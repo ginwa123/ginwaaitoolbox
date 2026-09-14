@@ -29,12 +29,33 @@ export interface NalarBrowserLike {
   close: (tabId: string) => Promise<{ ok: boolean }>
 }
 
+/**
+ * The pane triple the shell installs on the APP window (Linux only for now):
+ *
+ *   window.nalarBrowserPaneShow(tabId, url) → { ok, visible, error? }
+ *   window.nalarBrowserPaneHide()            → { ok, visible }
+ *   window.nalarBrowserPaneStatus()          → { supported, visible }
+ *
+ * Same flat-name rule as the window triple above: `window[name]` is written
+ * verbatim by the vendored glue, so these are three separate globals, not a
+ * namespace. Off Linux / in a plain-browser dev session / in an older shell
+ * they are `undefined` — a normal state the UI falls back from, never throws.
+ */
+export interface NalarBrowserPaneLike {
+  show: (tabId: string, url: string) => Promise<{ ok: boolean; visible: boolean; error?: string }>
+  hide: () => Promise<{ ok: boolean; visible: boolean }>
+  status: () => Promise<{ supported: boolean; visible: boolean }>
+}
+
 /** The globals the shell actually binds, plus the object shape if present. */
 export interface NalarBrowserGlobals {
   nalarBrowserOpen?: NalarBrowserLike['open']
   nalarBrowserStatus?: NalarBrowserLike['status']
   nalarBrowserClose?: NalarBrowserLike['close']
   nalarBrowser?: NalarBrowserLike
+  nalarBrowserPaneShow?: NalarBrowserPaneLike['show']
+  nalarBrowserPaneHide?: NalarBrowserPaneLike['hide']
+  nalarBrowserPaneStatus?: NalarBrowserPaneLike['status']
 }
 
 export interface BrowserBridgeStatus {
@@ -48,7 +69,27 @@ export interface BrowserBridgeOpenResult {
   error?: string
 }
 
+export interface BrowserPaneShowResult {
+  available: boolean
+  ok: boolean
+  visible: boolean
+  error?: string
+}
+
+export interface BrowserPaneHideResult {
+  available: boolean
+  ok: boolean
+  visible: boolean
+}
+
+export interface BrowserPaneStatus {
+  available: boolean
+  supported: boolean
+  visible: boolean
+}
+
 let testOverride: NalarBrowserLike | null | undefined
+let paneTestOverride: NalarBrowserPaneLike | null | undefined
 
 /** Test seam: stub the object-shaped bridge; `null` means "no bridge at all". */
 export function __setBrowserBridgeForTests(bridge: NalarBrowserLike | null): void {
@@ -58,6 +99,21 @@ export function __setBrowserBridgeForTests(bridge: NalarBrowserLike | null): voi
 /** Test seam: drop the override and go back to reading the real globals. */
 export function __resetBrowserBridgeForTests(): void {
   testOverride = undefined
+}
+
+/**
+ * Test seam: stub the pane triple; `null` means "no pane at all".
+ *
+ * Independent from the window-bridge override: a shell can have the process
+ * bridge without the pane (macOS today), so each half is stubbed separately.
+ */
+export function __setBrowserPaneForTests(pane: NalarBrowserPaneLike | null): void {
+  paneTestOverride = pane
+}
+
+/** Test seam: drop the pane override and go back to reading the real globals. */
+export function __resetBrowserPaneForTests(): void {
+  paneTestOverride = undefined
 }
 
 function globalsOf(): NalarBrowserGlobals[] {
@@ -82,6 +138,25 @@ function readBridge(): NalarBrowserLike | null {
   if (testOverride !== undefined) return testOverride
   try {
     return bridgeFromGlobals()
+  } catch {
+    return null
+  }
+}
+
+function paneFromGlobals(): NalarBrowserPaneLike | null {
+  for (const scope of globalsOf()) {
+    const show = scope.nalarBrowserPaneShow
+    const hide = scope.nalarBrowserPaneHide
+    const status = scope.nalarBrowserPaneStatus
+    if (show && hide && status) return { show, hide, status }
+  }
+  return null
+}
+
+function readPane(): NalarBrowserPaneLike | null {
+  if (paneTestOverride !== undefined) return paneTestOverride
+  try {
+    return paneFromGlobals()
   } catch {
     return null
   }
@@ -123,5 +198,54 @@ export async function closeBrowserWindow(tabId: string): Promise<void> {
     await bridge.close(tabId)
   } catch {
     // The strip must never wait on — or throw because of — the shell.
+  }
+}
+
+export function browserPaneAvailable(): boolean {
+  return readPane() !== null
+}
+
+export async function showBrowserPane(tabId: string, url: string): Promise<BrowserPaneShowResult> {
+  const pane = readPane()
+  if (!pane) return { available: false, ok: false, visible: false }
+  try {
+    const result = await pane.show(tabId, url)
+    return {
+      available: true,
+      ok: result.ok === true,
+      visible: result.visible === true,
+      error: result.error,
+    }
+  } catch {
+    return { available: true, ok: false, visible: false }
+  }
+}
+
+export async function hideBrowserPane(): Promise<BrowserPaneHideResult> {
+  const pane = readPane()
+  if (!pane) return { available: false, ok: false, visible: false }
+  try {
+    const result = await pane.hide()
+    return { available: true, ok: result.ok === true, visible: result.visible === true }
+  } catch {
+    return { available: true, ok: false, visible: false }
+  }
+}
+
+export async function browserPaneStatus(): Promise<BrowserPaneStatus> {
+  const pane = readPane()
+  if (!pane) return { available: false, supported: false, visible: false }
+  try {
+    const result = await pane.status()
+    // `supported:false` is reported honestly: a shell that answers at all but
+    // does not support the pane (a platform before its patch) is "present but
+    // unsupported", not absent.
+    return {
+      available: true,
+      supported: result.supported === true,
+      visible: result.visible === true,
+    }
+  } catch {
+    return { available: true, supported: false, visible: false }
   }
 }

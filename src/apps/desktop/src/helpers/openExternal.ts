@@ -1,10 +1,13 @@
 /**
- * Open an `http(s)` URL in a browser tab (+ a Nalar-owned window); anything
- * else falls through to `window.open` unchanged.
+ * Open an `http(s)` URL in a browser tab (+ the in-app pane when the shell
+ * offers it); anything else falls through to `window.open` unchanged.
  *
- * - Tab mode on: focus/create the browser tab (deduping by URL), re-apply
- *   the tab target to the URL, and spawn a window only when none is alive
- *   for that tab. When the bridge is unavailable, degrade to `window.open`.
+ * - Tab mode on, pane available: focus/create the browser tab (deduping by
+ *   URL), re-apply the tab target to the URL, and show the pane — no window
+ *   is spawned and `window.open` is never called.
+ * - Tab mode on, pane unavailable: focus/create the browser tab and spawn a
+ *   window only when none is alive for that tab (the invisible automatic
+ *   fallback). When the bridge is unavailable, degrade to `window.open`.
  * - Tab mode off: no tab is created; the fixed bridge id `'external'` is
  *   used with the same re-use rule, else `window.open`.
  * - Non-http(s) (`blob:`, `javascript:`, `data:`, relative) → `window.open`
@@ -15,7 +18,12 @@
 import router from '../router'
 import { withTabParam } from './tabTarget'
 import { isHttpUrl } from './browserUrl'
-import { browserStatus, openBrowserWindow } from './browserBridge'
+import {
+  browserPaneAvailable,
+  browserStatus,
+  openBrowserWindow,
+  showBrowserPane,
+} from './browserBridge'
 import { useTabsStore } from '../stores/tabs'
 
 function systemOpen(url: string): void {
@@ -47,6 +55,15 @@ async function run(url: string): Promise<void> {
       await router.replace({ path: tab.path, query: withTabParam(tab.query, tab.id) })
     } catch {
       /* tests / early boot — the tab is still created and activated */
+    }
+    if (browserPaneAvailable()) {
+      // The page lands in the browser tab with the pane — never a window.
+      try {
+        await showBrowserPane(tab.id, url)
+      } catch {
+        /* the bridge never throws; the tab is still created and activated */
+      }
+      return
     }
     const st = await browserStatus(tab.id)
     if (!st.available) {

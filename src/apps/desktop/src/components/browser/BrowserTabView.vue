@@ -1,24 +1,31 @@
 <script setup lang="ts">
 /**
- * The browser tab body: a launcher + record for a Nalar-owned webview window.
+ * The browser tab body: a launcher + record for the in-app browser pane.
  *
  * Blank (no `url`): an address bar. Enter/Open normalizes the input — a
- * refused scheme shows an inline error and spawns nothing.
+ * refused scheme shows an inline error and spawns nothing — then navigates
+ * the tab and drives the pane (or the fallbacks below).
  *
- * With a `url`: a read-only URL row, a status line, one always-enabled
- * primary button whose label follows the shell's status, and an
- * "Open in system browser" escape hatch.
+ * With a `url`: a read-only URL row, a status line, and "Open in system
+ * browser" as the escape hatch. There is deliberately NO separate-window
+ * affordance: when the pane is available the page already shows below the
+ * strip (this card is only visible while the pane is not covering it) and
+ * the window code path survives only as an invisible automatic fallback
+ * (used when the pane is unavailable but the window bridge exists).
  *
- * Window status is fetched on demand only (mount, active-tab change, after
- * an action) — never polled.
+ * Pane/window status is fetched on demand only (mount, active-tab change,
+ * after an action) — never polled.
  */
 import { computed, onMounted, ref, watch } from 'vue'
 
 import { normalizeAddressInput } from '../../helpers/browserUrl'
 import {
   browserBridgeAvailable,
+  browserPaneAvailable,
+  browserPaneStatus,
   browserStatus,
   openBrowserWindow,
+  showBrowserPane,
 } from '../../helpers/browserBridge'
 import { useTabsStore } from '../../stores/tabs'
 
@@ -37,20 +44,32 @@ const alive = ref(false)
 const copied = ref(false)
 /** False when this document has no shell bridge (plain browser / old shell). */
 const bridgeReady = ref(browserBridgeAvailable())
+/** True when the shell offers the in-app pane (Linux only for now). */
+const paneReady = ref(browserPaneAvailable())
+const paneVisible = ref(false)
 
 async function refreshStatus(): Promise<void> {
   const current = tab.value
+  const currentUrl = url.value
   if (!current) {
     alive.value = false
+    paneVisible.value = false
     return
   }
   try {
-    const st = await browserStatus(current.id)
+    const [st, pane] = await Promise.all([browserStatus(current.id), browserPaneStatus()])
+    // The tab may have moved on while the shell answered.
+    if (tab.value?.id !== current.id || url.value !== currentUrl) return
     bridgeReady.value = st.available
     alive.value = st.alive
+    paneReady.value = pane.available && pane.supported
+    paneVisible.value = pane.visible
   } catch {
+    if (tab.value?.id !== current.id || url.value !== currentUrl) return
     bridgeReady.value = browserBridgeAvailable()
     alive.value = false
+    paneReady.value = browserPaneAvailable()
+    paneVisible.value = false
   }
 }
 
@@ -76,6 +95,16 @@ async function submitAddress(): Promise<void> {
   error.value = ''
   tabsStore.navigateBrowserTab(current.id, r.url)
   emit('navigate')
+  if (browserPaneAvailable()) {
+    // The pane shows the page below the strip — no window.
+    try {
+      await showBrowserPane(current.id, r.url)
+    } catch {
+      /* the bridge never throws, but the tab target is already applied */
+    }
+    await refreshStatus()
+    return
+  }
   if (!browserBridgeAvailable()) {
     // No shell to ask: hand the address to the system browser rather than
     // navigating the tab and leaving the user with nothing.
@@ -91,23 +120,22 @@ async function submitAddress(): Promise<void> {
 }
 
 /**
- * The primary action is never disabled (§3 window re-use rule) and never a
- * no-op: with no bridge it does the only thing that can work here.
+ * The status line follows whichever surface actually shows the page: the
+ * pane when the shell offers it, otherwise the separate window.
  */
-const primaryLabel = computed(() => {
-  if (!bridgeReady.value) return 'Open in system browser'
-  return alive.value ? 'Open another window' : 'Open browser window'
+const statusText = computed(() => {
+  if (paneReady.value) return paneVisible.value ? 'pane visible' : 'pane hidden'
+  return alive.value ? '1 window open' : 'no window open'
 })
 
-function onPrimary(): void {
-  if (!bridgeReady.value) {
-    openInSystem()
-    return
-  }
-  void openWindow()
-}
-
-async function openWindow(): Promise<void> {
+/**
+ * Invisible-automatic-fallback made visible: with no pane but a window
+ * bridge (an older shell, a platform before its pane patch), the only
+ * in-app surface is the separate window, so the fallback button opens it.
+ * With no bridge at all there is no fallback — the system browser below is
+ * the primary action instead. Never disabled, never a no-op.
+ */
+async function openFallbackWindow(): Promise<void> {
   const current = tab.value
   const target = url.value
   if (!current || !target) return
@@ -216,27 +244,35 @@ async function copyUrl(): Promise<void> {
         class="text-sm"
         :style="{ color: 'var(--semantic-text-muted)' }"
       >
-        {{ alive ? '1 window open' : 'no window open' }}
+        {{ statusText }}
       </p>
       <p
-        v-if="!bridgeReady"
+        v-if="paneReady"
+        data-testid="browser-pane-note"
+        class="text-sm"
+        :style="{ color: 'var(--semantic-text-muted)' }"
+      >
+        Showing in the pane below.
+      </p>
+      <p
+        v-if="!paneReady && !bridgeReady"
         data-testid="browser-bridge-missing"
         class="text-sm"
         :style="{ color: 'var(--semantic-text-muted)' }"
       >
-        This page has no shell bridge, so a Nalar browser window cannot be
-        opened from here — opening in your system browser instead. Use the
-        Nalar desktop app for an in-app window.
+        This page has no shell bridge, so a Nalar browser window cannot be opened from here —
+        opening in your system browser instead. Use the Nalar desktop app for an in-app window.
       </p>
       <div class="flex gap-2">
         <button
+          v-if="!paneReady && bridgeReady"
           type="button"
-          data-testid="browser-open-window"
+          data-testid="browser-open-fallback"
           class="rounded-lg px-4 py-2 text-sm font-medium"
           :style="{ backgroundColor: 'var(--color-violet)', color: '#fff' }"
-          @click="onPrimary"
+          @click="openFallbackWindow"
         >
-          {{ primaryLabel }}
+          Open browser window
         </button>
         <button
           type="button"
