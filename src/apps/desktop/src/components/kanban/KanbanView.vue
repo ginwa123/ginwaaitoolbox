@@ -320,6 +320,7 @@ const emit = defineEmits<{
   // docs/superpowers/plans/2026-08-27-kanban-agent-as-tab.md.)
   // Pass-through from KanbanColumn.
   selectTask: [taskId: string]
+  openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
@@ -1272,6 +1273,7 @@ const handleCreateTaskSave = async (payload: {
           @request-run-all-agents="handleRunAllAgents"
           :run-all-busy="!!runAllBusyByColumn[column.id]"
           @select-task="(id) => emit('selectTask', id)"
+          @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
           @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
           @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
           @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"

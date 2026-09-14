@@ -27,6 +27,7 @@ import AddTaskPickerDialog from '../dialogs/AddTaskPickerDialog.vue'
 import type { WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 import { buildTaskUrlQuery } from '../../helpers/buildTaskUrlQuery'
+import { openInNewTab } from '../../helpers/openInNewTab'
 
 const router = useRouter()
 const route = useRoute()
@@ -375,11 +376,33 @@ const handleOpenItemInBackground = (payload: {
   name: string
   itemType?: string
 }) => {
-  const href = router.resolve({
+  openInNewTab(router, {
     path: '/app',
     query: { view: 'workspace', workspaceId: payload.workspaceId, itemId: payload.itemId },
-  }).href
-  window.open(href, '_blank', 'noopener')
+  })
+}
+
+/**
+ * Right-click "Open in new tab" on a task row/card. Builds the task
+ * chat URL from the row's explicit ids (NOT the active store state —
+ * the row may belong to a non-active item) and opens a real browser
+ * tab. Never mutates navigation state: the current tab stays put.
+ */
+const handleOpenTaskInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  itemType?: string
+  taskId: string
+}) => {
+  const query = buildTaskUrlQuery({
+    taskId: payload.taskId,
+    activeWorkspaceId: payload.workspaceId || null,
+    activeWorkspaceItemId: payload.itemId || null,
+    activeDesignPageId: null,
+    activeItemType: payload.itemType ?? null,
+    currentQuery: route.query,
+  })
+  openInNewTab(router, { path: '/app', query })
 }
 
 const handleSelectItem = async (workspaceId: string, itemId: string) => {
@@ -1402,6 +1425,7 @@ defineExpose({
           @add-workspace="handleAddWorkspace"
           @add-task="handleAddTask"
           @select-task="handleSelectTask"
+          @open-task-in-background="handleOpenTaskInBackground"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
           @load-more-tasks="handleLoadMoreTasks"

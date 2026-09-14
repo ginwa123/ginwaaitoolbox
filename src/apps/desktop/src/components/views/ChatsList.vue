@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref, watch, inject, onMounted, onUnmounted, onBeforeUnmount, nextTick, type Ref } from 'vue'
+import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { useContextMenu } from '../../composables/useContextMenu'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
+import { openInNewTab } from '../../helpers/openInNewTab'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
+import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 
 const router = useRouter()
 
@@ -73,53 +76,24 @@ const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
 const chatsTotal = ref(0)
 
-// Right-click context menu for a chat row. Offers "Open in new tab",
-// which opens a real browser tab (window.open) and stays put.
-// Positioned fixed via Teleport to body so VirtualScroller overflow
-// never clips it.
-const contextMenu = ref<{ id: string; name: string; x: number; y: number } | null>(null)
+// Right-click "Open in new tab" for a chat row. Position state +
+// dismiss wiring live in useContextMenu; the row payload (chat id)
+// lives here so @open can target it.
+const { menuPos, openAt, close: closeContextMenu } = useContextMenu()
+const contextMenuChatId = ref<string | null>(null)
 
 const onChatRowContextMenu = (event: MouseEvent, item: { id: string; name: string }) => {
-  event.preventDefault()
-  contextMenu.value = { id: item.id, name: item.name, x: event.clientX, y: event.clientY }
-}
-
-const closeContextMenu = () => {
-  contextMenu.value = null
-}
-
-const onContextMenuKeydown = (event: KeyboardEvent) => {
-  if (event.key === 'Escape') closeContextMenu()
-}
-
-const onContextMenuPointerDown = (event: MouseEvent) => {
-  if (!contextMenu.value) return
-  const target = event.target as HTMLElement | null
-  if (target && typeof target.closest === 'function' && target.closest('[data-testid="chat-menu"]')) return
-  closeContextMenu()
+  contextMenuChatId.value = item.id
+  openAt(event)
 }
 
 const openContextMenuInBackground = () => {
-  const menu = contextMenu.value
-  if (!menu) return
-  openChatInNewTab({ id: menu.id, name: menu.name })
+  const id = contextMenuChatId.value
+  contextMenuChatId.value = null
   closeContextMenu()
+  if (!id) return
+  openChatInNewTab({ id })
 }
-
-watch(contextMenu, (opened) => {
-  if (opened) {
-    window.addEventListener('keydown', onContextMenuKeydown)
-    window.addEventListener('mousedown', onContextMenuPointerDown)
-    return
-  }
-  window.removeEventListener('keydown', onContextMenuKeydown)
-  window.removeEventListener('mousedown', onContextMenuPointerDown)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onContextMenuKeydown)
-  window.removeEventListener('mousedown', onContextMenuPointerDown)
-})
 
 // Sort toggle extracted to a method so the template stays a single
 // expression. An inline multi-statement handler needs a semicolon
@@ -304,6 +278,22 @@ const loadChats = async () => {
     // without waiting for the next SSE refresh.
     const current = currentMainView.value
     if (current.kind === 'chat' && current.sessionId) {
+      // Fresh-tab title: a deep link never left-clicks, so
+      // activeChatName is empty/stale and the browser tab would read
+      // plain "Nalar". The name is usually already in this list —
+      // fall back to a single-session fetch past page 1.
+      const match = navItems.value.find((i) => i.id === current.sessionId)
+      if (match && match.name && match.name !== 'New Chat') {
+        navigationStore.setActiveChatName(match.name)
+      } else {
+        const sessionId = current.sessionId
+        void api.getSession(sessionId).then((sess) => {
+          const now = currentMainView.value
+          if (now.kind === 'chat' && now.sessionId === sessionId && sess?.sessionName) {
+            navigationStore.setActiveChatName(sess.sessionName)
+          }
+        })
+      }
       optimisticClearStaleDot(current.sessionId)
       fireSessionTouched(current.sessionId)
     }
@@ -381,9 +371,8 @@ const createChat = () => {
  * real browser tab (window.open) instead of navigating — the browser
  * gesture. A plain click keeps the previous behaviour.
  */
-const openChatInNewTab = (item: { id: string; name: string }) => {
-  const href = router.resolve({ path: '/app', query: { view: 'chat', session: item.id } }).href
-  window.open(href, '_blank', 'noopener')
+const openChatInNewTab = (item: { id: string }) => {
+  openInNewTab(router, { path: '/app', query: { view: 'chat', session: item.id } })
 }
 
 const onChatRowClick = (event: MouseEvent, item: { id: string; name: string }) => {
@@ -756,29 +745,10 @@ defineExpose({
     </button>
   </div>
 
-  <Teleport v-if="contextMenu" to="body">
-    <div
-      data-testid="chat-menu"
-      role="menu"
-      class="fixed z-50 py-1 text-xs rounded-lg shadow-lg"
-      :style="{
-        left: `${contextMenu.x}px`,
-        top: `${contextMenu.y}px`,
-        backgroundColor: 'var(--semantic-content-bg)',
-        border: '1px solid var(--color-border)',
-        color: 'var(--semantic-text)',
-      }"
-      @click.stop
-    >
-      <button
-        type="button"
-        role="menuitem"
-        data-testid="chat-menu-open-new-tab"
-        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
-        @click="openContextMenuInBackground"
-      >
-        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open in new tab
-      </button>
-    </div>
-  </Teleport>
+  <OpenInNewTabMenu
+    v-if="menuPos"
+    :x="menuPos.x"
+    :y="menuPos.y"
+    @open="openContextMenuInBackground"
+  />
 </template>

@@ -57,9 +57,9 @@ describe('ChatsList — right-click context menu', () => {
     expect(row).toBeTruthy()
     await row!.trigger('contextmenu', { clientX: 100, clientY: 200 })
     await nextTick()
-    const menu = document.body.querySelector('[data-testid="chat-menu"]')
+    const menu = document.body.querySelector('[data-testid="open-new-tab-menu"]')
     expect(menu).toBeTruthy()
-    const item = document.body.querySelector('[data-testid="chat-menu-open-new-tab"]') as HTMLButtonElement
+    const item = document.body.querySelector('[data-testid="open-new-tab-item"]') as HTMLButtonElement
     expect(item?.textContent).toContain('Open in new tab')
     expect(item?.querySelector('span[aria-hidden="true"]')).toBeTruthy()
     item.click()
@@ -69,7 +69,7 @@ describe('ChatsList — right-click context menu', () => {
       '_blank',
       'noopener',
     )
-    expect(document.body.querySelector('[data-testid="chat-menu"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="open-new-tab-menu"]')).toBeNull()
     wrapper.unmount()
     openSpy.mockRestore()
   })
