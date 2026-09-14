@@ -151,7 +151,8 @@ describe('browser_chrome.js (the injected bar)', () => {
     for (let removal = 1; removal <= 4; removal += 1) {
       env.removeBar()
       await settle()
-      expect(env.bar(), `removal ${removal} should be recovered`).not.toBeNull()
+      // (eslint-plugin-jest forbids a message argument, hence the bare expect.)
+      expect(env.bar()).not.toBeNull()
     }
     // The 5th exhausts the budget: the observer disconnects and the bar stays
     // gone (zero idle CPU — no timers were ever started).

@@ -1,6 +1,10 @@
 # In-app browser tab — simplified (Cursor-shaped)
 
-> **Status: PLAN ONLY — not executed.** Rev 7 (2026-09-14). Rev 6 closed five gaps
+> **Status: EXECUTED (2026-09-14)** — shell + frontend + docs landed on
+> `worktree/task-1789376475404`. See **Implementation status** at the bottom for
+> the shipped/deviated/gates record.
+>
+> Rev 7 (2026-09-14). Rev 6 closed five gaps
 > found in review (unauthenticated local spawn surface, the "one window per tab"
 > vs. edge-case-#7 ambiguity, an unqualified PID-liveness claim, an unbounded
 > chrome-bar remount, and an explicit non-goal statement). Rev 7 folds in the
@@ -581,5 +585,90 @@ actually match Cursor's browser rather than just its window primitive.**
 
 ## Implementation status
 
-**Not started.** Planning artefact only. When the work lands, append the
-shipped/deviated/gates sections here (house style).
+**Shipped.** `+` (and `Shift+Alt+T`) opens a blank browser tab; an address or a
+search term in it opens the page in a real **Nalar-owned webview window**
+(`nalar-desktop --browser <url>`) with an injected address/←/→/↻ bar; the tab is
+the launcher and record, the window owns history and cookies. The SPA reaches
+the shell through `webview_bind` — no HTTP route, no port, no token.
+
+| Plan task | Status | Notes |
+|---|---|---|
+| 1 — shell: `--browser`, `runBrowserWindow`, chrome bar, bridge | ✅ | `cli.zig` (`browser_url`, http(s)-only at parse time), `main.zig` (browser branch returns before attach/extraction), `webview_lib.zig` (`runBrowserWindow` + the bridge installed in `runWindow`), NEW `browser_bridge.zig`, NEW `browser_chrome.js` (`@embedFile`) |
+| 2 — frontend: the `browser` tab kind | ✅ | `tabTarget.ts` (`browser` kind, `browser:new`/`browser:<url>` keys, `browserTab()`), NEW `browserUrl.ts`, `stores/tabs.ts` (`openBrowserTab`, `navigateBrowserTab`, close→bridge), `TabBar.vue` (🌐, host label, `+`), `AppLayout.vue` (view branch + `Shift+Alt+T`), `useCurrentMainView.ts` |
+| 3 — frontend: tab body + bridge client | ✅ | NEW `browserBridge.ts`, NEW `components/browser/BrowserTabView.vue`, NEW `openExternal.ts` (+ the `ChatView`/`NalarSettings` reroutes; `PreviewContentRenderer` deliberately left on `blob:` + documented) |
+| 4 — docs | ✅ | `docs/tabs.md` (gestures, shortcuts, identity, labels, "The browser window", turning-it-off, Files, tests), `docs/SPEC.md` §3.7.12 + a §10.1 PR-index row, this section |
+| 5 — gates | ✅ | See "Gates" below |
+
+### Deviations from the plan
+
+1. **`open` takes the tab id first: `nalarBrowser.open(tabId, url)`.** §3.2's
+   sketch showed `open(url)`, but §1.6 requires the handle to be *stored under
+   the tab id* — and `status(tabId)`/`close(tabId)` can only find it if `open`
+   was told the id. The TS wrapper mirrors it (`openBrowserWindow(tabId, url)`).
+2. **The chrome-bar removal budget is the §5.1 reading, not the §3 wording.**
+   §3 said "a hard cap of 5 remounts"; §5.1's test case said "after 5 removals it
+   stays gone". Implemented as: **5 removals are tolerated** (each of the first
+   four is recovered by the observer) and the **5th is final** — the observer
+   disconnects and the bar stays gone. `MAX_REMOVALS = 5` in the asset; asserted
+   in `browserChrome.spec.ts`. The off-by-one between the two sentences is
+   resolved in favour of the test case, and the property that matters (bounded
+   work, no timers, 0% idle CPU, observer disconnect) holds either way.
+3. **`helpers/openExternal.ts` did not exist.** Tasks 2–3 assumed it; the three
+   call sites were raw `window.open(...)`. It was created, and the two that
+   open an `http(s)` URL were rerouted; the `blob:` one was left alone (with a
+   comment pointing at the decision table).
+4. **The chrome asset is embedded in `webview_lib.zig`, not passed from
+   `main.zig`.** §1.3 listed `chrome_js` as a parameter; §1.5 said "embed it in
+   the file that needs it" — that file is the one calling `webview_init`, so the
+   parameter would only have been threaded through `main.zig` to be handed
+   straight back. Same bytes, one less seam. `@embedFile("browser_chrome.js")`.
+5. **The tab body re-applies its URL by emitting `navigate`** (wired in
+   `AppLayout` to `applyActiveTabToUrl`, exactly like `TabBar`) rather than
+   calling the router itself — the store still makes no router call (§2.3).
+   `openExternal` is the one exception: it is called from non-component code
+   (a click handler in `ChatView`/`NalarSettings`), so it uses the router
+   singleton; with tab mode off it uses the fixed bridge id `external`.
+6. **Windows `WAIT_0` is a decl, not an enum field** (`NTSTATUS.WAIT_0 =
+   .SUCCESS`), so the probe spells the path out. Caught by the new cross-compile
+   hook — i.e. by the gate this plan added in 5.3, before any Windows runner saw
+   it.
+7. **A semicolon-joined template expression is a trap.** The repo's post-edit
+   prettier hook split `@click="closeTab(id); closeMenu()"` across three lines,
+   which the Vue compiler cannot parse (it rejected four spec files). It is now
+   a `closeTabFromMenu(id)` call. Worth knowing for any future edit to a
+   template attribute with `;` in it.
+
+### Gates
+
+* `zig build test:desktop-app --summary all` — **62/62 pass** (was 56; the new
+  `browser_bridge.zig` suite + `cli_test.zig`'s `--browser`/`isHttpUrl`/`hostOf`
+  cases + the two `webview_lib.zig` static contracts).
+* `zig build check:desktop-cross --summary all` — **4/4**: the bridge's per-OS
+  liveness probe compiles for **x86_64-windows-gnu, aarch64-macos and
+  x86_64-linux**. This gate is what caught deviation 6.
+* `pnpm --dir src/apps/desktop exec vitest run` — **371 files / 3290 tests:
+  4 failed, 3286 passed.** The 4 failures are exactly the pre-existing set
+  recorded *before* any edit (4 failed / 3247 passed of 3251): 
+  `FilePickerDialog.windows`, `WorkspaceItemHideTasksForDesign`,
+  `workspacesStoreNormalizeTaskDates`, `workspacesStoreNormalizeTaskImageUrls`.
+  **+39 new passes, 0 regressions.**
+* `pnpm --dir src/apps/desktop run build` (vite + `vue-tsc`) — green;
+  `run lint:check` (oxlint + eslint) — **0 errors, 0 warnings**.
+* `pytest tests/functional/desktop_browser_flag_test.py` — 1 passed (the static
+  contract: the `--browser` branch precedes `attach.resolveAttachTarget(`, so
+  browser mode cannot start a server) / 4 skipped (no `nalar-desktop` binary in
+  that environment; the suite skips by design). No new HTTP route means no new
+  wire test — which is itself the assertion.
+* **Not verifiable here, left for the human 9-item manual checklist:** the
+  three-OS sign-in/session-persistence check, a real Google/GitHub page, a dev
+  server, and the OS-driven window close. Everything in §9 that needs a display
+  or a second platform.
+
+### Follow-ups (unchanged from §10)
+
+The inline pane (§10.2), agent-driven control (§10.3) and the six small
+follow-ups (§10.4) remain their own cards. §10.4's "live URL + title back to the
+tab" is the one a reviewer will want next: it needs a reverse channel, and the
+tempting shortcut (a binding inside the *browser* window) is exactly what the
+§3.2 invariant forbids.
+
