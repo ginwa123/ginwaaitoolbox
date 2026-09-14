@@ -253,6 +253,7 @@ onBeforeUnmount(() => {
       ref="scrollerRef"
       class="flex-1 flex items-stretch overflow-x-auto tab-bar-scroll"
       style="scrollbar-width: none"
+      @wheel="onWheel"
     >
       <div
         v-for="(tab, index) in visibleTabs"

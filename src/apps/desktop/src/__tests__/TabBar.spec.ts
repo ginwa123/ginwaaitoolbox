@@ -266,7 +266,6 @@ describe('TabBar', () => {
 
   it('offers close / close-others / close-right in the context menu', async () => {
     const store = useTabsStore()
-    const home = store.tabs[0]
     const a = store.open({ query: { view: 'chat', session: 'sa' } })
     const b = store.open({ query: { view: 'chat', session: 'sb' } })
 
