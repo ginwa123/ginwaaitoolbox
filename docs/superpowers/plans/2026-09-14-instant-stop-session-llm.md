@@ -1,6 +1,6 @@
 # Instant Stop — cancel an in-flight LLM turn without the ~1 s tail
 
-> **Status: PHASES A + B IMPLEMENTED — Phase C still pending.**
+> **Status: PHASES A + B + C IMPLEMENTED.**
 > Implemented on this branch; see `## Implementation status` at the bottom for
 > what shipped, the test baselines, and what was deferred.
 
@@ -562,22 +562,27 @@ Executed 2026-09-14 on `worktree/instant-stop-session-llm-1789383350471`.
 | A3 | `Agent.zig` | Cancel classified **first** in the scanner `catch` and after loop exit, so it can never surface as a retryable `StreamInterrupted`. |
 | A4 | `workflow.zig` | `llm_cancel_thunk` (mirrors the MCP thunk): polls `isWorkerCancelled`, throttled to 50 ms, latched positive. |
 | A5 | `call_streaming_test.zig` | `callStreaming reports a mid-stream cancel as error.Cancelled, never as a retryable error`. |
+| C1–C2 | `workflow.zig` | `flushCancelledPartial` — on a mid-stream cancel, insert the partial as a `finish_reason = "cancelled"` assistant row (`is_emit_sse` → the `llm_full` the view settles on) and release the stream snapshot. |
+| C-test | `workflow.zig` | `flushCancelledPartial persists the streamed partial as a cancelled turn` — runs the **real migrations** and asserts the row + the released snapshot. |
 
 **Test baselines**
 
 - kabelweb `zig build test-client`: **244 passed; 2 skipped; 0 failed.**
-- ginwaaitoolbox `zig build test`: **3327 passed; 8 skipped; 0 failed.**
+- ginwaaitoolbox `zig build test`: **3328 passed; 8 skipped; 0 failed.**
 
-**Falsification (both suites were checked against the un-fixed code)**
+**Falsification (all three checks were run against the un-fixed code)**
 
 - kabelweb buffered-chunk test → `expected error.Cancelled, found { 70, 70, … }` (a queued `'F'` chunk).
-- ginwaaitoolbox test with `cancel_fn` nulled → `expected error.Cancelled, found error.StreamInterrupted` — exactly the retry-misclassification risk from §10.
+- ginwaaitoolbox agent test with `cancel_fn` nulled → `expected error.Cancelled, found error.StreamInterrupted` — exactly the retry-misclassification risk from §10.
+- ginwaaitoolbox Phase C test with `flushCancelledPartial` short-circuited → `error.NoRowInserted`, i.e. without the new code a stopped turn has **no history row at all** and the client-side streaming row is the only trace of it.
 
 **Not done**
 
-- **Phase C** (C1–C3): a stop still emits only `worker_deleted`, so the
-  `streaming-*` row and `isStreaming` linger and the partial text is not
-  persisted. Latency is fixed; this is the remaining work.
+- **C3 (frontend spec)** — no frontend code changed for Phase C, so no spec was
+  added. The `full`-settles-the-UI contract that C1 depends on
+  (`ChatView.vue`: only a `full` event clears the `streaming-*` row and
+  `isStreaming`) is asserted indirectly by the backend test's emit, not by a
+  Vitest case.
 - **A6 / functional latency test** — §8's `POST /stop` → last `llm_chunk`
   measurement was not written. (The Zig test deliberately uses a stalled server
   and therefore measures classification + a bounded return, not instantness;
