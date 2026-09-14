@@ -603,3 +603,57 @@ activated, with the board tab left open. The modal is gone.
 
 The §11 manual checklist (real browser/webview, port **5173**) has **not** been
 run — it needs a human at the window. Everything above is jsdom + static gates.
+
+---
+
+## Follow-up fix: per-column scroll was lost on the board↔chat round trip (2026-09-14)
+
+**Reported by the user after the first review pass:** *"after click the task,
+position scroll back to the top the kanban column scrollbar"*.
+
+**Cause — a real, foreseeable regression of this design, not a stray bug.**
+The modal kept `KanbanView` mounted (it teleported on top), so every scroll
+position survived the chat for free. Making the chat a *tab body* means the
+board **unmounts** whenever the chat tab is active, and the rebuilt board starts
+fresh. Only the columns ROW had a restore mechanism
+(`useKanbanScrollRestore` → horizontal `scrollLeft`); the vertical position
+inside each column had none, because nothing had ever needed it. This is the
+same follow-up the dropped `KanbanChat` branch would have had — its diff
+adjusted this exact comment while still acknowledging the unmount.
+
+**Fix.** New `composables/useKanbanColumnScrollRestore.ts`, wired in
+`KanbanColumn.vue`: persists the scroller container's `scrollTop` to
+`kanban-col-scroll-<itemId>:<columnId>` and restores it, clamped, once the
+container appears. It is deliberately a third sibling rather than a flag on
+`useKanbanScrollRestore`, for two reasons the existing pair doesn't share:
+
+1. **The element appears late.** The scroller is behind
+   `v-if="cardsInColumn.length > 0"`, so on a cold load it is absent at
+   `onMounted`. Attaching the listeners only on mount would mean the position
+   was never SAVED for that column — half the bug. The composable therefore
+   watches the ref (`flush: 'sync'`, so there is no window where the element
+   exists but the listener does not) and wires up whenever it shows up.
+2. **It restores unconditionally.** `useChatScrollRestore` deliberately refuses
+   a position within 40 px of the bottom so a chat lands on the newest message.
+   A column scrolled to its last card must land exactly there.
+
+One deliberate deviation from both siblings: the unmount flush writes the last
+**captured** value, never a fresh `el.scrollTop` read. By `onBeforeUnmount` the
+element can already be detached, and a detached element reports
+`scrollTop = 0` — which would overwrite a good saved position with zero. A test
+pins exactly that (scroll to 300 → element reads 0 → unmount → still `300`).
+
+**Coverage.** 11 unit tests for the composable
+(`composables/__tests__/useKanbanColumnScrollRestore.spec.ts`) and 3 integration
+tests for the wiring (`__tests__/KanbanColumn.columnScrollRestore.spec.ts`:
+save under the item+column key, restore on remount, no cross-board/column leak).
+The integration spec stubs `<VirtualScroller>` with a component exposing a
+geometry-controllable `containerRef`, since jsdom has no layout and a real
+scroller would report `scrollHeight === clientHeight === 0` and skip every
+restore. **Mutation-checked:** all 3 integration tests fail with the
+`useKanbanColumnScrollRestore` call removed from `KanbanColumn.vue` and pass
+with it — they exercise the real wiring, not a vacuous path.
+
+**Gates after the fix:** `pnpm test` 4 failed / **3247** passed (still only the
+4 pre-existing failures; +3 from the new spec), `pnpm run build` exit 0,
+`pnpm run lint` exit 0.

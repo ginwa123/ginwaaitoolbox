@@ -155,11 +155,13 @@ const loadColumnsAndTasks = async () => {
   // Step 1: parse the URL's sorts (defensive — route/router may
   // be null in tests that don't mock vue-router).
   const routeObj = (() => {
-    try { return route } catch { return null }
+    try {
+      return route
+    } catch {
+      return null
+    }
   })()
-  const sortsRaw = routeObj
-    ? (routeObj.query?.sorts as string | undefined)
-    : undefined
+  const sortsRaw = routeObj ? (routeObj.query?.sorts as string | undefined) : undefined
   const urlEntries = sortsRaw ? parseSortsParam(sortsRaw) : []
   const nonDefaultUrlEntries = urlEntries.filter(
     (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
@@ -178,9 +180,7 @@ const loadColumnsAndTasks = async () => {
     void nextTick(() => {
       for (const entry of urlEntries) {
         const col = columnRefs.value[entry.columnId] as
-          | { setSortMode?: (s: string, d: string) => void }
-          | null
-          | undefined
+          { setSortMode?: (s: string, d: string) => void } | null | undefined
         if (col && typeof col.setSortMode === 'function') {
           col.setSortMode(entry.sortBy, entry.direction)
         }
@@ -222,9 +222,8 @@ const loadColumnsAndTasks = async () => {
     //    columns loaded; the other 5 stayed empty until a
     //    column sort was picked).
     const urlSortFetches = nonDefaultUrlEntries.map((e) => {
-      const apiSortBy = e.sortBy === 'position'
-        ? undefined
-        : e.sortBy as 'created_at' | 'updated_at' | 'name'
+      const apiSortBy =
+        e.sortBy === 'position' ? undefined : (e.sortBy as 'created_at' | 'updated_at' | 'name')
       return { columnId: e.columnId, sortBy: apiSortBy, direction: e.direction }
     })
     const defaultFetches = needFetch
@@ -291,16 +290,16 @@ watch(
 //
 // KanbanView renders the kanban board full-width. The chat task is
 // now an AppLayout branch that REPLACES the board (its own tab), not
-// a modal overlay. Opening the chat unmounts KanbanView, so the
-// composable persists scrollLeft to localStorage to carry the
-// column the user was looking at across that round-trip and across
-// refreshes.
+// a modal overlay. Opening the chat unmounts KanbanView, so BOTH axes
+// of scroll have to be persisted explicitly to survive the round-trip
+// and a refresh:
+//   - horizontal (this composable) — which column the user was looking at
+//   - vertical per column (useKanbanColumnScrollRestore, called inside
+//     <KanbanColumn>) — where they were in a 50-card column
 //
 // Plan: docs/superpowers/plans/2026-07-23-preserve-kanban-horizontal-scroll.md
 const kanbanColumnsContainer = ref<HTMLElement | null>(null)
-const kanbanScrollStorageKey = computed(
-  () => `kanban-scroll-${effectiveItemId.value}`,
-)
+const kanbanScrollStorageKey = computed(() => `kanban-scroll-${effectiveItemId.value}`)
 useKanbanScrollRestore(kanbanColumnsContainer, kanbanScrollStorageKey)
 
 const emit = defineEmits<{
@@ -356,9 +355,7 @@ const emit = defineEmits<{
 // reorder never produces an out-of-order board even before the
 // API response lands).
 const sortedColumns = computed(() => {
-  return (props.item.kanban_columns ?? [])
-    .slice()
-    .sort((a, b) => a.position - b.position)
+  return (props.item.kanban_columns ?? []).slice().sort((a, b) => a.position - b.position)
 })
 
 // Tasks for this kanban (defensive — undefined is treated as []).
@@ -398,7 +395,7 @@ watch(searchQuery, (newQ) => {
     void workspacesStore.fetchKanbanTasksForAllColumns(
       props.workspaceId,
       effectiveItemId.value,
-      10,         // limit (matches loadMoreTasks + the store's default)
+      10, // limit (matches loadMoreTasks + the store's default)
       trimmed || undefined,
     )
   }, 300)
@@ -445,9 +442,12 @@ const parseSortsParam = (raw: string | string[] | undefined): SortEntry[] => {
     const [columnId, sortBy, direction] = trimmed.split(':')
     if (!columnId || !sortBy || !direction) continue
     if (
-      sortBy !== 'position' && sortBy !== 'created_at' &&
-      sortBy !== 'updated_at' && sortBy !== 'name'
-    ) continue
+      sortBy !== 'position' &&
+      sortBy !== 'created_at' &&
+      sortBy !== 'updated_at' &&
+      sortBy !== 'name'
+    )
+      continue
     if (direction !== 'asc' && direction !== 'desc') continue
     entries.push({ columnId, sortBy, direction })
   }
@@ -459,9 +459,7 @@ const parseSortsParam = (raw: string | string[] | undefined): SortEntry[] => {
 // Returns null when no non-default sorts exist (caller writes no
 // `sorts` param).
 const encodeSortsParam = (entries: SortEntry[]): string | null => {
-  const filtered = entries.filter(
-    (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
-  )
+  const filtered = entries.filter((e) => !(e.sortBy === 'position' && e.direction === 'asc'))
   if (filtered.length === 0) return null
   return filtered.map((e) => `${e.columnId}:${e.sortBy}:${e.direction}`).join(',')
 }
@@ -539,19 +537,15 @@ const handleColumnSortChange = (
   //    Default sort (position+asc) → no sortBy param → backend
   //    uses its default ORDER BY (kanban_position asc).
   if (payload.sortBy === 'position' && payload.direction === 'asc') {
-    void workspacesStore.fetchKanbanTasks(
-      props.workspaceId,
-      effectiveItemId.value,
-      columnId,
-      10,
-    )
+    void workspacesStore.fetchKanbanTasks(props.workspaceId, effectiveItemId.value, columnId, 10)
   } else {
     // The store's sortBy param excludes 'position' (no server
     // equivalent); narrow at the call site so the type checker
     // accepts the union.
-    const apiSortBy = payload.sortBy === 'position'
-      ? undefined
-      : payload.sortBy as 'created_at' | 'updated_at' | 'name'
+    const apiSortBy =
+      payload.sortBy === 'position'
+        ? undefined
+        : (payload.sortBy as 'created_at' | 'updated_at' | 'name')
     void workspacesStore.fetchKanbanTasks(
       props.workspaceId,
       effectiveItemId.value,
@@ -599,7 +593,7 @@ const handleOpenAgentSettings = () => {
 // the task in the chosen column.
 const handleOpenCreateDialog = () => {
   const firstColumn = sortedColumns.value[0]
-  if (!firstColumn) return  // disabled button covers this, defensive
+  if (!firstColumn) return // disabled button covers this, defensive
   handleViewCreateTask(firstColumn.id)
 }
 
@@ -635,11 +629,7 @@ const handleProjectRootSelected = async (path: string) => {
   pathPickerBusy.value = true
   pathPickerError.value = null
   try {
-    await workspacesStore.updateKanbanItemPath(
-      props.workspaceId,
-      props.item.id,
-      path,
-    )
+    await workspacesStore.updateKanbanItemPath(props.workspaceId, props.item.id, path)
   } catch (err) {
     pathPickerError.value = err instanceof Error ? err.message : String(err)
   } finally {
@@ -700,11 +690,7 @@ const handleViewTaskDetail = (taskId: string) => {
   // task list for the parent item, plucks this task, and patches
   // the cached copy in place. Best-effort — a failure is logged
   // and the dialog still opens with the cached value.
-  void workspacesStore.refreshTask(
-    props.workspaceId,
-    props.itemId || props.item.id,
-    taskId,
-  )
+  void workspacesStore.refreshTask(props.workspaceId, props.itemId || props.item.id, taskId)
 }
 
 // Dialog save handler — delegates to the store action which runs the
@@ -760,9 +746,9 @@ const handleStartAgent = async (payload: { taskId: string }) => {
       showTaskDetail.value = false
       activeTaskDetailId.value = null
     } else if (result && result.success === false) {
-      startAgentError.value = 'Agent didn\'t start — server reported failure.'
+      startAgentError.value = "Agent didn't start — server reported failure."
     } else if (result === undefined) {
-      startAgentError.value = 'Agent didn\'t start — network error.'
+      startAgentError.value = "Agent didn't start — network error."
     } else {
       // Defensive: response present but without the expected
       // success/status fields. Map to a generic error.
@@ -808,8 +794,7 @@ const handleRunAllAgents = async (columnId: string) => {
       const started = result?.started ?? []
       const skipped = result?.skipped ?? []
       const failed = result?.failed ?? []
-      runAllSummary.value =
-        `Started ${started.length}, skipped ${skipped.length} (already running), failed ${failed.length}.`
+      runAllSummary.value = `Started ${started.length}, skipped ${skipped.length} (already running), failed ${failed.length}.`
     }
   } catch (err) {
     console.error('Failed to run all agents in column:', err)
@@ -899,9 +884,7 @@ const createError = ref<string | null>(null)
 // looked up in the kanban's columns list which is already in scope.
 const activeCreateColumn = computed<KanbanColumnType | null>(() => {
   if (!activeCreateColumnId.value) return null
-  return (props.item.kanban_columns ?? []).find(
-    (c) => c.id === activeCreateColumnId.value,
-  ) ?? null
+  return (props.item.kanban_columns ?? []).find((c) => c.id === activeCreateColumnId.value) ?? null
 })
 
 // Bound to <KanbanColumn>'s `@add-task`. Sets the target column +
@@ -1018,14 +1001,9 @@ const handleCreateTaskSave = async (payload: {
     let uploadedImageUrls: string[] = []
     if (pendingFiles.length > 0) {
       try {
-        uploadedImageUrls = await Promise.all(
-          pendingFiles.map((entry) => fileToBase64(entry.file)),
-        )
+        uploadedImageUrls = await Promise.all(pendingFiles.map((entry) => fileToBase64(entry.file)))
       } catch (err) {
-        console.error(
-          '[handleCreateTaskSave] file-to-base64 conversion failed:',
-          err,
-        )
+        console.error('[handleCreateTaskSave] file-to-base64 conversion failed:', err)
         createError.value = `Image conversion failed: ${
           err instanceof Error ? err.message : String(err)
         }`
@@ -1044,21 +1022,16 @@ const handleCreateTaskSave = async (payload: {
           )
         : undefined
 
-    const response = await workspacesStore.addKanbanTask(
-      wsId,
-      itId,
-      payload.mode,
-      {
-        name: payload.name,
-        description: payload.description,
-        tags: payload.tags,
-        cwd: payload.cwdSession,
-        isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
-        selected_profile_model: payload.selectedProfile,
-        queue_message: queueMessage,
-        imageUrls: uploadedImageUrls,
-      },
-    )
+    const response = await workspacesStore.addKanbanTask(wsId, itId, payload.mode, {
+      name: payload.name,
+      description: payload.description,
+      tags: payload.tags,
+      cwd: payload.cwdSession,
+      isAutoRetryUntilStop: payload.is_auto_retry_until_stop,
+      selected_profile_model: payload.selectedProfile,
+      queue_message: queueMessage,
+      imageUrls: uploadedImageUrls,
+    })
 
     if (!response.task) {
       // Partial success (create_and_run only) — the store action
@@ -1116,11 +1089,11 @@ const handleCreateTaskSave = async (payload: {
     <!-- ─── Header ────────────────────────────────────────────────────── -->
     <header
       class="flex items-center gap-3 px-3 py-2 shrink-0"
-      style="border-bottom: 1px solid var(--color-border);"
+      style="border-bottom: 1px solid var(--color-border)"
     >
       <h3
         class="text-sm font-semibold truncate flex-1"
-        style="color: var(--semantic-text);"
+        style="color: var(--semantic-text)"
         :data-testid="`kanban-view-${item.id}-title`"
       >
         <InlineEditableText
@@ -1182,7 +1155,9 @@ const handleCreateTaskSave = async (payload: {
         "
         data-testid="kanban-add-task-button"
         :disabled="sortedColumns.length === 0"
-        :title="sortedColumns.length ? 'Add a task to this kanban' : 'Add columns first in Settings'"
+        :title="
+          sortedColumns.length ? 'Add a task to this kanban' : 'Add columns first in Settings'
+        "
         @click="handleOpenCreateDialog"
       >
         <span aria-hidden="true">➕</span>
@@ -1226,7 +1201,6 @@ const handleCreateTaskSave = async (payload: {
         <span aria-hidden="true">🤖</span>
         <span class="ml-1">Agent</span>
       </button>
-
     </header>
 
     <!--
@@ -1240,7 +1214,7 @@ const handleCreateTaskSave = async (payload: {
     <div
       v-if="tasks.length === 0 && searchQuery.trim() !== ''"
       class="px-3 py-2 text-xs shrink-0"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       :data-testid="`kanban-view-${item.id}-no-search-matches`"
     >
       No tasks match "{{ searchQuery }}"
@@ -1256,7 +1230,7 @@ const handleCreateTaskSave = async (payload: {
     <div
       v-if="runAllSummary"
       class="px-3 py-2 text-xs shrink-0"
-      style="color: var(--semantic-text);"
+      style="color: var(--semantic-text)"
       :data-testid="`kanban-view-${item.id}-run-all-summary`"
       role="status"
       aria-live="polite"
@@ -1276,9 +1250,7 @@ const handleCreateTaskSave = async (payload: {
     <div
       ref="kanbanColumnsContainer"
       class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
-      style="
-        scrollbar-width: thin;
-      "
+      style="scrollbar-width: thin"
       :data-testid="`kanban-view-${item.id}-columns`"
     >
       <div class="flex gap-3 p-3 h-full items-stretch">
@@ -1309,7 +1281,7 @@ const handleCreateTaskSave = async (payload: {
       </div>
     </div>
   </section>
-<!--
+  <!--
     FilePickerDialog for the "Set project root" banner. Mounted at the
     bottom of the template so it sits in the same Teleport target as
     the rest of the kanban's modals. Same data source wiring as
@@ -1368,7 +1340,7 @@ const handleCreateTaskSave = async (payload: {
     :creating="createBusy"
     @create="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_session' })"
     @create-and-run="(payload) => handleCreateTaskSave({ ...payload, mode: 'create_and_run' })"
-    @column-change="(columnId) => activeCreateColumnId = columnId"
+    @column-change="(columnId) => (activeCreateColumnId = columnId)"
   />
 </template>
 
