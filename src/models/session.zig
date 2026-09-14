@@ -7,7 +7,8 @@
 //! Schema: Migration 008 (`create_sessions_table`) + 012 (cwd) +
 //! 016 (workspace_id) + 029 (timestamps) + 035
 //! (selected_profile_model) + 046 (git_worktree_cwd) + 063
-//! (is_auto_retry_until_stop + last_finish_reason).
+//! (is_auto_retry_until_stop + last_finish_reason) + 086
+//! (pr_url + pr_provider).
 
 const std = @import("std");
 
@@ -29,6 +30,13 @@ selected_profile_model: ?[]u8 = null,
 /// Migration 046 — absolute path of the git worktree bound to this
 /// session. NULL when no worktree is bound.
 git_worktree_cwd: ?[]u8 = null,
+/// Migration 086 — normalized pull/merge-request URL attached to this
+/// session by the set_pull_request agent tool. NULL when no PR is bound.
+pr_url: ?[]u8 = null,
+/// Migration 086 — effective provider resolved at write time
+/// ("github" | "gitlab" | "generic"). Stored (not re-derived) so reads
+/// stay deterministic on self-hosted forges. NULL when no PR is bound.
+pr_provider: ?[]u8 = null,
 /// Migration 063 — opt-in flag for unattended mode. Wire-format is
 /// `"0"` / `"1"` to match the SQL INTEGER column.
 is_auto_retry_until_stop: bool = false,
@@ -49,6 +57,8 @@ pub const InitArgs = struct {
     updated_at: ?[]const u8 = null,
     selected_profile_model: ?[]const u8 = null,
     git_worktree_cwd: ?[]const u8 = null,
+    pr_url: ?[]const u8 = null,
+    pr_provider: ?[]const u8 = null,
     is_auto_retry_until_stop: bool = false,
     last_finish_reason: []const u8 = "",
 };
@@ -70,6 +80,8 @@ pub fn init(allocator: std.mem.Allocator, args: InitArgs) !Self {
             try allocator.dupe(u8, gwc)
         else
             null,
+        .pr_url = if (args.pr_url) |u| try allocator.dupe(u8, u) else null,
+        .pr_provider = if (args.pr_provider) |pr| try allocator.dupe(u8, pr) else null,
         .is_auto_retry_until_stop = args.is_auto_retry_until_stop,
         .last_finish_reason = try allocator.dupe(u8, args.last_finish_reason),
     };
@@ -85,6 +97,8 @@ pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     if (self.updated_at) |ua| allocator.free(ua);
     if (self.selected_profile_model) |spm| allocator.free(spm);
     if (self.git_worktree_cwd) |gwc| allocator.free(gwc);
+    if (self.pr_url) |u| allocator.free(u);
+    if (self.pr_provider) |pr| allocator.free(pr);
     if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
 }
 
@@ -99,6 +113,8 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .updated_at = if (self.updated_at) |ua| ua else null,
         .selected_profile_model = if (self.selected_profile_model) |spm| spm else null,
         .git_worktree_cwd = if (self.git_worktree_cwd) |gwc| gwc else null,
+        .pr_url = if (self.pr_url) |u| u else null,
+        .pr_provider = if (self.pr_provider) |pr| pr else null,
         .is_auto_retry_until_stop = self.is_auto_retry_until_stop,
         .last_finish_reason = self.last_finish_reason,
     });

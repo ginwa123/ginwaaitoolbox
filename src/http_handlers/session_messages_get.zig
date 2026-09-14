@@ -90,6 +90,14 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         break :blk null;
     };
 
+    // Zero-message fallback for the attached-PR binding (same race as
+    // the profile chip above): the JOIN yields no rows before the
+    // first message, so read the sessions row directly. Non-empty
+    // direct values win; otherwise null (unset).
+    const pr_fields: llm_history.SessionPrFields = llm_history.getSessionPrFields(allocator, sqlite_db, session_id) catch .{ .pr_url = "", .pr_provider = "" };
+    const pr_url_final: ?[]const u8 = msg_response.pr_url orelse (if (pr_fields.pr_url.len > 0) pr_fields.pr_url else null);
+    const pr_provider_final: ?[]const u8 = msg_response.pr_provider orelse (if (pr_fields.pr_provider.len > 0) pr_fields.pr_provider else null);
+
     // Convert llm_history.SessionMessageResponse to http_response.SessionMessagesResponse
     var messages: []http_response.SessionMessage = try allocator.alloc(http_response.SessionMessage, msg_response.messages.len);
     for (msg_response.messages, 0..) |msg, idx| {
@@ -130,6 +138,8 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         .next_cursor = msg_response.next_cursor,
         .cwd = msg_response.cwd,
         .git_worktree_cwd = msg_response.git_worktree_cwd,
+        .pr_url = pr_url_final,
+        .pr_provider = pr_provider_final,
         // 2026-08-07-profile-persist-read — pass the per-session
         // selected profile name through so the frontend's profile chip
         // survives a page refresh. Without this the chip resets to
@@ -237,7 +247,9 @@ fn setupDb() !TestCtx {
         \\    selected_profile_model TEXT,
         \\    git_worktree_cwd TEXT,
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
-        \\    last_finish_reason TEXT
+        \\    last_finish_reason TEXT,
+        \\    pr_url TEXT,
+        \\    pr_provider TEXT
         \\)
     , &.{});
 
@@ -557,4 +569,22 @@ test "getSessionMessagesSorted: selected_profile_model is NULL when session has 
     // And the fallback source still sees the profile directly.
     const name = try llm_history.getSessionProfileName(arena_alloc, &ctx.db, "s_fresh");
     try testing.expectEqualStrings("stub", name);
+}
+
+test "getSessionPrFields reads pr_url + pr_provider straight from sessions row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "INSERT INTO sessions (id, name, status, pr_url, pr_provider) VALUES ('s_pr', 'PR', 'active', 'https://github.com/o/r/pull/7', 'github')", &.{});
+
+    const fields = try llm_history.getSessionPrFields(alloc, &ctx.db, "s_pr");
+    try testing.expectEqualStrings("https://github.com/o/r/pull/7", fields.pr_url);
+    try testing.expectEqualStrings("github", fields.pr_provider);
+
+    // Missing row degrades to empty (unset), never an error.
+    const missing = try llm_history.getSessionPrFields(alloc, &ctx.db, "s_nope");
+    try testing.expectEqualStrings("", missing.pr_url);
+    try testing.expectEqualStrings("", missing.pr_provider);
 }

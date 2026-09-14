@@ -265,6 +265,12 @@ pub const SessionMessagesResponse = struct {
     /// `sessionMessagesHandler` from `llm_history.SessionMessageResponse`.
     /// See Chunk 1 of the git-worktree-cwd-pr plan.
     git_worktree_cwd: ?[]const u8 = null,
+    /// Attached PR URL (NULL/empty when no PR is bound). Mirrors
+    /// `sessions.pr_url`. Populated by `sessionMessagesHandler` from
+    /// `llm_history.SessionMessageResponse` for the set_pull_request tool.
+    pr_url: ?[]const u8 = null,
+    /// Effective PR provider. Mirrors `sessions.pr_provider`.
+    pr_provider: ?[]const u8 = null,
     /// Session's selected profile name (NULL/empty when no profile is
     /// selected). Mirrors `sessions.selected_profile_model`. Populated by
     /// `sessionMessagesHandler` from `llm_history.SessionMessageResponse`.

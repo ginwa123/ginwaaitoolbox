@@ -117,7 +117,7 @@ pub const ToolCallJson = struct {
 };
 
 /// Input parameters for sending SSE session events
-/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model, git_worktree_cwd, is_auto_retry_until_stop, last_finish_reason
+/// Reflects the sessions table columns: id, name, status, cwd, created_at, updated_at, selected_profile_model, git_worktree_cwd, pr_url, pr_provider, is_auto_retry_until_stop, last_finish_reason
 ///
 /// Migration 063 added the last two fields. Default values are `""` so
 /// existing callers that omit them continue to compile (the SSE payload
@@ -133,6 +133,10 @@ pub const OnEventInputSessions = struct {
     updated_at: []const u8,
     selected_profile_model: []const u8 = "",
     git_worktree_cwd: []const u8 = "",
+    /// Migration 086 — attached PR URL / effective provider. Empty
+    /// defaults keep older callers compiling (same rationale as 063).
+    pr_url: []const u8 = "",
+    pr_provider: []const u8 = "",
     /// Migration 063 — opt-in flag for unattended mode. Empty default =
     /// "off" (matches the production SQL default of `'0'` via COALESCE).
     is_auto_retry_until_stop: []const u8 = "",
@@ -397,6 +401,8 @@ pub fn onEventSendSessions(allocator: std.mem.Allocator, input: OnEventInputSess
         // Migration 063 — propagate the new columns via SSE so the
         // ChatsList badge updates without a refetch.
         .git_worktree_cwd = input.git_worktree_cwd,
+        .pr_url = input.pr_url,
+        .pr_provider = input.pr_provider,
         .is_auto_retry_until_stop = input.is_auto_retry_until_stop,
         .last_finish_reason = input.last_finish_reason,
         // Migration 082 - propagate the chat-side stamp so the SSE

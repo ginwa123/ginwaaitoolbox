@@ -1223,6 +1223,10 @@ export async function getChatHistory(
   next_cursor: string | null
   cwd?: string
   git_worktree_cwd?: string
+  /// Attached PR URL (empty/missing = none). Mirrors sessions.pr_url.
+  pr_url?: string
+  /// Effective PR provider. Mirrors sessions.pr_provider.
+  pr_provider?: string
   /// Session's selected profile name (empty/missing = "Default", i.e.
   /// no profile selected). Mirrors the backend `sessions.selected_profile_model`
   /// column. Populated by the backend's `GET /api/llm/session/:id/messages`
@@ -1286,6 +1290,8 @@ export async function getChatHistory(
       next_cursor: data.next_cursor,
       cwd: data.cwd,
       git_worktree_cwd: data.git_worktree_cwd,
+      pr_url: data.pr_url,
+      pr_provider: data.pr_provider,
       // 2026-08-07-profile-persist-read — read the per-session
       // selected profile name so the chatview chip can show the
       // persisted selection on page refresh. Empty string from the
@@ -1306,6 +1312,8 @@ export async function getChatHistory(
       next_cursor: null,
       cwd: undefined,
       git_worktree_cwd: undefined,
+      pr_url: undefined,
+      pr_provider: undefined,
       // 2026-08-07-profile-persist-read — preserve the field shape on
       // the error path so ChatView's `loadChatHistory` branch can
       // safely read `data.selected_profile_model` (it'll be
