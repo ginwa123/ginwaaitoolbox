@@ -12,9 +12,14 @@
  * is dimmed rather than hidden until hover) so behaviour is assertable
  * without simulating hover, and so a keyboard/touch user can reach it.
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch, watchEffect, type Ref } from 'vue'
 
-import { fallbackTitle, taskChatRendersInItemTab, type Tab, type TabKind } from '../../helpers/tabTarget'
+import {
+  fallbackTitle,
+  taskChatRendersInItemTab,
+  type Tab,
+  type TabKind,
+} from '../../helpers/tabTarget'
 import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
 import { useTabsStore } from '../../stores/tabs'
 import { useNavigationStore } from '../../stores/navigation'
@@ -23,6 +28,12 @@ import { useWorkspacesStore } from '../../stores/workspaces'
 const tabsStore = useTabsStore()
 const navigationStore = useNavigationStore()
 const workspacesStore = useWorkspacesStore()
+
+// LLM worker state, provided by App.vue as `Ref<Record<sessionId, boolean>>`.
+// Keyed by session_id — which equals task.id for task chats (Migration 052)
+// and the chat session_id for plain chats. Defaults to empty (idle) when no
+// provider is mounted (unit tests that mount TabBar standalone).
+const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
 
 const emit = defineEmits<{
   /** The active tab may have changed — re-apply the URL. */
@@ -56,9 +67,13 @@ const ITEM_GLYPHS: Record<string, string> = {
 }
 
 /** The workspace item a tab points at, with any `/chat/<taskId>` suffix split off. */
-function itemOf(tab: Tab): { chatTaskId: string | null; item: (typeof workspacesStore.allWorkspaceItems)[number] | null } {
+function itemOf(tab: Tab): {
+  chatTaskId: string | null
+  item: (typeof workspacesStore.allWorkspaceItems)[number] | null
+} {
   const parsed = parseItemIdWithChat(tab.query.itemId ?? '')
-  const item = workspacesStore.allWorkspaceItems.find((candidate) => candidate.id === parsed.itemId) ?? null
+  const item =
+    workspacesStore.allWorkspaceItems.find((candidate) => candidate.id === parsed.itemId) ?? null
   return { chatTaskId: parsed.chatTaskId, item }
 }
 
@@ -108,6 +123,57 @@ function glyph(tab: Tab): string {
 
 function isActive(tab: Tab): boolean {
   return tab.id === tabsStore.activeTabId
+}
+
+/**
+ * Session ids whose worker state makes this tab "busy".
+ *
+ * * `chat` tabs (both `view=chat&session=X` and `view=task&task=X`) point at
+ *   exactly one session — the worker key is that id.
+ * * `workspace` tabs with a `/chat/<taskId>` suffix point at that task's
+ *   session (`task.id == session_id` per Migration 052).
+ * * A bare item tab (board / canvas, no chat suffix) is busy when ANY of the
+ *   item's tasks is running — the tab is the only pointer to those sessions
+ *   while the board is in the background. Design pages resolve through the
+ *   page's `workspace_item_task_id` first, then fall back to the same
+ *   any-task check.
+ * * Every other kind (home / settings / overlays) never maps to a session.
+ */
+function busySessionIdsOf(tab: Tab): string[] {
+  if (tab.kind === 'chat') {
+    const session = tab.query.session || tab.query.task
+    return session ? [session] : []
+  }
+  if (tab.kind === 'workspace') {
+    const parsed = parseItemIdWithChat(tab.query.itemId ?? '')
+    if (parsed.chatTaskId) return [parsed.chatTaskId]
+    const item =
+      workspacesStore.allWorkspaceItems.find((candidate) => candidate.id === parsed.itemId) ?? null
+    // A design-page tab (`?view=workspace&itemId=X&pageId=P`) runs its worker
+    // on the page's backing task — prefer that single session when known.
+    const pageId = tab.query.pageId
+    if (pageId && parsed.itemId) {
+      const pages = workspacesStore.designPagesByItemId[parsed.itemId] ?? []
+      const page = pages.find((candidate) => candidate.id === pageId) ?? null
+      const backing = (page as unknown as { workspace_item_task_id?: unknown } | null)
+        ?.workspace_item_task_id
+      if (typeof backing === 'string' && backing) return [backing]
+    }
+    const tasks = item?.tasks ?? []
+    return tasks
+      .map((task) => task.id)
+      .filter((id): id is string => typeof id === 'string' && id !== '')
+  }
+  return []
+}
+
+/** True while any session behind this tab has a running worker. */
+function isTabBusy(tab: Tab): boolean {
+  const state = processingState.value
+  for (const id of busySessionIdsOf(tab)) {
+    if (state[id]) return true
+  }
+  return false
 }
 
 function tabStyle(tab: Tab): Record<string, string> {
@@ -172,7 +238,8 @@ function onWindowPointerDown(event: MouseEvent): void {
   if (!menu.value) return
   const target = event.target as HTMLElement | null
   // Dispatching on `window` gives a target without DOM element methods.
-  if (target && typeof target.closest === 'function' && target.closest('[data-testid="tab-menu"]')) return
+  if (target && typeof target.closest === 'function' && target.closest('[data-testid="tab-menu"]'))
+    return
   closeMenu()
 }
 
@@ -247,7 +314,10 @@ onBeforeUnmount(() => {
     role="tablist"
     aria-label="Open tabs"
     class="shrink-0 flex items-stretch h-9 overflow-hidden"
-    :style="{ borderBottom: '1px solid var(--color-border)', backgroundColor: 'var(--semantic-content-bg)' }"
+    :style="{
+      borderBottom: '1px solid var(--color-border)',
+      backgroundColor: 'var(--semantic-content-bg)',
+    }"
   >
     <div
       ref="scrollerRef"
@@ -262,6 +332,7 @@ onBeforeUnmount(() => {
         :aria-selected="isActive(tab) ? 'true' : 'false'"
         :data-testid="`tab-item-${tab.id}`"
         :data-tab-active="isActive(tab) ? 'true' : 'false'"
+        :data-tab-busy="isTabBusy(tab) ? 'true' : 'false'"
         :data-tab-key="tab.key"
         :title="titleOf(tab)"
         draggable="true"
@@ -276,6 +347,15 @@ onBeforeUnmount(() => {
         @drop.prevent="onDrop(index)"
       >
         <span aria-hidden="true" class="text-[11px] opacity-70">{{ glyph(tab) }}</span>
+        <span
+          v-if="isTabBusy(tab)"
+          :data-testid="`tab-loading-${tab.id}`"
+          class="shrink-0 w-1.5 h-1.5 rounded-full animate-pulse"
+          :style="{ backgroundColor: 'var(--color-yellow)' }"
+          title="Worker running"
+          aria-label="Worker running"
+          aria-hidden="false"
+        />
         <span class="flex-1 truncate text-xs">{{ titleOf(tab) }}</span>
         <button
           type="button"
@@ -288,12 +368,21 @@ onBeforeUnmount(() => {
           ×
         </button>
         <span
-          v-if="isActive(tab)"
+          v-if="isActive(tab) && !isTabBusy(tab)"
           class="absolute left-2 right-2 bottom-0 h-0.5"
           :style="{ backgroundColor: 'var(--color-violet)' }"
           aria-hidden="true"
           data-testid="tab-active-underline"
         />
+        <span
+          v-if="isTabBusy(tab)"
+          class="absolute left-2 right-2 bottom-0 h-0.5 overflow-hidden rounded-full"
+          :style="{ background: 'rgb(0 0 0 / 0.06)' }"
+          aria-hidden="true"
+          :data-testid="`tab-busy-bar-${tab.id}`"
+        >
+          <span class="tab-busy-bar-track" aria-hidden="true" />
+        </span>
       </div>
     </div>
 
@@ -358,5 +447,32 @@ onBeforeUnmount(() => {
   /* A visible scrollbar in a 36px strip eats the whole row; the strip is
      scrollable by wheel and by dragging the active tab into view. */
   height: 0;
+}
+
+.tab-busy-bar-track {
+  position: absolute;
+  inset: 0;
+  background: var(--color-yellow);
+  box-shadow: 0 0 4px rgb(196 178 138 / 0.5);
+  animation: tab-busy-bar-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  transform: translateX(-100%);
+  width: 100%;
+}
+
+@keyframes tab-busy-bar-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-busy-bar-track {
+    animation: none;
+    transform: none;
+    opacity: 0.55;
+  }
 }
 </style>
