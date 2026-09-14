@@ -137,22 +137,20 @@ pub fn runWindow(
     var bridge = browser_bridge.Bridge.init(allocator, io);
     bridge.installBindings(w);
 
-    // The in-app browser pane (Linux/GTK3 today): a second view inside this same
-    // window, placed at the rect the SPA reports. Off Linux nothing is installed,
-    // the SPA's pane bindings read as absent, and it falls back to the window mode.
-    //
-    // GATED OFF BY DEFAULT while its geometry is verified on real runs: a
-    // mis-placed native overlay maps over the app and swallows input (the
-    // "cannot click anything" report), so the in-window path is opt-in until the
-    // rect handling has a live regression gate. Opt in with NALAR_BROWSER_PANE=1.
-    const pane_enabled = browser_pane.supported and
-        std.c.getenv("NALAR_BROWSER_PANE") != null;
+    // The in-app browser pane: the page renders INSIDE the app window, in the tab
+    // area (Linux/GTK3 today; off Linux the SPA's pane bindings are absent and it
+    // falls back to the window mode). Safe by construction — the pane's host is
+    // mapped only when a view AND a real rect exist, so it can never cover the app
+    // or swallow its clicks (see `syncMapping` in browser_pane.zig).
+    // `NALAR_BROWSER_PANE=0` turns it off.
+    const pane_off = if (std.c.getenv("NALAR_BROWSER_PANE")) |value|
+        std.mem.eql(u8, std.mem.span(value), "0")
+    else
+        false;
     var pane = browser_pane.Pane{};
-    if (pane_enabled) {
+    if (browser_pane.supported and !pane_off) {
         pane.install(w);
         browser_pane.installBindings(w, &pane);
-    } else if (browser_pane.supported) {
-        std.log.info("browser pane: disabled (set NALAR_BROWSER_PANE=1 to enable)", .{});
     }
 
     _ = webview_set_title(w, title);

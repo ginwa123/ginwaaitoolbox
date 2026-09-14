@@ -73,6 +73,12 @@ PROBE_HTML = """<!doctype html>
     report('close=' + JSON.stringify(await window.nalarBrowserPaneClose()))
     await wait(400)
     report('status_closed=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
+    // SAFETY: a zero rect must leave the pane UNMAPPED. A mapped-but-unplaced
+    // native overlay covers the app and swallows every click — the failure the
+    // human hit ("cannot click other and it stuck there").
+    report('rect_zero=' + JSON.stringify(await window.nalarBrowserPaneRect(0, 0, 0, 0)))
+    await wait(300)
+    report('status_after_zero=' + JSON.stringify(await window.nalarBrowserPaneStatus()))
   } catch (e) { report('ERR ' + e) }
   report('DONE')
 })()
@@ -284,6 +290,13 @@ def main() -> int:
         problems.append(f"hiding destroyed the page (state must survive): {status_hidden!r}")
     if '"uri_len":0' not in status_closed:
         problems.append(f"closing the tab left the page running: {status_closed!r}")
+    # The click-eating state must be impossible: a zero rect leaves it unmapped.
+    rect_zero = value("rect_zero") or ""
+    status_after_zero = value("status_after_zero") or ""
+    if '"visible":false' not in rect_zero:
+        problems.append(f"a zero rect left the pane mapped (it would eat clicks): {rect_zero!r}")
+    if '"visible":false' not in status_after_zero:
+        problems.append(f"a zero rect left the pane visible: {status_after_zero!r}")
     if windows:
         problems.append(f"the pane spawned a browser window: {windows}")
 

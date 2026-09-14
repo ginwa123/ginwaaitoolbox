@@ -107,6 +107,12 @@ pub const Pane = struct {
     /// The scrolled window the pane view lives in — the widget we place.
     host: ?*GtkWidget = null,
     visible: bool = false,
+    /// The SPA asked for the pane. The host is MAPPED only once a usable rect
+    /// exists: a mapped-but-unplaced overlay child takes GtkOverlay's default
+    /// allocation (the WHOLE window) and, painting nothing, swallows every click
+    /// — that is how the app became unusable. Mapping is therefore gated on real
+    /// numbers, and `visible` is derived from that gate.
+    wants_visible: bool = false,
     /// Where the SPA says the browser tab's body is, in window coordinates.
     rect: Rect = .{},
     /// Hash of the loaded URL, so re-activating a tab does not reload the page.
@@ -181,25 +187,40 @@ pub const Pane = struct {
             self.url_hash = hash;
         }
 
-        if (rect) |value| self.setRect(value);
-        gtk_widget_show(host);
-        self.visible = true;
+        self.wants_visible = true;
+        if (rect) |value| self.rect = value;
+        self.syncMapping();
         return true;
+    }
+
+    /// Map the host only when there is something to show AND a rect to show it
+    /// in. Anything else keeps it unmapped: an unmapped widget takes no space and
+    /// receives no events, so it cannot cover the app or eat its clicks.
+    fn syncMapping(self: *Pane) void {
+        const host = self.host orelse return;
+        const usable = self.wants_visible and self.rect.width > 0 and self.rect.height > 0;
+        if (usable) {
+            gtk_widget_show(host);
+        } else {
+            gtk_widget_hide(host);
+        }
+        self.visible = usable;
+        if (self.overlay) |overlay| gtk_widget_queue_resize(overlay);
     }
 
     /// Move/resize the pane (window resize, sidebar drag, tab body changes).
     pub fn setRect(self: *Pane, rect: Rect) void {
         if (!supported) return;
         self.rect = rect;
-        if (self.overlay) |overlay| gtk_widget_queue_resize(overlay);
+        self.syncMapping();
     }
 
     /// Hide the pane (the view and the page survive). Safe before any show.
     /// This is the "left the tab" path — state is kept on purpose.
     pub fn hide(self: *Pane) void {
         if (!supported) return;
-        if (self.host) |host| gtk_widget_hide(host);
-        self.visible = false;
+        self.wants_visible = false;
+        self.syncMapping();
     }
 
     /// Destroy the pane view so **nothing keeps running**. Used when the browser
@@ -214,8 +235,8 @@ pub const Pane = struct {
             _ = webview_lib.webview_destroy(view);
             self.view = null;
         }
-        if (self.host) |host| gtk_widget_hide(host);
-        self.visible = false;
+        self.wants_visible = false;
+        self.syncMapping();
         self.url_hash = 0;
         std.log.info("browser pane: view destroyed (nothing running)", .{});
         return true;
@@ -272,6 +293,9 @@ fn onSizeAllocate(widget: *GtkWidget, alloc: *Rect, data: ?*anyopaque) callconv(
     _ = widget; // the handler is on the overlay itself; the rect is what matters
     const self: *Pane = @ptrCast(@alignCast(data orelse return));
     const host = self.host orelse return;
+    // An unmapped host gets NO allocation from us: never interfere with a hidden
+    // widget (that is how a transparent pane once ate every click).
+    if (gtk_widget_get_visible(host) == 0) return;
     // Clamp to the window so a stale/large rect can never cover the whole app.
     var rect = self.rect;
     if (rect.x < 0) rect.x = 0;
