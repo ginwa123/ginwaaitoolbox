@@ -15,6 +15,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 
 import { fallbackTitle, taskChatRendersInItemTab, type Tab, type TabKind } from '../../helpers/tabTarget'
+import { hostOf } from '../../helpers/browserUrl'
 import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
 import { useTabsStore } from '../../stores/tabs'
 import { useNavigationStore } from '../../stores/navigation'
@@ -41,6 +42,7 @@ const GLYPHS: Record<TabKind, string> = {
   workspace: '▦',
   'kanban-settings': '⚙',
   settings: '⚙',
+  browser: '🌐',
   other: '◻',
 }
 
@@ -71,6 +73,12 @@ function itemOf(tab: Tab): { chatTaskId: string | null; item: (typeof workspaces
  * persisted title is a real name too.
  */
 function titleOf(tab: Tab): string {
+  if (tab.kind === 'browser') {
+    // The label is the host: a browser tab's own record is its URL, and
+    // the live URL/Switches back to the shell are a follow-up (§10.4).
+    const url = typeof tab.query.url === 'string' ? tab.query.url : ''
+    return url ? hostOf(url) || tab.title || 'New tab' : 'New tab'
+  }
   if (tab.kind === 'chat') {
     // The chat flow always knows the ACTIVE chat's name (the sidebar / the
     // session-rename handler write it to the navigation store), so prefer that
@@ -128,6 +136,18 @@ function closeTab(id: string): void {
   if (tabsStore.close(id)) emit('navigate')
 }
 
+/**
+ * `Close tab` from the context menu: close it AND dismiss the menu.
+ *
+ * One call rather than `closeTab(id); closeMenu()` because a
+ * semicolon-joined expression in a template attribute is not a
+ * statement list to the Vue compiler — it fails to parse.
+ */
+function closeTabFromMenu(id: string): void {
+  closeTab(id)
+  closeMenu()
+}
+
 function closeOthers(id: string): void {
   closeMenu()
   tabsStore.closeOthers(id)
@@ -141,7 +161,9 @@ function closeToRight(id: string): void {
 }
 
 function newTab(): void {
-  tabsStore.openHomeTab()
+  // `+` opens a BLANK BROWSER TAB (the plan's locked decision), not the
+  // chats list.
+  tabsStore.openBrowserTab()
   emit('navigate')
 }
 
@@ -327,7 +349,7 @@ onBeforeUnmount(() => {
         role="menuitem"
         data-testid="tab-menu-close"
         class="block w-full text-left px-3 py-1.5 hover:opacity-80"
-        @click="closeTab(menu.id); closeMenu()"
+        @click="closeTabFromMenu(menu.id)"
       >
         Close tab
       </button>

@@ -24,6 +24,14 @@ export type {
 export { isAutoStickActive, AUTO_STICK_GATE_MS } from "./autoStickGate";
 export { renderResponse } from "./renderResponse";
 export {
+  SEARCH_URL_TEMPLATE,
+  normalizeAddressInput,
+  isHttpUrl,
+  hostOf,
+  browserTabTitle,
+} from "./browserUrl";
+export type { AddressResult } from "./browserUrl";
+export {
   PREVIEW_AUTO_RESIZE_SOURCE,
   CHAT_HTML_FRAME_RESIZE_SOURCE,
   MIN_FRAME_HEIGHT,

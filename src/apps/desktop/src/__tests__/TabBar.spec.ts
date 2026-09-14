@@ -257,15 +257,30 @@ describe('TabBar', () => {
     expect(prevented.defaultPrevented).toBe(true)
   })
 
-  it('opens a chats tab from the + button', async () => {
+  it('opens a blank browser tab from the + button', async () => {
     const store = useTabsStore()
     store.open({ query: { view: 'chat', session: 'sa' } })
     const wrapper = mount(TabBar)
     await wrapper.find('[data-testid="tab-new"]').trigger('click')
 
-    expect(store.activeTab?.key).toBe('home')
-    expect(store.tabCount).toBe(2)
+    // home + the chat + the new blank browser tab: `+` no longer focuses the
+    // chats list, it opens a browser tab (which dedupes only against another
+    // blank browser tab).
+    expect(store.activeTab?.key).toBe('browser:new')
+    expect(store.tabCount).toBe(3)
     expect(wrapper.emitted('navigate')).toHaveLength(1)
+  })
+
+  it('labels a browser tab with its host and a blank one New tab', async () => {
+    const store = useTabsStore()
+    store.openBrowserTab('https://github.com/x')
+    store.openBrowserTab()
+    const wrapper = mount(TabBar)
+    await nextTick()
+    const labels = wrapper.findAll('[role="tab"]').map((tab) => tab.text())
+    expect(labels[1]).toContain('github.com')
+    expect(labels[1]).toContain('🌐')
+    expect(labels[2]).toContain('New tab')
   })
 
   it('offers close / close-others / close-right in the context menu', async () => {
@@ -274,7 +289,9 @@ describe('TabBar', () => {
     const b = store.open({ query: { view: 'chat', session: 'sb' } })
 
     const wrapper = mount(TabBar)
-    await wrapper.find(`[data-testid="tab-item-${a.id}"]`).trigger('contextmenu', { clientX: 10, clientY: 20 })
+    await wrapper
+      .find(`[data-testid="tab-item-${a.id}"]`)
+      .trigger('contextmenu', { clientX: 10, clientY: 20 })
     expect(wrapper.find('[data-testid="tab-menu"]').exists()).toBe(true)
 
     await wrapper.find('[data-testid="tab-menu-close-others"]').trigger('click')
@@ -289,12 +306,16 @@ describe('TabBar', () => {
     const c = store2.open({ query: { view: 'chat', session: 'sc' } })
     store2.open({ query: { view: 'chat', session: 'sd' } })
     await nextTick()
-    await wrapper.find(`[data-testid="tab-item-${c.id}"]`).trigger('contextmenu', { clientX: 5, clientY: 5 })
+    await wrapper
+      .find(`[data-testid="tab-item-${c.id}"]`)
+      .trigger('contextmenu', { clientX: 5, clientY: 5 })
     await wrapper.find('[data-testid="tab-menu-close-right"]').trigger('click')
     expect(store2.tabs.map((t) => t.id)).toEqual([home2?.id, c.id])
 
     // and the plain close item
-    await wrapper.find(`[data-testid="tab-item-${c.id}"]`).trigger('contextmenu', { clientX: 5, clientY: 5 })
+    await wrapper
+      .find(`[data-testid="tab-item-${c.id}"]`)
+      .trigger('contextmenu', { clientX: 5, clientY: 5 })
     await wrapper.find('[data-testid="tab-menu-close"]').trigger('click')
     expect(store2.tabs.map((t) => t.id)).toEqual([home2?.id])
     void b

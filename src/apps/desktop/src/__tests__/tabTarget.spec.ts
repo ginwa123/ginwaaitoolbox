@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   MAX_CLOSED,
+  browserTab,
   fallbackTitle,
   homeTab,
   isBackgroundOpenEvent,
@@ -401,5 +402,59 @@ describe('migrateLegacySettingsTab', () => {
       tab: 'memories',
     })
     expect(migrateLegacySettingsTab('/app/settings', { tab: 'agent' })).toEqual({ tab: 'agent' })
+  })
+})
+
+describe('browser tab kind', () => {
+  it('keys blank vs url browser targets', () => {
+    expect(tabKeyOf('/app', { view: 'browser' })).toBe('browser:new')
+    expect(tabKeyOf('/app', { view: 'browser', url: '' })).toBe('browser:new')
+    expect(tabKeyOf('/app', { view: 'browser', url: 'https://example.com' })).toBe(
+      'browser:https://example.com',
+    )
+  })
+
+  it('derives the browser kind and its fallback title', () => {
+    expect(kindOf('/app', { view: 'browser' })).toBe('browser')
+    expect(kindOf('/app', { view: 'browser', url: 'https://example.com' })).toBe('browser')
+    expect(fallbackTitle('browser')).toBe('New tab')
+  })
+
+  it('round-trips a browser tab through parseTabList', () => {
+    const tab = browserTab('https://example.com')
+    const raw = JSON.stringify({ v: 1, active: tab.id, tabs: [tab], closed: [] })
+    const list = parseTabList(raw)
+    expect(list.tabs).toHaveLength(1)
+    expect(list.tabs[0]?.kind).toBe('browser')
+    expect(list.tabs[0]?.key).toBe('browser:https://example.com')
+    expect(list.tabs[0]?.query).toEqual({ view: 'browser', url: 'https://example.com' })
+  })
+
+  it('round-trips a blank browser tab through parseTabList', () => {
+    const tab = browserTab()
+    expect(tab.key).toBe('browser:new')
+    expect(tab.kind).toBe('browser')
+    const raw = JSON.stringify({ v: 1, active: tab.id, tabs: [tab], closed: [] })
+    const list = parseTabList(raw)
+    expect(list.tabs[0]?.kind).toBe('browser')
+    expect(list.tabs[0]?.key).toBe('browser:new')
+  })
+
+  it('builds the browserTab() shape', () => {
+    const blank = browserTab()
+    expect(blank.path).toBe('/app')
+    expect(blank.query).toEqual({ view: 'browser' })
+    expect(blank.title).toBe('New tab')
+    const withUrl = browserTab('https://github.com/x')
+    expect(withUrl.key).toBe('browser:https://github.com/x')
+    expect(withUrl.query).toEqual({ view: 'browser', url: 'https://github.com/x' })
+    expect(withUrl.title).toBe('github.com')
+  })
+
+  it('keeps url through stripTabParam', () => {
+    expect(stripTabParam({ view: 'browser', url: 'https://example.com', tab: 'tab_1' })).toEqual({
+      view: 'browser',
+      url: 'https://example.com',
+    })
   })
 })

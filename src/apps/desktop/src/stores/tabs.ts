@@ -43,6 +43,8 @@ import {
   type TabQuery,
 } from '../helpers/tabTarget'
 import { getWindowId } from '../helpers/windowId'
+import { browserTabTitle } from '../helpers/browserUrl'
+import { closeBrowserWindow } from '../helpers/browserBridge'
 import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 import { useSseBus } from '../helpers/sseBus'
 
@@ -308,6 +310,12 @@ export const useTabsStore = defineStore('tabs', () => {
     if (index === -1) return null
     const tab = tabs.value[index]
     if (!tab) return null
+    if (tab.kind === 'browser') {
+      // 1:1 lifetime: the shell owns the window, so ask it to close.
+      // Fire-and-forget — the strip must never wait on the shell.
+      // Never throws (the bridge degrades when absent).
+      void closeBrowserWindow(tab.id)
+    }
     const wasActive = activeTabId.value === id
     const remaining = tabs.value.filter((candidate) => candidate.id !== id)
 
@@ -341,7 +349,10 @@ export const useTabsStore = defineStore('tabs', () => {
     tabs.value = [keep]
     activeTabId.value = keep.id
     closedStack.value = [
-      ...dropped.slice().reverse().map((tab) => ({ ...tab, closedAt: Date.now() })),
+      ...dropped
+        .slice()
+        .reverse()
+        .map((tab) => ({ ...tab, closedAt: Date.now() })),
       ...closedStack.value,
     ]
     persistClosed()
@@ -355,7 +366,10 @@ export const useTabsStore = defineStore('tabs', () => {
     if (dropped.length === 0) return
     tabs.value = tabs.value.slice(0, index + 1)
     closedStack.value = [
-      ...dropped.slice().reverse().map((tab) => ({ ...tab, closedAt: Date.now() })),
+      ...dropped
+        .slice()
+        .reverse()
+        .map((tab) => ({ ...tab, closedAt: Date.now() })),
       ...closedStack.value,
     ]
     persistClosed()
@@ -379,7 +393,7 @@ export const useTabsStore = defineStore('tabs', () => {
     const current = tabs.value.findIndex((tab) => tab.id === activeTabId.value)
     const size = tabs.value.length
     const base = current === -1 ? 0 : current
-    const index = ((base + step) % size + size) % size
+    const index = (((base + step) % size) + size) % size
     const tab = tabs.value[index]
     if (!tab) return null
     activate(tab.id)
@@ -474,7 +488,37 @@ export const useTabsStore = defineStore('tabs', () => {
 
   /** The `+` button and `Shift+Alt+T`: open (or focus) the chats-list tab. */
   function openHomeTab(): Tab {
-    return open({ path: '/app', query: { view: 'chat' }, title: fallbackTitle('home'), kind: 'home' })
+    return open({
+      path: '/app',
+      query: { view: 'chat' },
+      title: fallbackTitle('home'),
+      kind: 'home',
+    })
+  }
+
+  /**
+   * Open (or focus) a browser tab. Dedupe by URL key is automatic through
+   * `open`: the same URL focuses the existing tab, a blank `+` focuses the
+   * one blank tab.
+   */
+  function openBrowserTab(url?: string): Tab {
+    return open({
+      path: '/app',
+      query: url ? { view: 'browser', url } : { view: 'browser' },
+      kind: 'browser',
+      title: browserTabTitle(url),
+    })
+  }
+
+  /**
+   * Point a browser tab at a new URL in place (same tab id, re-keyed).
+   * No router call — the caller re-applies via `applyActiveTabToUrl`.
+   */
+  function navigateBrowserTab(tabId: string, url: string): void {
+    const tab = byId(tabId)
+    if (!tab) return
+    rekeyTab(tabId, `browser:${url}`, { view: 'browser', url })
+    persist()
   }
 
   /**
@@ -539,7 +583,9 @@ export const useTabsStore = defineStore('tabs', () => {
 
   /** Live title feed (session SSE + the chats list). */
   function setChatTitle(sessionId: string, name: string): void {
-    const tab = tabs.value.find((candidate) => candidate.kind === 'chat' && candidate.key === `chat:${sessionId}`)
+    const tab = tabs.value.find(
+      (candidate) => candidate.kind === 'chat' && candidate.key === `chat:${sessionId}`,
+    )
     if (tab) setTabTitle(tab.id, name)
   }
 
@@ -620,6 +666,8 @@ export const useTabsStore = defineStore('tabs', () => {
     renameChatTab,
     setEnabled,
     openHomeTab,
+    openBrowserTab,
+    navigateBrowserTab,
     initTitleFeed,
     disposeTitleFeed,
     setChatTitle,

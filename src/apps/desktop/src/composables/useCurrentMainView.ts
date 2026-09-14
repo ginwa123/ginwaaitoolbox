@@ -49,6 +49,7 @@ export type CurrentMainView =
       workspaceId?: string
       itemId: string
     }
+  | { kind: 'browser'; url?: string }
   | { kind: 'none' }
 
 export function useCurrentMainView(): ComputedRef<CurrentMainView> {
@@ -82,6 +83,14 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
         }
       }
       return { kind: 'none' }
+    }
+    if (view === 'browser') {
+      // The tab body is a launcher for a Nalar-owned webview window; the
+      // sidebar has no row for it, so nothing is highlighted.
+      return {
+        kind: 'browser',
+        url: typeof q.url === 'string' && q.url.length > 0 ? q.url : undefined,
+      }
     }
     // kanban-settings page (path route /app/kanban/:itemId/settings).
     // itemId comes from route.params (path); workspaceId is optional

@@ -14,6 +14,7 @@ import {
 import { useNalarConfig } from '../composables/useNalarConfig'
 import { useRoute, useRouter } from 'vue-router'
 import { useTabsStore } from '../stores/tabs'
+import { openExternal } from '../helpers/openExternal'
 
 import NalarTabStrip from './nalar/NalarTabStrip.vue'
 import NalarSaveBar from './nalar/NalarSaveBar.vue'
@@ -546,7 +547,7 @@ async function refreshWebStatus() {
 
 function openWeb() {
   if (!webUrl.value) return
-  window.open(webUrl.value, '_blank', 'noopener')
+  openExternal(webUrl.value)
 }
 
 async function copyWeb() {

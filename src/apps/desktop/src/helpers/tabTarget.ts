@@ -15,6 +15,7 @@
  * storage) and they are trivially testable without Pinia or the router.
  */
 import { parseItemIdWithChat } from './buildItemIdWithChat'
+import { browserTabTitle } from './browserUrl'
 
 export type TabQuery = Record<string, string>
 
@@ -23,7 +24,8 @@ export type TabQuery = Record<string, string>
  * deliberately coarse: a pure function cannot know a workspace item's
  * `item_type`, and a wrong icon must never affect behaviour.
  */
-export type TabKind = 'home' | 'chat' | 'workspace' | 'kanban-settings' | 'settings' | 'other'
+export type TabKind =
+  'home' | 'chat' | 'workspace' | 'kanban-settings' | 'settings' | 'browser' | 'other'
 
 export interface Tab {
   /** Stable across reloads; the value in the URL's `tab` param. */
@@ -168,6 +170,7 @@ export function tabKeyOf(
   if (path === SETTINGS_PATH || path === `${SETTINGS_PATH}/`) return 'settings'
 
   const view = q.view || 'chat'
+  if (view === 'browser') return q.url ? `browser:${q.url}` : 'browser:new'
   if (view === 'chat') return q.session ? `chat:${q.session}` : 'home'
   if (view === 'task') return q.task ? `chat:${q.task}` : 'home'
   if (view === 'workspace') {
@@ -253,6 +256,7 @@ export function kindOf(path: string, query: Record<string, unknown> | null | und
   if (path === SETTINGS_PATH || path === `${SETTINGS_PATH}/`) return 'settings'
   const q = stripTabParam(query)
   const view = q.view || 'chat'
+  if (view === 'browser') return 'browser'
   if (view === 'chat') return q.session ? 'chat' : 'home'
   if (view === 'task') return q.task ? 'chat' : 'home'
   if (view === 'workspace') return 'workspace'
@@ -272,6 +276,8 @@ export function fallbackTitle(kind: TabKind): string {
       return 'Kanban settings'
     case 'settings':
       return 'Settings'
+    case 'browser':
+      return 'New tab'
     default:
       return 'Tab'
   }
@@ -341,6 +347,22 @@ export function homeTab(): Tab {
   }
 }
 
+/**
+ * A browser tab: the launcher + record for a Nalar-owned webview window.
+ * Blank (`browser:new`) until the user enters an address.
+ */
+export function browserTab(url?: string): Tab {
+  return {
+    id: newTabId(),
+    key: url ? `browser:${url}` : 'browser:new',
+    kind: 'browser',
+    title: browserTabTitle(url),
+    path: '/app',
+    query: url ? { view: 'browser', url } : { view: 'browser' },
+    createdAt: Date.now(),
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
@@ -351,7 +373,15 @@ function asString(value: unknown): string {
 }
 
 function asKind(value: unknown, path: string, query: TabQuery): TabKind {
-  const allowed: TabKind[] = ['home', 'chat', 'workspace', 'kanban-settings', 'settings', 'other']
+  const allowed: TabKind[] = [
+    'home',
+    'chat',
+    'workspace',
+    'kanban-settings',
+    'settings',
+    'browser',
+    'other',
+  ]
   if (typeof value === 'string' && (allowed as string[]).includes(value)) return value as TabKind
   return kindOf(path, query)
 }

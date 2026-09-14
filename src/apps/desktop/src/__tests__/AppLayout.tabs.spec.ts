@@ -114,6 +114,7 @@ function mountApp(): VueWrapper {
         AgentView: { template: '<div data-testid="agent-stub" />' },
         RoutineView: { template: '<div data-testid="routine-stub" />' },
         AgentChatView: true,
+        BrowserTabView: { template: '<div data-testid="browser-stub" />' },
       },
     },
   })
@@ -571,5 +572,46 @@ describe('AppLayout — tab mode', () => {
     expect(replaceCalls.some((call) => call.query?.tab)).toBe(false)
     // the URL is left exactly as the user (or a bookmark) provided it
     expect(route.query).toEqual({ view: 'chat', session: 'sa' })
+  })
+
+  it('deep-links a browser url into exactly one browser tab beside the boot home tab', async () => {
+    setRoute('/app', { view: 'browser', url: 'https://example.com' })
+    const wrapper = mountApp()
+    await settle()
+
+    const tabs = useTabsStore()
+    expect(tabs.tabs.map((t) => t.key)).toEqual(['home', 'browser:https://example.com'])
+    expect(tabs.activeTab?.kind).toBe('browser')
+    expect(wrapper.find('[data-testid="browser-stub"]').exists()).toBe(true)
+  })
+
+  it('does not shadow two different browser urls', async () => {
+    setRoute('/app', { view: 'browser', url: 'https://example.com' })
+    mountApp()
+    await settle()
+    const tabs = useTabsStore()
+
+    setRoute('/app', { view: 'browser', url: 'https://github.com' })
+    await settle()
+
+    expect(tabs.tabs.map((t) => t.key)).toEqual([
+      'home',
+      'browser:https://example.com',
+      'browser:https://github.com',
+    ])
+    expect(tabs.activeTab?.key).toBe('browser:https://github.com')
+  })
+
+  it('renders the browser body with tabs off and never adds ?tab=', async () => {
+    const tabs = useTabsStore()
+    tabs.setEnabled(false)
+    setRoute('/app', { view: 'browser', url: 'https://example.com' })
+
+    const wrapper = mountApp()
+    await settle()
+
+    expect(wrapper.find('[data-testid="browser-stub"]').exists()).toBe(true)
+    expect(replaceCalls.some((call) => call.query?.tab)).toBe(false)
+    expect(route.query).toEqual({ view: 'browser', url: 'https://example.com' })
   })
 })
