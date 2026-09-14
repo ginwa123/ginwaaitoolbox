@@ -262,6 +262,76 @@ Phase B1 to actually take effect promptly.
 Small, surgical, and independently testable. Land as a `kabelweb` PR, then bump
 the pin in `build.zig.zon:18-20`.
 
+### 5.0 Is the kabelweb change actually required? Yes — and here is the proof
+
+Verified first: `git diff 519f42b0..HEAD -- src/client/` in the local kabelweb
+checkout is **empty**, and the compiled copy at
+`zig-pkg/kabelweb-0.0.0-vhZam9nLGADq96sxxBxtio-9Da_vjlwWh_wvpxcfMoP-/src/client/stream.zig`
+is byte-identical (46204 bytes) to it. So the code analysed below **is** the code
+the binary builds against — no drift between local checkout and pin.
+
+Trace of a stop **without** the kabelweb line, assuming Phase A is already in:
+
+1. Agent loop sees the cancel between chunks → calls `stream.cancel()` → sets
+   `cancelled = true`.
+2. Agent returns `error.Cancelled` → `defer stream.deinit()` → `cancel()` +
+   `thread.join()`. **The consumer stops calling `next()`**, so the queue is no
+   longer drained.
+3. The worker keeps delivering. Each `writeCallback` push finds space
+   (`QUEUE_CAPACITY = 64`, `stream.zig:32`) and takes the `.pushed` arm — which
+   **never samples `cancelled`**.
+4. Only when the ring buffer is full does the `.full` arm run and finally see
+   `cancelled` → `return 0` → libcurl aborts.
+
+**Latency without the kabelweb line = up to ~64 write callbacks. With it = 1.**
+That is the whole argument. At typical token rates 64 callbacks is roughly
+0.6–2 s — i.e. the same order as the ~1 s being complained about, so an
+`ginwaaitoolbox`-only Phase A would land *looking like it did nothing*.
+
+**There is a kabelweb-free workaround, and I do not recommend it.** Because
+`ResponseStream.thread` and `.deinit()` are public, `Agent.zig` could hand the
+stream to a detached reaper thread (`allocator.create(ResponseStream)` + spawn +
+`defer if (!moved) stream.deinit();`) so the workflow thread returns immediately
+and the UI is instant. But it costs:
+
+- the upstream LLM request keeps **streaming and billing** for ~64 more chunks;
+- a **thread per Stop** (transient, but a new failure mode under load);
+- it papers over a kabelweb footgun its own source already documents
+  (`stream.zig:553-560`: *"`cancel()` a no-op that left `deinit()` blocked on the
+  join"*) instead of fixing it, so the next caller of `ResponseStream.cancel()`
+  hits the same trap.
+
+Keep it in the back pocket only if landing a kabelweb PR is genuinely blocked;
+the 1-line fix is strictly better and cheaper.
+
+### 5.1 Landing mechanics (kabelweb is a pinned tarball, not the local dir)
+
+`build.zig.zon:18-20` pins `.url = ".../kabelweb/archive/519f42b0….tar.gz"` +
+`.hash = "kabelweb-0.0.0-vhZam9n…"`, and `build.zig:987` consumes it via
+`b.dependency("kabelweb", …).module("kabelweb")`. **A local edit in
+`/home/ginwa/kabelweb` is not picked up** until the pin moves — the local
+checkout is a convenience, not the source of truth.
+
+1. Branch + edit + test in `/home/ginwa/kabelweb` (remote
+   `github.com/ginwa123/kabelweb`, currently clean at `e1afde2`, 5 commits ahead
+   of the pin — none of them touch `src/client/`, so rebasing onto `e1afde2`
+   costs nothing).
+2. `zig build test` in kabelweb (B4).
+3. Push, open the kabelweb PR, merge.
+4. Bump the pin in `ginwaaitoolbox`:
+   ```bash
+   zig fetch --save=https://github.com/ginwa123/kabelweb/archive/<new-sha>.tar.gz
+   ```
+   zig 0.16.0 supports this (`zig fetch` prints/records the hash; it must be a
+   **tarball URL**, so push first). Commit `build.zig.zon` and
+   `build.zig.zon`'s hash change alongside the ginwaaitoolbox side.
+5. Optional dev shortcut for iterating before the PR lands: temporarily swap the
+   entry to `.kabelweb = .{ .path = "/home/ginwa/kabelweb" }`. **Never commit
+   that** — a local path breaks CI and every other machine.
+
+Until step 4 lands, Phase A is inert (§5.0), so the two PRs must be sequenced:
+kabelweb first (or ginwaaitoolbox gated on the bump).
+
 - [ ] **B1 (required, ~2 lines). Sample `cancelled` on every write callback.**
   `kabelweb src/client/stream.zig:561`, first statement of `writeCallback`:
 
@@ -464,8 +534,11 @@ functional harness (`tests/functional/harness.py`) — it picks a free port in
 ## 11. Recommended landing order
 
 1. **B1 + B2** (kabelweb) — tiny, independently tested, unblocks everything.
-2. **A1–A4** (ginwaaitoolbox) — the actual latency fix; measure at A6.
-3. **C1–C2** — transcript settles, partial survives.
-4. **B3** + the stall test — closes the reasoning-pause case.
-5. **§9 Q1** only if profiling justifies it.
-6. **§7 tool-execution cancellation** as its own card.
+2. **Pin bump** in `ginwaaitoolbox` (`zig fetch --save=…`, §5.1). Phase A stays
+   inert until this lands — do not ship A alone.
+3. **A1–A4** (ginwaaitoolbox) — the actual latency fix; measure at A6.
+4. **C1–C2** — transcript settles, partial survives.
+5. **B3** + the stall test — closes the reasoning-pause case.
+6. **The non-blocking teardown** for stalls (reaper or XFERINFO) — only if
+   profiling shows stop-during-pause is common enough to matter (§9 Q1).
+7. **§7 tool-execution cancellation** as its own card.
