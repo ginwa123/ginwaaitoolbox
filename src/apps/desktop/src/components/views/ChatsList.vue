@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from 'vue'
+import { ref, watch, inject, onMounted, onUnmounted, onBeforeUnmount, nextTick, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -73,6 +73,64 @@ const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
 const chatsTotal = ref(0)
+
+// Right-click context menu for a chat row. Mirrors TabBar's tab-menu
+// pattern but offers "Open in new tab" (tabsStore.openInBackground)
+// since list rows are not open tabs yet. Positioned fixed via
+// Teleport to body so VirtualScroller overflow never clips it.
+const contextMenu = ref<{ id: string; name: string; x: number; y: number } | null>(null)
+
+const onChatRowContextMenu = (event: MouseEvent, item: { id: string; name: string }) => {
+  event.preventDefault()
+  contextMenu.value = { id: item.id, name: item.name, x: event.clientX, y: event.clientY }
+}
+
+const closeContextMenu = () => {
+  contextMenu.value = null
+}
+
+const onContextMenuKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') closeContextMenu()
+}
+
+const onContextMenuPointerDown = (event: MouseEvent) => {
+  if (!contextMenu.value) return
+  const target = event.target as HTMLElement | null
+  if (target && typeof target.closest === 'function' && target.closest('[data-testid="chat-menu"]')) return
+  closeContextMenu()
+}
+
+const openContextMenuInBackground = () => {
+  const menu = contextMenu.value
+  if (!menu) return
+  openChatInBackground({ id: menu.id, name: menu.name })
+  closeContextMenu()
+}
+
+watch(contextMenu, (opened) => {
+  if (opened) {
+    window.addEventListener('keydown', onContextMenuKeydown)
+    window.addEventListener('mousedown', onContextMenuPointerDown)
+    return
+  }
+  window.removeEventListener('keydown', onContextMenuKeydown)
+  window.removeEventListener('mousedown', onContextMenuPointerDown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onContextMenuKeydown)
+  window.removeEventListener('mousedown', onContextMenuPointerDown)
+})
+
+// Sort toggle extracted to a method so the template stays a single
+// expression. An inline multi-statement handler needs a semicolon
+// separator, which the repo prettier config (semi:false,
+// printWidth:100) strips when it wraps the long line, breaking the
+// Vue template compiler (see ChatsList activeFromUrl specs).
+const onSortToggle = () => {
+  chatsSortDirection.value = chatsSortDirection.value === 'desc' ? 'asc' : 'desc'
+  loadChats()
+}
 
 // Chats resize handling
 const isChatsResizing = ref(false)
@@ -571,7 +629,7 @@ defineExpose({
       >
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
         <button
-          @click.stop="chatsSortDirection = chatsSortDirection === 'desc' ? 'asc' : 'desc'; loadChats()"
+          @click.stop="onSortToggle"
           :title="chatsSortDirection === 'desc' ? 'Newest first (click to flip)' : 'Oldest first (click to flip)'"
           :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
           data-testid="chats-sort-toggle"
@@ -609,6 +667,7 @@ defineExpose({
           <button
             @click="onChatRowClick($event, item)"
             @auxclick="onChatRowAuxClick($event, item)"
+            @contextmenu.prevent="onChatRowContextMenu($event, item)"
             class="relative w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-all duration-150 border-t border-transparent overflow-hidden"
             :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="
@@ -713,4 +772,30 @@ defineExpose({
       +
     </button>
   </div>
+
+  <Teleport v-if="contextMenu" to="body">
+    <div
+      data-testid="chat-menu"
+      role="menu"
+      class="fixed z-50 py-1 text-xs rounded-lg shadow-lg"
+      :style="{
+        left: `${contextMenu.x}px`,
+        top: `${contextMenu.y}px`,
+        backgroundColor: 'var(--semantic-content-bg)',
+        border: '1px solid var(--color-border)',
+        color: 'var(--semantic-text)',
+      }"
+      @click.stop
+    >
+      <button
+        type="button"
+        role="menuitem"
+        data-testid="chat-menu-open-new-tab"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="openContextMenuInBackground"
+      >
+        Open in new tab
+      </button>
+    </div>
+  </Teleport>
 </template>
