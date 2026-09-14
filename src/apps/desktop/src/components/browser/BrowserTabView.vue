@@ -16,7 +16,7 @@
  * Pane/window status is fetched on demand only (mount, active-tab change,
  * after an action) — never polled.
  */
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 
 import { normalizeAddressInput } from '../../helpers/browserUrl'
 import {
@@ -56,23 +56,16 @@ const paneStatusVisible = ref(false)
  * standalone (tests, plain browser) there is no provider, so visibility falls
  * back to the status reply above and the host handoff is a no-op.
  */
+/**
+ * The pane's rect comes from AppLayout's `<main>` (the content area), not from
+ * this view: an element inside the pane's own area collapses while the native
+ * view covers it, which is how the pane once reported a 0-width rect and ended
+ * up covering the entire window. The ref below stays only so the card can hide
+ * itself while the pane is up.
+ */
 const paneApi = inject<BrowserPaneApi | null>(BrowserPaneKey, null)
-/** The native view covers this element — the shell reports its rect. */
-const paneHost = ref<HTMLElement | null>(null)
 /** The card hides while the native view covers it. */
 const paneVisible = computed(() => paneApi?.paneVisible.value ?? paneStatusVisible.value)
-
-watch(
-  paneHost,
-  (el) => {
-    paneApi?.setPaneHost(el)
-  },
-  { immediate: true },
-)
-
-onUnmounted(() => {
-  paneApi?.setPaneHost(null)
-})
 
 async function refreshStatus(): Promise<void> {
   const current = tab.value
@@ -284,7 +277,7 @@ async function copyUrl(): Promise<void> {
           class="text-sm"
           :style="{ color: 'var(--semantic-text-muted)' }"
         >
-          Showing in the pane below.
+          The page renders in the pane inside this window.
         </p>
         <p
           v-if="!paneReady && !bridgeReady"

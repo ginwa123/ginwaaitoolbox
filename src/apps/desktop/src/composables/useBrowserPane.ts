@@ -18,19 +18,23 @@
  * `nalarBrowserPaneShow` args) and on later layout changes through a
  * `ResizeObserver` on that element plus a window `resize` listener, coalesced
  * with `requestAnimationFrame` and sent via `nalarBrowserPaneRect` only when
- * the numbers changed. No polling, no intervals.
+ * the numbers changed.
+ *
+ * A show is NEVER sent without numbers: the shell cannot place the pane, and
+ * a rect-less show is refused. The tab body mounts in the same Vue flush as
+ * the tab switch that reveals it, so `drive` awaits `nextTick()` and, if the
+ * host still is not registered, holds the show until `setPaneHost` arrives
+ * (browserBridge.ts's `showBrowserPane` is skipped entirely in that window).
  *
  * No polling, no intervals — it reacts to tab changes and layout events
  * only. Async replies are guarded two ways: a generation counter drops
  * replies from a drive that a newer drive has superseded, and the tab id/url
  * captured by the call is compared with the current value before assigning,
- * so a stale reply can never flip the state. A repeat show for the same tab
- * id + URL with no hide in between is skipped (the shell ignores an
- * unchanged URL, and re-entering the tab must not reload the page).
+ * so a stale reply can never flip the state.
  *
  * Hides on unmount. Never throws.
  */
-import { onUnmounted, ref, watch, type Ref } from 'vue'
+import { nextTick, onUnmounted, ref, watch, type Ref } from 'vue'
 
 import {
   hideBrowserPane,
@@ -71,6 +75,32 @@ export function useBrowserPane(): BrowserPaneApi {
   let rafId = 0
   let resizeListening = false
 
+  // A show was requested while the host element was not registered yet; the
+  // host's arrival retries it (see `drive`).
+  let pendingShow = false
+  // Bounded retries for that race: ~20 frames, then it waits for a tab change.
+  let pendingRetries = 0
+
+  /** Retry a held show on the next frame, at most ~20 times (no polling). */
+  function schedulePendingRetry(): void {
+    if (pendingRetries >= 20) return
+    pendingRetries += 1
+    try {
+      const raf = globalThis.requestAnimationFrame
+      if (typeof raf === 'function') {
+        raf(() => {
+          void drive()
+        })
+        return
+      }
+      globalThis.setTimeout(() => {
+        void drive()
+      }, 16)
+    } catch {
+      // No scheduler: the host registration path still retries.
+    }
+  }
+
   function currentTarget(): { tabId: string; url: string } | null {
     const active = tabsStore.activeTab
     const url = typeof active?.query.url === 'string' ? active.query.url : ''
@@ -83,6 +113,11 @@ export function useBrowserPane(): BrowserPaneApi {
     if (!el) return null
     try {
       const box = el.getBoundingClientRect()
+      // A collapsed/hidden element measures 0: that is "no numbers yet", not a
+      // rect. Reporting zeros is how the pane once covered the WHOLE app (tab
+      // strip included, so the user could not switch back): the shell then has
+      // nothing to allocate, and GtkOverlay's default is the full window.
+      if (box.width < 1 || box.height < 1) return null
       // Integers: the shell works in whole CSS px, and rounding keeps a
       // sub-pixel layout jitter from looking like a move.
       return {
@@ -145,6 +180,11 @@ export function useBrowserPane(): BrowserPaneApi {
    */
   function setPaneHost(el: Element | null): void {
     host = el
+    if (el && pendingShow) {
+      // The show that was held because there were no numbers can go out now.
+      pendingShow = false
+      void drive()
+    }
     try {
       if (observer) {
         observer.disconnect()
@@ -178,8 +218,7 @@ export function useBrowserPane(): BrowserPaneApi {
       lastShownKey = ''
       lastShownTabId = ''
       lastReported = null
-      const tabGone =
-        closedTabId !== '' && !tabsStore.tabs.some((tab) => tab.id === closedTabId)
+      const tabGone = closedTabId !== '' && !tabsStore.tabs.some((tab) => tab.id === closedTabId)
       if (!tabGone) {
         try {
           await hideBrowserPane()
@@ -199,14 +238,28 @@ export function useBrowserPane(): BrowserPaneApi {
     }
     lastShownKey = key
     lastShownTabId = target.tabId
-    // Let the tab body register its host (it mounts in the same pass as the
-    // layout) before the first show, so the show carries the real rect.
-    await Promise.resolve()
+    // The tab body mounts in the SAME Vue flush as the tab switch, so wait for
+    // that flush (a bare microtask can beat it) and then, if the host still is
+    // not registered, hold the show: the shell cannot place the pane without
+    // numbers, and a 2-arg show is refused (the bug the human hit — the pane
+    // stayed hidden with no error).
+    await nextTick()
     if (myGeneration !== generation) return
     const rect = readRect()
+    if (!rect) {
+      // Keep `lastShownKey` unset so the host registration retries us, and retry
+      // a bounded number of frames ourselves: the tab becoming active, the
+      // layout giving `<main>` a box, and the pane being requested are three
+      // async steps, so a single attempt can lose the race. Bounded, not a poll.
+      lastShownKey = ''
+      pendingShow = true
+      schedulePendingRetry()
+      return
+    }
+    pendingRetries = 0
     let visible = false
     try {
-      const result = await showBrowserPane(target.tabId, target.url, rect ?? undefined)
+      const result = await showBrowserPane(target.tabId, target.url, rect)
       visible = result.visible === true
     } catch {
       visible = false
@@ -216,11 +269,8 @@ export function useBrowserPane(): BrowserPaneApi {
     // for the CURRENT tab may assign.
     const now = currentTarget()
     if (!now || now.tabId !== target.tabId || now.url !== target.url) return
-    lastReported = visible && rect ? rect : null
+    lastReported = visible ? rect : null
     paneVisible.value = visible
-    // The host arrived mid-flight (show went out without numbers while the
-    // pane is now up): report them now rather than waiting for a resize.
-    if (visible && !rect) scheduleRectSync()
   }
 
   const stop = watch(

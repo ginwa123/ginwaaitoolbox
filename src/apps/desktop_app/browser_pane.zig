@@ -152,9 +152,12 @@ pub const Pane = struct {
         std.log.info("browser pane: overlay installed", .{});
     }
 
-    /// Show the pane at `rect` and navigate it (only when the URL changed).
-    /// `rect` is in window coordinates, reported by the SPA for the tab's body.
-    pub fn show(self: *Pane, url: []const u8, rect: Rect) bool {
+    /// Show the pane and navigate it (only when the URL changed). `rect` is the
+    /// tab body the SPA reports; it may be null when the SPA's layout has not
+    /// settled yet — then the pane is shown and waits for a `nalarBrowserPaneRect`
+    /// (never a refusal: a rect-less show used to be rejected outright, which
+    /// left the pane invisible with no error — the bug the human hit).
+    pub fn show(self: *Pane, url: []const u8, rect: ?Rect) bool {
         if (!supported) return false;
         const host = self.host orelse return false;
 
@@ -178,7 +181,7 @@ pub const Pane = struct {
             self.url_hash = hash;
         }
 
-        self.setRect(rect);
+        if (rect) |value| self.setRect(value);
         gtk_widget_show(host);
         self.visible = true;
         return true;
@@ -277,7 +280,15 @@ fn onSizeAllocate(widget: *GtkWidget, alloc: *Rect, data: ?*anyopaque) callconv(
     if (rect.height < 0) rect.height = 0;
     if (rect.x + rect.width > alloc.width) rect.width = @max(0, alloc.width - rect.x);
     if (rect.y + rect.height > alloc.height) rect.height = @max(0, alloc.height - rect.y);
-    if (rect.width == 0 or rect.height == 0) return;
+    if (rect.width == 0 or rect.height == 0) {
+        // No usable numbers (the SPA has not measured the body yet, or the element
+        // collapsed). Allocate NOTHING: returning early would leave the host with
+        // GtkOverlay's default full-window allocation, which covers the whole app
+        // — tab strip included — so the user cannot switch back to another tab.
+        var hidden = Rect{ .x = 0, .y = 0, .width = 0, .height = 0 };
+        gtk_widget_size_allocate(host, &hidden);
+        return;
+    }
     gtk_widget_size_allocate(host, &rect);
 }
 
@@ -300,7 +311,26 @@ pub fn installBindings(w: *Webview, pane: *Pane) void {
 pub const Method = enum { show, rect, hide, close, status };
 
 /// Drive one bound call (webview-independent, so the contract is testable).
+/// Logs one line per call: these are user-driven events (never a loop), and the
+/// line is what makes "the pane did not appear" diagnosable from the app's own
+/// output — the missing log is itself the answer.
 pub fn handle(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]const u8 {
+    const result = handleInner(pane, method, req, out);
+    std.log.info(
+        "browser pane: {s} rect=[{d},{d},{d},{d}] reply={s}",
+        .{
+            @tagName(method),
+            pane.rect.x,
+            pane.rect.y,
+            pane.rect.width,
+            pane.rect.height,
+            result,
+        },
+    );
+    return result;
+}
+
+fn handleInner(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]const u8 {
     var arena_buf: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&arena_buf);
     var params: [8][]const u8 = undefined;
@@ -335,10 +365,10 @@ pub fn handle(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]const
             return okReply(pane, out);
         },
         .show => {
-            if (count < 6) {
+            if (count < 2) {
                 return browser_bridge.reply(
                     out,
-                    "{{\"ok\":false,\"error\":\"show expects (tabId, url, x, y, width, height)\"}}",
+                    "{{\"ok\":false,\"error\":\"show expects (tabId, url[, x, y, width, height])\"}}",
                     .{},
                 );
             }
@@ -355,8 +385,13 @@ pub fn handle(pane: *Pane, method: Method, req: []const u8, out: []u8) [:0]const
                     .{},
                 );
             }
-            const rect = rectFromParams(params[2..count]) orelse
-                return browser_bridge.reply(out, "{{\"ok\":false,\"error\":\"bad rect\"}}", .{});
+            // The rect is optional: the SPA may not have laid the tab body out
+            // yet. 4 numbers = the rect; anything else = "wait for a Rect call".
+            var rect: ?Rect = null;
+            if (count >= 6) {
+                rect = rectFromParams(params[2..count]) orelse
+                    return browser_bridge.reply(out, "{{\"ok\":false,\"error\":\"bad rect\"}}", .{});
+            }
             if (!pane.show(url, rect)) {
                 return browser_bridge.reply(
                     out,
@@ -455,13 +490,26 @@ test "browser pane: a malformed request is refused, never half-applied" {
     for ([_][]const u8{
         "not json",
         "[\"tab_1\"]",
-        "[\"tab_1\",\"https://example.com\"]", // no rect
         "[\"bad id!\",\"https://example.com\",\"0\",\"0\",\"10\",\"10\"]",
+        "[\"tab_1\",\"https://example.com\",\"0\",\"0\",\"10\"]", // half a rect
     }) |req| {
         const result = handle(&pane, .show, req, &out);
         try testing.expect(std.mem.indexOf(u8, result, "\"ok\":false") != null);
     }
     try testing.expect(pane.view == null);
+}
+
+test "browser pane: a show without a rect is not refused for its shape" {
+    // The SPA may ask before its layout has settled. That request must reach the
+    // widget layer (it used to be rejected outright, which left the pane
+    // invisible with no error — the bug the human hit); creating the view needs a
+    // display, so here it reports the pane as unavailable instead.
+    var pane = Pane{};
+    var out: [browser_bridge.REPLY_BUF]u8 = undefined;
+    const result = handle(&pane, .show, "[\"tab_1\",\"https://example.com\"]", &out);
+    try testing.expect(std.mem.indexOf(u8, result, "expects (tabId, url") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "bad rect") == null);
+    try testing.expect(std.mem.indexOf(u8, result, "only http(s)") == null);
 }
 
 test "browser pane: rect-only updates are validated and stored" {

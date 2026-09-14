@@ -2382,6 +2382,22 @@ onUnmounted(() => {
 const browserPane = useBrowserPane()
 provide(BrowserPaneKey, browserPane)
 
+/**
+ * The pane covers the app's CONTENT area — `<main>`, i.e. below the tab strip and
+ * right of the sidebar — which is what "the page inside the tab" means: the strip
+ * and the sidebar stay visible, so switching tabs and getting back to a chat is
+ * always one click. Measuring a per-view element inside that area is not stable
+ * (it collapses while the native view covers it and can report a 0-width rect).
+ */
+const paneHostRef = ref<HTMLElement | null>(null)
+watch(
+  paneHostRef,
+  (el) => {
+    browserPane.setPaneHost(el)
+  },
+  { immediate: true },
+)
+
 watch(
   () => route.fullPath,
   () => {
@@ -2400,10 +2416,7 @@ defineExpose({
 </script>
 
 <template>
-  <div
-    class="flex h-screen"
-    style="background-color: var(--semantic-content-bg)"
-  >
+  <div class="flex h-screen" style="background-color: var(--semantic-content-bg)">
     <Sidebar
       ref="sidebarRef"
       @navigate="handleNavigate"
@@ -2412,7 +2425,7 @@ defineExpose({
       @toggle-collapse="toggleSidebar"
       @resize="handleSidebarResize"
     />
-    <main class="flex-1 flex flex-col overflow-hidden relative">
+    <main ref="paneHostRef" class="flex-1 flex flex-col overflow-hidden relative">
       <TabBar @navigate="applyActiveTabToUrl" />
       <!-- Git File Viewer (shown when view is gitfile) -->
       <GitFileViewer
