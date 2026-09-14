@@ -63,12 +63,8 @@ pub fn readFile(
         if (c == '\n' or i == raw.len - 1) {
             const line_end = if (c == '\n') i + 1 else i + 1;
             if (line_idx >= offset and captured < limit) {
-                // format: "    1\t" (4-digit padded line number + tab)
-                const line_num_len = std.fmt.count("{d:>4}\t", .{line_idx + 1});
-                const num_buf = try allocator.alloc(u8, line_num_len);
-                defer allocator.free(num_buf);
-                const num_str = std.fmt.bufPrint(num_buf, "{d:>4}\t", .{line_idx + 1}) catch unreachable;
-                try out.appendSlice(allocator, num_str);
+                // Raw content only — no per-line number prefix. Callers derive
+                // absolute 1-indexed line numbers as start_line + 1 + index.
                 try out.appendSlice(allocator, raw[line_start..line_end]);
                 captured += 1;
                 end_line = line_idx;
@@ -107,7 +103,7 @@ pub const read_file_tool_system_prompt =
     \\## Read File Tool — Behavior
     \\Use `read_file` to read file contents by absolute path.
     \\- For large files, use `offset` + `limit` to paginate (500 lines per page). Check `total_lines` first.
-    \\- Each returned line is prefixed with its 1-indexed line number.
+    \\- Content is raw (no per-line number prefixes). Derive absolute 1-indexed line numbers as `start_line + 1 + index`.
     \\- Never guess offsets — read sequentially.
     \\
 ;
@@ -122,7 +118,7 @@ pub const read_file_tool = AgentTool{
         \\- Omit offset and limit to read the whole file.
         \\- Use offset + limit to paginate large files (recommended page: 500 lines).
         \\- Never guess offsets — check total_lines from a prior call first.
-        \\- Each line is prefixed with its line number (1-indexed).
+        \\- Content is raw without line-number prefixes; absolute 1-indexed line numbers are start_line + 1 + index.
         ,
         .parameters = .{
             .type = "object",
@@ -148,3 +144,58 @@ pub const read_file_tool = AgentTool{
         .system_prompt = read_file_tool_system_prompt,
     },
 };
+
+// ─── Raw-content contract tests ─────────────────────────────────────────
+// Content is raw (no per-line number prefixes). Positioning comes from
+// start_line/end_line/total_lines; absolute 1-indexed line numbers are
+// start_line + 1 + index.
+
+test "read_file returns raw content without line-number prefixes" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "raw.txt", .data = "alpha\nbeta\ngamma\n" });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const abs = try std.fs.path.join(std.testing.allocator, &.{ path_buf[0..n], "raw.txt" });
+    defer std.testing.allocator.free(abs);
+
+    var result = try readFile(std.testing.allocator, std.testing.io, abs, .{});
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma\n", result.content);
+    try std.testing.expectEqual(@as(usize, 3), result.total_lines);
+    try std.testing.expectEqual(@as(usize, 0), result.start_line);
+    try std.testing.expectEqual(@as(usize, 2), result.end_line);
+}
+
+test "read_file paginated slice is raw with correct start/end lines" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "page.txt", .data = "l1\nl2\nl3\nl4\n" });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const abs = try std.fs.path.join(std.testing.allocator, &.{ path_buf[0..n], "page.txt" });
+    defer std.testing.allocator.free(abs);
+
+    var result = try readFile(std.testing.allocator, std.testing.io, abs, .{ .offset = 1, .limit = 2 });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("l2\nl3\n", result.content);
+    try std.testing.expectEqual(@as(usize, 4), result.total_lines);
+    try std.testing.expectEqual(@as(usize, 1), result.start_line);
+    try std.testing.expectEqual(@as(usize, 2), result.end_line);
+}
+
+test "toXMLSuccess envelope carries raw content and line range" {
+    const content = try std.testing.allocator.dupe(u8, "foo\nbar\n");
+    const result = ReadFileResult{ .content = content, .total_lines = 2, .start_line = 0, .end_line = 1 };
+    defer result.deinit(std.testing.allocator);
+
+    const xml = try toXMLSuccess(std.testing.allocator, result, "/x.txt");
+    defer std.testing.allocator.free(xml);
+
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<content>foo\nbar\n</content>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<total_lines>2</total_lines>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<start_line>0</start_line>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<end_line>1</end_line>") != null);
+}

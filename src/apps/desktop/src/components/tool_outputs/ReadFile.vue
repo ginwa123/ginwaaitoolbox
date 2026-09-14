@@ -18,11 +18,21 @@ const parsed = computed(() => parseReadFile(props.content))
 // Display the parsed content; the parser already strips XML wrappers.
 const fileContent = computed(() => parsed.value.content || '')
 
-const lineCount = computed(() => {
+// Raw content lines. A single trailing "" produced by a final "\n" is
+// a split artifact, not a real line — drop it so the gutter stays exact.
+const contentLines = computed(() => {
   const c = fileContent.value
-  if (!c) return 0
-  return c.split('\n').length
+  if (!c) return []
+  const lines = c.split('\n')
+  if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+  return lines
 })
+
+// 1-indexed display number of the first line. The backend's start_line
+// is a 0-indexed offset, so line i renders as baseLine + i.
+const baseLine = computed(() => (parsed.value.startLine ?? 0) + 1)
+
+const lineCount = computed(() => contentLines.value.length)
 
 const contentPath = computed((): string | null => {
   const p = parsed.value.path
@@ -66,10 +76,23 @@ const handleToggle = (next: boolean) => {
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
+      <div
+        v-else-if="contentLines.length > 0"
+        class="p-2 m-0 bg-black/[0.02] overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs"
+      >
+        <div v-for="(line, idx) in contentLines" :key="idx" class="flex hover:bg-violet-500/5">
+          <span
+            class="rf-gutter min-w-[3rem] text-right mr-3 text-[var(--semantic-text-dim)] select-none shrink-0"
+            >{{ baseLine + idx }}</span
+          >
+          <span class="rf-line whitespace-pre">{{ line }}</span>
+        </div>
+      </div>
       <pre
         v-else
         class="p-2 m-0 bg-black/[0.02] whitespace-pre overflow-x-visible leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
-      >{{ fileContent || '(empty)' }}</pre>
+      >
+(empty)</pre>
       <ToolParameters :parameters="parameters" />
     </div>
   </div>
