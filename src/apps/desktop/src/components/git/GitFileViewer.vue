@@ -2,7 +2,7 @@
 import { ref, onMounted, watch } from 'vue'
 import * as api from '../../api'
 import type { GitFileDiff } from '../../api'
-import FileInput from '../file/FileInput.vue'
+import DiffCommentBox, { type DiffCommentSavePayload } from '../views/chat_right_sidebar/DiffCommentBox.vue'
 import {
   escapeDiffHtml,
   parseUnifiedDiff,
@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   close: []
   submitReview: [message: string]
+  commentSaved: [payload: DiffCommentSavePayload]
 }>()
 
 // State
@@ -94,17 +95,12 @@ const closeMiniChat = () => {
   miniChatEndLine.value = 0
 }
 
-const submitMiniChat = (message: string) => {
-  // Build review message with code context, file path, and line numbers
-  const lineRange = miniChatStartLine.value === miniChatEndLine.value
-    ? `Line ${miniChatStartLine.value}`
-    : `Lines ${miniChatStartLine.value}-${miniChatEndLine.value}`
-  
-  const reviewWithContext = `## Code Review\n**File:** \`${miniChatFilePath.value}\`\n**${lineRange}**\n\n\`\`\`\n${miniChatContent.value}\n\`\`\`\n\n## Review Comment\n\n${message}`
-  emit('submitReview', reviewWithContext)
-  closeMiniChat()
+const handleCommentSave = (payload: DiffCommentSavePayload) => {
+  // The comment box owns persistence (localStorage draft + Saved
+  // feedback). Keep the popup open showing the saved state and bubble
+  // the structured payload upward. Nothing here sends to the LLM.
+  emit('commentSaved', payload)
 }
-
 // Diff parsing delegates to the shared pure module (also used by the
 // ChatView-embedded sidebar) — behaviour unchanged.
 const applyParsedDiff = (diffText: string) => {
@@ -382,11 +378,13 @@ onMounted(() => {
         <div class="mini-chat-code">
           <pre>{{ miniChatContent }}</pre>
         </div>
-        <FileInput
+        <DiffCommentBox
+          :file-path="miniChatFilePath"
+          :start-line="miniChatStartLine"
+          :end-line="miniChatEndLine"
+          :context="miniChatContent"
           :cwd="cwd"
-          :reviewMode="true"
-          :initialMessage="''"
-          @submit="submitMiniChat"
+          @save="handleCommentSave"
         />
       </div>
     </Teleport>

@@ -89,6 +89,11 @@ const emit = defineEmits<{
   // RenameDesignPageModal. Pure pass-through — same pattern as
   // selectDesignPage / deleteDesignPage.
   renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
+  // Right-click "Go to settings" on the item row. Carries the
+  // item payload so Sidebar can route per item_type: kanban items
+  // open /app/kanban/:itemId/settings, agent items open their
+  // AgentView config (Tools / System Prompt / Knowledge).
+  goToSettings: [payload: { workspaceId: string; itemId: string; itemType?: string }]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -159,6 +164,12 @@ const handleClick = (event?: MouseEvent) => {
   if (props.item.item_type !== 'design' && props.item.item_type !== 'kanban') {
     workspacesStore.toggleExpandedItem(props.item.id)
   }
+  // Agent items never navigate on plain left-click: their main view
+  // IS the Agent config (Tools / System Prompt / Knowledge), so a
+  // click would yank the user into a settings-looking page. Click
+  // only expands/collapses the inline task list; the config opens
+  // via the right-click "Go to settings" entry (new browser tab).
+  if (props.item.item_type === 'agent') return
   // Always emit click for external handling (e.g., navigation to
   // the kanban board via activeWorkspaceItemId).
   emit('click', props.item)
@@ -231,6 +242,18 @@ const openItemMenuInBackground = () => {
   closeItemMenu()
   emit('openItemInBackground', itemMenuPayload())
 }
+
+const openItemMenuSettings = () => {
+  closeItemMenu()
+  emit('goToSettings', itemMenuPayload())
+}
+
+// Only item types with a dedicated settings surface get the menu
+// entry: kanban boards (KanbanSettingsView: Columns + Agent tabs)
+// and agent items (AgentView: Tools / System Prompt / Knowledge).
+const showItemSettings = computed(
+  () => props.item.item_type === 'kanban' || props.item.item_type === 'agent',
+)
 
 // Right-click "Open in new tab" on a task row. The row only knows
 // workspaceId/itemId/taskId — the item_type is filled in here so
@@ -857,7 +880,9 @@ const handlePinnedDrop = (event: DragEvent) => {
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
+      :show-settings="showItemSettings"
       @open="openItemMenuInBackground"
+      @settings="openItemMenuSettings"
     />
   </li>
 </template>

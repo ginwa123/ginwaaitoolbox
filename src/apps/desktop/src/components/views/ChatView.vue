@@ -76,6 +76,7 @@ import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
+import { copyTextToClipboard } from './chat_right_sidebar/DiffCommentBox.vue'
 import {
   centerDiffSectionId,
   encodePathParam,
@@ -93,6 +94,8 @@ import CompactionCard from '../preview/CompactionCard.vue'
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
+import ChatScrollSlider from '../chat/ChatScrollSlider.vue'
+import { pickActivePillIndex, isPillGroup, estimateViewportEnd } from '../chat/activePill'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -481,9 +484,87 @@ const chatSidebarRef = ref<InstanceType<typeof ChatRightSidebar> | null>(null)
 const chatPrUrl = ref('')
 const chatPrProvider = ref('')
 
-async function onChatSidebarSubmitReview(message: string) {
-  if (!sessionId.value || !effectiveCwd.value) return
-  await api.sendChatMessage(sessionId.value, message, effectiveCwd.value)
+// Persisted review comments (agnostic comment-box path). Saved to
+// localStorage instead of sent to the LLM — the diff comment box owns
+// per-line draft persistence; ChatView keeps the appended list (capped
+// at 200 entries).
+interface SavedReviewComment {
+  filePath: string
+  message: string
+  formatted: string
+  savedAt: number
+}
+
+const REVIEW_COMMENTS_KEY = 'diff-review-comments'
+
+function loadSavedReviewComments(): SavedReviewComment[] {
+  try {
+    if (typeof localStorage === 'undefined') return []
+    const raw = localStorage.getItem(REVIEW_COMMENTS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as SavedReviewComment[]
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const savedReviewComments = ref<SavedReviewComment[]>(loadSavedReviewComments())
+
+function persistSavedReviewComments(): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(REVIEW_COMMENTS_KEY, JSON.stringify(savedReviewComments.value.slice(-200)))
+  } catch {
+    // Best effort — comments stay in memory for the session.
+  }
+}
+
+function appendSavedReviewComment(entry: SavedReviewComment): void {
+  savedReviewComments.value = [...savedReviewComments.value, entry].slice(-200)
+  persistSavedReviewComments()
+}
+
+// Legacy compat: the old mini-chat emitted raw markdown for the LLM.
+// Now it only persists — never calls api.sendChatMessage.
+function onChatSidebarSubmitReview(message: string) {
+  appendSavedReviewComment({ filePath: '', message, formatted: message, savedAt: Date.now() })
+}
+
+function onChatSidebarCommentSaved(payload: {
+  filePath: string
+  startLine: number
+  endLine: number
+  message: string
+  formatted: string
+}) {
+  appendSavedReviewComment({
+    filePath: payload.filePath,
+    message: payload.message,
+    formatted: payload.formatted,
+    savedAt: Date.now(),
+  })
+}
+
+const reviewCommentsForDiff = computed(() => {
+  const order = new Map(centerFiles.value.map((f, i) => [f.path, i]))
+  return savedReviewComments.value
+    .filter((e) => order.has(e.filePath))
+    .sort((a, b) => (order.get(a.filePath) ?? 0) - (order.get(b.filePath) ?? 0))
+})
+
+const copiedAllReviews = ref(false)
+let copiedAllTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyAllReviewComments() {
+  const body = reviewCommentsForDiff.value.map((e) => e.formatted).join('\n\n---\n\n')
+  if (!body) return
+  await copyTextToClipboard(body)
+  copiedAllReviews.value = true
+  if (copiedAllTimer) clearTimeout(copiedAllTimer)
+  copiedAllTimer = setTimeout(() => {
+    copiedAllReviews.value = false
+  }, 2000)
 }
 
 // Sidebar file-row click (or header Open button): open the file in the
@@ -506,7 +587,7 @@ const centerFiles = ref<DiffSelection[]>([])
 const currentPath = ref<string | null>(null)
 const centerDiffScrollRef = ref<HTMLElement | null>(null)
 
-const showCenterDiff = computed(() => centerDiff.value !== null || centerFiles.value.length > 0)
+const showCenterDiff = computed(() => centerDiff.value !== null)
 
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
@@ -531,11 +612,11 @@ function onChatSidebarShowDiffList(files: DiffSelection[]) {
     if (!incoming.has(existing.path)) merged.push(existing)
   }
   centerFiles.value = merged
+  // Refresh an open selection in place when the list reloads, but never
+  // auto-open from a background list load — refresh must land on chat.
   if (centerDiff.value) {
     const refresh = incoming.get(centerDiff.value.path)
     if (refresh) centerDiff.value = refresh
-  } else if (merged.length > 0) {
-    centerDiff.value = merged[0] ?? null
   }
 }
 
@@ -710,6 +791,8 @@ interface VirtualScrollerExposed {
   containerRef: HTMLElement | null
   isPreservingScroll: boolean
   effectiveLoadMoreThreshold: number
+  /** Topmost/bottommost rendered item indices (auto-unwrapped computed). */
+  effectiveRange: { start: number; end: number }
   sizerHeight?: number
   modelTotal?: number
 }
@@ -737,6 +820,10 @@ const fileInputRef = ref<{ focusInput?: () => void } | null>(null)
 const scrollerContainerRef = computed<HTMLElement | null>(
   () => virtualScrollerRef.value?.containerRef ?? null,
 )
+// Stable accessor for ChatScrollSlider: the scroller's containerRef
+// resolves after mount and swaps on chat switch, so the slider takes
+// a function (re-resolved on its interval) instead of a raw element.
+const getChatScrollContainer = (): HTMLElement | null => scrollerContainerRef.value
 const chatScrollStorageKey = computed(() => `chat-scroll-${sessionId.value || props.chatId}`)
 const chatScrollRestore = useChatScrollRestore(scrollerContainerRef, chatScrollStorageKey)
 
@@ -1403,9 +1490,11 @@ const groupKeyForMessageId = (messageId: string): string | null => {
 const userPills = computed((): UserPill[] => {
   const pills: UserPill[] = []
   messageGroups.value.forEach((g, i) => {
-    if (g.role !== 'user') return
+    // Real user turns only: bg-output groups are role=user on the wire
+    // but render as tool cards, compaction envelopes are system
+    // artifacts — neither gets a pill (see isPillGroup).
     const first = g.messages[0]
-    if (first && isCompactionMessage(first)) return
+    if (!isPillGroup(g.role, isBgOnlyGroup(g), !!first && isCompactionMessage(first))) return
     const text = g.messages
       .map((m) => m.content || '')
       .join('\n')
@@ -1416,10 +1505,15 @@ const userPills = computed((): UserPill[] => {
   return pills
 })
 
-// Last pill the user jumped to (highlight). Ref — not scroll-derived —
-// so no extra scroll listener fights the auto-stick logic. Upgrade path:
-// derive from the scroller's exposed effectiveRange when needed.
+// Last pill the user jumped to (highlight). Also driven by scroll (see
+// the realtime update at the end of handleVirtualScroll) so the rail
+// lights up while reading, not just after a click-jump.
 const activePillGroupIndex = ref<number | null>(null)
+
+// Must mirror the `:buffer` prop on the <VirtualScroller> below: the
+// scroller renders this many extra items on EACH side of the viewport,
+// so the active-pill anchor compensates by it (see estimateViewportEnd).
+const CHAT_SCROLL_BUFFER = 30
 
 const jumpToUserGroup = (groupIndex: number, key: string) => {
   // Resolve the index by stable groupKey at click time: SSE appends
@@ -2499,6 +2593,24 @@ const handleVirtualScroll = (
     })
   }
   isAtBottom.value = nextIsAtBottom
+  // ── Realtime pill highlight ───────────────────────────────────────
+  // Light the rail pill for the latest user turn at/above the viewport
+  // BOTTOM as the user scrolls (previously the pill only lit on
+  // click-jump, so scrolling never activated any pill; and anchoring to
+  // the rendered window top lit index 0 whenever the window rendered
+  // from 0 — the overscan buffer above the viewport. See
+  // estimateViewportEnd). Pure display-ref write — no scroll writes,
+  // so it can't fight the auto-stick logic above.
+  const range = virtualScrollerRef.value?.effectiveRange
+  if (range) {
+    const visEnd = estimateViewportEnd(
+      range.start,
+      range.end,
+      messageGroups.value.length,
+      CHAT_SCROLL_BUFFER,
+    )
+    activePillGroupIndex.value = pickActivePillIndex(userPills.value, visEnd)
+  }
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
@@ -2982,6 +3094,12 @@ onMounted(async () => {
     sessionCwd.value = props.cwd
   }
 
+  // Refresh lands on chat, never auto-opens the diff: a reload keeps the
+  // ?diff= the scroll-spy wrote while the viewer was open, and the panel
+  // no longer restores from it — strip it here so the URL stays truthful
+  // (Back does the same on explicit exit).
+  if (typeof route.query.diff === 'string' && !showCenterDiff.value) syncDiffParam(null)
+
   if (sessionId.value) {
     // Seed the re-stick baseline BEFORE loadChatHistory so we catch the
     // very first measurement-driven contentShift. The VirtualScroller's
@@ -3316,7 +3434,7 @@ const compactSession = async () => {
       <div
         v-show="!showCenterDiff"
         ref="messagesWrapperRef"
-        class="relative flex-1 min-h-0 flex flex-col mb-4"
+        class="relative flex-1 min-h-0 flex flex-col mb-4 messages-scroll-hide-native"
       >
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
@@ -3991,6 +4109,15 @@ const compactSession = async () => {
           @jump="jumpToUserGroup"
         />
 
+        <!-- Realtime chat slider: continuous draggable scrollbar thumb
+             synced to the VirtualScroller's scroll position (scroll-up
+             moves the thumb in realtime; dragging the thumb scrubs the
+             chat). Sibling of VirtualScroller inside the relative
+             messagesWrapperRef so it never virtualizes. The native
+             scrollbar is hidden for this scroller (see scoped style
+             below) — this thumb IS the scrollbar visual. -->
+        <ChatScrollSlider :get-container="getChatScrollContainer" />
+
         <!-- 2026-08-25 agent-error-card (task_1787663566535_2):
              Agentic-loop error/retry diagnostics. Rendered OUTSIDE the
              VirtualScroller on purpose — the scroller's height-estimate
@@ -4281,6 +4408,24 @@ const compactSession = async () => {
           >
             {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}
           </span>
+          <button
+            v-if="reviewCommentsForDiff.length > 0"
+            type="button"
+            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            style="color: var(--color-blue)"
+            data-testid="chat-center-diff-copy-all"
+            @click="copyAllReviewComments"
+          >
+            Copy all ({{ reviewCommentsForDiff.length }})
+          </button>
+          <span
+            v-if="copiedAllReviews"
+            class="text-xs"
+            style="color: var(--color-green)"
+            data-testid="chat-center-diff-copied-all"
+          >
+            Copied
+          </span>
         </div>
         <div
           ref="centerDiffScrollRef"
@@ -4301,6 +4446,7 @@ const compactSession = async () => {
             @open="onChatSidebarOpenFile"
             @retry="onCenterDiffRetry"
             @submit-review="onChatSidebarSubmitReview"
+            @comment-saved="onChatSidebarCommentSaved"
           />
         </div>
       </div>
@@ -4734,5 +4880,20 @@ const compactSession = async () => {
     outline: 2px solid var(--color-violet, #8b5cf6);
     outline-offset: 2px;
   }
+}
+
+/* Realtime chat slider: this scroller's native scrollbar is replaced by
+   the ChatScrollSlider thumb (draggable, scroll-synced). Scrolling
+   itself is untouched (wheel/touch/keyboard still work) — only the
+   native visual is hidden, and only inside this wrapper. */
+.messages-scroll-hide-native :deep(.virtual-scroller) {
+  scrollbar-width: none;
+}
+.messages-scroll-hide-native :deep(.virtual-scroller::-webkit-scrollbar) {
+  display: none;
+}
+/* Make room for the slider track at the extreme right edge. */
+.messages-scroll-hide-native :deep(.user-pill-rail) {
+  right: 18px;
 }
 </style>

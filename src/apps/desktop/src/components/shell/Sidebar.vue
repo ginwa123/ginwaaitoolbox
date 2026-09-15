@@ -366,6 +366,28 @@ const handleDeleteConfirm = () => {
 const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWorkspace(workspaceId)
 
 /**
+ * Right-click "Go to settings" from a workspace item row. Opens
+ * the item's own settings surface in a NEW browser tab (never navigates the current tab, NOT the global /app/settings page):
+ * kanban items open their KanbanSettingsView (Columns + Agent tabs),
+ * agent items open their AgentView config (Tools / System Prompt /
+ * Knowledge).
+ */
+const handleGoToSettings = (payload: {
+  workspaceId: string
+  itemId: string
+  itemType?: string
+}) => {
+  if (payload.itemType === 'kanban') {
+    openInNewTab(router, { path: `/app/kanban/${payload.itemId}/settings`, query: {} })
+    return
+  }
+  openInNewTab(router, {
+    path: '/app',
+    query: { view: 'workspace', workspaceId: payload.workspaceId, itemId: payload.itemId },
+  })
+}
+
+/**
  * Ctrl/Cmd+click (or middle click) on a workspace item: open a real
  * browser tab and stay where the user is. The click never navigates,
  * so nothing in the render chain has to know about it.
@@ -1437,6 +1459,7 @@ defineExpose({
           @delete-design-page="handleDeleteDesignPage"
           @add-design-page="handleAddDesignPage"
           @rename-design-page="handleRenameDesignPage"
+          @go-to-settings="handleGoToSettings"
         />
         <!-- Collapsed workspaces: minimal text-driven monograms.
              Each workspace is rendered as a 1-2 letter monogram
