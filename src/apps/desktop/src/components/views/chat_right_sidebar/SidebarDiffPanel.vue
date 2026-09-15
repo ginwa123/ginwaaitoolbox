@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import * as api from '../../../api'
+import { openInNewTab } from '../../../helpers/openInNewTab'
+import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
+import { useContextMenu } from '../../../composables/useContextMenu'
+import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import FileInput from '../../file/FileInput.vue'
 import {
   escapeDiffHtml,
@@ -21,6 +26,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'submit-review': [message: string]
   refresh: []
+  /** File-row click (or header Open button): host opens the file in the code browser. */
+  'open-file': [payload: { path: string; line?: number }]
 }>()
 
 const isGitRepo = ref(false)
@@ -62,6 +69,61 @@ const isLoadingPr = ref(false)
 const prError = ref<string | null>(null)
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
+
+const router = useRouter()
+
+// Right-click "Open file in new tab" for a file row. Position state +
+// dismiss wiring live in useContextMenu; the row payload (file path)
+// lives here so the menu emit can target it (ChatsList pattern).
+const { menuPos, openAt, close: closeContextMenu } = useContextMenu()
+const contextMenuPath = ref<string | null>(null)
+
+const codeEditorQuery = (path: string): Record<string, string> => ({
+  view: 'code-editor',
+  file: btoa(path),
+  cwd: props.cwd,
+})
+
+const openFileInNewTab = (path: string) => {
+  openInNewTab(router, { path: '/app', query: codeEditorQuery(path) })
+}
+
+const onFileRowContextMenu = (event: MouseEvent, path: string) => {
+  contextMenuPath.value = path
+  openAt(event)
+}
+
+const openMenuFileInBackground = () => {
+  const path = contextMenuPath.value
+  contextMenuPath.value = null
+  closeContextMenu()
+  if (!path) return
+  openFileInNewTab(path)
+}
+
+// Ctrl/Cmd+click and middle-click open the code-editor URL in a real
+// browser tab (the browser gesture); plain click keeps panel behavior.
+const onFileRowClick = (event: MouseEvent, file: api.GitFileChange, staged: boolean) => {
+  if (isBackgroundOpenEvent(event)) {
+    openFileInNewTab(file.path)
+    return
+  }
+  selectFile(file, staged)
+}
+
+const onPrFileRowClick = (event: MouseEvent, file: SplitDiffFile) => {
+  if (isBackgroundOpenEvent(event)) {
+    openFileInNewTab(file.path)
+    return
+  }
+  selectPrFile(file)
+}
+
+const onFileRowAuxClick = (event: MouseEvent, path: string) => {
+  if (event.button !== 1) return
+  event.preventDefault()
+  openFileInNewTab(path)
+}
 
 // Short label for the header: "#42" from /pull/42 or /merge_requests/42,
 // else the URL host. Pure display helper (no network).
@@ -108,6 +170,15 @@ const selectPrFile = (file: SplitDiffFile) => {
   diffLines.value = parsed.lines
   diffAdded.value = parsed.added
   diffRemoved.value = parsed.removed
+  emit('open-file', { path: file.path })
+}
+
+// Header Open button: navigate to the selected file, jumping to the
+// first added line when the diff has one (else the editor opens at top).
+const openSelectedFile = () => {
+  if (!selectedPath.value) return
+  const firstAdd = diffLines.value.find((l) => l.type === 'add')
+  emit('open-file', { path: selectedPath.value, line: firstAdd?.newLineNum })
 }
 
 function displayStatus(file: api.GitFileChange): { icon: string; text: string } {
@@ -196,6 +267,9 @@ const selectFile = (file: api.GitFileChange, staged: boolean) => {
   selectedStaged.value = staged
   closeMiniChat()
   void loadDiff()
+  // Plain click navigates to the code browser (host-owned); the inline
+  // selection above keeps panel context.
+  emit('open-file', { path: file.path })
 }
 
 const stageFile = async (file: api.GitFileChange) => {
@@ -380,6 +454,17 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
     </div>
 
     <div class="flex-1 overflow-y-auto min-h-0">
+      <button
+        v-if="selectedPath"
+        type="button"
+        class="w-full text-left px-3 py-1.5 text-xs hover:opacity-70 shrink-0"
+        style="color: var(--semantic-text-dim)"
+        title="Back to file list"
+        data-testid="sidebar-diff-back"
+        @click="selectedPath = null"
+      >
+        ‹ {{ isPrMode ? `All PR files (${prFiles.length})` : `All changes (${changeCount})` }}
+      </button>
       <template v-if="isPrMode">
         <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
           <svg
@@ -434,7 +519,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           >
             Diff truncated at 1MB — showing first files
           </div>
-          <div class="py-1">
+          <div v-show="!selectedPath" class="py-1">
             <div
               class="px-3 py-1 text-xs font-semibold"
               style="color: var(--color-violet)"
@@ -452,7 +537,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                     : 'transparent',
               }"
               :data-testid="`sidebar-pr-file-${file.path}`"
-              @click="selectPrFile(file)"
+              @click="onPrFileRowClick($event, file)"
+              @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+              @auxclick="onFileRowAuxClick($event, file.path)"
             >
               <span class="text-xs">{{ prStatusIcon[file.status] ?? '📄' }}</span>
               <span
@@ -520,7 +607,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
       </div>
 
       <template v-else>
-        <div v-if="stagedFiles.length > 0" class="py-1">
+        <div v-if="stagedFiles.length > 0" v-show="!selectedPath" class="py-1">
           <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-green)">
             Staged Changes ({{ stagedFiles.length }})
           </div>
@@ -535,7 +622,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                   : 'transparent',
             }"
             :data-testid="`sidebar-diff-file-staged-${file.path}`"
-            @click="selectFile(file, true)"
+            @click="onFileRowClick($event, file, true)"
+            @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+            @auxclick="onFileRowAuxClick($event, file.path)"
           >
             <span class="text-xs">{{ displayStatus(file).icon }}</span>
             <span
@@ -558,7 +647,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           </div>
         </div>
 
-        <div v-if="unstagedFiles.length > 0" class="py-1">
+        <div v-if="unstagedFiles.length > 0" v-show="!selectedPath" class="py-1">
           <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-orange)">
             Changes ({{ unstagedFiles.length }})
           </div>
@@ -573,7 +662,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                   : 'transparent',
             }"
             :data-testid="`sidebar-diff-file-unstaged-${file.path}`"
-            @click="selectFile(file, false)"
+            @click="onFileRowClick($event, file, false)"
+            @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+            @auxclick="onFileRowAuxClick($event, file.path)"
           >
             <span class="text-xs">{{ displayStatus(file).icon }}</span>
             <span
@@ -596,7 +687,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           </div>
         </div>
 
-        <div v-if="untrackedFiles.length > 0" class="py-1">
+        <div v-if="untrackedFiles.length > 0" v-show="!selectedPath" class="py-1">
           <div class="px-3 py-1 text-xs font-semibold" style="color: var(--semantic-text-dim)">
             Untracked ({{ untrackedFiles.length }})
           </div>
@@ -611,7 +702,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                   : 'transparent',
             }"
             :data-testid="`sidebar-diff-file-untracked-${file.path}`"
-            @click="selectFile(file, false)"
+            @click="onFileRowClick($event, file, false)"
+            @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+            @auxclick="onFileRowAuxClick($event, file.path)"
           >
             <span class="text-xs">❓</span>
             <span
@@ -672,6 +765,17 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           >
             Wrap
           </button>
+          <button
+            type="button"
+            class="px-2 py-1 text-xs rounded hover:opacity-70"
+            style="color: var(--semantic-text-dim)"
+            title="Open file in code browser"
+            aria-label="Open file in code browser"
+            data-testid="sidebar-diff-open-file"
+            @click="openSelectedFile"
+          >
+            ⤴
+          </button>
         </div>
 
         <div v-if="diffLoading" class="flex items-center justify-center py-6">
@@ -724,7 +828,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           :class="{ 'wrap-on': wordWrap }"
           :style="{
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-            maxHeight: '40vh',
+            /* full-height: diff grows with the overlay panel */
           }"
         >
           <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
@@ -817,6 +921,15 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
         </div>
       </div>
     </div>
+
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      :show-chat="false"
+      show-file
+      @open-file="openMenuFileInBackground"
+    />
 
     <Teleport to="body">
       <div

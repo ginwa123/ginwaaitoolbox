@@ -478,6 +478,16 @@ async function onChatSidebarSubmitReview(message: string) {
   await api.sendChatMessage(sessionId.value, message, effectiveCwd.value)
 }
 
+// Sidebar file-row click (or header Open button): open the file in the
+// in-app code browser, which also updates the app URL (view=code-editor).
+// Null-guarded: the injection is absent outside an AppLayout subtree
+// (e.g. unit tests), where the click is a no-op.
+function onChatSidebarOpenFile(payload: { path: string; line?: number }) {
+  const openInEditor = useInjectOpenInCodeEditor()
+  if (!openInEditor || !effectiveCwd.value) return
+  void openInEditor({ filePath: payload.path, cwd: effectiveCwd.value, line: payload.line })
+}
+
 // Re-read the session's worktree binding from the backend. The binding
 // is created/removed mid-chat by the LLM's set_git_worktree tool, so
 // the mount-time value from loadChatHistory() goes stale — the sidebar
@@ -3098,7 +3108,7 @@ const compactSession = async () => {
 </script>
 
 <template>
-  <div class="flex h-full w-full">
+  <div class="flex h-full w-full relative">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
       <!--
@@ -4117,6 +4127,7 @@ const compactSession = async () => {
       @update:width="(w) => chatSidebar.setWidth(w)"
       @submit-review="onChatSidebarSubmitReview"
       @refresh="onChatSidebarRefresh"
+      @open-file="onChatSidebarOpenFile"
     />
 
     <!-- Skills Popup Modal -->

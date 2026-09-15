@@ -19,6 +19,7 @@ const emit = defineEmits<{
   'update:width': [width: number]
   'submit-review': [message: string]
   refresh: []
+  'open-file': [payload: { path: string; line?: number }]
 }>()
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
@@ -30,8 +31,8 @@ const startResize = (e: MouseEvent) => {
   isResizing.value = true
   const startX = e.clientX
   const startWidth = props.width
-  const min = props.minWidth ?? 200
-  const max = props.maxWidth ?? 600
+  const min = props.minWidth ?? 380
+  const max = props.maxWidth ?? 720
 
   const onMove = (ev: MouseEvent) => {
     const next = startWidth - (ev.clientX - startX)
@@ -61,9 +62,11 @@ defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
 <template>
   <aside
     v-if="open"
-    class="chat-right-sidebar shrink-0 h-full relative hidden lg:flex flex-col min-h-0"
+    class="chat-right-sidebar absolute right-0 top-0 bottom-0 z-30 flex flex-col min-h-0 shadow-xl"
     :style="{
       width: width + 'px',
+      maxWidth: '45%',
+      minWidth: '380px',
       backgroundColor: 'var(--semantic-sidebar-bg)',
       borderLeft: '1px solid var(--color-border)',
     }"
@@ -102,6 +105,7 @@ defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
         :pr-provider="prProvider"
         @submit-review="(msg) => emit('submit-review', msg)"
         @refresh="() => emit('refresh')"
+        @open-file="(payload) => emit('open-file', payload)"
       />
     </div>
   </aside>

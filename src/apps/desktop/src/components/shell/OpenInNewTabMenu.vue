@@ -10,17 +10,25 @@
  * (WorkspaceItemTaskRow) keep the single chat item while kanban
  * cards (WorkspaceItemTaskCard) offer both.
  */
-defineProps<{
-  x: number
-  y: number
-  showDetails?: boolean
-  showStop?: boolean
-}>()
+withDefaults(
+  defineProps<{
+    x: number
+    y: number
+    showDetails?: boolean
+    showStop?: boolean
+    /** Show the "Open chat in new tab" item (default true; file-only hosts hide it). */
+    showChat?: boolean
+    /** Show the "Open file in new tab" item for file-row hosts. */
+    showFile?: boolean
+  }>(),
+  { showChat: true },
+)
 
 const emit = defineEmits<{
   open: []
   openDetails: []
   stop: []
+  openFile: []
 }>()
 </script>
 
@@ -40,6 +48,7 @@ const emit = defineEmits<{
       @click.stop
     >
       <button
+        v-if="showChat !== false"
         type="button"
         role="menuitem"
         data-testid="open-new-tab-item"
@@ -47,6 +56,16 @@ const emit = defineEmits<{
         @click="emit('open')"
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open chat in new tab
+      </button>
+      <button
+        v-if="showFile"
+        type="button"
+        role="menuitem"
+        data-testid="open-file-new-tab-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="emit('openFile')"
+      >
+        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open file in new tab
       </button>
       <button
         v-if="showDetails"
