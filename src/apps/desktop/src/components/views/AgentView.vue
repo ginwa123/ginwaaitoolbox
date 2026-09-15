@@ -19,12 +19,13 @@ import * as api from '../../api'
 import { useAgentToolsStore } from '../../stores/agentTools'
 import type { WorkspaceItem } from '../../stores/workspaces'
 
-/** Agnostic row types — AgentView is reused for both `item_type='agent'` and kanban boards.
- *  Agent rows use `agent_id`, kanban rows use `kanban_id`; all other fields are identical.
+/** Agnostic row types — AgentView is reused for `item_type='agent'`, kanban boards and routines.
+ *  Agent rows use `agent_id`, kanban rows use `kanban_id`, routine rows use
+ *  `routine_id`; all other fields are identical.
  *  The component only reads `id`, `label`, `file_path`, `content` (knowledge) and
  *  `id`, `title`, `content` (system prompts), so a union is safe. */
-export type AgnosticKnowledgeRow = api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow
-export type AgnosticSystemPromptRow = api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow
+export type AgnosticKnowledgeRow = api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow | api.AgentRoutineKnowledgeRow
+export type AgnosticSystemPromptRow = api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow | api.AgentRoutineSystemPromptRow
 
 interface Props {
   item: WorkspaceItem
