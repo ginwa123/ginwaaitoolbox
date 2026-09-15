@@ -208,6 +208,29 @@ describe('SidebarDiffView inline comment threads', () => {
     expect(threads[0]!.get('[data-testid="diff-comment-message"]').text()).toBe('fresh thread 28')
   })
 
+  it('Copy writes the formatted markdown to the clipboard', async () => {
+    seedFull(20, 26, 'copy me out', 'ctx lines here')
+    const written: string[] = []
+    Object.defineProperty(globalThis.navigator, 'clipboard', {
+      value: {
+        writeText: (t: string) => {
+          written.push(t)
+          return Promise.resolve()
+        },
+      },
+      writable: true,
+      configurable: true,
+    })
+    const wrapper = mountView()
+    await wrapper.get('[data-testid="diff-comment-copy"]').trigger('click')
+    await flushPromises()
+    expect(written).toHaveLength(1)
+    expect(written[0]).toContain('## Code Review')
+    expect(written[0]).toContain('src/reviewed.ts')
+    expect(written[0]).toContain('copy me out')
+    expect(wrapper.find('[data-testid="diff-comment-copied"]').exists()).toBe(true)
+  })
+
   it('escapes message HTML', () => {
     seed(CWD, PATH, 20, 26, '<img src=x onerror=alert(1)>')
     const wrapper = mountView()

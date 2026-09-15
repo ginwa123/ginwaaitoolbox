@@ -135,6 +135,15 @@ describe('ChatView stacked center render', () => {
     expect(chatViewSrc).toMatch(/v-show="!showCenterDiff" ref="messagesWrapperRef"/)
   })
 
+  it('header offers Copy all scoped to this diff', () => {
+    expect(chatViewSrc).toMatch(/data-testid="chat-center-diff-copy-all"/)
+    expect(chatViewSrc).toMatch(/v-if="reviewCommentsForDiff\.length > 0"/)
+    expect(chatViewSrc).toMatch(/function copyAllReviewComments\(\)/)
+    expect(chatViewSrc).toMatch(/reviewCommentsForDiff\.value\.map\(\(e\) => e\.formatted\)/)
+    expect(chatViewSrc).toMatch(/copyTextToClipboard\(body\)/)
+    expect(chatViewSrc).toMatch(/data-testid="chat-center-diff-copied-all"/)
+  })
+
   it('opens only on explicit selection — list loads never auto-open', () => {
     // Refresh must land on chat even when the PR/diff fetch succeeds:
     // the gate ignores the preloaded list, and the list handler has no

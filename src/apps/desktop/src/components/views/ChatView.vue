@@ -76,6 +76,7 @@ import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
+import { copyTextToClipboard } from './chat_right_sidebar/DiffCommentBox.vue'
 import {
   centerDiffSectionId,
   encodePathParam,
@@ -541,6 +542,27 @@ function onChatSidebarCommentSaved(payload: {
     formatted: payload.formatted,
     savedAt: Date.now(),
   })
+}
+
+const reviewCommentsForDiff = computed(() => {
+  const order = new Map(centerFiles.value.map((f, i) => [f.path, i]))
+  return savedReviewComments.value
+    .filter((e) => order.has(e.filePath))
+    .sort((a, b) => (order.get(a.filePath) ?? 0) - (order.get(b.filePath) ?? 0))
+})
+
+const copiedAllReviews = ref(false)
+let copiedAllTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyAllReviewComments() {
+  const body = reviewCommentsForDiff.value.map((e) => e.formatted).join('\n\n---\n\n')
+  if (!body) return
+  await copyTextToClipboard(body)
+  copiedAllReviews.value = true
+  if (copiedAllTimer) clearTimeout(copiedAllTimer)
+  copiedAllTimer = setTimeout(() => {
+    copiedAllReviews.value = false
+  }, 2000)
 }
 
 // Sidebar file-row click (or header Open button): open the file in the
@@ -4339,6 +4361,24 @@ const compactSession = async () => {
             data-testid="chat-center-diff-count"
           >
             {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}
+          </span>
+          <button
+            v-if="reviewCommentsForDiff.length > 0"
+            type="button"
+            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            style="color: var(--color-blue)"
+            data-testid="chat-center-diff-copy-all"
+            @click="copyAllReviewComments"
+          >
+            Copy all ({{ reviewCommentsForDiff.length }})
+          </button>
+          <span
+            v-if="copiedAllReviews"
+            class="text-xs"
+            style="color: var(--color-green)"
+            data-testid="chat-center-diff-copied-all"
+          >
+            Copied
           </span>
         </div>
         <div

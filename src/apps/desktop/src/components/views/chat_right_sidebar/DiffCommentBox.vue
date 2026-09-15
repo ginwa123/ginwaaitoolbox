@@ -29,6 +29,31 @@ export function formatReviewComment(
   );
 }
 
+export async function copyTextToClipboard(text: string): Promise<void> {
+  try {
+    const clipboard = (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
+    if (clipboard?.writeText) {
+      await clipboard.writeText(text);
+      return;
+    }
+  } catch {
+    // Fall through to the textarea fallback below.
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    // Best effort only.
+  }
+  document.body.removeChild(ta);
+}
+
 export interface SavedComment {
   start: number;
   end: number;
@@ -220,34 +245,9 @@ function onSave(): void {
   });
 }
 
-async function copyFallback(text: string): Promise<void> {
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.setAttribute("readonly", "");
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
-  document.body.appendChild(ta);
-  ta.select();
-  try {
-    document.execCommand("copy");
-  } catch {
-    // Best effort — the copy emit still tells the parent what to persist.
-  }
-  document.body.removeChild(ta);
-}
-
 async function onCopy(): Promise<void> {
   const text = formatted.value;
-  try {
-    const clipboard = (navigator as Navigator & { clipboard?: Clipboard }).clipboard;
-    if (clipboard?.writeText) {
-      await clipboard.writeText(text);
-    } else {
-      await copyFallback(text);
-    }
-  } catch {
-    await copyFallback(text);
-  }
+  await copyTextToClipboard(text);
   flash("copied");
   emit("copy", { formatted: text });
 }

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import DiffCommentBox, {
+  copyTextToClipboard,
   deleteSavedComment,
+  formatReviewComment,
   listSavedComments,
   type DiffCommentSavePayload,
   type SavedComment,
@@ -151,6 +153,20 @@ const cancelEdit = () => {
 const deleteThread = (thread: SavedComment) => {
   deleteSavedComment(props.cwd, props.path, thread.start, thread.end)
   reviewedVersion.value++
+}
+
+const copiedKey = ref<string | null>(null)
+let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+const copyThread = async (thread: SavedComment) => {
+  await copyTextToClipboard(
+    formatReviewComment(props.path, thread.start, thread.end, thread.context, thread.message),
+  )
+  copiedKey.value = threadKey(thread)
+  if (copiedTimer) clearTimeout(copiedTimer)
+  copiedTimer = setTimeout(() => {
+    copiedKey.value = null
+  }, 2000)
 }
 
 watch(
@@ -429,6 +445,23 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       >
                         Delete
                       </button>
+                      <button
+                        type="button"
+                        class="text-xs hover:opacity-70"
+                        style="color: var(--color-blue)"
+                        data-testid="diff-comment-copy"
+                        @click="copyThread(thread)"
+                      >
+                        Copy
+                      </button>
+                      <span
+                        v-if="copiedKey === threadKey(thread)"
+                        class="text-xs"
+                        style="color: var(--color-green)"
+                        data-testid="diff-comment-copied"
+                      >
+                        Copied
+                      </span>
                     </div>
                   </div>
                 </div>
