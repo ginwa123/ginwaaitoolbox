@@ -437,7 +437,7 @@ watch(
 </script>
 
 <template>
-  <div class="flex flex-col gap-4 p-5 max-w-2xl" data-testid="routine-view">
+  <div class="flex flex-col gap-4 p-5 h-full min-h-0" data-testid="routine-view">
     <div class="flex items-center gap-2">
       <span aria-hidden="true" class="text-lg">⏰</span>
       <h2 class="text-base font-semibold" style="color: var(--semantic-text)">
@@ -474,7 +474,7 @@ watch(
       </button>
     </div>
 
-    <template v-if="activeTab === 'routine'">
+    <div v-if="activeTab === 'routine'" class="max-w-2xl w-full flex flex-col gap-4 overflow-y-auto" data-testid="routine-form">
       <div v-if="loading" class="text-sm" style="color: var(--semantic-text-dim)">
         Loading routine…
       </div>
@@ -593,7 +593,7 @@ watch(
           </button>
         </div>
       </template>
-    </template>
+    </div>
 
     <div
       v-else
