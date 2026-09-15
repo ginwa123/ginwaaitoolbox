@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref } from 'vue'
 import SidebarDiffPanel from './SidebarDiffPanel.vue'
 import type { DiffSelection } from './parseUnifiedDiff'
 
@@ -9,6 +9,10 @@ const props = defineProps<{
   width: number
   minWidth?: number
   maxWidth?: number
+  /** Branch from the bottom status bar (single source of truth).
+   * `undefined` while loading — the panel falls back to its own
+   * fetched branch. Drilled from ChatView's `sidebarBranch`. */
+  branch?: string
   /** Attached PR URL — switches the panel to PR-changes mode. */
   prUrl?: string
   /** Effective provider for the attached PR. */
@@ -50,12 +54,10 @@ const startResize = (e: MouseEvent) => {
 
 const close = () => emit('update:open', false)
 
-watch(
-  () => props.cwd,
-  () => {
-    panelRef.value?.loadGitStatus()
-  },
-)
+// No cwd watcher here: SidebarDiffPanel already watches props.cwd
+// itself (clears its tab cache + reloads). A second fetch from this
+// level doubled every worktree switch and the two concurrent
+// getGitChanges calls could resolve out of order (stale branch wins).
 
 defineExpose({
   refresh: () => panelRef.value?.loadGitStatus(),
@@ -103,6 +105,7 @@ defineExpose({
       <SidebarDiffPanel
         ref="panelRef"
         :cwd="cwd"
+        :branch="branch"
         :pr-url="prUrl"
         :pr-provider="prProvider"
         @refresh="() => emit('refresh')"

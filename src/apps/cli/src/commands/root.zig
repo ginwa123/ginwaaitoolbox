@@ -11,12 +11,14 @@ pub const send = @import("send.zig");
 pub const sessions = @import("sessions.zig");
 pub const messages = @import("messages.zig");
 pub const events = @import("events.zig");
+pub const pr_status = @import("pr_status.zig");
 
 pub const CommandKind = enum {
     send,
     sessions,
     messages,
     events,
+    pr_status,
     help,
 };
 
@@ -46,6 +48,7 @@ pub const help_text =
     \\  sessions [--limit <n>]                                List LLM sessions
     \\  messages <session_id> [--limit <n>] [--reverse]       List messages in a session
     \\  events [--channels <a,b,c>]                           Tail the SSE event stream
+    \\  pr-status [<pr>] [--path <repo>] [--provider <n>] [--json]  Show PR open/merged/closed status
     \\  help                                                  Show this help
     \\
     \\Config (highest priority first):
@@ -84,6 +87,10 @@ pub fn dispatch(cmd: Command, cfg: config.Config, io: std.Io) DispatchResult {
         .events => {
             const parsed = parseEventsArgs(cmd.args) catch return .err;
             return events.run(parsed, cfg, io);
+        },
+        .pr_status => {
+            const parsed = parsePrStatusArgs(cmd.args) catch return .err;
+            return pr_status.run(parsed, cfg, io);
         },
     }
 }
@@ -189,6 +196,32 @@ fn parseEventsArgs(args: []const []const u8) !events.Args {
     return out;
 }
 
+fn parsePrStatusArgs(args: []const []const u8) !pr_status.Args {
+    var out: pr_status.Args = .{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--path")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            out.path = args[i];
+        } else if (std.mem.eql(u8, a, "--provider")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            out.provider = args[i];
+        } else if (std.mem.eql(u8, a, "--json")) {
+            out.json = true;
+        } else if (std.mem.startsWith(u8, a, "--")) {
+            return error.UnknownFlag;
+        } else if (out.pr.len == 0) {
+            out.pr = a;
+        } else {
+            return error.UnknownPositional;
+        }
+    }
+    return out;
+}
+
 /// Parse the command from argv (excluding the program name). The
 /// `scratch` buffer is used for in-place lower-casing the verb so
 /// we don't need to allocate.
@@ -228,6 +261,8 @@ pub fn parseCommand(
         return .{ .kind = .messages, .args = argv[1..] };
     } else if (std.mem.eql(u8, lower, "events")) {
         return .{ .kind = .events, .args = argv[1..] };
+    } else if (std.mem.eql(u8, lower, "pr-status") or std.mem.eql(u8, lower, "pr")) {
+        return .{ .kind = .pr_status, .args = argv[1..] };
     } else if (std.mem.eql(u8, lower, "help") or std.mem.eql(u8, lower, "--help") or std.mem.eql(u8, lower, "-h")) {
         return .{ .kind = .help, .args = &.{} };
     } else {
@@ -368,6 +403,48 @@ test "parseEventsArgs: --channels workers,llm" {
 test "parseEventsArgs: unknown flag → error.UnknownFlag" {
     const args = [_][]const u8{ "--wat" };
     try testing.expectError(error.UnknownFlag, parseEventsArgs(&args));
+}
+
+test "parseCommand: pr-status → CommandKind.pr_status" {
+    var scratch: [256]u8 = undefined;
+    const args = [_][]const u8{ "pr-status", "42" };
+    const cmd = try parseCommand(testing.allocator, &args, &scratch);
+    try testing.expectEqual(CommandKind.pr_status, cmd.kind);
+    try testing.expectEqual(@as(usize, 1), cmd.args.len);
+}
+
+test "parseCommand: pr alias → CommandKind.pr_status" {
+    var scratch: [256]u8 = undefined;
+    const args = [_][]const u8{ "pr", "42" };
+    const cmd = try parseCommand(testing.allocator, &args, &scratch);
+    try testing.expectEqual(CommandKind.pr_status, cmd.kind);
+}
+
+test "parsePrStatusArgs: defaults (current branch)" {
+    const args = [_][]const u8{};
+    const parsed = try parsePrStatusArgs(&args);
+    try testing.expectEqualStrings("", parsed.pr);
+    try testing.expectEqualStrings(".", parsed.path);
+    try testing.expect(!parsed.json);
+}
+
+test "parsePrStatusArgs: full flag set" {
+    const args = [_][]const u8{ "42", "--path", "/tmp/repo", "--provider", "github", "--json" };
+    const parsed = try parsePrStatusArgs(&args);
+    try testing.expectEqualStrings("42", parsed.pr);
+    try testing.expectEqualStrings("/tmp/repo", parsed.path);
+    try testing.expectEqualStrings("github", parsed.provider.?);
+    try testing.expect(parsed.json);
+}
+
+test "parsePrStatusArgs: unknown flag → error.UnknownFlag" {
+    const args = [_][]const u8{ "--wat" };
+    try testing.expectError(error.UnknownFlag, parsePrStatusArgs(&args));
+}
+
+test "parsePrStatusArgs: second positional → error.UnknownPositional" {
+    const args = [_][]const u8{ "42", "43" };
+    try testing.expectError(error.UnknownPositional, parsePrStatusArgs(&args));
 }
 
 const testing = std.testing;

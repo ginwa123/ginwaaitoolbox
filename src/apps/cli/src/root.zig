@@ -29,6 +29,7 @@ test {
     _ = @import("commands/messages_test.zig");
     _ = @import("commands/send_test.zig");
     _ = @import("commands/events_test.zig");
+    _ = @import("commands/pr_status_test.zig");
 }
 
 const std = @import("std");

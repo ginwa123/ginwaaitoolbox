@@ -71,6 +71,7 @@ all three binaries.
 | `sessions` | GET `/api/llm/session?limit=N` | List recent sessions. |
 | `messages <id>` | GET `/api/llm/session/<id>/messages` | List messages in a session. |
 | `events` | GET `/api/events?channels=…` | Long-lived SSE tail (uses `kabelweb.client.openStream`). |
+| `pr-status [<pr>]` | GET `/api/git/pr/status` | Show PR open/merged/closed status (`gh pr view` wrapper). Alias: `pr`. |
 | `help` | — | Print usage. |
 
 Run `nalarcli help` for the full flag list.
@@ -114,5 +115,6 @@ src/apps/cli/
 │       ├── sessions.zig        # GET /api/llm/session
 │       ├── messages.zig        # GET /api/llm/session/<id>/messages
 │       ├── events.zig          # GET /api/events (SSE tail)
+│       ├── pr_status.zig       # GET /api/git/pr/status (open/merged/closed)
 │       └── *_test.zig          # placeholder tests; real tests land when the live endpoint is wired
 ```

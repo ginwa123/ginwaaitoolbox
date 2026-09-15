@@ -71,4 +71,28 @@ describe('ChatView worktree sidebar binding', () => {
       /const effectiveCwd = computed\(\(\) => gitWorktreeCwd\.value \|\| sessionCwd\.value\)/,
     )
   })
+
+  it('bottom chip never falls back to a hardcoded main', () => {
+    // The stale-'main' bug: `gitStatus.branch || 'main'` showed main
+    // while the worktree branch was checked out (detached/loading).
+    expect(chatViewSrc).not.toMatch(/\|\| 'main'/)
+  })
+
+  it('bottom gitStatus is the single branch source, drilled to the sidebar', () => {
+    expect(chatViewSrc).toMatch(/const sidebarBranch = computed/)
+    expect(chatViewSrc).toMatch(/:branch="sidebarBranch"/)
+    expect(shellSrc).toMatch(/branch\?: string/)
+    expect(shellSrc).toMatch(/:branch="branch"/)
+    expect(panelSrc).toMatch(/branch\?: string/)
+    expect(panelSrc).toMatch(/displayBranch/)
+  })
+
+  it('stale fetches cannot overwrite the branch (seq guards, single fetch path)', () => {
+    expect(chatViewSrc).toMatch(/gitStatusSeq/)
+    expect(panelSrc).toMatch(/loadSeq/)
+    // ChatRightSidebar must not fire its own duplicate getGitChanges —
+    // the panel's cwd watcher is the only fetch path (expose passthrough
+    // for explicit refresh is fine, a watcher is not).
+    expect(shellSrc).not.toMatch(/watch\(/)
+  })
 })

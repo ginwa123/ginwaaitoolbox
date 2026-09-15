@@ -689,6 +689,36 @@ pub fn makeGitPrCreateResponse(allocator: std.mem.Allocator, response: GitPrCrea
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git PR status types ──────────────────────────────────────────────────
+// Wire shape for `GET /api/git/pr/status?path=<repo>[&pr=<n|url>][&provider=]`.
+// Wraps `gh pr view --json ...` so the CLI can show open/merged/closed
+// without shelling to `gh` itself.
+pub const GitPrStatusResponse = struct {
+    pr_url: []const u8 = "",
+    number: i64 = 0,
+    title: []const u8 = "",
+    /// Raw `gh` state (OPEN/CLOSED/MERGED).
+    state: []const u8 = "",
+    /// Normalized lowercase status (open/closed/merged).
+    status: []const u8 = "",
+    mergeable: []const u8 = "",
+    merge_state: []const u8 = "",
+    head_ref: []const u8 = "",
+    base_ref: []const u8 = "",
+    author: []const u8 = "",
+    created_at: []const u8 = "",
+    updated_at: []const u8 = "",
+    merged_at: []const u8 = "",
+    closed_at: []const u8 = "",
+    additions: i64 = 0,
+    deletions: i64 = 0,
+    changed_files: i64 = 0,
+};
+
+pub fn makeGitPrStatusResponse(allocator: std.mem.Allocator, response: GitPrStatusResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // ─── Git branches list types ──────────────────────────────────────────────
 // Wire shape for `GET /api/git/branches?path=<repo>`. Consumed by the
 // kanban "New task" dialog's base-branch picker so the user can choose

@@ -1,0 +1,148 @@
+"""Functional wire tests for GET /api/git/pr/status.
+
+Exercises the endpoint the `nalarcli pr-status` command calls
+(`gh pr view` wrapper returning open/merged/closed):
+
+  1. Missing path → 400 (route is registered, validator runs).
+  2. Unknown provider → 400 (strict validator).
+  3. gitlab provider → 400 (v1 is github-only).
+  4. Non-repo path → 404 (not shadowing, real handler answer).
+  5. Happy path via a fake `gh` on PATH → 200 with normalized status.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from harness import FunctionalHarness
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+        cwd=str(cwd),
+        check=True,
+        timeout=30,
+    )
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    cwd = tmp_path / "pr-status-proj"
+    cwd.mkdir(parents=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", "--quiet", str(cwd)],
+        check=True,
+        timeout=30,
+    )
+    (cwd / "a.txt").write_text("hi\n")
+    _git(cwd, "add", "-A")
+    _git(cwd, "commit", "--quiet", "-m", "base")
+    return cwd
+
+
+def test_missing_path_is_400(harness: FunctionalHarness) -> None:
+    r = harness.http("GET", "/api/git/pr/status", expect=400).json()
+    assert "error" in r, f"got: {r!r}"
+
+
+def test_unknown_provider_is_400(
+    harness: FunctionalHarness, repo: Path
+) -> None:
+    r = harness.http(
+        "GET",
+        "/api/git/pr/status",
+        params={"path": str(repo), "provider": "bitbucket"},
+        expect=400,
+    ).json()
+    assert "error" in r, f"got: {r!r}"
+
+
+def test_gitlab_provider_is_400_v1_github_only(
+    harness: FunctionalHarness, repo: Path
+) -> None:
+    r = harness.http(
+        "GET",
+        "/api/git/pr/status",
+        params={"path": str(repo), "provider": "gitlab"},
+        expect=400,
+    ).json()
+    assert "github" in r["error"].lower(), f"got: {r!r}"
+
+
+def test_non_repo_path_is_404(
+    harness: FunctionalHarness, tmp_path: Path
+) -> None:
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir(parents=True)
+    r = harness.http(
+        "GET",
+        "/api/git/pr/status",
+        params={"path": str(plain), "pr": "42"},
+        expect=404,
+    ).json()
+    assert "error" in r, f"got: {r!r}"
+
+
+def test_happy_path_via_fake_gh(
+    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+) -> None:
+    """A fake `gh` on PATH proves the 200 wire shape end-to-end.
+
+    The harness boots the server with the parent's PATH, so prepending
+    a tmpdir bin with an executable `gh` stub makes the backend's
+    `gh pr view --json ...` spawn return canned JSON without network.
+    The harness must boot AFTER the PATH patch, so this test takes
+    `default_nalar_bin` and boots its own harness instead of the
+    function-scoped `harness` fixture.
+    """
+    bindir = tmp_path / "fakebin"
+    bindir.mkdir(parents=True)
+    fake_gh = bindir / "gh"
+    payload = {
+        "number": 42,
+        "title": "Fix login",
+        "url": "https://github.com/acme/app/pull/42",
+        "state": "MERGED",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "CLEAN",
+        "headRefName": "feature",
+        "baseRefName": "main",
+        "createdAt": "2026-09-01T00:00:00Z",
+        "updatedAt": "2026-09-02T00:00:00Z",
+        "mergedAt": "2026-09-03T00:00:00Z",
+        "closedAt": "",
+        "author": {"login": "alice"},
+        "additions": 10,
+        "deletions": 5,
+        "changedFiles": 3,
+    }
+    fake_gh.write_text(
+        "#!/bin/sh\ncat <<'EOF'\n" + json.dumps(payload) + "\nEOF\n"
+    )
+    fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+
+    h2 = FunctionalHarness.boot(default_nalar_bin)
+    try:
+        body = h2.http(
+            "GET",
+            "/api/git/pr/status",
+            params={"path": str(repo), "pr": "42"},
+            expect=200,
+            timeout_s=15.0,
+        ).json()
+    finally:
+        h2.teardown()
+    assert body["number"] == 42
+    assert body["state"] == "MERGED"
+    assert body["status"] == "merged"
+    assert body["title"] == "Fix login"
+    assert body["head_ref"] == "feature"
+    assert body["base_ref"] == "main"
