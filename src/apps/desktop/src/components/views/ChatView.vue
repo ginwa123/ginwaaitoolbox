@@ -563,7 +563,7 @@ const centerFiles = ref<DiffSelection[]>([])
 const currentPath = ref<string | null>(null)
 const centerDiffScrollRef = ref<HTMLElement | null>(null)
 
-const showCenterDiff = computed(() => centerDiff.value !== null || centerFiles.value.length > 0)
+const showCenterDiff = computed(() => centerDiff.value !== null)
 
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
@@ -588,11 +588,11 @@ function onChatSidebarShowDiffList(files: DiffSelection[]) {
     if (!incoming.has(existing.path)) merged.push(existing)
   }
   centerFiles.value = merged
+  // Refresh an open selection in place when the list reloads, but never
+  // auto-open from a background list load — refresh must land on chat.
   if (centerDiff.value) {
     const refresh = incoming.get(centerDiff.value.path)
     if (refresh) centerDiff.value = refresh
-  } else if (merged.length > 0) {
-    centerDiff.value = merged[0] ?? null
   }
 }
 

@@ -5,7 +5,8 @@
  * content-visibility + IntersectionObserver lazy mount, not pagination.
  *
  * - `centerFiles: DiffSelection[]` (ordered) + `currentPath`, with
- *   `centerDiff` kept for compat (set on both show-diff and list load).
+ *   `centerDiff` set on show-diff only — list loads preload silently and
+ *   never auto-open (refresh lands on chat).
  * - show-diff merges a single file (union by path); show-diff-list
  *   merges the full list with list order winning; a click on an
  *   already-loaded file only scrolls (no refetch).
@@ -86,7 +87,10 @@ describe('CenterDiffSection lazy mount', () => {
     expect(observeMock).toHaveBeenCalledTimes(1)
 
     // Section nears viewport -> mount the real diff, drop the placeholder.
-    observers[0]!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+    observers[0]!(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver,
+    )
     await nextTick()
     expect(wrapper.find('[data-testid="center-diff-placeholder"]').exists()).toBe(false)
     const diff = wrapper.findComponent(SidebarDiffView)
@@ -129,5 +133,15 @@ describe('ChatView stacked center render', () => {
 
   it('hides messages+composer while any stacked diff shows', () => {
     expect(chatViewSrc).toMatch(/v-show="!showCenterDiff" ref="messagesWrapperRef"/)
+  })
+
+  it('opens only on explicit selection — list loads never auto-open', () => {
+    // Refresh must land on chat even when the PR/diff fetch succeeds:
+    // the gate ignores the preloaded list, and the list handler has no
+    // first-file auto-select branch.
+    expect(chatViewSrc).toMatch(
+      /const showCenterDiff = computed\(\(\) => centerDiff\.value !== null\)/,
+    )
+    expect(chatViewSrc).not.toMatch(/else if \(merged\.length > 0\)/)
   })
 })
