@@ -20,6 +20,8 @@ withDefaults(
     showChat?: boolean
     /** Show the "Open file in new tab" item for file-row hosts. */
     showFile?: boolean
+    /** Show the "Go to settings" item for workspace item rows. */
+    showSettings?: boolean
   }>(),
   { showChat: true },
 )
@@ -29,6 +31,7 @@ const emit = defineEmits<{
   openDetails: []
   stop: []
   openFile: []
+  settings: []
 }>()
 </script>
 
@@ -87,6 +90,16 @@ const emit = defineEmits<{
         @click="emit('stop')"
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#9632;</span>Stop agent
+      </button>
+      <button
+        v-if="showSettings"
+        type="button"
+        role="menuitem"
+        data-testid="go-to-settings-item"
+        class="block w-full text-left px-3 py-1.5 hover:opacity-80"
+        @click="emit('settings')"
+      >
+        <span aria-hidden="true" class="mr-2 opacity-70">⚙</span>Go to settings
       </button>
     </div>
   </Teleport>
