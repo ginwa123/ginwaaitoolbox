@@ -155,6 +155,7 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
 # Tests that need a clean enable use `preview_design_page` (in-registry, never a default).
 EXPECTED_DEFAULTS = [
     "add_skill",
+    "ask_user",
     "command",
     "edit_skill",
     "get_plan",
