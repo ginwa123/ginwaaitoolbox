@@ -370,7 +370,8 @@ const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWor
  * the item's own settings surface in a NEW browser tab (never navigates the current tab, NOT the global /app/settings page):
  * kanban items open their KanbanSettingsView (Columns + Agent tabs),
  * agent items open their AgentView config (Tools / System Prompt /
- * Knowledge).
+ * Knowledge), routine items open their RoutineView config
+ * (description / instruction / schedule).
  */
 const handleGoToSettings = (payload: {
   workspaceId: string
