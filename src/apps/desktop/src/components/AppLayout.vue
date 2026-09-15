@@ -376,9 +376,18 @@ watch(
     // The no-op comparison below treats `null` as equivalent to `''` —
     // it just means "the active item is unset, don't write the URL".
     const safeItemId = itemId ?? ''
-    const rewrittenItemId = parsedExisting.chatTaskId
-      ? buildItemIdWithChat(safeItemId, parsedExisting.chatTaskId)
-      : safeItemId
+    // Only preserve the /chat/<taskId> suffix when the suffixed task
+    // is still the store's active task. When navigating to a
+    // DIFFERENT item (e.g. clicking a kanban row while an agent task
+    // chat is open), Sidebar clears activeTask first — re-appending
+    // the stale suffix would resurrect the old chat on top of the new
+    // item, so the kanban board never opens (the chat branch shadows
+    // it in the main-view chain).
+    const liveTaskId = workspacesStore.activeTask?.id ?? null
+    const rewrittenItemId =
+      parsedExisting.chatTaskId && parsedExisting.chatTaskId === liveTaskId
+        ? buildItemIdWithChat(safeItemId, parsedExisting.chatTaskId)
+        : safeItemId
 
     const query: Record<string, string> = { view: 'workspace' }
     if (wsId && safeItemId) {
