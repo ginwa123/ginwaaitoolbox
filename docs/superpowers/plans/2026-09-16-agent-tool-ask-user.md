@@ -468,3 +468,50 @@ Carried forward as implementation-time notes, not blockers:
 - **TUI/CLI** — verify the TUI never equips `ask_user` (§7 item 9). It is seeded through `DEFAULT_AGENT_TOOLS`, which only the agent/kanban item-creation flows call, so the expectation is "unaffected" — verify, do not assume.
 - **Kanban dot (T9, optional)** — `awaiting_user` currently paints no icon on a kanban task card (fact #6). Extending the `=== 'stop'` conditions to also accept `awaiting_user` is a 2-line display change; **not** in scope unless asked.
 - **Card placement** — inline in the transcript. A sticky banner above the composer is **not** being built.
+
+---
+
+## 11. Implementation notes — where the code deviates from this plan
+
+Written after implementing T1–T9, so the spec matches what actually shipped. Each deviation was forced by something the plan assumed wrongly.
+
+### 11.1 The question's shape travels in the envelope, not in the tool row's arguments
+
+§1.2 and §5.7 assumed the card could render the question from `getParametersForMessage(msg)`. **It cannot.** `handle_tool`'s Phase 1 builds the placeholder content with `wrapToolOutput`, which runs the raw arguments through `jsonArgsToXml` (`tools_wrap_output.zig:113`) — so the `<parameters>` block is *XML*, not parseable JSON — and the tool row carries no `tool_calls_json` (that field lives on the assistant row).
+
+So `buildAskUserXml` emits the whole question (`header`, `question`, `options`, `allow_free_text`, `multi_select`, `recommended`) in the envelope itself. The card parses that, which has the side benefit the plan wanted anyway: the pending state renders identically live and after a page reload, from one source.
+
+### 11.2 Migration 087 gained one column: `multi_select`
+
+§4 deliberately avoided storing question-shape columns. That was right for everything except `multi_select`: without it the answer endpoint cannot reject a scalar answer to a multi-select question at the wire boundary, and the only alternative was reverse-parsing the XML `<parameters>` blob. One boolean column is the cheaper, more honest option. `answer` stays NULL-able (Migration 079's empty-slice-as-NULL trap) and is `COALESCE`d on read.
+
+### 11.3 `resolveQuestion` must own its strings
+
+The first implementation returned slices of the `PendingQuestion` row it had just freed, so an idempotent answer replied with **0xAA undefined bytes** (`[170, 170, …]` in the JSON). `AnswerOutcome` now dupes `status`/`answer` and the caller `deinit`s them. Worth keeping in mind for any future helper that reads a row and returns part of it.
+
+### 11.4 One new default tool means four test files
+
+`DEFAULT_AGENT_TOOLS` is mirrored in **four** functional tests, not one:
+
+| File | Shape |
+|---|---|
+| `agent_tools_defaults_test.py` | `EXPECTED_DEFAULTS` / `EXPECTED_KANBAN_DEFAULTS` |
+| `agent_tools_toggle_test.py` | `EXPECTED_DEFAULTS` |
+| `command_tool_test.py` | `_DEFAULTS` ×2 + `_DEFAULTS_MINUS_COMMAND` |
+| `agent_kanbans_test.py` | an inline list inside the bundle assertion |
+
+All four are updated. This is the same "two lists to maintain" hazard §0 flags for the registry — it just lives in the tests instead.
+
+### 11.5 The functional test must NOT create its session with `POST /api/llm/session`
+
+`POST /api/llm/session` starts an agent run. A live run's DB transaction then hides this test's externally-seeded rows from the app, and every seeded question looks missing (404). `ask_user_test.py` therefore uses `PUT /api/llm/session/:id` (which auto-creates via `ensureSessionExists`) — exactly why `session_human_touched_at_test._create_session_via_update` exists and documents the same thing.
+
+Related: the test helper's source-read cap had to go from 256 KiB to 1 MiB. `src/migrations/migration.zig` is a single file that grows with every migration (~256 KB as of Migration 087) and crossed the cap, which surfaced as a *bogus* "Migration 043 is missing" failure rather than an I/O error.
+
+### 11.6 `awaiting_user` is persisted on the session, not on the assistant row
+
+§1.3 said "persist the assistant row with `finish_reason = awaiting_user`". The code instead leaves the assistant row at `tool_calls` — that IS what the LLM returned, and the frontend's TOOLS-pill logic keys off it (`ChatView.vue:1693`) — and writes `awaiting_user` to `sessions.last_finish_reason` via the existing `updateSessionLastFinishReason`. The authoritative "this session is waiting on you" signal is the `session_pending_question` row itself, which `GET`-able state makes explicit.
+
+### 11.7 The `GET …/pending_questions` endpoint was dropped
+
+§5.5 planned a rehydration endpoint. Nothing needs it: the card reads the question out of the tool-result row (11.1), and history already returns that row. `listRecentQuestions` remains in `ask_user_pending.zig` because the `session_create` abandon guard uses it.
