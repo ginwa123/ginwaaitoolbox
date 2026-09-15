@@ -24,11 +24,19 @@
     - image/* mimes: thumbnail in the row + full-width preview below
       (click either → fullscreen `ImagePreview` modal). Filename + ⬇
       button download (`disposition=attachment`).
-    - text/html: sandboxed iframe (`disposition=inline`, fixed 480px
-      height) + "Open in new tab" action. Same sandbox contract as the
-      former `show_preview` html branch (allow-scripts only: no
-      allow-same-origin, no allow-forms, no top navigation).
-    - application/pdf: embedded iframe (`disposition=inline`, 480px).
+    - text/html: fetched source rendered into a sandboxed `srcdoc`
+      iframe (fixed 480px height) + "Open in new tab" action. Same
+      sandbox contract as the former `show_preview` html branch
+      (allow-scripts only: no allow-same-origin, no allow-forms, no
+      top navigation). Fetched via same-origin `fetch` (cookies ride
+      along) because the download endpoint's response carries the
+      server's default framing headers (`X-Frame-Options: DENY` +
+      `frame-ancestors 'none'`), which refuse a direct
+      `<iframe src=downloadUrl>` navigation while leaving top-level
+      "Open in new tab" working.
+    - application/pdf: fetched as a Blob and embedded via an object
+      URL (same framing-header reason as html) + "Open in new tab".
+    - video/*: native `<video controls>`. audio/*: native `<audio controls>`.
     - video/*: native `<video controls>`. audio/*: native `<audio controls>`.
     - text-like (text/*, application/json, application/javascript):
       fetched source (≤ 512 KB, sliced to 200k chars) rendered via
@@ -45,7 +53,7 @@
   ✗/✓ status indicators, expand/collapse `+`/`−` toggle.
 -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -212,10 +220,104 @@ async function fetchTextFor(f: ParsedPresentFile): Promise<void> {
   }
 }
 
+/** Inline HTML fetch budget: the whole doc lives in memory as srcdoc. */
+const MAX_INLINE_HTML_BYTES = 1024 * 1024
+/** Inline PDF fetch budget: the whole file lives in memory as a Blob. */
+const MAX_INLINE_PDF_BYTES = 20 * 1024 * 1024
+
+interface HtmlState {
+  status: 'loading' | 'ready' | 'error' | 'skipped'
+  content: string
+  error: string | null
+}
+
+const htmlByPath = ref<Record<string, HtmlState>>({})
+
+async function fetchHtmlFor(f: ParsedPresentFile): Promise<void> {
+  const key = f.path
+  if (htmlByPath.value[key]) return
+  if (!isHtml(f)) return
+  if (f.bytes > MAX_INLINE_HTML_BYTES) {
+    htmlByPath.value[key] = { status: 'skipped', content: '', error: null }
+    return
+  }
+  htmlByPath.value[key] = { status: 'loading', content: '', error: null }
+  try {
+    const res = await fetch(previewUrl(f))
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    htmlByPath.value[key] = { status: 'ready', content: await res.text(), error: null }
+  } catch (e) {
+    htmlByPath.value[key] = {
+      status: 'error',
+      content: '',
+      error: e instanceof Error ? e.message : 'fetch failed',
+    }
+  }
+}
+
+/**
+ * Build the HTML iframe's `srcdoc` value. Do NOT escape `<`, `>`, `&`,
+ * `"` here — Vue's `:srcdoc` binding goes through setAttribute, which
+ * encodes them, and the iframe parser decodes them back (same contract
+ * as PreviewContentRenderer's html branch). The margin reset keeps
+ * unstyled docs flush like the previous direct-navigation render.
+ */
+function htmlSrcDoc(f: ParsedPresentFile): string {
+  const raw = htmlByPath.value[f.path]?.content ?? ''
+  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
+}
+
+interface PdfState {
+  status: 'loading' | 'ready' | 'error' | 'skipped'
+  url: string | null
+  error: string | null
+}
+
+const pdfByPath = ref<Record<string, PdfState>>({})
+
+async function fetchPdfFor(f: ParsedPresentFile): Promise<void> {
+  const key = f.path
+  if (pdfByPath.value[key]) return
+  if (!isPdf(f)) return
+  if (f.bytes > MAX_INLINE_PDF_BYTES) {
+    pdfByPath.value[key] = { status: 'skipped', url: null, error: null }
+    return
+  }
+  pdfByPath.value[key] = { status: 'loading', url: null, error: null }
+  try {
+    const res = await fetch(previewUrl(f))
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    pdfByPath.value[key] = { status: 'ready', url, error: null }
+  } catch (e) {
+    pdfByPath.value[key] = {
+      status: 'error',
+      url: null,
+      error: e instanceof Error ? e.message : 'fetch failed',
+    }
+  }
+}
+
+onUnmounted(() => {
+  for (const key of Object.keys(pdfByPath.value)) {
+    const url = pdfByPath.value[key]?.url
+    if (url) {
+      try {
+        URL.revokeObjectURL(url)
+      } catch {
+        // ignore — test doubles / already-revoked URLs
+      }
+    }
+  }
+})
+
 function maybeFetchVisibleTexts(): void {
   if (!isExpanded.value) return
   for (const f of files.value) {
     if (isTextLike(f)) void fetchTextFor(f)
+    else if (isHtml(f)) void fetchHtmlFor(f)
+    else if (isPdf(f)) void fetchPdfFor(f)
   }
 }
 
@@ -334,20 +436,43 @@ const openInNewTab = (f: ParsedPresentFile) => {
             />
           </div>
 
-          <!-- Inline preview: HTML in a sandboxed iframe + open-in-tab. -->
+          <!--
+            Inline preview: HTML fetched over same-origin fetch and
+            rendered into a sandboxed srcdoc iframe. A direct
+            `<iframe src=downloadUrl>` is refused by the server's
+            framing headers (X-Frame-Options: DENY + frame-ancestors
+            'none') while top-level "Open in new tab" keeps working,
+            so navigation is never used here.
+          -->
           <div
             v-else-if="isHtml(f)"
             class="max-w-full overflow-hidden rounded border border-[var(--color-border)] bg-white"
             :data-testid="`present-files-inline-html-${idx}`"
           >
             <iframe
-              :src="previewUrl(f)"
+              v-if="htmlByPath[f.path]?.status === 'ready'"
+              :srcdoc="htmlSrcDoc(f)"
               sandbox="allow-scripts"
               style="height: 480px"
               class="block w-full border-0"
               :title="displayName(f)"
-              loading="lazy"
             />
+            <div
+              v-else
+              class="flex items-center justify-center px-2 py-8 text-[var(--semantic-text-dim)]"
+            >
+              <span v-if="!htmlByPath[f.path] || htmlByPath[f.path]!.status === 'loading'"
+                >Loading preview…</span
+              >
+              <span v-else-if="htmlByPath[f.path]!.status === 'skipped'"
+                >File too large for inline HTML preview ({{ fileMeta(f) }}) — open in a new tab to
+                view.</span
+              >
+              <span v-else class="text-red-500"
+                >Preview failed to load ({{ htmlByPath[f.path]!.error }}) — open in a new tab to
+                view.</span
+              >
+            </div>
             <div
               class="flex items-center justify-end gap-2 border-t border-[var(--color-border)] bg-black/[0.02] px-2 py-1.5"
             >
@@ -363,19 +488,52 @@ const openInNewTab = (f: ParsedPresentFile) => {
             </div>
           </div>
 
-          <!-- Inline preview: PDF embedded. -->
+          <!--
+            Inline preview: PDF fetched as a Blob and embedded via an
+            object URL (same framing-header reason as html — a direct
+            `<iframe src=downloadUrl>` is refused inline).
+          -->
           <div
             v-else-if="isPdf(f)"
             class="max-w-full overflow-hidden rounded border border-[var(--color-border)] bg-white"
             :data-testid="`present-files-inline-pdf-${idx}`"
           >
             <iframe
-              :src="previewUrl(f)"
+              v-if="pdfByPath[f.path]?.status === 'ready' && pdfByPath[f.path]!.url"
+              :src="pdfByPath[f.path]!.url!"
               style="height: 480px"
               class="block w-full border-0"
               :title="displayName(f)"
-              loading="lazy"
             />
+            <div
+              v-else
+              class="flex items-center justify-center px-2 py-8 text-[var(--semantic-text-dim)]"
+            >
+              <span v-if="!pdfByPath[f.path] || pdfByPath[f.path]!.status === 'loading'"
+                >Loading preview…</span
+              >
+              <span v-else-if="pdfByPath[f.path]!.status === 'skipped'"
+                >File too large for inline PDF preview ({{ fileMeta(f) }}) — open in a new tab to
+                view.</span
+              >
+              <span v-else class="text-red-500"
+                >Preview failed to load ({{ pdfByPath[f.path]!.error }}) — open in a new tab to
+                view.</span
+              >
+            </div>
+            <div
+              class="flex items-center justify-end gap-2 border-t border-[var(--color-border)] bg-black/[0.02] px-2 py-1.5"
+            >
+              <button
+                type="button"
+                class="cursor-pointer rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] px-2 py-0.5 text-xs text-[var(--semantic-text)] transition-colors hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)]"
+                :data-testid="`present-files-open-tab-${idx}`"
+                :title="`Open ${displayName(f)} in a new browser tab`"
+                @click.stop="openInNewTab(f)"
+              >
+                ↗ Open in new tab
+              </button>
+            </div>
           </div>
 
           <!-- Inline preview: native video / audio players. -->

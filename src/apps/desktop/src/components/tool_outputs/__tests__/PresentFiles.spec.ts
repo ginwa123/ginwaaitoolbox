@@ -8,10 +8,12 @@
  *    label, size, mime; download anchors point at
  *    /api/files/download with disposition=attachment
  *  - image files render a thumbnail <img> with disposition=inline plus a
- *    full-width inline preview; html renders a sandboxed iframe;
- *    pdf/video/audio render native players; text-like files fetch source
- *    and render via PreviewContentRenderer; anything else renders a 📄
- *    row with no inline preview
+ *    full-width inline preview; html renders fetched source into a
+ *    sandboxed srcdoc iframe (never a direct src navigation — the
+ *    download endpoint's framing headers refuse it); pdf renders a
+ *    fetched Blob object URL; video/audio render native players;
+ *    text-like files fetch source and render via PreviewContentRenderer;
+ *    anything else renders a 📄 row with no inline preview
  *  - error path: red border + ✗ + error message inline
  *  - expand/collapse: rows hidden until the header is toggled
  */
@@ -20,18 +22,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import PresentFiles from '../PresentFiles.vue'
 
-// The text branch fetches source over same-origin `fetch` — stub it so no
-// test performs a real network call and text previews resolve
+// The html/pdf/text branches fetch source over same-origin `fetch` —
+// stub it so no test performs a real network call and previews resolve
 // deterministically.
+const fetchMock = vi.fn()
+const origCreateObjectURL = URL.createObjectURL
+const origRevokeObjectURL = URL.revokeObjectURL
+
 beforeEach(() => {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async () => ({ ok: true, status: 200, text: async () => '# Hello\n' }) as Response),
+  fetchMock.mockImplementation(
+    async () =>
+      ({
+        ok: true,
+        status: 200,
+        text: async () => '<h1>Hello</h1>',
+        blob: async () => new Blob(['%PDF-mock'], { type: 'application/pdf' }),
+      }) as Response,
   )
+  vi.stubGlobal('fetch', fetchMock)
+  URL.createObjectURL = vi.fn(() => 'blob:mock-preview') as unknown as typeof URL.createObjectURL
+  URL.revokeObjectURL = vi.fn() as unknown as typeof URL.revokeObjectURL
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  URL.createObjectURL = origCreateObjectURL
+  URL.revokeObjectURL = origRevokeObjectURL
 })
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
@@ -125,7 +141,7 @@ describe('PresentFiles', () => {
     expect(inline.attributes('src') ?? '').toContain(`path=${encodeURIComponent('/tmp/photo.jpg')}`)
   })
 
-  it('html files render a sandboxed inline iframe + open-in-new-tab', () => {
+  it('html files render fetched source in a sandboxed srcdoc iframe (no src navigation)', async () => {
     const content = [
       '<present_files>',
       '<status>presented</status>',
@@ -136,34 +152,100 @@ describe('PresentFiles', () => {
       '</present_files>',
     ].join('')
     const wrapper = mountCard(content)
+    await flushPromises()
     const frame = wrapper.find('[data-testid="present-files-inline-html-0"] iframe')
     expect(frame.exists()).toBe(true)
-    expect(frame.attributes('src') ?? '').toContain('disposition=inline')
+    // Direct src navigation is refused by the server's framing headers
+    // (X-Frame-Options: DENY + frame-ancestors 'none'), so the iframe
+    // must use srcdoc with the fetched bytes — never a download URL.
+    expect(frame.attributes('src') ?? '').toBe('')
+    const srcdoc = frame.attributes('srcdoc') ?? ''
+    expect(srcdoc).toContain('<h1>Hello</h1>')
     expect(frame.attributes('sandbox') ?? '').toContain('allow-scripts')
     expect(frame.attributes('sandbox') ?? '').not.toContain('allow-same-origin')
     expect(wrapper.find('[data-testid="present-files-open-tab-0"]').exists()).toBe(true)
+    // The bytes arrive via same-origin fetch (cookies ride along).
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(`path=${encodeURIComponent('/tmp/test-page.html')}`),
+    )
   })
 
-  it('pdf / video / audio files render native inline players', () => {
+  it('oversize html files skip the inline preview but keep open-in-new-tab', async () => {
     const content = [
       '<present_files>',
       '<status>presented</status>',
-      '<count>3</count>',
+      '<count>1</count>',
+      '<files>',
+      '<file path="/tmp/big.html" bytes="2097152" mime="text/html; charset=utf-8" label="big.html"/>',
+      '</files>',
+      '</present_files>',
+    ].join('')
+    const wrapper = mountCard(content)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="present-files-inline-html-0"] iframe').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="present-files-inline-html-0"]').text()).toContain(
+      'too large for inline HTML preview',
+    )
+    expect(wrapper.find('[data-testid="present-files-open-tab-0"]').exists()).toBe(true)
+  })
+
+  it('html fetch failure shows an error with the open-in-new-tab fallback', async () => {
+    fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 403 }) as Response)
+    const content = [
+      '<present_files>',
+      '<status>presented</status>',
+      '<count>1</count>',
+      '<files>',
+      '<file path="/tmp/gone.html" bytes="10" mime="text/html; charset=utf-8" label="gone.html"/>',
+      '</files>',
+      '</present_files>',
+    ].join('')
+    const wrapper = mountCard(content)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="present-files-inline-html-0"] iframe').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="present-files-inline-html-0"]').text()).toContain(
+      'Preview failed to load',
+    )
+    expect(wrapper.find('[data-testid="present-files-open-tab-0"]').exists()).toBe(true)
+  })
+
+  it('pdf files render a fetched blob object URL (no src navigation) + open-in-new-tab', async () => {
+    const content = [
+      '<present_files>',
+      '<status>presented</status>',
+      '<count>1</count>',
       '<files>',
       '<file path="/tmp/doc.pdf" bytes="100" mime="application/pdf" label="doc.pdf"/>',
+      '</files>',
+      '</present_files>',
+    ].join('')
+    const wrapper = mountCard(content)
+    await flushPromises()
+    const pdf = wrapper.find('[data-testid="present-files-inline-pdf-0"] iframe')
+    expect(pdf.exists()).toBe(true)
+    // Same framing-header reason as html: the blob URL carries no
+    // server framing headers, so it embeds where src navigation can't.
+    expect(pdf.attributes('src') ?? '').toBe('blob:mock-preview')
+    expect(URL.createObjectURL).toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="present-files-open-tab-0"]').exists()).toBe(true)
+  })
+
+  it('video / audio files render native inline players', () => {
+    const content = [
+      '<present_files>',
+      '<status>presented</status>',
+      '<count>2</count>',
+      '<files>',
       '<file path="/tmp/clip.mp4" bytes="200" mime="video/mp4" label="clip.mp4"/>',
       '<file path="/tmp/song.mp3" bytes="300" mime="audio/mpeg" label="song.mp3"/>',
       '</files>',
       '</present_files>',
     ].join('')
     const wrapper = mountCard(content)
-    const pdf = wrapper.find('[data-testid="present-files-inline-pdf-0"] iframe')
-    expect(pdf.exists()).toBe(true)
-    expect(pdf.attributes('src') ?? '').toContain('disposition=inline')
-    const video = wrapper.find('[data-testid="present-files-inline-video-1"] video')
+    const video = wrapper.find('[data-testid="present-files-inline-video-0"] video')
     expect(video.exists()).toBe(true)
     expect(video.attributes('src') ?? '').toContain('disposition=inline')
-    const audio = wrapper.find('[data-testid="present-files-inline-audio-2"] audio')
+    const audio = wrapper.find('[data-testid="present-files-inline-audio-1"] audio')
     expect(audio.exists()).toBe(true)
     expect(audio.attributes('src') ?? '').toContain('disposition=inline')
   })
@@ -181,7 +263,7 @@ describe('PresentFiles', () => {
     const wrapper = mountCard(content)
     await flushPromises()
     expect(wrapper.find('[data-testid="present-files-inline-text-0"]').exists()).toBe(true)
-    // The stubbed fetch returns '# Hello' markdown → <h1> via marked().
+    // The stubbed fetch returns '<h1>Hello</h1>' → <h1> via marked().
     expect(wrapper.find('[data-testid="present-files-inline-text-0"]').html()).toContain('<h1')
   })
 })
