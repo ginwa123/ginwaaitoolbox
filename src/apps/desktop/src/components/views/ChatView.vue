@@ -3039,6 +3039,12 @@ onMounted(async () => {
     sessionCwd.value = props.cwd
   }
 
+  // Refresh lands on chat, never auto-opens the diff: a reload keeps the
+  // ?diff= the scroll-spy wrote while the viewer was open, and the panel
+  // no longer restores from it — strip it here so the URL stays truthful
+  // (Back does the same on explicit exit).
+  if (typeof route.query.diff === 'string' && !showCenterDiff.value) syncDiffParam(null)
+
   if (sessionId.value) {
     // Seed the re-stick baseline BEFORE loadChatHistory so we catch the
     // very first measurement-driven contentShift. The VirtualScroller's
