@@ -10,6 +10,7 @@ One-sentence problem statement (user's words): *"the auto fetch is loaded after 
 **Non-goals (v1):** no page-size change, no backend/API change, no change to `VirtualScroller.vue`'s shared load-more timing (KanbanColumn/ChatsList depend on it), no velocity-based trigger (Phase 2, §"Phase 2"), no virtualized-height re-architecture, no streaming/SSE behavior change, no search/jump-to-message work.
 
 ## Decision log
+- 2026-09-15 (user, answering this plan's three open questions): **"use your recommendation"** — implemented as (1) keep the manual button for non-scrollable containers, (2) **no** prefetch-on-open, (3) arm radius `max(800 px, 1.5 × viewport)`. See "Implementation outcome" for what the browser measurement changed in (2).
 - 2026-09-15 (this plan): the early-fire radius already exists (`loadMoreThresholdRatio` = half a screen) and is **not** the problem — the trigger's *timing* is. Fix the timing with an **arm → commit → refill** prefetch **owned by `ChatView`**, not by raising the threshold and not by editing the shared `VirtualScroller`.
 - 2026-09-15: v1 is **distance(margin)-based only**; the velocity term is scaffolded in the pure decision function and switched on in Phase 2 only if the UI test / logs show the margin misses fast flings. Rationale: `max(800, 1.5 × viewport)` already gives 300-900 px of head start (≈100-300 ms at fling speed) with zero extra state, and a predictive-velocity term only pays off in a regime where the velocity EMA has not yet converged (i.e. it is least reliable exactly when it claims to help). Smaller diff, fewer flake sources.
 - 2026-09-15: keep the machinery **inside `ChatView.vue`**, not a new composable. Extraction touches exactly the code that PRs #308/#310/#324/#336/#337/#349/#355 each broke once; the file's existing source-grep contract spec (`ChatView.userPillRail.spec.ts`) is what makes staying in place safe.
@@ -336,3 +337,78 @@ NALAR_BIN=./zig-out/bin/nalarcore-linux-x86_64 \
 - **NEW:** `src/apps/desktop/src/helpers/prefetchOlderMessages.ts`; `src/apps/desktop/src/helpers/__tests__/prefetchOlderMessages.spec.ts`; `src/apps/desktop/src/__tests__/ChatView.lazyPrefetch.spec.ts`; `src/apps/desktop/src/__tests__/views/ChatView.lazyPrefetchMount.spec.ts`; `tests/functional_ui/chatview_lazy_prefetch_ui_test.py`
 - **EDIT:** `src/apps/desktop/src/components/views/ChatView.vue` (state, refactor, trigger, logging, invalidation), `src/apps/desktop/src/helpers/index.ts` (re-export), `src/apps/desktop/src/helpers/scrollLogger.ts` (reason union + doc comment)
 - **UNCHANGED (asserted in step 9):** `src/apps/desktop/src/helpers/VirtualScroller.vue`, `src/apps/desktop/src/helpers/virtualScrollerThreshold.ts`, `src/apps/desktop/src/helpers/autoStickGate.ts`, `src/apps/desktop/src/components/kanban/KanbanColumn.vue`, `src/apps/desktop/src/components/views/ChatsList.vue`, any `.zig` file
+
+---
+
+# Implementation outcome (2026-09-15) — DONE, verified end-to-end
+
+Branch `worktree/chatview-lazyscroll-auto-fetch-make-it-smoot-1789505349776`. PR #527 (this PR now carries
+the implementation as well as the plan).
+
+## What shipped
+| File | Change |
+|---|---|
+| `src/apps/desktop/src/helpers/prefetchOlderMessages.ts` | NEW — pure decision: `armRadiusPx` (delegates to `computeLoadMoreThreshold`), `nextFetchEstimate`, `decidePrefetchOlder` + `PrefetchSkip` codes |
+| `src/apps/desktop/src/helpers/__tests__/prefetchOlderMessages.spec.ts` | NEW — 31 tests (margin/NaN edges, every skip code, EMA clamps, arm-earlier-than-commit invariant over `h ∈ {0…3000}`) |
+| `src/apps/desktop/src/__tests__/ChatView.lazyPrefetch.spec.ts` | NEW — 14 source-contract tests (arm is invisible; synchronous buffer claim before the first `await`; preserve ordering; cursor writes; invalidation sites) |
+| `tests/functional_ui/chatview_lazy_prefetch_ui_test.py` | NEW — 3 real-browser tests (hard gate, exhausted history, multi-page) |
+| `src/apps/desktop/src/components/views/ChatView.vue` | `toChatMessages` / `fetchOlderPage` / `resetOlderPrefetch` / `armPrefetchOlder` / `claimBufferedOlderPage` / `commitOlderPage` / `evaluateOlderPrefetch` / `maybeLoadOlder` + the trigger in `handleVirtualScroll`; `loadChatHistory` lost its `loadMore` parameter |
+| `src/apps/desktop/src/helpers/index.ts`, `helpers/scrollLogger.ts` | re-exports + 5 new `ScrollReason` members |
+| `src/apps/desktop/src/__tests__/ChatView.userPillRail.spec.ts` | retargeted one assertion to `commitOlderPage` (the cursor-advance fix moved there with the code) |
+| **UNCHANGED, as planned** | `VirtualScroller.vue`, `virtualScrollerThreshold.ts`, `autoStickGate.ts`, `KanbanColumn.vue`, `ChatsList.vue`, every `.zig` file — verified with `git diff --stat` |
+
+## Deviations from the plan (and why)
+1. **No eager prefetch evaluation on open** (plan §C step 4 said "evaluate once after the initial load settles").
+   The real browser disproved it: at that point the initial-load scroll has not been applied yet, so
+   `container.scrollTop` still reads `0`, the arm radius check passes, and **every chat open burned one
+   scroll-back request** which was then dropped a frame later (observed: request at `t=2269 ms`,
+   `scrollTop=0`, dropped at `scroll#20`). Removed; the arm now waits for the first real user scroll event.
+   This also made the "no scroll-back request on open" gate meaningful (it was vacuous before).
+2. **The ChatView mount spec (plan §C) was dropped.** `ChatView.scrollRestore.spec.ts` and
+   `chatViewWorktree.spec.ts` fail on a clean `main` in this environment (`.virtual-scroller` never renders
+   in jsdom here) — a new mount spec would have been born red. The structural invariants are pinned by the
+   source-contract spec instead, and the real-browser test covers the behaviour. Recorded as a known gap.
+3. **State lives in one cohesive block** in the pagination section rather than next to `isLoadingMore`
+   (~`:991`) — keeps the whole feature reviewable as one hunk.
+4. **Velocity is Phase 2 only** (as planned): `decidePrefetchOlder` accepts the term, v1 passes neither
+   `velocityPxPerMs` nor `estimatedFetchMs`; `fetchEstimateMs` is measured and logged so the numbers are
+   available when/if it is switched on.
+5. **`index.ts` was reformatted to single quotes** — it was the one file in `helpers/` not matching
+   `.prettierrc.json` (`singleQuote: true`); it now passes `prettier --check`.
+
+## Verification — actual numbers
+*(run in this worktree; `NALAR_BIN` pointed at the existing `nalarcore-linux-x86_64` because the backend is
+untouched by this task and a fresh worktree has no `zig-out/`)*
+
+| Gate | Command | Result |
+|---|---|---|
+| Pure units | `pnpm vitest --run src/helpers/__tests__/prefetchOlderMessages.spec.ts` | **31/31 pass** |
+| Source contract | `pnpm vitest --run src/__tests__/ChatView.lazyPrefetch.spec.ts` | **14/14 pass** |
+| Whole unit suite vs `main` | `pnpm vitest --run` (both trees, failure-set diff) | **31 failures on `main`, the same 31 here** — zero new, zero fixed (all pre-existing env failures: jsdom mount specs, `FilePickerDialog.windows`, `workspacesStore*`) |
+| Types + build | `pnpm type-check`, `pnpm run build` | clean |
+| **Functional UI (hard gate)** | `pytest tests/functional_ui/chatview_lazy_prefetch_ui_test.py` | **3/3 pass** (ran twice: 3 passed / 3 passed) |
+| **Control run (pre-fix)** | same file, frontend stashed back to `main` | **hard gate FAILS**: *"no scroll-back request was issued while the user was still above the load-more band (band=330px) — the prefetch never armed"*; the other two tests still pass |
+| UI regression gate | `pytest tests/functional_ui/chatview_*.py` | 24 passed / 4 failed — **the same 4 fail on `main`** (`sse_stick::test_user_scroll_up_during_stream_is_respected`, 3 × `pill_rail`), i.e. pre-existing |
+
+Hard-gate evidence with the fix (band = `max(200, 0.5 × clientHeight)` = 330 px, clientHeight 661 px,
+arm radius = 990 px):
+
+```
+requests=[{t: 4020, scrollTop: 829, cursor: '1789509429268592'}, …]
+[prefetch] commit landed -2 ms after the user reached the top
+```
+
+The request is issued at `scrollTop = 829` (≈ 2.5× the band, while the user is still travelling) and the
+prepended page is on screen at the moment of arrival — the round trip is off the critical path. Pre-fix the
+only request happens after the fling settles, i.e. from inside the band.
+
+## Follow-ups (deliberately not in this PR)
+- **Velocity trigger** (Phase 2, §"Phase 2"): flip on `velocityPxPerMs` + `estimatedFetchMs` and add
+  `helpers/scrollVelocity.ts` if logs show the margin alone misses very fast flings.
+- **Non-scrollable containers** (RC5): the manual button is still the only route; auto-committing once when
+  `hasMoreMessages && !scrollerIsScrollable` remains an option.
+- **ChatView mount specs**: fix the jsdom harness (`.virtual-scroller` rendering) so a mount-level prefetch
+  spec can exist; today the state machine is pinned textually.
+- **`has_more` after a short last page**: the browser run showed the backend still reports `has_more=true`
+  after a 60-row page, so REFILL arms one extra page fetch that the user may never use. Wasted work is one
+  page; worth a backend look separately.
