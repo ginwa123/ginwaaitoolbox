@@ -2,7 +2,7 @@
 //! `ToolCall` to the `generate_image` tool's `execute_generate_image`
 //! implementation.
 //!
-//! Follows the exact same pattern as `tools_exec_show_preview.zig`:
+//! Follows the exact same pattern as `tools_exec_present_files.zig`:
 //! 1. Parse the LLM's JSON arguments into `GenerateImageInput`
 //! 2. Call `execute_generate_image(...)` with the active profile's
 //!    `base_url` + `api_key` + the session's `cwd` (all carried on

@@ -152,7 +152,7 @@ def _registry_tools(harness: FunctionalHarness) -> list[str]:
 
 # Fresh agents are born with DEFAULT_AGENT_TOOLS — see
 # src/agentic_loop/tools_equipped.zig::DEFAULT_AGENT_TOOLS.
-# Tests that need a clean enable use `show_preview` (in-registry, never a default).
+# Tests that need a clean enable use `preview_design_page` (in-registry, never a default).
 EXPECTED_DEFAULTS = [
     "add_skill",
     "command",
@@ -179,7 +179,7 @@ EXPECTED_DEFAULTS = [
     "view_tool",
     "write_file",
 ]
-NON_DEFAULT_TOOL = "show_preview"
+NON_DEFAULT_TOOL = "preview_design_page"
 
 
 # ─── Tests ────────────────────────────────────────────────────────────────

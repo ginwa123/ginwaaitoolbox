@@ -33,8 +33,7 @@ pub fn execGetDesignContext(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecR
     defer ctx.allocator.free(inner);
 
     // Detect <design_context><error>...</error></design_context> and surface
-    // as a tool failure (matches the convention used by set_design_page +
-    // show_preview).
+    // as a tool failure (matches the convention used by set_design_page).
     if (std.mem.indexOf(u8, inner, "<error>") != null) {
         const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
         const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);

@@ -4,8 +4,8 @@
 //!
 //! The generated image is saved to `<cwd>/generated_images/img_<ts>_<idx>.png`
 //! and the absolute path is returned in an XML envelope. The agent then
-//! calls `show_preview` with `content_type="image"` + `path=<path>` to
-//! display the image in the chat's side panel.
+//! calls `present_files` with `files=[{path=<path>}]` to display the
+//! image inline in the chat.
 //!
 //! Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
 //! API:  https://developers.openai.com/api/reference/resources/images/methods/generate
@@ -97,13 +97,12 @@ pub const SavedImage = struct {
 ///
 /// Description is intentionally verbose — it must explain (1) that the
 /// tool saves the image to disk and returns a path, (2) that the LLM
-/// should call `show_preview` next, and (3) that the active profile's
+/// should call `present_files` next, and (3) that the active profile's
 /// API key is used (no separate key needed).
 pub const generate_image_tool_system_prompt =
     \\## Generate Image Tool — Behavior
     \\Use `generate_image` to generate an image via OpenAI Images API (DALL-E 2/3, gpt-image-1).
-    \\- Provide a detailed `prompt`. Saves to `generated_images/` and returns a path; call `show_preview` next to display it.
-    \\- Use `path` not `content` for large images (DALL-E 3 exceeds 1 MiB inline cap).
+    \\- Provide a detailed `prompt`. Saves to `generated_images/` and returns a path; call `present_files` next to display it.
     \\
 ;
 
@@ -120,9 +119,9 @@ pub const generate_image_tool = AgentTool{
             \\
             \\OUTPUT (XML success envelope): <generate_image><status>generated</status><count>N</count><model>...</model><size>...</size><images><image index="0" path="/abs/path/img_xxx.png" bytes="12345" mime="image/png"/></images><revised_prompt>...</revised_prompt></generate_image>. On error: <generate_image><error>HTTP 400: ...OpenAI message...</error></generate_image>.
             \\
-            \\NEXT STEP: Call `show_preview` with content_type="image", path=<path from the envelope>, and title=<prompt> (or a truncated version) to display the image in the chat's side panel. The image is durable on disk, so the user can re-view it later.
+            \\NEXT STEP: Call `present_files` with files=[{path=<path from the envelope>}] and label=<prompt> (or a truncated version) to display the image inline in the chat. The image is durable on disk, so the user can re-view it later.
             \\
-            \\IMAGE SIZE NOTE: DALL-E 3 images are 1-5 MB and exceed show_preview's 1 MiB inline content cap — always use `path`, not `content`. DALL-E 2 at 256x256 / 512x512 is small enough to inline if the caller insists.
+            \\IMAGE SIZE NOTE: DALL-E 3 images are 1-5 MB — present them via `present_files` (URL-based preview, no inline byte cap).
             \\
             \\AUTH: Active profile's api_key + base_url. Self-hosted DALL-E-compatible endpoints work the same way (just set base_url to the proxy).
         ,
@@ -405,7 +404,7 @@ fn statFileSize(io: std.Io, path: []const u8) u64 {
 // ─── XML helpers ─────────────────────────────────────────────────────────
 
 /// Escape XML special characters. Mirrors the helper in
-/// `show_preview.zig:149-165` (duplicated per project convention —
+/// `kanban_list.zig` (duplicated per project convention —
 /// every tool file has its own copy).
 fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     var result: std.ArrayList(u8) = .empty;
@@ -805,7 +804,7 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 /// Open a fresh `std.Io.Threaded` runtime for tests that need an Io
 /// (the save-to-disk helper needs it for `std.Io.Clock.now` and
 /// `std.Io.Dir.createFile`). Mirrors the helper in
-/// `show_preview_test.zig:59-62` and `fire_test.zig:52-91`.
+/// `kanban_list.zig` and `fire_test.zig:52-91`.
 fn setupIo() std.Io.Threaded {
     const threaded = std.Io.Threaded.init(testing.allocator, .{});
     return threaded;

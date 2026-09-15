@@ -6,9 +6,9 @@
 //!   2. Behavioural tests that drive `executePreviewDesignPageToString`
 //!      directly against an in-memory SQLite DB with the v6 schema.
 //!
-//! The SVG content lives INSIDE the `<preview_id>` envelope (same shape as
-//! `show_preview`'s envelope) — the frontend's existing `<show_preview>`
-//! handler renders the html content-type via a sandboxed iframe.
+//! The envelope uses the legacy `<show_preview>` tag name (kept for wire
+//! compat with existing transcripts); the chat renders it via the generic
+//! tool fallback.
 //!
 //! Plan: docs/superpowers/plans/2026-08-06-ai-agent-design-context-tool.md (Chunk 2)
 
@@ -280,7 +280,7 @@ test "executePreviewDesignPageToString on empty page returns success envelope + 
     defer alloc.free(out);
     defer alloc.free(preview_id);
 
-    // Envelope shape (matches show_preview)
+    // Envelope shape (legacy `<show_preview>` tag name)
     try testing.expect(contains(out, "<show_preview>"));
     try testing.expect(contains(out, "<status>shown</status>"));
     try testing.expect(contains(out, "<preview_id>"));

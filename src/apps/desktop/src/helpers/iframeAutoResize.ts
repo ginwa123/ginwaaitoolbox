@@ -23,7 +23,7 @@
  * object. The parent's handler only writes a clamped pixel height.
  */
 
-/** Reporter tag for the inline `show_preview` HTML iframe. */
+/** Reporter tag for the inline preview HTML iframe. */
 export const PREVIEW_AUTO_RESIZE_SOURCE = 'show-preview-auto-resize'
 
 /** Reporter tag for ChatView's `<html>` wrapper-tag iframes. */
@@ -139,10 +139,9 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
-})();<` +
-    `/script>`
+})();<` + `/script>`
   )
 }
 
-/** The reporter script pre-tagged for the `show_preview` iframe. */
+/** The reporter script pre-tagged for the preview HTML iframe. */
 export const PREVIEW_AUTO_RESIZE_SCRIPT = autoResizeScript(PREVIEW_AUTO_RESIZE_SOURCE)

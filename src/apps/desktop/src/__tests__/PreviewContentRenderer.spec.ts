@@ -1,10 +1,10 @@
 /**
  * Behavioural tests for the <PreviewContentRenderer> component.
  *
- * The renderer renders a single `show_preview` output inline inside
- * the chat bubble (used by <ShowPreview>). Covers the 5-branch
- * pipeline (markdown / text / code / image / html) plus the HTML
- * "Open in new tab" action.
+ * The renderer renders text content inline inside
+ * the chat bubble (used by <PresentFiles> for per-file text previews).
+ * Covers the 5-branch pipeline (markdown / text / code / image / html)
+ * plus the HTML "Open in new tab" action.
  */
 
 import { describe, it, expect, vi } from 'vitest'
@@ -99,9 +99,7 @@ describe('PreviewContentRenderer (inline + new tab)', () => {
         args: { content: '<h1>Hi</h1>' },
       },
     })
-    expect(
-      wrapper.find('[data-testid="preview-open-new-tab-button"]').exists(),
-    ).toBe(true)
+    expect(wrapper.find('[data-testid="preview-open-new-tab-button"]').exists()).toBe(true)
   })
 
   it('does not show the new-tab button for non-html content', () => {
@@ -111,19 +109,13 @@ describe('PreviewContentRenderer (inline + new tab)', () => {
         args: { content: '# Title' },
       },
     })
-    expect(
-      wrapper.find('[data-testid="preview-open-new-tab-button"]').exists(),
-    ).toBe(false)
+    expect(wrapper.find('[data-testid="preview-open-new-tab-button"]').exists()).toBe(false)
   })
 
   it('clicking "Open in new tab" calls window.open with a blob URL', async () => {
-    const openSpy = vi
-      .spyOn(window, 'open')
-      .mockImplementation(() => null)
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null)
     const createSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock')
-    const revokeSpy = vi
-      .spyOn(URL, 'revokeObjectURL')
-      .mockImplementation(() => {})
+    const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     try {
       const wrapper = mount(PreviewContentRenderer, {
         props: {
@@ -131,9 +123,7 @@ describe('PreviewContentRenderer (inline + new tab)', () => {
           args: { content: '<h1>Hi</h1>' },
         },
       })
-      await wrapper
-        .find('[data-testid="preview-open-new-tab-button"]')
-        .trigger('click')
+      await wrapper.find('[data-testid="preview-open-new-tab-button"]').trigger('click')
       expect(createSpy).toHaveBeenCalled()
       expect(openSpy).toHaveBeenCalledWith('blob:mock', '_blank', 'noopener')
     } finally {
@@ -162,8 +152,7 @@ describe('PreviewContentRenderer (inline + new tab)', () => {
       },
       attachTo: document.body,
     })
-    const iframe = wrapper.find('[data-testid="preview-html-iframe"]')
-      .element as HTMLIFrameElement
+    const iframe = wrapper.find('[data-testid="preview-html-iframe"]').element as HTMLIFrameElement
     window.dispatchEvent(
       new MessageEvent('message', {
         data: { source: 'show-preview-auto-resize', height: 500 },

@@ -2,71 +2,52 @@
 
 This document lists the agent tools that the nalar LLM can call.
 
-## `show_preview`
+## `present_files`
 
-Show a visual preview to the user inline within the chat message bubble. HTML previews offer an "Open in new tab" action for full-width viewing.
+Present workspace files as inline-preview cards in the chat transcript.
+Each file renders an inline preview plus a download action — images
+full-width (click → fullscreen), HTML in a sandboxed iframe with an
+"Open in new tab" action, text/markdown/code as fetched source,
+PDF embedded, video/audio with native players; anything else falls back
+to a file row with a download button. To show generated content inline,
+first save it with `write_file`, then present the saved file.
 
 **Input** (JSON object):
-- `content_type` (required): one of `"markdown"`, `"text"`, `"code"`, `"image"`, `"html"`
-- `content` (required): the content to display (string, up to 1 MB)
-- `title` (optional): human-readable title shown above the preview
-- `language` (required when `content_type='code'`): programming language for syntax highlighting
-- `caption` (optional): caption shown below the preview
+- `files` (required): array of 1–10 objects, each with `path` (required,
+  ABSOLUTE path to an existing file), `label` (optional display name),
+  `caption` (optional note below the row)
 
 **Output to LLM** (XML envelope):
-- Success: `<show_preview><status>shown</status><preview_id>pv_...</preview_id><content_type>markdown</content_type><content_length>NN</content_length></show_preview>`
-- Error: `<show_preview><error>...</error></show_preview>`
+- Success: `<present_files><status>presented</status><count>N</count><files><file path="..." bytes="..." mime="..." label="..."/>...</files></present_files>`
+- Error: `<present_files><error>...</error></present_files>`
 
-**SSE event:** none — uses the standard `llm_full` event with `tool_name='show_preview'`. The frontend's `<ShowPreview>` card renders the message inline.
+**SSE event:** none — uses the standard `llm_full` event with `tool_name='present_files'`. The frontend's `<PresentFiles>` card renders the message inline.
 
-**Persistence:** `llm_history` row with `tool_name='show_preview'` and `parameters` containing the full content. The inner `<data>` envelope carries only metadata (status, preview_id, content_type, content_length) — the actual content is delivered via `parameters` to keep storage compact. On reload, `loadChatHistory` returns the row and the inline card re-renders from `messages`.
+**Persistence:** `llm_history` row with `tool_name='present_files'`. The inner `<data>` envelope carries only metadata (status, count, per-file path/bytes/mime/label) — file bytes are served on demand via `GET /api/files/download` (`disposition=inline` for previews, `attachment` for downloads), so the SSE payload stays tiny. On reload, `loadChatHistory` returns the row and the inline card re-renders from `messages`.
 
 **Error cases** (return `success=false` to the LLM):
-- Empty or missing `content_type` / `content`
-- `content_type` not one of the five supported values
-- `content` exceeds 1 MB
-- `content_type='code'` with no `language` (or empty `language`)
+- Empty `files` list, or more than 10 files
+- Empty or relative `path`
+- File not found (or is a directory)
+- File exceeds 50 MiB
 
-**Frontend rendering** (`PreviewContentRenderer.vue`, used by
-`<ShowPreview>`):
-- `markdown` → rendered via `marked()`
-- `text` → preserved whitespace in a `<pre>` block
-- `code` → syntax-highlighted via `<pre><code class="language-X">`
-- `image` → `<img>` with `data:` or `http(s):` URL only (XSS protection)
-- `html` → rendered inside an `<iframe sandbox="allow-scripts" srcdoc="...">`. The iframe gets a null origin, so its JS cannot read the parent app's cookies, localStorage, or window. Forms render but cannot submit; `window.open()` from the iframe is blocked. The HTML is attribute-escaped into the `srcdoc` (no HTML sanitization — the iframe sandbox is the security boundary).
+**Frontend rendering** (`PresentFiles.vue`; text source via the shared
+`PreviewContentRenderer.vue`):
+- `image/*` → thumbnail in the row + full-width inline preview (`<img src="...disposition=inline">`, click → fullscreen modal)
+- `text/html` → sandboxed `<iframe src="...disposition=inline" sandbox="allow-scripts">` (fixed 480px height) + "Open in new tab". The iframe gets a null origin, so its JS cannot read the parent app's cookies, localStorage, or window. Forms render but cannot submit; `window.open()` from the iframe is blocked. The sandbox is the security boundary.
+- `application/pdf` → embedded `<iframe src="...disposition=inline">` (480px)
+- `video/*` → native `<video controls>`; `audio/*` → native `<audio controls>`
+- text-like (`text/*`, `application/json`, `application/javascript`) → source fetched over same-origin `fetch` (≤ 512 KB, sliced to 200k chars) and rendered via `PreviewContentRenderer`: markdown for `.md`, code + language for known code extensions, plain `<pre>` text otherwise
+- anything else (zip, etc.) → generic 📄 row (icon + name + size + mime + ⬇ download)
 
 **Example usage:**
 
 ```json
 {
-  "content_type": "markdown",
-  "content": "# Project Summary\n\nThis project has 3 main components...",
-  "title": "Project structure overview"
-}
-```
-
-```json
-{
-  "content_type": "code",
-  "content": "fn main() void {\n    std.debug.print(\"Hello\\n\", .{});\n}",
-  "language": "zig",
-  "title": "Sample Zig program"
-}
-```
-
-```json
-{
-  "content_type": "image",
-  "content": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-  "title": "Generated chart"
-}
-```
-
-```json
-{
-  "content_type": "html",
-  "content": "<!DOCTYPE html>\n<html>\n  <body style=\"font-family: sans-serif; padding: 2rem;\">\n    <h1>Welcome</h1>\n    <p>Landing pages are a common preview target.</p>\n    <button onclick=\"alert('clicked')\">Click me</button>\n  </body>\n</html>",
-  "title": "Landing page preview"
+  "files": [
+    { "path": "/home/user/report.md", "label": "Weekly report" },
+    { "path": "/home/user/chart.png" }
+  ]
 }
 ```
 
@@ -141,16 +122,16 @@ The error envelope surfaces as `success=false` to the LLM via the standard `wrap
 
 **Next step for the agent:**
 
-After `generate_image` returns the success envelope, the agent MUST call `show_preview` with `content_type="image"` and `path=<path from the envelope>` to display the image in the side panel. The agent also sees the `<revised_prompt>` and can echo it back to the user (so the user knows what the model actually generated). Example two-call sequence:
+After `generate_image` returns the success envelope, the agent MUST call `present_files` with `files=[{path=<path from the envelope>}]` to display the image inline in the chat. The agent also sees the `<revised_prompt>` and can echo it back to the user (so the user knows what the model actually generated). Example two-call sequence:
 
 ```
 → generate_image({"prompt": "a cute cat wearing a top hat"})
 ← <generate_image>...<image index="0" path="/.../img_xxx_0.png" .../>...<revised_prompt>A cute cat wearing a black top hat in watercolor style</revised_prompt></generate_image>
-→ show_preview({"content_type": "image", "path": "/.../img_xxx_0.png", "title": "A cute cat wearing a black top hat in watercolor style"})
-← <show_preview><status>shown</status>...</show_preview>
+→ present_files({"files": [{"path": "/.../img_xxx_0.png", "label": "A cute cat wearing a black top hat in watercolor style"}]})
+← <present_files><status>presented</status>...</present_files>
 ```
 
-The image is durable on disk at `<cwd>/generated_images/img_xxx_0.png` — the user can re-view it later via the chat history (which embeds the same `show_preview` envelope, and `PreviewContentRenderer` reads the local file again on reload). The image is also available for use as a kanban task attachment (`create_kanban_task`'s `image_urls` field) or for embedding in a design-mode element (`update_design_element`'s `image_url` field).
+The image is durable on disk at `<cwd>/generated_images/img_xxx_0.png` — the user can re-view it later via the chat history (which embeds the same `present_files` envelope, and the card re-fetches the bytes via `GET /api/files/download?disposition=inline` on reload). The image is also available for use as a kanban task attachment (`create_kanban_task`'s `image_urls` field) or for embedding in a design-mode element (`update_design_element`'s `image_url` field).
 
 **Auth:**
 

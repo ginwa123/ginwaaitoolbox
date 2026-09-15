@@ -63,7 +63,6 @@ const group_design_elements_mod = nalarcore.group_design_elements;
 const set_element_parent_mod = nalarcore.set_element_parent;
 const move_design_element_mod = nalarcore.move_design_element;
 const move_element_to_page_mod = nalarcore.move_element_to_page;
-const show_preview_mod = nalarcore.ai_mod.show_preview;
 const remove_agent_mod = nalarcore.remove_agent;
 const remove_file_mod = nalarcore.remove_file;
 const change_agent_mod = nalarcore.change_agent;

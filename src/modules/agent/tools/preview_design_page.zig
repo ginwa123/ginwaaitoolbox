@@ -1,12 +1,11 @@
-//! LLM tool: `preview_design_page` — render a design page as an SVG in
-//! the side panel so the agent can SEE it.
+//! LLM tool: `preview_design_page` — render a design page as an SVG
+//! preview so the agent can SEE it.
 //!
 //! Takes `page_id` (required) and an optional `scale` (default 1.0, max 4.0).
 //! Generates an SVG that renders every element on the page using their
-//! design coordinates + visual properties, then wraps the SVG in a
-//! `<show_preview>` envelope (same shape as the `show_preview` tool —
-//! content_type="html", so the existing frontend pipeline renders it via
-//! the sandboxed iframe).
+//! design coordinates + visual properties, then wraps the metadata in a
+//! `<show_preview>` envelope (legacy envelope name kept for wire compat;
+//! content_type="html").
 //!
 //! Per-element rendering:
 //!   - `rectangle` → `<rect>` with fill, stroke, corner_radius, rotation
@@ -24,7 +23,10 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
-const show_preview = nalarcore.ai_mod.show_preview;
+
+/// Hex alphabet for the random suffix of the preview id (kept local —
+/// tool files are self-contained per project convention).
+const HEX_DIGITS = "0123456789abcdef";
 
 /// Maximum scale the agent can request. Caps the SVG's pixel dimensions
 /// so a malicious or well-meaning LLM can't request a 1000x page scaled to
@@ -66,7 +68,7 @@ pub const preview_design_page_tool = AgentTool{
             \\
             \\Groups/frames nest recursively — a group inside a frame renders inside the frame's `<g>`, etc.
             \\
-            \\Returns a `<show_preview>` envelope (same shape as the `show_preview` tool) so the user sees the page rendered in the side panel. The chat transcript shows the preview_id for the user to reference.
+            \\Returns a `<show_preview>` envelope (legacy name, content_type="html") carrying the preview_id so the transcript can reference the render.
         ,
         .parameters = .{
             .type = "object",
@@ -117,6 +119,54 @@ fn errorEnvelope(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
     defer allocator.free(escaped);
     try xml.appendSlice(allocator, escaped);
     try xml.appendSlice(allocator, "</error></show_preview>");
+    return try xml.toOwnedSlice(allocator);
+}
+
+/// Generate a unique preview id of the form `pv_<unix_ms>_<6 hex>`.
+/// Self-contained copy of the id scheme the deleted `show_preview` tool
+/// used, so this tool no longer depends on it. Caller owns the slice.
+fn generatePreviewId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    const ts = std.Io.Clock.now(.real, io);
+    const unix_ms = ts.toMilliseconds();
+    var random_bytes: [3]u8 = undefined;
+    io.random(&random_bytes);
+    var hex: [6]u8 = undefined;
+    for (random_bytes, 0..) |b, i| {
+        hex[i * 2] = HEX_DIGITS[b >> 4];
+        hex[i * 2 + 1] = HEX_DIGITS[b & 0xF];
+    }
+    return std.fmt.allocPrint(allocator, "pv_{d}_{s}", .{ unix_ms, &hex });
+}
+
+/// Build the success envelope `<show_preview><status>shown</status>...`.
+/// Self-contained copy of the envelope the deleted `show_preview` tool
+/// used (tag name kept for wire compat). Caller owns the slice.
+fn successEnvelope(
+    allocator: std.mem.Allocator,
+    preview_id: []const u8,
+    content_type: []const u8,
+    content_length: usize,
+) ![]u8 {
+    var xml: std.ArrayList(u8) = .empty;
+    errdefer xml.deinit(allocator);
+    try xml.appendSlice(allocator, "<show_preview>");
+    try xml.appendSlice(allocator, "<status>shown</status>");
+    const eid = try xmlEscape(allocator, preview_id);
+    defer allocator.free(eid);
+    try xml.appendSlice(allocator, "<preview_id>");
+    try xml.appendSlice(allocator, eid);
+    try xml.appendSlice(allocator, "</preview_id>");
+    const ect = try xmlEscape(allocator, content_type);
+    defer allocator.free(ect);
+    try xml.appendSlice(allocator, "<content_type>");
+    try xml.appendSlice(allocator, ect);
+    try xml.appendSlice(allocator, "</content_type>");
+    var len_buf: [32]u8 = undefined;
+    const len_str = std.fmt.bufPrint(&len_buf, "{d}", .{content_length}) catch unreachable;
+    try xml.appendSlice(allocator, "<content_length>");
+    try xml.appendSlice(allocator, len_str);
+    try xml.appendSlice(allocator, "</content_length>");
+    try xml.appendSlice(allocator, "</show_preview>");
     return try xml.toOwnedSlice(allocator);
 }
 
@@ -389,7 +439,8 @@ fn appendRotation(
 
 /// Execute `preview_design_page`.
 ///
-/// Returns a `<show_preview>` envelope (same shape as `show_preview`):
+/// Returns a `<show_preview>` envelope (legacy tag name, kept for wire
+/// compat):
 ///   - success: `<show_preview><status>shown</status>...</show_preview>`
 ///   - error:   `<show_preview><error>...</error></show_preview>`
 ///
@@ -403,9 +454,9 @@ pub fn executePreviewDesignPageToString(
     input: PreviewDesignPageInput,
     out_preview_id: *[]u8,
 ) ![]u8 {
-    // Generate the preview id first (matches show_preview's contract —
-    // always allocated, even on error, so the caller can correlate).
-    const preview_id = try show_preview.generatePreviewId(allocator, io);
+    // Generate the preview id first (always allocated, even on error,
+    // so the caller can correlate).
+    const preview_id = try generatePreviewId(allocator, io);
     out_preview_id.* = preview_id;
 
     // Validate scale
@@ -446,10 +497,9 @@ pub fn executePreviewDesignPageToString(
     const sanitized = try @import("helpers").sanitize.sanitizeUtf8(allocator, svg_content);
     defer allocator.free(sanitized);
 
-    // Wrap in the same <show_preview> envelope shape that show_preview uses.
-    // The frontend's existing <show_preview> chat handler renders
-    // content_type="html" via a sandboxed iframe.
-    return try show_preview.successEnvelope(
+    // Wrap in the `<show_preview>` envelope (legacy tag name, kept for
+    // wire compat with existing transcripts).
+    return try successEnvelope(
         allocator,
         preview_id,
         "html",

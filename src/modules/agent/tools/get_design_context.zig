@@ -131,7 +131,7 @@ fn errorEnvelope(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
 ///   - error:   `<design_context><error>...</error></design_context>`
 ///
 /// Both forms are detectable by the exec wrapper via the `<error>` substring
-/// search (matches the convention used by `set_design_page` / `show_preview`).
+/// search (matches the convention used by `set_design_page`).
 pub fn executeGetDesignContextToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,

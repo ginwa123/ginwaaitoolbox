@@ -31,7 +31,6 @@ const group_design_elements_mod = nalarcore.group_design_elements;
 const set_element_parent_mod = nalarcore.set_element_parent;
 const move_design_element_mod = nalarcore.move_design_element;
 const move_element_to_page_mod = nalarcore.move_element_to_page;
-const show_preview_mod = nalarcore.ai_mod.show_preview;
 const present_files_mod = nalarcore.ai_mod.present_files;
 const get_design_context_mod = nalarcore.get_design_context;
 const preview_design_page_mod = nalarcore.preview_design_page;
@@ -103,7 +102,6 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
         set_pull_request_mod.set_pull_request_tool,
-        show_preview_mod.show_preview_tool,
         present_files_mod.present_files_tool,
 
         // kanban only
@@ -241,14 +239,13 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "get_design_context", .exec = tools.execGetDesignContext, .tool_def = get_design_context_mod.get_design_context_tool },
         .{ .name = "preview_design_page", .exec = tools.execPreviewDesignPage, .tool_def = preview_design_page_mod.preview_design_page_tool },
 
-        // === PREVIEW TOOLS ===
-        .{ .name = "show_preview", .exec = tools.execShowPreview, .tool_def = show_preview_mod.show_preview_tool },
+        // === PRESENTATION TOOLS ===
         .{ .name = "present_files", .exec = tools.execPresentFiles, .tool_def = present_files_mod.present_files_tool },
 
         // === IMAGE GENERATION TOOLS ===
         // generate_image calls OpenAI's /v1/images/generations endpoint
         // (DALL-E 2/3 + gpt-image-1). Saves the result to disk and returns
-        // a path; the agent calls show_preview next to display it.
+        // a path; the agent calls present_files next to display it.
         // Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
         .{ .name = "generate_image", .exec = tools.execGenerateImage, .tool_def = generate_image_mod.generate_image_tool },
 
