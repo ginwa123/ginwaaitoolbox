@@ -75,6 +75,8 @@ import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
+import SidebarDiffView from './chat_right_sidebar/SidebarDiffView.vue'
+import type { DiffSelection } from './chat_right_sidebar/parseUnifiedDiff'
 import { useChatRightSidebar } from './chat_right_sidebar/useChatRightSidebar'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
@@ -487,6 +489,29 @@ function onChatSidebarOpenFile(payload: { path: string; line?: number }) {
   if (!openInEditor || !effectiveCwd.value) return
   void openInEditor({ filePath: payload.path, cwd: effectiveCwd.value, line: payload.line })
 }
+
+// Center-stage diff: sidebar row clicks land here (parsed lines travel
+// with the event, no refetch). Back clears; the panel list highlight
+// persists so the user can hop between files.
+const centerDiff = ref<DiffSelection | null>(null)
+
+function onChatSidebarShowDiff(selection: DiffSelection) {
+  centerDiff.value = selection
+}
+
+function onCenterDiffRetry() {
+  chatSidebarRef.value?.reloadDiff()
+}
+
+// A changed cwd invalidates the shown diff (e.g. worktree bound or
+// cleared mid-review) — drop back to chat rather than showing stale
+// hunks. Fires only on actual value change.
+watch(
+  () => effectiveCwd.value,
+  () => {
+    centerDiff.value = null
+  },
+)
 
 // Re-read the session's worktree binding from the backend. The binding
 // is created/removed mid-chat by the LLM's set_git_worktree tool, so
@@ -3108,7 +3133,7 @@ const compactSession = async () => {
 </script>
 
 <template>
-  <div class="flex h-full w-full relative">
+  <div class="flex h-full w-full">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
       <!--
@@ -3174,7 +3199,7 @@ const compactSession = async () => {
         and the last bubbles overlap the FileInput below. This is the
         "no scroll, bubbles overlap input" bug.
       -->
-      <div ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
+      <div v-show="!centerDiff" ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
         <button
@@ -3866,6 +3891,7 @@ const compactSession = async () => {
       <Transition name="fade">
         <button
           v-if="!isAtBottom && messageGroups.length > 0"
+          v-show="!centerDiff"
           @click="scrollToBottom(true, 'user-button-click')"
           class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
@@ -3890,6 +3916,7 @@ const compactSession = async () => {
       <!-- Input (hidden in peek-embed read-only mode) -->
       <div
         v-if="!hideInput"
+        v-show="!centerDiff"
         class="p-4"
         style="
           border-top: 1px solid var(--color-border);
@@ -4107,6 +4134,31 @@ const compactSession = async () => {
           </div>
         </div>
       </div>
+      <!-- Center-stage diff view: full-height file diff swapped in for
+           messages+composer while a sidebar file is selected. Messages
+           state is preserved (v-show) underneath. -->
+      <div
+        v-if="centerDiff"
+        class="flex-1 min-h-0 flex flex-col"
+        data-testid="chat-center-diff"
+      >
+        <SidebarDiffView
+          :path="centerDiff.path"
+          :lines="centerDiff.lines"
+          :added="centerDiff.added"
+          :removed="centerDiff.removed"
+          :staged="centerDiff.staged"
+          :loading="false"
+          :error="centerDiff.error ?? null"
+          :cwd="effectiveCwd"
+          :show-back="true"
+          back-label="Back to chat"
+          @back="centerDiff = null"
+          @open="onChatSidebarOpenFile"
+          @retry="onCenterDiffRetry"
+          @submit-review="onChatSidebarSubmitReview"
+        />
+      </div>
     </div>
 
     <!-- Chat-owned git-diff sidebar. Mounted beside (not inside) the
@@ -4125,9 +4177,8 @@ const compactSession = async () => {
       :max-width="chatSidebar.MAX_WIDTH"
       @update:open="(v) => (v ? chatSidebar.open() : chatSidebar.close())"
       @update:width="(w) => chatSidebar.setWidth(w)"
-      @submit-review="onChatSidebarSubmitReview"
       @refresh="onChatSidebarRefresh"
-      @open-file="onChatSidebarOpenFile"
+      @show-diff="onChatSidebarShowDiff"
     />
 
     <!-- Skills Popup Modal -->

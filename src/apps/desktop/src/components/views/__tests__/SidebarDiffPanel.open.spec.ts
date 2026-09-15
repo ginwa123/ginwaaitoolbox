@@ -43,7 +43,7 @@ const DIFF = `diff --git a/dirty.txt b/dirty.txt
 -old
 +new`
 
-describe('SidebarDiffPanel open-file', () => {
+describe('SidebarDiffPanel show-diff', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
@@ -57,32 +57,26 @@ describe('SidebarDiffPanel open-file', () => {
     })
   })
 
-  it('emits open-file with path on worktree file-row click', async () => {
+  it('emits show-diff with parsed payload on worktree file-row click', async () => {
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
-    expect(wrapper.emitted('open-file')).toEqual([[{ path: 'dirty.txt' }]])
+    const emitted = wrapper.emitted('show-diff')
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', staged: false, added: 1, removed: 1 })
   })
 
-  it('header Open button emits open-file with first added line', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
-    await flushPromises()
-    await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
-    await flushPromises()
-    await wrapper.get('[data-testid="sidebar-diff-open-file"]').trigger('click')
-    // First '+' line in the sample diff is newLine 2.
-    expect(wrapper.emitted('open-file')).toContainEqual([{ path: 'dirty.txt', line: 2 }])
-  })
-
-  it('emits open-file on PR file-row click', async () => {
+  it('emits show-diff on PR file-row click', async () => {
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/1' },
     })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-pr-file-dirty.txt"]').trigger('click')
     await flushPromises()
-    expect(wrapper.emitted('open-file')).toEqual([[{ path: 'dirty.txt' }]])
+    const emitted = wrapper.emitted('show-diff')
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', staged: false })
   })
 })
 
@@ -117,7 +111,7 @@ describe('SidebarDiffPanel file context menu', () => {
       expect(href).toContain('view=code-editor')
       expect(href).toContain(`file=${btoa('dirty.txt')}`)
       // Menu action does not navigate inline (no open-file emit).
-      expect(wrapper.emitted('open-file')).toBeUndefined()
+      expect(wrapper.emitted('show-diff')).toBeUndefined()
     } finally {
       openSpy.mockRestore()
     }
@@ -135,42 +129,9 @@ describe('SidebarDiffPanel file context menu', () => {
         .get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]')
         .trigger('click', { ctrlKey: true })
       expect(openSpy).toHaveBeenCalledTimes(1)
-      expect(wrapper.emitted('open-file')).toBeUndefined()
+      expect(wrapper.emitted('show-diff')).toBeUndefined()
     } finally {
       openSpy.mockRestore()
     }
-  })
-})
-
-describe('SidebarDiffPanel list collapse', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    getGitChangesMock.mockResolvedValue(CHANGES)
-    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
-  })
-
-  it('selecting a file collapses the list behind a breadcrumb; back restores', async () => {
-    const wrapper = mount(SidebarDiffPanel, {
-      props: { cwd: '/repo' },
-      global: { plugins: [testRouter] },
-    })
-    await flushPromises()
-    const list = wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]')
-    expect(list.isVisible()).toBe(true)
-    await list.trigger('click')
-    await flushPromises()
-    // List group hidden via v-show (display:none on the group container;
-    // VTU isVisible does not walk ancestors, so assert the container).
-    const rowEl = wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]')
-    expect((rowEl.element.parentElement as HTMLElement).style.display).toBe('none')
-    // Breadcrumb shown with count.
-    const back = wrapper.get('[data-testid="sidebar-diff-back"]')
-    expect(back.text()).toContain('All changes (1)')
-    await back.trigger('click')
-    expect(
-      (wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').element.parentElement as HTMLElement)
-        .style.display,
-    ).not.toBe('none')
-    expect(wrapper.find('[data-testid="sidebar-diff-back"]').exists()).toBe(false)
   })
 })
