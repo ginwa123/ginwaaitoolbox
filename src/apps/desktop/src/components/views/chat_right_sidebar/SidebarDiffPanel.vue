@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter, useRoute } from 'vue-router'
+import { useRouter } from 'vue-router'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import {
-  decodePathParam,
   parseUnifiedDiff,
   splitDiffByFile,
   type DiffSelection,
@@ -65,7 +64,6 @@ const prError = ref<string | null>(null)
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
 
 const router = useRouter()
-const route = useRoute()
 
 // Right-click "Open file in new tab" for a file row. Position state +
 // dismiss wiring live in useContextMenu; the row payload (file path)
@@ -161,7 +159,6 @@ const loadPrDiff = async () => {
       }
     })
     emit('show-diff-list', list)
-    restoreFromUrlParam(list, selectRestored)
   } catch (err) {
     console.error('Failed to load PR diff:', err)
     prError.value = 'Failed to load PR diff'
@@ -285,29 +282,6 @@ const loadFullList = async () => {
       }
     })
   emit('show-diff-list', list)
-  restoreFromUrlParam(list, selectRestored)
-}
-
-// Deep-link restore: on the first list load, a ?diff= param naming a
-// listed file auto-selects it (same payload as a row click). Stale or
-// garbage params are ignored; later refreshes never yank the selection
-// back after the user clicked elsewhere.
-let restoredFromUrl = false
-
-const selectRestored = (file: DiffSelection) => {
-  selectedPath.value = file.path
-  selectedStaged.value = file.staged
-  emit('show-diff', file)
-}
-
-const restoreFromUrlParam = (files: DiffSelection[], select: (file: DiffSelection) => void) => {
-  if (restoredFromUrl) return
-  restoredFromUrl = true
-  const param = route.query.diff
-  if (typeof param !== 'string' || param.length === 0) return
-  const hit = decodePathParam(param, files.map((f) => f.path))
-  const file = hit ? files.find((f) => f.path === hit) : undefined
-  if (file) select(file)
 }
 
 const loadDiff = async () => {
@@ -376,7 +350,6 @@ watch(
   () => [props.cwd, props.prUrl],
   () => {
     selectedPath.value = null
-    restoredFromUrl = false
     if (isPrMode.value) void loadPrDiff()
     else void loadGitStatus()
   },
