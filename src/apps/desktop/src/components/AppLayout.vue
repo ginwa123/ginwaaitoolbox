@@ -2283,16 +2283,39 @@ watch(
         // Task is handled by workspacesStore.setActiveTask already called in onMounted
       } else if (!view || view === 'workspace') {
         // Clear chat session cwd when not in chat view. We
-        // intentionally do NOT clear activeWorkspaceItemId here:
+        // intentionally do NOT blindly clear activeWorkspaceItemId here:
         // Sidebar's handleSelectItem navigates to this exact URL
         // after setting the active workspace item (folder or
-        // kanban). Clearing it here would clobber the user's
-        // selection and force them to click the item again.
-        // The empty-state placeholder in the v-else-if chain
-        // below renders when activeWorkspaceItem is null, so
-        // users still see a "select a project" message when
-        // there's no active item — clearing in the watcher is
-        // unnecessary.
+        // kanban).
+        //
+        // Back/Forward reconciliation (task_1789421136160_2): a bare
+        // board URL must render the board. Browser Back from a
+        // standalone chat changes ONLY the URL — no sidebar handler
+        // runs — so activeWorkspaceItemId stayed null and activeChatId
+        // stayed set, and ChatView kept winning on a board URL (board
+        // URL + chat content, the reported anomaly). Adopt the URL's
+        // item and drop any stale chat/task so the board renders.
+        // Scoped to path '/app' (path routes like /app/settings own
+        // their contracts) and to bare itemIds (a /chat/<taskId>
+        // suffix means a task chat is open — the suffix watcher owns
+        // that sync). All writes are equality-guarded and in-app
+        // navigations set the same values before pushing, so this only
+        // ever acts on Back/Forward/deep-link drift.
+        if (route.path === '/app') {
+          const parsed = parseItemIdWithChat((query.itemId as string | undefined) ?? '')
+          if (!parsed.chatTaskId) {
+            const wantItemId = parsed.itemId || null
+            if (workspacesStore.activeWorkspaceItemId !== wantItemId) {
+              workspacesStore.setActiveWorkspaceItem(wantItemId)
+            }
+            if (workspacesStore.activeTaskId !== null) {
+              workspacesStore.setActiveTask(null)
+            }
+            if (navigationStore.activeChatId !== '') {
+              navigationStore.clearActiveChat()
+            }
+          }
+        }
         chatSessionCwd.value = ''
       }
     }
