@@ -95,7 +95,7 @@ import CompactionCard from '../preview/CompactionCard.vue'
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
 import ChatScrollSlider from '../chat/ChatScrollSlider.vue'
-import { pickActivePillIndex } from '../chat/activePill'
+import { pickActivePillIndex, isPillGroup } from '../chat/activePill'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -1490,9 +1490,11 @@ const groupKeyForMessageId = (messageId: string): string | null => {
 const userPills = computed((): UserPill[] => {
   const pills: UserPill[] = []
   messageGroups.value.forEach((g, i) => {
-    if (g.role !== 'user') return
+    // Real user turns only: bg-output groups are role=user on the wire
+    // but render as tool cards, compaction envelopes are system
+    // artifacts — neither gets a pill (see isPillGroup).
     const first = g.messages[0]
-    if (first && isCompactionMessage(first)) return
+    if (!isPillGroup(g.role, isBgOnlyGroup(g), !!first && isCompactionMessage(first))) return
     const text = g.messages
       .map((m) => m.content || '')
       .join('\n')

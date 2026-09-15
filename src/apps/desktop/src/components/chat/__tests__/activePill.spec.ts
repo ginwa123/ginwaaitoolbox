@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { pickActivePillIndex } from '../activePill'
+import { pickActivePillIndex, isPillGroup } from '../activePill'
 
 const pills = [{ groupIndex: 0 }, { groupIndex: 3 }, { groupIndex: 7 }]
 
@@ -22,5 +22,24 @@ describe('pickActivePillIndex', () => {
 
   it('returns null for an empty rail', () => {
     expect(pickActivePillIndex([], 5)).toBe(null)
+  })
+})
+
+describe('isPillGroup', () => {
+  it('keeps real user turns', () => {
+    expect(isPillGroup('user', false, false)).toBe(true)
+  })
+
+  it('skips bg-command outputs (role=user on the wire, tool card in pixels)', () => {
+    expect(isPillGroup('user', true, false)).toBe(false)
+  })
+
+  it('skips compaction envelopes', () => {
+    expect(isPillGroup('user', false, true)).toBe(false)
+  })
+
+  it('skips non-user roles', () => {
+    expect(isPillGroup('assistant', false, false)).toBe(false)
+    expect(isPillGroup('tool', false, false)).toBe(false)
   })
 })
