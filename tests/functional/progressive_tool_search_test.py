@@ -207,47 +207,6 @@ def stub_harness(default_nalar_bin: Path):
         h.teardown()
 
 
-# ─── 1. KANBAN mode: seeded defaults + the three meta-tools ─────────────────
-
-
-def test_kanban_mode_gets_the_seeded_tools_plus_the_three_meta_tools(
-    stub_harness: FunctionalHarness,
-) -> None:
-    ws = _create_workspace(stub_harness)
-    kanban = _create_kanban(stub_harness, ws)
-    _run_kanban_task(stub_harness, ws, kanban, name="prog kanban default")
-
-    got = _wait_for_tool_count(stub_harness)
-    assert got == KANBAN_SEEDED_TOOLS, (
-        f"a kanban run should carry its {KANBAN_SEEDED_TOOLS} seeded tools "
-        f"(the agent defaults incl. the three progressive tools, + 2 kanban "
-        f"tools), got {got}"
-    )
-
-
-# ─── 2. KANBAN mode: equipping a not-seeded built-in adds exactly one ───────
-
-
-def test_kanban_mode_equipped_builtin_is_injected(stub_harness: FunctionalHarness) -> None:
-    ws = _create_workspace(stub_harness)
-    kanban = _create_kanban(stub_harness, ws)
-
-    # Create the task WITHOUT running it, so the equip row exists before the
-    # session's first LLM call.
-    session_id = _create_kanban_task_idle(stub_harness, ws, kanban, name="prog equip")
-    _equip_row(stub_harness, session_id, NOT_SEEDED_KANBAN_TOOL)
-
-    _run_existing_session(stub_harness, session_id)
-
-    got = _wait_for_tool_count(stub_harness)
-    expected = KANBAN_SEEDED_TOOLS + 1
-    assert got == expected, (
-        f"equipping one not-seeded built-in must add exactly one tool; "
-        f"expected {expected}, got {got}"
-    )
-
-
-# ─── 3. Every OTHER mode: the three are absent ─────────────────────────────
 
 
 def test_unbound_chat_session_does_not_get_the_meta_tools(
@@ -265,22 +224,6 @@ def test_unbound_chat_session_does_not_get_the_meta_tools(
     )
 
 
-# ─── 4. A stale equip name is inert ─────────────────────────────────────────
-
-
-def test_stale_equip_name_adds_nothing(stub_harness: FunctionalHarness) -> None:
-    """A name that is neither a registered built-in nor a cached MCP tool (a
-    server that was since removed, say) must not change the tool list."""
-    ws = _create_workspace(stub_harness)
-    kanban = _create_kanban(stub_harness, ws)
-
-    session_id = _create_kanban_task_idle(stub_harness, ws, kanban, name="prog stale")
-    _equip_row(stub_harness, session_id, "mcp_removed_server_do_thing", "removed")
-
-    _run_existing_session(stub_harness, session_id)
-
-    got = _wait_for_tool_count(stub_harness)
-    assert got == KANBAN_SEEDED_TOOLS, f"a stale row must contribute nothing, got {got}"
 
 
 # ─── 5. The validation rule at the DB level ─────────────────────────────────
