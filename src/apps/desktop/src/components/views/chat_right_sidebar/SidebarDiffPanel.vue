@@ -29,6 +29,12 @@ const emit = defineEmits<{
    * worktree fetch failed (PR mode parses inline — always clean).
    */
   'show-diff': [selection: DiffSelection]
+  /**
+   * Full ordered list after a list load (PR: parsed chunks; worktree:
+   * parallel per-file fetch). ChatView stacks every file in the center
+   * column; per-click `show-diff` stays instant and unchanged.
+   */
+  'show-diff-list': [files: DiffSelection[]]
 }>()
 
 const isGitRepo = ref(false)
@@ -140,6 +146,21 @@ const loadPrDiff = async () => {
     prBase.value = data.base || ''
     prHead.value = data.head || ''
     prTruncated.value = data.truncated
+    // Stacked center view: every chunk parses synchronously — no
+    // per-file fetch needed, the full diff text is already in hand.
+    emit(
+      'show-diff-list',
+      prFiles.value.map((file) => {
+        const parsed = parseUnifiedDiff(file.text)
+        return {
+          path: file.path,
+          staged: false,
+          lines: parsed.lines,
+          added: parsed.added,
+          removed: parsed.removed,
+        }
+      }),
+    )
   } catch (err) {
     console.error('Failed to load PR diff:', err)
     prError.value = 'Failed to load PR diff'
@@ -211,10 +232,12 @@ const loadGitStatus = async () => {
       stagedFiles.value = data.staged_files || []
       unstagedFiles.value = data.modified_files || []
       untrackedFiles.value = data.untracked_files || []
+      await loadFullList()
     } else {
       stagedFiles.value = []
       unstagedFiles.value = []
       untrackedFiles.value = []
+      emit('show-diff-list', [])
     }
   } catch (err) {
     console.error('Failed to load git status:', err)
@@ -223,6 +246,46 @@ const loadGitStatus = async () => {
   } finally {
     isLoadingGit.value = false
   }
+}
+
+// Stacked center view: fetch every changed file in parallel so the
+// center column renders all diffs without per-click round-trips.
+// allSettled keeps one failed file from rejecting the batch — its
+// entry carries `error` with empty lines instead.
+const loadFullList = async () => {
+  if (!props.cwd) return
+  const targets: { path: string; staged: boolean }[] = [
+    ...stagedFiles.value.map((f) => ({ path: f.path, staged: true })),
+    ...unstagedFiles.value.map((f) => ({ path: f.path, staged: false })),
+    ...untrackedFiles.value.map((f) => ({ path: f.path, staged: false })),
+  ]
+  const results = await Promise.allSettled(
+    targets.map((t) => api.getGitFileDiff(props.cwd, t.path, t.staged)),
+  )
+  emit(
+    'show-diff-list',
+    targets.map((t, i) => {
+      const r = results[i]
+      if (r && r.status === 'fulfilled') {
+        const parsed = parseUnifiedDiff(r.value.diff_content)
+        return {
+          path: t.path,
+          staged: t.staged,
+          lines: parsed.lines,
+          added: parsed.added,
+          removed: parsed.removed,
+        }
+      }
+      return {
+        path: t.path,
+        staged: t.staged,
+        lines: [],
+        added: 0,
+        removed: 0,
+        error: 'Failed to load file diff',
+      }
+    }),
+  )
 }
 
 const loadDiff = async () => {

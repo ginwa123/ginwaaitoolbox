@@ -1,0 +1,169 @@
+/**
+ * Phase 3 center lazy diff (3.1): the panel emits the FULL ordered file
+ * list (`show-diff-list {files: DiffSelection[]}`) in addition to the
+ * instant per-click `show-diff`. ChatView stacks every file vertically
+ * so scroll is fast (lazy mount + content-visibility, no pagination).
+ *
+ * - PR mode: after splitDiffByFile, every chunk is parsed synchronously
+ *   (map parseUnifiedDiff) — one getPrDiff call, no per-file fetch.
+ * - Worktree mode: after getGitChanges, all staged+modified+untracked
+ *   files are fetched in parallel (Promise.allSettled over
+ *   getGitFileDiff); per-file failures become error entries and never
+ *   reject the batch.
+ */
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { createRouter, createMemoryHistory } from 'vue-router'
+
+const testRouter = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+})
+
+const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock } = vi.hoisted(() => ({
+  getGitChangesMock: vi.fn(),
+  getGitFileDiffMock: vi.fn(),
+  getPrDiffMock: vi.fn(),
+}))
+
+vi.mock('../../../api', async () => {
+  const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
+  return {
+    ...actual,
+    getGitChanges: getGitChangesMock,
+    getGitFileDiff: getGitFileDiffMock,
+    getPrDiff: getPrDiffMock,
+    stageGitFiles: vi.fn(),
+    unstageGitFiles: vi.fn(),
+  }
+})
+
+const PR_DIFF = `diff --git a/foo.txt b/foo.txt
+index 123..456 100644
+--- a/foo.txt
++++ b/foo.txt
+@@ -1 +1 @@
+-old
++new
+diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
++hello`
+
+const CHANGES = {
+  is_git_repo: true,
+  branch: 'main',
+  has_changes: true,
+  staged_files: [{ index_status: 'M', worktree_status: ' ', path: 'staged.txt' }],
+  modified_files: [{ index_status: ' ', worktree_status: 'M', path: 'dirty.txt' }],
+  untracked_files: [{ index_status: '??', worktree_status: '??', path: 'new.txt' }],
+}
+
+const diffFor = (path: string) =>
+  `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1 +1 @@\n-old\n+new`
+
+describe('SidebarDiffPanel show-diff-list (3.1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getGitChangesMock.mockResolvedValue(CHANGES)
+    getGitFileDiffMock.mockImplementation((cwd: string, path: string, staged: boolean) =>
+      Promise.resolve({ path, diff_content: diffFor(path), staged }),
+    )
+    getPrDiffMock.mockResolvedValue({
+      pr_url: 'https://github.com/acme/app/pull/42',
+      base: 'main',
+      head: 'feature',
+      diff_content: PR_DIFF,
+      truncated: false,
+    })
+  })
+
+  it('PR mode emits the full parsed list without per-file fetches', async () => {
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    expect(getPrDiffMock).toHaveBeenCalledTimes(1)
+    expect(getGitFileDiffMock).not.toHaveBeenCalled()
+    const listed = wrapper.emitted('show-diff-list')
+    expect(listed).toHaveLength(1)
+    const files = listed![0]![0] as Array<{
+      path: string
+      staged: boolean
+      lines: unknown[]
+      added: number
+      removed: number
+    }>
+    expect(files).toHaveLength(2)
+    expect(files.map((f) => f.path)).toEqual(['foo.txt', 'new.txt'])
+    for (const f of files) {
+      expect(f.staged).toBe(false)
+      expect(f.lines.length).toBeGreaterThan(0)
+    }
+    expect(files[0]).toMatchObject({ added: 1, removed: 1 })
+    expect(files[1]).toMatchObject({ added: 1, removed: 0 })
+    // List load is silent: no instant show-diff until a row is clicked.
+    expect(wrapper.emitted('show-diff')).toBeUndefined()
+  })
+
+  it('worktree mode fetches every file in parallel and emits the ordered list', async () => {
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo' },
+    })
+    await flushPromises()
+    expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
+    expect(getGitFileDiffMock).toHaveBeenCalledTimes(3)
+    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'staged.txt', true)
+    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'dirty.txt', false)
+    expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'new.txt', false)
+    const listed = wrapper.emitted('show-diff-list')
+    expect(listed).toHaveLength(1)
+    const files = listed![0]![0] as Array<{ path: string; staged: boolean; lines: unknown[] }>
+    expect(files.map((f) => f.path)).toEqual(['staged.txt', 'dirty.txt', 'new.txt'])
+    expect(files[0]).toMatchObject({ staged: true })
+    expect(files[1]).toMatchObject({ staged: false })
+    for (const f of files) expect(f.lines.length).toBeGreaterThan(0)
+    expect(wrapper.emitted('show-diff')).toBeUndefined()
+  })
+
+  it('worktree per-file failure becomes an error entry without rejecting the batch', async () => {
+    getGitFileDiffMock.mockImplementation((cwd: string, path: string) => {
+      if (path === 'dirty.txt') return Promise.reject(new Error('nope'))
+      return Promise.resolve({ path, diff_content: diffFor(path), staged: false })
+    })
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo' },
+    })
+    await flushPromises()
+    const listed = wrapper.emitted('show-diff-list')
+    expect(listed).toHaveLength(1)
+    const files = listed![0]![0] as Array<{
+      path: string
+      lines: unknown[]
+      added: number
+      removed: number
+      error?: string | null
+    }>
+    expect(files).toHaveLength(3)
+    const failed = files.find((f) => f.path === 'dirty.txt')!
+    expect(failed).toMatchObject({ lines: [], added: 0, removed: 0 })
+    expect(typeof failed.error).toBe('string')
+    // Siblings still parsed fine.
+    expect(files.find((f) => f.path === 'staged.txt')!.lines.length).toBeGreaterThan(0)
+  })
+
+  it('shell re-emits both show-diff and show-diff-list', () => {
+    const shellSrc = readFileSync(resolve(__dirname, '../chat_right_sidebar/ChatRightSidebar.vue'), 'utf8')
+    expect(shellSrc).toMatch(/'show-diff-list'/)
+    expect(shellSrc).toMatch(/show-diff-list.*emit\('show-diff-list'/)
+  })
+})

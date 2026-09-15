@@ -88,9 +88,11 @@ describe('SidebarDiffPanel', () => {
   })
 
   it('emits show-diff with error on diff fetch failure', async () => {
-    getGitFileDiffMock.mockRejectedValueOnce(new Error('nope'))
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
+    // Mount preloads the full list (show-diff-list); arm the failure
+    // after the preload so the click's own fetch is the one that fails.
+    getGitFileDiffMock.mockRejectedValueOnce(new Error('nope'))
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
     const emitted = wrapper.emitted('show-diff')
