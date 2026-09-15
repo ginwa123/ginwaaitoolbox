@@ -205,11 +205,14 @@ const MIGRATION_PATH = "src/migrations/migration.zig";
 /// Read a source file from disk, relative to the project root
 /// (which is the cwd when `zig build test:ai_workflow:tui` runs).
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    // 512 KiB: migration.zig grows with every migration and crossed 256 KiB
+    // at Migration 087 (agent_routines mirror). readFileAlloc errors with
+    // StreamTooLong past the cap, so keep headroom for future migrations.
     const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,
         path,
         allocator,
-        .limited(256 * 1024),
+        .limited(512 * 1024),
     );
     const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
     allocator.free(raw); // free the CRLF-laden input — normalized is the LF-only copy

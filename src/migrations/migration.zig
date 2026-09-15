@@ -1977,6 +1977,7 @@ pub const allMigrations: []const Migration = &.{
     .{ .version = Migration084ReplaceRoutinesWithWorkspaceRoutines.version, .name = Migration084ReplaceRoutinesWithWorkspaceRoutines.name, .up = Migration084ReplaceRoutinesWithWorkspaceRoutines.up },
     .{ .version = Migration085AddSessionProgressiveTool.version, .name = Migration085AddSessionProgressiveTool.name, .up = Migration085AddSessionProgressiveTool.up },
     .{ .version = Migration086AddSessionPrUrl.version, .name = Migration086AddSessionPrUrl.name, .up = Migration086AddSessionPrUrl.up },
+    .{ .version = Migration087CreateAgentRoutines.version, .name = Migration087CreateAgentRoutines.name, .up = Migration087CreateAgentRoutines.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4731,6 +4732,125 @@ pub const Migration086AddSessionPrUrl = struct {
 };
 
 // ============================================================================
+// Migration 087 — agent config tables for routine workspace items.
+// ============================================================================
+//
+// Mirrors Migration 081 (agent_kanbans) onto routines so the RoutineView
+// Agent tab has storage: `agent_routines` (1-1 with workspace_items where
+// item_type == 'routine', same D3 identity id == workspace_item_id) plus
+// `agent_routine_knowledges` + `agent_routine_system_prompt` +
+// `agent_routine_tools` children keyed by routine_id FK ON DELETE CASCADE.
+//
+// Differences vs 081 (intentional):
+//   - Backfills one `agent_routines` row per pre-existing routine item
+//     (INSERT OR IGNORE ... SELECT) so routines created before this
+//     migration get a working Agent tab immediately instead of a
+//     NotConfigured dead-end. Kanban stayed opt-in; routines need
+//     day-one config because the tab ships in the same release.
+//   - No default-tools seed here: an empty allowlist means "all tools"
+//     (kanban D5 semantics), which preserves the pre-migration fire
+//     behaviour exactly.
+//
+// Idempotency: CREATE TABLE/INDEX IF NOT EXISTS + INSERT OR IGNORE.
+// One statement per db.exec (sqlite3_prepare_v2 compiles only the first).
+//
+// Plan: Routine mode task_1789505553300_1 (option A, mirror agent_kanban_*).
+pub const Migration087CreateAgentRoutines = struct {
+    pub const version: u32 = 87;
+    pub const name = "create_agent_routines_mirror";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_routines (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_item_id TEXT NOT NULL UNIQUE,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_routines_workspace_item_id ON agent_routines(workspace_item_id)",
+            &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_routine_knowledges (
+            \\    id TEXT PRIMARY KEY,
+            \\    routine_id TEXT NOT NULL,
+            \\    file_path TEXT NOT NULL DEFAULT '',
+            \\    label TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (routine_id) REFERENCES agent_routines(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_routine_knowledges_routine_id ON agent_routine_knowledges(routine_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_routine_knowledges_routine_position ON agent_routine_knowledges(routine_id, position DESC)",
+            &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_routine_system_prompt (
+            \\    id TEXT PRIMARY KEY,
+            \\    routine_id TEXT NOT NULL,
+            \\    title TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    position INTEGER NOT NULL DEFAULT 0,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (routine_id) REFERENCES agent_routines(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_routine_system_prompt_routine_id ON agent_routine_system_prompt(routine_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_routine_system_prompt_routine_position ON agent_routine_system_prompt(routine_id, position DESC)",
+            &[_][]const u8{});
+
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS agent_routine_tools (
+            \\    id TEXT PRIMARY KEY,
+            \\    routine_id TEXT NOT NULL,
+            \\    tool_name TEXT NOT NULL,
+            \\    enabled INTEGER NOT NULL DEFAULT 1,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (routine_id) REFERENCES agent_routines(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_agent_routine_tools_routine_id ON agent_routine_tools(routine_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_routine_tools_routine_tool ON agent_routine_tools(routine_id, tool_name)",
+            &[_][]const u8{});
+
+        // Backfill parent rows for routines predating this migration.
+        // Guarded by a sqlite_master check so the migration also runs on
+        // databases where workspace_items does not exist yet (unit-test
+        // :memory: DBs that only exercise the new tables).
+        {
+            var q = try db.query(allocator,
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspace_items'",
+                &[_][]const u8{});
+            defer q.deinit();
+            const has_items_table = try q.next();
+            if (has_items_table) |r| r.deinit(allocator);
+            if (has_items_table != null) {
+                try db.exec(allocator,
+                    "INSERT OR IGNORE INTO agent_routines (id, workspace_item_id) SELECT id, id FROM workspace_items WHERE item_type = 'routine'",
+                    &[_][]const u8{});
+            }
+        }
+    }
+};
+
+// ============================================================================
 // Migration 083 — llm_history reasoning metadata — inline tests
 // ============================================================================
 
@@ -5373,4 +5493,121 @@ test "Migration086 is registered in allMigrations" {
         if (m.version == Migration086AddSessionPrUrl.version) return;
     }
     return error.Migration086NotRegistered;
+}
+
+// ============================================================================
+// Migration 087 — agent_routines mirror — inline tests
+// ============================================================================
+
+test "Migration087 creates agent_routines tables with correct columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration087CreateAgentRoutines.up(&ctx.db, alloc);
+
+    for ([_][]const u8{ "agent_routines", "agent_routine_knowledges", "agent_routine_system_prompt", "agent_routine_tools" }) |tbl| {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            &[_][]const u8{tbl});
+        defer q.deinit();
+        const found = try q.next();
+        if (found) |r| r.deinit(alloc);
+        try testing.expect(found != null);
+    }
+
+    const cols = try columnsOf(&ctx, "agent_routine_knowledges");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var has_routine_id = false;
+    var has_position = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "routine_id")) has_routine_id = true;
+        if (std.mem.eql(u8, c, "position")) has_position = true;
+    }
+    try testing.expect(has_routine_id);
+    try testing.expect(has_position);
+}
+
+test "Migration087 backfills agent_routines rows for pre-existing routines only" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('rt_1', 'ws_1', 'routine', 'Nightly')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('kb_1', 'ws_1', 'kanban', 'Board')",
+        &.{});
+
+    try Migration087CreateAgentRoutines.up(&ctx.db, alloc);
+
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT id, workspace_item_id FROM agent_routines",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("rt_1", row.values[0]);
+        try testing.expectEqualStrings("rt_1", row.values[1]);
+        try testing.expect((try q.next()) == null);
+    }
+}
+
+test "Migration087 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('rt_1', 'ws_1', 'routine', 'Nightly')",
+        &.{});
+
+    try Migration087CreateAgentRoutines.up(&ctx.db, alloc);
+    try Migration087CreateAgentRoutines.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM agent_routines",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration087 UNIQUE workspace_item_id rejects a duplicate" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration087CreateAgentRoutines.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO agent_routines (id, workspace_item_id) VALUES ('rt_1', 'rt_1')",
+        &.{});
+    const dup = ctx.db.exec(alloc,
+        "INSERT INTO agent_routines (id, workspace_item_id) VALUES ('rt_x', 'rt_1')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, dup);
+}
+
+test "Migration087 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration087CreateAgentRoutines.version) return;
+    }
+    return error.Migration087NotRegistered;
 }
