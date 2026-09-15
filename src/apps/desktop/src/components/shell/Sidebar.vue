@@ -365,6 +365,9 @@ const handleDeleteConfirm = () => {
 // Workspace handlers
 const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWorkspace(workspaceId)
 
+/** Right-click "Go to settings" from a workspace item row — same as the header Settings button. */
+const handleGoToSettings = () => emit('navigate', 'settings')
+
 /**
  * Ctrl/Cmd+click (or middle click) on a workspace item: open a real
  * browser tab and stay where the user is. The click never navigates,
@@ -1437,6 +1440,7 @@ defineExpose({
           @delete-design-page="handleDeleteDesignPage"
           @add-design-page="handleAddDesignPage"
           @rename-design-page="handleRenameDesignPage"
+          @go-to-settings="handleGoToSettings"
         />
         <!-- Collapsed workspaces: minimal text-driven monograms.
              Each workspace is rendered as a 1-2 letter monogram

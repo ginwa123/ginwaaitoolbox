@@ -89,6 +89,10 @@ const emit = defineEmits<{
   // RenameDesignPageModal. Pure pass-through — same pattern as
   // selectDesignPage / deleteDesignPage.
   renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
+  // Right-click "Go to settings" on the item row. Bubbled via
+  // WorkspaceList to Sidebar, which emits navigate 'settings'
+  // (same as its header Settings button) so AppLayout routes to /app/settings.
+  goToSettings: []
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -230,6 +234,11 @@ const onItemRowAuxClick = (event: MouseEvent) => {
 const openItemMenuInBackground = () => {
   closeItemMenu()
   emit('openItemInBackground', itemMenuPayload())
+}
+
+const openItemMenuSettings = () => {
+  closeItemMenu()
+  emit('goToSettings')
 }
 
 // Right-click "Open in new tab" on a task row. The row only knows
@@ -857,7 +866,9 @@ const handlePinnedDrop = (event: DragEvent) => {
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
+      show-settings
       @open="openItemMenuInBackground"
+      @settings="openItemMenuSettings"
     />
   </li>
 </template>
