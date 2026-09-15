@@ -13,7 +13,9 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import DiffCommentBox, {
   buildDraftKey,
+  deleteSavedComment,
   formatReviewComment,
+  listSavedComments,
 } from "../chat_right_sidebar/DiffCommentBox.vue";
 import { makeLocalStorageStub } from "../../../__tests__/helpers";
 
@@ -74,7 +76,10 @@ describe("DiffCommentBox behavior", () => {
     await flushPromises();
     const raw = localStorage.getItem(KEY);
     expect(raw).not.toBeNull();
-    expect(JSON.parse(raw!)).toMatchObject({ message: "looks good" });
+    expect(JSON.parse(raw!)).toMatchObject({
+      message: "looks good",
+      context: "10  old\n11 +new",
+    });
     const saved = wrapper.emitted("save");
     expect(saved).toHaveLength(1);
     const payload = saved![0]![0] as Record<string, unknown>;
@@ -110,5 +115,36 @@ describe("DiffCommentBox behavior", () => {
     expect(String(writeText.mock.calls[0]![0])).toContain("nit: rename");
     expect(wrapper.emitted("copy")).toHaveLength(1);
     expect(wrapper.find("[data-testid=diff-comment-copied]").exists()).toBe(true);
+  });
+});
+
+describe("listSavedComments / deleteSavedComment", () => {
+  it("returns full entries with message, savedAt and context", () => {
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({ message: "full", savedAt: 42, context: "ctx" }),
+    );
+    expect(listSavedComments("/repo", "src/foo.ts")).toEqual([
+      { start: 10, end: 14, message: "full", savedAt: 42, context: "ctx" },
+    ]);
+  });
+
+  it("defaults missing context to empty string and keeps legacy values", () => {
+    localStorage.setItem(KEY, JSON.stringify({ message: "no-ctx", savedAt: 7 }));
+    localStorage.setItem(
+      "diff-comment:/repo:src/foo.ts:1-2",
+      "legacy raw",
+    );
+    expect(listSavedComments("/repo", "src/foo.ts")).toEqual([
+      { start: 10, end: 14, message: "no-ctx", savedAt: 7, context: "" },
+      { start: 1, end: 2, message: "legacy raw", savedAt: 0, context: "" },
+    ]);
+  });
+
+  it("deleteSavedComment removes the entry", () => {
+    localStorage.setItem(KEY, JSON.stringify({ message: "bye", savedAt: 1 }));
+    deleteSavedComment("/repo", "src/foo.ts", 10, 14);
+    expect(localStorage.getItem(KEY)).toBeNull();
+    expect(listSavedComments("/repo", "src/foo.ts")).toEqual([]);
   });
 });

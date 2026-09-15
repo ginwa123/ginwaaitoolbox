@@ -186,3 +186,105 @@ describe("SidebarDiffView reviewed markers", () => {
     ).toBe(true);
   });
 });
+
+describe("SidebarDiffView inline comment threads", () => {
+  function seedFull(
+    start: number,
+    end: number,
+    message: string,
+    context: string,
+  ): void {
+    localStorage.setItem(
+      buildDraftKey(CWD, PATH, start, end),
+      JSON.stringify({ message, savedAt: 1234567890, context }),
+    );
+  }
+
+  it("renders a thread row after the last covered table row", () => {
+    seed(CWD, PATH, 20, 26, "thread body twenty-six");
+    const wrapper = mountView();
+    const threads = wrapper.findAll('[data-testid="diff-comment-thread"]');
+    expect(threads).toHaveLength(1);
+    expect(threads[0]!.text()).toContain("Comment on lines 20\u201326");
+    expect(
+      threads[0]!.get('[data-testid="diff-comment-message"]').text(),
+    ).toBe("thread body twenty-six");
+    const rows = wrapper.findAll("tr");
+    const idx26 = rows.findIndex((r) => r.text().includes("new-26"));
+    const idxThread = rows.findIndex(
+      (r) => r.attributes("data-testid") === "diff-comment-thread",
+    );
+    expect(idx26).toBeGreaterThanOrEqual(0);
+    expect(idxThread).toBe(idx26 + 1);
+  });
+
+  it("skips threads with no matching row", () => {
+    seed(CWD, PATH, 100, 110, "stale note");
+    const wrapper = mountView();
+    expect(wrapper.findAll('[data-testid="diff-comment-thread"]')).toHaveLength(0);
+    expect(wrapper.findAll('[data-testid="diff-reviewed-marker"]')).toHaveLength(0);
+  });
+
+  it("survives remount", () => {
+    seed(CWD, PATH, 20, 26, "persistent note");
+    expect(mountView().findAll('[data-testid="diff-comment-thread"]')).toHaveLength(1);
+    expect(mountView().find('[data-testid="diff-comment-message"]').text()).toBe(
+      "persistent note",
+    );
+  });
+
+  it("Edit reopens the box at the exact saved range with the saved draft", async () => {
+    seedFull(20, 26, "saved thread text", "saved ctx lines");
+    const wrapper = mountView();
+    await wrapper.get('[data-testid="diff-comment-edit"]').trigger("click");
+    await flushPromises();
+    const box = wrapper.findComponent(DiffCommentBox);
+    expect(box.exists()).toBe(true);
+    expect(box.props("startLine")).toBe(20);
+    expect(box.props("endLine")).toBe(26);
+    expect(
+      (box.get("[data-testid=diff-comment-input]").element as HTMLTextAreaElement).value,
+    ).toBe("saved thread text");
+  });
+
+  it("Delete removes the thread and its markers", async () => {
+    seed(CWD, PATH, 20, 26, "doomed note");
+    const wrapper = mountView();
+    expect(wrapper.findAll('[data-testid="diff-comment-thread"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="diff-reviewed-marker"]').length).toBeGreaterThan(0);
+    await wrapper.get('[data-testid="diff-comment-delete"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.findAll('[data-testid="diff-comment-thread"]')).toHaveLength(0);
+    expect(wrapper.findAll('[data-testid="diff-reviewed-marker"]')).toHaveLength(0);
+    expect(localStorage.getItem(buildDraftKey(CWD, PATH, 20, 26))).toBeNull();
+  });
+
+  it("save closes the popup and renders the thread without remount", async () => {
+    const wrapper = mountView();
+    await rowByText(wrapper, "new-28").trigger("click");
+    await flushPromises();
+    const box = wrapper.findComponent(DiffCommentBox);
+    expect(box.exists()).toBe(true);
+    await box.get("[data-testid=diff-comment-input]").setValue("fresh thread 28");
+    await box.get("[data-testid=diff-comment-save]").trigger("click");
+    await flushPromises();
+    expect(wrapper.emitted("comment-saved")).toHaveLength(1);
+    expect(wrapper.findComponent(DiffCommentBox).exists()).toBe(false);
+    const threads = wrapper.findAll('[data-testid="diff-comment-thread"]');
+    expect(threads).toHaveLength(1);
+    expect(threads[0]!.get('[data-testid="diff-comment-message"]').text()).toBe(
+      "fresh thread 28",
+    );
+    expect(
+      rowByText(wrapper, "new-28").find('[data-testid="diff-reviewed-marker"]').exists(),
+    ).toBe(true);
+  });
+
+  it("escapes message HTML", () => {
+    seed(CWD, PATH, 20, 26, "<img src=x onerror=alert(1)>");
+    const wrapper = mountView();
+    const html = wrapper.get('[data-testid="diff-comment-message"]').html();
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+  });
+});

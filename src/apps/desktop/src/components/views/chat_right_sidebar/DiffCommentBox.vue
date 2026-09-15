@@ -34,17 +34,22 @@ export interface SavedCommentRange {
   end: number;
 }
 
+export interface SavedComment extends SavedCommentRange {
+  message: string;
+  savedAt: number;
+  context: string;
+}
+
 /**
- * Scan localStorage for saved review comments on a file. Returns the
- * [start, end] line ranges whose stored entry still carries a non-empty
- * message, so diff rows can render a reviewed marker. Tolerates legacy
- * raw-string values. Never throws — storage may be unavailable.
+ * Scan localStorage for saved review comments on a file. Skips entries
+ * with empty messages and tolerates legacy raw-string values. Never
+ * throws — storage may be unavailable.
  */
-export function listSavedCommentRanges(
+export function listSavedComments(
   cwd: string,
   filePath: string,
-): SavedCommentRange[] {
-  const out: SavedCommentRange[] = [];
+): SavedComment[] {
+  const out: SavedComment[] = [];
   try {
     if (typeof localStorage === "undefined") return out;
     const store = localStorage;
@@ -72,22 +77,58 @@ export function listSavedCommentRanges(
       }
       if (raw == null || raw.length === 0) continue;
       let message: unknown = null;
+      let savedAt = 0;
+      let context = "";
       try {
-        const parsed = JSON.parse(raw) as { message?: unknown };
-        message =
-          parsed !== null && typeof parsed === "object" && "message" in parsed
-            ? parsed.message
-            : raw;
+        const parsed = JSON.parse(raw) as {
+          message?: unknown;
+          savedAt?: unknown;
+          context?: unknown;
+        };
+        if (
+          parsed !== null &&
+          typeof parsed === "object" &&
+          "message" in parsed
+        ) {
+          message = parsed.message;
+          if (typeof parsed.savedAt === "number") savedAt = parsed.savedAt;
+          if (typeof parsed.context === "string") context = parsed.context;
+        } else {
+          message = raw;
+        }
       } catch {
         message = raw;
       }
       if (typeof message !== "string" || message.length === 0) continue;
-      out.push({ start, end });
+      out.push({ start, end, message, savedAt, context });
     }
   } catch {
-    // Storage unavailable — no markers.
+    // Storage unavailable — no comments.
   }
   return out;
+}
+
+export function listSavedCommentRanges(
+  cwd: string,
+  filePath: string,
+): SavedCommentRange[] {
+  return listSavedComments(cwd, filePath).map(({ start, end }) => ({
+    start,
+    end,
+  }));
+}
+
+export function deleteSavedComment(
+  cwd: string,
+  filePath: string,
+  start: number,
+  end: number,
+): void {
+  try {
+    localStorage.removeItem(buildDraftKey(cwd, filePath, start, end));
+  } catch {
+    // Storage unavailable — nothing to delete.
+  }
 }
 
 export interface DiffCommentSavePayload {
@@ -173,7 +214,11 @@ function onSave(): void {
   try {
     localStorage.setItem(
       draftKey.value,
-      JSON.stringify({ message: draft.value, savedAt: Date.now() }),
+      JSON.stringify({
+        message: draft.value,
+        savedAt: Date.now(),
+        context: props.context,
+      }),
     );
   } catch {
     // Storage full or unavailable — still emit so the parent can persist.
