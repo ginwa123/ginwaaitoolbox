@@ -19,6 +19,7 @@ const emit = defineEmits<{
   'update:width': [width: number]
   'submit-review': [message: string]
   refresh: []
+  'open-file': [payload: { path: string; line?: number }]
 }>()
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
@@ -102,6 +103,7 @@ defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
         :pr-provider="prProvider"
         @submit-review="(msg) => emit('submit-review', msg)"
         @refresh="() => emit('refresh')"
+        @open-file="(payload) => emit('open-file', payload)"
       />
     </div>
   </aside>

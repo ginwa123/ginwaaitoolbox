@@ -21,6 +21,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'submit-review': [message: string]
   refresh: []
+  /** File-row click (or header Open button): host opens the file in the code browser. */
+  'open-file': [payload: { path: string; line?: number }]
 }>()
 
 const isGitRepo = ref(false)
@@ -108,6 +110,15 @@ const selectPrFile = (file: SplitDiffFile) => {
   diffLines.value = parsed.lines
   diffAdded.value = parsed.added
   diffRemoved.value = parsed.removed
+  emit('open-file', { path: file.path })
+}
+
+// Header Open button: navigate to the selected file, jumping to the
+// first added line when the diff has one (else the editor opens at top).
+const openSelectedFile = () => {
+  if (!selectedPath.value) return
+  const firstAdd = diffLines.value.find((l) => l.type === 'add')
+  emit('open-file', { path: selectedPath.value, line: firstAdd?.newLineNum })
 }
 
 function displayStatus(file: api.GitFileChange): { icon: string; text: string } {
@@ -196,6 +207,9 @@ const selectFile = (file: api.GitFileChange, staged: boolean) => {
   selectedStaged.value = staged
   closeMiniChat()
   void loadDiff()
+  // Plain click navigates to the code browser (host-owned); the inline
+  // selection above keeps panel context.
+  emit('open-file', { path: file.path })
 }
 
 const stageFile = async (file: api.GitFileChange) => {
@@ -671,6 +685,17 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
             @click="wordWrap = !wordWrap"
           >
             Wrap
+          </button>
+          <button
+            type="button"
+            class="px-2 py-1 text-xs rounded hover:opacity-70"
+            style="color: var(--semantic-text-dim)"
+            title="Open file in code browser"
+            aria-label="Open file in code browser"
+            data-testid="sidebar-diff-open-file"
+            @click="openSelectedFile"
+          >
+            ⤴
           </button>
         </div>
 
