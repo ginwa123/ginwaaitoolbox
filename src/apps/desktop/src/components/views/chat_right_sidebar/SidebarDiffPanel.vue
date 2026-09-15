@@ -391,20 +391,38 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
     >
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded"
+        class="text-xs px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-files"
         role="tab"
         :aria-selected="activeTab === 'files'"
+        :style="
+          activeTab === 'files'
+            ? {
+              color: 'var(--semantic-text)',
+              fontWeight: 600,
+              boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+            }
+            : { color: 'var(--semantic-text)', opacity: '0.6' }
+        "
         @click="setActiveTab('files')"
       >
         Files changed{{ changeCount > 0 ? ` (${changeCount})` : '' }}
       </button>
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded"
+        class="text-xs px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-pr"
         role="tab"
         :aria-selected="activeTab === 'pr'"
+        :style="
+          activeTab === 'pr'
+            ? {
+              color: 'var(--semantic-text)',
+              fontWeight: 600,
+              boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+            }
+            : { color: 'var(--semantic-text)', opacity: '0.6' }
+        "
         @click="setActiveTab('pr')"
       >
         Pull request{{ prFiles.length > 0 ? ` (${prFiles.length})` : '' }}

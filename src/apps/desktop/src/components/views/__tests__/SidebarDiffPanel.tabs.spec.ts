@@ -73,20 +73,26 @@ describe('SidebarDiffPanel tabs', () => {
   })
 
   it('with prUrl shows tabs with PR active by default', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
     expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(true)
     expect(wrapper.get('[data-testid="sidebar-tab-pr"]').attributes('aria-selected')).toBe('true')
-    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe('false')
+    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe(
+      'false',
+    )
     expect(wrapper.find('[data-testid="sidebar-pr-file-foo.txt"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(
+      false,
+    )
   })
 
   it('clicking Files loads and renders worktree rows, clicking PR goes back', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
@@ -94,7 +100,9 @@ describe('SidebarDiffPanel tabs', () => {
     await wrapper.get('[data-testid="sidebar-tab-files"]').trigger('click')
     await flushPromises()
     expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
-    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe(
+      'true',
+    )
     expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="sidebar-pr-file-foo.txt"]').exists()).toBe(false)
     await wrapper.get('[data-testid="sidebar-tab-pr"]').trigger('click')
@@ -105,10 +113,27 @@ describe('SidebarDiffPanel tabs', () => {
   })
 
   it('without prUrl shows no tabs', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo' },
+    })
     await flushPromises()
     expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
+  })
+
+  it('active tab is bright with an underline, inactive stays readable', async () => {
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    const prStyle = wrapper.get('[data-testid="sidebar-tab-pr"]').attributes('style') ?? ''
+    expect(prStyle).toContain('var(--semantic-text)')
+    expect(prStyle).toContain('inset 0 -2px')
+    const filesStyle = wrapper.get('[data-testid="sidebar-tab-files"]').attributes('style') ?? ''
+    expect(filesStyle).toContain('var(--semantic-text)')
+    expect(filesStyle).not.toContain('inset 0 -2px')
   })
 })
