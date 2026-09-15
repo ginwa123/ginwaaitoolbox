@@ -10,4 +10,7 @@ pub const makeAgentSystemPrompt = @import("prompts_make_agent_system_prompt.zig"
 // Agent-Kanbans mirror (Migration 081)
 pub const makeAgentKanbanKnowledge = @import("prompts_make_agent_kanban_knowledge.zig").makeAgentKanbanKnowledge;
 pub const makeAgentKanbanSystemPrompt = @import("prompts_make_agent_kanban_system_prompt.zig").makeAgentKanbanSystemPrompt;
+// Agent-Routines mirror (Migration 087)
+pub const makeAgentRoutineKnowledge = @import("prompts_make_agent_routine_knowledge.zig").makeAgentRoutineKnowledge;
+pub const makeAgentRoutineSystemPrompt = @import("prompts_make_agent_routine_system_prompt.zig").makeAgentRoutineSystemPrompt;
 pub const makePlanContext = @import("prompts_make_plan_context.zig").makePlanContext;

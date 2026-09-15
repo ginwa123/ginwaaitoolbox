@@ -192,6 +192,22 @@ pub fn buildMessages(
         try final_system.appendSlice(allocator, agentKanbanKnowledgeContent);
     }
 
+    // Agent-Routines mirror (Migration 087): routine system prompt +
+    // knowledge resolve via workspace_routines (fire sessions) or
+    // workspace_item_tasks (chats under a routine item). Empty for
+    // non-routine sessions — same opt-out contract as the kanban pair.
+    const agentRoutineSystemPromptContent = try agentic_loop.prompts_mod.makeAgentRoutineSystemPrompt(allocator, io, db, session_id);
+    defer allocator.free(agentRoutineSystemPromptContent);
+    if (agentRoutineSystemPromptContent.len > 0) {
+        try final_system.appendSlice(allocator, agentRoutineSystemPromptContent);
+    }
+
+    const agentRoutineKnowledgeContent = try agentic_loop.prompts_mod.makeAgentRoutineKnowledge(allocator, io, db, session_id);
+    defer allocator.free(agentRoutineKnowledgeContent);
+    if (agentRoutineKnowledgeContent.len > 0) {
+        try final_system.appendSlice(allocator, agentRoutineKnowledgeContent);
+    }
+
     // 6. kanbanStatus → designStatus
     const kanbanStatusContent = try agentic_loop.prompts_mod.makeKanbanContext(allocator, db, session_id, filtered_tools);
     defer allocator.free(kanbanStatusContent);

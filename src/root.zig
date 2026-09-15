@@ -899,6 +899,9 @@ test {
     _ = @import("agentic_loop/agent_kanban_tools_allowed.zig");
     _ = @import("agentic_loop/prompts_make_agent_kanban_knowledge.zig");
     _ = @import("agentic_loop/prompts_make_agent_kanban_system_prompt.zig");
+    // Agent-Routines mirror (Migration 087).
+    _ = @import("agentic_loop/prompts_make_agent_routine_knowledge.zig");
+    _ = @import("agentic_loop/prompts_make_agent_routine_system_prompt.zig");
     // Single-file Lua hooks (plan 2026-09-12-hook-lua-pre-post-tool-use):
     // impl + inline tests in one file each. Same discovery workaround as
     // mcp_http above — the `pub const` re-export alone doesn't pull tests.
