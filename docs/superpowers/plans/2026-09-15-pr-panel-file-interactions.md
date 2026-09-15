@@ -6,7 +6,7 @@
 
 1. **Click a file → open in code browser.** Today a click only expands the inline diff. A plain click should open the file in the code editor (`view=code-editor`, i.e. the app URL changes), jumping to the first added line when the click lands on a diff row.
 2. **Right-click → Open in new tab.** File rows get the app's standard right-click menu opening the code-editor URL in a real browser tab; Ctrl/Cmd+click and middle-click do the same (browser gesture, ChatsList precedent).
-3. **Full-height diff.** Today the inline diff is capped at `40vh` inside a file-list-first layout. When a file is selected, the file list collapses to a breadcrumb/back row and the diff takes the full sidebar height (list ↔ diff toggle, selection persists).
+3. **Wider overlay sidebar with full-height diff (confirmed 2026-09-15).** Today the inline diff is capped at `40vh` inside a file-list-first layout. When a file is selected, the file list collapses to a breadcrumb/back row and the diff takes the full panel height (list ↔ diff toggle, selection persists).
 
 **Why this shape:** every piece reuses an existing funnel — `openInCodeEditor` (AppLayout provide/inject, `useInjectOpenInCodeEditor`), `openInNewTab(router, {path:'/app', query})` single funnel, `useContextMenu` + `OpenInNewTabMenu`, `isBackgroundOpenEvent`/`auxclick` (ChatsList pattern). No new navigation primitives, no backend changes (all three are frontend-only).
 
@@ -50,7 +50,7 @@
    - Simpler alternative (chosen): file-row click navigates; diff-row click keeps mini-chat; selected-file header gets an explicit `⤴ Open` button (same action, discoverable).
 2. **Menu reuse, not a new menu.** Extend `OpenInNewTabMenu.vue` with an opt-in file item (`showFileInNewTab` prop + `openFile` emit, label "Open file in new tab") following the existing `showDetails`/`showStop` pattern. Panel hosts `useContextMenu()` per file list (one menu instance, payload = right-clicked file).
 3. **New-tab URL = code-editor deep link.** `{path:'/app', query:{view:'code-editor', file:btoa(path), cwd}}` via the `openInNewTab` funnel (consistent window features). `line` omitted for row opens (row has no single line); included for diff-row `⤴`? No — keep row-level only (line comes from plain diff-row mini-chat flow, unchanged).
-4. **Full-height diff = list collapses.** When `selectedPath` is set, the file-list groups hide behind a breadcrumb row (`‹ All files (n)` back button clears selection); the diff section grows to fill (`maxHeight: 40vh` → flex-1 full scroll). Clearing selection restores the list. Both modes share the behavior (one `v-if` on the list container). Selection persists across refreshes (already does via `selectedPath`).
+4. **Overlay + collapse (confirmed 2026-09-15).** When `selectedPath` is set, the file-list groups hide behind a breadcrumb row (`‹ All files (n)` back button clears selection); the diff section grows to fill (`maxHeight: 40vh` → flex-1 full scroll). Clearing selection restores the list. Both modes share the behavior. The shell switches from `hidden lg:flex` flex sibling to an `absolute right-0 top-0 bottom-0` overlay (`z-30`, shadow, `w-[560px] max-w-[45%] min-w-[380px]`) so it overlaps the chat instead of squeezing the message column. Default width in `useChatRightSidebar` rises 280 to 520 (clamp 380-720, same localStorage key). Peek keeps precedence. Selection persists across refreshes (already does via `selectedPath`).
 5. **Ctrl/Cmd+click + middle-click** on file rows open the same new-tab URL (ChatsList `onChatRowClick`/`onChatRowAuxClick` pattern with `isBackgroundOpenEvent`).
 
 ---
@@ -60,7 +60,7 @@
 | File | Action | Why |
 |---|---|---|
 | `components/views/chat_right_sidebar/SidebarDiffPanel.vue` | EDIT | File-row click → `open-file` emit (+ keep inline selection); diff header `⤴ Open` button; right-click menu wiring; list-collapse + full-height diff |
-| `components/views/chat_right_sidebar/ChatRightSidebar.vue` | EDIT | Re-emit `open-file` upward (shell stays logic-free, panel precedent) |
+| `components/views/chat_right_sidebar/ChatRightSidebar.vue` | EDIT | Re-emit `open-file` upward + overlay shell (absolute, wider, shadow) |
 | `components/views/ChatView.vue` | EDIT (small) | `onChatSidebarOpenFile({path, line?})` → `openInCodeEditor({filePath, cwd: effectiveCwd, line})` |
 | `components/shell/OpenInNewTabMenu.vue` | EDIT | Opt-in file item (`showFileInNewTab` + `openFile` emit) |
 | `components/views/__tests__/SidebarDiffPanel.open.spec.ts` | NEW | Behavioural: click emits open-file, no navigation on mini-chat rows, right-click menu opens, back button restores list, diff fills height |
@@ -79,17 +79,16 @@
 - [ ] Task 1.1: `OpenInNewTabMenu.vue` file item (`showFileInNewTab`, `openFile` emit). Behavioural spec.
 - [ ] Task 1.2: Panel `useContextMenu` wiring on file rows (both modes): right-click opens menu with file payload; `openFile` → `openInNewTab(router, {path:'/app', query:{view:'code-editor', file:btoa, cwd}})`; Ctrl/Cmd+click + `auxclick` (middle) same target. Vitest: right-click shows menu, item click calls `window.open` with code-editor href; Escape dismisses.
 
-### Phase 2 — Full-height diff
-- [ ] Task 2.1: List collapses to `‹ All files (n)` breadcrumb when `selectedPath` set; diff container `maxHeight 40vh` → `flex-1 min-h-0` full scroll; back button clears selection. Both modes. Vitest: selecting hides list, shows breadcrumb; back restores.
-- [ ] Task 2.2: `vue-tsc --build` + views/git vitest sweep (tool-width failure pre-exists on main — verify no NEW failures).
-
----
+### Phase 2 — Wider overlay sidebar + full-height diff
+- [ ] Task 2.1: Shell becomes overlay (`absolute right-0 top-0 bottom-0 z-30`, `w-[560px] max-w-[45%] min-w-[380px]`, shadow, overlaps chat); default width 280 to 520, clamp 380-720 (same localStorage key); verify no flex leftover in ChatView root. Vitest: aside has overlay classes/width style, close emits.
+- [ ] Task 2.2: List collapses to `‹ All files (n)` breadcrumb when `selectedPath` set; diff container `maxHeight 40vh` to `flex-1 min-h-0` full scroll; back button clears selection. Both modes. Vitest: selecting hides list, shows breadcrumb; back restores.
+- [ ] Task 2.3: `vue-tsc --build` + views/git vitest sweep (tool-width failure pre-exists on main — verify no NEW failures).
 
 ## 4. Tests
 
 | Layer | File | What it proves |
 |---|---|---|
-| Vitest | `SidebarDiffPanel.open.spec.ts` | open-file emit on row click, header button, menu open/emit/dismiss, collapse + back, no stage buttons in PR mode (existing) |
+| Vitest | `SidebarDiffPanel.open.spec.ts` | open-file emit on row click, header button, menu open/emit/dismiss, collapse + back, overlay shell classes, no stage buttons in PR mode (existing) |
 | Vitest | `ChatView.prOpen.spec.ts` | handler exists, calls openInCodeEditor with filePath + effectiveCwd |
 | Vitest | `OpenInNewTabMenu.file.spec.ts` | file item gated by prop, emits openFile |
 | Typecheck | `vue-tsc --build` | no regressions |
@@ -99,6 +98,6 @@
 
 ## 5. Risks / open questions (for human review)
 
-1. **Click-navigates vs click-expands?** Plan makes file-row click navigate away (chat stays, editor takes main view). If you preferred click = expand-only with navigation only via `⤴`/menu, say so — Task 0.1 flips in one line.
-2. **PR files missing from worktree?** `openInCodeEditor` shows its inline read error; panel does not pre-check. Acceptable?
-3. **"Full git diff" interpretation?** Plan implements list-collapse + full-height diff in-sidebar. If you instead meant a wider sidebar or fullscreen overlay, say so.
+1. ~~Click-navigates vs click-expands?~~ Answered 2026-09-15: **click navigates away**. Original text said click navigates; kept for reference: `⤴`/menu, say so — Task 0.1 flips in one line.
+2. ~~PR files missing from worktree?~~ Accepted 2026-09-15: **editor inline read error, no pre-check**.
+3. ~~"Full git diff" interpretation?~~ Answered 2026-09-15: **wider overlay sidebar** (overlaps chat, ~560px) + list-collapse + full-height diff.
