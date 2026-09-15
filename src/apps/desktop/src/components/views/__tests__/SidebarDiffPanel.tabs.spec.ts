@@ -136,4 +136,41 @@ describe('SidebarDiffPanel tabs', () => {
     expect(filesStyle).toContain('var(--semantic-text)')
     expect(filesStyle).not.toContain('inset 0 -2px')
   })
+
+  it('tab clicks sync ?panel= to the URL and mount restores it', async () => {
+    const makeRouter = async (query: Record<string, string>) => {
+      const r = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+      })
+      await r.push({ path: '/', query })
+      await r.isReady()
+      return r
+    }
+    const router = await makeRouter({})
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [router] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    await wrapper.get('[data-testid="sidebar-tab-files"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.panel).toBe('files')
+    await wrapper.get('[data-testid="sidebar-tab-pr"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.panel).toBe('pr')
+
+    const filesRouter = await makeRouter({ panel: 'files' })
+    const restored = mount(SidebarDiffPanel, {
+      global: { plugins: [filesRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    expect(restored.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe(
+      'true',
+    )
+    expect(restored.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(
+      true,
+    )
+  })
 })

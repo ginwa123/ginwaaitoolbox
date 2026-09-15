@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
@@ -53,8 +53,23 @@ const changeCount = computed(
   () => stagedFiles.value.length + unstagedFiles.value.length + untrackedFiles.value.length,
 )
 
+const router = useRouter()
+const route = useRoute()
+
+const readTabParam = (): 'files' | 'pr' | null => {
+  const v = route.query.panel
+  return v === 'files' || v === 'pr' ? v : null
+}
+
+const syncTabParam = (tab: 'files' | 'pr' | null) => {
+  const query = { ...route.query }
+  if (tab) query.panel = tab
+  else delete query.panel
+  router.replace({ path: route.path, query }).catch(() => {})
+}
+
 const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
-const activeTab = ref<'files' | 'pr'>(isPrMode.value ? 'pr' : 'files')
+const activeTab = ref<'files' | 'pr'>(isPrMode.value ? (readTabParam() ?? 'pr') : 'files')
 const showTabs = computed(() => isPrMode.value)
 const showPr = computed(() => isPrMode.value && activeTab.value === 'pr')
 const loadedTabs = ref(new Set<string>())
@@ -66,8 +81,6 @@ const isLoadingPr = ref(false)
 const prError = ref<string | null>(null)
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
-
-const router = useRouter()
 
 // Right-click "Open file in new tab" for a file row. Position state +
 // dismiss wiring live in useContextMenu; the row payload (file path)
@@ -298,6 +311,7 @@ const loadTab = async (tab: 'files' | 'pr', force = false) => {
 
 const setActiveTab = (tab: 'files' | 'pr') => {
   activeTab.value = tab
+  syncTabParam(tab)
   void loadTab(tab)
 }
 
@@ -367,7 +381,13 @@ watch(
   ([, url], [, prevUrl]) => {
     const had = (prevUrl ?? '').trim().length > 0
     const has = (url ?? '').trim().length > 0
-    if (had !== has) activeTab.value = has ? 'pr' : 'files'
+    if (had !== has) {
+      if (has) activeTab.value = readTabParam() ?? 'pr'
+      else {
+        activeTab.value = 'files'
+        syncTabParam(null)
+      }
+    }
     selectedPath.value = null
     loadedTabs.value.clear()
     void loadTab(activeTab.value, true)
