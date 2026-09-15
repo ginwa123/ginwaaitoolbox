@@ -568,6 +568,13 @@ const handleNavigate = (
     router.push({ path: '/app', query: { view: 'chat' } })
   } else if (view === 'workspace') {
     navigationStore.clearAll()
+    // Navigating to the board wins over any open task chat — clear the
+    // workspaces task so the kanban/design/folder view renders instead of
+    // the chat. (navigationStore.clearAll only clears the navigation
+    // store's task; the visible chat is gated on workspacesStore.activeTask.
+    // Without this, a board URL can render chat content when the caller
+    // forgot to clear the task first.)
+    workspacesStore.setActiveTask(null)
     chatSessionCwd.value = ''
     // When the caller passes (workspaceId, itemId), mirror them into the
     // URL so the kanban/folder/design item survives a page reload.
@@ -604,6 +611,11 @@ const closeGitViewer = () => {
   // workspace context. For design items, also preserve pageId so
   // the active design page survives a reload.
   if (workspacesStore.activeWorkspaceItemId) {
+    // Returning to the board wins over any open task chat — clear the
+    // task so the kanban/design/folder renders instead of the chat.
+    // Without this, the URL is bare (no /chat/ suffix) while the chat
+    // is still active: board URL + chat content.
+    workspacesStore.setActiveTask(null)
     const wsId = activeWorkspaceId.value
     const itemId = workspacesStore.activeWorkspaceItemId
     const pageId = workspacesStore.activeDesignPageId
@@ -650,6 +662,7 @@ const closeSkillViewer = () => {
   // closeGitViewer for the same pattern. For design items, also
   // preserve pageId so the active design page survives a reload.
   if (workspacesStore.activeWorkspaceItemId) {
+    workspacesStore.setActiveTask(null)
     const wsId = activeWorkspaceId.value
     const itemId = workspacesStore.activeWorkspaceItemId
     const pageId = workspacesStore.activeDesignPageId
@@ -770,6 +783,7 @@ const closeCodeEditor = () => {
   // same pattern. For design items, also preserve pageId so the
   // active design page survives a reload.
   if (workspacesStore.activeWorkspaceItemId) {
+    workspacesStore.setActiveTask(null)
     const wsId = activeWorkspaceId.value
     const itemId = workspacesStore.activeWorkspaceItemId
     const pageId = workspacesStore.activeDesignPageId
