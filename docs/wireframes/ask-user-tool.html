@@ -9,7 +9,6 @@
     --bg:#1D1C19;
     --panel:#232220;
     --card:#1F1E1B;
-    --card-hi:#26241F;
     --border:#302E2B;
     --border-soft:#282727;
     --text:#c5c9c5;
@@ -44,9 +43,9 @@
   .app{border:1px solid var(--border);border-radius:12px;background:var(--panel);overflow:hidden}
   .app-bar{display:flex;align-items:center;gap:9px;padding:9px 13px;border-bottom:1px solid var(--border);
            background:#201F1C;font-size:11px;color:var(--faint);font-family:var(--mono)}
+  .app-bar .runstate{margin-left:auto;color:var(--faint)}
   .dot{width:9px;height:9px;border-radius:50%;background:#3a3833}
-  .app-body{padding:20px 26px 26px;background:
-      radial-gradient(1200px 300px at 50% -80px, #ffffff05, transparent 70%)}
+  .app-body{padding:20px 26px 0;background:radial-gradient(1200px 300px at 50% -80px, #ffffff05, transparent 70%)}
   .turn{display:flex;gap:11px;margin:0 0 16px}
   .av{flex:0 0 24px;height:24px;border-radius:6px;background:#2b2a26;border:1px solid var(--border);
       display:flex;align-items:center;justify-content:center;font-size:10px;font-family:var(--mono);color:var(--faint)}
@@ -55,11 +54,20 @@
   .msg{font-size:13.5px;color:var(--text)}
   .msg.dim{color:var(--dim)}
 
-  /* ---------- tool card chrome (mirrors ToolCardHeader.vue + chat-tool-card) ---------- */
+  /* composer mock */
+  .composer{border-top:1px solid var(--border);background:#201F1C;padding:12px 26px 14px;display:flex;gap:10px;align-items:flex-end}
+  .composer .box{flex:1;border:1px solid var(--border);border-radius:10px;background:#191817;color:var(--faint);
+                 font-size:12.5px;padding:10px 12px;font-family:var(--sans)}
+  .composer .send{border:1px solid var(--border);border-radius:10px;padding:9px 18px;font-size:12.5px;font-weight:600;
+                  background:linear-gradient(135deg,var(--violet),var(--blue));color:#1D1C19;white-space:nowrap}
+  .composer .stop{border:1px solid #4a2b28;border-radius:10px;padding:9px 18px;font-size:12.5px;font-weight:600;
+                  background:#ea696218;color:var(--red);white-space:nowrap}
+
+  /* ---------- tool card chrome ---------- */
   .tcard{border:1px solid var(--border);border-radius:9px;background:var(--card);overflow:hidden;
          font-family:var(--mono);font-size:11.5px}
   .tcard.waiting{border-color:#4a3f22}
-  .tcard.solved{opacity:.92}
+  .tcard.solved{opacity:.94}
   .thead{display:flex;align-items:center;gap:8px;padding:7px 10px}
   .tname{color:var(--violet);font-weight:600;white-space:nowrap}
   .tprim{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
@@ -81,7 +89,6 @@
 
   /* ---------- question body ---------- */
   .qhead{font-size:13.5px;color:#e6e2d8;margin:0 0 10px;font-family:var(--sans)}
-  .qhead code{font-size:11px}
   .opts{display:flex;flex-direction:column;gap:5px;margin:0 0 10px}
   .opt{display:flex;align-items:flex-start;gap:9px;padding:8px 10px;border:1px solid var(--border-soft);
        border-radius:7px;background:#00000024;cursor:pointer;transition:border-color .12s,background .12s}
@@ -103,7 +110,7 @@
   textarea,input[type=text]{width:100%;background:#171614;border:1px solid var(--border);border-radius:7px;
         color:var(--text);font-family:var(--sans);font-size:12.5px;padding:7px 9px;resize:vertical}
   textarea:focus,input[type=text]:focus{outline:none;border-color:var(--violet)}
-  .actions{display:flex;align-items:center;gap:8px;padding-top:2px;border-top:1px solid var(--border-soft);
+  .actions{display:flex;align-items:center;gap:8px;border-top:1px solid var(--border-soft);
            margin-top:11px;padding-top:10px}
   .btn{border:1px solid var(--border);background:#2a2823;color:var(--text);border-radius:7px;
        padding:5px 12px;font-size:12px;font-family:var(--sans);cursor:pointer}
@@ -116,7 +123,6 @@
   .answered-chip{display:inline-flex;align-items:center;gap:7px;border:1px solid #2f4429;background:#8ec07c10;
        color:var(--green);border-radius:7px;padding:5px 10px;font-size:12.5px;font-family:var(--mono)}
   .note{color:var(--faint);font-size:12px;font-family:var(--sans)}
-  .count{font-family:var(--mono);font-size:10.5px;color:var(--yellow)}
   .spin{display:inline-block;width:11px;height:11px;border:1.5px solid #4a4740;border-top-color:var(--violet);
         border-radius:50%;animation:sp .7s linear infinite;vertical-align:-1px;margin-right:6px}
   @keyframes sp{to{transform:rotate(360deg)}}
@@ -137,6 +143,7 @@
   .flow{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin-top:12px;font-family:var(--mono);font-size:11px}
   .flow .step{border:1px solid var(--border);background:var(--card);border-radius:7px;padding:6px 9px;color:var(--dim)}
   .flow .step b{color:var(--text);font-weight:600}
+  .flow .stop{border-color:#4a3f22;background:#e0b0600f;color:var(--yellow)}
   .flow .ar{color:var(--faint)}
   .kv{font-family:var(--mono);font-size:11px;color:var(--dim)}
   .swatches{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-family:var(--mono);font-size:10.5px;color:var(--faint)}
@@ -150,18 +157,21 @@
 <div class="wrap">
 
   <h1>ask_user — agent tool wireframe</h1>
-  <p class="sub">The agent stops mid-run, asks the human a question with selectable options and/or free text,
-     and the agentic loop blocks until the human answers.</p>
+  <p class="sub">The agent stops mid-task, asks the human a question with selectable options and/or free text,
+     and the turn <b>ends</b>. When the human answers, the answer is written back as the tool result and a
+     new run continues the conversation.</p>
   <p class="lead">Plan: <code>docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md</code> ·
      Card lives inline in the transcript, exactly where every other tool card lives.
-     The question is <b>persistent</b> — it survives a reload and is answerable whenever you get to it.</p>
+     The question is a <b>persisted row</b>, so it survives a reload and can be answered at any time — there is no
+     timeout and nothing is kept waiting in memory.</p>
 
   <h2><span class="n">1</span> Where it lives — a real transcript</h2>
-  <p class="sub">Agent hits a genuinely ambiguous decision, asks, blocks, resumes with the answer as the tool result.</p>
+  <p class="sub">Agent hits a genuinely ambiguous decision, asks, the turn ends, and the run resumes after the answer.</p>
 
   <div class="app">
     <div class="app-bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
-      &nbsp;Chat — deploy pipeline</div>
+      &nbsp;Chat — deploy pipeline
+      <span class="runstate" id="runState">● idle — no worker</span></div>
     <div class="app-body">
 
       <div class="turn">
@@ -193,7 +203,6 @@
               <span class="tprim">Deploy target</span>
               <span class="tspacer"></span>
               <span class="badge run" id="demoBadge">● waiting for you</span>
-              <span class="count" id="demoCount">14:52</span>
               <span class="tchev">▾</span>
             </div>
             <div class="tbody">
@@ -224,7 +233,7 @@
                 <button class="btn primary" id="demoSubmit">Send answer</button>
                 <button class="btn ghost" id="demoSkip">Skip</button>
                 <span class="tspacer"></span>
-                <span class="hint">1–3 pick · ⏎ send · esc skip · times out in 30:00</span>
+                <span class="hint">1–3 pick · ⏎ send · esc skip · no timeout</span>
               </div>
             </div>
             <details class="targs"><summary>Arguments</summary>
@@ -234,52 +243,49 @@
   "options": ["staging", "production", "both, staging first"],
   "allow_free_text": true,
   "multi_select": false,
-  "recommended": "staging",
-  "timeout_seconds": 900
+  "recommended": "staging"
 }</pre></details>
           </div>
           <!-- ============ /PENDING CARD ============ -->
 
           <div class="anno">
             <span class="k">render</span>
-            <span>The card is the normal tool placeholder row that <code>handle_tool</code> already inserts + streams
-            <em>before</em> the tool body runs. Its arguments already contain the question — so the card renders correctly
-            even if every ephemeral event is missed. Only the <b>status</b> needs the side map.</span>
+            <span>The card is a normal tool card. The tool-result row already carries the question's
+            <b>arguments</b> (question, options, recommended, flags) and a <code>&lt;status&gt;pending&lt;/status&gt;</code>
+            payload — so the card renders entirely from the row itself. <b>No new SSE event type, no side map,
+            and nothing to rehydrate after a reload.</b></span>
           </div>
         </div>
       </div>
 
-      <div class="turn">
-        <div class="av">ai</div>
-        <div class="bub">
-          <div class="who">nalar · loop 3 · resumed 41s later</div>
-          <div class="msg dim">Got it — staging first. Applying 086 and 087 to staging now…</div>
-        </div>
-      </div>
+    </div>
 
+    <div class="composer">
+      <div class="box">Message nalar… (typing here moves on without answering — see §5)</div>
+      <div class="send">Send</div>
     </div>
   </div>
 
   <div class="anno">
-    <span class="k">pause</span>
-    <span>The loop is parked inside the tool while the card is pending. Nothing else in the batch runs.
-      <b>Stop</b> still works (the wait loop polls the same <code>worker.cancelled</code> flag the rest of the run uses),
-      and the user can answer, skip, or just let it time out.</span>
+    <span class="k">turn<br>ended</span>
+    <span>The run is <b>over</b> — the worker is deleted, the session is idle, and the composer is fully functional.
+      Nothing is parked in memory and <b>there is no timeout</b>: the question can wait a minute or a week for the
+      same cost. The card itself is the only thing that says the agent is waiting on you.</span>
   </div>
 
   <div class="hr"></div>
 
   <h2><span class="n">2</span> Every card state</h2>
-  <p class="sub">The same component, eight states. Header chrome is the shared <code>ToolCardHeader.vue</code>.</p>
+  <p class="sub">One component, nine states. Every one is derived from <code>&lt;status&gt;</code> in the tool row plus
+     the tool-call arguments.</p>
 
   <div class="grid">
 
-    <!-- single select -->
     <div class="cell">
-      <div class="cl"><span><b>pending</b> · single-select</span><span>--</span></div>
+      <div class="cl"><span><b>pending</b> · single-select</span><span>&lt;status&gt;pending&lt;/status&gt;</span></div>
       <div class="tcard waiting">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Refactor scope</span>
-          <span class="tspacer"></span><span class="badge run">● waiting for you</span><span class="count">14:52</span></div>
+          <span class="tspacer"></span><span class="badge run">● waiting for you</span></div>
         <div class="tbody">
           <p class="qhead">Should I refactor the router first, or ship the fix and refactor later?</p>
           <div class="opts">
@@ -300,23 +306,18 @@
       </div>
     </div>
 
-    <!-- multi select -->
     <div class="cell">
-      <div class="cl"><span><b>pending</b> · multi-select + free text</span><span>--</span></div>
+      <div class="cl"><span><b>pending</b> · multi-select + free text</span><span>&lt;status&gt;pending&lt;/status&gt;</span></div>
       <div class="tcard waiting">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Which checks to run</span>
-          <span class="tspacer"></span><span class="badge run">● waiting for you</span><span class="count">04:37</span></div>
+          <span class="tspacer"></span><span class="badge run">● waiting for you</span></div>
         <div class="tbody">
           <p class="qhead">Which test suites should I run before opening the PR? (pick any)</p>
           <div class="opts">
-            <div class="opt multi sel"><span class="mark">✓</span>
-              <span class="lab">Zig unit tests</span></div>
-            <div class="opt multi sel"><span class="mark">✓</span>
-              <span class="lab">Functional harness (pytest)</span></div>
-            <div class="opt multi"><span class="mark"></span>
-              <span class="lab">Vitest frontend suite</span></div>
-            <div class="opt multi"><span class="mark"></span>
-              <span class="lab">Cross-target build (win/mac)</span></div>
+            <div class="opt multi sel"><span class="mark">✓</span><span class="lab">Zig unit tests</span></div>
+            <div class="opt multi sel"><span class="mark">✓</span><span class="lab">Functional harness (pytest)</span></div>
+            <div class="opt multi"><span class="mark"></span><span class="lab">Vitest frontend suite</span></div>
+            <div class="opt multi"><span class="mark"></span><span class="lab">Cross-target build (win/mac)</span></div>
           </div>
           <div class="actions">
             <button class="btn primary">Send 2 answers</button>
@@ -327,12 +328,11 @@
       </div>
     </div>
 
-    <!-- free text only -->
     <div class="cell">
       <div class="cl"><span><b>pending</b> · free text only</span><span>allow_free_text, no options</span></div>
       <div class="tcard waiting">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Branch name</span>
-          <span class="tspacer"></span><span class="badge run">● waiting for you</span><span class="count">14:52</span></div>
+          <span class="tspacer"></span><span class="badge run">● waiting for you</span></div>
         <div class="tbody">
           <p class="qhead">What should I name the branch? I'll use your exact string.</p>
           <input type="text" value="worktree/agent-tool-ask-user-1789509458939" />
@@ -345,7 +345,6 @@
       </div>
     </div>
 
-    <!-- submitting -->
     <div class="cell">
       <div class="cl"><span><b>submitting</b></span><span>POST in flight</span></div>
       <div class="tcard waiting">
@@ -362,12 +361,11 @@
         </div>
       </div>
       <div class="note" style="margin-top:9px">No optimistic swap: the card stays <code>submitting</code> until the
-        <code>action:"answered"</code> frame lands. A 200 with no frame patches locally after 2s.</div>
+        tool row is rewritten and its <code>llm_full</code> update lands. A 200 with no event patches locally after 2s.</div>
     </div>
 
-    <!-- answered -->
     <div class="cell">
-      <div class="cl"><span><b>answered</b></span><span>resolved, read-only</span></div>
+      <div class="cl"><span><b>answered</b></span><span>&lt;status&gt;answered&lt;/status&gt;</span></div>
       <div class="tcard solved">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Deploy target</span>
           <span class="tspacer"></span><span class="badge ok">✓ answered</span><span class="tmeta">14:33</span></div>
@@ -375,7 +373,7 @@
           <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
           <span class="answered-chip">✓ staging</span>
           <div class="actions" style="border-top:0;padding-top:9px">
-            <span class="hint">answered 41s after asking · the agent resumed</span>
+            <span class="hint">the tool row was rewritten · a new run resumed</span>
             <span class="tspacer"></span><span class="tchev">▸</span>
           </div>
         </div>
@@ -383,7 +381,6 @@
       <div class="note" style="margin-top:9px">Collapses to one line. Multi-select renders one chip per answer.</div>
     </div>
 
-    <!-- skipped -->
     <div class="cell">
       <div class="cl"><span><b>skipped</b></span><span>human pressed Skip</span></div>
       <div class="tcard solved">
@@ -393,60 +390,44 @@
           <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
           <span class="note">You skipped this question.</span>
           <div class="actions" style="border-top:0;padding-top:9px">
-            <span class="hint">the tool tells the model: do not guess — stop this line of work</span>
+            <span class="hint">the model is told: do not guess — state what you're blocked on and stop</span>
           </div>
         </div>
       </div>
-      <div class="note" style="margin-top:9px">Deliberately <b>not</b> the same as Stop: the run continues and the
-        model must say what it is blocked on.</div>
+      <div class="note" style="margin-top:9px">A new run still starts: the model must <em>acknowledge</em> the skip
+        and stop that line of work, rather than resuming silently.</div>
     </div>
 
-    <!-- timeout -->
     <div class="cell">
-      <div class="cl"><span><b>timeout</b></span><span>nobody answered</span></div>
+      <div class="cl"><span><b>abandoned</b></span><span>you sent a message instead</span></div>
       <div class="tcard solved">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Deploy target</span>
-          <span class="tspacer"></span><span class="badge muted">timed out</span><span class="tmeta">14:48</span></div>
+          <span class="tspacer"></span><span class="badge muted">moved on</span><span class="tmeta">14:41</span></div>
         <div class="tbody">
           <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
-          <span class="note">No answer within 30 minutes — the agent decided on its own.</span>
+          <span class="note">You moved on without answering.</span>
         </div>
       </div>
+      <div class="note" style="margin-top:9px">Typing in the composer while a question is pending resolves it as
+        <code>abandoned</code> — so the session is never dead-ended, and the model is explicitly told not to guess
+        (§5).</div>
     </div>
 
-    <!-- unavailable -->
     <div class="cell">
-      <div class="cl"><span><b>unavailable</b></span><span>unattended run only</span></div>
+      <div class="cl"><span><b>unavailable</b></span><span>unattended run / sub-agent</span></div>
       <div class="tcard solved">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Deploy target</span>
-          <span class="tspacer"></span><span class="badge muted">no human</span><span class="tmeta">returned instantly</span></div>
+          <span class="tspacer"></span><span class="badge muted">no human</span><span class="tmeta">same run</span></div>
         <div class="tbody">
           <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
           <span class="note">No human was available — the agent decided on its own and stated the assumption.</span>
         </div>
       </div>
-      <div class="note" style="margin-top:9px">Only for an <b>unattended run</b> (<code>is_auto_retry_until_stop=1</code>) or a
-        sub-agent. A missing browser tab no longer skips the question — the question is <b>persistent</b>, so the agent
-        waits for a human who may show up later.</div>
+      <div class="note" style="margin-top:9px">Only for an unattended run (<code>is_auto_retry_until_stop=1</code>) or a
+        sub-agent. <b>No question row is written</b> — the model decides in the same run and the run completes, so a
+        scheduled job never leaves a dangling question.</div>
     </div>
 
-    <!-- orphaned -->
-    <div class="cell">
-      <div class="cl"><span><b>orphaned</b></span><span>run died mid-question</span></div>
-      <div class="tcard solved">
-        <div class="thead"><span class="tname">ask_user</span><span class="tprim">Deploy target</span>
-          <span class="tspacer"></span><span class="badge muted">run ended</span><span class="tmeta">not answerable</span></div>
-        <div class="tbody">
-          <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
-          <span class="note">The run ended before you answered. Re-ask the agent if you still need this.</span>
-        </div>
-      </div>
-      <div class="note" style="margin-top:9px">A persisted question whose owning run is gone (backend restarted, session
-        stopped). The boot sweep marks it once, and a late answer returns <code>410</code> instead of pretending to
-        resume — the card never implies an answer the agent will never read.</div>
-    </div>
-
-    <!-- error -->
     <div class="cell">
       <div class="cl"><span><b>error</b></span><span>answer POST failed</span></div>
       <div class="tcard waiting" style="border-color:#4a2b28">
@@ -461,9 +442,10 @@
             <span class="hint">your selection is kept</span></div>
         </div>
       </div>
+      <div class="note" style="margin-top:9px">The row is left <code>pending</code> on purpose so Retry is safe — the
+        endpoint never resumes a run whose answer did not land first.</div>
     </div>
 
-    <!-- invalid args (model error) -->
     <div class="cell">
       <div class="cl"><span><b>invalid args</b></span><span>model called it wrong</span></div>
       <div class="tcard" style="border-color:#4a2b28">
@@ -472,12 +454,12 @@
         <div class="tbody">
           <span class="note" style="color:var(--red)">recommended must exactly match one of options</span>
           <div class="actions" style="border-top:0;padding-top:9px">
-            <span class="hint">success=false → the model sees the error and retries with valid args</span>
+            <span class="hint">success=false → the model sees the error and retries with valid args, in the same run</span>
           </div>
         </div>
       </div>
-      <div class="note" style="margin-top:9px">Only malformed input becomes an <code>&lt;error&gt;</code>.
-        Timeout / no-human / skipped are <b>successful</b> calls with a degraded outcome.</div>
+      <div class="note" style="margin-top:9px">Only malformed input is an <code>&lt;error&gt;</code>.
+        Skipped / abandoned / no-human are <b>successful</b> calls with a degraded outcome.</div>
     </div>
 
   </div>
@@ -494,7 +476,6 @@
           <span class="tprim">Deploy target</span>
           <span class="tspacer"></span>
           <span class="badge run">● waiting for you</span>
-          <span class="count">14:52</span>
         </div>
         <div class="tbody">
           <p class="qhead">Which environment should I deploy to?</p>
@@ -523,19 +504,19 @@
     <tr><th>#</th><th>Element</th><th>Source</th><th>Notes</th></tr>
     <tr><td>1</td><td>Tool-name pill <code>ask_user</code></td><td>shared chrome</td><td><code>ToolCardHeader.vue</code>, violet — identical to every other card</td></tr>
     <tr><td>2</td><td><code>header</code> as primary text</td><td>tool args</td><td>≤ 40 chars, validated. Falls back to the tool name if absent</td></tr>
-    <tr><td>3</td><td><code>● waiting for you</code> + countdown</td><td>map state + <code>expires_at</code></td><td>the only affordance that says the run is parked <b>on you</b></td></tr>
+    <tr><td>3</td><td><code>● waiting for you</code></td><td><code>&lt;status&gt;pending&lt;/status&gt;</code></td><td>the card sets the header's existing <code>running</code> badge itself (the run is already over, so nothing else would)</td></tr>
     <tr><td>4</td><td>Question body (markdown)</td><td>tool args</td><td>rendered via the existing <code>renderResponse</code> helper</td></tr>
     <tr><td>5</td><td>Options, keys <code>1..6</code></td><td>tool args</td><td>radio (single) / checkbox (multi). Labels are plain strings</td></tr>
-    <tr><td>6</td><td><code>recommended</code> chip</td><td>tool args</td><td>green chip on the matching option; disappears once answered</td></tr>
+    <tr><td>6</td><td><code>recommended</code> chip</td><td>tool args</td><td>green chip on the matching option; disappears once resolved</td></tr>
     <tr><td>7</td><td>"Other" textarea</td><td><code>allow_free_text</code></td><td>hidden when the model sets it false</td></tr>
-    <tr><td>8</td><td>Send / Skip</td><td>—</td><td>Send disabled until a valid selection; Skip = <code>{skip:true}</code></td></tr>
+    <tr><td>8</td><td>Send / Skip</td><td>—</td><td>Send disabled until a valid selection; Skip posts <code>{skip:true}</code></td></tr>
     <tr><td>9</td><td>Collapsible Arguments</td><td><code>tool_calls_json</code></td><td>shared <code>ToolParameters</code>-style block — same as every card</td></tr>
   </table>
 
   <h3>Theme tokens (no new colours)</h3>
   <div class="swatches">
     <span class="sw"><i style="background:#c09cf0"></i>--color-violet · tool pill, selection</span>
-    <span class="sw"><i style="background:#e0b060"></i>--yellow · waiting/running</span>
+    <span class="sw"><i style="background:#e0b060"></i>--yellow · waiting for you</span>
     <span class="sw"><i style="background:#8ec07c"></i>--green · answered</span>
     <span class="sw"><i style="background:#ea6962"></i>--red · error / invalid</span>
     <span class="sw"><i style="background:#302E2B"></i>--color-border</span>
@@ -544,99 +525,115 @@
 
   <div class="hr"></div>
 
-  <h2><span class="n">4</span> Wire &amp; control flow</h2>
+  <h2><span class="n">4</span> Flow</h2>
 
   <div class="flow">
     <span class="step"><b>agent</b> calls ask_user</span><span class="ar">→</span>
-    <span class="step"><b>handle_tool</b> inserts placeholder row + SSEs it <span style="color:var(--faint)">(already exists)</span></span>
+    <span class="step"><b>gate</b>: unattended / sub-agent? → <span style="color:var(--faint)">unavailable, same run</span></span>
     <span class="ar">→</span>
-    <span class="step"><b>execAskUser</b> gate: human available?</span><span class="ar">→</span>
     <span class="step"><b>INSERT</b> session_pending_question <span style="color:var(--faint)">(Migration 087)</span></span>
     <span class="ar">→</span>
-    <span class="step"><b>emit</b> llm_full / role=ask_user / requested</span>
+    <span class="step">tool returns <b>&lt;status&gt;pending&lt;/status&gt;</b> immediately</span>
   </div>
   <div class="flow" style="margin-top:8px">
-    <span class="step" style="border-color:#4a3f22"><b>card renders</b> pending</span><span class="ar">→</span>
+    <span class="step"><b>handle_tool</b> finishes the batch <span style="color:var(--faint)">(every tool_call already has its row)</span></span>
+    <span class="ar">→</span>
+    <span class="step stop"><b>BREAK</b> — persist <code>finish_reason=awaiting_user</code>, delete worker</span>
+    <span class="ar">→</span>
+    <span class="step">card waits, session idle, <b>no timeout</b></span>
+  </div>
+  <div class="flow" style="margin-top:8px">
     <span class="step">human picks <b>staging</b></span><span class="ar">→</span>
     <span class="step"><b>POST</b> /api/llm/session/:id/answer</span><span class="ar">→</span>
-    <span class="step"><b>UPDATE</b> row status=answered</span><span class="ar">→</span>
-    <span class="step"><b>emit</b> action=answered</span><span class="ar">→</span>
-    <span class="step">wait loop sees it within <b>100 ms</b></span><span class="ar">→</span>
-    <span class="step"><b>tool result</b> &lt;status&gt;answered&lt;/status&gt; → agent resumes</span>
+    <span class="step"><b>UPDATE</b> question row</span><span class="ar">→</span>
+    <span class="step"><b>REWRITE</b> the tool-result row in place <span style="color:var(--faint)">(+ llm_full → card flips)</span></span>
+    <span class="ar">→</span>
+    <span class="step"><b>emit_run_agent</b> <code>skip_initial_queue_message=true</code> → <b>new run resumes</b></span>
+  </div>
+
+  <div class="anno" style="margin-top:14px">
+    <span class="k">order<br>matters</span>
+    <span>The row rewrite <b>must</b> land before the resume run starts. Placeholder tool rows are
+      <code>is_feed_to_llm = 1</code>, so a run that starts first would hand the model
+      <code>&lt;status&gt;pending&lt;/status&gt;</code> and it might guess. If the rewrite fails, the endpoint errors and
+      leaves the row <code>pending</code> so Retry is safe.</span>
   </div>
 
   <div class="two" style="margin-top:20px">
     <div>
-      <h3>Wire frames — no new event type</h3>
+      <h3>Nothing new on the wire</h3>
       <div class="kv" style="border:1px solid var(--border);border-radius:9px;background:var(--card);padding:12px">
-<pre style="margin:0;white-space:pre-wrap;color:var(--dim)">event: llm_full
+<pre style="margin:0;white-space:pre-wrap;color:var(--dim)">event: llm_full        ← the standard tool-result row
 
-{ "role": "ask_user",
-  "action": "requested",
-  "question_id": "q_1789509583247_ab12",
+{ "tool_name": "ask_user",
   "tool_call_id": "call_abc",
-  "header": "Deploy target",
-  "question": "Which environment should I deploy to?",
-  "options": ["staging", "production"],
-  "allow_free_text": true,
-  "multi_select": false,
-  "recommended": "staging",
-  "expires_at": 1789510000 }
-  // `answer` OMITTED while pending</pre>
+  "role": "tool",
+  "content": "&lt;tool&gt;&lt;name&gt;ask_user&lt;/name&gt;
+              &lt;parameters&gt;{ …args… }&lt;/parameters&gt;
+              &lt;success&gt;true&lt;/success&gt;
+              &lt;data&gt;&lt;ask_user&gt;
+                &lt;status&gt;pending&lt;/status&gt;…" }</pre>
       </div>
-      <p class="note" style="margin-top:9px">Reuses the <code>llm_full</code> channel with a distinguishing
-        <code>role</code>, exactly like <code>subagent_progress</code> — so there is <b>no</b> new named event and
-        nothing to register in <code>additionalEventTypes</code>. A named event missed in registration is silently
-        dropped by the browser before JS ever runs.</p>
+      <p class="note" style="margin-top:9px">No new named SSE event, so nothing to add to
+        <code>additionalEventTypes</code> and no browser-side silent-drop risk (the PR #291 bug class). The answer
+        rewrites <b>the same row id</b>, so the open chat patches the card through the existing in-place
+        <code>llm_full</code> path — and a reload just re-fetches history.</p>
     </div>
 
     <div>
-      <h3>Three independent delivery paths</h3>
+      <h3>Why the loop can break safely</h3>
       <div class="kv" style="border:1px solid var(--border);border-radius:9px;background:var(--card);padding:12px">
-<pre style="margin:0;white-space:pre-wrap;color:var(--dim)">1. args      → question + options + recommended
-                (renders from tool_calls_json alone)
-2. SSE frame → live status: pending → answered
-                (role="ask_user" on llm_full)
-3. REST      → GET …/pending_questions
-                rehydrates on page refresh</pre>
+<pre style="margin:0;white-space:pre-wrap;color:var(--dim)">handle_tool Phase 1
+  → 1 assistant row (tool_calls=[ask_user])
+  → 1 role=tool row  per tool_call   ← ALWAYS
+     (is_feed_to_llm = 1, tool_call_id set)
+
+so a break leaves a MATCHED chain:
+  assistant(tool_calls) + tool(result)
+
+Which is exactly what a normal completed
+tool turn looks like — the next run's
+payload builder replays it verbatim.</pre>
       </div>
-      <p class="note" style="margin-top:9px">(1) means a missed/replayed event can never hide the question.
-        (2) means the card flips state instantly. (3) means F5 mid-question keeps the card alive.</p>
+      <p class="note" style="margin-top:9px">Verified in <code>handle_tool.zig:513-566</code>: the placeholder insert
+        loop has <b>no</b> filter, so even an unknown tool gets a row. There is no orphaned
+        <code>tool_calls</code> entry to trip the OpenAI/Anthropic/Responses builders.</p>
     </div>
   </div>
 
   <div class="hr"></div>
 
-  <h2><span class="n">5</span> Gates — when the agent must <em>not</em> ask</h2>
+  <h2><span class="n">5</span> Gates — and what happens if you ignore the card</h2>
   <table>
     <tr><th>Situation</th><th>Behaviour</th><th>Why</th></tr>
-    <tr><td>Sub-agent calls <code>ask_user</code></td><td><b>stripped at equip time</b>; runtime fallback <code>unavailable</code></td><td>the parent is parked on <code>group.await</code> with no timeout → guaranteed deadlock</td></tr>
-    <tr><td>Unattended run (<code>is_auto_retry_until_stop=1</code>)</td><td><code>unavailable</code> <b>immediately</b></td><td>unattended means "do not ask"; a long hang per question is worse than a wrong assumption</td></tr>
-    <tr><td>No browser tab attached</td><td><b>still blocks</b> — the question is persistent and answerable whenever the human shows up</td><td>reviewer decision: never give up on the human just because no tab is watching at that instant</td></tr>
-    <tr><td>Human presses <b>Stop</b> while pending</td><td>wait loop polls <code>worker.cancelled</code> → <code>cancelled</code> in ≤100 ms</td><td>Stop must never appear to hang</td></tr>
-    <tr><td>Timeout expires (default 30 min)</td><td><code>timeout</code> + "pick the most reasonable option, state the assumption"</td><td>the run always makes progress; <code>timeout_seconds: 0</code> opts into waiting forever</td></tr>
-    <tr><td>Run dies mid-question</td><td>boot sweep → <code>orphaned</code>; late answer → <code>410</code></td><td>never silently lose the question, never fake a resume</td></tr>
-    <tr><td>Model calls it with bad args</td><td><code>success=false</code> + <code>&lt;error&gt;</code></td><td>only malformed input is an error — degraded outcomes are successful calls</td></tr>
+    <tr><td>Sub-agent calls <code>ask_user</code></td><td><b>stripped at equip time</b>; runtime fallback <code>unavailable</code></td><td>a sub-agent run has no answer surface — the question would sit forever and the sub-agent would return nothing useful</td></tr>
+    <tr><td>Unattended run (<code>is_auto_retry_until_stop=1</code>)</td><td><code>unavailable</code> <b>immediately</b>, <b>no row written</b></td><td>the model decides in the same run and the run completes — a scheduled job never leaves a dangling question</td></tr>
+    <tr><td>Nobody has the app open</td><td><b>ask anyway</b></td><td>the question is a persisted row; whoever opens the session later sees the card</td></tr>
+    <tr><td>You <b>send a message instead</b> of answering</td><td>question resolved as <code>abandoned</code>, then your message runs</td><td>never dead-end the human; the model is told explicitly not to guess</td></tr>
+    <tr><td>You press <b>Skip</b></td><td><code>skipped</code>, a new run starts, the model must not guess</td><td>the model has to acknowledge and stop that line of work rather than resume silently</td></tr>
+    <tr><td>You never answer, ever</td><td>nothing happens — no timeout, no cleanup, no cost</td><td>there is no parked loop to expire; the row is inert data</td></tr>
+    <tr><td>Model calls it with bad args</td><td><code>success=false</code> + <code>&lt;error&gt;</code></td><td>malformed input is an error; degraded outcomes are successful calls</td></tr>
   </table>
 
   <h3>What <code>ask_user</code> does to the turn</h3>
-  <p class="sub" style="margin-top:6px">It does <b>not</b> end the turn. The call arrives as a tool call, so the LLM
-    turn's <code>finish_reason</code> is <code>tool_calls</code> — not <code>stop</code> — and the loop parks
-    <em>inside</em> the tool. The session keeps showing as running (it genuinely is), <b>Stop works normally</b>, and the
-    turn only reaches <code>stop</code> after the tool returns its answer and the loop makes one more LLM call with that
-    answer in context.</p>
+  <p class="sub" style="margin-top:6px">The call arrives as a tool call, so the LLM turn's
+    <code>finish_reason</code> is <code>tool_calls</code> — then <code>handle_tool</code> completes the batch and the
+    workflow <b>breaks</b>, persisting <code>finish_reason = awaiting_user</code> on the assistant row (a new value in
+    the <code>FinishReason</code> enum; nothing switches exhaustively on it, and <code>last_finish_reason</code> is
+    display-only). The worker is deleted, the session goes idle, and the composer becomes usable again.</p>
 
   <h2><span class="n">6</span> Decisions locked in review</h2>
   <table>
     <tr><th>Question</th><th>Answer</th></tr>
-    <tr><td>Is the question ephemeral or persistent?</td><td><b>Persistent</b> — a durable row, answerable whenever the human shows up. No "no viewer" bail-out.</td></tr>
-    <tr><td>How does the card know the question before the tool returns?</td><td>The placeholder row's <b>arguments</b> carry it, plus an ephemeral <code>llm_full</code> frame for status.</td></tr>
-    <tr><td>How does the loop pause?</td><td>A <b>DB poll loop</b> (100 ms) that also polls the existing cancel flag — no condvar, no deadlock.</td></tr>
-    <tr><td>How does the answer get back?</td><td><code>POST /api/llm/session/:id/answer</code> → row UPDATE → the loop's next poll returns.</td></tr>
+    <tr><td>Does <code>ask_user</code> end the turn?</td><td><b>Yes — the loop breaks.</b> No parked thread, no in-memory wait, no timeout.</td></tr>
+    <tr><td>Ephemeral or persistent question?</td><td><b>Persistent</b> — and this design makes that free: the question is just a row you answer later.</td></tr>
+    <tr><td>How does the card know the question?</td><td>From the tool-result row itself (args + <code>&lt;status&gt;</code>). No side map, no rehydration call.</td></tr>
+    <tr><td>How does the answer get back?</td><td>The tool row is <b>rewritten in place</b>, then <code>emit_run_agent(skip_initial_queue_message=true)</code> starts a new run.</td></tr>
     <tr><td>Where does the answer appear?</td><td><b>Inside the card only</b> — not as a separate user bubble.</td></tr>
-    <tr><td>What does Skip mean?</td><td>The <b>run continues</b>; the tool tells the model not to guess and to stop that line of work.</td></tr>
+    <tr><td>What does Skip mean?</td><td>The <b>run continues</b>; the model is told not to guess and to stop that line of work.</td></tr>
+    <tr><td>What if you type instead of answering?</td><td>Resolved as <code>abandoned</code>, then your message runs. Never a dead end.</td></tr>
     <tr><td>Which modes get the tool?</td><td><b>All modes by default</b> — chat, agent items, kanban items.</td></tr>
-    <tr><td>What if nobody is there?</td><td>Unattended run → <code>unavailable</code> immediately. Otherwise wait (30 min default, or forever if <code>timeout_seconds: 0</code>).</td></tr>
+    <tr><td>What if nobody is there?</td><td>Unattended run → <code>unavailable</code> in the same run. Otherwise the question simply waits.</td></tr>
   </table>
 
   <p class="note" style="margin-top:26px">Static wireframe + interactive demo of the pending card.
@@ -645,15 +642,14 @@
 </div>
 
 <script>
-  // Interactive demo: the big card in section 1 actually resolves.
   (function () {
     var card = document.getElementById('demoCard');
     if (!card) return;
     var opts = card.querySelectorAll('.opt');
     var badge = document.getElementById('demoBadge');
-    var count = document.getElementById('demoCount');
     var submit = document.getElementById('demoSubmit');
     var skip = document.getElementById('demoSkip');
+    var runState = document.getElementById('runState');
     var chosen = 'staging';
 
     opts.forEach(function (o) {
@@ -663,36 +659,37 @@
         chosen = o.getAttribute('data-val');
         submit.textContent = 'Send answer';
       });
-      o.addEventListener('mouseenter', function () { card.classList.add('hovering'); });
     });
 
-    function resolve(label, cls) {
+    function resolve(label, cls, bodyHtml) {
       card.classList.remove('waiting');
       card.classList.add('solved');
       badge.className = 'badge ' + cls;
       badge.textContent = label;
-      if (count) count.remove();
       var body = card.querySelector('.tbody');
-      body.innerHTML =
-        '<p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>' +
-        (cls === 'ok'
-          ? '<span class="answered-chip">\u2713 ' + chosen + '</span>'
-          : '<span class="note">You skipped this question. The agent will not guess \u2014 it stops this line of work.</span>') +
-        '<div class="actions" style="border-top:0;padding-top:9px">' +
-        '<span class="hint">answered ' + (cls === 'ok' ? '41s after asking' : '') +
-        ' \u00b7 the agent resumed</span></div>';
+      body.innerHTML = bodyHtml;
       var args = card.querySelector('.targs');
       if (args) args.remove();
+      if (runState) runState.textContent = '\u25cf running again \u2014 resuming with your answer';
     }
 
     submit.addEventListener('click', function () {
       submit.innerHTML = '<span class="spin"></span>Sending\u2026';
-      var all = card.querySelectorAll('.btn');
-      all.forEach(function (b) { b.disabled = true; });
-      setTimeout(function () { resolve('\u2713 answered', 'ok'); }, 900);
+      card.querySelectorAll('.btn').forEach(function (b) { b.disabled = true; });
+      setTimeout(function () {
+        resolve('\u2713 answered', 'ok',
+          '<p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>' +
+          '<span class="answered-chip">\u2713 ' + chosen + '</span>' +
+          '<div class="actions" style="border-top:0;padding-top:9px">' +
+          '<span class="hint">tool row rewritten \u00b7 new run resumed</span></div>');
+      }, 900);
     });
 
-    skip.addEventListener('click', function () { resolve('skipped', 'muted'); });
+    skip.addEventListener('click', function () {
+      resolve('skipped', 'muted',
+        '<p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>' +
+        '<span class="note">You skipped this question \u2014 the agent will not guess.</span>');
+    });
 
     document.addEventListener('keydown', function (e) {
       if (!card.classList.contains('solved')) {

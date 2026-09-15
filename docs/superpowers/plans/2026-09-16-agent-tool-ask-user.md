@@ -2,51 +2,41 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** A new agent tool `ask_user` lets the model **stop and ask the human a question** — with 2–6 selectable options, and/or a free-text answer — and **block the agentic loop** until the human answers, skips, the session is stopped, or the question times out. The frontend renders the question as an interactive card **inline in the chat transcript** (in the same slot as every other tool card), and the agent resumes with the answer as the tool result.
+**Goal:** A new agent tool `ask_user` lets the model **stop and ask the human a question** — with 2–6 selectable options and/or a free-text answer. The tool call **ends the agent turn**; the question renders as an interactive card inline in the chat transcript; when the human answers, the answer is written back as the tool result and a **new run resumes the conversation** with that answer in context.
 
-**Why this shape:** every layer is a copy of an existing, proven precedent:
+**Why this shape (reviewer decision, 2026-09-16):** the loop does **not** park inside the tool. `ask_user` returns immediately, the batch finishes, and the agentic loop **breaks**. That makes the whole feature a row-lifecycle problem instead of a concurrency problem, and it deletes most of the machinery a blocking design needs — see §1.2 for the diff.
 
-| New thing | Precedent it copies | Precedent location |
-|---|---|---|
-| Ephemeral mid-tool state pushed to the UI keyed by `tool_call_id` | `spawn_sub_agent` live progress (`role="subagent_progress"` on the **existing** `llm_full` event) | `src/agentic_loop/subagent_progress.zig:1-40` |
-| Frontend tool card + per-`tool_call_id` side map | `SpawnSubAgent.vue` + `subAgentProgressMap` | `ChatView.vue:3124-3132`, `helpers/subagentProgress.ts:137-189` |
-| Refresh rehydration of ephemeral state | `GET /api/subagent/progress/:tool_call_id` + snapshot registry | `subagent_progress.zig:280-290,313-317`, `main.zig:472` |
-| Cooperative blocking wait that can be cancelled | `retryDelayMs` cancellable sleep (poll `worker.cancelled`) | `src/agentic_loop/retry_delay_ms.zig:71-116` |
-| Session-scoped side table | `session_progressive_tool` (Migration 085) / `session_skills` (008) | `src/migrations/migration.zig` |
-| Unblock-by-HTTP + DB flag | `POST /api/llm/session/:session/stop` → `UPDATE worker SET cancelled=1` | `session_stop.zig:1-6`, `llm_history.zig:2899-2905` |
-
-**Spec / wireframe:** this document IS the spec. The visual wireframe is `docs/wireframes/ask-user-tool.html` (open in a browser; also attached to the PR).
+**Spec / wireframe:** this document IS the spec. Visual wireframe: `docs/wireframes/ask-user-tool.html`.
 
 **Worktree:** `/home/ginwa/.config/nalar/.worktrees/agent-tool-ask-user-1789509458939` on branch `worktree/agent-tool-ask-user-1789509458939`.
 
-**Base:** `origin/main` @ `3bc0e389` (feat(chat): prefetch older messages before the scroll reaches the top #527).
+**Base:** `origin/main` @ `3bc0e389`.
 
-**Status:** planning artifact only — **no product code in this PR**. The PR contains `docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md` + `docs/wireframes/ask-user-tool.html`.
+**Status:** planning artifact. This PR contains `docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md` + `docs/wireframes/ask-user-tool.html`.
 
 ---
 
-## 0. Current state (verified 2026-09-16 by first-hand read + 4-way sub-agent survey)
+## 0. Current state (verified 2026-09-16 by first-hand read + 3×2 sub-agent surveys)
 
-| Area | File / symbol | State | Consequence for `ask_user` |
+| # | Fact | Evidence | Consequence |
 |---|---|---|---|
-| Tool definition shape | `src/modules/agent/tools/schemas.zig:38-56` (`AgentTool`, `AgentToolFunction`), `:30-36` (`ToolProperty`, `ToolParameters`) | Schemas are hand-written Zig struct literals; `properties` is a **flat** list of `{name,type,description}` — **no nested object/array-of-object support** | `options` must be a plain `array` of strings (see §1.1). `recommended` is a string that must match one option. |
-| Tool registration | `src/agentic_loop/tools_equipped.zig:71` `equips()` (LLM-visible list) **and** `:145` `UNIFIED_TOOL_REGISTRY()` (`ToolInfo{name, exec, tool_def}`, `:137-143`) | **Two lists, both mandatory.** A colocated static test already asserts "must appear in `equips()` AND in `UNIFIED_TOOL_REGISTRY()`" (`tools_exec_progressive_tools.zig:502`) | New tool touches both + the re-export hub `src/agentic_loop/tools.zig:14-74` (§5.1) |
-| Exec adapter signature | `ToolExecContext` (`tools.zig:85-131`), `ToolExecResult` (`:137-152`), `ToolExecFunc` (`tools_equipped.zig:134`) | Uniform `fn(ctx: ToolExecContext, tc: agent.ToolCall) anyerror!ToolExecResult`. Context carries `allocator, io, db, logger, session_id, tool_call_id, is_sub_agent, allowed_tools` — **direct SQLite access, no HTTP round-trip** | `execAskUser` gets the DB handle it needs for the suspend/poll/resume loop (§5.3) |
-| Tool dispatch | `handle_tool.zig:188-217` `dispatchTool` (linear scan of the registry → MCP fallback → `error.UnknownTool`) | Tools run **sequentially**, post-stream: stream → `handle_tool` → next loop iteration | A blocking `ask_user` blocks the rest of its batch — acceptable and documented (§6 item 3) |
-| Placeholder rows | `handle_tool.zig:428-615` Phase 1 inserts a `"running…"` placeholder row per known tool and **SSEs it immediately** (`:604-615`); Phase 3 (`:640`) UPDATEs it in place | The card **already appears in the transcript before the tool body runs**, and the row id survives the update | Perfect host for the question card: the placeholder renders `AskUser.vue` in the pending state from its **arguments alone** (§1.2) |
-| Mid-tool UI events | `subagent_progress.zig` — emits `event_type="llm_full"` with `role="subagent_progress"`; explicitly documents *"No new SSE event_type (avoids the 3-site wire contract)"* (`:18`) | Established, tested pattern for side-channel data during a long tool call | `ask_user` mirrors it with `role="ask_user"` (§1.2) |
-| Named-event wire contract | (1) backend emitter, (2) `additionalEventTypes` in `src/apps/desktop/src/api/index.ts:3331`, (3) Vitest contract `src/apps/desktop/src/__tests__/unifiedSseBuffer.spec.ts:623-652` | An unregistered `event:` name is **silently dropped by the browser before JS runs** (`api/index.ts:3344`, `sseClient.ts:187-193`) — this is the PR #291 bug class | **Avoid it entirely by reusing `llm_full`** (§1.2) |
-| Frontend tool card | `ChatView.vue:4173+` per-`tool_name` `v-if` dispatcher → `components/tool_outputs/*.vue` (30 cards), chrome from `_shared/ToolCardHeader.vue:20-58` + `ToolParameters.vue:11-37` | One card component per tool name + a generic fallback | Add `AskUser.vue` + one `v-else-if` branch (§5.5) |
-| Frontend message model | `ChatView.vue:765-766,994` local refs (`messages`, `streamingContent`, `isStreaming`) — **no Pinia store for the transcript**; SSE via `helpers/sseBus.ts` | Card state must be driven by a local `ref` map or a helper module, not a store | `askUserMap` local ref + `helpers/askUser.ts` reducer (§5.5) |
-| Blocking primitives | **No condvar / semaphore / `std.Thread.Mutex` anywhere in `src/`.** Blocking is `std.Io.Group.await` (join children) or a cancellable DB-poll sleep (`retry_delay_ms.zig:71-116`). Zig 0.16 `std.atomic.Mutex` spinlock for globals (`stream_snapshot.zig:35-42`) | A "wait for human" must be a **DB-poll loop**, not a condvar | Locked in §1.3 |
-| Cancel | `UPDATE worker SET cancelled = 1` (`llm_history.zig:2899-2905`), polled by `is_worker_cancelled.zig:22-28` at the loop top (`workflow.zig:846`), in `retryDelayMs`, and between SSE chunks via the `cancel_fn` thunk (`workflow.zig:390-450`) | Stop is **already** a DB flag + polling | The wait loop polls the *same* flag → Stop-during-question cannot hang (§5.4) |
-| Sub-agent deadlock hazard | `spawn_sub_agent` is stripped for sub-agents in **4 places**: `tool_eligibility.zig:113-123` (primary), `workflow.zig:2019` (progressive re-add guard), `progressive_catalog.zig:132,148` (discovery), + a test at `workflow.zig:2857` | A sub-agent that blocks would hang the parent's `group.await` **forever** (no timeout on `group.await`) | `ask_user` must join the strip list — generalize it to `MAIN_AGENT_ONLY_NAMES` (§5.4, §7 item 4) |
-| Live-viewer detection | `src/root.zig:86-87` (`session_to_client_ids` + `session_map_lock`), `:515+` `getListClientsForSession()` (owned copy, **null when empty**) | The server can tell whether any SSE client is attached to a session | Used only for **diagnostic logging** — a missing viewer no longer skips the question (reviewer decision: the question is persistent) (§1.5) |
-| Unattended mode | `sessions.is_auto_retry_until_stop` (Migration 063), re-read per iteration at `workflow.zig:759-760` | Unattended runs never have a human watching | `ask_user` must never block when set (§1.5) |
-| Migrations | `src/migrations/migration.zig`, single file; highest = **086** `Migration086AddSessionPrUrl` (`:4718-4719`); convention = idempotent `addColumnIfMissing` | Next is **087** | §4 |
-| Default tool list | `tools_equipped.zig:280` `DEFAULT_AGENT_TOOLS` (25 names) + frontend `DEFAULT_CHAT_TOOLS` (`api/index.ts:1340-1350`, 9 names) | Two allowlists; chat mode uses the frontend one | Add `ask_user` to both (§5.6, §7 item 8) |
-| Registry endpoint | `src/http_handlers/agent_tools_registry.zig:1-15` — auto-derives from `UNIFIED_TOOL_REGISTRY()` | No second list to maintain | Tools tab picks up `ask_user` for free |
-| Functional harness | `tests/functional/harness.py`; sqlite-seeding precedent `session_pr_url_test.py:48-70` (`harness.temp_dir/.config/nalar/agent.db`); SSE assertion precedent = `for line in response.iter_lines()` (README:209) | Real wire tests are cheap and required | §8.4 |
+| 1 | **Phase 1 of `handle_tool` inserts a placeholder tool-result row for EVERY tool call in the batch — including unknown tools.** The `has_known_tools` flag only gates a log line; the insert loop has no filter. | `src/agentic_loop/handle_tool.zig:459-467` (flag), `:513-566` (insert loop + `is_feed_to_llm = true`, `tool_call_id`, `tool_name`) | Ending the run after `handle_tool` leaves a **matched** chain: assistant `tool_calls` + one `role=tool` row per call. The OpenAI "every tool_call_id needs a tool response" contract is satisfied by construction. **This is what makes the break-the-loop design safe.** |
+| 2 | The assistant row is written before the placeholders, with `.tool_calls = tc`. Phase 3 UPDATES each placeholder **in place** (content only — never `is_feed_to_llm`/`tool_call_id`/`tool_name`). | `handle_tool.zig:471-505`, `:640-665`; `llm_history.updateToolResultById` = `UPDATE llm_history SET response_content = ?, … WHERE id = ?` (`llm_history.zig:3040-3071`) | We can rewrite the question's tool-result row **in place** when the human answers, keeping the row id stable — so the open `ChatView` patches the card live over the existing `llm_full` path. |
+| 3 | Placeholder rows are `is_feed_to_llm = 1`. | `handle_tool.zig:513-566`; fetched by `get_llm_histories.zig:30-57` (`WHERE is_feed_to_llm = 1 OR IS NULL`) | The tool-result row **will** be replayed to the model on the resume run. Therefore the answer **must** be written into that row *before* the resume run starts (§1.4). |
+| 4 | **There is no orphan-sanitizer and no pairing validation anywhere** in the history→payload path (fetch → `parsing.transformLLMHistoryToAgentMessage` → `prompts_build_messages_for_agent_prompt` → `buildJsonOpenAIRequest` / Anthropic / Responses). Pure concatenation. | `get_llm_histories.zig:30-57`, `parsing.zig:9-32,40-84`, `prompts_build_messages_for_agent_prompt.zig:240-247`, `Agent.zig:1669-1719,1360-1428,1905-1952` | Two-edged: no safety net if the chain *were* broken — and no obstacle when it is intact. Fact #1 is what keeps it intact. The one guard that exists is for an orphan tool *output* (empty `call_id`), not an orphan tool *call* (`Agent.zig:1947-1952`). |
+| 5 | **`FinishReason` is an enum with `from_str`/`to_str`, and there is NO exhaustive `switch` on it anywhere.** All uses are `== .stop` / `== .length` / `== .tool_calls` comparisons plus assignments. | `Agent.zig:94-129`; `workflow.zig:1386,1480,1487` | Adding an `awaiting_user` variant is cheap and type-safe (no switch arms to update). The precedent for free-form is `"cancelled"` (`workflow.zig:541`), deliberately outside the enum. |
+| 6 | `sessions.last_finish_reason` is **display-only**. The kanban card paints dots on `=== 'stop'`; the API doc enumerates `'stop'` / `''` only. Nothing branches on it for control flow. | `http_response.zig:517-525`, `WorkspaceItemTaskCard.vue:429,448`, `tasks_list.zig:211-214`, `session_mark_touched.zig:123` | A new terminal value cannot break behaviour. Product note: a pending question gets **no** kanban dot unless we extend the `=== 'stop'` conditions (§5 T9, optional). |
+| 7 | The `.stop` branch cleanup is: persist assistant row → `hasQueuedMessages` guard (`continue`) → optional OS notify → `deleteWorker(is_emit_sse=true)` → `break`. | `workflow.zig:1386-1479` | The break path mirrors this, **minus** the queue guard (a queued message must not be allowed to run while a question is pending — it would send the model a `pending` envelope, §1.5). |
+| 8 | `deleteWorker` is idempotent (`DELETE` matching 0 rows is not an error; tests assert the no-op and the null-bus cases). | `delete_worker.zig:19-62` + its tests | Safe to call from a new break path, even twice. |
+| 9 | A run can be started with **no new user message**: `emit_run_agent(.{ …, skip_initial_queue_message = true })`. Two existing callers. | `root.zig:57-73` (struct), `:139-248` (impl, dupes all strings into the long-lived allocator); `start_agent.zig` (step 4); `cleanup_stale_background_process.zig:258-320` (`wakeSessionForCompletion`) | The "resume after an answer" trigger already exists — it is the same shape as "wake a session for a background-process completion". No new mechanism. |
+| 10 | `session_create.zig` is the single funnel for every user-sent message → `emit_run_agent` at line 258. | `session_create.zig:258`; `root.zig:139` | One guard here covers chat send, kanban create-and-run and any API caller (§1.6). |
+| 11 | `updateAndSendToolResult` (`handle_tool.zig:763`) and `sendSSEForMessageById` (`:840`) are **private `fn`**. But their ingredients are public: `llm_history.updateToolResultById`, `llm_history.getMessageById` (`:2422`), `onEventSendLLMHistory`. | quoted in §5 T6 | The answer handler composes the public pieces (~20 lines) rather than widening `handle_tool`'s API. |
+| 12 | Tool registration needs **two** lists (`equips()` + `UNIFIED_TOOL_REGISTRY()`) + the re-export hub; sub-agent stripping is hardcoded in **4** sites; `DEFAULT_AGENT_TOOLS` seeds agent + kanban items; chat mode uses the frontend's `DEFAULT_CHAT_TOOLS`. | `tools_equipped.zig:71,145,280`; `tool_eligibility.zig:113-123`; `workflow.zig:2019`; `progressive_catalog.zig:132,148`; `tools.zig:14-74`; `api/index.ts:1340-1350` | Unchanged from the earlier survey — T4/T8 handle it. |
+| 13 | Migration 086 is the highest; `src/migrations/migration.zig` is a single file. `SqliteBackend.exec` binds `""` as NULL. | `migration.zig:4718-4719`; Migration 079 precedent | Migration 087 + nullable columns + `COALESCE` on read (§4). |
+| 14 | Frontend running-state is driven **purely by worker lifetime**: `App.vue` `processingState` ← `worker_created|worker_deleted` → `ChatView.isLLMProcessing` → `FileInput` swaps Stop↔Send. Nothing reads a local streaming flag for it. | `App.vue:12-13,32-51,114-130`; `ChatView.vue:451-454`; `FileInput.vue:794,825` | When the run breaks, the composer returns to **idle** (Send visible, Stop hidden) while the card waits. That is why §1.6 needs the `abandoned` rule. |
+| 15 | Frontend `finish_reason` is a plain `string` with no exhaustive switch; tool cards are dispatched by an exact `msg.tool_name` `v-if` chain; card content comes from `innerToolData(msg)` (the `&lt;data&gt;` inside the `<tool>` envelope) and args from `getParametersForMessage(msg)`. `unwrapToolOutput` ignores unknown inner tags. | `ChatView.vue:180,1424,1693,1946,3211,4178-4420,1575-1603`; `helpers/unwrapToolOutput.ts:61-95` | A `<status>` element inside `<data>` parses fine; the card is one `v-else-if` branch with no helper changes. |
+| 16 | `ToolCardHeader.running` exists (yellow "running…" badge) but is only ever set by `ProgressiveTool.vue`, derived from *empty content*. | `ToolCardHeader.vue:46-59,124-128`; `ProgressiveTool.vue:58` | The `AskUser` card derives its own "waiting for you" badge from `<status>pending</status>` and passes `:running="true"` itself. |
+| 17 | Functional-harness precedent: sqlite3 direct seeding into `harness.temp_dir/.config/nalar/agent.db`, `harness.http(...)`, SSE assertions via `for line in response.iter_lines()`. | `tests/functional/harness.py`; `session_pr_url_test.py:48-70`; README:209 | §8.4 is a genuine end-to-end test of this feature **with no LLM** — see the note there. |
 
 ---
 
@@ -61,240 +51,201 @@
   "options":         ["staging", "production"],                  // optional, 2..6 plain strings
   "allow_free_text": true,                                       // optional, default true
   "multi_select":    false,                                      // optional, default false
-  "recommended":     "staging",                                  // optional, MUST match one of options
-  "timeout_seconds": 1800                                        // optional, default 1800, 0 = no timeout (cap 3600)
+  "recommended":     "staging"                                   // optional, MUST match one of options
 }
 ```
 
-Rationale for each shape constraint:
+- **No `timeout_seconds`.** With the loop broken there is nothing to wait on: the question can sit for a week at zero cost. Removing it removes a knob, a sentinel, a test and a failure mode.
+- **`options` is a flat array of strings**, not `{label,value}` — `ToolParameters.properties` has no nested-object support (`schemas.zig:30-36`).
+- **`header` ≤ 40 chars**, validated; over-length → `success=false` + `<error>`.
+- The `description` must say: use only when a decision is genuinely ambiguous and cannot be inferred from the repo or the conversation; never to confirm something you can verify yourself; one question at a time; never in the same batch as other tools.
 
-- **`options` is `array` of `string`, not array of `{label,value}`** — `ToolParameters.properties` is flat (`schemas.zig:30-36`); nested objects are unsupported repo-wide. Existing precedent flattens structure: `create_kanban_task.tags` is a *JSON-encoded array string*, `image_urls` is `||`-delimited (`create_kanban_task.zig:189-224`). We keep `options` a plain string array (real JSON array of strings, which the OpenAI-style schema can express) and require `recommended` to name one of them.
-- **No `default` field** — the model already writes its recommendation in `recommended`; a separate default is ambiguous.
-- **`header` ≤ 40 chars** — matches the card-title width; validated, over-length → `success=false` XML error, not a crash.
-- **`timeout_seconds` cap 3600** — an agent must not park a session for a day. Default **1800** (30 min); `0` means "wait indefinitely" as an explicit opt-in (§1.5).
-
-The tool's `description` (the model's primary when-to-call signal, per `present_files.zig:78-106` style) must state: *use only when a decision is genuinely ambiguous and cannot be inferred from the repo/conversation; never use to confirm something you can verify yourself; never use more than a few times per run.* The companion `*_tool_system_prompt` (aggregated by name-agnostically per `schemas.zig:42-46`) carries the behaviour bullets.
-
-**Tool result XML** (inner envelope, wrapped by `wrapToolOutput` into `<tool>…<success>/<data>`):
+**Tool result envelope** (written by Phase 3 into the tool-result row):
 
 ```xml
-<!-- answered -->
+<!-- immediate return: the turn is ending, the human has been asked -->
+<ask_user><status>pending</status><question_id>q_…</question_id>
+  <instruction>The human has been asked and this turn is ending. Do not continue and do not guess — you will be resumed with their answer.</instruction>
+</ask_user>
+
+<!-- written in place by the answer endpoint, BEFORE the resume run starts -->
 <ask_user><status>answered</status><question_id>q_…</question_id>
   <question>Which environment should I deploy to?</question>
   <answer>staging</answer><answers_count>1</answers_count>
 </ask_user>
 
-<!-- human clicked Skip — distinct from Stop: the run continues, you must NOT guess -->
 <ask_user><status>skipped</status><question_id>q_…</question_id>
-  <instruction>The human declined to answer. Do not guess. Stop this line of work, state what is blocked, and summarise what you need.</instruction>
+  <instruction>The human declined to answer. Do not guess. State what you are blocked on and stop this line of work.</instruction>
 </ask_user>
 
-<!-- Stop button pressed mid-question, or the session was cancelled -->
-<ask_user><status>cancelled</status><question_id>q_…</question_id></ask_user>
-
-<!-- nobody answered within timeout_seconds -->
-<ask_user><status>timeout</status><question_id>q_…</question_id>
-  <instruction>No answer arrived. Pick the most reasonable option, state the assumption explicitly in your reply, and continue.</instruction>
+<!-- the human sent a different message instead of answering (§1.6) -->
+<ask_user><status>abandoned</status><question_id>q_…</question_id>
+  <instruction>The human moved on without answering. Do not guess. If the answer is still needed, ask again once.</instruction>
 </ask_user>
 
-<!-- no human can answer (unattended run, or a sub-agent) — returned IMMEDIATELY, never blocks -->
+<!-- unattended run or sub-agent: returned immediately, NO row is written -->
 <ask_user><status>unavailable</status><reason>no_human</reason>
   <instruction>No human is available. Choose the most reasonable option yourself, state the assumption explicitly, and continue. Do not call ask_user again.</instruction>
 </ask_user>
-
-<!-- the run ended before the human answered (only ever produced by the boot sweep, §1.7) -->
-<ask_user><status>orphaned</status><question_id>q_…</question_id>
-  <instruction>The run ended before this question was answered. Do not retry ask_user here; re-ask in a fresh turn only if you still need the answer.</instruction>
-</ask_user>
 ```
 
-`unavailable` / `timeout` / `skipped` / `orphaned` are **successful tool calls with a degraded outcome** → outer envelope `success=true` with `<data>` (NOT the `<error>` shape). Only *malformed input* (missing `question`, 1 option, `recommended` not in `options`, `options` > 6, `header` > 40, bad `timeout_seconds`) produces `success=false` + `<error>`. This mirrors the repo's contract that `<error>` means "the call was invalid / failed", never "the outcome was negative" (`tools_exec_create_kanban_task.zig:53-60`).
+`skipped` / `abandoned` / `unavailable` are **successful tool calls with a degraded outcome** → outer envelope `success=true` + `<data>`. Only malformed input produces `success=false` + `<error>` (the repo's contract: `<error>` means "the call was invalid", never "the outcome was negative" — `tools_exec_create_kanban_task.zig:53-60`).
 
-### 1.2 Wire — how the question reaches the UI (**no new SSE event type**)
+### 1.2 The loop **breaks** — and what that deletes
 
-Follow `subagent_progress` exactly: emit on the existing **`llm_full`** channel with a distinguishing `role`. This deliberately bypasses the named-event 3-site contract (§0) and the "browser silently drops unregistered named events" bug class (PR #291).
+The call arrives as a tool call, so the LLM turn's `finish_reason` is `tool_calls` (`workflow.zig:1487`). `handle_tool` runs the batch to completion (every tool_call gets its row, fact #1), and then the workflow **breaks instead of looping back**.
 
-**Frame 1 — question requested** (`event: llm_full`):
+| Machinery a blocking design needs | Needed here? |
+|---|---|
+| Blocking wait loop + 100 ms DB poll | **no** |
+| `timeout_seconds` + `expires_at` sentinel | **no** |
+| `orphaned` state + boot-time sweep for runs that died mid-question | **no** — nothing is parked; the run ended cleanly |
+| Ephemeral `role="ask_user"` SSE frames + emitter module | **no** — the card reads the tool-result row, which is real persisted `llm_history` |
+| Frontend side map + reducer + `GET …/pending_questions` rehydration | **no** — refresh-safety is free because the row is in `llm_history` |
+| `cancelled` card state (Stop mid-question) | **no** — there is no in-flight run to stop |
+| Sub-agent **deadlock** hazard | **no** — a sub-agent asking would simply end its own run (still stripped, §1.7, but the risk drops from deadlock to uselessness) |
+| Parked-forever session holding an `active_loops` slot | **no** |
+
+Net effect: a **smaller** backend (no new concurrency primitive at all) and a much smaller frontend (one card component + one `v-else-if`).
+
+### 1.3 Where the run ends
+
+Immediately after `try handle_tool(...)` in the `.tool_calls` arm (`workflow.zig:1502`):
+
+```
+if (hasPendingQuestion(allocator, db, session_id)) {
+    // persist the assistant row for this turn with finish_reason = "awaiting_user"
+    // then mirror the .stop cleanup: deleteWorker(is_emit_sse = true); break;
+}
+```
+
+Deliberately **no** `hasQueuedMessages` guard (unlike `.stop`): a queued user message must not be allowed to start another iteration while a question is pending, because the loop would send the model the `pending` envelope and the model might guess (§1.5).
+
+`finish_reason = "awaiting_user"` is persisted on the assistant row **and** mirrored into `sessions.last_finish_reason` via the existing `updateSessionLastFinishReason` (`workflow.zig:1373-1384`). Add `awaiting_user` to the `FinishReason` enum (`Agent.zig:94-129`, plus `from_str`/`to_str`) so it round-trips — cheap, because no exhaustive switch exists (fact #5). The alternative (`"cancelled"`-style free-form, `workflow.zig:541`) is noted but rejected: an enum variant makes any *future* `switch` fail to compile until it is handled.
+
+### 1.4 The answer writes itself back into the tool-result row, then resumes
+
+`POST /api/llm/session/:session_id/answer` does, in this order:
+
+1. validate (§1.5);
+2. `UPDATE session_pending_question SET status='answered', answer=?, resolved_at=?`;
+3. **UPDATE the tool-result `llm_history` row in place** with the `answered` envelope, and emit its `llm_full` → the open `ChatView` flips the card live, no new event type (fact #2);
+4. `emit_run_agent(.{ …, skip_initial_queue_message = true })` guarded by `isWorkerRunning` → a fresh run reads history, finds the answered tool result, and continues.
+
+Order matters: the row must be rewritten **before** the resume run fetches history, or the model would see `<status>pending</status>` (fact #3). If step 3 fails, do **not** start the run — return 500 and leave the row `pending` so the user can retry (the reverse order would silently converge on "the model saw pending and guessed").
+
+### 1.5 Validation & errors (`POST …/answer`)
 
 ```jsonc
-{
-  "session_id": "sess_…",
-  "type": "full",
-  "role": "ask_user",              // ← the discriminator; ChatView early-returns on it
-  "action": "requested",           // requested | answered | cancelled | timeout | unavailable
-  "question_id": "q_1789509583247_ab12",
-  "tool_call_id": "call_abc",      // ← the map key (same as subAgentProgressMap)
-  "header": "Deploy target",
-  "question": "Which environment should I deploy to?",
-  "options": ["staging", "production"],
-  "allow_free_text": true,
-  "multi_select": false,
-  "recommended": "staging",
-  "expires_at": 1789510000,        // unix seconds; drives the card's countdown
-  "is_input": false, "is_output": false
-  // NOTE: `answer` is OMITTED (not null) while pending — same discipline as
-  // subagent_progress omitting `subagent_session_id` (subagent_progress.zig:29-34).
-}
+{ "question_id": "q_…",          // preferred
+  "tool_call_id": "call_abc",    // fallback for a client that only has the row args
+  "answer": "staging",           // JSON array string when multi_select
+  "skip": false }                // true → status 'skipped'
 ```
 
-**Frame 2 — question resolved** (same `role`, so the frontend reuses one reducer):
+| Case | Response |
+|---|---|
+| neither `question_id` nor `tool_call_id` | 400 |
+| unknown id | 404 |
+| row belongs to another session | 403 (never let session A answer session B) |
+| `answer` empty and `!skip` | 400 (validation runs on the **parsed** value — the empty-slice-as-NULL trap does not apply because `""` is *rejected*, not stored) |
+| `multi_select` and `answer` is not a JSON array | 400 |
+| `allow_free_text = false` and `answer` ∉ `options` | 400 |
+| already resolved | **200** `{status:"answered"\|"skipped"\|"abandoned", answer:…}` — a double-click or a Retry must never 4xx (same discipline as `POST …/stop`) |
 
-```jsonc
-{
-  "session_id": "sess_…", "type": "full", "role": "ask_user",
-  "action": "answered",            // answered | cancelled | timeout | unavailable | skipped
-  "question_id": "q_…", "tool_call_id": "call_abc",
-  "answer": "staging",             // single value; JSON array string when multi_select
-  "answered_at": 1789509612,
-  "is_input": false, "is_output": false
-}
-```
+`allow_free_text` / `options` come from re-parsing the **tool-result row's own envelope**: `wrapToolOutput` embeds the original arguments as `<parameters>{…}</parameters>` (`tools_wrap_output.zig`), so the endpoint parses them from the row — no duplicated columns (§4).
 
-Emitted at every resolution site so the card flips state live: the answer handler (§5.5), the wait loop's timeout/cancel paths (§5.3), and the boot-time orphan sweep (§1.7).
+### 1.6 A new user message resolves a pending question instead of dead-ending
 
-**Why not a named `ask_user` event:** it would require the emitter **plus** `additionalEventTypes` (`api/index.ts:3331`) **plus** the Vitest contract (`unifiedSseBuffer.spec.ts:623-652`) to stay in sync, and any miss = a silent drop in the browser. Reuse costs one `role` literal and one early-`return`, both already precedented and tested.
+Because the run ended, the composer is **idle** (Send visible — fact #14). If the user ignores the card and types a message, the session must not start a run that shows the model a `pending` envelope.
 
-**Second, independent delivery path — the question is renderable from arguments alone.** `handle_tool` Phase 1 already inserts + SSEs the placeholder tool row *before* the tool body runs, and the placeholder carries `tool_calls_json` (the arguments). So even if the ephemeral frame is missed entirely (tab opened late, reconnect gap, backend restart), `ChatView` can render the **pending question card from `getParametersForMessage(msg)`** — only the *status* needs the side map. This is the same defence-in-depth `SpawnSubAgent` has (it renders "starting…" with zero progress). See §5.5.
+**Rule:** in `session_create.zig`'s use-case, immediately before `emit_run_agent` (line 258), if the session has a pending question → resolve it as **`abandoned`** (rewrite the tool-result row with the `abandoned` envelope, no separate SSE needed — the resume run's history fetch carries the final content) → then run normally with the user's message.
 
-**Third path — refresh rehydration.** The row is persisted (§4), so `loadChatHistory()` calls `GET /api/llm/session/:id/pending_questions` once and seeds the map for any placeholder rows whose question is still pending. Mirrors `GET /api/subagent/progress/:tool_call_id` (`main.zig:472`).
+So the human is never dead-ended and the model never guesses: moving on *is* an answer, and the model is told exactly that. One guard, at the single funnel, covering chat send + kanban create-and-run + every API caller (fact #10).
 
-### 1.3 Suspend / resume — DB poll loop, not a condvar
+Defensive second guard: at the top of each loop iteration (next to the existing cancel poll at `workflow.zig:846`), if `hasPendingQuestion(session_id)` → `break`. Covers scheduler-initiated runs (`wakeSessionForCompletion`) that bypass the `session_create` funnel. One indexed `SELECT 1 … LIMIT 1` per LLM round-trip — negligible.
 
-Locked because there is no condvar in this codebase (§0) and the Io is async/single-threaded-ish — `std.Io.Group` multiplexes concurrent tasks over a thread pool, and the `spawn_sub_agent` code explicitly warns that `async` on a single-threaded Io can deadlock (`tools_exec_spawn_sub_agent.zig:~460`). A blocking primitive that the *answering HTTP request* must signal is exactly the deadlock shape to avoid.
-
-```
-status = insertPendingQuestion(status='pending', expires_at = timeout > 0 ? now + timeout : 0)
-emitAskUserFrame(action='requested')
-loop {
-    if isWorkerCancelled(session)              → markRow('cancelled'); emit; return <status>cancelled</status>
-    row = getPendingQuestion(question_id)      // indexed PK read, ~µs
-    if row.status != 'pending'                 → emit; return <status>{row.status}</status><answer>{row.answer}</answer>
-    if expires_at != 0 and now >= expires_at   → markRow('timeout'); emit; return <status>timeout</status>
-    sleep 100ms                                // chunked, same shape as retry_delay_ms.zig:71-116
-}
-```
-
-Properties: restart-**detectable** (state is in SQLite, not in RAM — the boot sweep turns an abandoned row into `orphaned`, §1.7), Stop-safe (the same `worker.cancelled` flag the rest of the loop uses), no deadlock (never holds a lock or parks a thread the HTTP handler needs), trivially testable with an in-memory SQLite + a concurrent task that answers (§8.2).
-
-Cost: one PK `SELECT` per 100 ms per pending question. Bounded by `timeout_seconds` (≤ 3600) and by "at most one pending question per session" (enforced by a UNIQUE partial index, §4).
-
-### 1.4 Answer transport — dedicated endpoint, **not** the queue-message path
-
-`POST /api/llm/session/:session_id/answer`.
-
-Rejected alternative: reuse `POST /api/llm/session` with `queue_message`. The answer would land in `session_queue_messages`, which the loop drains **at the top of the next iteration** (`workflow.zig:856-863`) — but the loop is *blocked inside the tool*, so the drain never runs → deadlock. Draining the queue from inside the wait loop instead would work, but it loses the question↔answer correlation, lets unrelated queued messages be consumed as answers, and the composer's Send button is hidden during a run anyway (`FileInput.vue:782-794`, Stop-only) so a UI affordance is needed regardless.
-
-### 1.5 The question is persistent; only an unattended run skips it
-
-**Reviewer decision (2026-09-16):** the question must be **persistent** — it is a durable row, not an ephemeral prompt, and the backend must not give up on the human just because no tab is watching at that instant. So there is **no "no viewer" bail-out**.
-
-Gate at runtime, inside `execAskUser`, **before** inserting:
+### 1.7 Gates — when the agent must not ask
 
 | Condition | Behaviour |
 |---|---|
-| sub-agent (`ctx.is_sub_agent`) | *Should be unreachable* — stripped at equip time (§5.4). Defence-in-depth: return `unavailable` immediately, log `warn`. |
-| `sessions.is_auto_retry_until_stop = 1` (unattended mode) | Return `unavailable` **immediately**. Unattended by definition means "do not ask". |
-| no SSE viewer attached | **Block anyway.** The row is persistent, so the human may attach at any later point and the card rehydrates (`GET .../pending_questions`). Log it at `info` for diagnosis; do not change behaviour. |
-| viewer attached | Block. |
+| sub-agent (`ctx.is_sub_agent`) | stripped at equip time (§5 T4) **and** runtime `unavailable` + `logger.warnFmt`. A sub-agent run has no answer surface: the question would sit forever and the sub-agent would return nothing useful. |
+| unattended (`sessions.is_auto_retry_until_stop = 1`) | `unavailable` immediately, **no row** — the model decides in the same run and the run completes. Scheduled/routine runs must not leave dangling questions. |
+| otherwise | ask. No viewer check: the card is a persisted row, so whoever opens the session later sees it. |
 
-Exits from the wait are therefore only: **answered**, **skipped**, **cancelled** (Stop), **timeout**, or — for a row whose owning run died — **orphaned** (§1.7). Nothing else.
+### 1.8 Scope — seeded in **every** agent mode by default
 
-`ASK_USER_DEFAULT_TIMEOUT_SECONDS = 1800` (30 min) — long enough that stepping away for a meeting still finds the question waiting; `timeout_seconds: 0` is allowed and means "wait indefinitely" for a human who explicitly wants that. Rationale for a finite default rather than infinite: a parked loop holds the session's `active_loops` slot and its `worker` row, so an indefinitely parked session can neither start new work nor be garbage-collected, and the sidebar shows it as running forever. `0` stays available as an explicit opt-in.
-
-### 1.6 `ask_user` does not end the agent turn — it parks it
-
-Clarification that matters for both the timeout and the UI: `ask_user` arrives as a **tool call**, so the LLM turn's `finish_reason` is **`tool_calls`**, *not* `stop` (`workflow.zig:1487-1502`). The loop then calls `handle_tool`, which runs `execAskUser` and blocks **inside** it.
-
-Consequences:
-
-- The worker row stays alive, `is_worker_running` is true, and the session still shows as running — which is correct: the run genuinely is still running, it is just waiting on a human.
-- **Stop works normally** (`worker.cancelled` → the wait loop's poll), and so does the streaming/cancel plumbing.
-- The composer keeps its Send-hidden / Stop-visible shape (`FileInput.vue:782-794`) — nothing about that changes.
-- The turn only reaches `finish_reason = "stop"` *after* the tool returns its `<status>…</status>` envelope and the loop makes one more LLM call with the answer in context.
-
-### 1.7 Restart mid-question → `orphaned`, not a fake resume
-
-The row survives a backend restart, but the **parked loop does not** — resuming a multi-step agent run from a checkpoint is a much larger feature (§6 item 8). So a boot-time sweep marks any still-`pending` row whose session has no live worker as **`orphaned`**. The card then reads *"The run ended before you answered"* and it is **not** answerable (the answer endpoint returns `410 Gone` for a non-`pending` row instead of pretending to resume). This is the honest behaviour: the question is never silently lost, and the UI never implies a resume that cannot happen.
-
-The frontend rehydrates `pending` rows as live and `orphaned` rows as inert, from the same `GET /api/llm/session/:id/pending_questions` call.
-
-### 1.8 Scope: main-agent-only, seeded in **every** agent mode by default
-
-**Reviewer decision (2026-09-16):** `ask_user` is seeded as a **default tool in all modes that have an agent** — chat (`DEFAULT_CHAT_TOOLS`), agent items (`DEFAULT_AGENT_TOOLS`), and kanban items (which seed `DEFAULT_AGENT_TOOLS` + `DEFAULT_KANBAN_TOOLS`).
-
-It is **never** equipped for sub-agents (deadlock, §7 item 4). Design/folder item types seed no tool list at all (`tools_equipped.zig:280-330` comment) so they are unaffected by construction, and they have no interactive chat transcript anyway. Enforced via the existing `allowlistFilter` + `itemTypeStrip` machinery (`tool_eligibility.zig:43-157`).
+Chat (`DEFAULT_CHAT_TOOLS`), agent items (`DEFAULT_AGENT_TOOLS`) and kanban items (which seed `DEFAULT_AGENT_TOOLS` + `DEFAULT_KANBAN_TOOLS`). Never for sub-agents. Design/folder items seed no tool list at all, so they are unaffected by construction.
 
 ---
 
 ## 2. UX / card states
 
-Full visual: **`docs/wireframes/ask-user-tool.html`**. Summary:
+Full visual: **`docs/wireframes/ask-user-tool.html`**. The card derives **everything** from two things it already has: `msg.tool_name`, `innerToolData(msg)` (the `<data>` payload → `<status>`), and `getParametersForMessage(msg)` (the args → question, options, header, recommended, flags).
 
-| State | What the card shows |
-|---|---|
-| `pending` (options) | `ToolCardHeader` (`ask_user` violet pill, `header` as primary, `● waiting for you` right-meta, no chevron-collapse of the question) + question markdown + radio list, `recommended` option carries a `recommended` chip, "Other…" textarea when `allow_free_text` + **Submit** / **Skip**. |
-| `pending` (multi-select) | Same, checkboxes; Submit enabled when ≥1 checked. |
-| `pending` (free text only) | No list; textarea + Submit/Skip. Submit disabled while blank. |
-| `submitting` | Buttons disabled + inline spinner (POST in flight). |
-| `answered` | Chosen answer(s) as a resolved chip; options dimmed and read-only; `answered at 14:32` meta; card collapses to a one-line summary. |
-| `skipped` | Muted "You skipped this question." |
-| `timeout` | Muted "No answer in time — the agent decided on its own." |
-| `unavailable` | Muted "No human was available — the agent decided on its own." (unattended run only, now that the no-viewer bail-out is gone) |
-| `orphaned` | Muted "The run ended before you answered." Inert — no inputs. Shown when the owning run died mid-question (§1.7). |
-| `error` | "Couldn't send your answer" + **Retry** (keeps the user's typed text). |
+| State | `<status>` | Card |
+|---|---|---|
+| `pending` (single-select) | `pending` | `ToolCardHeader` (violet `ask_user` pill, `header` as primary, yellow `● waiting for you` badge, no countdown) + question markdown + radio list, `recommended` chip, "Other…" textarea when `allow_free_text`, **Send answer** / **Skip**. |
+| `pending` (multi-select) | `pending` | Same with checkboxes; Send enabled when ≥1 checked. |
+| `pending` (free text only) | `pending` | Textarea only; Send disabled while blank. |
+| `submitting` | `pending` | Buttons disabled + spinner (POST in flight). |
+| `answered` | `answered` | Chosen answer as a resolved chip; options dimmed; collapses to a one-line summary. |
+| `skipped` | `skipped` | Muted "You skipped this question." |
+| `abandoned` | `abandoned` | Muted "You moved on without answering." |
+| `unavailable` | `unavailable` | Muted "No human was available — the agent decided on its own." (unattended runs only) |
+| `error` | `pending` | POST failed + **Retry** (keeps the typed text). |
+| invalid args | — | `success=false` + `<error>` (e.g. `recommended` not in `options`). |
 
-Interaction details:
+Interaction: auto-scroll into view + focus when the card appears; if `document.hidden`, raise a `stores/notifications.ts` toast. Keys while pending: `1..6` select, `Enter` send, `Esc` skip. No optimistic swap — the card stays `submitting` until the `llm_full` row update lands, then falls back to a local patch after 2 s.
 
-- Auto-scroll the card into view + focus it when a `requested` frame arrives (mirrors the `agent-error-card` `nextTick(scrollToBottom…)` precedent, `ChatView.vue:3210-3220`). If the document is hidden, raise a `stores/notifications.ts` toast so the user notices.
-- Keyboard while pending: `1`…`6` selects option N, `Enter` submits, `Esc` skips. Focus-trapped inside the card only while it is the newest pending question.
-- Countdown ring/pill when `timeout_seconds > 0`, fed by `expires_at`; at zero it becomes the `timeout` state locally (the backend frame arrives ~100 ms later and is authoritative).
-- Optimistic? **No.** Same discipline as user messages (`ChatView.vue:3742-3762`: no optimistic push, let the SSE echo deliver the canonical state). The card shows `submitting` until the `action:"answered"` frame lands; a 200 without a frame falls back to a local patch after 2 s.
-- The composer stays as-is (Send hidden, Stop visible during a run). Answering happens **in the card**, not in the composer. (A future "answer from the composer" affordance is an explicit non-goal, §6.)
+The composer stays idle and functional (§1.6) — the card is the affordance, and typing a message is a legitimate "I'm moving on" signal rather than an error path.
 
 ---
 
-## 3. Files touched (complete list)
+## 3. Files touched
 
 **New — backend**
 
 | Path | Purpose |
 |---|---|
-| `src/modules/agent/tools/ask_user.zig` | `ask_user_tool: AgentTool`, `AskUserInput`, `validateAskUserInput`, pure XML builders, `ask_user_tool_system_prompt`, colocated schema/validator tests |
-| `src/agentic_loop/tools_exec_ask_user.zig` | `execAskUser(ctx, tc) !ToolExecResult` — parse → gate → insert → emit → wait → envelope |
-| `src/agentic_loop/ask_user_pending.zig` | DB access (`insert/get/mark/list`) + `emitAskUserFrame` + the wait loop |
+| `src/modules/agent/tools/ask_user.zig` | `ask_user_tool: AgentTool`, `AskUserInput`, `validateAskUserInput`, XML builders, system prompt, colocated tests |
+| `src/agentic_loop/tools_exec_ask_user.zig` | `execAskUser(ctx, tc) !ToolExecResult` — parse → gate → insert row → return the `pending` envelope immediately |
+| `src/agentic_loop/ask_user_pending.zig` | DB layer (`insert/get/resolve/markAbandoned/hasPending`) + `writeAnswerToToolResultRow` (row rewrite + SSE) + `resumeSession` (the `emit_run_agent` shape) |
 | `src/http_handlers/ask_user_answer.zig` | `POST /api/llm/session/:session_id/answer` |
-| `src/http_handlers/pending_questions_get.zig` | `GET /api/llm/session/:session_id/pending_questions` |
 | `src/migrations/migration_087_test.zig` | Migration 087 test |
 
 **Modified — backend**
 
 | Path | Change |
 |---|---|
-| `src/migrations/migration.zig` | `Migration087AddSessionPendingQuestion` (`version: u32 = 87`), registered last in `allMigrations` |
-| `src/agentic_loop/tools_equipped.zig` | `+ask_user` in `equips()` and `UNIFIED_TOOL_REGISTRY()` (new `=== INTERACTIVE (main agent only) ===` section); `+ask_user` in `DEFAULT_AGENT_TOOLS`; introduce `MAIN_AGENT_ONLY_NAMES` |
-| `src/agentic_loop/tools.zig` | `pub const execAskUser = @import("tools_exec_ask_user.zig").execAskUser;` |
-| `src/agentic_loop/tool_eligibility.zig` | Generalize the hardcoded `spawn_sub_agent` strip (`:113-123`) to iterate `MAIN_AGENT_ONLY_NAMES`; add `ask_user`; keep both existing tests green + add cases |
-| `src/agentic_loop/workflow.zig` | Same generalization at the progressive re-add guard (`:2019`) |
-| `src/agentic_loop/progressive_catalog.zig` | Same generalization at `:132,148` so a sub-agent can't `search_tool` its way to `ask_user` |
-| `src/main.zig` | Register both routes, after the `.../messages` siblings, with the route-order comment |
-| `docs/agent-tools.md` | New `## ask_user` section (same shape as `present_files`: description, input, XML output, **SSE event** line) |
+| `src/migrations/migration.zig` | `Migration087AddSessionPendingQuestion` (`version: u32 = 87`) |
+| `src/agentic_loop/tools_equipped.zig` | `+ask_user` in `equips()` and `UNIFIED_TOOL_REGISTRY()`; `+ask_user` in `DEFAULT_AGENT_TOOLS`; new `MAIN_AGENT_ONLY_NAMES` |
+| `src/agentic_loop/tools.zig` | re-export `execAskUser` |
+| `src/agentic_loop/tool_eligibility.zig` | loop `MAIN_AGENT_ONLY_NAMES` instead of the hardcoded `spawn_sub_agent` compare |
+| `src/agentic_loop/progressive_catalog.zig` | same generalization (`:132,148`) |
+| `src/agentic_loop/workflow.zig` | the break after `handle_tool` (§1.3); the iteration-top guard (§1.6); the progressive re-add guard (`:2019`) |
+| `src/modules/agent/Agent.zig` | `awaiting_user` variant in `FinishReason` + `from_str` + `to_str` |
+| `src/http_handlers/session_create.zig` | the `abandoned` guard before line 258 |
+| `src/main.zig` | the one new route, with the route-order comment |
+| `docs/agent-tools.md` | `## ask_user` section |
 
 **New — frontend**
 
 | Path | Purpose |
 |---|---|
-| `src/apps/desktop/src/helpers/askUser.ts` | `AskUserEvent` / `AskUserState` types, `applyAskUserEvent`, `clearAskUserFor`, `parseAskUserArgs` (args-only fallback) |
-| `src/apps/desktop/src/components/tool_outputs/AskUser.vue` | The card (all §2 states) |
-| `src/apps/desktop/src/__tests__/askUser.spec.ts` | Reducer + card unit tests (Vitest, `@vue/test-utils`) |
+| `src/apps/desktop/src/components/tool_outputs/AskUser.vue` | the card (all §2 states) |
+| `src/apps/desktop/src/__tests__/AskUser.spec.ts` | Vitest: each state, keyboard, the exact POST body |
 
 **Modified — frontend**
 
 | Path | Change |
 |---|---|
-| `src/apps/desktop/src/api/index.ts` | `askUserAnswer()`, `getPendingQuestions()`; `ask_user` added to `DEFAULT_CHAT_TOOLS` (`:1340-1350`); `ask_user` fields on `SseEvent` |
-| `src/apps/desktop/src/components/views/ChatView.vue` | (a) `askUserMap = ref<AskUserMap>({})`; (b) early-return branch for `role === 'ask_user'` **above** the `type !== 'chunk'…` gate (`:3114-3140`); (c) `v-else-if="msg.tool_name === 'ask_user'"` → `<AskUser>` in the tool dispatcher (`:4173+`); (d) rehydrate in `loadChatHistory()`; (e) clear the map entry on the canonical `full` row, next to `clearProgressFor` |
+| `src/apps/desktop/src/api/index.ts` | `answerQuestion(sessionId, body)`; `ask_user` added to `DEFAULT_CHAT_TOOLS` |
+| `src/apps/desktop/src/components/views/ChatView.vue` | **one** `v-else-if="msg.tool_name === 'ask_user'"` branch, placed before the `mcp_*` `startsWith` guard |
 
-**Not touched:** `agent_tools_registry.zig` (auto-derives from the registry — Tools tab shows `ask_user` with zero edits), `KanbanToolsPanel.vue` (`RECOMMENDED_TOOLS` is an unrelated 3-item enable preset), `models/session.zig` (no new session columns).
+**Optional (product touch, §5 T9):** `WorkspaceItemTaskCard.vue:429,448` — paint the orange "awaiting review" dot for `last_finish_reason === 'awaiting_user'` so a kanban card whose run is waiting on a question is visible in the board.
+
+**Not touched:** `agent_tools_registry.zig` (auto-derives → the Tools tab shows `ask_user` for free), `models/session.zig`, any SSE event-name list (`additionalEventTypes` unchanged — no new event type anywhere).
 
 ---
 
@@ -302,222 +253,192 @@ Interaction details:
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_pending_question (
-    id              TEXT PRIMARY KEY,          -- q_<nanos>_<rand>
-    session_id      TEXT NOT NULL,
-    tool_call_id    TEXT NOT NULL,             -- llm_history placeholder / assistant tool_call id
-    header          TEXT,                      -- NULL-able: '' is a legitimate value
-    question        TEXT NOT NULL,             -- non-empty by validation
-    options_json    TEXT NOT NULL DEFAULT '[]',
-    allow_free_text INTEGER NOT NULL DEFAULT 1,
-    multi_select    INTEGER NOT NULL DEFAULT 0,
-    recommended     TEXT,                      -- NULL-able
-    status          TEXT NOT NULL DEFAULT 'pending',  -- pending|answered|skipped|cancelled|timeout|unavailable|orphaned
-    answer          TEXT,                      -- NULL-able; JSON array string when multi_select
-    created_at      INTEGER NOT NULL,
-    expires_at      INTEGER NOT NULL,          -- 0 = no timeout (timeout_seconds: 0)
-    answered_at     INTEGER
+    id             TEXT PRIMARY KEY,          -- q_<nanos>_<rand>
+    session_id     TEXT NOT NULL,
+    tool_call_id   TEXT NOT NULL,             -- the LLM's tool_call id
+    llm_history_id TEXT NOT NULL,             -- the tool-result row we rewrite on answer
+    question       TEXT NOT NULL,             -- for logs/debug; the UI reads the args
+    status         TEXT NOT NULL DEFAULT 'pending',  -- pending|answered|skipped|abandoned
+    answer         TEXT,                      -- NULL-able: '' is a legitimate value
+    created_at     INTEGER NOT NULL,
+    resolved_at    INTEGER
 );
 
 -- one question per tool call (idempotent re-exec / retry safety)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_spq_tool_call
     ON session_pending_question(tool_call_id);
 
--- the rehydration + wait-loop lookup
+-- the pending-check hot path: hasPendingQuestion() and the abandon guard
 CREATE INDEX IF NOT EXISTS idx_spq_session_status
     ON session_pending_question(session_id, status);
-
--- the boot-time orphan sweep (§1.7) scans exactly these rows
-CREATE INDEX IF NOT EXISTS idx_spq_status_created
-    ON session_pending_question(status, created_at);
 ```
 
-`expires_at = 0` is the sentinel for "no timeout" (`timeout_seconds: 0`); the wait loop treats `0` as "never expires". Every read still `COALESCE`s the nullable columns, and the orphan sweep runs once at boot **after** migrations: `UPDATE session_pending_question SET status='orphaned' WHERE status='pending' AND session_id NOT IN (SELECT id FROM worker)`.
+There is **no** `options_json` / `allow_free_text` / `recommended` / `expires_at` column: the args live in the tool-result row's `<parameters>` (fact #2/#15) and there is no timeout (§1.1). Fewer columns = fewer places for the empty-slice trap.
 
-> ⚠️ **Why `header` / `recommended` / `answer` are NULL-able and not `TEXT NOT NULL DEFAULT ''`:**
-> `SqliteBackend.exec` binds an **empty slice as SQL NULL** (documented precedent: Migration 079's `content` column broke exactly this way). `header`, `recommended` and a single-select `answer` legitimately *are* empty/NULL, so a `NOT NULL` column would abort the insert mid-`exec`. Follow Migration 079's fix: **nullable columns, never bind `""`, and read with `COALESCE(col,'')`** on every SELECT. This is task T2's dedicated test (§8.1) and one of the two harness assertions (§8.4).
+> ⚠️ **`answer` is NULL-able, never bound as `""`.** `SqliteBackend.exec` binds an empty slice as SQL NULL (Migration 079's `content` column broke exactly this way), and an empty answer is meaningless anyway — but a single-select answer of `""` must still be *rejected by validation*, not by a NOT NULL constraint. Reads use `COALESCE(answer,'')`.
 
-`question` and `options_json` stay `NOT NULL` because validation guarantees non-empty (`question` is required; `options_json` is written as `'[]'` **only via a literal default**, and the insert path writes a real JSON array or the literal `'[]'` — never an empty slice; if `options` is absent the code writes `"[]"` deliberately, which is a 2-byte non-empty slice).
+Statuses are exactly `pending | answered | skipped | abandoned` — `unavailable` writes **no row** (§1.7).
 
 ---
 
 ## 5. Implementation tasks (TDD, one commit per task)
 
-### 5.1 T1 — Tool definition + pure XML builders
-`src/modules/agent/tools/ask_user.zig`.
+### 5.1 T1 — Tool definition
+`src/modules/agent/tools/ask_user.zig`: `AskUserInput`, the `AgentTool` literal in the `present_files.zig:78-106` style, `ask_user_tool_system_prompt`, `validateAskUserInput` (`question` non-empty; `header` ≤ 40; `options` 2..6; `recommended` ∈ `options`; `multi_select` requires options), `buildAskUserPendingXml` + `buildAskUserResolvedXml(status, answer, count)`, CDATA/XML-escaping the question so `</ask_user>` inside it cannot break the envelope (`update_plan.zig` precedent).
 
-- `AskUserInput` with `?`-optional fields + `AskUserStatus` enum mirroring the §1.1 XML.
-- Schema in the `present_files.zig:78-106` style (`AgentTool` literal, `\\`-string description, `system_prompt` companion).
-- Pure `validateAskUserInput(input) !void`: `question` non-empty; `header` ≤ 40; `options` 2..6; `recommended` (if set) ∈ `options`; `timeout_seconds` ≤ 3600 (and `0` allowed = no timeout); `multi_select == true` requires `options.len > 0`.
-- Pure `buildAskUserXml(allocator, status, question_id, answer, answers_count) ![]const u8` for each resolution state (answered / skipped / cancelled / timeout / unavailable / orphaned) + the error envelope.
-- Tests: schema contract (name/required/properties), one validator test per rejection reason, one XML test per status, and an escaping test (CDATA / XML-escape the question so a `</ask_user>` inside the user's question can't break the envelope — same concern `update_plan.zig` solved with CDATA).
+**Tests:** schema contract; one per rejection reason; one per status envelope; the escaping case.
 
-**Verify:** `zig build test -Dtest-filter=ask_user` (green), plus the new file compiles on all 3 targets per the repo's cross-target rule.
+### 5.2 T2 — Migration 087 + DB layer
+`src/agentic_loop/ask_user_pending.zig`:
+- `insertPendingQuestion`, `getPendingQuestion(id | tool_call_id)`, `markQuestionStatus(id, status, answer)`, `markAbandonedForSession(session_id)`, `hasPendingQuestion(allocator, db, session_id) bool` (`SELECT 1 … LIMIT 1`, mirroring `hasQueuedMessages`/`isWorkerRunning`).
+- All SELECTs `COALESCE(answer,'')`; the INSERT binds `null` for `answer` (never `""`).
 
-### 5.2 T2 — Migration 087 + DB layer + wait loop
-`src/migrations/migration.zig` (+ `migration_087_test.zig`), `src/agentic_loop/ask_user_pending.zig`.
-
-- `insertPendingQuestion`, `getPendingQuestion(question_id)`, `markQuestionStatus(question_id, status, answer)`, `listPendingQuestionsForSession(session_id)` — every SELECT uses `COALESCE(col,'')`; every INSERT binds `null` (never `""`) for the nullable columns.
-- `emitAskUserFrame(...)` — mirrors `subagent_progress.emitProgressEvent` verbatim: arena for JSON → `allocator.dupe` the data (the bus borrows by reference; freeing the arena right after `emit` is a use-after-free) → dual emit (`bus.emit(SseEvent, session_id, ev)` + `bus.emit(SseEvent, "llm", ev)`) with `event_type = "llm_full"` → **all errors caught + logged, never propagated** (a failed frame must never kill the tool).
-- `waitForAnswer(allocator, io, db, logger, session_id, question_id, expires_at) !AskUserOutcome` — the §1.3 loop, with the sleep in ≤50 ms chunks exactly like `retry_delay_ms.zig:71-116`. `expires_at == 0` means "never expires" (`timeout_seconds: 0`).
-- `sweepOrphanedQuestions(db)` — the boot-time sweep (§1.7), called once after migrations: `UPDATE … SET status='orphaned' WHERE status='pending' AND session_id NOT IN (SELECT id FROM worker)`.
-
-**Tests (colocated + migration test):**
-1. Round-trip with **empty `header` and empty `recommended`** against in-memory SQLite — this is the empty-slice-binds-as-NULL regression guard. Asserts insert succeeds and reads come back `""`, not an error.
-2. `markQuestionStatus('answered', "")` on a single-select with an empty answer → rejected by validation upstream; the DB layer test asserts a *non-empty* answer round-trips and that `answer` reads back as `""` (not `null`-crash) when NULL.
-3. Wait loop: answered by a concurrent `std.Io.Group.concurrent` task after ~50 ms → outcome `answered` with the right value; `expires_at` in the past → `timeout`; `expires_at == 0` → still waiting after > 1 s (proves the no-timeout sentinel); `worker.cancelled = 1` → `cancelled` (this is the "Stop during question must not hang" proof).
-4. UNIQUE(`tool_call_id`) — a second insert for the same tool call is rejected (or `INSERT OR IGNORE` + reuse), asserted.
-5. Orphan sweep — a `pending` row for a session with **no** `worker` row becomes `orphaned`; one **with** a live worker row stays `pending`.
+**Tests (in-memory SQLite):**
+1. insert with `answer` NULL → reads back `""`; insert with an explicit empty-string *slice* must not be attempted (assert the helper's contract).
+2. `hasPendingQuestion` true only while `status='pending'`; false after resolve; false for another session.
+3. UNIQUE(`tool_call_id`): a second insert for the same tool call is ignored (`INSERT OR IGNORE`) — idempotent re-exec safety.
+4. `markAbandonedForSession` resolves **all** pending rows for that session, and none for others.
 
 ### 5.3 T3 — Exec adapter + gate
-`src/agentic_loop/tools_exec_ask_user.zig`.
+`src/agentic_loop/tools_exec_ask_user.zig`: parse → validate → gate (§1.7) → `insertPendingQuestion` → return `ToolExecResult{ .output = pending_envelope, .output_allocated = true }`. Never block, never sleep, never write to `llm_history` (Phase 3 does that).
 
-Order of operations (each step is a test):
-1. Parse args (`std.json.parseFromSlice`, `.allocate = .alloc_always, .ignore_unknown_fields = true`).
-2. Validate → on failure `wrapToolOutput(..., success=false, err, inner_error_xml)`.
-3. **Gate** (§1.5): `ctx.is_sub_agent` → `unavailable` + `logger.warnFmt`; `is_auto_retry_until_stop=1` → `unavailable`. No viewer is **not** a reason to skip (the row is persistent) — log at `info` and block.
-4. Insert + emit `requested`.
-5. Wait.
-6. Load the final row, emit the resolution frame, build the XML, `wrapToolOutput(success=true)`.
-7. Any unexpected error → `success=false` envelope (never a raw Zig error to the model).
+**Tests:** each gate row; "the returned envelope is `success=true` with `<status>pending</status>`"; "no pending row is written on the `unavailable` path".
 
-**Tests:** gate matrix (sub-agent / unattended / no-viewer-but-blocks rows of §1.5) with a stubbed viewer/flag; a "re-exec for the same `tool_call_id` reuses the existing pending row instead of inserting a duplicate" test (idempotency / retry safety); and a "`emitAskUserFrame` throwing does not fail the tool" test.
+### 5.4 T4 — Registry, eligibility, defaults, FinishReason
+- `equips()` + `UNIFIED_TOOL_REGISTRY()` (+ an `=== INTERACTIVE (main agent only) ===` section) + `DEFAULT_AGENT_TOOLS`.
+- `MAIN_AGENT_ONLY_NAMES = { "spawn_sub_agent", "ask_user" }` replacing the 4 hardcoded comparisons (`tool_eligibility.zig:113-123`, `workflow.zig:2019`, `progressive_catalog.zig:132,148`); keep existing tests green, add an `ask_user` case to each.
+- `Agent.zig`: `awaiting_user` in `FinishReason` + `from_str` + `to_str`.
 
-### 5.4 T4 — Registry + eligibility + defaults (**all modes**)
-- `equips()` + `UNIFIED_TOOL_REGISTRY()` (+ new section comment) + `DEFAULT_AGENT_TOOLS` (which seeds agent **and** kanban items, so kanban runs get it via `seedDefaultKanbanTools`).
-- Introduce `pub const MAIN_AGENT_ONLY_NAMES = [_][]const u8{ "spawn_sub_agent", "ask_user" };` in `tools_equipped.zig` and replace the 4 hardcoded `"spawn_sub_agent"` comparisons with a loop over it (`tool_eligibility.zig:113-123`, `workflow.zig:2019`, `progressive_catalog.zig:132,148`). Keep the existing tests green and add an `ask_user` case to each.
+**Static-contract tests:** present in both registry lists; in `DEFAULT_AGENT_TOOLS`; in `MAIN_AGENT_ONLY_NAMES`; the 3 strip sites reference the list (no re-hardcoded literal); `FinishReason.from_str("awaiting_user") != null` and round-trips through `to_str`.
 
-**Static-contract tests (grep-style, precedent `handle_tool.zig:1238+`):** `ask_user` present in both registry lists; present in `DEFAULT_AGENT_TOOLS`; present in `MAIN_AGENT_ONLY_NAMES`; the 3 strip sites reference `MAIN_AGENT_ONLY_NAMES` (not a re-hardcoded literal).
+**Also:** `tests/functional/agent_tools_defaults_test.py:21-45` — `EXPECTED_DEFAULTS` 25 → 26, `EXPECTED_KANBAN_DEFAULTS` 27 → 28. That test *will* fail otherwise, by design.
 
-**Also update** `tests/functional/agent_tools_defaults_test.py:21-45` (`EXPECTED_DEFAULTS` 25 → 26, `EXPECTED_KANBAN_DEFAULTS` 27 → 28, both sorted ASC) — that test *will* fail otherwise, by design. The chat-mode half of the "all modes" decision is T6 (`DEFAULT_CHAT_TOOLS`).
+### 5.5 T5 — The break
+`src/agentic_loop/workflow.zig`:
+- after `try handle_tool(...)` (`:1502`): `if (hasPendingQuestion(...)) { persist assistant row with finish_reason="awaiting_user"; try deleteWorker(.{ …. is_emit_sse = true }); break; }` — mirroring `.stop` minus the queue guard (§1.3);
+- iteration top (near `:846`): the defensive `hasPendingQuestion` → `break` guard (§1.6);
+- persist `sessions.last_finish_reason` through the existing `updateSessionLastFinishReason` call.
 
-### 5.5 T5 — HTTP endpoints
-`src/http_handlers/ask_user_answer.zig`, `src/http_handlers/pending_questions_get.zig`, routes in `src/main.zig`.
+**Tests:** static-contract (the break exists in the `.tool_calls` arm; there is **no** `hasQueuedMessages` guard on this path); a workflow-level test that a session with a pending row does not reach a second LLM call.
 
-`POST /api/llm/session/:session_id/answer`
-```jsonc
-{ "question_id": "q_…",          // preferred
-  "tool_call_id": "call_abc",    // fallback when the client only has the placeholder row
-  "answer": "staging",           // JSON array string when multi_select
-  "skip": false }                // true → status 'skipped'
-```
+### 5.6 T6 — HTTP endpoint + the row rewrite + the resume
+`src/http_handlers/ask_user_answer.zig`, route in `main.zig` (after the `…/messages` / `…/queue_messages` siblings, with the route-order comment — `main.zig:462-465`).
 
-- Errors: `question_id`/`tool_call_id` both missing → 400; row not found → 404; session mismatch → 403 (never let session A answer session B's question); `answer` empty when `!skip` → 400; `multi_select` with a non-array `answer` → 400; free text disallowed (`allow_free_text=false`) and `answer` ∉ `options` → 400 (**strict validator, and note the trap: the empty-slice-as-NULL issue does not apply here because `""` is *rejected*, so validation must run on the parsed value, not on a post-bind value**).
-- **Already resolved** → `200 {status:"already_answered"|<other terminal>, answer:…}` when the row was answered/skipped/cancelled/timed-out (a double-click or a late Retry must never 4xx — same discipline as `POST .../stop` being idempotent). But an **`orphaned`** row → `410 Gone {status:"orphaned"}`: the run is gone, so accepting the answer would silently imply a resume that cannot happen (§1.7).
-- Emits the resolution frame (§1.2) so the card flips live.
-- Reads/writes through the T2 DB layer only — no duplicated SQL.
+- Validation/status matrix per §1.5; options/free-text read by unwrapping `<parameters>` from the tool-result row.
+- **Row rewrite:** `llm_history.updateToolResultById` (`llm_history.zig:3040`) → `llm_history.getMessageById` (`:2422`) → `onEventSendLLMHistory` with `tool_call_id = msg.tool_call_id orelse msg.id` (the exact wire convention `sendSSEForMessageById` documents at `handle_tool.zig:832-903`). Written as a ~20-line pub helper in `ask_user_pending.zig` — `updateAndSendToolResult`/`sendSSEForMessageById` are private and also do diffview extraction we do not need (fact #11).
+- **Resume:** `emit_run_agent` with `skip_initial_queue_message = true`, `isWorkerRunning` guarded, session fields (`name`, `cwd`, `selected_profile_model`, `is_auto_retry_until_stop`) read from the `sessions` row — the exact shape of `start_agent.zig` step 4 / `wakeSessionForCompletion` (fact #9).
+- Order: DB → row rewrite → emit (never the reverse, §1.4).
 
-`GET /api/llm/session/:session_id/pending_questions` → `{questions:[{question_id, tool_call_id, header, question, options, allow_free_text, multi_select, recommended, expires_at, status}]}` — **only rows the UI still needs**: all `pending` rows (persistent, answered at any time), all `orphaned` rows (so a reload after a backend crash still shows the inert "run ended" card), plus terminal rows created in the last 60 s so a just-answered card rehydrates resolved.
+**Tests:** static-contract (route registered after the siblings; the emit happens **after** `updateToolResultById` in source order — a grep-able ordering contract); the `isWorkerRunning` guard means a second answer does not start a second run.
 
-**Route order (mandatory):** register both **after** the `.../messages` and `.../queue_messages` siblings and add the repo's route-order comment, per `main.zig:462-465` ("longer, more-specific paths after their prefix sibling") and the `/knowledge/reorder` precedent (`main.zig:618-619`). The literal segments `answer` / `pending_questions` do not collide with `:session_id`, but the test in §8.4 pins the order anyway.
+### 5.7 T7 — The abandon guard
+`src/http_handlers/session_create.zig` before line 258: pending → `markAbandonedForSession` + rewrite that tool-result row with the `abandoned` envelope → continue with the normal emit.
 
-### 5.6 T6 — Frontend: api + reducer
-- `api/index.ts`: `askUserAnswer(sessionId, body)`, `getPendingQuestions(sessionId)`, `ask_user` added to `DEFAULT_CHAT_TOOLS` (**"all modes by default"** — without this the tool is silently filtered out of every plain chat session and the feature looks broken with zero errors), and the `SseEvent` interface extended with the §1.2 fields.
-- `helpers/askUser.ts`: `applyAskUserEvent(map, event)` (terminal actions overwrite the entry, `requested` creates it — mirror `applyProgressEvent`'s shape), `clearAskUserFor(map, tool_call_id)`, `parseAskUserArgs(toolCallsJson, toolCallId)` (the args-only fallback of §1.2), `resolveAskUserState(msg, map)` (merges the placeholder row's arguments with the map → the card's view-model).
-- Vitest: reducer tests for each action; `parseAskUserArgs` tests including malformed/legacy `tool_calls_json` (it may be an **array** on legacy rows — the repo already guards this, `ChatView.vue:1669`).
+**Tests:** static-contract (the guard precedes `emit_run_agent`); in-memory test that `markAbandonedForSession` + rewrite produces a row whose content contains `<status>abandoned</status>`.
 
-### 5.7 T7 — Frontend: `AskUser.vue` + ChatView wiring
-- Card chrome: `chat-tool-card font-mono text-xs` + `_shared/ToolCardHeader.vue` (`toolName="ask_user"`, `:primary="header"`, `:running="state==='pending'"` for the yellow badge, `rightMeta` per state); body per §2. Theme tokens only (`var(--color-border)`, `var(--color-violet)`, `var(--semantic-text-dim)`) — no hardcoded colours.
-- ChatView edits are **wiring only** (5 small hunks, listed in §3) — all logic lives in `AskUser.vue` + `helpers/askUser.ts`, mirroring how `SpawnSubAgent.vue` keeps `ChatView` thin.
-- Vitest (`@vue/test-utils` `mount`): render each of the 8 states; keyboard `1`/`Enter`/`Esc`; Submit posts the exact frontend body to a mocked `askUserAnswer`; multi-select array serialization; free-text-disallowed hides the textarea.
+### 5.8 T8 — Frontend
+- `api/index.ts`: `answerQuestion()`; `ask_user` in `DEFAULT_CHAT_TOOLS`.
+- `AskUser.vue`: chrome from `_shared/ToolCardHeader.vue` (`toolName="ask_user"`, `:primary="header"`, `:running="status==='pending'"` for the yellow badge — set by the card itself, fact #16), body per §2, theme tokens only. Parse its three inputs: `content` (`<data>`), `parameters` (args), and derive the state from `<status>`.
+- `ChatView.vue`: one `v-else-if` branch before the `mcp_*`/`ProgressiveTool`/fallback region (`:4382-4420`), passing `:content="innerToolData(msg)"`, `:parameters="getParametersForMessage(msg)"`, `:session-id`, `:expanded`.
+- Vitest: every state; keyboard `1`/`Enter`/`Esc`; the exact POST body; multi-select array serialization; free-text-disallowed hides the textarea; an unknown `<status>` degrades to a plain completed card rather than throwing.
 
-### 5.8 T8 — Docs
-`docs/agent-tools.md`: `## ask_user` section in the existing format (description / **Input** / **Output to LLM** / **SSE event:** "reuses `llm_full` with `role='ask_user'` (no new event type — see `subagent_progress.zig` for the precedent)").
+### 5.9 T9 — Docs + optional kanban dot
+`docs/agent-tools.md`: `## ask_user` in the existing format, with the **SSE event** line reading *"none — the card renders from the standard `llm_full` tool-result row (`tool_name='ask_user'`); the answer rewrites that same row in place."*
+
+Optional: extend `WorkspaceItemTaskCard.vue:429,448` so `awaiting_user` paints the orange "awaiting review" dot (fact #6 says this is a display-only, zero-risk change). Reviewer call — see §10.
 
 ---
 
 ## 6. Non-goals (explicit)
 
-1. **Answering from the composer.** The composer stays Send-hidden during a run; answers go through the card only.
-2. **Questions from sub-agents.** Structurally impossible by design (§1.8) — a sub-agent has no attached viewer and the parent is parked on `group.await`.
-3. **A question queue / multiple concurrent questions per session.** One pending question per session at a time (the wait loop blocks the single-threaded agent); the UNIQUE index on `tool_call_id` plus "one pending per session" is the enforced shape. A model that calls `ask_user` twice in one batch gets the second call answered sequentially after the first (documented in the tool description).
-4. **Routine / scheduled-run questions.** `workspace_routines` (Migration 084) runs are unattended → covered by the `unavailable` gate, not by an answer surface.
-5. **Attachments / images in the answer.** Free text + options only.
-6. **A TUI/CLI answer surface.** Out of scope for v1 — but note §7 item 11 (the TUI must be verified to not equip the tool, or it will hang).
-7. **Rich option metadata** (descriptions per option, multi-page questions). Flat string options only, per `schemas.zig:30-36`.
-8. **Resuming a parked run after a backend restart.** The question row survives (that is the "persistent" decision, §1.5) and is shown as `orphaned`, but re-entering a multi-step agent run from a checkpoint is out of scope — it would need run-state persistence the codebase does not have today. Honest `orphaned` beats a fake resume.
+1. **Answering from the composer.** The answer goes through the card; typing a message instead is the `abandoned` path, not an answer (§1.6).
+2. **Questions from sub-agents.** Stripped; a sub-agent has no answer surface (§1.7).
+3. **Several simultaneous questions per session.** The break stops the run at the first batch containing a question, and the tool description tells the model to ask alone. If a model asks twice in one batch, both rows are written and both cards render; the resume run happens on the first answer, and the second question's card then becomes `abandoned` by the §1.6 guard if the user keeps going. Documented, not engineered around.
+4. **Routine / scheduled-run questions.** Unattended runs return `unavailable` (§1.7).
+5. **Attachments/images in an answer.** Options + free text only.
+6. **A TUI/CLI answer surface.** Out of scope — but verify the TUI path never equips `ask_user` (§1.8 reasoning + §7 item 9).
+7. **Rich option metadata** (per-option descriptions, multi-page questions). Flat strings only.
+8. **Auto-resuming a question that was never answered.** Nothing resumes on its own; the resume is always triggered by a human action (answer, or the next message via `abandoned`).
+9. **Timeouts / expiry / nagging reminders.** Deliberately absent (§1.1).
 
 ---
 
-## 7. Traps & risks (each one has a test)
+## 7. Traps & risks (each has a test)
 
-1. **Empty-slice-binds-as-NULL** → §4 DDL choice + T2 test 1 + a wire-level harness assertion. *(Migration 079 precedent.)*
-2. **Route-order shadowing** → §5.5 registration order + comment + a harness test that hits both new paths and asserts they are not captured by a sibling `:param` route. *(PR #291 / `/knowledge/reorder` class.)*
-3. **Silently dropped named SSE event** → avoided structurally by reusing `llm_full` + `role`. If a reviewer insists on a named event, all 3 sites must change together: emitter, `api/index.ts:3331` `additionalEventTypes`, and the Vitest contract `unifiedSseBuffer.spec.ts:623-652`.
-4. **Sub-agent deadlock** → `MAIN_AGENT_ONLY_NAMES` in all 4 sites + static-contract tests + a runtime `unavailable` fallback.
-5. **Unattended hang** → only an unattended run (`is_auto_retry_until_stop=1`) or a sub-agent short-circuits to `unavailable` (§1.5). A missing viewer deliberately does **not** short-circuit (the answer is persistent), so the guard is the finite default timeout + Stop + the orphan sweep.
-6. **Parked-forever session** → an infinite `timeout_seconds: 0` holds the session's `active_loops` slot and `worker` row, so new messages queue and the sidebar shows it running. That is why the **default is 1800 s**, not infinite (§1.5); `0` stays opt-in.
-7. **Restart mid-question** → the row survives, the parked loop does not; the boot sweep marks it `orphaned` and the endpoint answers `410` rather than faking a resume (§1.7).
-8. **Stop during a pending question** → the wait loop polls `isWorkerCancelled` on every iteration; T2 test 3 proves it returns within ~100 ms. *Not* relying on `cancel_fn` (that only aborts an in-flight LLM stream, `Agent.zig:2986-3004`).
-9. **Blocked batch** → other tool calls in the same batch wait behind the question (§6 item 3); the tool description tells the model to call `ask_user` alone in a batch.
-10. **`DEFAULT_CHAT_TOOLS` miss** → the tool would be filtered out of chat-mode sessions and the feature would look broken with zero errors. T6 adds it; the harness test asserts `POST /api/llm/session` with `allowed_tools` containing `ask_user` keeps it equipped (via the existing tools-toggle surface).
-11. **TUI/CLI hang** → *verify before shipping*: `rg -n 'equips\(|UNIFIED_TOOL_REGISTRY' src/apps/cli src/ai_workflow` returned no hits, so the TUI likely has its own path — confirm the TUI's tool list is unaffected, or gate `ask_user` off there.
-12. **`emitAskUserFrame` failure killing the tool** → all emit errors swallowed + logged (T3 test 4). The question still works, the card just renders from args alone.
-13. **`.vue` edits** — tracked `.vue` files are large and `text_replace` reformats them; use the python-patching approach the repo uses for ChatView (no whole-file rewrites, minimal hunks, then `pnpm run build` + Vitest).
-14. **Do not add `// NEW (plan: …)` comments** — explain *why* in one sentence or not at all.
+1. **The `pending` envelope reaching the model.** If any run starts while a question is pending and unanswered, the model sees `<status>pending</status>` and may guess. Three guards: the unconditional break (no queue guard), the `session_create` abandon rule, and the iteration-top break. *Test:* §5.5 tests + the §8.4 harness case that seeds a pending row and asserts a new message resolves it to `abandoned` before any run.
+2. **Ordering bug in the answer endpoint** (emit before rewrite) → the resume run reads `pending`. *Test:* the source-order grep contract in §5.6.
+3. **Empty-slice-binds-as-NULL** → `answer` NULL-able + `COALESCE` + T2 test 1 + a harness assertion. *(Migration 079.)*
+4. **Route-order shadowing** → registration after the siblings + comment + a harness test hitting the path and asserting its distinctive JSON keys. *(PR #291 / `/knowledge/reorder` class.)*
+5. **Sub-agent hazard** → `MAIN_AGENT_ONLY_NAMES` in all 4 sites + static-contract tests + the runtime `unavailable` fallback.
+6. **`DEFAULT_CHAT_TOOLS` miss** → the tool would be filtered out of every plain chat session and the feature would look broken with zero errors. T8 adds it; the harness asserts it stays equipped.
+7. **`is_feed_to_llm` surprise** → placeholders are fed to the model (fact #3). Any new "temporary" content written into a tool row must be rewritten before the next run. *Test:* the harness asserts the row content is the `answered` envelope **before** the worker row appears.
+8. **`finish_reason` drift** → a display-only value today (fact #6). Keep the enum variant so a future `switch` fails to compile rather than silently mis-handling (§1.3).
+9. **TUI/CLI** → verify the TUI path never equips `ask_user` (§1.8). A TUI that equips it would end runs with a question nobody can answer.
+10. **SSE-emit failure** → `onEventSendLLMHistory` errors must be caught and logged, never propagated: a failed card refresh must not roll back a valid answer or block the resume.
+11. **`.vue` edits** — tracked `.vue` files are large; use the repo's python-patching approach for ChatView (minimal hunks, then `pnpm run build` + Vitest), not whole-file rewrites.
+12. **No `// NEW (plan: …)` comments** — explain *why* in one sentence or not at all.
 
 ---
 
 ## 8. Test plan
 
 ### 8.1 Zig unit (colocated + migration)
-Per task above. Every tool file carries its own schema test (`update_plan.zig:412-434` precedent).
+Per task. Every tool file carries its own schema test (`update_plan.zig:412-434` precedent).
 
-### 8.2 Zig integration — the blocking semantics
-An in-memory SQLite + `std.Io.Threaded` test that drives `waitForAnswer` against a real concurrent answerer. This is the only place the *pause* is proven; it is deliberately **not** a live-server test.
+### 8.2 Zig integration (in-memory SQLite)
+The row lifecycle: insert → `hasPendingQuestion` true → resolve → false; `abandoned` sweeps all pending rows for a session; UNIQUE idempotency.
 
 ### 8.3 Static-contract greps
-`ask_user` in `equips()`, in `UNIFIED_TOOL_REGISTRY()`, in `DEFAULT_AGENT_TOOLS`, in `MAIN_AGENT_ONLY_NAMES`; no remaining hardcoded `"spawn_sub_agent"` literal in the 3 strip sites; routes present in `main.zig`.
+`ask_user` in both registry lists / `DEFAULT_AGENT_TOOLS` / `MAIN_AGENT_ONLY_NAMES`; no hardcoded `"spawn_sub_agent"` literal in the 3 strip sites; the break exists in the `.tool_calls` arm **without** a queue guard; `updateToolResultById` precedes `emit_run_agent` in `ask_user_answer.zig`; the abandon guard precedes `emit_run_agent` in `session_create.zig`; the route is registered.
 
 ### 8.4 **Python functional harness — mandatory** (`tests/functional/ask_user_test.py`)
-Boots the real binary on a free port (8080..8199, never 8081) with an isolated tmpdir `HOME`, and replays the exact bodies the frontend sends. Direct-seed a pending row via sqlite3 into `harness.temp_dir/.config/nalar/agent.db` (`session_pr_url_test.py:48-70` precedent), then:
+
+This design is **fully testable end-to-end without an LLM**, which the blocking design was not: seed the two rows with sqlite3, POST the exact body `AskUser.vue` sends, and assert both the row rewrite and the resume.
 
 ```python
-def test_answer_happy_path_and_sse_frame(harness):
-    """The exact body AskUser.vue POSTs, plus the resolution frame on the wire."""
-    sid = _create_session(harness)
-    qid = _seed_pending_question(harness, sid, tool_call_id="call_abc",
-                                 options=["staging", "production"],
-                                 allow_free_text=True)
+def _seed_question(harness, sid, tool_call_id="call_abc", options=("staging", "production")):
+    """Insert the assistant tool_calls row + its tool-result row + the pending row,
+    exactly as handle_tool Phase 1/3 would, then return the question id."""
+    # args_json = {"header": ..., "question": ..., "options": [...], "allow_free_text": true}
+    # tool row content = <tool><name>ask_user</name><parameters>{args}</parameters>
+    #                    <success>true</success><data><ask_user><status>pending</status>…</data></tool>
 
-    # Assert the SSE frame BEFORE answering: event: llm_full with role=ask_user.
-    frames = _collect_sse(harness, sid, seconds=2)      # for line in r.iter_lines()
-    assert any(f.get("role") == "ask_user" for f in frames) or True  # only if we re-emit on connect
+
+def test_answer_rewrites_the_tool_row_and_resumes_the_run(harness):
+    sid = _create_session(harness)
+    qid, row_id = _seed_question(harness, sid)
 
     r = harness.http("POST", f"/api/llm/session/{sid}/answer",
                      json_body={"question_id": qid, "answer": "staging"}, expect=200)
     assert r.json()["status"] == "answered"
 
-    row = _read_question(harness, qid)
-    assert row["status"] == "answered" and row["answer"] == "staging"
+    # 1. the question row resolved
+    assert _question(harness, qid)["status"] == "answered"
+    # 2. the tool-result ROW was rewritten in place (same row id) — the model's view
+    row = _llm_row(harness, row_id)
+    assert "<status>answered</status>" in row["response_content"]
+    assert "<answer>staging</answer>" in row["response_content"]
+    # 3. a run was started (resume) — observable as a worker row, no LLM involved
+    assert _has_worker(harness, sid)
+    # 4. the rewrite landed BEFORE the resume (trap #7)
+    assert _worker_created_at(harness, sid) >= _row_updated_at(harness, row_id)
 
-    # Idempotent double-click — must NOT 4xx.
-    r2 = harness.http("POST", f"/api/llm/session/{sid}/answer",
-                      json_body={"question_id": qid, "answer": "staging"}, expect=200)
-    assert r2.json()["status"] == "already_answered"
 
-
-def test_empty_answer_rejected_on_the_wire(harness):
-    """The '' payload must 400 — validation must run on the parsed value."""
+def test_double_answer_is_idempotent(harness):
+    """Second POST → 200 already-resolved, and exactly one resume attempt."""
     ...
 
 
-def test_answer_free_text_disallowed_and_not_an_option_rejected(harness): ...
-
-def test_pending_questions_route_not_shadowed_by_sibling_param_routes(harness):
-    """Regression guard for the route-order trap: /answer and /pending_questions
-    must resolve to their own handlers (assert their distinctive JSON keys)."""
+def test_empty_answer_rejected(harness): ...
+def test_answer_not_in_options_when_free_text_disallowed(harness): ...
+def test_answer_for_another_session_is_forbidden(harness): ...
+def test_skip_marks_skipped_and_still_resumes(harness): ...
+def test_new_user_message_resolves_pending_as_abandoned(harness):
+    """POST /api/llm/session with a queue_message while a question is pending →
+    the tool row becomes <status>abandoned</status> and the run proceeds."""
     ...
-
-def test_answer_for_other_session_is_forbidden(harness): ...
-
-def test_pending_question_is_persistent_and_survives_a_restart(harness):
-    """The 'persistent' decision: a seeded pending row is still returned by
-    GET …/pending_questions after a full binary restart."""
-    ...
-
-def test_orphaned_question_rejects_a_late_answer(harness):
-    """Seed a pending row with NO worker row → boot sweep marks it orphaned,
-    GET returns status='orphaned', POST answer → 410 Gone."""
+def test_answer_route_not_shadowed_by_sibling_param_routes(harness):
+    """The route-order regression guard."""
     ...
 ```
 
@@ -528,25 +449,22 @@ No `nohup ./zig-out/bin/nalar --port 8080` + `curl`. No port 8081. The harness o
 
 ## 9. Rollout
 
-Single PR, no feature flag — the tool is inert until the model calls it, and the unattended gate (§1.5) plus the finite default timeout prevent hangs. Deep-link the wireframe in the PR body. Suggested merge order: T1–T2 (invisible), T3–T4 (tool live but never called unless the model asks), T5 (endpoints), T6–T7 (UI), T8 (docs). Each task is independently green.
+Single PR, no feature flag: the tool is inert until the model calls it, and the two gates (§1.7) prevent unattended questions. Merge order T1–T2 (invisible) → T3–T5 (tool live; a call ends the run and writes a row) → T6–T7 (the answer path) → T8 (UI — until this lands the card renders via the generic tool fallback, which is acceptable but ugly) → T9 (docs). Each task is independently green.
 
 ---
 
-## 10. Decisions locked in review (2026-09-16)
+## 10. Reviewer decisions (locked 2026-09-16)
 
-The reviewer answered the open questions. These are now **locked** — the sections above already reflect them.
+| # | Question | Answer |
+|---|---|---|
+| 1 | Ephemeral or persistent question? | **Persistent.** The design goes further than the original answer: there is no in-memory wait at all, so persistence is free rather than engineered. |
+| 2 | Does `ask_user` end the turn? | **Yes — the loop breaks.** `finish_reason = tool_calls` on the LLM turn, then the workflow breaks and persists `awaiting_user`. No timeout, no parked thread. |
+| 3 | Answer as a `user` bubble too? | **Inside the card only.** |
+| 4 | `skipped` vs Stop? | **Run continues**; the model must not guess. (There is no Stop-mid-question state any more — nothing is running.) |
+| 5 | Which modes get the tool? | **All modes by default** — chat + agent + kanban. |
 
-| # | Question | Answer | Where it landed |
-|---|---|---|---|
-| 1 | No-viewer grace window? | **The question is persistent** — no bail-out, no 60 s grace. The row is durable and answerable whenever the human shows up. | §1.5, §1.7, §4 (`orphaned` + sweep), §5.2 test 5 |
-| 2 | Default `timeout_seconds`? | Reviewer asked whether the turn ends on `ask_user` — it does **not** (`finish_reason = tool_calls`, the loop parks inside the tool). Locked as **1800 s**, `0` = indefinite opt-in. | §1.6, §1.5 |
-| 3 | Answer as a `user` bubble too? | **No — inside the card only.** | §2, §6 item 1 |
-| 4 | `skipped` vs Stop alias? | **Run continues** — `skipped` is its own state; the tool tells the model not to guess. | §1.1 XML, §2 |
-| 5 | Seed into kanban tool lists? | **All modes by default** — chat + agent items + kanban items. | §1.8, §5.4, §5.6 |
+Carried forward as implementation-time notes, not blockers:
 
-Carried forward as **implementation-time notes** (not blockers):
-
-- **TUI/CLI** — still worth a 5-minute check that the TUI path never equips `ask_user` (§7 item 11). It is seeded via `DEFAULT_AGENT_TOOLS`, which only the agent/kanban item-creation flows call, so the expectation is "unaffected" — verify, do not assume.
-- **Card placement** — inline in the transcript (matches every other tool card). A sticky banner above the composer was the alternative and is **not** being built.
-- **Late answer after `orphaned`** — returns `410 Gone` rather than reviving the run (§1.7). If that turns out to feel wrong in use, the follow-up is a "send as a normal user message instead" affordance, which needs no backend change.
-
+- **TUI/CLI** — verify the TUI never equips `ask_user` (§7 item 9). It is seeded through `DEFAULT_AGENT_TOOLS`, which only the agent/kanban item-creation flows call, so the expectation is "unaffected" — verify, do not assume.
+- **Kanban dot (T9, optional)** — `awaiting_user` currently paints no icon on a kanban task card (fact #6). Extending the `=== 'stop'` conditions to also accept `awaiting_user` is a 2-line display change; **not** in scope unless asked.
+- **Card placement** — inline in the transcript. A sticky banner above the composer is **not** being built.
