@@ -164,6 +164,12 @@ const handleClick = (event?: MouseEvent) => {
   if (props.item.item_type !== 'design' && props.item.item_type !== 'kanban') {
     workspacesStore.toggleExpandedItem(props.item.id)
   }
+  // Agent items never navigate on plain left-click: their main view
+  // IS the Agent config (Tools / System Prompt / Knowledge), so a
+  // click would yank the user into a settings-looking page. Click
+  // only expands/collapses the inline task list; the config opens
+  // via the right-click "Go to settings" entry (new browser tab).
+  if (props.item.item_type === 'agent') return
   // Always emit click for external handling (e.g., navigation to
   // the kanban board via activeWorkspaceItemId).
   emit('click', props.item)
