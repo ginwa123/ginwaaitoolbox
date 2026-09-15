@@ -476,6 +476,11 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/terminal/sessions/:id/output", ai_mod.http_handlers.terminalOutputHandler);
     try gs.router.post("/api/terminal/sessions/:id/resize", ai_mod.http_handlers.terminalResizeHandler);
     try gs.router.delete("/api/terminal/sessions/:id", ai_mod.http_handlers.terminalDeleteHandler);
+    // Duplex PTY socket — attaches to a live session id (?id=) for
+    // binary output frames + JSON control frames. First (and only) WS
+    // route: fresh `/api/terminal/` prefix, literal `ws` segment, so
+    // no matchRoute shadowing risk. HTTP/1.1 only (browsers use h1).
+    try gs.router.ws("/api/terminal/ws", ai_mod.http_handlers.terminalWsHandler);
     // In-flight stream snapshot (task_1787673548905_0 stream-resume-on-
     // reselect) — serves `{ active, content }` from the in-memory
     // stream_snapshot registry so a re-mounted ChatView can resume a

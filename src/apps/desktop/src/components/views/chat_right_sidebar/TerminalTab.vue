@@ -32,12 +32,132 @@ let lastCols = 0
 let lastRows = 0
 let disposed = false
 let resizeObserver: ResizeObserver | null = null
+let ws: WebSocket | null = null
+let wsOpened = false
+
+const wsUrl = (id: string) => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  return `${proto}://${window.location.host}/api/terminal/ws?id=${encodeURIComponent(id)}`
+}
 
 const stopPoll = () => {
   if (pollTimer !== null) {
     clearInterval(pollTimer)
     pollTimer = null
   }
+}
+
+const startPollFallback = (reason: string) => {
+  // REST fallback when the socket can't connect or drops: clear and
+  // replay from the buffer start (cursor unknown in WS mode).
+  stopPoll()
+  closeWs()
+  term?.clear()
+  cursor = 0
+  status.value = reason
+  pollTimer = setInterval(pollOnce, POLL_MS)
+  void pollOnce()
+}
+
+const closeWs = () => {
+  const socket = ws
+  ws = null
+  wsOpened = false
+  if (socket && socket.readyState !== WebSocket.CLOSED) {
+    try {
+      socket.close()
+    } catch {
+      // Already gone — nothing to do.
+    }
+  }
+}
+
+const handleWsMessage = (event: MessageEvent) => {
+  const data = event.data
+  if (typeof data === 'string') {
+    try {
+      const msg = JSON.parse(data) as { type?: string; exit_code?: number | null }
+      if (msg.type === 'exit') {
+        exited.value = true
+        status.value =
+          msg.exit_code === null || msg.exit_code === undefined
+            ? 'shell exited'
+            : `shell exited (code ${msg.exit_code}) — Reconnect for a new one`
+        stopPoll()
+        closeWs()
+      }
+    } catch {
+      // Non-JSON text — ignore.
+    }
+    return
+  }
+  const bytes =
+    data instanceof ArrayBuffer
+      ? new Uint8Array(data)
+      : ArrayBuffer.isView(data)
+        ? new Uint8Array(data.buffer as ArrayBuffer, data.byteOffset, data.byteLength)
+        : null
+  if (bytes) {
+    term?.write(new TextDecoder().decode(bytes).replace(/\n/g, '\r\n'))
+  } else if (data instanceof Blob) {
+    void data.text().then((text) => {
+      if (!disposed) term?.write(text.replace(/\n/g, '\r\n'))
+    })
+  }
+}
+
+const connectWs = () => {
+  const id = sessionId.value
+  if (!id || disposed) return
+  closeWs()
+  let socket: WebSocket
+  try {
+    socket = new WebSocket(wsUrl(id))
+  } catch {
+    startPollFallback('socket unavailable — polling')
+    return
+  }
+  socket.binaryType = 'arraybuffer'
+  ws = socket
+  socket.onopen = () => {
+    if (disposed || ws !== socket) return
+    wsOpened = true
+    stopPoll()
+    status.value = 'connected'
+  }
+  socket.onmessage = (event) => {
+    if (ws !== socket) return
+    handleWsMessage(event)
+  }
+  socket.onerror = () => {
+    if (ws !== socket) return
+    if (!wsOpened) startPollFallback('socket failed — polling')
+  }
+  socket.onclose = () => {
+    if (ws !== socket || disposed) return
+    if (!wsOpened) {
+      startPollFallback('socket failed — polling')
+    } else {
+      wsOpened = false
+      if (!exited.value) startPollFallback('socket closed — polling')
+    }
+  }
+}
+
+const sendInput = (data: string) => {
+  const id = sessionId.value
+  if (!id || exited.value) return
+  if (ws && wsOpened && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'input', data }))
+      return
+    } catch {
+      // Fall through to REST.
+    }
+  }
+  sendTerminalInput(id, data).catch(() => {
+    status.value = 'input failed — retrying…'
+  })
 }
 
 const fitAndResize = async () => {
@@ -51,6 +171,14 @@ const fitAndResize = async () => {
   if (cols === lastCols && rows === lastRows) return
   lastCols = cols
   lastRows = rows
+  if (ws && wsOpened && ws.readyState === WebSocket.OPEN) {
+    try {
+      ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+      return
+    } catch {
+      // Fall through to REST.
+    }
+  }
   try {
     await resizeTerminal(sessionId.value, cols, rows)
   } catch {
@@ -101,10 +229,7 @@ const ensureSession = async () => {
     }
     sessionId.value = session.id
     pid.value = session.pid
-    status.value = 'connected'
-    stopPoll()
-    pollTimer = setInterval(pollOnce, POLL_MS)
-    await pollOnce()
+    connectWs()
   } catch (err) {
     status.value =
       err instanceof Error ? `failed to start: ${err.message}` : 'failed to start shell'
@@ -113,6 +238,7 @@ const ensureSession = async () => {
 
 const dropSession = async () => {
   stopPoll()
+  closeWs()
   const id = sessionId.value
   sessionId.value = null
   pid.value = null
@@ -147,13 +273,7 @@ onMounted(() => {
   term.loadAddon(fit)
   if (container.value) {
     term.open(container.value)
-    term.onData((data) => {
-      const id = sessionId.value
-      if (!id || exited.value) return
-      sendTerminalInput(id, data).catch(() => {
-        status.value = 'input failed — retrying…'
-      })
-    })
+    term.onData((data) => sendInput(data))
     resizeObserver = new ResizeObserver(() => {
       void fitAndResize()
     })
@@ -175,6 +295,7 @@ watch(
 onUnmounted(() => {
   disposed = true
   stopPoll()
+  closeWs()
   resizeObserver?.disconnect()
   resizeObserver = null
   const id = sessionId.value

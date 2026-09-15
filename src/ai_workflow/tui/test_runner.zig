@@ -34,6 +34,7 @@ _ = @import("../../http_handlers/subagent_progress_get.zig");
     _ = @import("../../http_handlers/terminal_output.zig");               // terminal output GET
     _ = @import("../../http_handlers/terminal_resize.zig");               // terminal resize POST
     _ = @import("../../http_handlers/terminal_delete.zig");               // terminal session DELETE
+    _ = @import("../../http_handlers/terminal_ws.zig");                   // terminal duplex WS (framing + control JSON)
     // NOTE: task_create_routines_test.zig deleted with the per-task
     // `routines` table (Migration 084, plan 2026-09-10-workspace-items-routines).
 _ = @import("../../http_handlers/task_create.zig");

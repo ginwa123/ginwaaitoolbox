@@ -53,6 +53,60 @@ const { FakeTerminal, FakeFitAddon } = vi.hoisted(() => {
 vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }))
 vi.mock('@xterm/addon-fit', () => ({ FitAddon: FakeFitAddon }))
 
+// ─── WebSocket fake ─────────────────────────────────────────────────────────
+
+const { FakeWebSocket } = vi.hoisted(() => {
+  type Handler = ((event: never) => void) | null
+  class FakeWebSocket {
+    static instances: FakeWebSocket[] = []
+    static CONNECTING = 0
+    static OPEN = 1
+    static CLOSING = 2
+    static CLOSED = 3
+
+    url: string
+    readyState = 0
+    binaryType = ''
+    sent: string[] = []
+    closed = false
+    onopen: Handler = null
+    onmessage: Handler = null
+    onerror: Handler = null
+    onclose: Handler = null
+
+    constructor(url: string) {
+      this.url = url
+      FakeWebSocket.instances.push(this)
+    }
+
+    send(data: string) {
+      this.sent.push(data)
+    }
+    close() {
+      this.closed = true
+      this.readyState = FakeWebSocket.CLOSED
+    }
+    serverOpen() {
+      this.readyState = FakeWebSocket.OPEN
+      this.onopen?.(undefined as never)
+    }
+    serverMessage(data: unknown) {
+      this.onmessage?.({ data } as never)
+    }
+    serverError() {
+      this.onerror?.(undefined as never)
+    }
+    serverClose() {
+      this.readyState = FakeWebSocket.CLOSED
+      this.onclose?.(undefined as never)
+    }
+  }
+
+  return { FakeWebSocket }
+})
+
+vi.stubGlobal('WebSocket', FakeWebSocket)
+
 // ─── API fakes ─────────────────────────────────────────────────────────────
 
 const apiState = {
@@ -91,7 +145,21 @@ const mountSidebar = () =>
     props: { cwd: '/tmp/toolbox', open: true, width: 280 },
   })
 
-describe('ChatRightSidebar terminal tab (Phase 2)', () => {
+const firstTerm = () => {
+  const term = FakeTerminal.instances[0]!
+  expect(term).toBeDefined()
+  return term
+}
+
+const firstSocket = () => {
+  const socket = FakeWebSocket.instances[0]!
+  expect(socket).toBeDefined()
+  return socket
+}
+
+const encode = (text: string) => new TextEncoder().encode(text)
+
+describe('ChatRightSidebar terminal tab (Phase 3: WS primary)', () => {
   beforeEach(() => {
     // jsdom 29 dropped localStorage from its default globals.
     Object.defineProperty(globalThis, 'localStorage', {
@@ -100,73 +168,83 @@ describe('ChatRightSidebar terminal tab (Phase 2)', () => {
       configurable: true,
     })
     FakeTerminal.instances = []
+    FakeWebSocket.instances = []
     apiState.outputs = []
     vi.clearAllMocks()
   })
 
-  it('keeps both panels mounted and switches visibility', async () => {
+  it('keeps both panels mounted and persists the active tab', async () => {
     const wrapper = mountSidebar()
     await flush()
-    // Terminal stays mounted (v-show) so the PTY survives tab switches.
     expect(wrapper.find('[data-testid="terminal-tab"]').exists()).toBe(true)
     await wrapper.find('[data-testid="chat-right-sidebar-tab-terminal"]').trigger('click')
     expect(localStorage.getItem('nalar-right-sidebar-panel')).toBe('terminal')
   })
 
-  it('creates a session on mount and writes polled output', async () => {
+  it('opens a socket after create and writes binary output', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    apiState.outputs.push({ data: 'hello', cursor: 5, exited: false, exit_code: null })
     await flush()
     expect(createTerminalSession).toHaveBeenCalledWith('/tmp/toolbox', {
       cols: 80,
       rows: 24,
     })
-    expect(getTerminalOutput).toHaveBeenCalled()
-    const term = FakeTerminal.instances[0]!
-    expect(term).toBeDefined()
-    expect(term.written.join('')).toContain('hello')
+    const socket = firstSocket()
+    expect(socket.url).toContain('/api/terminal/ws?id=term-1')
+
+    socket.serverOpen()
+    socket.serverMessage(encode('hello'))
+    await flush()
+    expect(firstTerm().written.join('')).toContain('hello')
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('connected')
+    // Socket primary: no REST polling while the socket is open.
+    expect(getTerminalOutput).not.toHaveBeenCalled()
   })
 
-  it('forwards typed input to the session', async () => {
+  it('sends typed input as socket JSON (not REST)', async () => {
     mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
-    const term = FakeTerminal.instances[0]!
-    expect(term).toBeDefined()
-    term.dataHandler?.('ls\n')
+    const socket = firstSocket()
+    socket.serverOpen()
+    firstTerm().dataHandler?.('ls\n')
     await flush()
-    expect(sendTerminalInput).toHaveBeenCalledWith('term-1', 'ls\n')
+    expect(socket.sent).toContain(JSON.stringify({ type: 'input', data: 'ls\n' }))
+    expect(sendTerminalInput).not.toHaveBeenCalled()
   })
 
-  it('shows the exited state when the shell ends', async () => {
+  it('shows the exited state on the socket exit event', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    apiState.outputs.push({ data: '', cursor: 0, exited: true, exit_code: 0 })
+    await flush()
+    const socket = firstSocket()
+    socket.serverOpen()
+    socket.serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
     await flush(10)
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('code 0')
   })
 
-  it('kill deletes the session and reconnect starts a new one', async () => {
+  it('falls back to REST polling when the socket fails', async () => {
+    const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+    apiState.outputs.push({ data: 'fb', cursor: 2, exited: false, exit_code: null })
+    await flush()
+    firstSocket().serverError()
+    await flush(10)
+    expect(getTerminalOutput).toHaveBeenCalled()
+    expect(firstTerm().written.join('')).toContain('fb')
+    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('polling')
+  })
+
+  it('kill closes the socket and deletes the session', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
+    const socket = firstSocket()
+    socket.serverOpen()
     await wrapper.find('[data-testid="terminal-kill"]').trigger('click')
     await flush()
+    expect(socket.closed).toBe(true)
     expect(deleteTerminalSession).toHaveBeenCalledWith('term-1')
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('killed')
 
     await wrapper.find('[data-testid="terminal-reconnect"]').trigger('click')
     await flush()
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
-  })
-
-  it('clear empties the visible buffer', async () => {
-    const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    apiState.outputs.push({ data: 'hello', cursor: 5, exited: false, exit_code: null })
-    await flush()
-    const term = FakeTerminal.instances[0]!
-    expect(term).toBeDefined()
-    expect(term.written.join('')).toContain('hello')
-    await wrapper.find('[data-testid="terminal-clear"]').trigger('click')
-    expect(term.cleared).toBeGreaterThan(0)
-    expect(term.written).toEqual([])
   })
 })

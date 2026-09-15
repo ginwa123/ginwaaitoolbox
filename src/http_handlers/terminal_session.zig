@@ -123,6 +123,19 @@ pub const Session = struct {
     exited: bool,
     exit_code: ?i32,
     mutex: std.atomic.Mutex,
+
+    /// Raw PTY master fd (for the WS pump's poll loop). Valid until
+    /// `destroySession`.
+    pub fn masterFd(s: *Session) c_int {
+        return s.master_fd;
+    }
+
+    /// Current absolute output cursor (for WS attach positioning).
+    pub fn totalCursor(s: *Session) u64 {
+        mutexLock(&s.mutex);
+        defer s.mutex.unlock();
+        return s.total;
+    }
 };
 
 var g_mutex: std.atomic.Mutex = .unlocked;
@@ -151,8 +164,7 @@ fn registry() *std.StringHashMap(*Session) {
 
 /// Look a session up by id. The caller must hold no lock; the returned
 /// pointer is valid until `destroySession` runs for it.
-pub fn getSession(id: []const u8) ?*Session {
-    const reg = registry();
+pub fn getSession(id: []const u8) ?*Session {    const reg = registry();
     mutexLock(&g_mutex);
     defer g_mutex.unlock();
     return reg.get(id);
