@@ -1860,11 +1860,13 @@ jobs:
           rm -f /tmp/functional-test-start.$$
 
   functional-test-ui:
-    # Linux-only: Playwright UI suites. Chained after functional-test
-    # via needs: so the UI never runs on a red functional suite.
+    # Linux-only: Playwright UI suites. Runs after backend is green,
+    # regardless of the functional-test result, so UI signal is never
+    # skipped on a red functional suite. Gated on backend success only.
     name: functional-test-ui (Linux X64)
     runs-on: [self-hosted, Linux, X64]
-    needs: functional-test
+    needs: [backend, functional-test]
+    if: always() && needs.backend.result == 'success'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1963,7 +1965,7 @@ jobs:
         # tmpdir HOME; the chatview tests DB-seed `sessions` +
         # `llm_history` rows so no real LLM is invoked.
         #
-        # Gate: needs: functional-test — runs only after functional-test passes.
+        # Gate: needs backend success only — runs even if functional-test fails.
         # The venv + chromium are restored from cache (saved by the
         # functional-test job under the same cache key).
         shell: bash

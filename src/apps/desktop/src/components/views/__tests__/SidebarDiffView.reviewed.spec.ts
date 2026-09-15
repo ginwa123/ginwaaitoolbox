@@ -68,8 +68,8 @@ function mountView() {
 
 function rowByText(wrapper: ReturnType<typeof mountView>, text: string) {
   const row = wrapper.findAll('tr').find((r) => r.text().includes(text))
-  expect(row, `expected a row containing ${text}`).toBeTruthy()
-  return row!
+  if (row == null) throw new Error(`expected a row containing ${text}`)
+  return row
 }
 
 beforeEach(() => {
