@@ -35,14 +35,16 @@ pub const SearchToolRule =
     \\**Self-check:** before reaching for `bash rg`, ask "Is this a code/text search?" If yes, use `search`.
 ;
 
-pub const SearchHistoryToolRule =
-    \\## Search History Tool — use filters, not free-text guesses
+pub const ReadWorkspaceSessionToolRule =
+    \\## Workspace Session History — discover, search, read (same workspace only)
     \\
-    \\To find anything in past conversation history (past tool calls, reasoning, user instructions, compacted-out content), use the `search_history` tool — don't reconstruct the past from `compacted_messages` envelopes.
+    \\To find anything in OTHER conversations in your workspace (past tool calls, reasoning, user instructions, compacted-out content), use the `read_workspace_session` tool — don't reconstruct the past from `compacted_messages` envelopes and don't ask the user to repeat themselves.
     \\
-    \\**TWO MODES:**
-    \\- `mode="text"` — FTS5 full-text search across all stored messages. Provide `query`; returns ranked hits with snippets + `<total_count>`; paginate with `offset`.
-    \\- `mode="session"` — list all messages for a `session_id` (live + compacted). Pass `message_ids` to fetch full `<content>` (capped at 50 per call).
+    \\**FOUR BEHAVIORS (pick by params):**
+    \\- No args → LIST sessions in your workspace (names + previews so you can pick one).
+    \\- `query` → SEARCH message content across your workspace (FTS5, ranked hits + `<total_count>`, paginate with `offset`).
+    \\- `session_id` → READ that session's messages (live + compacted). Pass `message_ids` for full `<content>` (capped at 50 per call). `order="desc"` for most-recent-first.
+    \\- `query` + `session_id` → SEARCH-WITHIN one session.
     \\
     \\**Use filters, not broad queries:**
     \\- `tool_name="bash"` — every bash invocation (combine with `query` for specific commands).
@@ -50,12 +52,13 @@ pub const SearchHistoryToolRule =
     \\- `agent="main" | "planning" | "compaction"` — separate outputs when one session has multiple agents.
     \\- `role="tool"` — tool outputs only.
     \\- `live_only=true` / `compacted_only=true` — still-in-context vs dropped-by-compaction. Mutually exclusive.
+    \\- `since`/`until` (YYYY-MM-DD HH:MM:SS) — time bounds.
     \\
-    \\**Time bounds:** absolute `since`/`until` (YYYY-MM-DD HH:MM:SS) or relative (`since_relative`, `until_relative`: `"1h"`, `"30m"`, `"2d"`, `"1w"`) or `relative_window="1h"`.
+    \\**Scope is automatic and closed:** you only ever see YOUR workspace. Cross-workspace targets return `<denied>`, never content.
     \\
     \\**FTS query syntax is auto-sanitized.** Plain queries with `.`, `-`, `:`, etc. work — the tool strips FTS5 operators and joins multi-word queries with `OR`. Don't pre-escape; write the natural query.
     \\
-    \\**Self-check:** before asking the user to repeat themselves or re-running a tool just to see "what happened", check if `search_history` can fetch the answer in one round-trip.
+    \\**Self-check:** before asking the user to repeat themselves or re-running a tool just to see "what happened", check if `read_workspace_session` can fetch the answer in one round-trip.
 ;
 
 pub const MemoryToolRule =

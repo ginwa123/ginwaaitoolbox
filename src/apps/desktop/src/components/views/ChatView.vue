@@ -70,7 +70,7 @@ import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
 import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
 import PresentFiles from '../tool_outputs/PresentFiles.vue'
-import SearchHistory from '../tool_outputs/SearchHistory.vue'
+import ReadWorkspaceSession from '../tool_outputs/ReadWorkspaceSession.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
@@ -3313,7 +3313,11 @@ const compactSession = async () => {
         and the last bubbles overlap the FileInput below. This is the
         "no scroll, bubbles overlap input" bug.
       -->
-      <div v-show="!showCenterDiff" ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
+      <div
+        v-show="!showCenterDiff"
+        ref="messagesWrapperRef"
+        class="relative flex-1 min-h-0 flex flex-col mb-4"
+      >
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
         <button
@@ -3607,8 +3611,8 @@ const compactSession = async () => {
                             :cwd="sessionCwd"
                             :parameters="getParametersForMessage(msg)"
                           />
-                          <SearchHistory
-                            v-else-if="msg.tool_name === 'search_history'"
+                          <ReadWorkspaceSession
+                            v-else-if="msg.tool_name === 'read_workspace_session'"
                             :content="innerToolData(msg)"
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :parameters="getParametersForMessage(msg)"

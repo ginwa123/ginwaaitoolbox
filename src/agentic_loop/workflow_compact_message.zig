@@ -1051,7 +1051,7 @@ pub fn compactMessageInMemoryNew(
     // `inserLLMHistories` returns a heap-allocated copy of the
     // generated row id (`allocator.dupe(u8, id)` at the bottom of
     // that function). The compaction flow doesn't need the id — the
-    // `search_history` tool fetches rows by session_id, not by the
+    // `read_workspace_session` tool fetches rows by session_id, not by the
     // returned string — so capture it and free immediately to avoid
     // a leak. (Same pattern as other call sites that don't use the
     // return value: see workflow.zig:185.)
@@ -1141,7 +1141,7 @@ pub fn compactMessageInMemoryNew(
 /// the dropped messages after compaction. The envelope has three
 /// sections: <metadata> (compaction event facts), <message_index>
 /// (id+role+preview for every dropped message so the agent can
-/// reference them later via search_history), and <summary>
+/// reference them later via read_workspace_session), and <summary>
 /// (the compactor's output, preserved verbatim).
 ///
 /// `dropped_messages` is the slice of messages that will be marked
@@ -1192,7 +1192,7 @@ fn buildCompactionEnvelope(
     // we keep the most RECENT dropped messages since those are most
     // likely to be relevant to what the agent does next, and note how
     // many older entries were omitted (full content still recoverable
-    // from the DB via search_history / session_id).
+    // from the DB via read_workspace_session / session_id).
     try env.appendSlice(allocator, "  <message_index>\n");
 
     const show_count = @min(dropped_messages.len, MAX_INDEX_ENTRIES);
@@ -1202,7 +1202,7 @@ fn buildCompactionEnvelope(
     if (omitted_count > 0) {
         try env.print(
             allocator,
-            "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use search_history with session_id to fetch full history from DB\"/>\n",
+            "    <truncated_entries count=\"{d}\" note=\"older entries omitted from index; use read_workspace_session with session_id to fetch full history from DB\"/>\n",
             .{omitted_count},
         );
     }
@@ -1230,7 +1230,7 @@ fn buildCompactionEnvelope(
         // For tool-result messages, surface tool_call_id so the agent
         // can match results back to calls. (tool_name is not available
         // on the in-memory AgentMessage struct in this codebase; the
-        // search_history tool can fetch it from the DB row.)
+        // read_workspace_session tool can fetch it from the DB row.)
         if (msg.role == .tool) {
             const tcid = msg.tool_call_id orelse "";
             const tcid_escaped = try xml_escape(allocator, tcid);
@@ -3924,7 +3924,7 @@ test "compactMessageInMemoryNew: message_index lists every dropped message with 
     // CURRENT IMPL: the envelope uses synthetic `adhoc_<i>` ids (where `i`
     // is the index into `dropped_messages`, i.e. messages.items[1..]).
     // Real DB primary keys are NOT embedded in the envelope — the full
-    // content is recovered from the DB via `search_history` using
+    // content is recovered from the DB via `read_workspace_session` using
     // the session_id, not via the embedded id. (See workflow.zig:1144.)
     //
     // The 6-msg fixture drops 5 messages, so the tool-result is at
@@ -3940,7 +3940,7 @@ test "compactMessageInMemoryNew: tool-role index entries include tool_call_id" {
     // CURRENT IMPL: only `tool_call_id` is surfaced for tool-role entries.
     // `tool_name` is NOT emitted in the envelope (the in-memory AgentMessage
     // struct has no `tool_name` field — that lives on the DB row and can
-    // be recovered via `search_history` with session_id). See
+    // be recovered via `read_workspace_session` with session_id). See
     // workflow.zig:1163-1172.
     var s = try envelopeSetupDb();
     defer envelopeTeardownDb(&s);
@@ -4088,7 +4088,7 @@ test "buildCompactionEnvelope: content=null yields empty preview (no content_par
     //
     // This is a known limitation: the agent has no signal in the envelope
     // that an image attachment existed. The full content is still
-    // recoverable via `search_history` using session_id.
+    // recoverable via `read_workspace_session` using session_id.
     var s = try envelopeSetupDb();
     defer envelopeTeardownDb(&s);
     const alloc = testing.allocator;
@@ -4170,7 +4170,7 @@ test "buildCompactionEnvelope: content=null yields empty preview (no content_par
 test "end-to-end: compacted rows are findable via getCompactedMessages after compaction" {
     // CURRENT IMPL: the envelope uses synthetic `adhoc_<i>` ids, NOT the
     // real DB primary keys. So you cannot pull an id out of the envelope
-    // and feed it back — `search_history` must be queried with
+    // and feed it back — `read_workspace_session` must be queried with
     // the session_id alone (no message_ids filter), and it returns all
     // rows for the session that have is_feed_to_llm=0.
     //

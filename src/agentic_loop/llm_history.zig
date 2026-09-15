@@ -1556,9 +1556,10 @@ pub fn getMessages(
 // Compacted Messages Query (is_feed_to_llm = 0)
 // =============================================================================
 
-/// Filter on the `is_feed_to_llm` column. The `search_history` tool
-/// surfaces this as `live_only` / `compacted_only` (mutually exclusive
-/// flags translated to one of these enum values at the tool boundary).
+/// Filter on the `is_feed_to_llm` column. The `read_workspace_session`
+/// tool surfaces this as `live_only` / `compacted_only` (mutually
+/// exclusive flags translated to one of these enum values at the tool
+/// boundary).
 ///
 /// `.all` = no filter (default).
 /// `.live_only` = restrict to `is_feed_to_llm = 1` (current live context).
@@ -1569,7 +1570,7 @@ pub const FeedFilter = enum { all, live_only, compacted_only };
 /// Options for filtering `getCompactedMessages`.
 pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages whose id is in this list.
-    /// Used by `search_history` (mode="session", message_ids=[...]).
+    /// Used by `read_workspace_session` (READ with message_ids=[...]).
     message_ids: ?[]const []const u8 = null,
     /// When non-null, only return messages with `role` matching this value
     /// (e.g. "user", "assistant", "tool").
@@ -1579,7 +1580,7 @@ pub const CompactedMessagesOptions = struct {
     /// When non-null, only return messages with `created_at <= until`.
     until: ?[]const u8 = null,
     /// When non-null, only return messages with `tool_name` matching
-    /// this value exactly (e.g. "bash", "read_file", "search_history").
+    /// this value exactly (e.g. "bash", "read_file", "read_workspace_session").
     /// Useful for "all `bash` invocations that ran `cargo test`".
     tool_name: ?[]const u8 = null,
     /// When non-null, only return messages with `parent_session_id` matching
@@ -1591,8 +1592,9 @@ pub const CompactedMessagesOptions = struct {
     /// chat vs sub-agent).
     agent: ?[]const u8 = null,
     /// Max number of rows to return. Defaults to 100 for safety — the
-    /// caller can request up to 1000 explicitly. The `search_history`
-    /// tool wraps this in its own user-facing limit parameter.
+    /// caller can request up to 1000 explicitly. The
+    /// `read_workspace_session` tool wraps this in its own user-facing
+    /// limit parameter.
     limit: ?u32 = 100,
     /// DEPRECATED alias for `feed_filter = .all`. When `true`, equivalent
     /// to `feed_filter = .all`; when `false` (default), equivalent to
@@ -1608,7 +1610,7 @@ pub const CompactedMessagesOptions = struct {
     feed_filter: ?FeedFilter = null,
     /// Sort direction for `created_at`. Default `.asc` (chronological
     /// forward). `.desc` returns most-recent-first — useful for
-    /// `search_history mode="session"` when the LLM wants to browse
+    /// `read_workspace_session` READ when the LLM wants to browse
     /// the tail of a long session.
     ///
     /// Pagination with `.desc` works the same way as `.asc`: pass the
@@ -1632,7 +1634,7 @@ pub const CompactedMessagesOptions = struct {
 };
 
 /// Lighter-weight return struct than `TUIHistory` — only the fields the
-/// `search_history` tool actually surfaces. Avoids the
+/// `read_workspace_session` tool actually surfaces. Avoids the
 /// ~30-field TUIHistory struct, which has columns that don't exist
 /// in a minimal test schema (e.g. `diffview_before`) and would force
 /// every test to seed them.
@@ -1672,6 +1674,12 @@ pub const SearchOptions = struct {
     /// When non-null, only return hits whose `llm_history.session_id` equals this.
     /// Useful for "search within this conversation only".
     session_id: ?[]const u8 = null,
+    /// When non-null and non-empty, only return hits whose
+    /// `llm_history.session_id` is in this list. Used for
+    /// workspace-scoped search: the caller resolves the workspace's
+    /// session set first, then restricts FTS to it. Combined with
+    /// `session_id` via AND when both are set.
+    session_ids: ?[]const []const u8 = null,
     /// When non-null, exact-match filter on `llm_history.role` ("user", "assistant", "tool").
     role: ?[]const u8 = null,
     /// When non-null, lower bound on `created_at` (inclusive, lex-sort = chrono-sort).
@@ -1696,7 +1704,7 @@ pub const SearchOptions = struct {
     /// request up to 200 (the tool layer caps there). The FTS ranking
     /// does the rest of the filtering.
     limit: ?u32 = 20,
-    /// Skip the first N results. Used by `search_history mode="text"`
+    /// Skip the first N results. Used by `read_workspace_session` search
     /// to walk forward through FTS results that exceed `limit`. Combined
     /// with `total_count` on the result, the LLM can paginate until
     /// `offset + hits.len >= total_count`.
@@ -1738,8 +1746,8 @@ pub const SearchHit = struct {
 /// (line 1076).
 ///
 /// With `opts.include_all == true`: returns ALL messages for the
-/// session regardless of `is_feed_to_llm`. Used by `search_history`
-/// `mode="session"` to browse the full conversation history.
+/// session regardless of `is_feed_to_llm`. Used by
+/// `read_workspace_session` READ to browse the full conversation history.
 ///
 /// Filter semantics (identical regardless of `include_all`):
 /// - `message_ids`: when non-null, IN-clause filter (skipped if empty).
@@ -1754,8 +1762,8 @@ pub const SearchHit = struct {
 ///   TEXT string (e.g. `"1784119389936251112"`) and lex-comparing that
 ///   against a user-supplied date string like `"2026-07-15 00:00:00"`
 ///   silently returns 0 rows (since `'1' < '2'`). The column is
-///   indexable so the filter is O(log n). See
-///   `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
+///   indexable so the filter is O(log n). See the workspace history
+///   plan (`docs/plans/2026-09-15-workspace-scoped-chat-history.md`).
 /// - `limit`: clamps the row count (defaults to 100).
 ///
 /// Returned slice's elements are heap-allocated via `allocator.dupe`;
@@ -1772,9 +1780,8 @@ pub fn getCompactedMessages(
     // Build the WHERE clause incrementally. Each filter appends
     // AND <clause> to the base `h.session_id = ?`.
     // `is_feed_to_llm = 0` is appended UNLESS `opts.effectiveFeedFilter()`
-    // resolves to `.all` (search_history mode="session" passes feed_filter
-    // = .all via `include_all = true` to browse the full conversation
-    // history).
+    // resolves to `.all` (`read_workspace_session` READ passes feed_filter
+    // = .all to browse the full conversation history).
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(allocator);
     try sql.appendSlice(allocator,
@@ -1884,11 +1891,12 @@ pub fn getCompactedMessages(
 
 /// Look up messages by id alone, without a `session_id` filter.
 ///
-/// Used by `search_history mode="text"` when `message_ids` is provided
-/// without a `session_id` scope — the LLM is asking for specific ids
-/// (e.g. ones it learned about from a previous call) without scoping
-/// to a session. `getCompactedMessages` always appends a session_id
-/// WHERE clause, so a separate query path is needed.
+/// Used by `read_workspace_session` SEARCH when `message_ids` is provided
+/// — the LLM is asking for specific ids (e.g. ones it learned about from
+/// a previous call) without scoping to a session. `getCompactedMessages`
+/// always appends a session_id WHERE clause, so a separate query path is
+/// needed. Callers must filter the result to their workspace scope
+/// themselves (the tool layer drops ids from other workspaces).
 ///
 /// Returns the same `CompactedMessage` shape as `getCompactedMessages`.
 /// Caller owns the slice — free with `m.deinit(allocator)` per element
@@ -2212,6 +2220,18 @@ pub fn searchMessagesFts(
     if (opts.session_id) |sid| {
         try sql.appendSlice(allocator, " AND h.session_id = ?");
         try bind_values.append(allocator, sid);
+    }
+
+    if (opts.session_ids) |sids| {
+        if (sids.len > 0) {
+            try sql.appendSlice(allocator, " AND h.session_id IN (");
+            for (sids, 0..) |sid, i| {
+                if (i > 0) try sql.append(allocator, ',');
+                try sql.append(allocator, '?');
+                try bind_values.append(allocator, sid);
+            }
+            try sql.append(allocator, ')');
+        }
     }
 
     if (opts.role) |r| {
@@ -8762,7 +8782,8 @@ test "getCompactedMessages: include_all=true returns live AND compacted rows" {
 
 // ────────────────────────────────────────────────────────────────────────
 // Regression tests for the since/until bug
-// (docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md).
+// (historical note: fixed under the old global history search; the
+// `created_iso` semantics are unchanged).
 //
 // These exercise the filter on `created_iso` (the STORED generated column
 // added by Migration 059) instead of `created_at` (which stores Unix
@@ -9112,7 +9133,8 @@ test "getCompactedMessages: returns empty slice when session has no compacted me
 
 // ────────────────────────────────────────────────────────────────────────
 // Regression tests for the since/until bug
-// (docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md).
+// (historical note: fixed under the old global history search; the
+// `created_iso` semantics are unchanged).
 //
 // The bug: `created_at` stores Unix microseconds as TEXT (e.g.
 // `"1784119389936251112"`). The previous SQL did a lex comparison on

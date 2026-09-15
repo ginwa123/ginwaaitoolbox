@@ -308,7 +308,7 @@ Expected: **5 failures**. That is the point — commit them **disabled via `if (
 - [ ] **Fix** — add a per-run `HistoryCursor { last_created_at_nano: i128, feed_count: usize, messages: std.ArrayList(AgentMessage) }`. Each turn: SELECT only rows with `created_at_nano > cursor.last_created_at_nano` (`ORDER BY created_at_nano ASC`), transform them, append to the retained list.
 - [ ] **Correctness fallbacks (mandatory, test each):**
   - If `loop_counter == 1` **or** the previous turn triggered compaction (`maybeCompactMessagesNew` returned true, `workflow.zig:1032-1039`) → full rebuild from scratch.
-  - If `markHistoryNotForLLMRun` flipped rows to `is_feed_to_llm = 0` (compaction, `search_history` restore) → detect via a cheap `SELECT COUNT(*) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL)` compared against `cursor.feed_count`; on mismatch, full rebuild.
+  - If `markHistoryNotForLLMRun` flipped rows to `is_feed_to_llm = 0` (compaction, history restore) → detect via a cheap `SELECT COUNT(*) FROM llm_history WHERE session_id = ? AND (is_feed_to_llm = 1 OR is_feed_to_llm IS NULL)` compared against `cursor.feed_count`; on mismatch, full rebuild.
   - Tool/assistant pairing: the retained list must never split a `tool_calls` row from its matching `tool` rows — since the cursor only ever appends whole turns and a compaction resets everything, this holds; add an explicit assertion in the test.
 - [ ] **Byte-identity test** — for a 5-turn scripted session with tool calls, the prompt at each turn is byte-identical to the from-scratch build.
 - [ ] **Commit** — `perf(agentic-loop): incremental history materialisation with full-rebuild fallbacks`.

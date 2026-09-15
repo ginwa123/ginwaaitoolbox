@@ -34,7 +34,7 @@ pub const CompactionAgent = prompts.CompactionAgent;
 pub const GenerateSessionNameAgent = prompts.GenerateSessionNameAgent;
 pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const SearchToolRule = prompts.SearchToolRule;
-pub const SearchHistoryToolRule = prompts.SearchHistoryToolRule;
+pub const ReadWorkspaceSessionToolRule = prompts.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = prompts.MemoryToolRule;
 
 // ---------------------------------------------------------------------------

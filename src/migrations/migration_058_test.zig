@@ -1,5 +1,5 @@
 //! Static regression checks for Migration 058
-//! (FTS5 virtual table on `llm_history` for the search-history rewrite).
+//! (FTS5 virtual table on `llm_history` for workspace history search).
 //!
 //! Why this file exists
 //! ────────────────────
@@ -30,11 +30,10 @@
 //! Single-token MATCH keeps the contract tight: "the row containing word
 //! W is in the FTS index".
 //!
-//! Plan: docs/superpowers/plans/2026-07-16-search-history-rewrite.md
-//!   (Chunk 1, Task 1.3 — Migration 058 regression test)
+//! Plan: workspace history FTS (Chunk 1, Task 1.3 — Migration 058 regression test)
 //!
-//! Versioning note: plan called this Migration 055 but the search-history-
-//! rewrite branch already has AddDesignPages (55), UpgradeDesignPagesToFileModel
+//! Versioning note: the original plan called this Migration 055 but the
+//! branch already had AddDesignPages (55), UpgradeDesignPagesToFileModel
 //! (56), AddDesignElementProperties (57). 058 is the next free slot.
 
 const std = @import("std");

@@ -237,7 +237,7 @@ pub fn loadMemoriesByFts(
 ) ![]MemoryHit {
     if (opts.query.len == 0) return allocator.alloc(MemoryHit, 0);
 
-    // Sanitize the FTS5 query — same helper `search_history` uses.
+    // Sanitize the FTS5 query — same helper workspace history search uses.
     const sanitized_query = try llm_history.escapeFtsQuery(allocator, opts.query);
     defer allocator.free(sanitized_query);
     // Empty after sanitization (query was all FTS5 operators) — bail

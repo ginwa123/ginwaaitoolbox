@@ -132,12 +132,12 @@ The 178 plan files in `docs/plans/` and `docs/superpowers/plans/` (now deleted, 
 | `2026-06-30-unify-sse-endpoints.md` | ✅ | 5 routes → `/api/events?channels=…` (#48) |
 | `2026-07-03-decoupled-nalar-service.md` | ✅ | `nalar service {start,stop,status,restart}` + `daemon.zig` (#72) |
 | `2026-07-16-search-add-rg-flags.md` | ✅ | `word_boundary`/`literal`/`only_matching` (#104) |
-| `2026-07-16-search-history-rewrite.md` | ✅ | `search_history` replaces `read_compacted_messages` |
+| `2026-07-16-history-fts.md` | ✅ | FTS5 history search replaces `read_compacted_messages` |
 | `2026-07-16-session-auto-retry-until-stop.md` | ✅ | "Unattended mode" — keep retrying (#103) |
 | `2026-07-25-custom-http-client-libcurl.md` | ✅ | libcurl-backed HTTP client + macOS+Windows (#120, #123) |
 | `2026-07-25-llm-user-identifier.md` | ✅ | End-user identifier UUID for Anthropic + OpenAI (#114) |
 | `2026-06-11-tls-init-fast-fail.md` | ❌ | Replaced by `CallError = error{StreamTimeout, …}` + configurable `retry_delay_ms` |
-| `2026-06-20-compaction-output-long-context.md` | 🟡 | Envelope landed; `read_compacted_messages` → `search_history` (different tool) |
+| `2026-06-20-compaction-output-long-context.md` | 🟡 | Envelope landed; history search via workspace-scoped tool (different tool) |
 | `2026-06-24-fix-compaction-envelope-id-mismatch.md` | 🟡 | Real-DB-IDs + role-aware previews (commit `36abea33`) — on worktree, not merged |
 | `2026-06-21-llm-stream-watchdog.md` | 🟡 | `StreamWatchdog` (commit `21ec4e92`) — on worktree, not merged |
 | `2025-01-13-read_file-hash-only.md` | ⏳ | `hash_only` added then REMOVED in a refactor — feature still relevant |
@@ -790,7 +790,7 @@ The per-board agent config (Knowledge / System Prompt / Tools checkboxes, fed by
 | `2026-08-14-migrate-compaction-into-workflow-commpact.md` | Worktree branch | `worktree/migrate-compaction-into-workflow-commpact` — moves remaining `compaction.zig` exports (`CallCompactAgentInput`, `callCompactAgent`, `noopStreamCallbackNew`) into the orchestrator file `workflow_commpact_message.zig` (3 m's); `compaction.zig` deleted. Public API (`workflow.callCompactAgent`, `workflow.CallCompactAgentInput`) unchanged. |
 | `2026-08-06-encapsulate-compaction-prompt.md` | Worktree branch | `worktree/encapsulate-compaction-prompt` — extracts `buildCompactMessagePrompt` from `callCompactAgent` + 8 inline tests + 3 leak fixes |
 | `2026-04-08-multifolder-session-dir.md` | Backend partial | `session_dirs: ?[][]const u8` array — only single `session_dir` filter shipped |
-| `2026-06-20-compaction-output-long-context.md` | Done via different tool | `read_compacted_messages` → `search_history` |
+| `2026-06-20-compaction-output-long-context.md` | Done via different tool | `read_compacted_messages` → workspace history search |
 | `2026-06-24-fix-compaction-envelope-id-mismatch.md` | Worktree branch | `36abea33` — real-DB-IDs + role-aware previews (worktree, not merged) |
 | `2026-06-21-llm-stream-watchdog.md` | Worktree branch | `21ec4e92` — `StreamWatchdog` (worktree, not merged) |
 | `2026-06-19-stop-notification.md` | Frontend toast | Backend OS-notification hook fired; frontend toast UI not built |
@@ -1079,7 +1079,7 @@ The 107 implementation plans once held here have been consolidated into this SPE
 2026-07-15-search-respect-ignore-files         ✅ landed (#96)
 2026-07-16-kanban-task-detail-dialog           ✅ landed (#101)
 2026-07-16-search-add-rg-flags                 ✅ landed (#104)
-2026-07-16-search-history-rewrite              ✅ landed
+2026-07-16-history-fts-rewrite              ✅ landed
 2026-07-16-session-auto-retry-until-stop       ✅ landed (#103)
 2026-07-17-frontend-error-logs                 ✅ landed (PR #105)
 2026-07-17-refactor-frontend-components-folder ✅ landed (PR #106)

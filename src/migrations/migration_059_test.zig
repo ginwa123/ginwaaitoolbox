@@ -7,7 +7,7 @@
 //! `llm_history`. The column is populated by **application code** in
 //! `saveMessage` (libc `localtime_r` + `strftime`) at INSERT time, and
 //! by an idempotent backfill `UPDATE` for legacy rows that pre-date
-//! the application update. The search_history / getCompactedMessages
+//! the application update. The workspace history / getCompactedMessages
 //! SQL filters on `since`/`until` bind to this column, so the documented
 //! `since`/`until` format works.
 //!
@@ -16,8 +16,7 @@
 //! `"1784119389936251112"`) against user input like `"2026-07-15 00:00:00"`.
 //! Because `'1' < '2'` lexicographically, every data row was always
 //! considered "less than" a date string starting with `'2'`, so the
-//! filter silently returned 0 rows. See
-//! `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
+//! filter silently returned 0 rows.
 //!
 //! ## Why application code, not SQLite triggers?
 //!
@@ -58,7 +57,7 @@
 //!   4. The index `idx_llm_history_created_iso` is created.
 //!   5. The migration is idempotent (re-runs are no-ops).
 //!
-//! Plan: docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md
+//! Plan: workspace history `created_iso` backfill.
 
 const std = @import("std");
 const testing = std.testing;

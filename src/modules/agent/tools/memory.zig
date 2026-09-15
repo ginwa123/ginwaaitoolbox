@@ -77,7 +77,7 @@ fn extractSavedId(allocator: std.mem.Allocator, save_out: []const u8) ![]u8 {
 //
 // The actual INSERT lives in `agent_memories.saveMemory`.
 // This file is a thin XML wrapper around it (mirrors the
-// `kanban_list.zig` / `search_history.zig` pattern).
+// `kanban_list.zig` / `read_workspace_session.zig` pattern).
 //
 // Design choices:
 //   - Every call inserts a NEW row with a fresh `mem_<16-hex>` id
@@ -343,7 +343,7 @@ pub const LoadMemoryInput = struct {
 };
 
 /// Hard cap on the per-row content when `with_content=true`. 2 KiB
-/// matches the snippet length used by `search_history` (16 KiB is too
+/// matches the snippet length used by workspace history search (16 KiB is too
 /// large for a memory-note preview; 2 KiB is enough to see context
 /// around the matched phrase).
 pub const MAX_FULL_CONTENT_BYTES: u32 = 2 * 1024;

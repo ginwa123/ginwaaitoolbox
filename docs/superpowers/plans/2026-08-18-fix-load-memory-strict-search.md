@@ -37,7 +37,7 @@ Surgical change:
 - **Single-token** queries are emitted as-is (no `OR`, no quotes — FTS5 default tokenization handles `handle_tool.zig` correctly via the unicode61 tokenizer).
 - **Empty** query after sanitization (all operators) returns empty string; callers already guard against `len == 0`.
 
-Same function is used by `search_history` (and other FTS5 callers). The fix affects both, which is correct — `search_history` has the same recall problem. **All existing tests use single-token queries so they continue to pass.**
+Same function is used by the legacy history search (and other FTS5 callers). The fix affects both, which is correct — the legacy tool has the same recall problem. **All existing tests use single-token queries so they continue to pass.**
 
 ### 2. `src/modules/agent/tools/load_memory.zig` — tool description
 
@@ -46,11 +46,11 @@ Update the description block (around line 92-104) so the LLM knows:
 - Single-token queries still match as before.
 - Don't pre-escape; FTS5 operators are still auto-sanitized.
 
-### 3. `src/modules/agent/tools/search_history.zig` — tool description
+### 3. The legacy history tool file — tool description
 
 Same description update for symmetry.
 
-### 4. `src/modules/agent/prompts/core.zig` — `MemoryToolRule` (line 85) + `SearchHistoryToolRule` (line 62)
+### 4. `src/modules/agent/prompts/core.zig` — `MemoryToolRule` (line 85) + the legacy history tool rule (line 62)
 
 Replace the misleading "wraps your input in FTS5 phrase syntax" sentence with the new OR semantics. Without this fix, the LLM keeps using the tool wrong.
 
@@ -99,8 +99,8 @@ Add inline tests for `escapeFtsQuery` directly (none exist today):
 |---|---|
 | `src/ai_workflow/tui/agentic_loop/llm_history.zig` | `escapeFtsQuery` body rewritten (~30 LOC). Inline tests added (~50 LOC). |
 | `src/modules/agent/tools/load_memory.zig` | Tool description block (line ~92). |
-| `src/modules/agent/tools/search_history.zig` | Tool description block (line ~116). |
-| `src/modules/agent/prompts/core.zig` | `MemoryToolRule` (line ~85) + `SearchHistoryToolRule` (line ~62). |
+| The legacy history tool file | Tool description block (line ~116). |
+| `src/modules/agent/prompts/core.zig` | `MemoryToolRule` (line ~85) + the legacy history tool rule (line ~62). |
 | `src/modules/agent/tools/load_memory_test.zig` | 3 new tests. |
 
 **Total: 5 files modified, ~120 LOC.**

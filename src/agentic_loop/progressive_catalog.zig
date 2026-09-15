@@ -629,7 +629,7 @@ fn catalogForRegexTests(allocator: std.mem.Allocator) ![]const Entry {
     const reg_specs = [_][2][]const u8{
         .{ "kanban_list", "Enumerate every card on a board." },
         .{ "kanban_move_task", "Move a card." },
-        .{ "search_history", "Search past conversation history." },
+        .{ "read_workspace_session", "Search and read past conversation history" },
         .{ "crawl_web", "Searcher index for external pages." },
         .{ "glob", "Find files by PATTERN." },
         .{ "read_file", "Read a file with line numbers." },
@@ -667,9 +667,9 @@ test "matchQuery: a regex query, not just a substring" {
     // A word, not a fragment: \bsearch\b removes the "Searcher" noise that the
     // plain substring keeps — the A/B is the point.
     const word = try matchQuery(a, entries, "\\bsearch\\b", "", .{});
-    try testing.expectEqualStrings("search_history", try matchedNamesJoined(a, word));
+    try testing.expectEqualStrings("read_workspace_session", try matchedNamesJoined(a, word));
     const fragment = try matchQuery(a, entries, "search", "", .{});
-    try testing.expectEqualStrings("search_history,crawl_web", try matchedNamesJoined(a, fragment));
+    try testing.expectEqualStrings("read_workspace_session,crawl_web", try matchedNamesJoined(a, fragment));
 
     // `_` is a word byte, exactly like rg's -w: \blist\b cannot match the NAME
     // `kanban_list` (the underscore is a word byte on its left), and no
@@ -764,7 +764,7 @@ test "matchQuery: regex mode ignores substring artifacts of the old implementati
 
     // `$` is strict end-of-text.
     const end = try matchQuery(a, entries, "history$", "", .{});
-    try testing.expectEqualStrings("search_history", try matchedNamesJoined(a, end));
+    try testing.expectEqualStrings("read_workspace_session", try matchedNamesJoined(a, end));
 
     // server filter still applies on top of a regex.
     const scoped = try matchQuery(a, entries, "create", "linear", .{});

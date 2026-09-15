@@ -4,36 +4,53 @@ import ToolParameters from './_shared/ToolParameters.vue'
 import { extractParam } from '../../helpers/extractParam'
 
 /**
- * SearchHistory — renders the rich `<search_history>` envelope returned by the
- * `search_history` tool (see `search_history.zig`). The tool is the LLM's
- * primary window into the full conversation history on disk — both the
- * FTS5 search (mode="text") and the per-session browse (mode="session")
- * variants — so surfacing it as a structured card matters: a raw-XML
- * dump in the chat is unreadable, and (worse) the previous dispatch
- * fell through to the generic `tool-expandable` div which rendered it
- * inside a `diff search_history` block with empty BEFORE/AFTER columns.
+ * ReadWorkspaceSession — renders the rich `<read_workspace_session>`
+ * envelope returned by the `read_workspace_session` tool (see
+ * `read_workspace_session.zig`). The tool is the LLM's window into
+ * OTHER chat sessions in its own workspace — list, FTS search,
+ * per-session read, and search-within — so surfacing it as a
+ * structured card matters: a raw-XML dump in the chat is unreadable.
  *
- * Two output shapes, both well-formed by construction:
+ * Four output shapes, all well-formed by construction:
  *
- *   mode="text" (FTS5 search results):
- *     <search_history mode="text" offset="N" limit="M">
- *       <query>...FTS5 query...</query>
+ *   behavior="list" (workspace session discovery):
+ *     <read_workspace_session behavior="list" limit="M">
+ *       <count>K</count>
+ *       <total_count>T</total_count>
+ *       <sessions>
+ *         <session>
+ *           <id>s_xxx</id>
+ *           <name>...</name>
+ *           <status>active</status>
+ *           <message_count>N</message_count>
+ *           <last_activity>...</last_activity>
+ *           <preview>...latest human message...</preview>
+ *         </session>
+ *         ...
+ *       </sessions>
+ *     </read_workspace_session>
+ *
+ *   behavior="search" | "search-within" (FTS results):
+ *     <read_workspace_session behavior="search" offset="N" limit="M">
+ *       <query>...FTS query...</query>
+ *       [<session_id>s_xxx</session_id>]  <!-- search-within only -->
  *       <count>K</count>
  *       <total_count>T</total_count>
  *       <results>
  *         <entry>
  *           <id>h_xxx</id>
  *           <session_id>s_xxx</session_id>
+ *           <session_name>...</session_name>
  *           <role>user|assistant|tool</role>
- *           <created_at>YYYY-MM-DD HH:MM:SS</created_at>
+ *           <created_at>...</created_at>
  *           <snippet>...with [match] markers around hits...</snippet>
  *         </entry>
  *         ...
  *       </results>
- *     </search_history>
+ *     </read_workspace_session>
  *
- *   mode="session" (per-session message index):
- *     <search_history mode="session" order="asc|desc">
+ *   behavior="read" (per-session message index):
+ *     <read_workspace_session behavior="read" order="asc|desc">
  *       <session_id>s_xxx</session_id>
  *       <count>K</count>
  *       <total_count>T</total_count>
@@ -41,7 +58,7 @@ import { extractParam } from '../../helpers/extractParam'
  *         <entry>
  *           <id>h_xxx</id>
  *           <role>user|assistant|tool</role>
- *           <created_at>YYYY-MM-DD HH:MM:SS</created_at>
+ *           <created_at>...</created_at>
  *           <preview>...first 100 chars...</preview>
  *           <tool_call_id>...</tool_call_id>  <!-- only for tool role -->
  *           <tool_name>...</tool_name>         <!-- only for tool role -->
@@ -49,21 +66,34 @@ import { extractParam } from '../../helpers/extractParam'
  *         </entry>
  *         ...
  *       </message_index>
- *     </search_history>
+ *     </read_workspace_session>
+ *
+ *   Denied (cross-workspace target):
+ *     <read_workspace_session><denied session_id="s_xxx">...</denied></read_workspace_session>
  *
  *   Error:
- *     <search_history><error>...</error></search_history>
+ *     <read_workspace_session><error>...</error></read_workspace_session>
  *
- * Parsing uses regex (consistent with ReadCompactedMessages / Search.vue /
- * ListSkills.vue) — the backend emits well-formed XML and regex is plenty
- * for this fixed shape.
+ * Parsing uses regex (consistent with Search.vue / ListSkills.vue) —
+ * the backend emits well-formed XML and regex is plenty for this
+ * fixed shape.
  */
 
 // ── Shared types ──────────────────────────────────────────────────────────
 
-interface TextEntry {
+interface WorkspaceSession {
+  id: string
+  name: string
+  status: string
+  message_count: number
+  last_activity?: string
+  preview: string
+}
+
+interface SearchEntry {
   id: string
   session_id: string
+  session_name: string
   role: string
   created_at?: string
   /** Raw snippet with `[match]` markers around hits — we render these
@@ -71,7 +101,7 @@ interface TextEntry {
   snippet: string
 }
 
-interface SessionEntry {
+interface ReadEntry {
   id: string
   role: string
   created_at?: string
@@ -95,14 +125,16 @@ const isExpanded = ref(props.expanded ?? false)
 
 // ── Parse outer envelope ─────────────────────────────────────────────────
 
-const mode = computed((): 'text' | 'session' | 'error' | 'unknown' => {
-  // Try attribute-form first (success: <search_history mode="...">).
-  const attrMatch = props.content.match(/<search_history\s+mode="([^"]+)"/)
+type Behavior = 'list' | 'search' | 'search-within' | 'read' | 'denied' | 'error' | 'unknown'
+
+const behavior = computed((): Behavior => {
+  if (/<denied[\s>]/.test(props.content)) return 'denied'
+  if (/<error>/.test(props.content)) return 'error'
+  const attrMatch = props.content.match(/<read_workspace_session\s+behavior="([^"]+)"/)
   if (attrMatch && attrMatch[1]) {
-    return attrMatch[1] === 'session' ? 'session' : 'text'
+    const b = attrMatch[1]
+    if (b === 'list' || b === 'search' || b === 'search-within' || b === 'read') return b
   }
-  // No mode attribute → root has no attrs → error envelope
-  // (<search_history><error>...</error></search_history>).
   return 'unknown'
 })
 
@@ -113,12 +145,19 @@ const queryText = computed((): string | null => {
 })
 
 // In-progress fallback: prefer envelope, fall back to tool-call parameters
-const displayMode = computed((): string | null => {
-  if (mode.value !== 'unknown') return mode.value
-  return extractParam(props.parameters, 'mode')
+const displayBehavior = computed((): string | null => {
+  if (behavior.value !== 'unknown') return behavior.value
+  if (extractParam(props.parameters, 'query')) return 'search'
+  if (extractParam(props.parameters, 'session_id')) return 'read'
+  return null
 })
-const displayQuery = computed((): string | null => queryText.value ?? extractParam(props.parameters, 'query'))
-const isRunning = computed(() => props.content.trim() === '' && (displayMode.value !== null || displayQuery.value !== null))
+const displayQuery = computed(
+  (): string | null => queryText.value ?? extractParam(props.parameters, 'query'),
+)
+const displaySessionId = computed(
+  (): string | null => sessionId.value ?? extractParam(props.parameters, 'session_id'),
+)
+const isRunning = computed(() => props.content.trim() === '' && displayBehavior.value !== null)
 
 const sessionId = computed((): string | null => {
   const match = props.content.match(/<session_id>([\s\S]*?)<\/session_id>/)
@@ -144,13 +183,13 @@ const totalCount = computed((): number | null => {
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const offset = computed((): number | null => {
-  const match = props.content.match(/<search_history[^>]*\soffset="(\d+)"/)
+  const match = props.content.match(/<read_workspace_session[^>]*\soffset="(\d+)"/)
   if (!match || !match[1]) return null
   return parseInt(match[1], 10)
 })
 
 const order = computed((): string | null => {
-  const match = props.content.match(/<search_history[^>]*\sorder="([^"]+)"/)
+  const match = props.content.match(/<read_workspace_session[^>]*\sorder="([^"]+)"/)
   if (!match || !match[1]) return null
   return match[1]
 })
@@ -161,10 +200,49 @@ const errorMessage = computed((): string | null => {
   return match[1].trim()
 })
 
+const deniedSessionId = computed((): string | null => {
+  const attrMatch = props.content.match(/<denied[^>]*\ssession_id="([^"]+)"/)
+  if (attrMatch && attrMatch[1]) return attrMatch[1]
+  return null
+})
+
+const deniedMessage = computed((): string | null => {
+  const match = props.content.match(/<denied[^>]*>([\s\S]*?)<\/denied>/)
+  if (!match || !match[1]) return null
+  return match[1].trim()
+})
+
 // ── Parse entries ────────────────────────────────────────────────────────
 
-const textEntries = computed((): TextEntry[] => {
-  const results: TextEntry[] = []
+const listSessions = computed((): WorkspaceSession[] => {
+  const results: WorkspaceSession[] = []
+  const entryRegex = /<session>([\s\S]*?)<\/session>/g
+  let m
+  while ((m = entryRegex.exec(props.content)) !== null) {
+    const body = m[1]
+    if (body === undefined) continue
+
+    const idMatch = body.match(/<id>([\s\S]*?)<\/id>/)
+    const nameMatch = body.match(/<name>([\s\S]*?)<\/name>/)
+    const statusMatch = body.match(/<status>([\s\S]*?)<\/status>/)
+    const countMatch = body.match(/<message_count>(\d+)<\/message_count>/)
+    const activityMatch = body.match(/<last_activity>([\s\S]*?)<\/last_activity>/)
+    const previewMatch = body.match(/<preview>([\s\S]*?)<\/preview>/)
+
+    results.push({
+      id: (idMatch?.[1] ?? '').trim(),
+      name: (nameMatch?.[1] ?? '').trim(),
+      status: (statusMatch?.[1] ?? '').trim(),
+      message_count: countMatch?.[1] ? parseInt(countMatch[1], 10) : 0,
+      last_activity: activityMatch?.[1]?.trim() || undefined,
+      preview: (previewMatch?.[1] ?? '').trim(),
+    })
+  }
+  return results
+})
+
+const searchEntries = computed((): SearchEntry[] => {
+  const results: SearchEntry[] = []
   const entryRegex = /<entry>([\s\S]*?)<\/entry>/g
   let m
   while ((m = entryRegex.exec(props.content)) !== null) {
@@ -173,6 +251,7 @@ const textEntries = computed((): TextEntry[] => {
 
     const idMatch = body.match(/<id>([\s\S]*?)<\/id>/)
     const sidMatch = body.match(/<session_id>([\s\S]*?)<\/session_id>/)
+    const snameMatch = body.match(/<session_name>([\s\S]*?)<\/session_name>/)
     const roleMatch = body.match(/<role>([\s\S]*?)<\/role>/)
     const createdAtMatch = body.match(/<created_at>([\s\S]*?)<\/created_at>/)
     const snippetMatch = body.match(/<snippet>([\s\S]*?)<\/snippet>/)
@@ -180,6 +259,7 @@ const textEntries = computed((): TextEntry[] => {
     results.push({
       id: (idMatch?.[1] ?? '').trim(),
       session_id: (sidMatch?.[1] ?? '').trim(),
+      session_name: (snameMatch?.[1] ?? '').trim(),
       role: (roleMatch?.[1] ?? 'unknown').trim(),
       created_at: createdAtMatch?.[1]?.trim() || undefined,
       snippet: (snippetMatch?.[1] ?? '').trim(),
@@ -188,8 +268,8 @@ const textEntries = computed((): TextEntry[] => {
   return results
 })
 
-const sessionEntries = computed((): SessionEntry[] => {
-  const results: SessionEntry[] = []
+const readEntries = computed((): ReadEntry[] => {
+  const results: ReadEntry[] = []
   const entryRegex = /<entry>([\s\S]*?)<\/entry>/g
   let m
   while ((m = entryRegex.exec(props.content)) !== null) {
@@ -225,22 +305,29 @@ const sessionEntries = computed((): SessionEntry[] => {
 
 const summaryText = computed((): string => {
   if (errorMessage.value) return errorMessage.value
+  if (behavior.value === 'denied') {
+    return deniedSessionId.value
+      ? `denied · ${truncateMiddle(deniedSessionId.value, 32)} not in your workspace`
+      : 'denied · session not in your workspace'
+  }
 
   const parts: string[] = []
-  const effectiveMode = mode.value !== 'unknown' ? mode.value : displayMode.value
-  const effectiveQuery = queryText.value ?? displayQuery.value
-  if (mode.value === 'text') {
-    parts.push('text search')
-    if (queryText.value) parts.push(`"${truncateMiddle(queryText.value, 48)}"`)
-  } else if (mode.value === 'session') {
+  const b = behavior.value !== 'unknown' ? behavior.value : displayBehavior.value
+  if (b === 'list') {
+    parts.push('workspace sessions')
+  } else if (b === 'search' || b === 'search-within') {
+    parts.push(b === 'search-within' ? 'search within session' : 'workspace search')
+    const q = queryText.value ?? displayQuery.value
+    if (q) parts.push(`"${truncateMiddle(q, 48)}"`)
+    const sid = sessionId.value ?? displaySessionId.value
+    if (b === 'search-within' && sid) parts.push(truncateMiddle(sid, 32))
+  } else if (b === 'read') {
     parts.push('session')
-    if (sessionId.value) parts.push(truncateMiddle(sessionId.value, 32))
+    const sid = sessionId.value ?? displaySessionId.value
+    if (sid) parts.push(truncateMiddle(sid, 32))
     if (order.value) parts.push(`order=${order.value}`)
-  } else if (effectiveMode) {
-    parts.push(effectiveMode === 'session' ? 'session' : 'text search')
-    if (effectiveQuery) parts.push(`"${truncateMiddle(effectiveQuery, 48)}"`)
   } else {
-    parts.push('search_history')
+    parts.push('read_workspace_session')
   }
 
   // Counters: "20 of 47" when paginated, just "47" when all fit.
@@ -256,11 +343,13 @@ const summaryText = computed((): string => {
 })
 
 const isError = computed(() => !!errorMessage.value)
-const hasEntries = computed(() =>
-  mode.value === 'text'
-    ? textEntries.value.length > 0
-    : sessionEntries.value.length > 0,
-)
+const isDenied = computed(() => behavior.value === 'denied')
+const hasEntries = computed(() => {
+  if (behavior.value === 'list') return listSessions.value.length > 0
+  if (behavior.value === 'search' || behavior.value === 'search-within')
+    return searchEntries.value.length > 0
+  return readEntries.value.length > 0
+})
 const hasArgs = computed(() => {
   const v = (props.parameters ?? '').trim()
   return v !== '' && v !== '{}'
@@ -269,7 +358,7 @@ const hasArgs = computed(() => {
 // ── Actions ──────────────────────────────────────────────────────────────
 
 const toggle = () => {
-  if (hasEntries.value || isError.value || hasArgs.value) {
+  if (hasEntries.value || isError.value || isDenied.value || hasArgs.value) {
     isExpanded.value = !isExpanded.value
   }
 }
@@ -279,7 +368,7 @@ const copyId = async (e: Event, id: string) => {
   await navigator.clipboard.writeText(id)
 }
 
-// Per-session-entry "show full content" toggle. We only show the
+// Per-read-entry "show full content" toggle. We only show the
 // full <content> when the user explicitly expands it — keeps the
 // bubble compact even when one entry happens to be huge.
 const expandedContentIds = ref<Set<string>>(new Set())
@@ -350,7 +439,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
   <div
     class="chat-tool-card font-mono text-xs"
     :class="isError ? 'border-red-500/50 opacity-90' : ''"
-    data-testid="search-history"
+    data-testid="read-workspace-session"
   >
     <!-- Header -->
     <div
@@ -359,7 +448,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">search_history</span>
+      <span class="text-[var(--color-violet)] font-semibold text-xs">read_workspace_session</span>
       <span
         class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
         :title="summaryText"
@@ -372,22 +461,26 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         v-if="count !== null && totalCount !== null && totalCount !== count"
         class="text-[0.65rem] font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
         :title="`Page contains ${count} entries out of ${totalCount} total matches`"
-        data-testid="search-history-page-badge"
+        data-testid="read-workspace-session-page-badge"
       >
         {{ count }} of {{ totalCount }}
       </span>
 
-      <span
-        v-if="isError"
-        class="text-red-500 text-[0.65rem] font-medium shrink-0"
-      >
-        Error
+      <span v-if="isError" class="text-red-500 text-[0.65rem] font-medium shrink-0"> Error </span>
+
+      <span v-if="isDenied" class="text-yellow-500 text-[0.65rem] font-medium shrink-0">
+        Denied
       </span>
 
-      <span v-if="isRunning" data-testid="search-history-running" class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0">running…</span>
+      <span
+        v-if="isRunning"
+        data-testid="read-workspace-session-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+        >running…</span
+      >
 
       <span
-        v-if="hasEntries || isError || hasArgs"
+        v-if="hasEntries || isError || isDenied || hasArgs"
         class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
       >
         {{ isExpanded ? '−' : '+' }}
@@ -399,9 +492,22 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
     <div
       v-if="isError"
       class="border-t border-[var(--color-border)] px-3 py-2 text-red-500 text-[0.72rem] break-words"
-      data-testid="search-history-error"
+      data-testid="read-workspace-session-error"
     >
       {{ errorMessage }}
+    </div>
+
+    <!-- Denied body — always visible. The target session is outside the
+         caller's workspace; no content is ever rendered here. -->
+    <div
+      v-else-if="isDenied"
+      class="border-t border-[var(--color-border)] px-3 py-2 text-yellow-500 text-[0.72rem] break-words"
+      data-testid="read-workspace-session-denied"
+    >
+      {{ deniedMessage ?? 'Session is not in your workspace.' }}
+      <span v-if="deniedSessionId" class="text-[var(--semantic-text-muted)]"
+        >({{ deniedSessionId }})</span
+      >
     </div>
 
     <!-- Empty-result hint — always visible when there's no error but also
@@ -409,68 +515,132 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
     <div
       v-else-if="!hasEntries"
       class="border-t border-[var(--color-border)] px-3 py-4 text-center text-[var(--semantic-text-muted)] text-xs"
-      data-testid="search-history-empty"
+      data-testid="read-workspace-session-empty"
     >
-      <template v-if="mode === 'text'">
+      <template v-if="behavior === 'list'"> No other sessions in your workspace </template>
+      <template v-else-if="behavior === 'search' || behavior === 'search-within'">
         No matches for "{{ queryText }}"
       </template>
-      <template v-else>
-        No messages in {{ sessionId }}
-      </template>
+      <template v-else> No messages in {{ sessionId }} </template>
     </div>
 
     <!-- Entry list — only when expanded and there are entries. -->
     <div
-      v-if="isExpanded && hasEntries && !isError"
+      v-if="isExpanded && hasEntries && !isError && !isDenied"
       class="border-t border-[var(--color-border)] bg-black/[0.02]"
     >
-      <!-- mode="text": FTS5 results -->
+      <!-- behavior="list": workspace sessions -->
       <ul
-        v-if="mode === 'text'"
+        v-if="behavior === 'list'"
         class="divide-y divide-[var(--color-border)]"
-        data-testid="search-history-text-entries"
+        data-testid="read-workspace-session-list-entries"
       >
         <li
-          v-for="(entry, idx) in textEntries"
+          v-for="(session, idx) in listSessions"
+          :key="session.id || idx"
+          class="px-3 py-2 text-[var(--semantic-text)] hover:bg-violet-500/5"
+          data-testid="read-workspace-session-list-entry"
+        >
+          <div class="flex items-start gap-2 min-w-0">
+            <!-- Session name -->
+            <span
+              class="font-semibold text-[var(--semantic-text)] text-xs truncate max-w-[200px]"
+              :title="session.name || session.id"
+              :data-testid="`list-entry-name-${idx}`"
+            >
+              {{ session.name || session.id }}
+            </span>
+
+            <!-- ID + copy -->
+            <div class="flex items-center gap-1 min-w-0 shrink-0">
+              <code class="entry-id" :title="session.id" :data-testid="`list-entry-id-${idx}`">
+                {{ session.id }}
+              </code>
+              <button
+                class="copy-btn"
+                @click="(e) => copyId(e, session.id)"
+                title="Copy session id"
+              >
+                ⎘
+              </button>
+            </div>
+
+            <!-- Status -->
+            <span
+              v-if="session.status"
+              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+            >
+              {{ session.status }}
+            </span>
+
+            <!-- Message count -->
+            <span
+              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              :title="`${session.message_count} messages`"
+            >
+              {{ session.message_count }} msgs
+            </span>
+
+            <!-- Last activity -->
+            <span
+              v-if="session.last_activity"
+              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              :title="`Last activity ${session.last_activity}`"
+            >
+              {{ session.last_activity }}
+            </span>
+          </div>
+
+          <!-- Preview -->
+          <p
+            v-if="session.preview"
+            class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+            :data-testid="`list-entry-preview-${idx}`"
+          >
+            {{ session.preview }}
+          </p>
+        </li>
+      </ul>
+
+      <!-- behavior="search" | "search-within": FTS results -->
+      <ul
+        v-else-if="behavior === 'search' || behavior === 'search-within'"
+        class="divide-y divide-[var(--color-border)]"
+        data-testid="read-workspace-session-search-entries"
+      >
+        <li
+          v-for="(entry, idx) in searchEntries"
           :key="entry.id || idx"
           class="px-3 py-2 text-[var(--semantic-text)] hover:bg-violet-500/5"
-          data-testid="search-history-text-entry"
+          data-testid="read-workspace-session-search-entry"
         >
           <div class="flex items-start gap-2 min-w-0">
             <!-- Role badge -->
             <span
               class="role-badge shrink-0"
               :class="`role-${entry.role}`"
-              :data-testid="`text-entry-role-${idx}`"
+              :data-testid="`search-entry-role-${idx}`"
             >
               {{ entry.role }}
             </span>
 
             <!-- ID + copy -->
             <div class="flex items-center gap-1 min-w-0 shrink-0">
-              <code
-                class="entry-id"
-                :title="entry.id"
-                :data-testid="`text-entry-id-${idx}`"
-              >
+              <code class="entry-id" :title="entry.id" :data-testid="`search-entry-id-${idx}`">
                 {{ entry.id }}
               </code>
-              <button
-                class="copy-btn"
-                @click="(e) => copyId(e, entry.id)"
-                title="Copy message id"
-              >
+              <button class="copy-btn" @click="(e) => copyId(e, entry.id)" title="Copy message id">
                 ⎘
               </button>
             </div>
 
-            <!-- Session id (truncated) -->
+            <!-- Session name + id (truncated) -->
             <span
-              v-if="entry.session_id"
+              v-if="entry.session_name || entry.session_id"
               class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0 max-w-[140px] truncate"
               :title="entry.session_id"
             >
-              in {{ entry.session_id }}
+              in {{ entry.session_name || entry.session_id }}
             </span>
 
             <!-- Timestamp -->
@@ -487,7 +657,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <p
             v-if="entry.snippet"
             class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
-            :data-testid="`text-entry-snippet-${idx}`"
+            :data-testid="`search-entry-snippet-${idx}`"
           >
             <template v-for="(seg, segIdx) in parseSnippet(entry.snippet)" :key="segIdx">
               <mark v-if="seg.match" class="bg-yellow-500/30 text-inherit rounded px-0.5">
@@ -499,42 +669,34 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         </li>
       </ul>
 
-      <!-- mode="session": message index -->
+      <!-- behavior="read": message index -->
       <ul
         v-else
         class="divide-y divide-[var(--color-border)]"
-        data-testid="search-history-session-entries"
+        data-testid="read-workspace-session-read-entries"
       >
         <li
-          v-for="(entry, idx) in sessionEntries"
+          v-for="(entry, idx) in readEntries"
           :key="entry.id || idx"
           class="px-3 py-2 text-[var(--semantic-text)] hover:bg-violet-500/5"
-          data-testid="search-history-session-entry"
+          data-testid="read-workspace-session-read-entry"
         >
           <div class="flex items-start gap-2 min-w-0">
             <!-- Role badge -->
             <span
               class="role-badge shrink-0"
               :class="`role-${entry.role}`"
-              :data-testid="`session-entry-role-${idx}`"
+              :data-testid="`read-entry-role-${idx}`"
             >
               {{ entry.role }}
             </span>
 
             <!-- ID + copy -->
             <div class="flex items-center gap-1 min-w-0 shrink-0">
-              <code
-                class="entry-id"
-                :title="entry.id"
-                :data-testid="`session-entry-id-${idx}`"
-              >
+              <code class="entry-id" :title="entry.id" :data-testid="`read-entry-id-${idx}`">
                 {{ entry.id }}
               </code>
-              <button
-                class="copy-btn"
-                @click="(e) => copyId(e, entry.id)"
-                title="Copy message id"
-              >
+              <button class="copy-btn" @click="(e) => copyId(e, entry.id)" title="Copy message id">
                 ⎘
               </button>
             </div>
@@ -553,7 +715,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
               v-if="entry.tool_call_id"
               class="tool-pill"
               :title="`Tool call id: ${entry.tool_call_id}`"
-              :data-testid="`session-entry-tool-call-id-${idx}`"
+              :data-testid="`read-entry-tool-call-id-${idx}`"
             >
               {{ entry.tool_call_id }}
             </span>
@@ -561,7 +723,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
               v-if="entry.tool_name"
               class="tool-pill tool-name-pill"
               :title="`Tool: ${entry.tool_name}`"
-              :data-testid="`session-entry-tool-name-${idx}`"
+              :data-testid="`read-entry-tool-name-${idx}`"
             >
               {{ entry.tool_name }}
             </span>
@@ -571,7 +733,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <p
             v-if="entry.preview"
             class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
-            :data-testid="`session-entry-preview-${idx}`"
+            :data-testid="`read-entry-preview-${idx}`"
           >
             {{ entry.preview }}
           </p>
@@ -581,7 +743,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <button
               class="content-toggle"
               type="button"
-              :data-testid="`session-entry-toggle-content-${idx}`"
+              :data-testid="`read-entry-toggle-content-${idx}`"
               @click="toggleContent(entry.id)"
             >
               <span class="content-toggle-icon">{{ isContentExpanded(entry.id) ? '▼' : '▶' }}</span>
@@ -599,14 +761,14 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <pre
               v-if="isContentExpanded(entry.id)"
               class="content-body"
-              :data-testid="`session-entry-content-${idx}`"
-            >{{ entry.content }}</pre>
+              :data-testid="`read-entry-content-${idx}`"
+              >{{ entry.content }}</pre>
           </div>
         </li>
       </ul>
       <ToolParameters :parameters="parameters" />
     </div>
-    <div v-if="isExpanded && !hasEntries && !isError">
+    <div v-if="isExpanded && !hasEntries && !isError && !isDenied">
       <ToolParameters :parameters="parameters" />
     </div>
   </div>

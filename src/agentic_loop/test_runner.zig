@@ -105,4 +105,10 @@ test {
     // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
     // in-flight stream buffer registry + snapshot getter. Tests inline.
     _ = @import("stream_snapshot.zig");
+    // Workspace-scoped chat history — read/search/list other sessions
+    // in the caller's workspace (replaces the global history search).
+    _ = @import("tools_exec_read_workspace_session.zig");
+    // Workspace-scoped chat history — session-to-workspace resolution
+    // (task link + cwd heuristic) with in-memory SQLite tests.
+    _ = @import("workspace_scope.zig");
 }

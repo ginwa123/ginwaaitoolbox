@@ -10,7 +10,7 @@ will keep asking the user for preferences it should remember, and keep
 re-discovering facts it should have persisted.
 
 This work adds a `MemoryToolRule` section following the established
-`SearchHistoryToolRule` pattern (gated on the runtime tool list via
+the legacy history tool-rule pattern (gated on the runtime tool list via
 `requires_tool`), and a small block on the `CompactionAgent` so the
 compaction step also uses memory appropriately.
 
@@ -23,9 +23,9 @@ surface from the hand-curated `.md` files (both stay).
 
 | File | Edit |
 |---|---|
-| `src/modules/agent/prompts/core.zig` | **NEW** `MemoryToolRule` constant (after `SearchHistoryToolRule`, line 65). Mirrors the existing tool-rule style — lead paragraph, TWO TOOLS block, wire-format notes, when-to-call bullets, self-check. |
-| `src/modules/agent/prompts/prompts.zig` | Re-export `MemoryToolRule` (after line 26's `SearchHistoryToolRule`). |
-| `src/modules/agent/prompts.zig` | (a) Re-export `MemoryToolRule` (after line 42). (b) Add to `PROMPT_SECTIONS` with `requires_tool = "load_memory"`, immediately after the `search_history_tool_rule` slot (line 91). |
+| `src/modules/agent/prompts/core.zig` | **NEW** `MemoryToolRule` constant (after the legacy history tool rule, line 65). Mirrors the existing tool-rule style — lead paragraph, TWO TOOLS block, wire-format notes, when-to-call bullets, self-check. |
+| `src/modules/agent/prompts/prompts.zig` | Re-export `MemoryToolRule` (after line 26's legacy history tool rule). |
+| `src/modules/agent/prompts.zig` | (a) Re-export `MemoryToolRule` (after line 42). (b) Add to `PROMPT_SECTIONS` with `requires_tool = "load_memory"`, immediately after the legacy history tool-rule slot (line 91). |
 | `src/modules/agent/prompts/special.zig` | Add a `## CROSS-SESSION MEMORY` block at the end of `CompactionAgent` (after the existing `## HOW THE NEXT AGENT WILL USE THIS OUTPUT` block) — short, teaching compaction to forward save/load cues to the next agent. |
 | `src/modules/agent/prompts_test.zig` | **NEW** 3 tests: (1) section rendered when `load_memory` in tools, (2) section omitted when `load_memory` absent, (3) CompactionAgent contains the new CROSS-SESSION MEMORY block. |
 
@@ -41,7 +41,7 @@ surface from the hand-curated `.md` files (both stay).
 4. **WIRE FORMAT — 3 contracts stay in sync** — `tags` is a single string
    (NOT array; this is the documented contract after the bugfix); `id` is
    `mem_<16-hex>` or caller slug; storage is permanent, no delete.
-5. **FTS5 sanitization** — auto-applied, mirrors search_history.
+5. **FTS5 sanitization** — auto-applied, mirrors the legacy history search.
 6. **WHEN TO CALL save_memory** — 4 trigger categories with examples.
 7. **WHEN TO CALL load_memory** — 4 trigger categories with examples.
 8. **Self-check** — re-state check + re-derive check.
@@ -55,7 +55,7 @@ surface from the hand-curated `.md` files (both stay).
    often than persistence in any given turn.
 2. The two tools ship as a pair in `tools_equipped.zig` — gating on either
    is effectively the same runtime check.
-3. Mirrors the `search_history` precedent (gate on the primary tool).
+3. Mirrors the legacy history-search precedent (gate on the primary tool).
 
 If a kanban/folder session ever has its memory tools stripped by the
 `filteringTools` filter (currently it doesn't), the section will silently
@@ -80,7 +80,7 @@ Run `zig build test --summary all` — these 3 tests fail (section doesn't exist
 1. Add `MemoryToolRule` constant to `core.zig` after line 65.
 2. Add `pub const MemoryToolRule = core.MemoryToolRule;` in `prompts.zig`.
 3. Add `pub const MemoryToolRule = prompts.MemoryToolRule;` in `prompts.zig` (outer).
-4. Add `.{ .name = "memory_tool_rule", .content = MemoryToolRule, .requires_tool = "load_memory" }` to `PROMPT_SECTIONS` after the `search_history_tool_rule` entry.
+4. Add `.{ .name = "memory_tool_rule", .content = MemoryToolRule, .requires_tool = "load_memory" }` to `PROMPT_SECTIONS` after the legacy history tool-rule entry.
 5. Append `## CROSS-SESSION MEMORY (save_memory / load_memory)` block to
    `CompactionAgent` in `special.zig`.
 

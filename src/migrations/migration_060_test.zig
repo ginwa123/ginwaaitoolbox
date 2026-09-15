@@ -9,7 +9,8 @@
 //! `datetime(CAST(<microseconds> AS REAL) / 1000000, 'unixepoch',
 //! 'localtime')` overflowed SQLite's `datetime()` range (cap: year
 //! 9999) for modern timestamps. This silently broke the
-//! `since`/`until` filter on `search_history` and `getCompactedMessages`.
+//! `since`/`until` filter on workspace history reads and
+//! `getCompactedMessages`.
 //!
 //! Migration 060 unconditionally re-runs the v2 backfill UPDATE so
 //! production users get a fix on the next nalar restart without

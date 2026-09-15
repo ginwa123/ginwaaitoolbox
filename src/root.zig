@@ -640,7 +640,7 @@ pub const memory = @import("modules/agent/tools/memory.zig");
 pub const save_memory = memory;
 pub const load_memory = memory;
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
-pub const search_history_tool = @import("modules/agent/tools/search_history.zig");
+pub const read_workspace_session_tool = @import("modules/agent/tools/read_workspace_session.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
@@ -853,6 +853,7 @@ pub const tui_check_session_exists = @import("agentic_loop/llm_history.zig");
 pub const session_helpers = @import("agentic_loop/llm_history.zig");
 pub const session_db = @import("agentic_loop/llm_history.zig");
 pub const llm_history = @import("agentic_loop/llm_history.zig");
+pub const workspace_scope = @import("agentic_loop/workspace_scope.zig");
 pub const agent_memories = @import("agentic_loop/agent_memories.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).

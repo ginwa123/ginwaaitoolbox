@@ -46,7 +46,7 @@
     Error:   red error block.
 
   Style is consistent with the rest of the tool_outputs components
-  (SearchHistory is the closest analog — both have FTS5 snippets).
+  (ReadWorkspaceSession is the closest analog — both have FTS5 snippets).
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
@@ -129,9 +129,7 @@ const entries = computed((): MemoryEntry[] => {
     const contentMatch = body.match(/<content(?:\s+truncated="([01])")?\s*>([\s\S]*?)<\/content>/)
 
     const tagsRaw = (tagsMatch?.[1] ?? '').trim()
-    const tags: string[] = tagsRaw.length > 0
-      ? tagsRaw.split('||').filter((t) => t.length > 0)
-      : []
+    const tags: string[] = tagsRaw.length > 0 ? tagsRaw.split('||').filter((t) => t.length > 0) : []
 
     results.push({
       id: (idMatch?.[1] ?? '').trim(),
@@ -197,7 +195,7 @@ const copyId = async (e: Event, id: string) => {
   }
 }
 
-// Per-entry "show full content" toggle. Mirrors SearchHistory's
+// Per-entry "show full content" toggle. Mirrors ReadWorkspaceSession's
 // pattern — we only render <content> when the user explicitly expands
 // it, keeping the bubble compact even when one entry is huge.
 const expandedContentIds = ref<Set<string>>(new Set())
@@ -221,7 +219,7 @@ function truncateMiddle(s: string, max: number): string {
 
 /** Parse a snippet that uses `[match]…[/match]` markers into a list
  *  of (text, isMatch) segments for Vue rendering. Same algorithm as
- *  SearchHistory.vue — backend emits the same marker format. */
+ *  ReadWorkspaceSession.vue — backend emits the same marker format. */
 function parseSnippet(snippet: string): { text: string; match: boolean }[] {
   const out: { text: string; match: boolean }[] = []
   let i = 0
@@ -299,12 +297,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         with content
       </span>
 
-      <span
-        v-if="isError"
-        class="text-red-500 text-[0.65rem] font-medium shrink-0"
-      >
-        Error
-      </span>
+      <span v-if="isError" class="text-red-500 text-[0.65rem] font-medium shrink-0"> Error </span>
 
       <!-- Live badge (tool call underway, envelope still empty) -->
       <span
@@ -361,11 +354,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         <div class="flex items-start gap-2 min-w-0 flex-wrap">
           <!-- ID + copy -->
           <div class="flex items-center gap-1 min-w-0 shrink-0">
-            <code
-              class="entry-id"
-              :title="entry.id"
-              :data-testid="`load-memory-entry-id-${idx}`"
-            >
+            <code class="entry-id" :title="entry.id" :data-testid="`load-memory-entry-id-${idx}`">
               {{ entry.id }}
             </code>
             <button
@@ -446,7 +435,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             v-if="isContentExpanded(entry.id)"
             class="content-body"
             :data-testid="`load-memory-entry-content-${idx}`"
-          >{{ entry.content }}</pre>
+            >{{ entry.content }}</pre>
         </div>
       </div>
       <ToolParameters :parameters="parameters" />
@@ -458,7 +447,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
 </template>
 
 <style scoped>
-/* Mirrors the styling in SearchHistory.vue (same FTS5 snippet shape).
+/* Mirrors the styling in ReadWorkspaceSession.vue (same FTS5 snippet shape).
    Kept local (scoped) so styles don't leak. */
 .entry-id {
   font-family: monospace;
