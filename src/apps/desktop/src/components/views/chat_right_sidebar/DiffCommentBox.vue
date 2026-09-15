@@ -29,6 +29,67 @@ export function formatReviewComment(
   );
 }
 
+export interface SavedCommentRange {
+  start: number;
+  end: number;
+}
+
+/**
+ * Scan localStorage for saved review comments on a file. Returns the
+ * [start, end] line ranges whose stored entry still carries a non-empty
+ * message, so diff rows can render a reviewed marker. Tolerates legacy
+ * raw-string values. Never throws — storage may be unavailable.
+ */
+export function listSavedCommentRanges(
+  cwd: string,
+  filePath: string,
+): SavedCommentRange[] {
+  const out: SavedCommentRange[] = [];
+  try {
+    if (typeof localStorage === "undefined") return out;
+    const store = localStorage;
+    const prefix = `diff-comment:${cwd}:${filePath}:`;
+    const len = store.length;
+    for (let i = 0; i < len; i++) {
+      let key: string | null = null;
+      try {
+        key = store.key(i);
+      } catch {
+        continue;
+      }
+      if (!key || !key.startsWith(prefix)) continue;
+      const suffix = key.slice(prefix.length);
+      const m = /^(\d+)-(\d+)$/.exec(suffix);
+      if (!m) continue;
+      const start = parseInt(m[1]!, 10);
+      const end = parseInt(m[2]!, 10);
+      if (Number.isNaN(start) || Number.isNaN(end)) continue;
+      let raw: string | null = null;
+      try {
+        raw = store.getItem(key);
+      } catch {
+        continue;
+      }
+      if (raw == null || raw.length === 0) continue;
+      let message: unknown = null;
+      try {
+        const parsed = JSON.parse(raw) as { message?: unknown };
+        message =
+          parsed !== null && typeof parsed === "object" && "message" in parsed
+            ? parsed.message
+            : raw;
+      } catch {
+        message = raw;
+      }
+      if (typeof message !== "string" || message.length === 0) continue;
+      out.push({ start, end });
+    }
+  } catch {
+    // Storage unavailable — no markers.
+  }
+  return out;
+}
+
 export interface DiffCommentSavePayload {
   filePath: string;
   startLine: number;

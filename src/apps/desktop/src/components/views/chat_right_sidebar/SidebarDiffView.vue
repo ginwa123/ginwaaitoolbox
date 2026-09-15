@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import DiffCommentBox, { type DiffCommentSavePayload } from './DiffCommentBox.vue'
+import { computed, ref, watch } from 'vue'
+import DiffCommentBox, { listSavedCommentRanges, type DiffCommentSavePayload } from './DiffCommentBox.vue'
 import { escapeDiffHtml, type ParsedDiffLine } from './parseUnifiedDiff'
 
 /**
@@ -87,10 +87,33 @@ const closeMiniChat = () => {
   miniChatEndLine.value = 0
 }
 
+const reviewedVersion = ref(0)
+const reviewedRanges = computed(() => {
+  void reviewedVersion.value
+  return listSavedCommentRanges(props.cwd, props.path)
+})
+
+watch(
+  () => props.path,
+  () => {
+    reviewedVersion.value = 0
+  },
+)
+
+function isReviewedLine(line: ParsedDiffLine): boolean {
+  let n: number | undefined
+  if (line.type === 'add') n = line.newLineNum
+  else if (line.type === 'remove') n = line.oldLineNum
+  else return false
+  if (n == null) return false
+  return reviewedRanges.value.some((r) => n >= r.start && n <= r.end)
+}
+
 const handleCommentSave = (payload: DiffCommentSavePayload) => {
   // The comment box owns persistence (localStorage draft + Saved
   // feedback). Keep the popup open showing the saved state and bubble
   // the structured payload upward. Nothing here sends to the LLM.
+  reviewedVersion.value++
   emit('comment-saved', payload)
 }
 const firstAddLine = computed(() => props.lines.find((l) => l.type === 'add')?.newLineNum)
@@ -236,7 +259,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                   color: var(--semantic-text);
                 "
               >
-                <span style="color: var(--color-green); font-weight: bold">+</span>
+                <span style="color: var(--color-green); font-weight: bold">+</span><span v-if="isReviewedLine(line)" title="Reviewed — click to view comment" data-testid="diff-reviewed-marker">💬</span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
@@ -263,7 +286,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                   color: var(--semantic-text);
                 "
               >
-                <span style="color: var(--color-red); font-weight: bold">−</span>
+                <span style="color: var(--color-red); font-weight: bold">−</span><span v-if="isReviewedLine(line)" title="Reviewed — click to view comment" data-testid="diff-reviewed-marker">💬</span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
