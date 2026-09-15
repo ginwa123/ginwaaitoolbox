@@ -758,4 +758,8 @@ test "success SET xml includes PR hint note with set_pull_request" {
         std.debug.print("!! success <note> does not mention `gh pr create` !!\n", .{});
         return error.SuccessNoteMissingGhPrCreate;
     }
+    if (std.mem.indexOf(u8, source, "agent tool `set_pull_request`") == null) {
+        std.debug.print("!! success <note> must explicitly say agent tool `set_pull_request` !!\n", .{});
+        return error.SuccessNoteMissingAgentToolWording;
+    }
 }
