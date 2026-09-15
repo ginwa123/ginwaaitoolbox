@@ -2,10 +2,20 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import * as api from '../../../api'
 import FileInput from '../../file/FileInput.vue'
-import { escapeDiffHtml, parseUnifiedDiff, type ParsedDiffLine } from './parseUnifiedDiff'
+import {
+  escapeDiffHtml,
+  parseUnifiedDiff,
+  splitDiffByFile,
+  type ParsedDiffLine,
+  type SplitDiffFile,
+} from './parseUnifiedDiff'
 
 const props = defineProps<{
   cwd: string
+  /** Attached PR URL (set_pull_request tool). Non-empty switches the panel to PR mode. */
+  prUrl?: string
+  /** Effective provider for the attached PR (stored pr_provider). */
+  prProvider?: string
 }>()
 
 const emit = defineEmits<{
@@ -43,6 +53,63 @@ const changeCount = computed(
   () => stagedFiles.value.length + unstagedFiles.value.length + untrackedFiles.value.length,
 )
 
+const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
+const prFiles = ref<SplitDiffFile[]>([])
+const prBase = ref('')
+const prHead = ref('')
+const prTruncated = ref(false)
+const isLoadingPr = ref(false)
+const prError = ref<string | null>(null)
+
+const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
+
+// Short label for the header: "#42" from /pull/42 or /merge_requests/42,
+// else the URL host. Pure display helper (no network).
+const prLabel = computed(() => {
+  const url = props.prUrl ?? ''
+  const m = url.match(/\/(?:pull|merge_requests)\/(\d+)/)
+  if (m?.[1]) return `#${m[1]}`
+  try {
+    return new URL(url).host
+  } catch {
+    return 'PR'
+  }
+})
+
+const loadPrDiff = async () => {
+  if (!props.cwd || !isPrMode.value) {
+    prFiles.value = []
+    return
+  }
+  isLoadingPr.value = true
+  prError.value = null
+  try {
+    const data = await api.getPrDiff(props.cwd, props.prUrl ?? '', {
+      provider: props.prProvider || undefined,
+    })
+    prFiles.value = splitDiffByFile(data.diff_content)
+    prBase.value = data.base || ''
+    prHead.value = data.head || ''
+    prTruncated.value = data.truncated
+  } catch (err) {
+    console.error('Failed to load PR diff:', err)
+    prError.value = 'Failed to load PR diff'
+    prFiles.value = []
+  } finally {
+    isLoadingPr.value = false
+  }
+}
+
+const selectPrFile = (file: SplitDiffFile) => {
+  selectedPath.value = file.path
+  selectedStaged.value = false
+  closeMiniChat()
+  const parsed = parseUnifiedDiff(file.text)
+  diffLines.value = parsed.lines
+  diffAdded.value = parsed.added
+  diffRemoved.value = parsed.removed
+}
+
 function displayStatus(file: api.GitFileChange): { icon: string; text: string } {
   if (file.index_status === '??') return { icon: '❓', text: 'Untracked' }
   const indexStatus = file.index_status === ' ' ? '' : file.index_status
@@ -70,7 +137,8 @@ const onRefreshClick = () => {
   // changed, so a stale-cwd click self-heals instead of re-showing
   // the old branch.
   emit('refresh')
-  void loadGitStatus()
+  if (isPrMode.value) void loadPrDiff()
+  else void loadGitStatus()
 }
 
 const loadGitStatus = async () => {
@@ -215,24 +283,71 @@ const submitMiniChat = (message: string) => {
 }
 
 watch(
-  () => props.cwd,
+  () => [props.cwd, props.prUrl],
   () => {
     selectedPath.value = null
     diffLines.value = []
-    void loadGitStatus()
+    if (isPrMode.value) void loadPrDiff()
+    else void loadGitStatus()
   },
 )
 
 onMounted(() => {
-  void loadGitStatus()
+  if (isPrMode.value) void loadPrDiff()
+  else void loadGitStatus()
 })
 
-defineExpose({ loadGitStatus, loadDiff, changeCount })
+defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
 </script>
 
 <template>
   <div class="flex flex-col h-full min-h-0" data-testid="sidebar-diff-panel">
     <div
+      v-if="isPrMode"
+      class="flex items-center gap-2 px-3 h-10 shrink-0"
+      style="border-bottom: 1px solid var(--color-border)"
+    >
+      <span class="text-sm">🔀</span>
+      <a
+        :href="prUrl"
+        target="_blank"
+        rel="noopener"
+        class="text-sm font-medium truncate flex-1 hover:underline"
+        style="color: var(--semantic-text)"
+        :title="prUrl"
+        data-testid="sidebar-pr-link"
+      >
+        {{ prLabel }}
+      </a>
+      <span
+        v-if="prBase || prHead"
+        class="text-xs truncate"
+        style="color: var(--semantic-text-dim)"
+        :title="`${prBase}...${prHead}`"
+      >
+        {{ prBase }}…{{ prHead }}
+      </span>
+      <span
+        v-if="prFiles.length > 0"
+        class="px-1.5 py-0.5 rounded text-xs font-medium"
+        style="background-color: var(--color-violet); color: var(--color-bg)"
+        data-testid="sidebar-pr-count"
+      >
+        {{ prFiles.length }}
+      </span>
+      <button
+        type="button"
+        class="text-xs px-2 py-1 rounded hover:opacity-70"
+        style="color: var(--semantic-text-dim)"
+        title="Refresh PR diff"
+        data-testid="sidebar-diff-refresh"
+        @click="onRefreshClick"
+      >
+        ↻
+      </button>
+    </div>
+    <div
+      v-else
       class="flex items-center gap-2 px-3 h-10 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
@@ -265,6 +380,93 @@ defineExpose({ loadGitStatus, loadDiff, changeCount })
     </div>
 
     <div class="flex-1 overflow-y-auto min-h-0">
+      <template v-if="isPrMode">
+        <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
+          <svg
+            class="animate-spin w-5 h-5"
+            style="color: var(--color-aqua)"
+            viewBox="0 0 24 24"
+            fill="none"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+            />
+          </svg>
+        </div>
+        <div
+          v-else-if="prError"
+          class="flex flex-col items-center justify-center p-4 text-center"
+        >
+          <span class="text-2xl mb-2">⚠️</span>
+          <p class="text-xs" style="color: var(--semantic-error)">{{ prError }}</p>
+          <button
+            type="button"
+            class="mt-3 px-3 py-1.5 text-sm rounded"
+            style="background: var(--color-green); color: var(--color-bg)"
+            data-testid="sidebar-pr-retry"
+            @click="loadPrDiff"
+          >
+            Retry
+          </button>
+        </div>
+        <div
+          v-else-if="prFiles.length === 0"
+          class="flex flex-col items-center justify-center p-4 text-center"
+        >
+          <span class="text-3xl mb-3">🔀</span>
+          <p class="text-xs" style="color: var(--semantic-text-dim)">No PR changes found</p>
+        </div>
+        <template v-else>
+          <div
+            v-if="prTruncated"
+            class="px-3 py-1 text-xs"
+            style="color: var(--semantic-text-dim)"
+          >
+            Diff truncated at 1MB — showing first files
+          </div>
+          <div class="py-1">
+            <div
+              class="px-3 py-1 text-xs font-semibold"
+              style="color: var(--color-violet)"
+            >
+              PR files ({{ prFiles.length }})
+            </div>
+            <div
+              v-for="file in prFiles"
+              :key="'pr-' + file.path"
+              class="flex items-center gap-2 px-3 py-1.5 cursor-pointer hover:opacity-80"
+              :style="{
+                backgroundColor:
+                  selectedPath === file.path
+                    ? 'var(--semantic-active-bg)'
+                    : 'transparent',
+              }"
+              :data-testid="`sidebar-pr-file-${file.path}`"
+              @click="selectPrFile(file)"
+            >
+              <span class="text-xs">{{ prStatusIcon[file.status] ?? '📄' }}</span>
+              <span
+                class="text-xs truncate flex-1"
+                style="color: var(--semantic-text)"
+                :title="file.path"
+              >
+                {{ file.path }}
+              </span>
+            </div>
+          </div>
+        </template>
+      </template>
+      <template v-else>
       <div v-if="isLoadingGit" class="flex items-center justify-center py-8">
         <svg
           class="animate-spin w-5 h-5"
@@ -432,186 +634,188 @@ defineExpose({ loadGitStatus, loadDiff, changeCount })
           </div>
         </div>
 
-        <div v-if="selectedPath" class="mt-2" style="border-top: 1px solid var(--color-border)">
-          <div class="flex items-center gap-2 px-3 py-2" style="background: var(--color-bg-m2)">
-            <span
-              class="text-xs font-medium truncate flex-1"
-              style="color: var(--semantic-text)"
-              :title="selectedPath"
-              data-testid="sidebar-diff-selected"
-            >
-              {{ selectedPath }}
-            </span>
-            <span
-              v-if="selectedStaged"
-              class="text-xs px-1.5 py-0.5 rounded"
-              style="background: rgba(135, 169, 135, 0.15); color: var(--color-green)"
-            >
-              Staged
-            </span>
-            <span class="text-xs font-mono" style="color: var(--color-green)">
-              +{{ diffAdded }}
-            </span>
-            <span class="text-xs font-mono" style="color: var(--color-red)">
-              -{{ diffRemoved }}
-            </span>
-            <button
-              type="button"
-              class="px-2 py-1 text-xs rounded"
-              :style="{
-                backgroundColor: wordWrap ? 'var(--semantic-active-bg)' : 'transparent',
-                color: wordWrap ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
-              }"
-              title="Toggle word wrap"
-              @click="wordWrap = !wordWrap"
-            >
-              Wrap
-            </button>
-          </div>
 
-          <div v-if="diffLoading" class="flex items-center justify-center py-6">
-            <svg
-              class="animate-spin w-5 h-5"
-              style="color: var(--color-aqua)"
-              viewBox="0 0 24 24"
-              fill="none"
-            >
-              <circle
-                class="opacity-25"
-                cx="12"
-                cy="12"
-                r="10"
-                stroke="currentColor"
-                stroke-width="4"
-              />
-              <path
-                class="opacity-75"
-                fill="currentColor"
-                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              />
-            </svg>
-          </div>
-
-          <div v-else-if="diffError" class="flex flex-col items-center justify-center p-4">
-            <span class="text-2xl mb-2">⚠️</span>
-            <p class="text-xs" style="color: var(--semantic-error)">{{ diffError }}</p>
-            <button
-              type="button"
-              class="mt-3 px-3 py-1.5 text-sm rounded"
-              style="background: var(--color-green); color: var(--color-bg)"
-              @click="loadDiff"
-            >
-              Retry
-            </button>
-          </div>
-
-          <div
-            v-else-if="diffLines.length === 0"
-            class="flex flex-col items-center justify-center p-4"
-          >
-            <span class="text-2xl mb-2">📄</span>
-            <p class="text-xs" style="color: var(--semantic-text-dim)">No changes detected</p>
-          </div>
-
-          <div
-            v-else
-            class="overflow-auto"
-            :class="{ 'wrap-on': wordWrap }"
-            :style="{
-              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-              maxHeight: '40vh',
-            }"
-          >
-            <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
-              <tbody>
-                <template v-for="(line, idx) in diffLines" :key="idx">
-                  <tr v-if="line.type === 'hunk'">
-                    <td
-                      colspan="3"
-                      class="px-3 py-1"
-                      style="background: rgba(139, 164, 176, 0.1); color: var(--color-blue)"
-                    >
-                      {{ line.content }}
-                    </td>
-                  </tr>
-                  <tr
-                    v-else-if="line.type === 'add'"
-                    style="cursor: pointer"
-                    @click="openMiniChat($event, line)"
-                  >
-                    <td
-                      class="w-10 px-2 text-right select-none"
-                      style="color: var(--semantic-text-dim); user-select: none"
-                    >
-                      {{ line.newLineNum || '' }}
-                    </td>
-                    <td
-                      class="w-10 px-2 text-right select-none"
-                      style="color: var(--semantic-text-dim); user-select: none"
-                    ></td>
-                    <td
-                      class="px-2"
-                      style="
-                        border-left: 3px solid var(--color-green);
-                        background: rgba(135, 169, 135, 0.15);
-                        color: var(--semantic-text);
-                      "
-                    >
-                      <span style="color: var(--color-green); font-weight: bold">+</span>
-                      <span v-html="escapeDiffHtml(line.content)"></span>
-                    </td>
-                  </tr>
-                  <tr
-                    v-else-if="line.type === 'remove'"
-                    style="cursor: pointer"
-                    @click="openMiniChat($event, line)"
-                  >
-                    <td
-                      class="w-10 px-2 text-right select-none"
-                      style="color: var(--semantic-text-dim); user-select: none"
-                    >
-                      {{ line.oldLineNum || '' }}
-                    </td>
-                    <td
-                      class="w-10 px-2 text-right select-none"
-                      style="color: var(--semantic-text-dim); user-select: none"
-                    ></td>
-                    <td
-                      class="px-2"
-                      style="
-                        border-left: 3px solid var(--color-red);
-                        background: rgba(169, 135, 135, 0.15);
-                        color: var(--semantic-text);
-                      "
-                    >
-                      <span style="color: var(--color-red); font-weight: bold">−</span>
-                      <span v-html="escapeDiffHtml(line.content)"></span>
-                    </td>
-                  </tr>
-                  <tr v-else-if="line.type === 'context'">
-                    <td
-                      class="w-10 px-2 text-right select-none"
-                      style="color: var(--semantic-text-dim); user-select: none"
-                    >
-                      {{ line.oldLineNum || '' }}
-                    </td>
-                    <td
-                      class="w-10 px-2 text-right select-none"
-                      style="color: var(--semantic-text-dim); user-select: none"
-                    >
-                      {{ line.newLineNum || '' }}
-                    </td>
-                    <td class="px-2" style="color: var(--semantic-text-dim)">
-                      <span>&nbsp;</span>
-                      <span v-html="escapeDiffHtml(line.content)"></span>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-        </div>
       </template>
+      </template>
+      <div v-if="selectedPath" class="mt-2" style="border-top: 1px solid var(--color-border)">
+        <div class="flex items-center gap-2 px-3 py-2" style="background: var(--color-bg-m2)">
+          <span
+            class="text-xs font-medium truncate flex-1"
+            style="color: var(--semantic-text)"
+            :title="selectedPath"
+            data-testid="sidebar-diff-selected"
+          >
+            {{ selectedPath }}
+          </span>
+          <span
+            v-if="selectedStaged"
+            class="text-xs px-1.5 py-0.5 rounded"
+            style="background: rgba(135, 169, 135, 0.15); color: var(--color-green)"
+          >
+            Staged
+          </span>
+          <span class="text-xs font-mono" style="color: var(--color-green)">
+            +{{ diffAdded }}
+          </span>
+          <span class="text-xs font-mono" style="color: var(--color-red)">
+            -{{ diffRemoved }}
+          </span>
+          <button
+            type="button"
+            class="px-2 py-1 text-xs rounded"
+            :style="{
+              backgroundColor: wordWrap ? 'var(--semantic-active-bg)' : 'transparent',
+              color: wordWrap ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
+            }"
+            title="Toggle word wrap"
+            @click="wordWrap = !wordWrap"
+          >
+            Wrap
+          </button>
+        </div>
+
+        <div v-if="diffLoading" class="flex items-center justify-center py-6">
+          <svg
+            class="animate-spin w-5 h-5"
+            style="color: var(--color-aqua)"
+            viewBox="0 0 24 24"
+            fill="none"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+            />
+          </svg>
+        </div>
+
+        <div v-else-if="diffError" class="flex flex-col items-center justify-center p-4">
+          <span class="text-2xl mb-2">⚠️</span>
+          <p class="text-xs" style="color: var(--semantic-error)">{{ diffError }}</p>
+          <button
+            type="button"
+            class="mt-3 px-3 py-1.5 text-sm rounded"
+            style="background: var(--color-green); color: var(--color-bg)"
+            @click="loadDiff"
+          >
+            Retry
+          </button>
+        </div>
+
+        <div
+          v-else-if="diffLines.length === 0"
+          class="flex flex-col items-center justify-center p-4"
+        >
+          <span class="text-2xl mb-2">📄</span>
+          <p class="text-xs" style="color: var(--semantic-text-dim)">No changes detected</p>
+        </div>
+
+        <div
+          v-else
+          class="overflow-auto"
+          :class="{ 'wrap-on': wordWrap }"
+          :style="{
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            maxHeight: '40vh',
+          }"
+        >
+          <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
+            <tbody>
+              <template v-for="(line, idx) in diffLines" :key="idx">
+                <tr v-if="line.type === 'hunk'">
+                  <td
+                    colspan="3"
+                    class="px-3 py-1"
+                    style="background: rgba(139, 164, 176, 0.1); color: var(--color-blue)"
+                  >
+                    {{ line.content }}
+                  </td>
+                </tr>
+                <tr
+                  v-else-if="line.type === 'add'"
+                  style="cursor: pointer"
+                  @click="openMiniChat($event, line)"
+                >
+                  <td
+                    class="w-10 px-2 text-right select-none"
+                    style="color: var(--semantic-text-dim); user-select: none"
+                  >
+                    {{ line.newLineNum || '' }}
+                  </td>
+                  <td
+                    class="w-10 px-2 text-right select-none"
+                    style="color: var(--semantic-text-dim); user-select: none"
+                  ></td>
+                  <td
+                    class="px-2"
+                    style="
+                      border-left: 3px solid var(--color-green);
+                      background: rgba(135, 169, 135, 0.15);
+                      color: var(--semantic-text);
+                    "
+                  >
+                    <span style="color: var(--color-green); font-weight: bold">+</span>
+                    <span v-html="escapeDiffHtml(line.content)"></span>
+                  </td>
+                </tr>
+                <tr
+                  v-else-if="line.type === 'remove'"
+                  style="cursor: pointer"
+                  @click="openMiniChat($event, line)"
+                >
+                  <td
+                    class="w-10 px-2 text-right select-none"
+                    style="color: var(--semantic-text-dim); user-select: none"
+                  >
+                    {{ line.oldLineNum || '' }}
+                  </td>
+                  <td
+                    class="w-10 px-2 text-right select-none"
+                    style="color: var(--semantic-text-dim); user-select: none"
+                  ></td>
+                  <td
+                    class="px-2"
+                    style="
+                      border-left: 3px solid var(--color-red);
+                      background: rgba(169, 135, 135, 0.15);
+                      color: var(--semantic-text);
+                    "
+                  >
+                    <span style="color: var(--color-red); font-weight: bold">−</span>
+                    <span v-html="escapeDiffHtml(line.content)"></span>
+                  </td>
+                </tr>
+                <tr v-else-if="line.type === 'context'">
+                  <td
+                    class="w-10 px-2 text-right select-none"
+                    style="color: var(--semantic-text-dim); user-select: none"
+                  >
+                    {{ line.oldLineNum || '' }}
+                  </td>
+                  <td
+                    class="w-10 px-2 text-right select-none"
+                    style="color: var(--semantic-text-dim); user-select: none"
+                  >
+                    {{ line.newLineNum || '' }}
+                  </td>
+                  <td class="px-2" style="color: var(--semantic-text-dim)">
+                    <span>&nbsp;</span>
+                    <span v-html="escapeDiffHtml(line.content)"></span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <Teleport to="body">

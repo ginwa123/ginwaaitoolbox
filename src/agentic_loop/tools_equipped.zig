@@ -21,6 +21,7 @@ const list_agents_mod = nalarcore.list_agents;
 const add_skill_mod = nalarcore.skill_tools;
 const edit_skill_mod = nalarcore.skill_tools;
 const set_git_worktree_mod = nalarcore.set_git_worktree;
+const set_pull_request_mod = nalarcore.set_pull_request;
 const kanban_list_mod = nalarcore.kanban_list;
 const kanban_move_task_mod = nalarcore.kanban_move_task;
 const set_design_page_mod = nalarcore.set_design_page;
@@ -101,6 +102,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         list_directory_mod.list_directory_tool,
         generate_image_mod.generate_image_tool,
         set_git_worktree_mod.set_git_worktree_tool,
+        set_pull_request_mod.set_pull_request_tool,
         show_preview_mod.show_preview_tool,
         present_files_mod.present_files_tool,
 
@@ -202,6 +204,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 
         // === GIT WORKTREE BINDING ===
         .{ .name = "set_git_worktree", .exec = tools.execSetGitWorktree, .tool_def = set_git_worktree_mod.set_git_worktree_tool },
+        .{ .name = "set_pull_request", .exec = tools.execSetPullRequest, .tool_def = set_pull_request_mod.set_pull_request_tool },
 
         // === KANBAN TOOLS ===
         // Both tools read directly from the DB (kanban_model.listColumns

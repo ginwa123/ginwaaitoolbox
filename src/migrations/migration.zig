@@ -1977,6 +1977,7 @@ pub const allMigrations: []const Migration = &.{
     // Task: task_1789032258828_0.
     .{ .version = Migration084ReplaceRoutinesWithWorkspaceRoutines.version, .name = Migration084ReplaceRoutinesWithWorkspaceRoutines.name, .up = Migration084ReplaceRoutinesWithWorkspaceRoutines.up },
     .{ .version = Migration085AddSessionProgressiveTool.version, .name = Migration085AddSessionProgressiveTool.name, .up = Migration085AddSessionProgressiveTool.up },
+    .{ .version = Migration086AddSessionPrUrl.version, .name = Migration086AddSessionPrUrl.name, .up = Migration086AddSessionPrUrl.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4714,6 +4715,21 @@ pub const Migration085AddSessionProgressiveTool = struct {
     }
 };
 
+pub const Migration086AddSessionPrUrl = struct {
+    pub const version: u32 = 86;
+    pub const name = "add_session_pr_url";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Attached-PR binding for the ChatView right panel (set_pull_request
+        // agent tool). pr_url holds the normalized PR/MR URL ("" = unset);
+        // pr_provider holds the effective provider resolved at write time
+        // ("github" | "gitlab" | "generic") so reads stay deterministic on
+        // self-hosted forges where host-based detection would misroute.
+        try addColumnIfMissing(db, allocator, "sessions", "pr_url", "pr_url TEXT");
+        try addColumnIfMissing(db, allocator, "sessions", "pr_provider", "pr_provider TEXT");
+    }
+};
+
 // ============================================================================
 // Migration 083 — llm_history reasoning metadata — inline tests
 // ============================================================================
@@ -5274,4 +5290,87 @@ test "Migration085 is registered in allMigrations" {
         if (m.version == Migration085AddSessionProgressiveTool.version) return;
     }
     return error.Migration085NotRegistered;
+}
+
+// ============================================================================
+// Migration 086 — sessions.pr_url + pr_provider — inline tests
+// ============================================================================
+
+test "Migration086 adds pr_url + pr_provider columns to sessions" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Minimal pre-086 sessions shape.
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &.{});
+
+    try Migration086AddSessionPrUrl.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "sessions");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var has_url = false;
+    var has_provider = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "pr_url")) has_url = true;
+        if (std.mem.eql(u8, c, "pr_provider")) has_provider = true;
+    }
+    try testing.expect(has_url);
+    try testing.expect(has_provider);
+
+    // Both nullable TEXT (notnull == 0).
+    var q = try ctx.db.query(alloc,
+        "SELECT name, type, \"notnull\" FROM pragma_table_info('sessions') WHERE name IN ('pr_url', 'pr_provider') ORDER BY name",
+        &.{});
+    defer q.deinit();
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("TEXT", row.values[1]);
+        try testing.expectEqualStrings("0", row.values[2]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), idx);
+}
+
+test "Migration086 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &.{});
+
+    try Migration086AddSessionPrUrl.up(&ctx.db, alloc);
+    try Migration086AddSessionPrUrl.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('pr_url', 'pr_provider')",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
+}
+
+test "Migration086 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration086AddSessionPrUrl.version) return;
+    }
+    return error.Migration086NotRegistered;
 }

@@ -115,6 +115,48 @@ export function parseUnifiedDiff(diffText: string): ParsedDiff {
   return { lines: parsed, added, removed }
 }
 
+export interface SplitDiffFile {
+  /** Display path (b/ side, or a/ side for deletions). */
+  path: string
+  /** 'M' | 'A' | 'D' | 'R' derived from the file header. */
+  status: string
+  /** Raw unified-diff chunk for this file (includes its headers). */
+  text: string
+}
+
+// Split a multi-file unified diff (e.g. `gh pr diff` output) into
+// per-file chunks at `diff --git` boundaries. Pure: no IO, no Vue.
+// Status comes from the header lines: `new file mode` → A,
+// `deleted file mode` → D, `similarity index`/`rename from` → R,
+// else M. Unparseable leading text (e.g. empty diff) yields [].
+export function splitDiffByFile(diffText: string): SplitDiffFile[] {
+  const out: SplitDiffFile[] = []
+  const lines = diffText.split('\n')
+  let start = -1
+  const push = (end: number) => {
+    if (start < 0) return
+    const chunk = lines.slice(start, end).join('\n')
+    const header = lines.slice(start, Math.min(start + 8, end)).join('\n')
+    let status = 'M'
+    if (header.includes('new file mode')) status = 'A'
+    else if (header.includes('deleted file mode')) status = 'D'
+    else if (header.includes('rename from') || header.includes('similarity index')) status = 'R'
+    const first = lines[start] ?? ''
+    const m = first.match(/^diff --git a\/(.*) b\/(.*)$/)
+    const path = (m?.[2] ?? m?.[1] ?? '').replace(/\/$/, '') || 'unknown'
+    out.push({ path, status, text: chunk })
+    start = -1
+  }
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]?.startsWith('diff --git ')) {
+      push(i)
+      start = i
+    }
+  }
+  push(lines.length)
+  return out.filter((f) => f.text.trim().length > 0)
+}
+
 export function escapeDiffHtml(line: string): string {
   if (!line) return '&nbsp;'
   return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

@@ -223,6 +223,7 @@ pub const gitUnstageHandler = @import("git_file_stage.zig").gitUnstageHandler;
 pub const gitWorktreeInfoHandler = @import("git_worktree_info.zig").gitWorktreeInfoHandler;
 pub const gitBranchesListHandler = @import("git_branches_list.zig").gitBranchesListHandler;
 pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
+pub const gitPrDiffHandler = @import("git_pr_diff.zig").gitPrDiffHandler;
 
 // Queue messages handlers
 pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessagesGetHandler;

@@ -111,6 +111,11 @@ pub const SessionBroadcastInfo = struct {
     agent: []const u8,
     selected_profile_model: []const u8,
     git_worktree_cwd: []const u8,
+    /// Migration 086 — attached PR URL ("" = none). Defaults keep older
+    /// literal sites compiling; populated by getSessionsForBroadcast.
+    pr_url: []const u8 = "",
+    /// Migration 086 — effective PR provider. Same defaulting rationale.
+    pr_provider: []const u8 = "",
     /// Migration 063 — opt-in flag for unattended mode.
     is_auto_retry_until_stop: []const u8,
     /// Migration 063 — most recent finish_reason the workflow observed.
@@ -549,6 +554,13 @@ pub const SessionMessageResponse = struct {
     /// worktree's branch/path in the chat status bar from the moment
     /// the chat loads (not just after the user re-fetches).
     git_worktree_cwd: ?[]const u8 = null,
+    /// Attached PR URL (NULL/empty when no PR is bound). Mirrors
+    /// `sessions.pr_url`. Added for the set_pull_request tool so the
+    /// ChatView right panel can switch to PR-changes mode.
+    pr_url: ?[]const u8 = null,
+    /// Effective PR provider (NULL/empty when no PR is bound). Mirrors
+    /// `sessions.pr_provider`.
+    pr_provider: ?[]const u8 = null,
     /// Session's selected profile name (NULL/empty when no profile is
     /// selected). Mirrors `sessions.selected_profile_model`. Added by
     /// the 2026-08-07-profile-persist-read fix so the frontend can
@@ -636,7 +648,7 @@ pub fn getSessionMessagesSorted(
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
-            \\       COALESCE(s.selected_profile_model, '')
+            \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -655,7 +667,7 @@ pub fn getSessionMessagesSorted(
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
-            \\       COALESCE(s.selected_profile_model, '')
+            \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -675,6 +687,8 @@ pub fn getSessionMessagesSorted(
     // Get cwd from first row (same for all rows since we filter by session_id)
     var cwd: ?[]u8 = null;
     var git_worktree_cwd: ?[]u8 = null;
+    var pr_url: ?[]u8 = null;
+    var pr_provider: ?[]u8 = null;
     // 2026-08-07-profile-persist-read: also extract
     // `selected_profile_model` from the joined sessions row so the
     // frontend's profile chip survives a page refresh.
@@ -699,6 +713,20 @@ pub fn getSessionMessagesSorted(
             const wt_val = row.values[10];
             if (wt_val.len > 0) {
                 git_worktree_cwd = try allocator.dupe(u8, wt_val);
+            }
+        }
+        // Column indices 20/21 appended after selected_profile_model
+        // at 19 (see SELECT above). Same first-row-only pattern.
+        if (pr_url == null) {
+            const pr_val = row.values[20];
+            if (pr_val.len > 0) {
+                pr_url = try allocator.dupe(u8, pr_val);
+            }
+        }
+        if (pr_provider == null) {
+            const prp_val = row.values[21];
+            if (prp_val.len > 0) {
+                pr_provider = try allocator.dupe(u8, prp_val);
             }
         }
         if (selected_profile_model == null) {
@@ -777,6 +805,8 @@ pub fn getSessionMessagesSorted(
         .next_cursor = next_cursor,
         .cwd = cwd,
         .git_worktree_cwd = git_worktree_cwd,
+        .pr_url = pr_url,
+        .pr_provider = pr_provider,
         .selected_profile_model = selected_profile_model,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = blk: {
@@ -850,6 +880,40 @@ pub fn getSessionProfileName(
         return allocator.dupe(u8, row.values[0]);
     }
     return "";
+}
+
+/// Attached-PR binding for one session, read straight from the
+/// `sessions` row. Same graceful-degrade contract as
+/// `getSessionProfileName`: "" when NULL/missing/query fails. Used by
+/// `sessionMessagesHandler` as the zero-message fallback — the JOIN in
+/// `getSessionMessagesSorted` yields no rows before the first message,
+/// so without this the panel would never see a PR bound to a fresh
+/// chat (same race the 2026-08-24 profile fix closed).
+pub const SessionPrFields = struct {
+    pr_url: []const u8,
+    pr_provider: []const u8,
+};
+
+pub fn getSessionPrFields(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !SessionPrFields {
+    var rows = try db.query(
+        allocator,
+        "SELECT COALESCE(pr_url, ''), COALESCE(pr_provider, '') FROM sessions WHERE id = ?",
+        &.{session_id},
+    );
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        return .{
+            .pr_url = try allocator.dupe(u8, row.values[0]),
+            .pr_provider = try allocator.dupe(u8, row.values[1]),
+        };
+    }
+    return .{ .pr_url = "", .pr_provider = "" };
 }
 
 /// Resolve the effective context window for a session view. Pure
@@ -3081,6 +3145,9 @@ pub const SessionTableInfo = struct {
     updated_at: []u8,
     selected_profile_model: []u8,
     git_worktree_cwd: []u8,
+    /// Migration 086 — attached PR URL + effective provider ("" = unset).
+    pr_url: []u8,
+    pr_provider: []u8,
     /// Migration 063 — opt-in flag for unattended mode. Stored as text
     /// ("0" / "1") to match `is_auto_retry_until_stop`'s INTEGER column
     /// convention used by the rest of the codebase.
@@ -3098,6 +3165,8 @@ pub const SessionTableInfo = struct {
         allocator.free(self.updated_at);
         allocator.free(self.selected_profile_model);
         allocator.free(self.git_worktree_cwd);
+        allocator.free(self.pr_url);
+        allocator.free(self.pr_provider);
         allocator.free(self.is_auto_retry_until_stop);
         allocator.free(self.last_finish_reason);
     }
@@ -3134,6 +3203,8 @@ pub fn create_session(
         .updated_at = "",
         .selected_profile_model = "",
         .git_worktree_cwd = "",
+        .pr_url = "",
+        .pr_provider = "",
         .is_auto_retry_until_stop = flag,
         .last_finish_reason = "",
     }) catch {};
@@ -3155,6 +3226,8 @@ pub fn create_session(
         .updated_at = try allocator.dupe(u8, ""),
         .selected_profile_model = try allocator.dupe(u8, ""),
         .git_worktree_cwd = try allocator.dupe(u8, ""),
+        .pr_url = try allocator.dupe(u8, ""),
+        .pr_provider = try allocator.dupe(u8, ""),
         // Migration 063 — populated with the just-bound value for the
         // flag; last_finish_reason is empty until the workflow writes
         // the first value (Chunk 2 Task 2.1).
@@ -3201,7 +3274,8 @@ pub fn getSession(
         \\SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''),
         \\       COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''),
         \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''),
-        \\       COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, '')
+        \\       COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''),
+        \\       COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
         \\FROM sessions s WHERE s.id = ?
     ;
 
@@ -3218,6 +3292,8 @@ pub fn getSession(
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .selected_profile_model = try allocator.dupe(u8, row.values[6]),
             .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
+            .pr_url = try allocator.dupe(u8, row.values[10]),
+            .pr_provider = try allocator.dupe(u8, row.values[11]),
             // Migration 063 — row.values[8] = is_auto_retry_until_stop
             // (COALESCE'd to '0'); row.values[9] = last_finish_reason
             // (COALESCE'd to '').
@@ -3255,6 +3331,8 @@ pub fn update_session_status(
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
             .git_worktree_cwd = s.git_worktree_cwd,
+            .pr_url = s.pr_url,
+            .pr_provider = s.pr_provider,
         }) catch {};
     }
 }
@@ -3283,6 +3361,8 @@ pub fn updateSessionName(
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
             .git_worktree_cwd = s.git_worktree_cwd,
+            .pr_url = s.pr_url,
+            .pr_provider = s.pr_provider,
         }) catch {};
     }
 }
@@ -3356,6 +3436,8 @@ pub fn updateSessionAutoRetryUntilStop(
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
             .git_worktree_cwd = s.git_worktree_cwd,
+            .pr_url = s.pr_url,
+            .pr_provider = s.pr_provider,
             .is_auto_retry_until_stop = s.is_auto_retry_until_stop,
             .last_finish_reason = s.last_finish_reason,
         }) catch {};
@@ -3581,6 +3663,8 @@ pub fn updateSessionSelectedProfileModel(
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
             .git_worktree_cwd = s.git_worktree_cwd,
+            .pr_url = s.pr_url,
+            .pr_provider = s.pr_provider,
         }) catch {};
     }
 }
@@ -3611,6 +3695,43 @@ pub fn updateSessionGitWorktreeCwd(
             .updated_at = s.updated_at,
             .selected_profile_model = s.selected_profile_model,
             .git_worktree_cwd = s.git_worktree_cwd,
+            .pr_url = s.pr_url,
+            .pr_provider = s.pr_provider,
+        }) catch {};
+    }
+}
+
+/// Update session attached-PR binding. Pass nulls (or empty strings) to
+/// clear. Mirrors updateSessionGitWorktreeCwd: persist, re-read, and
+/// broadcast a session.updated SSE event so subscribers see the new
+/// binding without a refetch.
+pub fn updateSessionPrUrl(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    pr_url: ?[]const u8,
+    pr_provider: ?[]const u8,
+) !void {
+    const effective_url: []const u8 = pr_url orelse "";
+    const effective_provider: []const u8 = pr_provider orelse "";
+    const sql = "UPDATE sessions SET pr_url = ?, pr_provider = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+    try db.exec(allocator, sql, &.{ effective_url, effective_provider, id });
+
+    const session = getSession(allocator, db, id) catch null;
+    if (session) |s| {
+        defer s.deinit(allocator);
+        on_event_sent.onEventSendSessions(allocator, .{
+            .action = "updated",
+            .id = s.id,
+            .name = s.name,
+            .status = s.status,
+            .cwd = s.cwd,
+            .created_at = s.created_at,
+            .updated_at = s.updated_at,
+            .selected_profile_model = s.selected_profile_model,
+            .git_worktree_cwd = s.git_worktree_cwd,
+            .pr_url = s.pr_url,
+            .pr_provider = s.pr_provider,
         }) catch {};
     }
 }
@@ -3635,6 +3756,8 @@ pub fn delete_session(
         .updated_at = "",
         .selected_profile_model = "",
         .git_worktree_cwd = "",
+        .pr_url = "",
+        .pr_provider = "",
     }) catch {};
 }
 
@@ -5489,7 +5612,7 @@ pub fn getSessionsForBroadcast(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]SessionBroadcastInfo {
-    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
+    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
 
     var rows = db.query(allocator, sql, &[_][]const u8{}) catch return &[_]SessionBroadcastInfo{};
     defer rows.deinit();
@@ -5508,6 +5631,8 @@ pub fn getSessionsForBroadcast(
             .agent = try allocator.dupe(u8, row.values[6]),
             .selected_profile_model = try allocator.dupe(u8, row.values[7]),
             .git_worktree_cwd = try allocator.dupe(u8, row.values[8]),
+            .pr_url = try allocator.dupe(u8, row.values[9]),
+            .pr_provider = try allocator.dupe(u8, row.values[10]),
         };
         try sessions.append(allocator, session);
     }
@@ -5526,6 +5651,8 @@ pub fn freeSessionsForBroadcast(allocator: std.mem.Allocator, sessions: []Sessio
         allocator.free(s.updated_at);
         allocator.free(s.agent);
         allocator.free(s.git_worktree_cwd);
+        allocator.free(s.pr_url);
+        allocator.free(s.pr_provider);
     }
     allocator.free(sessions);
 }
@@ -6780,7 +6907,9 @@ fn sessionUpdateSetupDb() !TestCtx {
         \\    selected_profile_model TEXT,
         \\    git_worktree_cwd TEXT,
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
-        \\    last_finish_reason TEXT
+        \\    last_finish_reason TEXT,
+        \\    pr_url TEXT,
+        \\    pr_provider TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded, .alloc = alloc };

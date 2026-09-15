@@ -8,6 +8,10 @@ const props = defineProps<{
   width: number
   minWidth?: number
   maxWidth?: number
+  /** Attached PR URL — switches the panel to PR-changes mode. */
+  prUrl?: string
+  /** Effective provider for the attached PR. */
+  prProvider?: string
 }>()
 
 const emit = defineEmits<{
@@ -94,6 +98,8 @@ defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
       <SidebarDiffPanel
         ref="panelRef"
         :cwd="cwd"
+        :pr-url="prUrl"
+        :pr-provider="prProvider"
         @submit-review="(msg) => emit('submit-review', msg)"
         @refresh="() => emit('refresh')"
       />

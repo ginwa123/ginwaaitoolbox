@@ -58,7 +58,9 @@ fn setupDb() !TestCtx {
         \\    selected_profile_model TEXT,
         \\    git_worktree_cwd TEXT,
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
-        \\    last_finish_reason TEXT
+        \\    last_finish_reason TEXT,
+        \\    pr_url TEXT,
+        \\    pr_provider TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded };
