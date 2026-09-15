@@ -203,6 +203,17 @@ export function decodePathParam(param: string, candidates: string[]): string | n
   }
 }
 
+// Scroll the stacked section for a path into view. Returns false when
+// the section isn't mounted (list not loaded yet) — callers treat that
+// as "nothing to scroll to", never a throw.
+export function scrollToSectionElement(path: string): boolean {
+  if (typeof document === 'undefined') return false
+  const el = document.getElementById(centerDiffSectionId(path))
+  if (!el) return false
+  el.scrollIntoView({ block: 'start' })
+  return true
+}
+
 export function escapeDiffHtml(line: string): string {
   if (!line) return '&nbsp;'
   return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')

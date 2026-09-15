@@ -76,14 +76,18 @@ import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
-import { centerDiffSectionId } from './chat_right_sidebar/parseUnifiedDiff'
+import {
+  centerDiffSectionId,
+  encodePathParam,
+  scrollToSectionElement,
+} from './chat_right_sidebar/parseUnifiedDiff'
 import type { DiffSelection } from './chat_right_sidebar/parseUnifiedDiff'
 import { useChatRightSidebar } from './chat_right_sidebar/useChatRightSidebar'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
 import type { AgentErrorEntry } from '../../stores/agentError'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import CompactionCard from '../preview/CompactionCard.vue'
 // 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
@@ -463,6 +467,7 @@ const PAGE_SIZE = 100
 //      the main chat view to the sub-agent's session.
 const nav = useNavigationStore()
 const router = useRouter()
+const route = useRoute()
 
 // Chat-owned git-diff sidebar (git-diff-only scope). ChatView passes
 // its already-owned effectiveCwd + sessionId down, so each chat shows
@@ -504,11 +509,9 @@ const centerDiffScrollRef = ref<HTMLElement | null>(null)
 const showCenterDiff = computed(() => centerDiff.value !== null || centerFiles.value.length > 0)
 
 function scrollToCenterFile(path: string) {
-  // Click on an already-loaded file scrolls instead of refetching —
-  // the section id derives from the path (base64url, no padding).
+  // Click on an already-loaded file scrolls instead of refetching.
   currentPath.value = path
-  const el = document.getElementById(centerDiffSectionId(path))
-  el?.scrollIntoView({ block: 'start' })
+  scrollToSectionElement(path)
 }
 
 function onChatSidebarShowDiff(selection: DiffSelection) {
@@ -540,7 +543,66 @@ function onCenterDiffBack() {
   centerDiff.value = null
   centerFiles.value = []
   currentPath.value = null
+  stopCenterSpy()
+  // Back exits the diff view: drop the param so reload lands on chat,
+  // not a stale file. The currentPath watcher skips while hidden, so
+  // clear it explicitly here (replace, not push).
+  syncDiffParam(null)
 }
+
+// Scroll-spy: the most-visible section (middle band of the center
+// scroll container) owns currentPath, which syncs to ?diff= below.
+let centerSpy: IntersectionObserver | null = null
+
+function startCenterSpy() {
+  stopCenterSpy()
+  const root = centerDiffScrollRef.value
+  if (!root || typeof IntersectionObserver === 'undefined') return
+  centerSpy = new IntersectionObserver(
+    (entries) => {
+      let best: string | null = null
+      let bestRatio = 0
+      for (const entry of entries) {
+        const path = (entry.target as HTMLElement).dataset.path
+        if (!entry.isIntersecting || !path) continue
+        if (entry.intersectionRatio > bestRatio) {
+          bestRatio = entry.intersectionRatio
+          best = path
+        }
+      }
+      if (best) currentPath.value = best
+    },
+    { root, rootMargin: '-40% 0px -55%', threshold: [0, 0.25, 0.5, 0.75, 1] },
+  )
+  for (const el of root.querySelectorAll('[data-testid="center-diff-section"]'))
+    centerSpy.observe(el)
+}
+
+function stopCenterSpy() {
+  centerSpy?.disconnect()
+  centerSpy = null
+}
+
+function syncDiffParam(path: string | null) {
+  const query = { ...route.query }
+  if (path) query.diff = encodePathParam(path)
+  else delete query.diff
+  void router.replace({ path: route.path, query })
+}
+
+watch(currentPath, (path) => {
+  // Replace, not push — scrolling must not spam history entries.
+  if (!showCenterDiff.value) return
+  syncDiffParam(path)
+})
+
+watch(
+  () => centerFiles.value.length,
+  () => {
+    if (centerFiles.value.length === 0) stopCenterSpy()
+    else void nextTick(() => startCenterSpy())
+  },
+)
 
 function onCenterDiffRetry() {
   chatSidebarRef.value?.reloadDiff()
@@ -2987,6 +3049,7 @@ onUnmounted(() => {
   stopGitStatusPoll()
   document.removeEventListener('click', closeOnOutsideClick)
   window.removeEventListener('message', onHtmlFrameResize)
+  stopCenterSpy()
 })
 
 // Load available profiles (called once on mount)

@@ -116,8 +116,7 @@ describe('ChatView stacked center render', () => {
     expect(chatViewSrc).toMatch(/function onChatSidebarShowDiffList\(files: DiffSelection\[\]\)/)
     expect(chatViewSrc).toMatch(/@show-diff-list="onChatSidebarShowDiffList"/)
     expect(chatViewSrc).toMatch(/function scrollToCenterFile\(path: string\)/)
-    expect(chatViewSrc).toMatch(/getElementById\(centerDiffSectionId\(path\)\)/)
-    expect(chatViewSrc).toMatch(/scrollIntoView\(\{ block: 'start' \}\)/)
+    expect(chatViewSrc).toMatch(/scrollToSectionElement\(path\)/)
   })
 
   it('stacks one lazy section per file in a dedicated scroll container', () => {

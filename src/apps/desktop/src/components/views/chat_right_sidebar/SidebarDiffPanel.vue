@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import {
+  decodePathParam,
   parseUnifiedDiff,
   splitDiffByFile,
   type DiffSelection,
@@ -64,6 +65,7 @@ const prError = ref<string | null>(null)
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
 
 const router = useRouter()
+const route = useRoute()
 
 // Right-click "Open file in new tab" for a file row. Position state +
 // dismiss wiring live in useContextMenu; the row payload (file path)
@@ -148,19 +150,18 @@ const loadPrDiff = async () => {
     prTruncated.value = data.truncated
     // Stacked center view: every chunk parses synchronously — no
     // per-file fetch needed, the full diff text is already in hand.
-    emit(
-      'show-diff-list',
-      prFiles.value.map((file) => {
-        const parsed = parseUnifiedDiff(file.text)
-        return {
-          path: file.path,
-          staged: false,
-          lines: parsed.lines,
-          added: parsed.added,
-          removed: parsed.removed,
-        }
-      }),
-    )
+    const list: DiffSelection[] = prFiles.value.map((file) => {
+      const parsed = parseUnifiedDiff(file.text)
+      return {
+        path: file.path,
+        staged: false,
+        lines: parsed.lines,
+        added: parsed.added,
+        removed: parsed.removed,
+      }
+    })
+    emit('show-diff-list', list)
+    restoreFromUrlParam(list, selectRestored)
   } catch (err) {
     console.error('Failed to load PR diff:', err)
     prError.value = 'Failed to load PR diff'
@@ -262,9 +263,7 @@ const loadFullList = async () => {
   const results = await Promise.allSettled(
     targets.map((t) => api.getGitFileDiff(props.cwd, t.path, t.staged)),
   )
-  emit(
-    'show-diff-list',
-    targets.map((t, i) => {
+  const list: DiffSelection[] = targets.map((t, i) => {
       const r = results[i]
       if (r && r.status === 'fulfilled') {
         const parsed = parseUnifiedDiff(r.value.diff_content)
@@ -284,8 +283,31 @@ const loadFullList = async () => {
         removed: 0,
         error: 'Failed to load file diff',
       }
-    }),
-  )
+    })
+  emit('show-diff-list', list)
+  restoreFromUrlParam(list, selectRestored)
+}
+
+// Deep-link restore: on the first list load, a ?diff= param naming a
+// listed file auto-selects it (same payload as a row click). Stale or
+// garbage params are ignored; later refreshes never yank the selection
+// back after the user clicked elsewhere.
+let restoredFromUrl = false
+
+const selectRestored = (file: DiffSelection) => {
+  selectedPath.value = file.path
+  selectedStaged.value = file.staged
+  emit('show-diff', file)
+}
+
+const restoreFromUrlParam = (files: DiffSelection[], select: (file: DiffSelection) => void) => {
+  if (restoredFromUrl) return
+  restoredFromUrl = true
+  const param = route.query.diff
+  if (typeof param !== 'string' || param.length === 0) return
+  const hit = decodePathParam(param, files.map((f) => f.path))
+  const file = hit ? files.find((f) => f.path === hit) : undefined
+  if (file) select(file)
 }
 
 const loadDiff = async () => {
@@ -354,6 +376,7 @@ watch(
   () => [props.cwd, props.prUrl],
   () => {
     selectedPath.value = null
+    restoredFromUrl = false
     if (isPrMode.value) void loadPrDiff()
     else void loadGitStatus()
   },
