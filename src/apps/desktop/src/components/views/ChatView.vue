@@ -618,21 +618,6 @@ function onCenterDiffRetry() {
   chatSidebarRef.value?.reloadDiff()
 }
 
-// A changed cwd invalidates the shown diff (e.g. worktree bound or
-// cleared mid-review) — drop back to chat rather than showing stale
-// hunks. Fires only on actual value change.
-watch(
-  () => effectiveCwd.value,
-  () => {
-    // Stop the spy synchronously before clearing: otherwise the
-    // observer fires during teardown and writes a stale ?diff=.
-    stopCenterSpy()
-    centerDiff.value = null
-    centerFiles.value = []
-    currentPath.value = null
-  },
-)
-
 // Re-read the session's worktree binding from the backend. The binding
 // is created/removed mid-chat by the LLM's set_git_worktree tool, so
 // the mount-time value from loadChatHistory() goes stale — the sidebar
@@ -3123,6 +3108,14 @@ watch(
 watch(
   () => effectiveCwd.value,
   (newCwd) => {
+    // A changed cwd invalidates the shown diff (e.g. worktree bound or
+    // cleared mid-review) — stop the spy synchronously before clearing
+    // so the observer can't fire during teardown and write a stale
+    // ?diff= racing the chat-switch navigation.
+    stopCenterSpy()
+    centerDiff.value = null
+    centerFiles.value = []
+    currentPath.value = null
     if (newCwd) {
       checkGitStatus()
     } else {
