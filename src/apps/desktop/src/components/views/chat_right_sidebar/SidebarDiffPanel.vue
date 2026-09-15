@@ -6,6 +6,7 @@ import { openInNewTab } from '../../../helpers/openInNewTab'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
+import GitCommits from '../../git/GitCommits.vue'
 import {
   parseUnifiedDiff,
   splitDiffByFile,
@@ -59,6 +60,8 @@ let loadSeq = 0
 
 const selectedPath = ref<string | null>(null)
 const selectedStaged = ref(false)
+// Read-only history toggle (Changes | Commits) for the non-PR view.
+const showCommits = ref(false)
 
 const changeCount = computed(
   () => stagedFiles.value.length + unstagedFiles.value.length + untrackedFiles.value.length,
@@ -407,6 +410,7 @@ watch(
       }
     }
     selectedPath.value = null
+    showCommits.value = false
     loadedTabs.value.clear()
     void loadTab(activeTab.value, true)
   },
@@ -535,6 +539,16 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
         type="button"
         class="text-xs px-2 py-1 rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
+        :title="showCommits ? 'Show changed files' : 'Show commit history'"
+        data-testid="sidebar-diff-commits-toggle"
+        @click="showCommits = !showCommits"
+      >
+        {{ showCommits ? 'Files' : 'Commits' }}
+      </button>
+      <button
+        type="button"
+        class="text-xs px-2 py-1 rounded hover:opacity-70"
+        style="color: var(--semantic-text-dim)"
         title="Refresh git status"
         data-testid="sidebar-diff-refresh"
         @click="onRefreshClick"
@@ -543,7 +557,10 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
       </button>
     </div>
 
-    <div class="flex-1 overflow-y-auto min-h-0">
+    <div v-if="showCommits && !showPr" class="flex-1 min-h-0">
+      <GitCommits :cwd="cwd" />
+    </div>
+    <div v-else class="flex-1 overflow-y-auto min-h-0">
       <template v-if="showPr">
         <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
           <svg

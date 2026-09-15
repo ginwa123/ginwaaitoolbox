@@ -743,6 +743,56 @@ pub fn makeGitBranchesResponse(allocator: std.mem.Allocator, response: GitBranch
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git commits list types ───────────────────────────────────────────────
+// Wire shape for `GET /api/git/commits?path=<repo>[&limit=100][&skip=0]`.
+// Read-only lazygit-style history: short SHA + author + subject per row,
+// paged with skip/limit. `total_count` is best-effort (`rev-list --count
+// HEAD`, zero when unresolvable).
+pub const GitCommitEntry = struct {
+    sha: []const u8 = "",
+    short_sha: []const u8 = "",
+    author: []const u8 = "",
+    email: []const u8 = "",
+    timestamp: i64 = 0,
+    subject: []const u8 = "",
+    body: []const u8 = "",
+};
+
+pub const GitCommitsResponse = struct {
+    is_git_repo: bool = false,
+    branch: []const u8 = "",
+    total_count: i64 = 0,
+    commits: []const GitCommitEntry = &.{},
+};
+
+pub fn makeGitCommitsResponse(allocator: std.mem.Allocator, response: GitCommitsResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
+// ─── Git commit detail types ──────────────────────────────────────────────
+// Wire shape for `GET /api/git/commit?path=<repo>&sha=<sha>`. Full message
+// plus the touched-file list (`git diff-tree --name-status`); per-file
+// diffs reuse the existing file-diff flow.
+pub const GitCommitFileEntry = struct {
+    status: []const u8 = "",
+    path: []const u8 = "",
+};
+
+pub const GitCommitDetailResponse = struct {
+    sha: []const u8 = "",
+    short_sha: []const u8 = "",
+    author: []const u8 = "",
+    email: []const u8 = "",
+    timestamp: i64 = 0,
+    subject: []const u8 = "",
+    body: []const u8 = "",
+    files: []const GitCommitFileEntry = &.{},
+};
+
+pub fn makeGitCommitDetailResponse(allocator: std.mem.Allocator, response: GitCommitDetailResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // Profile types
 pub const LlmProfileResponse = struct {
     name: []const u8,
