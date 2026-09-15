@@ -1,8 +1,8 @@
 /**
- * Phase 3 deep-link restore (3.4, panel side): on the first list load,
- * a ?diff= param that decodes to a listed path auto-selects that file
- * (instant show-diff, same as a row click). Unknown/stale params are
- * ignored — the list still loads silently.
+ * Refresh lands on chat: the panel never auto-selects from ?diff= on
+ * list load. A reload keeps the param the scroll-spy wrote while the
+ * viewer was open; ChatView strips it on mount while the center is
+ * closed. Row clicks still emit show-diff instantly as before.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -58,7 +58,7 @@ async function mountWithDiff(diff: string | null) {
   return wrapper
 }
 
-describe('SidebarDiffPanel ?diff= restore', () => {
+describe('SidebarDiffPanel ?diff= is ignored on load', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
@@ -67,15 +67,12 @@ describe('SidebarDiffPanel ?diff= restore', () => {
     )
   })
 
-  it('auto-selects the linked file on first list load', async () => {
+  it('does NOT auto-select even when ?diff= names a listed file', async () => {
     const wrapper = await mountWithDiff(encodePathParam('other.txt'))
     // Full list still emitted for the stacked center view...
     expect(wrapper.emitted('show-diff-list')).toHaveLength(1)
-    // ...plus the instant selection for the deep-linked file.
-    const shown = wrapper.emitted('show-diff')
-    expect(shown).toHaveLength(1)
-    expect(shown![0]![0]).toMatchObject({ path: 'other.txt', staged: false })
-    expect((shown![0]![0] as { lines: unknown[] }).lines.length).toBeGreaterThan(0)
+    // ...but no instant selection — refresh lands on chat.
+    expect(wrapper.emitted('show-diff')).toBeUndefined()
   })
 
   it('ignores a param that matches no listed file', async () => {

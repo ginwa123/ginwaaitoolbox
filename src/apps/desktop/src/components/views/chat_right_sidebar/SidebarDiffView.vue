@@ -1,6 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import FileInput from '../../file/FileInput.vue'
+import { computed, ref, watch } from 'vue'
+import DiffCommentBox, {
+  copyTextToClipboard,
+  deleteSavedComment,
+  formatReviewComment,
+  listSavedComments,
+  type DiffCommentSavePayload,
+  type SavedComment,
+} from './DiffCommentBox.vue'
 import { escapeDiffHtml, type ParsedDiffLine } from './parseUnifiedDiff'
 
 /**
@@ -18,7 +25,7 @@ const props = defineProps<{
   staged?: boolean
   loading?: boolean
   error?: string | null
-  /** cwd for the review FileInput. */
+  /** cwd for the review DiffCommentBox. */
   cwd: string
   /** Show the back button (center mode). Panel list mode hides it. */
   showBack?: boolean
@@ -30,6 +37,7 @@ const emit = defineEmits<{
   open: [payload: { path: string; line?: number }]
   retry: []
   'submit-review': [message: string]
+  'comment-saved': [payload: DiffCommentSavePayload]
 }>()
 
 const wordWrap = ref(false)
@@ -54,6 +62,14 @@ const miniChatStyle = computed(() => {
   }
 })
 
+const openBoxAtRange = (start: number, end: number, context: string) => {
+  miniChatFilePath.value = props.path
+  miniChatStartLine.value = start
+  miniChatEndLine.value = end
+  miniChatContent.value = context
+  showMiniChat.value = true
+}
+
 const openMiniChat = (event: MouseEvent, line: ParsedDiffLine) => {
   if (line.type !== 'add' && line.type !== 'remove') return
   event.preventDefault()
@@ -64,18 +80,17 @@ const openMiniChat = (event: MouseEvent, line: ParsedDiffLine) => {
   const endIdx = Math.min(props.lines.length, lineIdx + 4)
   const contextLines = props.lines.slice(startIdx, endIdx)
   if (contextLines.length === 0) return
-  miniChatFilePath.value = props.path
-  miniChatStartLine.value = contextLines[0]!.newLineNum || contextLines[0]!.oldLineNum || 0
+  const start = contextLines[0]!.newLineNum || contextLines[0]!.oldLineNum || 0
   const last = contextLines[contextLines.length - 1]!
-  miniChatEndLine.value = last.newLineNum || last.oldLineNum || 0
-  miniChatContent.value = contextLines
+  const end = last.newLineNum || last.oldLineNum || 0
+  const content = contextLines
     .map((l) => {
       const prefix = l.type === 'add' ? '+' : l.type === 'remove' ? '-' : ' '
       const lineNum = l.newLineNum || l.oldLineNum || ''
       return `${lineNum} ${prefix}${l.content}`
     })
     .join('\n')
-  showMiniChat.value = true
+  openBoxAtRange(start, end, content)
 }
 
 const closeMiniChat = () => {
@@ -86,18 +101,88 @@ const closeMiniChat = () => {
   miniChatEndLine.value = 0
 }
 
-const submitMiniChat = (message: string) => {
-  const lineRange =
-    miniChatStartLine.value === miniChatEndLine.value
-      ? `Line ${miniChatStartLine.value}`
-      : `Lines ${miniChatStartLine.value}-${miniChatEndLine.value}`
-  emit(
-    'submit-review',
-    `## Code Review\n**File:** \`${miniChatFilePath.value}\`\n**${lineRange}**\n\n\`\`\`\n${miniChatContent.value}\n\`\`\`\n\n## Review Comment\n\n${message}`,
-  )
-  closeMiniChat()
+const reviewedVersion = ref(0)
+const savedThreads = computed(() => {
+  void reviewedVersion.value
+  return listSavedComments(props.cwd, props.path)
+})
+
+const threadsAfterRow = computed(() => {
+  const map = new Map<number, SavedComment[]>()
+  for (const thread of savedThreads.value) {
+    let anchor = -1
+    props.lines.forEach((line, idx) => {
+      let n: number | undefined
+      if (line.type === 'add') n = line.newLineNum
+      else if (line.type === 'remove') n = line.oldLineNum
+      else if (line.type === 'context') n = line.newLineNum || line.oldLineNum
+      else return
+      if (n != null && n >= thread.start && n <= thread.end) anchor = idx
+    })
+    if (anchor < 0) continue
+    const list = map.get(anchor)
+    if (list) list.push(thread)
+    else map.set(anchor, [thread])
+  }
+  return map
+})
+
+function threadsAfter(idx: number): SavedComment[] {
+  return threadsAfterRow.value.get(idx) ?? []
 }
 
+function formatSavedTime(ts: number): string {
+  try {
+    return new Date(ts).toLocaleString()
+  } catch {
+    return ''
+  }
+}
+
+const editingKey = ref<string | null>(null)
+const threadKey = (thread: SavedComment) => `${thread.start}-${thread.end}`
+
+const editThread = (thread: SavedComment) => {
+  editingKey.value = threadKey(thread)
+}
+
+const cancelEdit = () => {
+  editingKey.value = null
+}
+
+const deleteThread = (thread: SavedComment) => {
+  deleteSavedComment(props.cwd, props.path, thread.start, thread.end)
+  reviewedVersion.value++
+}
+
+const copiedKey = ref<string | null>(null)
+let copiedTimer: ReturnType<typeof setTimeout> | null = null
+
+const copyThread = async (thread: SavedComment) => {
+  await copyTextToClipboard(
+    formatReviewComment(props.path, thread.start, thread.end, thread.context, thread.message),
+  )
+  copiedKey.value = threadKey(thread)
+  if (copiedTimer) clearTimeout(copiedTimer)
+  copiedTimer = setTimeout(() => {
+    copiedKey.value = null
+  }, 2000)
+}
+
+watch(
+  () => props.path,
+  () => {
+    reviewedVersion.value = 0
+    editingKey.value = null
+  },
+)
+
+const handleCommentSave = (payload: DiffCommentSavePayload) => {
+  closeMiniChat()
+  editingKey.value = null
+  reviewedVersion.value++
+  emit('comment-saved', payload)
+}
 const firstAddLine = computed(() => props.lines.find((l) => l.type === 'add')?.newLineNum)
 
 const openFile = () => emit('open', { path: props.path, line: firstAddLine.value })
@@ -290,6 +375,98 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
+            <tr
+              v-if="threadsAfter(idx).length > 0"
+              data-testid="diff-comment-thread"
+            >
+              <td colspan="3" class="px-2 py-1">
+                <div
+                  v-for="thread in threadsAfter(idx)"
+                  :key="`${thread.start}-${thread.end}`"
+                  class="rounded p-2 mb-1"
+                  style="border: 1px solid var(--color-border)"
+                >
+                  <div
+                    class="text-xs font-medium mb-1"
+                    style="color: var(--semantic-text)"
+                  >
+                    Comment on lines {{ thread.start }}–{{ thread.end }}
+                    <span
+                      v-if="thread.savedAt"
+                      class="font-normal"
+                      style="color: var(--semantic-text-dim)"
+                      data-testid="diff-comment-time"
+                      >· {{ formatSavedTime(thread.savedAt) }}</span
+                    >
+                  </div>
+                  <div v-if="editingKey === threadKey(thread)">
+                    <DiffCommentBox
+                      :file-path="path"
+                      :start-line="thread.start"
+                      :end-line="thread.end"
+                      :context="thread.context"
+                      :cwd="cwd"
+                      @save="handleCommentSave"
+                    />
+                    <button
+                      type="button"
+                      class="text-xs hover:opacity-70 mt-1"
+                      style="color: var(--color-blue)"
+                        data-testid="diff-comment-cancel"
+                      @click="cancelEdit"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div v-else>
+                    <div
+                      class="text-xs whitespace-pre-wrap mb-1"
+                      style="color: var(--semantic-text)"
+                      data-testid="diff-comment-message"
+                    >
+                      {{ thread.message }}
+                    </div>
+                    <div class="flex gap-3">
+                      <button
+                        type="button"
+                        class="text-xs hover:opacity-70"
+                        style="color: var(--color-blue)"
+                        data-testid="diff-comment-edit"
+                        @click="editThread(thread)"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        class="text-xs hover:opacity-70"
+                        style="color: var(--color-blue)"
+                        data-testid="diff-comment-delete"
+                        @click="deleteThread(thread)"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
+                        class="text-xs hover:opacity-70"
+                        style="color: var(--color-blue)"
+                        data-testid="diff-comment-copy"
+                        @click="copyThread(thread)"
+                      >
+                        Copy
+                      </button>
+                      <span
+                        v-if="copiedKey === threadKey(thread)"
+                        class="text-xs"
+                        style="color: var(--color-green)"
+                        data-testid="diff-comment-copied"
+                      >
+                        Copied
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </td>
+            </tr>
           </template>
         </tbody>
       </table>
@@ -314,7 +491,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
             ✕
           </button>
         </div>
-        <FileInput :cwd="cwd" :review-mode="true" @submit="submitMiniChat" />
+        <DiffCommentBox :file-path="miniChatFilePath" :start-line="miniChatStartLine" :end-line="miniChatEndLine" :context="miniChatContent" :cwd="cwd" @save="handleCommentSave" />
       </div>
     </Teleport>
   </div>

@@ -59,6 +59,7 @@ const stopResize = () => {
 }
 
 onUnmounted(() => {
+  stopGitPoll()
   document.removeEventListener('mousemove', onResize)
   document.removeEventListener('mouseup', stopResize)
 })
@@ -161,11 +162,24 @@ const loadGitStatus = async () => {
   }
 }
 
+// 30s git poll while a workspace is bound (ChatView.checkGitStatus precedent).
+let gitPoll: ReturnType<typeof setInterval> | null = null
+const stopGitPoll = () => {
+  if (gitPoll) { clearInterval(gitPoll); gitPoll = null }
+}
+const startGitPoll = () => {
+  stopGitPoll()
+  if (!props.cwd) return
+  gitPoll = setInterval(() => { if (props.cwd) void loadGitStatus() }, 30000)
+}
+
 // Watch for cwd changes
 watch(() => props.cwd, (newCwd) => {
   if (newCwd) {
     loadGitStatus()
+    startGitPoll()
   } else {
+    stopGitPoll()
     isGitRepo.value = false
     stagedFiles.value = []
     unstagedFiles.value = []

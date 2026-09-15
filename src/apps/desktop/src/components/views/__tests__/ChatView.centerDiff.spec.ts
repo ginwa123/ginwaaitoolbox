@@ -30,7 +30,23 @@ describe('ChatView center-stage diff', () => {
     expect(chatViewSrc).toMatch(/@click="onCenterDiffBack"/)
     expect(chatViewSrc).toMatch(/@retry="onCenterDiffRetry"/)
     expect(chatViewSrc).toMatch(/@submit-review="onChatSidebarSubmitReview"/)
+    expect(chatViewSrc).toMatch(/@comment-saved="onChatSidebarCommentSaved"/)
     expect(chatViewSrc).toMatch(/function onCenterDiffRetry\(\)/)
+    expect(chatViewSrc).toMatch(/function onChatSidebarCommentSaved\(/)
+  })
+
+  it('persists review comments instead of sending them to the LLM', () => {
+    const start = chatViewSrc.indexOf('function onChatSidebarSubmitReview')
+    expect(start).toBeGreaterThan(-1)
+    const end = chatViewSrc.indexOf('\n}\n', start)
+    expect(end).toBeGreaterThan(start)
+    expect(chatViewSrc.slice(start, end)).not.toMatch(/sendChatMessage/)
+    const savedStart = chatViewSrc.indexOf('function onChatSidebarCommentSaved')
+    expect(savedStart).toBeGreaterThan(-1)
+    const savedEnd = chatViewSrc.indexOf('\n}\n', savedStart)
+    expect(chatViewSrc.slice(savedStart, savedEnd)).not.toMatch(/sendChatMessage/)
+    expect(chatViewSrc).toMatch(/savedReviewComments/)
+    expect(chatViewSrc).toMatch(/diff-review-comments/)
   })
 
   it('hides messages+composer while the diff shows (state preserved)', () => {

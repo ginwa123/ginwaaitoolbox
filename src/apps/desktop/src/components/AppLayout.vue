@@ -867,6 +867,10 @@ const handleSubmitReview = async (message: string) => {
   closeGitViewer()
 }
 
+const handleCommentSaved = () => {
+  closeGitViewer()
+}
+
 // Git file viewer state
 const gitViewerFile = ref<api.GitFileChange | null>(null)
 const gitViewerStaged = ref(false)
@@ -2506,6 +2510,7 @@ defineExpose({
         :staged="gitViewerStaged"
         @close="closeGitViewer"
         @submit-review="handleSubmitReview"
+        @comment-saved="handleCommentSaved"
       />
 
       <!-- Skill Detail Viewer (shown when view is skill) -->

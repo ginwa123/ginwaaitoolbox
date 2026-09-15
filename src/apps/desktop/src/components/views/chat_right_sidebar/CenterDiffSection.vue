@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import SidebarDiffView from './SidebarDiffView.vue'
+import type { DiffCommentSavePayload } from './DiffCommentBox.vue'
 import type { ParsedDiffLine } from './parseUnifiedDiff'
 
 /**
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   open: [payload: { path: string; line?: number }]
   retry: []
   'submit-review': [message: string]
+  'comment-saved': [payload: DiffCommentSavePayload]
 }>()
 
 const isMounted = ref(false)
@@ -87,6 +89,7 @@ onUnmounted(() => {
       @open="(payload) => emit('open', payload)"
       @retry="() => emit('retry')"
       @submit-review="(message) => emit('submit-review', message)"
+      @comment-saved="(payload) => emit('comment-saved', payload)"
     />
   </section>
 </template>

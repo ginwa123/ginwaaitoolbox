@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffView from '../chat_right_sidebar/SidebarDiffView.vue'
+import DiffCommentBox from '../chat_right_sidebar/DiffCommentBox.vue'
 import type { ParsedDiffLine } from '../chat_right_sidebar/parseUnifiedDiff'
 
 vi.mock('../../../api', async () => {
@@ -71,7 +72,7 @@ describe('SidebarDiffView', () => {
     expect(err.emitted('retry')).toHaveLength(1)
   })
 
-  it('opens mini-chat on diff row click and submits review', async () => {
+  it('opens mini-chat on diff row click and saves via DiffCommentBox (no LLM send)', async () => {
     const wrapper = mountView()
     const rows = wrapper.findAll('tr.diff-line, tr')
     expect(rows.length).toBeGreaterThan(0)
@@ -81,13 +82,24 @@ describe('SidebarDiffView', () => {
     await addRow!.trigger('click')
     await flushPromises()
     expect(wrapper.emitted('submit-review')).toBeUndefined()
-    // Mini-chat popup appears with a FileInput; submit via its emit.
-    const fileInput = wrapper.findComponent({ name: 'FileInput' })
-    expect(fileInput.exists()).toBe(true)
-    await fileInput.vm.$emit('submit', 'looks good')
-    const submitted = wrapper.emitted('submit-review')
-    expect(submitted).toHaveLength(1)
-    expect(String(submitted![0]![0])).toContain('looks good')
-    expect(String(submitted![0]![0])).toContain('dirty.txt')
+    // Mini-chat popup renders the agnostic comment box — never FileInput.
+    expect(wrapper.findComponent({ name: 'FileInput' }).exists()).toBe(false)
+    const box = wrapper.findComponent(DiffCommentBox)
+    expect(box.exists()).toBe(true)
+    expect(box.props('filePath')).toBe('dirty.txt')
+    await box.vm.$emit('save', {
+      filePath: 'dirty.txt',
+      startLine: 1,
+      endLine: 2,
+      message: 'looks good',
+      formatted: '## Code Review looks good',
+    })
+    // Structured save bubbles up; nothing is sent to the LLM and the
+    // popup closes — the inline thread is the confirmation.
+    expect(wrapper.emitted('submit-review')).toBeUndefined()
+    const saved = wrapper.emitted('comment-saved')
+    expect(saved).toHaveLength(1)
+    expect(saved![0]![0]).toMatchObject({ filePath: 'dirty.txt', message: 'looks good' })
+    expect(wrapper.findComponent(DiffCommentBox).exists()).toBe(false)
   })
 })

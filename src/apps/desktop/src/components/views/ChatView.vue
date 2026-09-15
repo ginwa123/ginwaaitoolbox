@@ -76,6 +76,7 @@ import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
+import { copyTextToClipboard } from './chat_right_sidebar/DiffCommentBox.vue'
 import {
   centerDiffSectionId,
   encodePathParam,
@@ -481,9 +482,87 @@ const chatSidebarRef = ref<InstanceType<typeof ChatRightSidebar> | null>(null)
 const chatPrUrl = ref('')
 const chatPrProvider = ref('')
 
-async function onChatSidebarSubmitReview(message: string) {
-  if (!sessionId.value || !effectiveCwd.value) return
-  await api.sendChatMessage(sessionId.value, message, effectiveCwd.value)
+// Persisted review comments (agnostic comment-box path). Saved to
+// localStorage instead of sent to the LLM — the diff comment box owns
+// per-line draft persistence; ChatView keeps the appended list (capped
+// at 200 entries).
+interface SavedReviewComment {
+  filePath: string
+  message: string
+  formatted: string
+  savedAt: number
+}
+
+const REVIEW_COMMENTS_KEY = 'diff-review-comments'
+
+function loadSavedReviewComments(): SavedReviewComment[] {
+  try {
+    if (typeof localStorage === 'undefined') return []
+    const raw = localStorage.getItem(REVIEW_COMMENTS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as SavedReviewComment[]
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const savedReviewComments = ref<SavedReviewComment[]>(loadSavedReviewComments())
+
+function persistSavedReviewComments(): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(REVIEW_COMMENTS_KEY, JSON.stringify(savedReviewComments.value.slice(-200)))
+  } catch {
+    // Best effort — comments stay in memory for the session.
+  }
+}
+
+function appendSavedReviewComment(entry: SavedReviewComment): void {
+  savedReviewComments.value = [...savedReviewComments.value, entry].slice(-200)
+  persistSavedReviewComments()
+}
+
+// Legacy compat: the old mini-chat emitted raw markdown for the LLM.
+// Now it only persists — never calls api.sendChatMessage.
+function onChatSidebarSubmitReview(message: string) {
+  appendSavedReviewComment({ filePath: '', message, formatted: message, savedAt: Date.now() })
+}
+
+function onChatSidebarCommentSaved(payload: {
+  filePath: string
+  startLine: number
+  endLine: number
+  message: string
+  formatted: string
+}) {
+  appendSavedReviewComment({
+    filePath: payload.filePath,
+    message: payload.message,
+    formatted: payload.formatted,
+    savedAt: Date.now(),
+  })
+}
+
+const reviewCommentsForDiff = computed(() => {
+  const order = new Map(centerFiles.value.map((f, i) => [f.path, i]))
+  return savedReviewComments.value
+    .filter((e) => order.has(e.filePath))
+    .sort((a, b) => (order.get(a.filePath) ?? 0) - (order.get(b.filePath) ?? 0))
+})
+
+const copiedAllReviews = ref(false)
+let copiedAllTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyAllReviewComments() {
+  const body = reviewCommentsForDiff.value.map((e) => e.formatted).join('\n\n---\n\n')
+  if (!body) return
+  await copyTextToClipboard(body)
+  copiedAllReviews.value = true
+  if (copiedAllTimer) clearTimeout(copiedAllTimer)
+  copiedAllTimer = setTimeout(() => {
+    copiedAllReviews.value = false
+  }, 2000)
 }
 
 // Sidebar file-row click (or header Open button): open the file in the
@@ -506,7 +585,7 @@ const centerFiles = ref<DiffSelection[]>([])
 const currentPath = ref<string | null>(null)
 const centerDiffScrollRef = ref<HTMLElement | null>(null)
 
-const showCenterDiff = computed(() => centerDiff.value !== null || centerFiles.value.length > 0)
+const showCenterDiff = computed(() => centerDiff.value !== null)
 
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
@@ -531,11 +610,11 @@ function onChatSidebarShowDiffList(files: DiffSelection[]) {
     if (!incoming.has(existing.path)) merged.push(existing)
   }
   centerFiles.value = merged
+  // Refresh an open selection in place when the list reloads, but never
+  // auto-open from a background list load — refresh must land on chat.
   if (centerDiff.value) {
     const refresh = incoming.get(centerDiff.value.path)
     if (refresh) centerDiff.value = refresh
-  } else if (merged.length > 0) {
-    centerDiff.value = merged[0] ?? null
   }
 }
 
@@ -2982,6 +3061,12 @@ onMounted(async () => {
     sessionCwd.value = props.cwd
   }
 
+  // Refresh lands on chat, never auto-opens the diff: a reload keeps the
+  // ?diff= the scroll-spy wrote while the viewer was open, and the panel
+  // no longer restores from it — strip it here so the URL stays truthful
+  // (Back does the same on explicit exit).
+  if (typeof route.query.diff === 'string' && !showCenterDiff.value) syncDiffParam(null)
+
   if (sessionId.value) {
     // Seed the re-stick baseline BEFORE loadChatHistory so we catch the
     // very first measurement-driven contentShift. The VirtualScroller's
@@ -4277,6 +4362,24 @@ const compactSession = async () => {
           >
             {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}
           </span>
+          <button
+            v-if="reviewCommentsForDiff.length > 0"
+            type="button"
+            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            style="color: var(--color-blue)"
+            data-testid="chat-center-diff-copy-all"
+            @click="copyAllReviewComments"
+          >
+            Copy all ({{ reviewCommentsForDiff.length }})
+          </button>
+          <span
+            v-if="copiedAllReviews"
+            class="text-xs"
+            style="color: var(--color-green)"
+            data-testid="chat-center-diff-copied-all"
+          >
+            Copied
+          </span>
         </div>
         <div
           ref="centerDiffScrollRef"
@@ -4297,6 +4400,7 @@ const compactSession = async () => {
             @open="onChatSidebarOpenFile"
             @retry="onCenterDiffRetry"
             @submit-review="onChatSidebarSubmitReview"
+            @comment-saved="onChatSidebarCommentSaved"
           />
         </div>
       </div>
