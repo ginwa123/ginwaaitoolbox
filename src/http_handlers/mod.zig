@@ -233,6 +233,14 @@ pub const queueMessagesGetHandler = @import("queue_messages_get.zig").queueMessa
 pub const backgroundProcessesListHandler = @import("background_processes_list.zig").backgroundProcessesListHandler;
 pub const backgroundProcessLogGetHandler = @import("background_process_log_get.zig").backgroundProcessLogGetHandler;
 
+// Right-sidebar terminal (PTY over REST + poll — no WebSocket, no
+// kabelweb changes). In-memory session registry, no migration.
+pub const terminalCreateHandler = @import("terminal_create.zig").terminalCreateHandler;
+pub const terminalInputHandler = @import("terminal_input.zig").terminalInputHandler;
+pub const terminalOutputHandler = @import("terminal_output.zig").terminalOutputHandler;
+pub const terminalResizeHandler = @import("terminal_resize.zig").terminalResizeHandler;
+pub const terminalDeleteHandler = @import("terminal_delete.zig").terminalDeleteHandler;
+
 // Design-mode HTTP handlers (item_type='design') — v6 of the
 // design-mode redesign. See
 // docs/superpowers/plans/2026-07-08-design-mode-redesign.md

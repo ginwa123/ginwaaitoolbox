@@ -28,6 +28,12 @@ _ = @import("../../http_handlers/stream_get.zig");
 _ = @import("../../http_handlers/subagent_progress_get.zig");
     _ = @import("../../http_handlers/background_processes_list.zig");     // session bg-process list GET (bg-completion endpoints)
     _ = @import("../../http_handlers/background_process_log_get.zig");    // session bg-process log-tail GET (bg-completion endpoints)
+    _ = @import("../../http_handlers/terminal_session.zig");              // right-sidebar terminal PTY registry
+    _ = @import("../../http_handlers/terminal_create.zig");               // terminal session POST
+    _ = @import("../../http_handlers/terminal_input.zig");                // terminal input POST
+    _ = @import("../../http_handlers/terminal_output.zig");               // terminal output GET
+    _ = @import("../../http_handlers/terminal_resize.zig");               // terminal resize POST
+    _ = @import("../../http_handlers/terminal_delete.zig");               // terminal session DELETE
     // NOTE: task_create_routines_test.zig deleted with the per-task
     // `routines` table (Migration 084, plan 2026-09-10-workspace-items-routines).
 _ = @import("../../http_handlers/task_create.zig");

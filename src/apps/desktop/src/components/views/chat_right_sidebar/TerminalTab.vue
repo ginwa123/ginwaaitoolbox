@@ -1,52 +1,189 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import '@xterm/xterm/css/xterm.css'
+import {
+  createTerminalSession,
+  deleteTerminalSession,
+  getTerminalOutput,
+  resizeTerminal,
+  sendTerminalInput,
+} from '../../../api'
 
 const props = defineProps<{
   cwd: string
 }>()
 
-interface TermLine {
-  id: number
-  text: string
-  kind: 'cmd' | 'out' | 'sys'
+const POLL_MS = 300
+
+const container = ref<HTMLElement | null>(null)
+const sessionId = ref<string | null>(null)
+const pid = ref<number | null>(null)
+const status = ref('connecting…')
+const exited = ref(false)
+
+let term: Terminal | null = null
+let fit: FitAddon | null = null
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollInFlight = false
+let cursor = 0
+let lastCols = 0
+let lastRows = 0
+let disposed = false
+let resizeObserver: ResizeObserver | null = null
+
+const stopPoll = () => {
+  if (pollTimer !== null) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
 }
 
-let nextId = 1
-const welcome = (cwd: string): TermLine[] => [
-  { id: nextId++, text: `Connected (mock) — ${cwd || '(no cwd)'}`, kind: 'sys' },
-  { id: nextId++, text: 'Phase 1 mock: input echoes locally, nothing executes.', kind: 'sys' },
-  {
-    id: nextId++,
-    text: 'PTY backend lands in Phase 2 — reconnect/kill stay disabled.',
-    kind: 'sys',
-  },
-]
+const fitAndResize = async () => {
+  if (!term || !fit || !sessionId.value || exited.value) return
+  try {
+    fit.fit()
+  } catch {
+    return
+  }
+  const { cols, rows } = term
+  if (cols === lastCols && rows === lastRows) return
+  lastCols = cols
+  lastRows = rows
+  try {
+    await resizeTerminal(sessionId.value, cols, rows)
+  } catch {
+    // Resize is best-effort; the session keeps running at its old size.
+  }
+}
 
-const lines = ref<TermLine[]>(welcome(props.cwd))
-const input = ref('')
+const pollOnce = async () => {
+  if (pollInFlight || !sessionId.value || disposed) return
+  pollInFlight = true
+  try {
+    const out = await getTerminalOutput(sessionId.value, cursor)
+    cursor = out.cursor
+    if (out.data) term?.write(out.data.replace(/\n/g, '\r\n'))
+    if (out.exited) {
+      exited.value = true
+      status.value =
+        out.exit_code === null
+          ? 'shell exited'
+          : `shell exited (code ${out.exit_code}) — Reconnect for a new one`
+      stopPoll()
+    }
+  } catch {
+    // Transient poll failure (server restart, session reaped): keep the
+    // timer running so a recreated session resumes; surface one line.
+    status.value = 'connection lost — retrying…'
+  } finally {
+    pollInFlight = false
+  }
+}
+
+const ensureSession = async () => {
+  if (disposed || sessionId.value) return
+  status.value = 'connecting…'
+  exited.value = false
+  cursor = 0
+  try {
+    fit?.fit()
+    const cols = term?.cols ?? 80
+    const rows = term?.rows ?? 24
+    lastCols = cols
+    lastRows = rows
+    const session = await createTerminalSession(props.cwd, { cols, rows })
+    if (disposed) {
+      // Unmounted while creating — clean up immediately, no leak.
+      await deleteTerminalSession(session.id).catch(() => {})
+      return
+    }
+    sessionId.value = session.id
+    pid.value = session.pid
+    status.value = 'connected'
+    stopPoll()
+    pollTimer = setInterval(pollOnce, POLL_MS)
+    await pollOnce()
+  } catch (err) {
+    status.value =
+      err instanceof Error ? `failed to start: ${err.message}` : 'failed to start shell'
+  }
+}
+
+const dropSession = async () => {
+  stopPoll()
+  const id = sessionId.value
+  sessionId.value = null
+  pid.value = null
+  if (id) {
+    await deleteTerminalSession(id).catch(() => {})
+  }
+}
+
+const reconnect = async () => {
+  await dropSession()
+  term?.clear()
+  await ensureSession()
+}
+
+const kill = async () => {
+  await dropSession()
+  exited.value = true
+  status.value = 'session killed — Reconnect for a new one'
+}
+
+const clear = () => term?.clear()
+
+onMounted(() => {
+  term = new Terminal({
+    fontSize: 12,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: { background: '#0f0e0c', foreground: '#c5c9c5', cursor: '#c5c9c5' },
+  })
+  fit = new FitAddon()
+  term.loadAddon(fit)
+  if (container.value) {
+    term.open(container.value)
+    term.onData((data) => {
+      const id = sessionId.value
+      if (!id || exited.value) return
+      sendTerminalInput(id, data).catch(() => {
+        status.value = 'input failed — retrying…'
+      })
+    })
+    resizeObserver = new ResizeObserver(() => {
+      void fitAndResize()
+    })
+    resizeObserver.observe(container.value)
+  }
+  void ensureSession()
+})
 
 watch(
   () => props.cwd,
-  (cwd) => {
-    lines.value = welcome(cwd)
+  async (next, prev) => {
+    if (next === prev || disposed) return
+    await dropSession()
+    term?.clear()
+    await ensureSession()
   },
 )
 
-const submit = () => {
-  const cmd = input.value.trim()
-  if (!cmd) return
-  lines.value.push({ id: nextId++, text: `$ ${cmd}`, kind: 'cmd' })
-  lines.value.push({
-    id: nextId++,
-    text: `mock: '${cmd}' not executed — backend lands in Phase 2`,
-    kind: 'out',
-  })
-  input.value = ''
-}
-
-const clear = () => {
-  lines.value = welcome(props.cwd)
-}
+onUnmounted(() => {
+  disposed = true
+  stopPoll()
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  const id = sessionId.value
+  sessionId.value = null
+  if (id) void deleteTerminalSession(id).catch(() => {})
+  term?.dispose()
+  term = null
+  fit = null
+})
 </script>
 
 <template>
@@ -60,7 +197,7 @@ const clear = () => {
         style="background: var(--semantic-active-bg); color: var(--semantic-text)"
         data-testid="terminal-session-pill"
       >
-        zsh — mock ●
+        {{ pid !== null ? `zsh — ${pid} ●` : 'zsh — …' }}
       </span>
       <span
         class="text-[11px] truncate flex-1"
@@ -74,9 +211,9 @@ const clear = () => {
         type="button"
         class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
-        title="Reconnect (disabled in Phase 1 mock)"
-        disabled
+        title="Reconnect (new shell)"
         data-testid="terminal-reconnect"
+        @click="reconnect"
       >
         ⟲
       </button>
@@ -94,37 +231,20 @@ const clear = () => {
         type="button"
         class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
-        title="Kill session (disabled in Phase 1 mock)"
-        disabled
+        title="Kill session"
         data-testid="terminal-kill"
+        @click="kill"
       >
         ✂
       </button>
     </div>
+    <div ref="container" class="flex-1 min-h-0 px-1" data-testid="terminal-xterm" />
     <div
-      class="flex-1 min-h-0 overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed"
-      data-testid="terminal-output"
+      class="px-3 h-6 shrink-0 flex items-center text-[11px] truncate"
+      style="color: var(--semantic-text-dim); border-top: 1px solid var(--color-border)"
+      data-testid="terminal-status"
     >
-      <div v-for="line in lines" :key="line.id" :data-kind="line.kind">
-        <span v-if="line.kind === 'cmd'" style="color: var(--semantic-text)">{{ line.text }}</span>
-        <span v-else style="color: var(--semantic-text-dim)">{{ line.text }}</span>
-      </div>
+      {{ status }}
     </div>
-    <form
-      class="flex items-center gap-2 px-3 h-10 shrink-0"
-      style="border-top: 1px solid var(--color-border)"
-      @submit.prevent="submit"
-    >
-      <span class="font-mono text-xs" style="color: var(--semantic-text-dim)">$</span>
-      <input
-        v-model="input"
-        type="text"
-        class="flex-1 min-w-0 bg-transparent outline-none font-mono text-xs"
-        style="color: var(--semantic-text)"
-        placeholder="Type a command (mock — nothing executes)"
-        aria-label="Terminal input (mock)"
-        data-testid="terminal-input"
-      />
-    </form>
   </div>
 </template>

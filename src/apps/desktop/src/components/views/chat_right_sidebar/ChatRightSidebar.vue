@@ -167,18 +167,23 @@ defineExpose({
       </button>
     </div>
     <div class="flex-1 min-h-0">
-      <TerminalTab v-if="activePanel === 'terminal'" :cwd="cwd" />
-      <SidebarDiffPanel
-        v-else
-        ref="panelRef"
-        :cwd="cwd"
-        :branch="branch"
-        :pr-url="prUrl"
-        :pr-provider="prProvider"
-        @refresh="() => emit('refresh')"
-        @show-diff="(selection) => emit('show-diff', selection)"
-        @show-diff-list="(files) => emit('show-diff-list', files)"
-      />
+      <!-- Both panels stay mounted (v-show, not v-if) so the PTY
+      session survives tab switches; only the visible one paints. -->
+      <div v-show="activePanel === 'terminal'" class="h-full min-h-0">
+        <TerminalTab :cwd="cwd" />
+      </div>
+      <div v-show="activePanel === 'changes'" class="h-full min-h-0">
+        <SidebarDiffPanel
+          ref="panelRef"
+          :cwd="cwd"
+          :branch="branch"
+          :pr-url="prUrl"
+          :pr-provider="prProvider"
+          @refresh="() => emit('refresh')"
+          @show-diff="(selection) => emit('show-diff', selection)"
+          @show-diff-list="(files) => emit('show-diff-list', files)"
+        />
+      </div>
     </div>
   </aside>
 </template>
