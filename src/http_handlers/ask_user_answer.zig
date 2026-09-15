@@ -42,6 +42,9 @@ pub const AnswerError = error{
     LookupFailed,
     ResumeFailed,
     GlobalContextNotInitialized,
+    /// `resolveQuestion` dupes the outcome's strings; unreachable on the
+    /// per-request arena, but the type system requires the variant.
+    OutOfMemory,
 };
 
 /// Request body. `question_id` is preferred; `tool_call_id` is the fallback
@@ -53,14 +56,25 @@ pub const AnswerBody = struct {
     skip: bool = false,
 };
 
+/// The outcome of resolving one question.
+///
+/// `status` / `answer` are OWNED by the outcome — `resolveQuestion` frees the
+/// `PendingQuestion` row it read them from, so returning borrowed slices would
+/// hand the caller freed memory (which JSON-serialises as 0xAA undefined
+/// bytes in debug builds). Call `deinit` once done.
 pub const AnswerOutcome = struct {
     /// The status stored on the question row: answered | skipped | abandoned.
-    status: []const u8,
+    status: []u8,
     /// The stored answer ("" when skipped / already skipped).
-    answer: []const u8,
+    answer: []u8,
     /// False when the question was already resolved — the response is still
     /// 200; `resumed` is false because no new run was started.
     resumed: bool,
+
+    pub fn deinit(self: *const AnswerOutcome, allocator: std.mem.Allocator) void {
+        allocator.free(self.status);
+        allocator.free(self.answer);
+    }
 };
 
 /// Validate the wire shape of `answer` against the question's own
@@ -124,8 +138,8 @@ pub fn resolveQuestion(input: ResolveInput) AnswerError!AnswerOutcome {
     // Already resolved → idempotent 200, no second run.
     if (!std.mem.eql(u8, question.status, ask_user_mod.Status.pending.to_str())) {
         return .{
-            .status = question.status,
-            .answer = question.answer,
+            .status = try allocator.dupe(u8, question.status),
+            .answer = try allocator.dupe(u8, question.answer),
             .resumed = false,
         };
     }
@@ -163,8 +177,8 @@ pub fn resolveQuestion(input: ResolveInput) AnswerError!AnswerOutcome {
     }) catch return error.RewriteFailed;
 
     return .{
-        .status = target.to_str(),
-        .answer = stored_answer orelse "",
+        .status = try allocator.dupe(u8, target.to_str()),
+        .answer = try allocator.dupe(u8, stored_answer orelse ""),
         .resumed = true,
     };
 }
@@ -252,6 +266,7 @@ pub fn askUserAnswerHandler(
             error.LookupFailed => 500,
             error.ResumeFailed => 500,
             error.GlobalContextNotInitialized => 500,
+            error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
             error.QuestionNotFound => "no such pending question for this session",
@@ -266,6 +281,7 @@ pub fn askUserAnswerHandler(
             error.BodyRequired => "Request body required",
             error.InvalidJsonBody => "Invalid JSON body",
             error.GlobalContextNotInitialized => "Global context not initialized",
+            error.OutOfMemory => "Out of memory",
         };
         return res.jsonResponse(.{
             .status_code = status,
@@ -292,6 +308,8 @@ pub fn askUserAnswerHandler(
         .answer = outcome.answer,
         .resumed = resumed,
     }, .{});
+    // `payload` copied the strings, so the outcome is done.
+    outcome.deinit(allocator);
 
     return res.jsonResponse(.{
         .status_code = 200,

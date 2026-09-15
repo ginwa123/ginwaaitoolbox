@@ -46,6 +46,7 @@ import {
   type SubAgentProgressEvent,
   type SubAgentProgressMap,
 } from '../../helpers/subagentProgress'
+import AskUser from '../tool_outputs/AskUser.vue'
 import DiffView from '../tool_outputs/_shared/DiffView.vue'
 import ReadFile from '../tool_outputs/ReadFile.vue'
 import WriteFile from '../tool_outputs/WriteFile.vue'
@@ -4391,6 +4392,13 @@ const compactSession = async () => {
                             startsWith so new servers work with zero template
                             changes.
                           -->
+                          <AskUser
+                            v-else-if="msg.tool_name === 'ask_user'"
+                            :content="innerToolData(msg)"
+                            :parameters="getParametersForMessage(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
+                            :session-id="sessionId || chatId"
+                          />
                           <McpTool
                             v-else-if="msg.tool_name?.startsWith('mcp_')"
                             :content="innerToolData(msg)"

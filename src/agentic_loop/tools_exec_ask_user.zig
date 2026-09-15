@@ -93,9 +93,18 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer ctx.allocator.free(question_id);
 
+    // The envelope carries the whole question, not just the id: the card
+    // renders from it (live AND after a reload), because the tool row's
+    // <parameters> blob is XML-converted arguments, not parseable JSON.
     const inner = try ask_user_mod.buildAskUserXml(ctx.allocator, .{
         .status = .pending,
         .question_id = question_id,
+        .question = input.question,
+        .header = input.header,
+        .options = input.options,
+        .allow_free_text = input.allow_free_text,
+        .multi_select = input.multi_select,
+        .recommended = input.recommended,
     });
     defer ctx.allocator.free(inner);
 

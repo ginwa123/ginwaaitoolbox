@@ -178,6 +178,20 @@ pub const AskUserXml = struct {
     /// How many values `answer` holds (1 for single-select, N for
     /// multi-select). Zero for every non-answered status.
     answers_count: usize = 0,
+
+    // ── The question's shape. Carried in the envelope itself ──────────────
+    //
+    // The card renders from THIS, not from the tool row's `<parameters>`
+    // blob: `wrapToolOutput` converts the arguments to XML (`jsonArgsToXml`),
+    // so the frontend cannot JSON-parse them back, and the tool row has no
+    // `tool_calls_json` (that lives on the assistant row). Putting the shape
+    // here means the pending card renders identically live and after a
+    // reload, from one source.
+    header: []const u8 = "",
+    options: []const []const u8 = &.{},
+    allow_free_text: ?bool = null,
+    multi_select: ?bool = null,
+    recommended: []const u8 = "",
 };
 
 /// Build the `<ask_user>…</ask_user>` inner envelope.
@@ -220,6 +234,40 @@ pub fn buildAskUserXml(allocator: std.mem.Allocator, xml: AskUserXml) ![]u8 {
         const count = try std.fmt.allocPrint(allocator, "<answers_count>{d}</answers_count>", .{xml.answers_count});
         defer allocator.free(count);
         try buf.appendSlice(allocator, count);
+    }
+
+    if (xml.header.len > 0) {
+        const esc = try xmlEscape(allocator, xml.header);
+        defer allocator.free(esc);
+        try buf.appendSlice(allocator, "<header>");
+        try buf.appendSlice(allocator, esc);
+        try buf.appendSlice(allocator, "</header>");
+    }
+
+    if (xml.allow_free_text) |aft| {
+        try buf.appendSlice(allocator, if (aft) "<allow_free_text>true</allow_free_text>" else "<allow_free_text>false</allow_free_text>");
+    }
+    if (xml.multi_select) |ms| {
+        try buf.appendSlice(allocator, if (ms) "<multi_select>true</multi_select>" else "<multi_select>false</multi_select>");
+    }
+    if (xml.recommended.len > 0) {
+        const esc = try xmlEscape(allocator, xml.recommended);
+        defer allocator.free(esc);
+        try buf.appendSlice(allocator, "<recommended>");
+        try buf.appendSlice(allocator, esc);
+        try buf.appendSlice(allocator, "</recommended>");
+    }
+
+    if (xml.options.len > 0) {
+        try buf.appendSlice(allocator, "<options>");
+        for (xml.options) |opt| {
+            const esc = try xmlEscape(allocator, opt);
+            defer allocator.free(esc);
+            try buf.appendSlice(allocator, "<option>");
+            try buf.appendSlice(allocator, esc);
+            try buf.appendSlice(allocator, "</option>");
+        }
+        try buf.appendSlice(allocator, "</options>");
     }
 
     const instruction = instructionFor(xml.status);
@@ -582,6 +630,40 @@ test "ask_user: skipped / abandoned / unavailable each carry their own instructi
     // model's recovery behaviour wrong for at least one of them.
     try testing.expect(!std.mem.eql(u8, instructionFor(.skipped), instructionFor(.abandoned)));
     try testing.expect(!std.mem.eql(u8, instructionFor(.skipped), instructionFor(.unavailable)));
+}
+
+test "ask_user: the pending envelope carries the question's shape" {
+    const a = testing.allocator;
+    const xml = try buildAskUserXml(a, .{
+        .status = .pending,
+        .question_id = "q_1",
+        .question = "Which environment?",
+        .header = "Deploy target",
+        .options = &.{ "staging", "production" },
+        .allow_free_text = true,
+        .multi_select = false,
+        .recommended = "staging",
+    });
+    defer a.free(xml);
+
+    // The card renders the pending state from these alone — it cannot read
+    // the tool row's XML-ified <parameters> blob as JSON.
+    try testing.expect(std.mem.indexOf(u8, xml, "<header>Deploy target</header>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<question>Which environment?</question>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<allow_free_text>true</allow_free_text>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<multi_select>false</multi_select>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<recommended>staging</recommended>") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<options><option>staging</option><option>production</option></options>") != null);
+}
+
+test "ask_user: a free-text-only question omits the options block" {
+    const a = testing.allocator;
+    const xml = try buildAskUserXml(a, .{ .status = .pending, .question_id = "q_2", .question = "Name?" });
+    defer a.free(xml);
+    // `<options>` must not appear at all — an empty block would make the card
+    // render an empty list instead of a textarea.
+    try testing.expect(std.mem.indexOf(u8, xml, "<options>") == null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<header>") == null);
 }
 
 test "ask_user: the question cannot break the envelope" {
