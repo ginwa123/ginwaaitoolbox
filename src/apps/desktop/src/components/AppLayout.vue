@@ -867,10 +867,7 @@ const handleSubmitReview = async (message: string) => {
   closeGitViewer()
 }
 
-const handleCommentSaved = (payload: { filePath: string; message: string; formatted: string }) => {
-  console.log('[AppLayout] Review comment saved:', payload.filePath)
-  // Persisted by DiffCommentBox (localStorage draft) — just close the
-  // viewer. Unlike handleSubmitReview above, this never sends to the LLM.
+const handleCommentSaved = () => {
   closeGitViewer()
 }
 
