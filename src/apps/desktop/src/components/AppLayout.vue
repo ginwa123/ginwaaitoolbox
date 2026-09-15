@@ -360,9 +360,6 @@ watch(
     // (chat, settings, gitfile, skill, code-editor) have their
     // own URL contract and should be preserved.
     if (currentView !== 'workspace' && currentView !== undefined) return
-    const urlWsId = route.query.workspaceId as string | undefined
-    const urlItemId = route.query.itemId as string | undefined
-    const urlPageId = route.query.pageId as string | undefined
 
     // SIMPLIFY-URL-BROWSER (2026-08-15): preserve the
     // /chat/<taskId> suffix when mirroring activeWorkspaceItemId
@@ -383,7 +380,6 @@ watch(
       ? buildItemIdWithChat(safeItemId, parsedExisting.chatTaskId)
       : safeItemId
 
-    if (urlWsId === wsId && urlItemId === rewrittenItemId && urlPageId === pageId) return
     const query: Record<string, string> = { view: 'workspace' }
     if (wsId && safeItemId) {
       query.workspaceId = wsId
@@ -420,6 +416,37 @@ watch(
       if (urlSorts) {
         query.sorts = urlSorts
       }
+      // Preserve the kanban task-detail deep-link (?detail=<taskId>)
+      // when staying on the SAME board, so reactive store updates
+      // (e.g. setActiveTask parent-discovery, design page switches)
+      // don't drop the open panel. Dropped when navigating to a
+      // different item — the detail id belongs to the previous board
+      // and openDetailFromRoute would ignore it anyway.
+      const urlDetail = route.query.detail as string | undefined
+      if (urlDetail) {
+        const urlBare = parsedExisting.itemId
+        if (urlBare === safeItemId) {
+          query.detail = urlDetail
+        }
+      }
+    }
+    // No-op when the URL already matches the store state (including
+    // sorts/detail/pageId) — avoids redundant replaces that would
+    // churn history and re-trigger the route watcher.
+    {
+      const urlQ = route.query as Record<string, unknown>
+      const keys = new Set([...Object.keys(urlQ), ...Object.keys(query)])
+      let same = true
+      for (const k of keys) {
+        if (k === 'tab') continue
+        const a = typeof urlQ[k] === 'string' ? (urlQ[k] as string) : undefined
+        const b = query[k]
+        if ((a ?? undefined) !== (b ?? undefined)) {
+          same = false
+          break
+        }
+      }
+      if (same && route.path === '/app') return
     }
     router.replace({ path: '/app', query })
   },
@@ -480,6 +507,20 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
   // funnel would add a second tab for the same chat.
   tabsStore.renameChatTab(oldId, newId)
   sidebarRef.value?.updateChatId(oldId, newId)
+  // Keep the browser URL truthful: a brand-new chat mounts at
+  // ?view=chat&session=<synthetic-id> and gets its real id on the first
+  // message. Without this the address bar keeps the dead synthetic id, so
+  // refresh/share lands on a missing session while the view shows the real
+  // one (URL desync reported as "fix url browser").
+  try {
+    const urlSession = route.query.session as string | undefined
+    const urlView = route.query.view as string | undefined
+    if (urlView === 'chat' && urlSession === oldId) {
+      router.replace({ path: '/app', query: { view: 'chat', session: newId } })
+    }
+  } catch {
+    // Router absent in unit tests — store + tabs already updated.
+  }
 }
 
 const handleNavigate = (
