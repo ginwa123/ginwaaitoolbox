@@ -54,6 +54,10 @@ const changeCount = computed(
 )
 
 const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
+const activeTab = ref<'files' | 'pr'>(isPrMode.value ? 'pr' : 'files')
+const showTabs = computed(() => isPrMode.value)
+const showPr = computed(() => isPrMode.value && activeTab.value === 'pr')
+const loadedTabs = ref(new Set<string>())
 const prFiles = ref<SplitDiffFile[]>([])
 const prBase = ref('')
 const prHead = ref('')
@@ -208,8 +212,8 @@ const onRefreshClick = () => {
   // changed, so a stale-cwd click self-heals instead of re-showing
   // the old branch.
   emit('refresh')
-  if (isPrMode.value) void loadPrDiff()
-  else void loadGitStatus()
+  if (showPr.value) void loadTab('pr', true)
+  else void loadTab('files', true)
 }
 
 const loadGitStatus = async () => {
@@ -284,10 +288,22 @@ const loadFullList = async () => {
   emit('show-diff-list', list)
 }
 
+// Per-tab lazy load: each side fetches once until cwd/prUrl changes.
+const loadTab = async (tab: 'files' | 'pr', force = false) => {
+  if (!force && loadedTabs.value.has(tab)) return
+  if (tab === 'pr') await loadPrDiff()
+  else await loadGitStatus()
+  loadedTabs.value.add(tab)
+}
+
+const setActiveTab = (tab: 'files' | 'pr') => {
+  activeTab.value = tab
+  void loadTab(tab)
+}
+
 const loadDiff = async () => {
-  // Worktree mode only: PR-mode diffs parse inline from the fetched
-  // chunks (selectPrFile), so a center-view retry in PR mode is a no-op.
-  if (isPrMode.value) return
+  // PR list parses inline (selectPrFile); a center retry there is a no-op.
+  if (showPr.value) return
   if (!props.cwd || !selectedPath.value) return
   try {
     const diff = await api.getGitFileDiff(props.cwd, selectedPath.value, selectedStaged.value)
@@ -347,17 +363,19 @@ const unstageFile = async (file: api.GitFileChange) => {
 }
 
 watch(
-  () => [props.cwd, props.prUrl],
-  () => {
+  () => [props.cwd, props.prUrl] as const,
+  ([, url], [, prevUrl]) => {
+    const had = (prevUrl ?? '').trim().length > 0
+    const has = (url ?? '').trim().length > 0
+    if (had !== has) activeTab.value = has ? 'pr' : 'files'
     selectedPath.value = null
-    if (isPrMode.value) void loadPrDiff()
-    else void loadGitStatus()
+    loadedTabs.value.clear()
+    void loadTab(activeTab.value, true)
   },
 )
 
 onMounted(() => {
-  if (isPrMode.value) void loadPrDiff()
-  else void loadGitStatus()
+  void loadTab(activeTab.value, true)
 })
 
 defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
@@ -366,7 +384,34 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
 <template>
   <div class="flex flex-col h-full min-h-0" data-testid="sidebar-diff-panel">
     <div
-      v-if="isPrMode"
+      v-if="showTabs"
+      class="flex items-center gap-1 px-3 h-9 shrink-0"
+      style="border-bottom: 1px solid var(--color-border)"
+      role="tablist"
+    >
+      <button
+        type="button"
+        class="text-xs px-2 py-1 rounded"
+        data-testid="sidebar-tab-files"
+        role="tab"
+        :aria-selected="activeTab === 'files'"
+        @click="setActiveTab('files')"
+      >
+        Files changed{{ changeCount > 0 ? ` (${changeCount})` : '' }}
+      </button>
+      <button
+        type="button"
+        class="text-xs px-2 py-1 rounded"
+        data-testid="sidebar-tab-pr"
+        role="tab"
+        :aria-selected="activeTab === 'pr'"
+        @click="setActiveTab('pr')"
+      >
+        Pull request{{ prFiles.length > 0 ? ` (${prFiles.length})` : '' }}
+      </button>
+    </div>
+    <div
+      v-if="showPr"
       class="flex items-center gap-2 px-3 h-10 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
@@ -443,7 +488,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
     </div>
 
     <div class="flex-1 overflow-y-auto min-h-0">
-      <template v-if="isPrMode">
+      <template v-if="showPr">
         <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
           <svg
             class="animate-spin w-5 h-5"
