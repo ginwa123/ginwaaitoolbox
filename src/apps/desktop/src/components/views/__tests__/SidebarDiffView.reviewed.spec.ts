@@ -118,6 +118,15 @@ describe('SidebarDiffView inline comment threads', () => {
     expect(idxThread).toBe(idx26 + 1)
   })
 
+  it('Edit/Delete links use an explicit readable color', () => {
+    seed(CWD, PATH, 20, 26, 'readable links')
+    const wrapper = mountView()
+    for (const tid of ['diff-comment-edit', 'diff-comment-delete']) {
+      const style = wrapper.get(`[data-testid="${tid}"]`).attributes('style') ?? ''
+      expect(style).toContain('--color-blue')
+    }
+  })
+
   it('skips threads with no matching row', () => {
     seed(CWD, PATH, 100, 110, 'stale note')
     const wrapper = mountView()

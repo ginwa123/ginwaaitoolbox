@@ -395,7 +395,8 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                     <button
                       type="button"
                       class="text-xs hover:opacity-70 mt-1"
-                      data-testid="diff-comment-cancel"
+                      style="color: var(--color-blue)"
+                        data-testid="diff-comment-cancel"
                       @click="cancelEdit"
                     >
                       Cancel
@@ -413,6 +414,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       <button
                         type="button"
                         class="text-xs hover:opacity-70"
+                        style="color: var(--color-blue)"
                         data-testid="diff-comment-edit"
                         @click="editThread(thread)"
                       >
@@ -421,6 +423,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       <button
                         type="button"
                         class="text-xs hover:opacity-70"
+                        style="color: var(--color-blue)"
                         data-testid="diff-comment-delete"
                         @click="deleteThread(thread)"
                       >
