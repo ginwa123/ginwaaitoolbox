@@ -21,7 +21,12 @@ import {
   AUTO_STICK_GATE_MS,
   BOTTOM_THRESHOLD,
   TOP_THRESHOLD,
+  decidePrefetchOlder,
+  armRadiusPx,
+  nextFetchEstimate,
+  PREFETCH_SAMPLE_INIT_MS,
   type ScrollLogger,
+  type ScrollReason,
 } from '@/helpers'
 import FileInput from '../file/FileInput.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
@@ -1816,39 +1821,683 @@ const rehydrateSubAgentProgress = async () => {
   }
 }
 
-const loadChatHistory = async (loadMore = false) => {
+// ─── Older-history pagination: arm → commit → refill ─────────────────────────
+//
+// Task_1789505423062_0 — "the auto fetch is loaded after the user hit the
+// max; what if the auto fetch is done before the scroll reaches the top?"
+//
+// Why the old path felt slow: VirtualScroller's `loadMore` check is positional
+// AND debounced (200 ms, trailing edge, timer reset on every scroll event — see
+// its `onScroll`). During a fling the timer keeps being pushed out, so the
+// request is only issued ~200 ms after the LAST scroll event. On a fling that
+// ends at the top, "last event" IS "user already at the top" — the half-screen
+// head start from `loadMoreThresholdRatio` is consumed before the request even
+// starts, and the round trip + preserve dance then play out in front of a user
+// who has nothing left to scroll.
+//
+// The fix, in three beats:
+//   ARM     — while the user is still far from the top (armRadiusPx), fetch the
+//             next older page speculatively and keep it in memory. Invisible:
+//             no `messages` mutation, no scrollTop write, no stick-flag bump.
+//   COMMIT  — when the user actually enters the scroller's load-more band (or
+//             the 200 ms backstop fires, or the manual button is clicked), the
+//             buffered page is prepended through the SAME preserve path as
+//             before. Zero network wait on the critical path.
+//   REFILL  — after a commit, arm the next page from the advanced cursor, so
+//             page-after-page scroll-back is instant (one page of lookahead).
+//
+// Deliberate non-behaviour: prepending mid-fling is NOT done. `beginPreserve` /
+// `endPreserve` write `scrollTop` to keep the reading position stable; doing
+// that while a momentum scroll is in flight fights the gesture (the
+// jump/teleport class already fixed in #308/#337/#349). Fetch early, commit at
+// the band.
+//
+// Invariants (asserted by ChatView.lazyPrefetch.spec.ts):
+//   1. ARM mutates no DOM/scroll state — `messages` is untouched until COMMIT.
+//   2. `messageCursor` advances ONLY at COMMIT.
+//   3. The buffer is claimed SYNCHRONOUSLY, before the first `await`, so the
+//      positional commit and the 200 ms `@load-more` backstop cannot both
+//      prepend the same page.
+//   4. A buffer is dropped when its cursor or generation no longer matches
+//      (session switch, refresh, or another path advancing the cursor).
+
+interface BufferedOlderPage {
+  /** Cursor this page was requested with — must still equal `messageCursor` to commit. */
+  fetchedWithCursor: string | null
+  /** Generation stamp; a session switch / refresh invalidates it. */
+  generation: number
+  messages: Message[]
+  hasMore: boolean
+  nextCursor: string | null
+  /** Measured round trip, folded into `fetchEstimateMs`. */
+  measuredMs: number
+  /** `performance.now()` when the page landed (for the bufferedAgeMs log). */
+  armedAt: number
+}
+
+/** Page armed in memory, not yet in `messages`. `null` = nothing armed. */
+let bufferedOlderPage: BufferedOlderPage | null = null
+/** In-flight ARM request. Doubles as the single source of truth for "arm in flight". */
+let prefetchPromise: Promise<void> | null = null
+/** A commit (prepend/preserve) is in flight — guards the double-commit race. */
+let isCommittingOlder = false
+/** Bumped on session switch / refresh / unmount; invalidates buffers and late responses. */
+let commitGeneration = 0
+/** EMA of observed `getChatHistory` durations (logged; drives the Phase-2 velocity term). */
+let fetchEstimateMs = PREFETCH_SAMPLE_INIT_MS
+/** `performance.now()` deadline before another ARM may be attempted after a failure. */
+let prefetchBackoffUntil = 0
+let prefetchFailures = 0
+/** Consecutive commits with no intervening user gesture — bounds refill chaining. */
+let prefetchAutoChain = 0
+/** Last skip reason logged, so a fling inside the radius doesn't spam one line per frame. */
+let lastPrefetchSkip: string | null = null
+
+/**
+ * How many consecutive gesture-less commits may chain before REFILL stops.
+ * A commit normally restores the anchor far below the band (so no chain), but a
+ * tall viewport / short page can leave the viewport inside the band and pull
+ * pages back-to-back. Bound it; a fresh user scroll resets the budget.
+ */
+const MAX_PREFETCH_AUTO_CHAIN = 3
+
+/**
+ * Shared log context for the prefetch path — the same scroller/wrapper geometry
+ * every other scroll log carries. One helper, so the five prefetch log lines
+ * (`armed` / `committed` / `skipped` / `dropped` / `failed`) can never disagree
+ * about the geometry they report.
+ */
+const prefetchLogCtx = (
+  reason: ScrollReason,
+  caller: string,
+  extra: Record<string, unknown>,
+): Parameters<ScrollLogger['info']>[0] => ({
+  ...buildScrollContext(virtualScrollerRef.value?.containerRef, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
+  }),
+  reason,
+  caller,
+  extra,
+})
+
+/**
+ * Map REST rows into the view's `Message` shape.
+ *
+ * Shared by the initial load AND the scroll-back prefetch so a pull of older
+ * history can never drift from the initial page's wire shape (the #291 lesson:
+ * two mappers for one endpoint = two shapes).
+ */
+const toChatMessages = (
+  rows: Awaited<ReturnType<typeof api.getChatHistory>>['messages'] | undefined,
+): Message[] =>
+  (rows || []).map((msg) => ({
+    id: msg.id || `msg-${msg.created_at}`,
+    role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
+    content: msg.content,
+    timestamp: new Date((msg.created_at || 0) * 1000),
+    tool_name: msg.tool_name,
+    diffview_before: msg.diffview_before,
+    diffview_after: msg.diffview_after,
+    image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
+    finish_reason: msg.finish_reason,
+    tool_calls_json: msg.tool_calls_json,
+    tool_call_id: msg.tool_call_id,
+    is_input: msg.is_input,
+    is_output: msg.is_output,
+    // 2026-08-23 hidden-messages fix — carry the thinking model's
+    // reasoning through to the renderer. The backend REST endpoint
+    // already returns it (http_response.zig SessionMessage).
+    reasoning_content: msg.reasoning_content || undefined,
+  }))
+
+/**
+ * Fetch ONE older page and measure the round trip.
+ *
+ * Network + mapping only: mutates no component state except the fetch-duration
+ * estimate. Used by the speculative ARM (buffered, never rendered directly) and
+ * by the foreground path when no buffer is armed.
+ */
+const fetchOlderPage = async (cursor: string | null): Promise<BufferedOlderPage> => {
+  const startedAt = performance.now()
+  const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, cursor ?? undefined)
+  const measuredMs = performance.now() - startedAt
+  fetchEstimateMs = nextFetchEstimate(fetchEstimateMs, measuredMs)
+  return {
+    fetchedWithCursor: cursor,
+    generation: commitGeneration,
+    messages: toChatMessages(data.messages),
+    hasMore: data.has_more,
+    nextCursor: data.next_cursor,
+    measuredMs,
+    armedAt: performance.now(),
+  }
+}
+
+/**
+ * Drop any armed / in-flight older page and invalidate late responses.
+ *
+ * Called on session switch (the two `sessionId` watchers), on an initial
+ * `loadChatHistory()` refresh, and on unmount. The `commitGeneration` bump is
+ * what makes a response that is already in flight inert — it is checked both
+ * when an ARM resolves and again when a commit claims the buffer.
+ *
+ * Deliberately NOT called from the SSE `full` echo: that handler patches
+ * `messages` in place without touching `messageCursor`, so a cursor-stamped
+ * buffer stays valid and the commit's id-dedupe covers any overlap.
+ */
+const resetOlderPrefetch = (cause: string) => {
+  const hadWork = bufferedOlderPage !== null || prefetchPromise !== null
+  commitGeneration++
+  bufferedOlderPage = null
+  prefetchPromise = null
+  isCommittingOlder = false
+  prefetchFailures = 0
+  prefetchBackoffUntil = 0
+  prefetchAutoChain = 0
+  lastPrefetchSkip = null
+  if (hadWork) {
+    scrollLogger.info({
+      ...prefetchLogCtx('load-more-prefetch-dropped', 'resetOlderPrefetch', { cause }),
+    })
+  }
+}
+
+/**
+ * ARM — fetch the next older page speculatively, into the buffer.
+ *
+ * Invisible by contract: no `messages` mutation, no scrollTop write, no
+ * `lastAutoStickAt` bump, no `isLoadingMore`. That is also why it is NOT gated
+ * by the auto-stick gate: the gate requires `isAtBottom === true`, and the arm
+ * requires the user to be within `armRadiusPx` of the top — mutually exclusive
+ * in a scrollable chat, so a gate check here could never fire.
+ */
+const armPrefetchOlder = (trigger: 'margin' | 'velocity' | 'refill') => {
+  if (prefetchPromise) return
+  if (!sessionId.value || isPendingSession.value) return
+  const cursor = messageCursor.value
+  const generation = commitGeneration
+  prefetchPromise = (async () => {
+    try {
+      const page = await fetchOlderPage(cursor)
+      if (generation !== commitGeneration || page.fetchedWithCursor !== messageCursor.value) {
+        // The world moved while we were in flight (session switch, refresh,
+        // or another path advanced the cursor). Committing this page would
+        // prepend the wrong slice — drop it.
+        scrollLogger.info({
+          ...prefetchLogCtx('load-more-prefetch-dropped', 'armPrefetchOlder', {
+            cause: generation !== commitGeneration ? 'generation-changed' : 'cursor-changed',
+            trigger,
+            cursor: cursor ?? 'null',
+          }),
+        })
+        return
+      }
+      bufferedOlderPage = page
+      prefetchFailures = 0
+      prefetchBackoffUntil = 0
+      scrollLogger.info({
+        ...prefetchLogCtx('load-more-prefetch-armed', 'armPrefetchOlder', {
+          trigger,
+          cursor: cursor ?? 'null',
+          buffered: page.messages.length,
+          hasMore: page.hasMore,
+          measuredMs: Math.round(page.measuredMs),
+          estimatedFetchMs: Math.round(fetchEstimateMs),
+        }),
+      })
+    } catch (err) {
+      // A failed speculative fetch must never block the foreground path — the
+      // user's own trigger will simply fetch normally. Back off so a dead
+      // backend is not hammered once per scroll event.
+      prefetchFailures++
+      const backoffMs = Math.min(5000, 250 * 2 ** (prefetchFailures - 1))
+      prefetchBackoffUntil = performance.now() + backoffMs
+      scrollLogger.warn({
+        ...prefetchLogCtx('load-more-prefetch-failed', 'armPrefetchOlder', {
+          trigger,
+          backoffMs,
+          prefetchFailures,
+          error: String(err),
+        }),
+      })
+    } finally {
+      prefetchPromise = null
+    }
+  })()
+}
+
+/**
+ * Claim the armed page for a commit — SYNCHRONOUSLY, before any `await`.
+ *
+ * This is the contract that makes the positional commit and the 200 ms
+ * `@load-more` backstop safe: the first caller clears the slot in the same tick,
+ * so the second caller sees `null` and cannot prepend the same page twice.
+ * Returns `null` (and logs a drop) when the buffer no longer matches the live
+ * cursor/generation.
+ */
+const claimBufferedOlderPage = (): BufferedOlderPage | null => {
+  const page = bufferedOlderPage
+  bufferedOlderPage = null
+  if (!page) return null
+  if (page.generation !== commitGeneration || page.fetchedWithCursor !== messageCursor.value) {
+    scrollLogger.info({
+      ...prefetchLogCtx('load-more-prefetch-dropped', 'claimBufferedOlderPage', {
+        cause: page.generation !== commitGeneration ? 'generation-changed' : 'cursor-changed',
+        bufferedAgeMs: Math.round(performance.now() - page.armedAt),
+      }),
+    })
+    return null
+  }
+  return page
+}
+
+/**
+ * COMMIT — prepend a fetched older page through the preserve path.
+ *
+ * Moved verbatim from the old `loadChatHistory(true)` branch: suppress the
+ * contentShift re-stick, snapshot `wasAtBottom`, `beginPreserve`, dedupe by id,
+ * prepend, advance the cursor, `nextTick`, mark the restore programmatic,
+ * `endPreserve`, re-seed `lastObservedScrollHeight`, and re-stick when the user
+ * was at the bottom. The only additions are the `trigger`/`bufferedAgeMs`
+ * fields in the logs and the REFILL arm at the end.
+ *
+ * The caller (`maybeLoadOlder`) owns `isLoadingMore` / `isCommittingOlder`.
+ */
+const commitOlderPage = async (
+  page: BufferedOlderPage,
+  trigger: 'buffered' | 'foreground' | 'manual',
+) => {
+  const newMessages = page.messages
+  // Suppress the contentShift re-stick for the duration of the
+  // preserve. The user is scrolling *up* to load older history
+  // (not at the bottom), so the stick-to-bottom behavior is
+  // useless here — and its re-stick callback firing on every
+  // layout shift during the forceRender/measure/anchor dance is
+  // what was causing the visible flicker. Detaching the rAF
+  // handler eliminates that work entirely for this window.
+  suppressContentShiftStick = true
+
+  // Snapshot the at-bottom state BEFORE the preserve begins. The
+  // preserve dance (beginPreserve → messages mutation → endPreserve)
+  // fires scroll events that pass through handleVirtualScroll and
+  // would corrupt the live `isAtBottom` flag — the snapshot is the
+  // only trustworthy signal for the post-preserve re-validation
+  // below (task_1787638309623_3).
+  const wasAtBottom = isAtBottom.value
+
+  // Preserve scroll position when prepending new (older) messages at the top.
+  // beginPreserve must be called BEFORE mutating the array so the anchor
+  // element's offsetTop is captured while it's still in the DOM.
+  const newCount = newMessages.length
+  const containerBefore = virtualScrollerRef.value?.containerRef
+  const beforeCtx = buildScrollContext(containerBefore, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
+  })
+  scrollLogger.info({
+    ...beforeCtx,
+    caller: 'commitOlderPage',
+    reason: 'load-more-preserve-start',
+    extra: {
+      prepending: newCount,
+      trigger,
+      bufferedAgeMs: Math.round(performance.now() - page.armedAt),
+    },
+  })
+  virtualScrollerRef.value?.beginPreserve(newCount)
+  // 2026-09-09 user-pill pagination fix — dedupe: drop pages already
+  // present (retry after a failed endPreserve, overlapping cursor
+  // pages, or an SSE `full` echo that landed mid-preserve). Without
+  // this the same id prepended twice renders double bubbles and
+  // corrupts group indices the pill rail jumps to.
+  const seenIds = new Set(messages.value.map((m) => m.id))
+  const freshMessages = newMessages.filter((m) => !seenIds.has(m.id))
+  messages.value = [...freshMessages.slice().reverse(), ...messages.value]
+  // 2026-09-09 user-pill pagination fix — cursor advance: the NEXT
+  // loadMore must continue from THIS page's cursor, not the initial
+  // one. These assignments previously lived only in the initial-load
+  // branch, so every 2nd+ loadMore re-sent the same cursor and
+  // re-prepended the same page forever.
+  messageCursor.value = page.nextCursor
+  hasMoreMessages.value = page.hasMore
+  await nextTick()
+  // The VirtualScroller's internal scrollTop restoration may fire
+  // a scroll event. Mark it programmatic so the next
+  // handleVirtualScroll knows.
+  scrollLogger.markProgrammatic()
+  await virtualScrollerRef.value?.endPreserve()
+  const containerAfter = virtualScrollerRef.value?.containerRef
+  const afterCtx = buildScrollContext(containerAfter, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
+  })
+  // The interesting deltas: did scrollTop actually return to its
+  // pre-preserve position? did scrollHeight grow by ~the new
+  // messages? did the user-visible position jump (deltaAnchor ≠ 0)?
+  const scrollTopDelta = afterCtx.scrollTop - beforeCtx.scrollTop
+  const scrollHeightDelta = afterCtx.scrollHeight - beforeCtx.scrollHeight
+  scrollLogger.info({
+    ...afterCtx,
+    caller: 'commitOlderPage',
+    reason: 'load-more-preserve-end',
+    extra: {
+      prepending: newCount,
+      trigger,
+      scrollTopDelta,
+      scrollHeightDelta,
+      restoredOk: Math.abs(scrollTopDelta) < 2,
+    },
+  })
+
+  // Re-arm the re-stick. Re-seed `lastObservedScrollHeight` from the
+  // current `scrollHeight`, so the next contentShift is compared
+  // against the post-preserve state — not the stale pre-preserve
+  // value, which would have made the very first post-preserve shift
+  // look like a "measurement update" and re-trigger the stick path.
+  lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
+  suppressContentShiftStick = false
+
+  // ── Post-preserve bottom re-validation (task_1787638309623_3) ────────
+  //
+  // The suppress window above SWALLOWED every contentShift event, so
+  // if the user was at bottom before the prepend, nothing re-validated
+  // the bottom after `endPreserve` restored the anchor. If the
+  // prepended items' heights were still estimates when endPreserve
+  // measured them (images/code blocks settle later), the sizer grows
+  // AFTER the preserve window closes and nothing scrolls to absorb
+  // it — a persistent gap below the last message (the "new items on
+  // demand create big gaps" symptom).
+  //
+  // `wasAtBottom` was snapshotted BEFORE `beginPreserve` (the preserve
+  // dance fires scroll events that would corrupt the live flag).
+  // Explicit Math.max compute — same contract as the contentShift
+  // re-stick, no browser-clamp delegate.
+  if (wasAtBottom) {
+    const c = virtualScrollerRef.value?.containerRef
+    if (c) {
+      scrollLogger.markProgrammatic()
+      lastAutoStickAt.value = Date.now()
+      // Delegated to the scroller's scrollToBottom (real-bottom
+      // target — same rationale as the onContentShift stick).
+      virtualScrollerRef.value?.scrollToBottom('auto')
+      // Re-engage the stick explicitly: the user WAS at bottom before
+      // the prepend, and we just moved them to the new bottom on their
+      // behalf. The preserve dance's programmatic scroll events may
+      // have flipped isAtBottom=false mid-prepend (the round-2 guard
+      // only retains the stick for users who were already engaged) —
+      // without this re-arm, the next SSE chunk's contentShift would
+      // skip and leave a gap below the last message.
+      isAtBottom.value = true
+      scrollLogger.info({
+        ...afterCtx,
+        caller: 'commitOlderPage',
+        reason: 'post-preserve-stick',
+        extra: { prepending: newCount, wasAtBottom },
+      })
+    }
+  }
+
+  // REFILL — keep exactly one page of lookahead so the NEXT scroll-back is
+  // instant too. Bounded: a commit that leaves the viewport inside the band
+  // (tall viewport / short page) would otherwise chain pages with no gesture.
+  if (page.hasMore && !isLoading.value && !isPendingSession.value) {
+    if (prefetchAutoChain < MAX_PREFETCH_AUTO_CHAIN) {
+      prefetchAutoChain++
+      armPrefetchOlder('refill')
+    } else {
+      scrollLogger.info({
+        ...afterCtx,
+        caller: 'commitOlderPage',
+        reason: 'load-more-prefetch-skipped',
+        extra: {
+          skip: 'auto-chain-budget',
+          prefetchAutoChain,
+          maxAutoChain: MAX_PREFETCH_AUTO_CHAIN,
+        },
+      })
+    }
+  }
+}
+
+/**
+ * Evaluate the prefetch decision for the CURRENT scroll geometry and arm if it
+ * says so. Called from `handleVirtualScroll` (per user gesture) and once after
+ * the initial load settles (so a chat opened near the top pre-arms without
+ * waiting for a scroll event — at the bottom it is a no-op, out of radius).
+ */
+const evaluateOlderPrefetch = () => {
+  if (!sessionId.value || isPendingSession.value) return
+  const container = virtualScrollerRef.value?.containerRef
+  if (!container) return
+  const distanceFromTop = Math.max(0, container.scrollTop)
+  const radius = armRadiusPx(container.clientHeight)
+  const decision = decidePrefetchOlder({
+    distanceFromTop,
+    armRadiusPx: radius,
+    hasMore: hasMoreMessages.value,
+    isLoading: isLoading.value,
+    isCommitting: isCommittingOlder,
+    isPrefetching: prefetchPromise !== null,
+    hasBufferedPage: bufferedOlderPage !== null,
+    isPreservingScroll: virtualScrollerRef.value?.isPreservingScroll === true,
+    sessionId: sessionId.value || null,
+    backoffActive: performance.now() < prefetchBackoffUntil,
+  })
+  if (decision.arm) {
+    lastPrefetchSkip = null
+    armPrefetchOlder(decision.trigger === 'velocity' ? 'velocity' : 'margin')
+    return
+  }
+  // Log a skip once per DISTINCT reason (a fling inside the radius fires many
+  // scroll events; one line each would drown the log), and never log the
+  // ordinary "still far from the top" case.
+  const skip = decision.skip && decision.skip !== 'not-close-enough' ? decision.skip : null
+  if (skip && skip !== lastPrefetchSkip) {
+    scrollLogger.info({
+      ...prefetchLogCtx('load-more-prefetch-skipped', 'evaluateOlderPrefetch', {
+        skip,
+        distanceFromTop,
+        armRadiusPx: radius,
+      }),
+    })
+  }
+  lastPrefetchSkip = skip
+}
+
+/**
+ * The single entry point for "load older messages".
+ *
+ * Replaces the old `handleLoadMore` guard chain and is the only path that
+ * commits a page, so the guards run exactly once per attempt:
+ *   - the auto-stick gate applies ONLY to `trigger === 'edge'` (the scroll
+ *     trigger). The manual button deliberately bypasses it, matching the
+ *     previous behaviour where the button called `loadChatHistory(true)`
+ *     directly — an explicit user click must never be swallowed by a stream.
+ *   - `isLoadingMore` / `isCommittingOlder` are set SYNCHRONOUSLY with the
+ *     buffer claim, before the first `await` (double-commit contract).
+ */
+const maybeLoadOlder = async (trigger: 'edge' | 'manual') => {
+  const container = virtualScrollerRef.value?.containerRef
+  const ctx = buildScrollContext(container, {
+    chatId: sessionId.value || props.chatId,
+    messages: messages.value.length,
+    isAtBottom: isAtBottom.value,
+    virtualScrollerRef,
+    wrapperRef: messagesWrapperRef,
+  })
+
+  // Each guard is its own `if` (not chained with `||`) so we can
+  // log exactly which one blocked. Order matters: the auto-stick
+  // gate is first because it's the most common cause of "I
+  // scrolled to the top during streaming and nothing loaded".
+  //
+  // Gate suppression (not blanket suppression): the previous
+  // guard `isLLMProcessing && isAtBottom` blocked loadMore for
+  // the ENTIRE duration of the stream, which made pagination
+  // impossible while a long response was streaming. The new
+  // guard is timestamp-based: only suppress if the auto-stick
+  // actually fired recently (within AUTO_STICK_GATE_MS). That
+  // way:
+  //   - Active stream (chunks every <100ms)
+  //     → gate is fresh → suppress (no jitter from prepend
+  //       fighting the next chunk's stick).
+  //   - Slow model, paused stream, or user scrolled up
+  //     → gate goes stale → allow loadMore.
+  // See `helpers/autoStickGate.ts` for the gating math.
+  const now = Date.now()
+  const sinceLastAutoStickMs = lastAutoStickAt.value === 0 ? -1 : now - lastAutoStickAt.value
+  if (trigger === 'edge' && isAutoStickActive(lastAutoStickAt.value, now, isAtBottom.value)) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'maybeLoadOlder',
+      reason: 'load-more-suppressed',
+      extra: {
+        guard: 'auto-stick-active',
+        source: 'ChatView',
+        sinceLastAutoStickMs,
+        gateMs: AUTO_STICK_GATE_MS,
+        isLLMProcessing: isLLMProcessing.value,
+        isAtBottom: isAtBottom.value,
+      },
+    })
+    return
+  }
+  if (!hasMoreMessages.value) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'maybeLoadOlder',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'no-more-messages', source: 'ChatView', trigger },
+    })
+    return
+  }
+  if (isLoadingMore.value) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'maybeLoadOlder',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'already-loading', source: 'ChatView', trigger },
+    })
+    return
+  }
+  if (isCommittingOlder) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'maybeLoadOlder',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'already-committing', source: 'ChatView', trigger },
+    })
+    return
+  }
+  if (messages.value.length === 0) {
+    scrollLogger.info({
+      ...ctx,
+      caller: 'maybeLoadOlder',
+      reason: 'load-more-suppressed',
+      extra: { guard: 'no-messages', source: 'ChatView', trigger },
+    })
+    return
+  }
+
+  // Synchronous claim — the buffer slot is cleared and both in-flight flags are
+  // set BEFORE any `await`, so a second caller (the positional commit racing the
+  // scroller's 200 ms backstop) hits `already-loading`/`already-committing`.
+  const buffered = claimBufferedOlderPage()
+  const pending = prefetchPromise
+  isLoadingMore.value = true
+  isCommittingOlder = true
+
+  // All guards passed — log the threshold reached and fetch.
+  // The extra includes the LLM/scroll state so the log line
+  // answers "was this a streaming-time loadMore?" in one glance.
+  const effectiveThreshold = virtualScrollerRef.value?.effectiveLoadMoreThreshold ?? 200
+  scrollLogger.info({
+    ...ctx,
+    caller: 'maybeLoadOlder',
+    reason: 'load-more-threshold-reached',
+    extra: {
+      trigger,
+      hasMore: hasMoreMessages.value,
+      loadMoreThreshold: 200, // absolute floor, mirrors the prop on <VirtualScroller>
+      loadMoreThresholdRatio: 0.5, // mirrors the prop on <VirtualScroller>
+      effectiveLoadMoreThreshold: effectiveThreshold, // max(floor, containerHeight * ratio)
+      isLLMProcessing: isLLMProcessing.value,
+      isAtBottom: isAtBottom.value,
+      fromBuffer: buffered !== null,
+      estimatedFetchMs: Math.round(fetchEstimateMs),
+    },
+  })
+
+  try {
+    if (buffered) {
+      await commitOlderPage(buffered, 'buffered')
+      return
+    }
+    // No buffer: if an ARM is already in flight, reuse it instead of firing a
+    // duplicate request (single-flight), then commit whatever it produced.
+    if (pending) {
+      await pending
+      const claimed = claimBufferedOlderPage()
+      if (claimed) {
+        await commitOlderPage(claimed, 'buffered')
+        return
+      }
+    }
+    const page = await fetchOlderPage(messageCursor.value)
+    if (page.generation !== commitGeneration) return
+    await commitOlderPage(page, trigger === 'manual' ? 'manual' : 'foreground')
+  } catch (err) {
+    console.error('[ChatView] failed to load older messages:', err)
+  } finally {
+    isLoadingMore.value = false
+    isCommittingOlder = false
+  }
+}
+
+/**
+ * Initial load / refresh (the old `loadChatHistory(false)`).
+ *
+ * The `loadMore` branch that used to live here moved to `maybeLoadOlder` /
+ * `commitOlderPage`; this function no longer has a `loadMore` parameter, so the
+ * two scroll-back call sites can no longer accidentally take the slow path.
+ */
+const loadChatHistory = async () => {
   if (!sessionId.value || isPendingSession.value) return
 
-  if (loadMore) {
-    isLoadingMore.value = true
-  } else {
-    isLoading.value = true
-    messageCursor.value = null
-  }
+  isLoading.value = true
+  messageCursor.value = null
+  // Invalidate anything armed for the previous view of this session.
+  resetOlderPrefetch('refresh')
   error.value = null
 
   try {
-    const data = await api.getChatHistory(
-      sessionId.value,
-      PAGE_SIZE,
-      messageCursor.value ?? undefined,
-    )
+    const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, undefined)
 
-    if (!loadMore && data.cwd) {
+    if (data.cwd) {
       sessionCwd.value = data.cwd
     }
 
-    if (!loadMore && data.git_worktree_cwd !== undefined) {
+    if (data.git_worktree_cwd !== undefined) {
       gitWorktreeCwd.value = data.git_worktree_cwd
     }
 
     // Attached-PR binding for the sidebar's PR-changes mode. Loaded
     // here (mount) and re-synced by refreshWorktreeBinding() so a
     // mid-chat attach/clear flips the panel without a reload.
-    if (!loadMore && data.pr_url !== undefined) {
+    if (data.pr_url !== undefined) {
       chatPrUrl.value = data.pr_url ?? ''
     }
-    if (!loadMore && data.pr_provider !== undefined) {
+    if (data.pr_provider !== undefined) {
       chatPrProvider.value = data.pr_provider ?? ''
     }
 
@@ -1859,245 +2508,106 @@ const loadChatHistory = async (loadMore = false) => {
     // and races with loadChatHistory on initial mount. Reading it here
     // is the authoritative source: whichever finishes first, the value
     // is the same. The watch's later update will agree and not clobber.
-    if (!loadMore && data.selected_profile_model !== undefined) {
+    if (data.selected_profile_model !== undefined) {
       selectedProfile.value = data.selected_profile_model || null
     }
 
-    if (!loadMore) {
-      if (data.max_total_tokens !== undefined) {
-        maxTotalTokens.value = data.max_total_tokens
-      }
-      if (data.max_capacity_total_tokens !== undefined) {
-        maxCapacityTotalTokens.value = data.max_capacity_total_tokens
-      }
-      sessionSkills.value = data.skills || []
+    if (data.max_total_tokens !== undefined) {
+      maxTotalTokens.value = data.max_total_tokens
     }
+    if (data.max_capacity_total_tokens !== undefined) {
+      maxCapacityTotalTokens.value = data.max_capacity_total_tokens
+    }
+    sessionSkills.value = data.skills || []
 
-    const newMessages = (data.messages || []).map((msg) => ({
-      id: msg.id || `msg-${msg.created_at}`,
-      role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
-      content: msg.content,
-      timestamp: new Date((msg.created_at || 0) * 1000),
-      tool_name: msg.tool_name,
-      diffview_before: msg.diffview_before,
-      diffview_after: msg.diffview_after,
-      image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
-      finish_reason: msg.finish_reason,
-      tool_calls_json: msg.tool_calls_json,
-      tool_call_id: msg.tool_call_id,
-      is_input: msg.is_input,
-      is_output: msg.is_output,
-      // 2026-08-23 hidden-messages fix — carry the thinking model's
-      // reasoning through to the renderer. The backend REST endpoint
-      // already returns it (http_response.zig SessionMessage).
-      reasoning_content: msg.reasoning_content || undefined,
-    }))
+    const newMessages = toChatMessages(data.messages)
 
-    if (loadMore) {
-      // Suppress the contentShift re-stick for the duration of the
-      // preserve. The user is scrolling *up* to load older history
-      // (not at the bottom), so the stick-to-bottom behavior is
-      // useless here — and its re-stick callback firing on every
-      // layout shift during the forceRender/measure/anchor dance is
-      // what was causing the visible flicker. Detaching the rAF
-      // handler eliminates that work entirely for this window.
-      suppressContentShiftStick = true
-
-      // Snapshot the at-bottom state BEFORE the preserve begins. The
-      // preserve dance (beginPreserve → messages mutation → endPreserve)
-      // fires scroll events that pass through handleVirtualScroll and
-      // would corrupt the live `isAtBottom` flag — the snapshot is the
-      // only trustworthy signal for the post-preserve re-validation
-      // below (task_1787638309623_3).
-      const wasAtBottom = isAtBottom.value
-
-      // Preserve scroll position when prepending new (older) messages at the top.
-      // beginPreserve must be called BEFORE mutating the array so the anchor
-      // element's offsetTop is captured while it's still in the DOM.
-      const newCount = newMessages.length
-      const containerBefore = virtualScrollerRef.value?.containerRef
-      const beforeCtx = buildScrollContext(containerBefore, {
-        chatId: sessionId.value || props.chatId,
-        messages: messages.value.length,
-        isAtBottom: isAtBottom.value,
-        virtualScrollerRef,
-        wrapperRef: messagesWrapperRef,
-      })
-      scrollLogger.info({
-        ...beforeCtx,
-        caller: 'loadChatHistory',
-        reason: 'load-more-preserve-start',
-        extra: { prepending: newCount },
-      })
-      virtualScrollerRef.value?.beginPreserve(newCount)
-      // 2026-09-09 user-pill pagination fix — dedupe: drop pages already
-      // present (retry after a failed endPreserve, overlapping cursor
-      // pages, or an SSE `full` echo that landed mid-preserve). Without
-      // this the same id prepended twice renders double bubbles and
-      // corrupts group indices the pill rail jumps to.
-      const seenIds = new Set(messages.value.map((m) => m.id))
-      const freshMessages = newMessages.filter((m) => !seenIds.has(m.id))
-      messages.value = [...freshMessages.slice().reverse(), ...messages.value]
-      // 2026-09-09 user-pill pagination fix — cursor advance: the NEXT
-      // loadMore must continue from THIS page's cursor, not the initial
-      // one. These assignments previously lived only in the initial-load
-      // branch, so every 2nd+ loadMore re-sent the same cursor and
-      // re-prepended the same page forever.
+    // Initial load path. Set isInitialLoad BEFORE the messages
+    // assignment so the messages-length watcher's sync callback
+    // sees the flag and skips its own scrollToBottom (which would
+    // yank the user back to the bottom right after we restore a
+    // saved position).
+    isInitialLoad = true
+    try {
+      messages.value = newMessages.slice().reverse()
       messageCursor.value = data.next_cursor
       hasMoreMessages.value = data.has_more
-      await nextTick()
-      // The VirtualScroller's internal scrollTop restoration may fire
-      // a scroll event. Mark it programmatic so the next
-      // handleVirtualScroll knows.
-      scrollLogger.markProgrammatic()
-      await virtualScrollerRef.value?.endPreserve()
-      const containerAfter = virtualScrollerRef.value?.containerRef
-      const afterCtx = buildScrollContext(containerAfter, {
+
+      const initialContainer = virtualScrollerRef.value?.containerRef
+      const initialCtx = buildScrollContext(initialContainer, {
         chatId: sessionId.value || props.chatId,
         messages: messages.value.length,
         isAtBottom: isAtBottom.value,
         virtualScrollerRef,
         wrapperRef: messagesWrapperRef,
       })
-      // The interesting deltas: did scrollTop actually return to its
-      // pre-preserve position? did scrollHeight grow by ~the new
-      // messages? did the user-visible position jump (deltaAnchor ≠ 0)?
-      const scrollTopDelta = afterCtx.scrollTop - beforeCtx.scrollTop
-      const scrollHeightDelta = afterCtx.scrollHeight - beforeCtx.scrollHeight
       scrollLogger.info({
-        ...afterCtx,
+        ...initialCtx,
         caller: 'loadChatHistory',
-        reason: 'load-more-preserve-end',
-        extra: {
-          prepending: newCount,
-          scrollTopDelta,
-          scrollHeightDelta,
-          restoredOk: Math.abs(scrollTopDelta) < 2,
-        },
+        reason: 'scroll-to-bottom-forced',
+        extra: { trigger: 'initial-load' },
       })
+      await nextTick()
+      // Wait one paint frame so the browser has actually laid out the
+      // VirtualScroller items (nextTick alone only waits for Vue's DOM
+      // update, not for layout/paint). After this, the MutationObserver
+      // set up in onMounted takes over: whenever spacers resize (from
+      // measurement updates) it'll re-stick to the bottom as long as the
+      // user hasn't scrolled up.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
 
-      // Re-arm the re-stick. Re-seed `lastObservedScrollHeight` from the
-      // current `scrollHeight`, so the next contentShift is compared
-      // against the post-preserve state — not the stale pre-preserve
-      // value, which would have made the very first post-preserve shift
-      // look like a "measurement update" and re-trigger the stick path.
-      lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
-      suppressContentShiftStick = false
-
-      // ── Post-preserve bottom re-validation (task_1787638309623_3) ────────
-      //
-      // The suppress window above SWALLOWED every contentShift event, so
-      // if the user was at bottom before the prepend, nothing re-validated
-      // the bottom after `endPreserve` restored the anchor. If the
-      // prepended items' heights were still estimates when endPreserve
-      // measured them (images/code blocks settle later), the sizer grows
-      // AFTER the preserve window closes and nothing scrolls to absorb
-      // it — a persistent gap below the last message (the "new items on
-      // demand create big gaps" symptom).
-      //
-      // `wasAtBottom` was snapshotted BEFORE `beginPreserve` (the preserve
-      // dance fires scroll events that would corrupt the live flag).
-      // Explicit Math.max compute — same contract as the contentShift
-      // re-stick, no browser-clamp delegate.
-      if (wasAtBottom) {
-        const c = virtualScrollerRef.value?.containerRef
-        if (c) {
-          scrollLogger.markProgrammatic()
-          lastAutoStickAt.value = Date.now()
-          // Delegated to the scroller's scrollToBottom (real-bottom
-          // target — same rationale as the onContentShift stick).
-          virtualScrollerRef.value?.scrollToBottom('auto')
-          // Re-engage the stick explicitly: the user WAS at bottom before
-          // the prepend, and we just moved them to the new bottom on their
-          // behalf. The preserve dance's programmatic scroll events may
-          // have flipped isAtBottom=false mid-prepend (the round-2 guard
-          // only retains the stick for users who were already engaged) —
-          // without this re-arm, the next SSE chunk's contentShift would
-          // skip and leave a gap below the last message.
-          isAtBottom.value = true
-          scrollLogger.info({
-            ...afterCtx,
-            caller: 'loadChatHistory',
-            reason: 'post-preserve-stick',
-            extra: { prepending: newCount, wasAtBottom },
-          })
-        }
-      }
-    } else {
-      // Initial load path. Set isInitialLoad BEFORE the messages
-      // assignment so the messages-length watcher's sync callback
-      // sees the flag and skips its own scrollToBottom (which would
-      // yank the user back to the bottom right after we restore a
-      // saved position).
-      isInitialLoad = true
-      try {
-        messages.value = newMessages.slice().reverse()
-        messageCursor.value = data.next_cursor
-        hasMoreMessages.value = data.has_more
-
-        const initialContainer = virtualScrollerRef.value?.containerRef
-        const initialCtx = buildScrollContext(initialContainer, {
-          chatId: sessionId.value || props.chatId,
-          messages: messages.value.length,
-          isAtBottom: isAtBottom.value,
-          virtualScrollerRef,
-          wrapperRef: messagesWrapperRef,
-        })
+      // Try to restore the user's previous scroll position (set by
+      // useChatScrollRestore when they last closed this task). If
+      // no saved position exists OR the saved position is "near
+      // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
+      // returns null and we fall through to the existing
+      // scrollToBottom behavior. This is the chat-specific
+      // counterpart of the kanban composable's restore-on-mount
+      // path.
+      const savedScrollTop = chatScrollRestore.restore()
+      if (savedScrollTop !== null) {
+        scrollLogger.markProgrammatic()
+        virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
         scrollLogger.info({
           ...initialCtx,
           caller: 'loadChatHistory',
-          reason: 'scroll-to-bottom-forced',
-          extra: { trigger: 'initial-load' },
+          reason: 'scroll-position-restored',
+          extra: { savedScrollTop, trigger: 'initial-load' },
         })
-        await nextTick()
-        // Wait one paint frame so the browser has actually laid out the
-        // VirtualScroller items (nextTick alone only waits for Vue's DOM
-        // update, not for layout/paint). After this, the MutationObserver
-        // set up in onMounted takes over: whenever spacers resize (from
-        // measurement updates) it'll re-stick to the bottom as long as the
-        // user hasn't scrolled up.
-        await new Promise<void>((r) => requestAnimationFrame(() => r()))
-
-        // Try to restore the user's previous scroll position (set by
-        // useChatScrollRestore when they last closed this task). If
-        // no saved position exists OR the saved position is "near
-        // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
-        // returns null and we fall through to the existing
-        // scrollToBottom behavior. This is the chat-specific
-        // counterpart of the kanban composable's restore-on-mount
-        // path.
-        const savedScrollTop = chatScrollRestore.restore()
-        if (savedScrollTop !== null) {
-          scrollLogger.markProgrammatic()
-          virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
-          scrollLogger.info({
-            ...initialCtx,
-            caller: 'loadChatHistory',
-            reason: 'scroll-position-restored',
-            extra: { savedScrollTop, trigger: 'initial-load' },
-          })
-        } else {
-          scrollToBottom(true, 'initial-load')
-        }
-
-        setupCodeBlockCopyButtons()
-        // 2026-09-04 spawn-subagent-refresh-persist
-        // (task_1788505292766_1) — rehydrate live sub-agent rows after
-        // a (re)load. Fire-and-forget: the map update re-renders cards
-        // when snapshots land; failures keep Task 0's "starting…".
-        void rehydrateSubAgentProgress()
-      } finally {
-        isInitialLoad = false
+      } else {
+        scrollToBottom(true, 'initial-load')
       }
+
+      setupCodeBlockCopyButtons()
+      // 2026-09-04 spawn-subagent-refresh-persist
+      // (task_1788505292766_1) — rehydrate live sub-agent rows after
+      // a (re)load. Fire-and-forget: the map update re-renders cards
+      // when snapshots land; failures keep Task 0's "starting…".
+      void rehydrateSubAgentProgress()
+    } finally {
+      isInitialLoad = false
     }
   } catch (err) {
     console.error('Failed to load chat history:', err)
     error.value = 'Failed to load messages'
-    if (!loadMore) messages.value = []
+    messages.value = []
   } finally {
     isLoading.value = false
-    isLoadingMore.value = false
   }
+
+  // NOTE — deliberately NO prefetch evaluation here.
+  //
+  // An eager one-shot evaluation at this point reads unsettled geometry: the
+  // initial-load scroll (`chatScrollRestore.restore()` / `scrollToBottom`) is
+  // applied a tick AFTER this function returns, so `container.scrollTop` is
+  // still 0 and the arm radius check passes — burning a scroll-back request on
+  // every chat open, which then gets dropped when the real position lands.
+  // Verified in the browser (chatview_lazy_prefetch_ui_test.py): the eager
+  // request was issued at `scrollTop = 0` and dropped ~1 frame later.
+  //
+  // The arm therefore waits for the first real user scroll event, which is also
+  // when the prefetch is actually useful. A chat restored to a position near
+  // the top arms on its first upward scroll — still ~1.5 viewports early.
 }
 
 // ─── Scroll ──────────────────────────────────────────────────────────────────
@@ -2146,102 +2656,12 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
 
 // Triggered by VirtualScroller when the user scrolls within `loadMoreThreshold`
 // of the top (because `loadMoreAtTop` is true). Auto-paginates older messages.
+//
+// Thin wrapper: the guard chain + buffered-page commit live in
+// `maybeLoadOlder` (which the positional commit in `handleVirtualScroll` and
+// the manual button also call), so every trigger shares one implementation.
 const handleLoadMore = () => {
-  // Build the context once, up front, so every guard log carries
-  // the same scroller/wrapper/geometry state. The container may
-  // be null (the VirtualScroller was just unmounted, or the ref
-  // never bound) — `buildScrollContext` handles that.
-  const container = virtualScrollerRef.value?.containerRef
-  const ctx = buildScrollContext(container, {
-    chatId: sessionId.value || props.chatId,
-    messages: messages.value.length,
-    isAtBottom: isAtBottom.value,
-    virtualScrollerRef,
-    wrapperRef: messagesWrapperRef,
-  })
-
-  // Each guard is its own `if` (not chained with `||`) so we can
-  // log exactly which one blocked. Order matters: the auto-stick
-  // gate is first because it's the most common cause of "I
-  // scrolled to the top during streaming and nothing loaded".
-  //
-  // Gate suppression (not blanket suppression): the previous
-  // guard `isLLMProcessing && isAtBottom` blocked loadMore for
-  // the ENTIRE duration of the stream, which made pagination
-  // impossible while a long response was streaming. The new
-  // guard is timestamp-based: only suppress if the auto-stick
-  // actually fired recently (within AUTO_STICK_GATE_MS). That
-  // way:
-  //   - Active stream (chunks every <100ms)
-  //     → gate is fresh → suppress (no jitter from prepend
-  //       fighting the next chunk's stick).
-  //   - Slow model, paused stream, or user scrolled up
-  //     → gate goes stale → allow loadMore.
-  // See `helpers/autoStickGate.ts` for the gating math.
-  const now = Date.now()
-  const sinceLastAutoStickMs = lastAutoStickAt.value === 0 ? -1 : now - lastAutoStickAt.value
-  if (isAutoStickActive(lastAutoStickAt.value, now, isAtBottom.value)) {
-    scrollLogger.info({
-      ...ctx,
-      caller: 'handleLoadMore',
-      reason: 'load-more-suppressed',
-      extra: {
-        guard: 'auto-stick-active',
-        source: 'ChatView',
-        sinceLastAutoStickMs,
-        gateMs: AUTO_STICK_GATE_MS,
-        isLLMProcessing: isLLMProcessing.value,
-        isAtBottom: isAtBottom.value,
-      },
-    })
-    return
-  }
-  if (!hasMoreMessages.value) {
-    scrollLogger.info({
-      ...ctx,
-      caller: 'handleLoadMore',
-      reason: 'load-more-suppressed',
-      extra: { guard: 'no-more-messages', source: 'ChatView' },
-    })
-    return
-  }
-  if (isLoadingMore.value) {
-    scrollLogger.info({
-      ...ctx,
-      caller: 'handleLoadMore',
-      reason: 'load-more-suppressed',
-      extra: { guard: 'already-loading', source: 'ChatView' },
-    })
-    return
-  }
-  if (messages.value.length === 0) {
-    scrollLogger.info({
-      ...ctx,
-      caller: 'handleLoadMore',
-      reason: 'load-more-suppressed',
-      extra: { guard: 'no-messages', source: 'ChatView' },
-    })
-    return
-  }
-
-  // All guards passed — log the threshold reached and fetch.
-  // The extra includes the LLM/scroll state so the log line
-  // answers "was this a streaming-time loadMore?" in one glance.
-  const effectiveThreshold = virtualScrollerRef.value?.effectiveLoadMoreThreshold ?? 200
-  scrollLogger.info({
-    ...ctx,
-    caller: 'handleLoadMore',
-    reason: 'load-more-threshold-reached',
-    extra: {
-      hasMore: hasMoreMessages.value,
-      loadMoreThreshold: 200, // absolute floor, mirrors the prop on <VirtualScroller>
-      loadMoreThresholdRatio: 0.5, // mirrors the prop on <VirtualScroller>
-      effectiveLoadMoreThreshold: effectiveThreshold, // max(floor, containerHeight * ratio)
-      isLLMProcessing: isLLMProcessing.value,
-      isAtBottom: isAtBottom.value,
-    },
-  })
-  loadChatHistory(true)
+  void maybeLoadOlder('edge')
 }
 
 // Triggered by VirtualScroller when one of ITS internal guards
@@ -2465,6 +2885,26 @@ const handleVirtualScroll = (
       },
     })
   }
+  // ── Older-history prefetch (task_1789505423062_0) ────────────────────
+  //
+  // Runs on USER scroll events only: a programmatic write (anchor
+  // compensation, `endPreserve` restore) is not a gesture and must not feed
+  // the decision — but it must not skip the delta bookkeeping below either,
+  // so this is a scoped `if`, never an early return.
+  if (!isProgrammatic) {
+    // A real upward gesture is fresh intent to read history — reset the
+    // refill auto-chain budget so the next commits may chain again.
+    if (deltaTop < 0) prefetchAutoChain = 0
+    // ARM as early as the geometry allows (fetch into the buffer, invisibly)…
+    evaluateOlderPrefetch()
+    // …and COMMIT the moment the user is inside the scroller's own
+    // load-more band, instead of waiting out the 200 ms `@load-more`
+    // backstop. `maybeLoadOlder` re-runs every guard and claims the buffer
+    // synchronously, so this cannot double-commit with the backstop.
+    const band = virtualScrollerRef.value?.effectiveLoadMoreThreshold ?? 200
+    if (bufferedOlderPage && distanceFromTop < band) void maybeLoadOlder('edge')
+  }
+
   // ── State transitions are loud ─────────────────────────────────────
   //
   // This is the most useful line in the whole logger. "User was
@@ -3184,6 +3624,9 @@ onUnmounted(() => {
   document.removeEventListener('click', closeOnOutsideClick)
   window.removeEventListener('message', onHtmlFrameResize)
   stopCenterSpy()
+  // Drop any armed older page and invalidate in-flight arms — the
+  // commitGeneration bump makes a late response inert.
+  resetOlderPrefetch('unmount')
 })
 
 // Load available profiles (called once on mount)
@@ -3199,6 +3642,11 @@ window.addEventListener('message', onHtmlFrameResize)
 watch(
   () => sessionId.value,
   async (newId) => {
+    // Any page armed for the previous session is invalid — drop it before
+    // the new session's history loads. (The component is normally keyed
+    // per chat, but this watcher is the one place we can be sure the id
+    // actually changed without a remount.)
+    resetOlderPrefetch('session-change')
     if (!newId) {
       selectedProfile.value = null
       return
@@ -3265,7 +3713,10 @@ watch(
 // (sessionId is set in onMounted but the watch is registered before).
 watch(
   () => sessionId.value,
-  () => refreshScrollLogger(),
+  () => {
+    refreshScrollLogger()
+    resetOlderPrefetch('session-change')
+  },
 )
 
 // ─── Send Message ─────────────────────────────────────────────────────────────
@@ -3520,7 +3971,10 @@ const compactSession = async () => {
           and the user has no way to reach older messages.
 
           This button bypasses the scroll trigger and calls
-          `loadChatHistory(true)` directly. It is hidden while a
+          `maybeLoadOlder('manual')` — the same guard chain the scroll path
+          uses, minus the auto-stick gate (an explicit click must not be
+          swallowed by a stream). A page the prefetch already armed is
+          committed from memory. It is hidden while a
           pagination is already in flight (`isLoadingMore`) so we don't
           show two spinners, hidden when the initial empty state is
           rendered (`messageGroups.length === 0`), and hidden when the
@@ -3543,7 +3997,7 @@ const compactSession = async () => {
           data-testid="load-more-messages"
         >
           <button
-            @click="loadChatHistory(true)"
+            @click="maybeLoadOlder('manual')"
             class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs transition-all duration-200 hover:scale-105"
             style="
               background-color: var(--semantic-card-bg);

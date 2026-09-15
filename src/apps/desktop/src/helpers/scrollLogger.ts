@@ -146,6 +146,14 @@ export type ScrollReason =
   | 'load-more-preserve-start'
   | 'load-more-preserve-end'
   | 'post-preserve-stick' // loadMore prepend finished, user was at bottom → explicit re-stick (task_1787638309623_3)
+  // Older-history PREFETCH (task_1789505423062_0) — one page armed ahead of the
+  // scroll reaching the load-more band, so crossing the band commits from
+  // memory instead of waiting out a round trip.
+  | 'load-more-prefetch-armed' // the speculative page landed and is buffered (not yet in `messages`)
+  | 'load-more-prefetch-committed' // the buffered page was prepended (trigger: buffered/foreground/manual)
+  | 'load-more-prefetch-skipped' // the arm trigger ran but a state blocked it (extra.skip: PrefetchSkip)
+  | 'load-more-prefetch-dropped' // a buffered/in-flight page was discarded (extra.cause)
+  | 'load-more-prefetch-failed' // the speculative request threw (warn level)
   | 'sse-chunk-arrived'
   | 'messages-length-changed'
   // Per-call handleVirtualScroll diagnostics. Each one fires once
@@ -322,7 +330,10 @@ export interface ScrollLogger {
    * `markProgrammatic` counter, or pass an explicit value to override.
    */
   debug: (
-    ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & { origin?: ScrollOrigin; caller?: string },
+    ctx: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & {
+      origin?: ScrollOrigin
+      caller?: string
+    },
   ) => void
   /** State change / lifecycle event. Always logged. */
   info: (
@@ -384,15 +395,8 @@ export const createScrollLogger = (chatId: string): ScrollLogger => {
     partial: Omit<ScrollContext, 'chatId' | 'reason' | 'origin'> & { origin?: ScrollOrigin },
     reason: ScrollReason,
   ): ScrollContext => {
-    const {
-      scrollTop,
-      scrollHeight,
-      clientHeight,
-      messages,
-      isAtBottom,
-      extra,
-      containerInfo,
-    } = partial
+    const { scrollTop, scrollHeight, clientHeight, messages, isAtBottom, extra, containerInfo } =
+      partial
     const distanceFromTop = Math.max(0, scrollTop)
     const distanceFromBottom = Math.max(0, scrollHeight - scrollTop - clientHeight)
     const scrollable = scrollHeight - clientHeight

@@ -17,25 +17,29 @@ import { describe, it, expect } from 'vitest'
 const readChatViewSource = async (): Promise<string> => {
   const fs = await import('node:fs/promises')
   const path = await import('node:path')
-  const chatviewPath = path.resolve(
-    __dirname,
-    '..',
-    'components',
-    'views',
-    'ChatView.vue',
-  )
+  const chatviewPath = path.resolve(__dirname, '..', 'components', 'views', 'ChatView.vue')
   return fs.readFile(chatviewPath, 'utf8')
 }
 
 describe('pagination — cursor advances on loadMore', () => {
-  it('updates messageCursor + hasMoreMessages in the loadMore branch', async () => {
+  it('advances messageCursor + hasMoreMessages on the initial load AND on every prepend', async () => {
     const source = await readChatViewSource()
-    // Both assignments must appear TWICE: initial-load branch AND the
-    // loadMore (prepend) branch. One occurrence = the bug is back.
-    const cursorWrites = source.match(/messageCursor\.value = data\.next_cursor/g) ?? []
-    const hasMoreWrites = source.match(/hasMoreMessages\.value = data\.has_more/g) ?? []
-    expect(cursorWrites.length).toBeGreaterThanOrEqual(2)
-    expect(hasMoreWrites.length).toBeGreaterThanOrEqual(2)
+    // Initial load: cursor + exhaustion flag come straight from the REST page.
+    expect(source.match(/messageCursor\.value = data\.next_cursor/g) ?? []).toHaveLength(1)
+    expect(source.match(/hasMoreMessages\.value = data\.has_more/g) ?? []).toHaveLength(1)
+    // Every prepend (scroll-back, buffered prefetch, manual button) is routed
+    // through `commitOlderPage`, which advances the cursor from the COMMITTED
+    // page. Without this the 2nd+ page re-sends the same cursor and
+    // re-prepends the same messages forever. Task_1789505423062_0 moved this
+    // out of `loadChatHistory`'s old `loadMore` branch — assert it survives in
+    // its new home rather than at the old location.
+    const commitBody = source.slice(
+      source.indexOf('const commitOlderPage = async ('),
+      source.indexOf('const evaluateOlderPrefetch = '),
+    )
+    expect(commitBody.length).toBeGreaterThan(0)
+    expect(commitBody).toContain('messageCursor.value = page.nextCursor')
+    expect(commitBody).toContain('hasMoreMessages.value = page.hasMore')
   })
 
   it('dedupes prepended pages by id', async () => {
