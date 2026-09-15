@@ -63,7 +63,7 @@ test {
     _ = @import("tools/skill_tools.zig");
     _ = @import("tools/set_design_page.zig");
     _ = @import("tools/update_plan.zig");
-    _ = @import("tools/search_history.zig");
+    _ = @import("tools/read_workspace_session.zig");
     _ = @import("tools/glob.zig");
     _ = @import("tools/memory.zig");
     _ = @import("tools/kanban_list.zig");

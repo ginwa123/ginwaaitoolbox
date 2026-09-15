@@ -1473,13 +1473,13 @@ pub const Migration057AddDesignElementProperties = struct {
 };
 
 // ────────────────────────────────────────────────────────────────────────
-// Migration 058 — FTS5 virtual table on llm_history (search-history rewrite)
+// Migration 058 — FTS5 virtual table on llm_history (workspace history search)
 // ────────────────────────────────────────────────────────────────────────
 //
 // Why this migration exists
 // ──────────────────────────
-// The search-history rewrite (plan docs/superpowers/plans/2026-07-16-search-history-rewrite.md,
-// Chunk 3) replaces the LIKE-prefix-scan with an FTS5 MATCH query. This
+// The workspace history search replaces the LIKE-prefix-scan with an
+// FTS5 MATCH query. This
 // migration creates the `messages_fts` external-content FTS5 virtual table
 // over `llm_history.response_content`, plus the 3 sync triggers that keep
 // it in lockstep with the source rows.
@@ -1503,11 +1503,10 @@ pub const Migration057AddDesignElementProperties = struct {
 // Why version 58 (not 55)
 // ──────────────────────
 // Migration numbers 55, 56, 57 are already taken (AddDesignPages,
-// UpgradeDesignPagesToFileModel, AddDesignElementProperties — see
-// search-history-rewrite branch as of 2026-07-21). 58 is the next free
-// slot in the migration sequence. See Chunk 1 / Task 1.2 of the plan.
+// UpgradeDesignPagesToFileModel, AddDesignElementProperties).
+// 58 is the next free slot in the migration sequence.
 //
-// Plan: docs/superpowers/plans/2026-07-16-search-history-rewrite.md (Chunk 1)
+// Plan: workspace history FTS (Chunk 1)
 pub const Migration058AddLlmHistoryFts = struct {
     pub const version: u32 = 58;
     pub const name = "add_llm_history_fts";
@@ -1996,7 +1995,8 @@ pub const allMigrations: []const Migration = &.{
 ///
 /// As a result, production databases that ran V1 of Migration 059 had
 /// many rows with `created_iso = NULL`, which silently broke the
-/// `since`/`until` filter on `search_history` and `getCompactedMessages`
+/// `since`/`until` filter on workspace history reads and
+/// `getCompactedMessages`
 /// (since `'NULL' < '2026-07-15 ...'` in lex comparison filtered those
 /// rows back out, but the filter logic actually excluded them).
 ///
@@ -2053,11 +2053,11 @@ pub const Migration060RebackfillCreatedIso = struct {
 ///
 /// `llm_history.created_at` is a TEXT column storing **Unix microseconds**
 /// since the epoch as a string (e.g. `"1784119389936251112"`). The
-/// previous `search_history` / `getCompactedMessages` `since`/`until`
+/// previous history `since`/`until`
 /// filters did a lex-comparison on this column against user input like
 /// `"2026-07-15 00:00:00"` — which silently returned 0 rows because
 /// `'1' < '2'` (so `'1784…' < '2026-…'` is always true, excluding every
-/// row). See `docs/superpowers/plans/2026-07-15-search-history-since-until-bug.md`.
+/// row).
 ///
 /// ## What this does
 ///

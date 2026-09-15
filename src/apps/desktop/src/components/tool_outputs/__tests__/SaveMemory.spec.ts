@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SaveMemory from '../SaveMemory.vue'
 
 // ────────────────────────────────────────────────────────────────────────
-// jsdom clipboard stub (matches SearchHistory.spec.ts pattern)
+// jsdom clipboard stub (matches ReadWorkspaceSession.spec.ts pattern)
 // ────────────────────────────────────────────────────────────────────────
 
 let clipboardWrites: string[] = []
@@ -25,7 +25,11 @@ beforeEach(() => {
   clipboardWrites = []
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
-    value: { writeText: vi.fn(async (s: string) => { clipboardWrites.push(s) }) },
+    value: {
+      writeText: vi.fn(async (s: string) => {
+        clipboardWrites.push(s)
+      }),
+    },
   })
 })
 
@@ -37,11 +41,13 @@ afterEach(() => {
 // Helpers
 // ────────────────────────────────────────────────────────────────────────
 
-const makeSuccessContent = (opts: {
-  id?: string
-  created_at?: string
-  updated_at?: string
-} = {}) => {
+const makeSuccessContent = (
+  opts: {
+    id?: string
+    created_at?: string
+    updated_at?: string
+  } = {},
+) => {
   const id = opts.id ?? 'mem_aabbccdd11223344'
   const created = opts.created_at ?? '2026-08-06 10:00:00'
   const updated = opts.updated_at ?? '2026-08-06 10:05:00'

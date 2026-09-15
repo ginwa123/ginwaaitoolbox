@@ -15,14 +15,14 @@ The agent has two existing memory surfaces, neither of which fits the
    search — `read_file` is the only way to look at content.
 2. **LLM history** (`llm_history` + `messages_fts`) — every chat
    turn. Inadvertently used as a "memory" by agents who
-   `search_history` for past facts, but polluted with tool outputs
+   the legacy history search for past facts, but polluted with tool outputs
    and limited to session-driven rows.
 
 The gap: the agent needs to **persist a note** ("remember: the user
 prefers `claude-sonnet-4-5` for this project" / "remember: the user's
 company is XYZ") and **recall it later** via free-text search. The
 existing file-based memories are too heavy (markdown, no FTS5); the
-existing `search_history` is the wrong surface (it's for forensic
+the existing legacy history search is the wrong surface (it's for forensic
 search of past messages, not for first-class notes).
 
 ## Mental model
@@ -110,7 +110,7 @@ Response:
 ```
 
 Snippets use FTS5's `snippet()` with the same 10-token / `[match]`
-marker convention as `search_history` (the LLM can see what matched).
+marker convention as the legacy history search (the LLM can see what matched).
 
 ## Architecture
 
@@ -163,7 +163,7 @@ src/modules/agent/tools/save_memory.zig          + save_memory_test.zig
 src/modules/agent/tools/load_memory.zig          + load_memory_test.zig
 ```
 
-Pattern mirrors `kanban_list.zig` + `search_history.zig`:
+Pattern mirrors `kanban_list.zig` + the legacy history tool file:
 - `*_tool` constant (`AgentTool` shape)
 - `execute_*` function returning XML
 - `successXml` / `errorXml` helpers
@@ -188,7 +188,7 @@ Pattern mirrors `tools_exec_kanban_list.zig` (parse → exec → wrap → detect
 
 **No frontend changes.** Both tools are LLM-side only. The user
 sees the agent save/load memory via the conversation transcript
-only (same UX as `search_history`, `bash`, etc.).
+only (same UX as the legacy history search, `bash`, etc.).
 
 ## Architecture decisions
 
@@ -213,10 +213,10 @@ only (same UX as `search_history`, `bash`, etc.).
    SQL layer.
 
 5. **FTS5 sanitization via existing `escapeFtsQuery`.** Don't
-   reinvent; reuse the same helper `search_history` uses. User
+   reinvent; reuse the same FTS helper the legacy history search uses. User
    input with `.`, `-`, `:`, `*`, etc. is already handled.
 
-6. **`count` cap on `load_memory` is 50 (not 200 like search_history).**
+6. **`count` cap on `load_memory` is 50 (not 200 like the legacy history search).**
    Memory loads are typically more focused (the agent is
    retrieving a specific note) — 50 hits is plenty. Matches the
    `kanban_list` 50-row cap convention.

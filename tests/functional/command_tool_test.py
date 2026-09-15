@@ -123,13 +123,13 @@ class TestCommandRegistry:
 
 
 class TestCommandEnableDisable:
-    # Fresh agents are born with the 23-tool defaults (sorted ASC) — see
+    # Fresh agents are born with the 24-tool defaults (sorted ASC) — see
     # commit 43e37c8e (21-tool defaults expansion) and
     # docs/superpowers/plans/2026-09-06-default-agent-tools-on-creation.md.
     # (`delete_memory` removed 2026-09-12: memory is append-only.)
-    _DEFAULTS = ["add_skill", "command", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"]
-    # Post-DELETE expectation: the 23-tool list minus "command" (22 others, ASC).
-    _DEFAULTS_MINUS_COMMAND = ["add_skill", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"]
+    _DEFAULTS = ["add_skill", "command", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"]
+    # Post-DELETE expectation: the 24-tool list minus "command" (23 others, ASC).
+    _DEFAULTS_MINUS_COMMAND = ["add_skill", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"]
 
     def test_command_enable_list_disable_lifecycle(
         self, harness: FunctionalHarness
@@ -166,8 +166,8 @@ class TestCommandEnableDisable:
 
 
 class TestLegacyNamesRejected:
-    # Fresh agents seed the 23-tool defaults (sorted ASC, commit 43e37c8e).
-    _DEFAULTS = ["add_skill", "command", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"]
+    # Fresh agents seed the 24-tool defaults (sorted ASC, commit 43e37c8e).
+    _DEFAULTS = ["add_skill", "command", "edit_skill", "get_plan", "glob", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "read_workspace_session", "remove_file", "remove_skill", "save_memory", "search", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"]
 
     def test_bash_enable_now_400s_after_unify(
         self, harness: FunctionalHarness

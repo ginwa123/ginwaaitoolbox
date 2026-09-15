@@ -21,7 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LoadMemory from '../LoadMemory.vue'
 
 // ────────────────────────────────────────────────────────────────────────
-// jsdom clipboard stub (matches SearchHistory.spec.ts pattern)
+// jsdom clipboard stub (matches ReadWorkspaceSession.spec.ts pattern)
 // ────────────────────────────────────────────────────────────────────────
 
 let clipboardWrites: string[] = []
@@ -30,7 +30,11 @@ beforeEach(() => {
   clipboardWrites = []
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
-    value: { writeText: vi.fn(async (s: string) => { clipboardWrites.push(s) }) },
+    value: {
+      writeText: vi.fn(async (s: string) => {
+        clipboardWrites.push(s)
+      }),
+    },
   })
 })
 
@@ -42,23 +46,25 @@ afterEach(() => {
 // Helpers
 // ────────────────────────────────────────────────────────────────────────
 
-const makeSuccessContent = (opts: {
-  query?: string
-  offset?: number
-  limit?: number
-  with_content?: '0' | '1'
-  count?: number
-  total_count?: number
-  entries?: Array<{
-    id?: string
-    tags?: string
-    created_at?: string
-    updated_at?: string
-    snippet?: string
-    content?: string
-    content_truncated?: boolean
-  }>
-} = {}) => {
+const makeSuccessContent = (
+  opts: {
+    query?: string
+    offset?: number
+    limit?: number
+    with_content?: '0' | '1'
+    count?: number
+    total_count?: number
+    entries?: Array<{
+      id?: string
+      tags?: string
+      created_at?: string
+      updated_at?: string
+      snippet?: string
+      content?: string
+      content_truncated?: boolean
+    }>
+  } = {},
+) => {
   const query = opts.query ?? 'preferred model'
   const offset = opts.offset ?? 0
   const limit = opts.limit ?? 10
@@ -136,7 +142,7 @@ describe('LoadMemory.vue — happy path', () => {
     expect(wrapper.text()).toContain('load_memory')
     expect(wrapper.text()).toContain('"preferred model"')
     expect(wrapper.text()).toContain('3 hits')
-    // No status indicator on success (matches SearchHistory pattern —
+    // No status indicator on success (matches ReadWorkspaceSession pattern —
     // FTS5 result tools don't render a ✓ pill).
     expect(wrapper.text()).not.toContain('Error')
   })
@@ -185,9 +191,7 @@ describe('LoadMemory.vue — happy path', () => {
     const wrapper = mount(LoadMemory, {
       props: {
         content: makeSuccessContent({
-          entries: [
-            { id: 'mem_aaaa000000000001', tags: 'preferences||user' },
-          ],
+          entries: [{ id: 'mem_aaaa000000000001', tags: 'preferences||user' }],
         }),
         expanded: true,
       },
@@ -284,9 +288,7 @@ describe('LoadMemory.vue — pagination + with_content badges', () => {
       props: {
         content: makeSuccessContent({
           with_content: '1',
-          entries: [
-            { id: 'mem_aabbccdd00000001', content: 'full body', content_truncated: false },
-          ],
+          entries: [{ id: 'mem_aabbccdd00000001', content: 'full body', content_truncated: false }],
         }),
       },
     })
@@ -307,9 +309,7 @@ describe('LoadMemory.vue — full content toggle', () => {
       props: {
         content: makeSuccessContent({
           with_content: '1',
-          entries: [
-            { id: 'mem_aaaa000000000001', content: 'full memory body here' },
-          ],
+          entries: [{ id: 'mem_aaaa000000000001', content: 'full memory body here' }],
         }),
         expanded: true,
       },

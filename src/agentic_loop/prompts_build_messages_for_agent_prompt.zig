@@ -46,7 +46,6 @@ const write_file_mod = nalarcore.write_file;
 const list_skills_mod = nalarcore.skill_tools;
 const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
-const search_history_mod = nalarcore.search_history_tool;
 const use_skill_mod = nalarcore.skill_tools;
 const remove_skill_mod = nalarcore.skill_tools;
 const list_agents_mod = nalarcore.list_agents;
@@ -1166,6 +1165,7 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     .{ .name = "universal_rules", .content = prompts_const.UniversalRules },
     .{ .name = "search_tool_rule", .content = prompts_const.SearchToolRule },
     .{ .name = "memory_tool_rule", .content = prompts_const.MemoryToolRule, .requires_tool = "load_memory" },
+    .{ .name = "read_workspace_session_rule", .content = prompts_const.ReadWorkspaceSessionToolRule, .requires_tool = "read_workspace_session" },
     .{ .name = "agent_directive", .content = prompts_const.Agent },
     .{ .name = "git_prompt", .content = prompts_const.GitPrompt },
     .{ .name = "response_formatting", .content = prompts_const.ResponseFormatting },

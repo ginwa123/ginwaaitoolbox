@@ -22,7 +22,7 @@ test {
     _ = @import("migration_051_test.zig");
     _ = @import("migration_053_test.zig");
     _ = @import("migration_054_test.zig");
-    _ = @import("migration_058_test.zig");  // FTS5 on llm_history for search-history rewrite
+    _ = @import("migration_058_test.zig");  // FTS5 on llm_history for workspace history search
     _ = @import("migration_059_test.zig");  // created_iso STORED generated column (since/until fix)
     _ = @import("migration_060_test.zig");  // re-backfill for production DBs with NULL created_iso
     _ = @import("migration_061_test.zig");  // re-backfill wrong-year (58507-...) created_iso rows

@@ -26,7 +26,7 @@ pub const SearchToolRule = core.SearchToolRule;
 // to reach them (search_tool -> view_tool -> use_tool). Gated on the
 // search_tool being present in the resolved tool set.
 pub const ProgressiveToolRule = core.ProgressiveToolRule;
-pub const SearchHistoryToolRule = core.SearchHistoryToolRule;
+pub const ReadWorkspaceSessionToolRule = core.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = core.MemoryToolRule;
 
 pub const Agent = agent.Agent;

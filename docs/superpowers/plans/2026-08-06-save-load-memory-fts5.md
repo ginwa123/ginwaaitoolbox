@@ -4,7 +4,7 @@
 
 **Goal:** Add two new LLM-callable tools — `save_memory` (UPSERT) and `load_memory` (FTS5 phrase search) — backed by a new `agent_memories` SQLite table + `agent_memories_fts` FTS5 virtual table. The agent can persist short notes (preferences, decisions, facts) and recall them later via free-text search.
 
-**Architecture:** Migration 070 adds the table + FTS5 virtual table + sync triggers (mirrors the `messages_fts` pattern from Migration 058). A new `agent_memories.zig` module in `src/ai_workflow/tui/` owns the CRUD + FTS5 query helpers. Two new tool files (`save_memory.zig`, `load_memory.zig`) follow the existing `kanban_list.zig` / `search_history.zig` pattern. Two exec wrappers (`tools_exec_save_memory.zig`, `tools_exec_load_memory.zig`) wire the tools into the agent registry. No frontend changes.
+**Architecture:** Migration 070 adds the table + FTS5 virtual table + sync triggers (mirrors the `messages_fts` pattern from Migration 058). A new `agent_memories.zig` module in `src/ai_workflow/tui/` owns the CRUD + FTS5 query helpers. Two new tool files (`save_memory.zig`, `load_memory.zig`) follow the existing `kanban_list.zig` / legacy history-tool pattern. Two exec wrappers (`tools_exec_save_memory.zig`, `tools_exec_load_memory.zig`) wire the tools into the agent registry. No frontend changes.
 
 **Tech Stack:** Zig 0.16, SQLite 3 with FTS5, existing `escapeFtsQuery` helper from `llm_history.zig`, existing `AgentTool` schema from `src/modules/agent/tools/schemas.zig`.
 
@@ -146,7 +146,7 @@
   - K: `executeLoadMemory` paginates correctly (insert 15 memories, `limit=10` returns 10, `offset=10` returns 5)
   - L: `executeLoadMemory` sanitizes FTS5 queries (query `"handle_tool.zig"` doesn't crash)
 - [ ] **Step 2: Run the tests to confirm they fail** with "module not found".
-- [ ] **Step 3: Implement `src/modules/agent/tools/load_memory.zig`** following the `search_history.zig` pattern but with the context-bloat guard:
+- [ ] **Step 3: Implement `src/modules/agent/tools/load_memory.zig`** following the legacy history-tool pattern but with the context-bloat guard:
   - `pub const LoadMemoryInput = struct { query: []const u8 = "", tags: []const []const u8 = &.{}, limit: u32 = 10, offset: u32 = 0, with_content: bool = false };`
   - `pub const load_memory_tool = AgentTool{ ... }` — description explicitly mentions: snippets-only by default, `with_content=true` for full content (capped at 2 KiB/row), `limit` default 10 cap 50, FTS5 sanitization, tag filtering.
   - `pub const MAX_FULL_CONTENT_BYTES: u32 = 2 * 1024;` — 2 KiB cap when `with_content=true`.

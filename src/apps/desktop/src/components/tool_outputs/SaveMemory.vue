@@ -29,7 +29,7 @@
     Error:   red error block with the full error message.
 
   Style is consistent with the rest of the tool_outputs components
-  (KanbanMove, KanbanList, SearchHistory): monospace, rounded-md,
+  (KanbanMove, KanbanList, ReadWorkspaceSession): monospace, rounded-md,
   border + soft card bg, violet tool-name, ✗/✓ status indicators,
   expand/collapse `+`/`−` toggle on the right.
 -->
@@ -188,7 +188,9 @@ const copyId = async (e: Event) => {
           data-testid="save-memory-id-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Id:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ memoryId }}</span>
+          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
+            memoryId
+          }}</span>
         </div>
 
         <div
@@ -197,7 +199,9 @@ const copyId = async (e: Event) => {
           data-testid="save-memory-created-at-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Created:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ createdAt }}</span>
+          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
+            createdAt
+          }}</span>
         </div>
 
         <div
@@ -206,7 +210,9 @@ const copyId = async (e: Event) => {
           data-testid="save-memory-updated-at-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Updated:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ updatedAt }}</span>
+          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
+            updatedAt
+          }}</span>
         </div>
 
         <!-- Edge case: empty envelope (no id, no timestamps). Show a

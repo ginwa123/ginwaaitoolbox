@@ -1,0 +1,539 @@
+/**
+ * Tests for ReadWorkspaceSession.vue.
+ *
+ * Verifies:
+ *  - dispatches correctly between behavior="list" / "search" / "search-within" / "read" / denied / error envelopes
+ *  - header summary text reflects behavior, query/session, and count/total_count
+ *  - "N of M" badge appears only when total_count > count (paginated)
+ *  - search entries render id, role badge, session name, snippet with [match] highlighting
+ *  - read entries render id, role badge, preview, and full content toggle
+ *    when present (with the truncated attr surfaced as a "(truncated)" label)
+ *  - list entries render session name, id, status, message count, preview
+ *  - denied envelope renders the denial (never content) with a Denied badge
+ *  - error envelope renders the error text in red, hides entries
+ *  - empty result renders the per-behavior hint
+ *  - click on header toggles expanded state (only when there are entries, an error, a denial, or args)
+ *  - copy-id buttons copy the id to clipboard
+ */
+import { mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import ReadWorkspaceSession from '../ReadWorkspaceSession.vue'
+
+// ────────────────────────────────────────────────────────────────────────
+// Test helpers
+// ────────────────────────────────────────────────────────────────────────
+
+const makeSearchContent = (
+  opts: {
+    behavior?: 'search' | 'search-within'
+    query?: string
+    session_id?: string
+    offset?: number
+    limit?: number
+    count?: number
+    total_count?: number
+    entries?: Array<{
+      id: string
+      session_id?: string
+      session_name?: string
+      role?: string
+      created_at?: string
+      snippet?: string
+    }>
+  } = {},
+) => {
+  const behavior = opts.behavior ?? 'search'
+  const query = opts.query ?? 'login bug'
+  const offset = opts.offset ?? 0
+  const limit = opts.limit ?? 20
+  const count = opts.count ?? opts.entries?.length ?? 0
+  const total = opts.total_count ?? count
+  const entries = opts.entries ?? []
+  const entryXml = entries
+    .map((e) => {
+      const id = e.id
+      const sid = e.session_id ?? 's_default'
+      const sname = e.session_name ?? 'Default chat'
+      const role = e.role ?? 'user'
+      const ca = e.created_at ?? '2026-01-01 10:00:00'
+      const snip = e.snippet ?? '...the login [match]bug[/match] needs fixing...'
+      return [
+        '    <entry>',
+        `      <id>${id}</id>`,
+        `      <session_id>${sid}</session_id>`,
+        `      <session_name>${sname}</session_name>`,
+        `      <role>${role}</role>`,
+        `      <created_at>${ca}</created_at>`,
+        `      <snippet>${snip}</snippet>`,
+        '    </entry>',
+      ].join('\n')
+    })
+    .join('\n')
+  const sidLine = opts.session_id ? `  <session_id>${opts.session_id}</session_id>\n` : ''
+  return [
+    `<read_workspace_session behavior="${behavior}" offset="${offset}" limit="${limit}">`,
+    `  <query>${query}</query>`,
+    sidLine + `  <count>${count}</count>`,
+    `  <total_count>${total}</total_count>`,
+    `  <results>`,
+    entryXml,
+    `  </results>`,
+    `</read_workspace_session>`,
+  ].join('\n')
+}
+
+const makeReadContent = (
+  opts: {
+    session_id?: string
+    order?: 'asc' | 'desc'
+    count?: number
+    total_count?: number
+    entries?: Array<{
+      id: string
+      role?: string
+      created_at?: string
+      preview?: string
+      tool_call_id?: string
+      tool_name?: string
+      content?: string
+      content_truncated?: boolean
+    }>
+  } = {},
+) => {
+  const sid = opts.session_id ?? 's_X'
+  const order = opts.order ?? 'asc'
+  const count = opts.count ?? opts.entries?.length ?? 0
+  const total = opts.total_count ?? count
+  const entries = opts.entries ?? []
+  const entryXml = entries
+    .map((e) => {
+      const role = e.role ?? 'user'
+      const ca = e.created_at ?? '2026-01-01 10:00:00'
+      const preview = e.preview ?? 'short preview'
+      const parts = [
+        '    <entry>',
+        `      <id>${e.id}</id>`,
+        `      <role>${role}</role>`,
+        `      <created_at>${ca}</created_at>`,
+        `      <preview>${preview}</preview>`,
+      ]
+      if (e.tool_call_id) parts.push(`      <tool_call_id>${e.tool_call_id}</tool_call_id>`)
+      if (e.tool_name) parts.push(`      <tool_name>${e.tool_name}</tool_name>`)
+      if (e.content !== undefined) {
+        const trunc = e.content_truncated ? ' truncated="1"' : ' truncated="0"'
+        parts.push(`      <content${trunc}>${e.content}</content>`)
+      }
+      parts.push('    </entry>')
+      return parts.join('\n')
+    })
+    .join('\n')
+  return [
+    `<read_workspace_session behavior="read" order="${order}">`,
+    `  <session_id>${sid}</session_id>`,
+    `  <count>${count}</count>`,
+    `  <total_count>${total}</total_count>`,
+    `  <message_index>`,
+    entryXml,
+    `  </message_index>`,
+    `</read_workspace_session>`,
+  ].join('\n')
+}
+
+const makeListContent = (
+  opts: {
+    count?: number
+    total_count?: number
+    sessions?: Array<{
+      id: string
+      name?: string
+      status?: string
+      message_count?: number
+      last_activity?: string
+      preview?: string
+    }>
+  } = {},
+) => {
+  const sessions = opts.sessions ?? []
+  const count = opts.count ?? sessions.length
+  const total = opts.total_count ?? count
+  const sessionXml = sessions
+    .map((s) => {
+      return [
+        '    <session>',
+        `      <id>${s.id}</id>`,
+        `      <name>${s.name ?? s.id}</name>`,
+        `      <status>${s.status ?? 'active'}</status>`,
+        `      <message_count>${s.message_count ?? 3}</message_count>`,
+        `      <last_activity>${s.last_activity ?? '2026-01-01 10:00:00'}</last_activity>`,
+        `      <preview>${s.preview ?? 'latest human message'}</preview>`,
+        '    </session>',
+      ].join('\n')
+    })
+    .join('\n')
+  return [
+    `<read_workspace_session behavior="list" limit="50">`,
+    `  <count>${count}</count>`,
+    `  <total_count>${total}</total_count>`,
+    `  <sessions>`,
+    sessionXml,
+    `  </sessions>`,
+    `</read_workspace_session>`,
+  ].join('\n')
+}
+
+const makeDeniedContent = (sid = 's_other') =>
+  `<read_workspace_session><denied session_id="${sid}">Session is not in your workspace.</denied></read_workspace_session>`
+
+const makeErrorContent = (msg = 'Database query failed: SyntaxError') =>
+  `<read_workspace_session><error>${msg}</error></read_workspace_session>`
+
+// ────────────────────────────────────────────────────────────────────────
+// jsdom doesn't ship a clipboard by default; provide a minimal stub.
+// ────────────────────────────────────────────────────────────────────────
+
+let clipboardWrites: string[] = []
+
+beforeEach(() => {
+  clipboardWrites = []
+  // jsdom doesn't define navigator.clipboard; attach a minimal stub.
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: {
+      writeText: vi.fn(async (s: string) => {
+        clipboardWrites.push(s)
+      }),
+    },
+  })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+// ────────────────────────────────────────────────────────────────────────
+// Tests
+// ────────────────────────────────────────────────────────────────────────
+
+describe('ReadWorkspaceSession.vue — envelope dispatch', () => {
+  it('renders behavior="search" header with query + entry count', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        content: makeSearchContent({
+          entries: [{ id: 'h1', snippet: '[match]login bug[/match]' }],
+        }),
+      },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('read_workspace_session')
+    expect(wrapper.text()).toContain('workspace search')
+    expect(wrapper.text()).toContain('"login bug"')
+    expect(wrapper.text()).toContain('1 entry')
+  })
+
+  it('renders behavior="read" header with session_id + order', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        content: makeReadContent({ session_id: 's_long', order: 'desc', entries: [{ id: 'h1' }] }),
+      },
+    })
+    expect(wrapper.text()).toContain('session')
+    expect(wrapper.text()).toContain('s_long')
+    expect(wrapper.text()).toContain('order=desc')
+  })
+
+  it('renders behavior="list" header with session count', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { content: makeListContent({ sessions: [{ id: 's_a' }, { id: 's_b' }] }) },
+    })
+    expect(wrapper.text()).toContain('workspace sessions')
+    expect(wrapper.text()).toContain('2 entries')
+  })
+
+  it('renders denied envelope with Denied badge, never content', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { content: makeDeniedContent('s_other') },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session-denied"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Denied')
+    expect(wrapper.text()).toContain('s_other')
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="read-workspace-session-read-entries"]').exists()).toBe(false)
+  })
+
+  it('renders error envelope with red border + error text', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { content: makeErrorContent('Not linked to any workspace') },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session"]').classes()).toContain(
+      'border-red-500/50',
+    )
+    expect(wrapper.find('[data-testid="read-workspace-session-error"]').text()).toContain(
+      'Not linked to any workspace',
+    )
+    // No entry list rendered.
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="read-workspace-session-read-entries"]').exists()).toBe(false)
+  })
+})
+
+describe('ReadWorkspaceSession.vue — pagination badge', () => {
+  it('shows "N of M" badge only when total_count > count (paginated)', () => {
+    // Paginated: 2 of 5 returned
+    const paginated = mount(ReadWorkspaceSession, {
+      props: {
+        content: makeSearchContent({
+          count: 2,
+          total_count: 5,
+          entries: [{ id: 'h1' }, { id: 'h2' }],
+        }),
+      },
+    })
+    const badge = paginated.find('[data-testid="read-workspace-session-page-badge"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('2 of 5')
+
+    // Not paginated: all 5 fit in one page — no badge
+    const full = mount(ReadWorkspaceSession, {
+      props: {
+        content: makeSearchContent({
+          count: 5,
+          total_count: 5,
+          entries: [{ id: 'h1' }, { id: 'h2' }, { id: 'h3' }, { id: 'h4' }, { id: 'h5' }],
+        }),
+      },
+    })
+    expect(full.find('[data-testid="read-workspace-session-page-badge"]').exists()).toBe(false)
+    expect(full.text()).toContain('5 entries')
+  })
+})
+
+describe('ReadWorkspaceSession.vue — search entries', () => {
+  it('renders one <li> per entry with role badge, id, session name, snippet', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [
+            {
+              id: 'h1',
+              role: 'user',
+              session_id: 's_42',
+              session_name: 'Auth work',
+              snippet: 'fix [match]login bug[/match]',
+            },
+            {
+              id: 'h2',
+              role: 'assistant',
+              session_id: 's_42',
+              session_name: 'Auth work',
+              snippet: '[match]login[/match] confirmed',
+            },
+          ],
+        }),
+      },
+    })
+    const entries = wrapper.findAll('[data-testid="read-workspace-session-search-entry"]')
+    expect(entries.length).toBe(2)
+
+    expect(entries[0]!.text()).toContain('user')
+    expect(entries[0]!.text()).toContain('h1')
+    expect(entries[0]!.text()).toContain('Auth work')
+    expect(entries[0]!.text()).toContain('login bug')
+  })
+
+  it('highlights [match]...[/match] spans inside the snippet with <mark>', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [{ id: 'h1', snippet: 'pre [match]login bug[/match] post' }],
+        }),
+      },
+    })
+    const snippetEl = wrapper.find('[data-testid="search-entry-snippet-0"]')
+    expect(snippetEl.exists()).toBe(true)
+    expect(snippetEl.html()).toContain('<mark')
+    expect(snippetEl.html()).toContain('login bug')
+    expect(snippetEl.html()).toContain('pre')
+    expect(snippetEl.html()).toContain('post')
+  })
+
+  it('renders the empty-results hint when search matches nothing', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        content: makeSearchContent({
+          query: 'no-such-string',
+          count: 0,
+          total_count: 0,
+          entries: [],
+        }),
+      },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session-empty"]').text()).toContain(
+      'No matches for "no-such-string"',
+    )
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      false,
+    )
+  })
+})
+
+describe('ReadWorkspaceSession.vue — read entries', () => {
+  it('renders role badge, id, preview, and tool_call_id/tool_name for tool-role entries', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeReadContent({
+          entries: [
+            { id: 'h_user', role: 'user', preview: 'fix the login bug' },
+            {
+              id: 'h_tool',
+              role: 'tool',
+              preview: 'bash output',
+              tool_call_id: 'call_123',
+              tool_name: 'bash',
+            },
+          ],
+        }),
+      },
+    })
+    const entries = wrapper.findAll('[data-testid="read-workspace-session-read-entry"]')
+    expect(entries.length).toBe(2)
+    expect(entries[1]!.text()).toContain('tool')
+    expect(entries[1]!.text()).toContain('call_123')
+    expect(entries[1]!.text()).toContain('bash')
+  })
+
+  it('hides the full <content> by default; toggle button expands it', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeReadContent({
+          entries: [
+            {
+              id: 'h_full',
+              role: 'assistant',
+              content: 'this is the full body',
+              content_truncated: false,
+            },
+          ],
+        }),
+      },
+    })
+    // Content body should be hidden initially.
+    expect(wrapper.find('[data-testid="read-entry-content-0"]').exists()).toBe(false)
+    // Click the toggle.
+    await wrapper.find('[data-testid="read-entry-toggle-content-0"]').trigger('click')
+    expect(wrapper.find('[data-testid="read-entry-content-0"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="read-entry-content-0"]').text()).toBe(
+      'this is the full body',
+    )
+  })
+
+  it('shows "(truncated)" label when content_truncated is true', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeReadContent({
+          entries: [
+            { id: 'h_full', role: 'assistant', content: 'first 16 KB...', content_truncated: true },
+          ],
+        }),
+      },
+    })
+    const toggle = wrapper.find('[data-testid="read-entry-toggle-content-0"]')
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.text()).toContain('(truncated)')
+  })
+
+  it('renders the empty-results hint when session has 0 messages', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        content: makeReadContent({ session_id: 's_empty', count: 0, total_count: 0, entries: [] }),
+      },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session-empty"]').text()).toContain(
+      'No messages in s_empty',
+    )
+    expect(wrapper.find('[data-testid="read-workspace-session-read-entries"]').exists()).toBe(false)
+  })
+})
+
+describe('ReadWorkspaceSession.vue — list entries', () => {
+  it('renders one <li> per session with name, id, status, count, preview', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeListContent({
+          sessions: [
+            {
+              id: 's_a',
+              name: 'Auth work',
+              status: 'active',
+              message_count: 12,
+              preview: 'fix the login',
+            },
+            { id: 's_b', name: 'Deploy', status: 'archived', message_count: 4, preview: 'ship it' },
+          ],
+        }),
+      },
+    })
+    const entries = wrapper.findAll('[data-testid="read-workspace-session-list-entry"]')
+    expect(entries.length).toBe(2)
+    expect(entries[0]!.text()).toContain('Auth work')
+    expect(entries[0]!.text()).toContain('s_a')
+    expect(entries[0]!.text()).toContain('12 msgs')
+    expect(entries[0]!.text()).toContain('fix the login')
+  })
+
+  it('renders the empty hint when the workspace has no other sessions', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { content: makeListContent({ count: 0, total_count: 0, sessions: [] }) },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session-empty"]').text()).toContain(
+      'No other sessions in your workspace',
+    )
+  })
+})
+
+describe('ReadWorkspaceSession.vue — interactions', () => {
+  it('clicking the header toggles expanded state when entries are present', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { content: makeSearchContent({ entries: [{ id: 'h1' }] }) },
+    })
+    // Collapsed by default; toggle the header to expand.
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      false,
+    )
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      true,
+    )
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      false,
+    )
+  })
+
+  it('starts in expanded state when `expanded` prop is true', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { content: makeSearchContent({ entries: [{ id: 'h1' }] }), expanded: true },
+    })
+    expect(wrapper.find('[data-testid="read-workspace-session-search-entries"]').exists()).toBe(
+      true,
+    )
+  })
+
+  it('copy-id button writes the message id to the clipboard', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { expanded: true, content: makeReadContent({ entries: [{ id: 'h_42_unique' }] }) },
+    })
+    await wrapper.find('.copy-btn').trigger('click')
+    expect(clipboardWrites).toContain('h_42_unique')
+  })
+})

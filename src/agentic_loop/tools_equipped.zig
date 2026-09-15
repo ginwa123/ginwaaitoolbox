@@ -14,7 +14,7 @@ const memories_mod = nalarcore.memories;
 const list_memory_mod = nalarcore.list_memory_tool;
 const save_memory_mod = nalarcore.memory;
 const load_memory_mod = nalarcore.memory;
-const search_history_mod = nalarcore.search_history_tool;
+const read_workspace_session_mod = nalarcore.read_workspace_session_tool;
 const use_skill_mod = nalarcore.skill_tools;
 const remove_skill_mod = nalarcore.skill_tools;
 const list_agents_mod = nalarcore.list_agents;
@@ -85,7 +85,7 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         // list_memory_mod.list_memory_tool,
         save_memory_mod.save_memory_tool,
         load_memory_mod.load_memory_tool,
-        search_history_mod.search_history_tool,
+        read_workspace_session_mod.read_workspace_session_tool,
         use_skill_mod.use_skill_tool,
         remove_skill_mod.remove_skill_tool,
         add_skill_mod.add_skill_tool,
@@ -191,7 +191,7 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         // .{ .name = "list_memory", .exec = tools.execListMemory, .tool_def = list_memory_mod.list_memory_tool },
         .{ .name = "save_memory", .exec = tools.execSaveMemory, .tool_def = save_memory_mod.save_memory_tool },
         .{ .name = "load_memory", .exec = tools.execLoadMemory, .tool_def = load_memory_mod.load_memory_tool },
-        .{ .name = "search_history", .exec = tools.execSearchHistory, .tool_def = search_history_mod.search_history_tool },
+        .{ .name = "read_workspace_session", .exec = tools.execReadWorkspaceSession, .tool_def = read_workspace_session_mod.read_workspace_session_tool },
 
         // === FILE OPERATIONS ===
         .{ .name = "command", .exec = tools.execCommand, .tool_def = command_tool_mod.command_tool },
@@ -296,7 +296,7 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // for memory tools // addon
     save_memory_mod.save_memory_tool.function.name,
     load_memory_mod.load_memory_tool.function.name,
-    search_history_mod.search_history_tool.function.name,
+    read_workspace_session_mod.read_workspace_session_tool.function.name,
 
 
     // skill tools

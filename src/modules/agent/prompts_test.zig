@@ -1462,7 +1462,7 @@ test "build_agent_prompt renders Memory Tools section when load_memory is in too
     // Both tool names are mentioned (the rule covers both tools).
     try std.testing.expect(contains(prompt, "save_memory"));
     try std.testing.expect(contains(prompt, "load_memory"));
-    // FTS5 sanitization note is preserved (mirrors SearchHistoryToolRule pattern).
+    // FTS5 sanitization note is preserved (mirrors ReadWorkspaceSessionToolRule pattern).
     try std.testing.expect(contains(prompt, "FTS5") or contains(prompt, "FTS query syntax is auto-sanitized"));
     // When-to-call example survives.
     try std.testing.expect(contains(prompt, "do you remember"));

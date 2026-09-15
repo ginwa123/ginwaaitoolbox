@@ -45,7 +45,7 @@ const PARAMETERS_BRANCHES = [
   '<WriteFile',
   '<UpdateActivity',
   '<Search\n',
-  '<SearchHistory',
+  '<ReadWorkspaceSession',
   '<Glob',
   '<TextReplace',
   '<ShellTool',

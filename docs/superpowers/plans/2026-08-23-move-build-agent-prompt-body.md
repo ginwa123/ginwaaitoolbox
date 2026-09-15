@@ -181,7 +181,7 @@ that downstream code still consumes:
 - `UniversalRules`, `PromptAutoFix`, `Agent`, `ParallelWork`, `Classification`, `Execution`,
   `Escalation`, `MemoryPrompt`, `NalarMdAutoUpdate`, `GitPrompt`, `GlobalMemorySystem`,
   `LocalMemorySystem`, `CompactionAgent`, `GenerateSessionNameAgent`, `ResponseFormatting`,
-  `UpdateActivityRule`, `SearchToolRule`, `SearchHistoryToolRule`, `MemoryToolRule` (`prompts.zig:25-43`).
+  `UpdateActivityRule`, `SearchToolRule`, the legacy history tool rule, `MemoryToolRule` (`prompts.zig:25-43`).
 
 These are **template strings**, not assembly code. They belong in `prompts.zig` (the agent
 module's text-constants file) — moving them too would only renoise without simplifying.
@@ -265,7 +265,7 @@ Edits to **`prompts_build_messages_for_agent_prompt.zig` only**:
    - `appendSection` anonymous-struct pattern (line 51-58)
    - `PromptSection` (line 66-70)
    - `PROMPT_SECTIONS` (line 87-130) — references
-     `UniversalRules / SearchToolRule / SearchHistoryToolRule / MemoryToolRule / Agent / ParallelWork /
+     `UniversalRules / SearchToolRule / legacy history tool rule / MemoryToolRule / Agent / ParallelWork /
       Classification / Execution / Escalation / GitPrompt / UpdateActivityRule /
       memory_prompts.skills_system_prompt / ResponseFormatting` (all
       needed via the new `prompts_const` / `memory_prompts` imports)
