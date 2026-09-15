@@ -85,6 +85,22 @@
 - [ ] Task 2.3: ChatView main-column swap: `centerView` state (`chat`/`diff`), back-to-chat breadcrumb + filename/stats/editor/review header, full-height `SidebarDiffView`, composer hidden while diff shown (messages state preserved, just hidden). Back clears. Vitest static-contract + a mount test for the swap. Drop the overlay shell change and the width bump (revert to 280/200/600) and the list-collapse (list always visible).
 - [ ] Task 2.4: `vue-tsc --build` + views/git vitest sweep (tool-width failure pre-exists on main — verify no NEW failures).
 
+### Phase 3 — All-files stacked center + scroll-spy + URL sync (follow-up, approved 2026-09-15)
+
+**Behavior:** the center diff shows ALL changed files stacked vertically (not just the clicked one). Clicking a file in the list scrolls the center to that file's section and updates the browser URL. Scrolling the center auto-advances the current file (scroll-spy) and the URL follows. Back clears the center view + URL param. Deep-link restore: opening a chat URL carrying the param auto-opens the center on that file.
+
+- [ ] Task 3.1: Panel emits full list. Keep instant `show-diff {clicked}` (center opens immediately); add `show-diff-list {files: DiffSelection[]}` with the FULL ordered list — PR mode parses all chunks synchronously right after; worktree mode fetches all changed files' diffs in parallel (`Promise.allSettled`, failures become `{error}` entries, never reject the batch). Shell re-emits both. Vitest: PR list payload shape/count; worktree parallel fetch calls; failure entry shape.
+- [ ] Task 3.2: ChatView holds `centerFiles: DiffSelection[]` (ordered) + `currentPath`. Opens/merges on both emits (union by path, list order wins; click on a loaded file scrolls only, no refetch). Sections render stacked, each `id="center-diff-<slug>"` (slug = base64url path, no padding). Vitest: merge/union logic via static-contract + mount test for stacked render.
+- [ ] Task 3.3: Scroll-spy + URL sync. `IntersectionObserver` (root = center scroll container, `rootMargin: -40% 0px -55%`) sets `currentPath` to the most-visible section; watcher writes the browser URL via `router.replace({ query: { ...route.query, diff: btoa(path) } })` (needs `useRoute` import — ChatView has `useRouter` only today). Back button deletes the param. No navigation occurs (same view, replace only). Vitest: observer callback mapping (mock IO); URL replace called with merged query; back removes param.
+- [ ] Task 3.4: Click-to-scroll + deep-link restore. List click on a loaded file → `document.getElementById` + `scrollIntoView({block:'start'})` inside the center container + current/URL update (no fetch). On panel first list load, if `route.query.diff` decodes to a listed path, auto-select it (panel reads `useRoute`; invalid value ignored). Vitest: click scrolls (scrollIntoView stub); restore selects on load; bad param ignored.
+- [ ] Task 3.5: `vue-tsc --build` + views/git sweep (tool-width failure pre-exists — verify no NEW failures).
+
+**File map additions:** `SidebarDiffPanel.vue` (show-diff-list emit, parallel fetch, auto-restore), `ChatRightSidebar.vue` (re-emit), `ChatView.vue` (`centerFiles/currentPath`, observer, URL sync, scroll-to, `useRoute`), specs (`show-diff-list` payload, merge logic, observer mapping, URL replace/remove, restore).
+
+**Tests additions:** Vitest `SidebarDiffPanel.list.spec.ts` (full-list payloads), `ChatView.centerSpy.spec.ts` (static: observer setup, URL sync, restore); manual: attach PR, click file 3 → URL gains `diff=` → scroll to bottom → current file + URL advance → reload URL → center reopens on file → back clears URL.
+
+**Risks:** (a) Large changesets fan out N worktree fetches — `Promise.allSettled` bounds failure, not load; 50+ file PRs rely on the endpoint's 1MB cap + `truncated` note (no extra cap proposed — confirm). (b) `router.replace` on every scroll crossing spams history? `replace` (not `push`) avoids history entries — confirm no history growth. (c) `btoa` on non-Latin paths throws — wrap in try/catch, fall back to `encodeURIComponent` (same guard needed in existing `codeEditorQuery` — opportunistic fix, one line).
+
 ## 4. Tests
 
 | Layer | File | What it proves |
