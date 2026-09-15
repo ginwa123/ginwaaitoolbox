@@ -10,9 +10,10 @@ import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { encodePathParam } from '../chat_right_sidebar/parseUnifiedDiff'
 
-const { getGitChangesMock, getGitFileDiffMock } = vi.hoisted(() => ({
+const { getGitChangesMock, getGitFileDiffMock, getPrStatusMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
   getGitFileDiffMock: vi.fn(),
+  getPrStatusMock: vi.fn(),
 }))
 
 vi.mock('../../../api', async () => {
@@ -22,6 +23,7 @@ vi.mock('../../../api', async () => {
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
     getPrDiff: vi.fn(),
+    getPrStatus: getPrStatusMock,
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
   }
@@ -65,6 +67,25 @@ describe('SidebarDiffPanel ?diff= is ignored on load', () => {
     getGitFileDiffMock.mockImplementation((cwd: string, path: string, staged: boolean) =>
       Promise.resolve({ path, diff_content: diffFor(path), staged }),
     )
+    getPrStatusMock.mockResolvedValue({
+      status: 'open',
+      state: 'OPEN',
+      title: 'Test',
+      pr_url: 'https://github.com/acme/app/pull/42',
+      number: 42,
+      mergeable: '',
+      merge_state: '',
+      head_ref: 'feature',
+      base_ref: 'main',
+      author: 'acme',
+      created_at: '',
+      updated_at: '',
+      merged_at: '',
+      closed_at: '',
+      additions: 0,
+      deletions: 0,
+      changed_files: 2,
+    })
   })
 
   it('does NOT auto-select even when ?diff= names a listed file', async () => {

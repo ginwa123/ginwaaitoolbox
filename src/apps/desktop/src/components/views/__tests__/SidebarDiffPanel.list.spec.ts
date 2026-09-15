@@ -23,11 +23,14 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock } = vi.hoisted(() => ({
-  getGitChangesMock: vi.fn(),
-  getGitFileDiffMock: vi.fn(),
-  getPrDiffMock: vi.fn(),
-}))
+const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
+  () => ({
+    getGitChangesMock: vi.fn(),
+    getGitFileDiffMock: vi.fn(),
+    getPrDiffMock: vi.fn(),
+    getPrStatusMock: vi.fn(),
+  }),
+)
 
 vi.mock('../../../api', async () => {
   const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
@@ -36,6 +39,7 @@ vi.mock('../../../api', async () => {
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
     getPrDiff: getPrDiffMock,
+    getPrStatus: getPrStatusMock,
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
   }
@@ -81,6 +85,25 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
       head: 'feature',
       diff_content: PR_DIFF,
       truncated: false,
+    })
+    getPrStatusMock.mockResolvedValue({
+      status: 'open',
+      state: 'OPEN',
+      title: 'Test',
+      pr_url: 'https://github.com/acme/app/pull/42',
+      number: 42,
+      mergeable: '',
+      merge_state: '',
+      head_ref: 'feature',
+      base_ref: 'main',
+      author: 'acme',
+      created_at: '',
+      updated_at: '',
+      merged_at: '',
+      closed_at: '',
+      additions: 0,
+      deletions: 0,
+      changed_files: 2,
     })
   })
 
@@ -162,7 +185,10 @@ describe('SidebarDiffPanel show-diff-list (3.1)', () => {
   })
 
   it('shell re-emits both show-diff and show-diff-list', () => {
-    const shellSrc = readFileSync(resolve(__dirname, '../chat_right_sidebar/ChatRightSidebar.vue'), 'utf8')
+    const shellSrc = readFileSync(
+      resolve(__dirname, '../chat_right_sidebar/ChatRightSidebar.vue'),
+      'utf8',
+    )
     expect(shellSrc).toMatch(/'show-diff-list'/)
     expect(shellSrc).toMatch(/show-diff-list.*emit\('show-diff-list'/)
   })
