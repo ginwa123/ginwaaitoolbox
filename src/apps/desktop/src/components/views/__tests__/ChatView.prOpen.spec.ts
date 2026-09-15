@@ -2,9 +2,10 @@
  * Static contract: ChatView opens sidebar files in the in-app code
  * browser (which also updates the app URL to view=code-editor).
  *
- * File-row clicks (and the selected-file header Open button) bubble
- * `open-file {path, line?}`: panel → shell → ChatView, which calls
- * the injected `openInCodeEditor` with the chat's effectiveCwd.
+ * The center diff's Open button emits `open {path, line?}` straight
+ * to ChatView (mounted in the main column, not through the shell),
+ * which calls the injected `openInCodeEditor` with the chat's
+ * effectiveCwd.
  * Full ChatView mount is too heavy for a unit test, so this spec
  * greps the template source, following the repo's static-contract
  * pattern (cf. ChatView.prSidebar.spec.ts).
@@ -26,7 +27,7 @@ describe('ChatView sidebar open-file wiring', () => {
     )
   })
 
-  it('subscribes to the shell open-file emit', () => {
-    expect(chatViewSrc).toMatch(/@open-file="onChatSidebarOpenFile"/)
+  it('subscribes to the center diff open emit', () => {
+    expect(chatViewSrc).toMatch(/@open="onChatSidebarOpenFile"/)
   })
 })

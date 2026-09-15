@@ -50,7 +50,7 @@ describe('useChatRightSidebar', () => {
   it('defaults to closed with default width', () => {
     const { wrapper, exposed } = mountComposable()
     expect(exposed.isOpen.value).toBe(false)
-    expect(exposed.width.value).toBe(520)
+    expect(exposed.width.value).toBe(280)
     wrapper.unmount()
   })
 
@@ -67,12 +67,12 @@ describe('useChatRightSidebar', () => {
   it('clamps width to min/max and persists', () => {
     const { wrapper, exposed } = mountComposable()
     exposed.setWidth(50)
-    expect(exposed.width.value).toBe(380)
+    expect(exposed.width.value).toBe(200)
     exposed.setWidth(2000)
-    expect(exposed.width.value).toBe(720)
-    exposed.setWidth(500)
-    expect(exposed.width.value).toBe(500)
-    expect(localStorage.getItem('nalar-right-sidebar-width')).toBe('500')
+    expect(exposed.width.value).toBe(600)
+    exposed.setWidth(360)
+    expect(exposed.width.value).toBe(360)
+    expect(localStorage.getItem('nalar-right-sidebar-width')).toBe('360')
     wrapper.unmount()
   })
 

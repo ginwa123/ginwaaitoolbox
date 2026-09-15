@@ -1,9 +1,9 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 
 const STORAGE_KEY_WIDTH = 'nalar-right-sidebar-width'
-const DEFAULT_WIDTH = 520
-const MIN_WIDTH = 380
-const MAX_WIDTH = 720
+const DEFAULT_WIDTH = 280
+const MIN_WIDTH = 200
+const MAX_WIDTH = 600
 
 function openKey(chatType: string): string {
   return `nalar-chat-right-sidebar-open:${chatType}`

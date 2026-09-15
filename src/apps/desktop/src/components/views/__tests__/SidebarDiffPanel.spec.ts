@@ -73,13 +73,29 @@ describe('SidebarDiffPanel', () => {
     expect(wrapper.get('[data-testid="sidebar-diff-count"]').text()).toBe('3')
   })
 
-  it('loads inline diff on file click', async () => {
+  it('emits show-diff with parsed lines on file click (center renders)', async () => {
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
     expect(getGitFileDiffMock).toHaveBeenCalledWith('/repo', 'dirty.txt', false)
-    expect(wrapper.get('[data-testid="sidebar-diff-selected"]').text()).toBe('dirty.txt')
+    const emitted = wrapper.emitted('show-diff')
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', staged: false, added: 1, removed: 1 })
+    expect((emitted![0]![0] as { lines: unknown[] }).lines.length).toBeGreaterThan(0)
+    // Panel is list-only: no inline diff section rendered.
+    expect(wrapper.find('[data-testid="sidebar-diff-selected"]').exists()).toBe(false)
+  })
+
+  it('emits show-diff with error on diff fetch failure', async () => {
+    getGitFileDiffMock.mockRejectedValueOnce(new Error('nope'))
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
+    await flushPromises()
+    await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
+    await flushPromises()
+    const emitted = wrapper.emitted('show-diff')
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', error: 'Failed to load file diff' })
   })
 
   it('shows retry on list failure', async () => {

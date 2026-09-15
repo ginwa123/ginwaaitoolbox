@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import SidebarDiffPanel from './SidebarDiffPanel.vue'
+import type { DiffSelection } from './parseUnifiedDiff'
 
 const props = defineProps<{
   cwd: string
@@ -17,9 +18,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:open': [open: boolean]
   'update:width': [width: number]
-  'submit-review': [message: string]
   refresh: []
-  'open-file': [payload: { path: string; line?: number }]
+  'show-diff': [selection: DiffSelection]
 }>()
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
@@ -31,8 +31,8 @@ const startResize = (e: MouseEvent) => {
   isResizing.value = true
   const startX = e.clientX
   const startWidth = props.width
-  const min = props.minWidth ?? 380
-  const max = props.maxWidth ?? 720
+  const min = props.minWidth ?? 200
+  const max = props.maxWidth ?? 600
 
   const onMove = (ev: MouseEvent) => {
     const next = startWidth - (ev.clientX - startX)
@@ -56,17 +56,18 @@ watch(
   },
 )
 
-defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
+defineExpose({
+  refresh: () => panelRef.value?.loadGitStatus(),
+  reloadDiff: () => panelRef.value?.loadDiff(),
+})
 </script>
 
 <template>
   <aside
     v-if="open"
-    class="chat-right-sidebar absolute right-0 top-0 bottom-0 z-30 flex flex-col min-h-0 shadow-xl"
+    class="chat-right-sidebar shrink-0 h-full relative hidden lg:flex flex-col min-h-0"
     :style="{
       width: width + 'px',
-      maxWidth: '45%',
-      minWidth: '380px',
       backgroundColor: 'var(--semantic-sidebar-bg)',
       borderLeft: '1px solid var(--color-border)',
     }"
@@ -103,9 +104,8 @@ defineExpose({ refresh: () => panelRef.value?.loadGitStatus() })
         :cwd="cwd"
         :pr-url="prUrl"
         :pr-provider="prProvider"
-        @submit-review="(msg) => emit('submit-review', msg)"
         @refresh="() => emit('refresh')"
-        @open-file="(payload) => emit('open-file', payload)"
+        @show-diff="(selection) => emit('show-diff', selection)"
       />
     </div>
   </aside>

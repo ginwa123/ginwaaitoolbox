@@ -75,18 +75,22 @@ describe('SidebarDiffPanel PR mode', () => {
     expect(wrapper.text()).toContain('PR files (2)')
   })
 
-  it('loads inline diff on PR file click without stage buttons', async () => {
+  it('emits show-diff on PR file click without stage buttons', async () => {
     const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-pr-file-foo.txt"]').trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-testid="sidebar-diff-selected"]').text()).toBe('foo.txt')
+    const emitted = wrapper.emitted('show-diff')
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toMatchObject({ path: 'foo.txt', staged: false, added: 1, removed: 1 })
     // Read-only: no stage/unstage buttons anywhere in PR mode.
     expect(wrapper.find('button[title="Stage file"]').exists()).toBe(false)
     expect(wrapper.find('button[title="Unstage file"]').exists()).toBe(false)
     expect(stageGitFilesMock).not.toHaveBeenCalled()
+    // Panel is list-only: no inline diff section rendered.
+    expect(wrapper.find('[data-testid="sidebar-diff-selected"]').exists()).toBe(false)
   })
 
   it('shows retry on PR diff failure', async () => {
