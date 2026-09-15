@@ -75,7 +75,8 @@ import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
-import SidebarDiffView from './chat_right_sidebar/SidebarDiffView.vue'
+import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
+import { centerDiffSectionId } from './chat_right_sidebar/parseUnifiedDiff'
 import type { DiffSelection } from './chat_right_sidebar/parseUnifiedDiff'
 import { useChatRightSidebar } from './chat_right_sidebar/useChatRightSidebar'
 import { useNavigationStore } from '../../stores/navigation'
@@ -490,13 +491,55 @@ function onChatSidebarOpenFile(payload: { path: string; line?: number }) {
   void openInEditor({ filePath: payload.path, cwd: effectiveCwd.value, line: payload.line })
 }
 
-// Center-stage diff: sidebar row clicks land here (parsed lines travel
-// with the event, no refetch). Back clears; the panel list highlight
-// persists so the user can hop between files.
+// Stacked center diff: every changed file renders as its own
+// lazily-mounted section so long lists scroll fast. centerDiff stays as
+// the compat "current selection" (back-button + single-file wiring);
+// centerFiles is the ordered render list, currentPath the most-visible
+// section (scroll-spy + ?diff= deep link).
 const centerDiff = ref<DiffSelection | null>(null)
+const centerFiles = ref<DiffSelection[]>([])
+const currentPath = ref<string | null>(null)
+const centerDiffScrollRef = ref<HTMLElement | null>(null)
+
+const showCenterDiff = computed(() => centerDiff.value !== null || centerFiles.value.length > 0)
+
+function scrollToCenterFile(path: string) {
+  // Click on an already-loaded file scrolls instead of refetching —
+  // the section id derives from the path (base64url, no padding).
+  currentPath.value = path
+  const el = document.getElementById(centerDiffSectionId(path))
+  el?.scrollIntoView({ block: 'start' })
+}
 
 function onChatSidebarShowDiff(selection: DiffSelection) {
   centerDiff.value = selection
+  const idx = centerFiles.value.findIndex((f) => f.path === selection.path)
+  if (idx >= 0) centerFiles.value[idx] = selection
+  else centerFiles.value.push(selection)
+  void nextTick(() => scrollToCenterFile(selection.path))
+}
+
+function onChatSidebarShowDiffList(files: DiffSelection[]) {
+  // Union by path, incoming list order wins — the panel just fetched
+  // everything, so its entries are the freshest.
+  const incoming = new Map(files.map((f) => [f.path, f]))
+  const merged = [...files]
+  for (const existing of centerFiles.value) {
+    if (!incoming.has(existing.path)) merged.push(existing)
+  }
+  centerFiles.value = merged
+  if (centerDiff.value) {
+    const refresh = incoming.get(centerDiff.value.path)
+    if (refresh) centerDiff.value = refresh
+  } else if (merged.length > 0) {
+    centerDiff.value = merged[0] ?? null
+  }
+}
+
+function onCenterDiffBack() {
+  centerDiff.value = null
+  centerFiles.value = []
+  currentPath.value = null
 }
 
 function onCenterDiffRetry() {
@@ -510,6 +553,8 @@ watch(
   () => effectiveCwd.value,
   () => {
     centerDiff.value = null
+    centerFiles.value = []
+    currentPath.value = null
   },
 )
 
@@ -3199,7 +3244,7 @@ const compactSession = async () => {
         and the last bubbles overlap the FileInput below. This is the
         "no scroll, bubbles overlap input" bug.
       -->
-      <div v-show="!centerDiff" ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
+      <div v-show="!showCenterDiff" ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
         <button
@@ -3891,7 +3936,7 @@ const compactSession = async () => {
       <Transition name="fade">
         <button
           v-if="!isAtBottom && messageGroups.length > 0"
-          v-show="!centerDiff"
+          v-show="!showCenterDiff"
           @click="scrollToBottom(true, 'user-button-click')"
           class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
@@ -3916,7 +3961,7 @@ const compactSession = async () => {
       <!-- Input (hidden in peek-embed read-only mode) -->
       <div
         v-if="!hideInput"
-        v-show="!centerDiff"
+        v-show="!showCenterDiff"
         class="p-4"
         style="
           border-top: 1px solid var(--color-border);
@@ -4134,30 +4179,57 @@ const compactSession = async () => {
           </div>
         </div>
       </div>
-      <!-- Center-stage diff view: full-height file diff swapped in for
-           messages+composer while a sidebar file is selected. Messages
-           state is preserved (v-show) underneath. -->
+      <!-- Stacked center diff: every changed file renders as its own
+           lazily-mounted section (content-visibility + IntersectionObserver
+           in CenterDiffSection) so long lists scroll fast. Messages state
+           is preserved (v-show) underneath. -->
       <div
-        v-if="centerDiff"
+        v-if="showCenterDiff"
         class="flex-1 min-h-0 flex flex-col"
         data-testid="chat-center-diff"
       >
-        <SidebarDiffView
-          :path="centerDiff.path"
-          :lines="centerDiff.lines"
-          :added="centerDiff.added"
-          :removed="centerDiff.removed"
-          :staged="centerDiff.staged"
-          :loading="false"
-          :error="centerDiff.error ?? null"
-          :cwd="effectiveCwd"
-          :show-back="true"
-          back-label="Back to chat"
-          @back="centerDiff = null"
-          @open="onChatSidebarOpenFile"
-          @retry="onCenterDiffRetry"
-          @submit-review="onChatSidebarSubmitReview"
-        />
+        <div
+          class="flex items-center gap-2 px-3 h-10 shrink-0"
+          style="border-bottom: 1px solid var(--color-border)"
+        >
+          <button
+            type="button"
+            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            style="color: var(--semantic-text-dim)"
+            data-testid="chat-center-diff-back"
+            @click="onCenterDiffBack"
+          >
+            ← Back to chat
+          </button>
+          <span
+            class="text-xs truncate flex-1"
+            style="color: var(--semantic-text-dim)"
+            data-testid="chat-center-diff-count"
+          >
+            {{ centerFiles.length }} file{{ centerFiles.length !== 1 ? 's' : '' }}
+          </span>
+        </div>
+        <div
+          ref="centerDiffScrollRef"
+          class="flex-1 min-h-0 overflow-y-auto"
+          data-testid="chat-center-diff-scroll"
+        >
+          <CenterDiffSection
+            v-for="file in centerFiles"
+            :key="file.path"
+            :section-id="centerDiffSectionId(file.path)"
+            :path="file.path"
+            :lines="file.lines"
+            :added="file.added"
+            :removed="file.removed"
+            :staged="file.staged"
+            :error="file.error ?? null"
+            :cwd="effectiveCwd"
+            @open="onChatSidebarOpenFile"
+            @retry="onCenterDiffRetry"
+            @submit-review="onChatSidebarSubmitReview"
+          />
+        </div>
       </div>
     </div>
 
@@ -4179,6 +4251,7 @@ const compactSession = async () => {
       @update:width="(w) => chatSidebar.setWidth(w)"
       @refresh="onChatSidebarRefresh"
       @show-diff="onChatSidebarShowDiff"
+      @show-diff-list="onChatSidebarShowDiffList"
     />
 
     <!-- Skills Popup Modal -->

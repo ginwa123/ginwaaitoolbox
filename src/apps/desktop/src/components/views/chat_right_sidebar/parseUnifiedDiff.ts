@@ -171,6 +171,38 @@ export interface DiffSelection {
   error?: string | null
 }
 
+// Stacked center diff addressing: each section id is
+// `center-diff-<base64url-no-pad path>`, and the ?diff= URL param carries
+// the same encoding. btoa throws on non-latin1 paths (unicode), so fall
+// back to encodeURIComponent — still deterministic, still matchable.
+export function encodePathParam(path: string): string {
+  try {
+    return btoa(path).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  } catch {
+    return encodeURIComponent(path)
+  }
+}
+
+export function centerDiffSectionId(path: string): string {
+  return `center-diff-${encodePathParam(path)}`
+}
+
+// Resolve a ?diff= value against the listed paths only — never decode
+// blindly into a selection, so stale/garbage params are ignored. Also
+// accepts legacy padded btoa (other features link files that way).
+export function decodePathParam(param: string, candidates: string[]): string | null {
+  for (const c of candidates) {
+    if (encodePathParam(c) === param) return c
+  }
+  try {
+    const padded = param.replace(/-/g, '+').replace(/_/g, '/')
+    const decoded = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4))
+    return candidates.find((c) => c === decoded) ?? null
+  } catch {
+    return null
+  }
+}
+
 export function escapeDiffHtml(line: string): string {
   if (!line) return '&nbsp;'
   return line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
