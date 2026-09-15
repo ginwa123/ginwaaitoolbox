@@ -95,6 +95,7 @@ import CompactionCard from '../preview/CompactionCard.vue'
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
 import ChatScrollSlider from '../chat/ChatScrollSlider.vue'
+import { pickActivePillIndex } from '../chat/activePill'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -790,6 +791,8 @@ interface VirtualScrollerExposed {
   containerRef: HTMLElement | null
   isPreservingScroll: boolean
   effectiveLoadMoreThreshold: number
+  /** Topmost/bottommost rendered item indices (auto-unwrapped computed). */
+  effectiveRange: { start: number; end: number }
   sizerHeight?: number
   modelTotal?: number
 }
@@ -1500,9 +1503,9 @@ const userPills = computed((): UserPill[] => {
   return pills
 })
 
-// Last pill the user jumped to (highlight). Ref — not scroll-derived —
-// so no extra scroll listener fights the auto-stick logic. Upgrade path:
-// derive from the scroller's exposed effectiveRange when needed.
+// Last pill the user jumped to (highlight). Also driven by scroll (see
+// the realtime update at the end of handleVirtualScroll) so the rail
+// lights up while reading, not just after a click-jump.
 const activePillGroupIndex = ref<number | null>(null)
 
 const jumpToUserGroup = (groupIndex: number, key: string) => {
@@ -2583,6 +2586,15 @@ const handleVirtualScroll = (
     })
   }
   isAtBottom.value = nextIsAtBottom
+  // ── Realtime pill highlight ───────────────────────────────────────
+  // Light the rail pill for the topmost visible user group as the user
+  // scrolls (previously the pill only lit on click-jump, so scrolling
+  // never activated any pill). Pure display-ref write — no scroll
+  // writes, so it can't fight the auto-stick logic above.
+  const range = virtualScrollerRef.value?.effectiveRange
+  if (range) {
+    activePillGroupIndex.value = pickActivePillIndex(userPills.value, range.start)
+  }
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
