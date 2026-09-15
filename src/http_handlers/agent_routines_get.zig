@@ -1,0 +1,511 @@
+//! `GET /api/workspaces/:workspace_id/items/:item_id/agent_routine`.
+//!
+//! Returns `{agent_routine, knowledges, tools, system_prompts}` for the
+//! agent-routines config bound to this routine workspace_item. The
+//! frontend's RoutineAgentSettings consumes this payload to populate all
+//! three panels in one round-trip.
+//!
+//! - `agent_routine` — the `agent_routines` row (description, timestamps)
+//! - `knowledges` — array of `AgentRoutineKnowledgeRow` ordered position DESC
+//! - `tools` — array of `string` (tool_names) ordered by tool_name ASC,
+//!             filtered to `enabled = 1` only
+//! - `system_prompts` — array of `AgentRoutineSystemPromptRow`, position DESC
+//!
+//! Returns 400 when the workspace_item's `item_type` is not `'routine'`,
+//! 404 when the workspace_item doesn't exist, and 404 `NotConfigured`
+//! when no `agent_routines` row exists yet (the frontend treats this as
+//! "empty settings" — unlike agents, the config row is opt-in).
+//!
+//! Layered as:
+//!   - `useCase` — orchestrates the reads (config + 3 child collections)
+//!     and validates the workspace_item is a routine. Returns a typed
+//!     `AgentRoutinesGetOutput` with all owned slices.
+//!   - `agentRoutinesGetHandler` — thin orchestrator over `useCase`.
+//!
+//! Memory: the per-request arena reaps all allocations at request end,
+//! so the handler does NOT free anything. Tests using
+//! `testing.allocator` MUST free the slices themselves (see tests).
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const http_response = @import("http_response.zig");
+
+/// Wire shape for a knowledge row in the GET response.
+pub const AgentRoutineKnowledgeRow = struct {
+    id: []const u8,
+    routine_id: []const u8,
+    file_path: []const u8,
+    label: []const u8,
+    /// Inline manual text ('' = file-backed row).
+    content: []const u8,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Wire shape for a system-prompt row in the GET response.
+pub const AgentRoutineSystemPromptRow = struct {
+    id: []const u8,
+    routine_id: []const u8,
+    title: []const u8,
+    content: []const u8,
+    position: i64,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Wire shape for the agent-routines config row in the GET response.
+pub const AgentRoutineRow = struct {
+    id: []const u8,
+    workspace_item_id: []const u8,
+    description: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Domain-level error set for `useCase`. The handler maps each variant
+/// to an HTTP status code + message via two exhaustive switches
+/// (intentional — adding a new variant fails to compile until both are
+/// updated).
+pub const AgentRoutinesGetError = error{
+    /// `workspace_id` or `item_id` path param was missing or empty.
+    IdsRequired,
+    /// The workspace_item row did not exist.
+    ItemNotFound,
+    /// The workspace_item exists but its `item_type` is not `'routine'`.
+    ItemNotRoutine,
+    /// The workspace_item is a routine but has no `agent_routines` row yet.
+    NotConfigured,
+    /// A `db.query` failed.
+    DatabaseError,
+    /// `allocator.dupe` failed while copying slice fields.
+    OutOfMemory,
+};
+
+/// Inputs to the agent-routines-get use-case.
+pub const AgentRoutinesGetInput = struct {
+    workspace_id: []const u8,
+    item_id: []const u8,
+};
+
+/// Output of the agent-routines-get use-case. All slices are owned by
+/// the caller (lifetime = request arena in production).
+pub const AgentRoutinesGetOutput = struct {
+    agent_routine: AgentRoutineRow,
+    knowledges: []const AgentRoutineKnowledgeRow,
+    tools: []const []const u8,
+    system_prompts: []const AgentRoutineSystemPromptRow,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Resolve the agent-routines config row + children for a workspace_item.
+/// Validates the workspace_item exists + is of type `'routine'`, then
+/// loads the config row and its 3 sub-collections. Transport-agnostic:
+/// works under both the request arena and `testing.allocator`.
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: AgentRoutinesGetInput,
+) AgentRoutinesGetError!AgentRoutinesGetOutput {
+    if (input.workspace_id.len == 0 or input.item_id.len == 0) {
+        return error.IdsRequired;
+    }
+
+    // Validate item exists + is a routine.
+    var q = db.query(allocator,
+        "SELECT item_type FROM workspace_items WHERE id = ?",
+        &[_][]const u8{input.item_id},
+    ) catch return error.DatabaseError;
+    defer q.deinit();
+    const row = (q.next() catch null) orelse return error.ItemNotFound;
+    defer row.deinit(allocator);
+    if (!std.mem.eql(u8, row.values[0], "routine")) return error.ItemNotRoutine;
+
+    // Load config row (spec D3: agent_routines.id == workspace_item_id).
+    var qc = db.query(allocator,
+        "SELECT id, workspace_item_id, description, IFNULL(created_at, ''), IFNULL(updated_at, '') FROM agent_routines WHERE workspace_item_id = ?",
+        &[_][]const u8{input.item_id},
+    ) catch return error.DatabaseError;
+    defer qc.deinit();
+    const crow = (qc.next() catch null) orelse return error.NotConfigured;
+    defer crow.deinit(allocator);
+    const config = AgentRoutineRow{
+        .id = try allocator.dupe(u8, crow.values[0]),
+        .workspace_item_id = try allocator.dupe(u8, crow.values[1]),
+        .description = try allocator.dupe(u8, crow.values[2]),
+        .created_at = try allocator.dupe(u8, crow.values[3]),
+        .updated_at = try allocator.dupe(u8, crow.values[4]),
+    };
+
+    // Load knowledge rows (position DESC).
+    var knowledges = std.ArrayList(AgentRoutineKnowledgeRow).empty;
+    errdefer {
+        for (knowledges.items) |k| freeKnowledgeRow(allocator, k);
+        knowledges.deinit(allocator);
+    }
+    {
+        var qk = db.query(allocator,
+            \\SELECT id, routine_id, file_path, label, content, position,
+            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
+            \\FROM agent_routine_knowledges WHERE routine_id = ?
+            \\ORDER BY position DESC
+        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
+        defer qk.deinit();
+        while ((qk.next() catch null)) |r| {
+            defer r.deinit(allocator);
+            const position = std.fmt.parseInt(i64, r.values[5], 10) catch 0;
+            try knowledges.append(allocator, .{
+                .id = try allocator.dupe(u8, r.values[0]),
+                .routine_id = try allocator.dupe(u8, r.values[1]),
+                .file_path = try allocator.dupe(u8, r.values[2]),
+                .label = try allocator.dupe(u8, r.values[3]),
+                .content = try allocator.dupe(u8, r.values[4]),
+                .position = position,
+                .created_at = try allocator.dupe(u8, r.values[6]),
+                .updated_at = try allocator.dupe(u8, r.values[7]),
+            });
+        }
+    }
+    const knowledges_owned = try knowledges.toOwnedSlice(allocator);
+
+    // Load enabled tool names (tool_name ASC).
+    var tools = std.ArrayList([]u8).empty;
+    errdefer {
+        for (tools.items) |nm| allocator.free(nm);
+        tools.deinit(allocator);
+    }
+    {
+        var qt = db.query(allocator,
+            "SELECT tool_name FROM agent_routine_tools WHERE routine_id = ? AND enabled = 1 ORDER BY tool_name ASC",
+            &[_][]const u8{input.item_id}) catch return error.DatabaseError;
+        defer qt.deinit();
+        while ((qt.next() catch null)) |r| {
+            defer r.deinit(allocator);
+            try tools.append(allocator, try allocator.dupe(u8, r.values[0]));
+        }
+    }
+    const tools_owned = try tools.toOwnedSlice(allocator);
+
+    // Load system-prompt rows (position DESC).
+    var system_prompts = std.ArrayList(AgentRoutineSystemPromptRow).empty;
+    errdefer {
+        for (system_prompts.items) |p| freeSystemPromptRow(allocator, p);
+        system_prompts.deinit(allocator);
+    }
+    {
+        var qp = db.query(allocator,
+            \\SELECT id, routine_id, title, content, position,
+            \\       IFNULL(created_at, ''), IFNULL(updated_at, '')
+            \\FROM agent_routine_system_prompt WHERE routine_id = ?
+            \\ORDER BY position DESC
+        , &[_][]const u8{input.item_id}) catch return error.DatabaseError;
+        defer qp.deinit();
+        while ((qp.next() catch null)) |r| {
+            defer r.deinit(allocator);
+            const position = std.fmt.parseInt(i64, r.values[4], 10) catch 0;
+            try system_prompts.append(allocator, .{
+                .id = try allocator.dupe(u8, r.values[0]),
+                .routine_id = try allocator.dupe(u8, r.values[1]),
+                .title = try allocator.dupe(u8, r.values[2]),
+                .content = try allocator.dupe(u8, r.values[3]),
+                .position = position,
+                .created_at = try allocator.dupe(u8, r.values[5]),
+                .updated_at = try allocator.dupe(u8, r.values[6]),
+            });
+        }
+    }
+    const system_prompts_owned = try system_prompts.toOwnedSlice(allocator);
+
+    return .{
+        .agent_routine = config,
+        .knowledges = knowledges_owned,
+        .tools = tools_owned,
+        .system_prompts = system_prompts_owned,
+    };
+}
+
+/// Free every slice field on a single knowledge row.
+fn freeKnowledgeRow(allocator: std.mem.Allocator, k: AgentRoutineKnowledgeRow) void {
+    allocator.free(k.id);
+    allocator.free(k.routine_id);
+    allocator.free(k.file_path);
+    if (k.label.len > 0) allocator.free(k.label);
+    if (k.content.len > 0) allocator.free(k.content);
+    if (k.created_at.len > 0) allocator.free(k.created_at);
+    if (k.updated_at.len > 0) allocator.free(k.updated_at);
+}
+
+/// Free every slice field on a single system-prompt row.
+fn freeSystemPromptRow(allocator: std.mem.Allocator, p: AgentRoutineSystemPromptRow) void {
+    allocator.free(p.id);
+    allocator.free(p.routine_id);
+    if (p.title.len > 0) allocator.free(p.title);
+    if (p.content.len > 0) allocator.free(p.content);
+    if (p.created_at.len > 0) allocator.free(p.created_at);
+    if (p.updated_at.len > 0) allocator.free(p.updated_at);
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+/// Thin orchestrator over `useCase`. Resolves the singleton DB handle,
+/// delegates, marshals the output to JSON, maps errors to status codes.
+pub fn agentRoutinesGetHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const workspace_id = req.params.get("workspace_id") orelse "";
+    const item_id = req.params.get("item_id") orelse "";
+
+    const output = useCase(allocator, sqlite_db, .{
+        .workspace_id = workspace_id,
+        .item_id = item_id,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.IdsRequired => 400,
+            error.ItemNotFound => 404,
+            error.ItemNotRoutine => 400,
+            error.NotConfigured => 404,
+            error.DatabaseError => 500,
+            error.OutOfMemory => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.IdsRequired => "workspace_id and item_id required",
+            error.ItemNotFound => "workspace_item not found",
+            error.ItemNotRoutine => "workspace_item is not a routine",
+            error.NotConfigured => "agent_routines not configured for this routine",
+            error.DatabaseError => "DB error",
+            error.OutOfMemory => "Out of memory",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    const data = try std.json.Stringify.valueAlloc(allocator, .{
+        .agent_routine = output.agent_routine,
+        .knowledges = output.knowledges,
+        .tools = output.tools,
+        .system_prompts = output.system_prompts,
+    }, .{});
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+//
+// impl + tests in one file (project convention). Behavioural coverage:
+//
+//   1. Validation: empty workspace_id OR item_id → IdsRequired
+//   2. ItemNotFound: workspace_item doesn't exist
+//   3. ItemNotRoutine: workspace_item exists but item_type != 'routine'
+//   4. NotConfigured: routine without an agent_routines row
+//   5. Happy path: config + knowledges DESC + tools enabled ASC + prompts
+
+const sqlite = @import("nalarcore").sqlite;
+const testing = std.testing;
+const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Full-shape workspace_items (see agents_get.zig setupDb comment).
+    try db.exec(testing.allocator,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &[_][]const u8{},
+    );
+    try Migration087CreateAgentRoutines.up(&db, testing.allocator);
+
+    // Seed: 1 routine with a configured agent_routines row + children.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_1', 'ws_1', 'routine', 'My Routine')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routines (id, workspace_item_id, description) VALUES ('ws_item_1', 'ws_item_1', 'routine desc')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routine_knowledges (id, routine_id, file_path, label, position) VALUES ('kn_1', 'ws_item_1', '/tmp/a.md', 'A', 0)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routine_knowledges (id, routine_id, file_path, label, position) VALUES ('kn_2', 'ws_item_1', '', 'Notes', 1)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "UPDATE agent_routine_knowledges SET content = 'inline body' WHERE id = 'kn_2'",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routine_tools (id, routine_id, tool_name, enabled) VALUES ('kt_1', 'ws_item_1', 'bash', 1)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routine_tools (id, routine_id, tool_name, enabled) VALUES ('kt_2', 'ws_item_1', 'read_file', 1)",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routine_tools (id, routine_id, tool_name, enabled) VALUES ('kt_3', 'ws_item_1', 'write_file', 0)",
+        &[_][]const u8{},
+    );
+
+    // A second routine WITHOUT an agent_routines row → NotConfigured path.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_bare', 'ws_1', 'routine', 'Bare Routine')",
+        &[_][]const u8{},
+    );
+
+    // An agent-type item to verify the ItemNotRoutine path.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_agent', 'ws_1', 'agent', 'An agent')",
+        &[_][]const u8{},
+    );
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Free everything the use-case allocated for the output.
+fn freeOutput(allocator: std.mem.Allocator, output: AgentRoutinesGetOutput) void {
+    allocator.free(output.agent_routine.id);
+    allocator.free(output.agent_routine.workspace_item_id);
+    allocator.free(output.agent_routine.description);
+    allocator.free(output.agent_routine.created_at);
+    allocator.free(output.agent_routine.updated_at);
+    for (output.knowledges) |k| freeKnowledgeRow(allocator, k);
+    allocator.free(output.knowledges);
+    for (output.tools) |nm| allocator.free(nm);
+    allocator.free(output.tools);
+    for (output.system_prompts) |p| freeSystemPromptRow(allocator, p);
+    allocator.free(output.system_prompts);
+}
+
+test "useCase: empty workspace_id returns IdsRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.IdsRequired,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "", .item_id = "ws_item_1" }),
+    );
+}
+
+test "useCase: empty item_id returns IdsRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.IdsRequired,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "" }),
+    );
+}
+
+test "useCase: non-existent workspace_item returns ItemNotFound" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.ItemNotFound,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_404" }),
+    );
+}
+
+test "useCase: workspace_item of type agent returns ItemNotRoutine" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.ItemNotRoutine,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_agent" }),
+    );
+}
+
+test "useCase: routine without agent_routines row returns NotConfigured" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.NotConfigured,
+        useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_bare" }),
+    );
+}
+
+test "useCase: happy path returns config + knowledges DESC + tools enabled ASC" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const output = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_1" });
+    defer freeOutput(alloc, output);
+
+    // Config row.
+    try testing.expectEqualStrings("ws_item_1", output.agent_routine.id);
+    try testing.expectEqualStrings("routine desc", output.agent_routine.description);
+
+    // Knowledges: 2 rows, position DESC. kn_2 (position 1) first.
+    try testing.expectEqual(@as(usize, 2), output.knowledges.len);
+    try testing.expectEqualStrings("kn_2", output.knowledges[0].id);
+    try testing.expectEqualStrings("inline body", output.knowledges[0].content);
+    try testing.expectEqualStrings("kn_1", output.knowledges[1].id);
+
+    // Tools: 2 enabled, alphabetical. write_file excluded (enabled=0).
+    try testing.expectEqual(@as(usize, 2), output.tools.len);
+    try testing.expectEqualStrings("bash", output.tools[0]);
+    try testing.expectEqualStrings("read_file", output.tools[1]);
+}
+
+test "useCase: returns system_prompts ordered position DESC" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_routine_system_prompt (id, routine_id, title, content, position) VALUES ('sp_low', 'ws_item_1', 'Low', 'low body', 0)",
+        &[_][]const u8{},
+    );
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_routine_system_prompt (id, routine_id, title, content, position) VALUES ('sp_high', 'ws_item_1', 'High', 'high body', 3)",
+        &[_][]const u8{},
+    );
+
+    const output = try useCase(alloc, &ctx.db, .{ .workspace_id = "ws_1", .item_id = "ws_item_1" });
+    defer freeOutput(alloc, output);
+
+    try testing.expectEqual(@as(usize, 2), output.system_prompts.len);
+    try testing.expectEqualStrings("sp_high", output.system_prompts[0].id);
+    try testing.expectEqualStrings("high body", output.system_prompts[0].content);
+    try testing.expectEqualStrings("sp_low", output.system_prompts[1].id);
+}

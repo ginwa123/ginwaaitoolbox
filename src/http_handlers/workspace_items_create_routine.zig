@@ -13,10 +13,11 @@
 //! (empty = manual-run only, no auto-fire). `instruction` is the
 //! agent prompt fired on each tick.
 //!
-//! No tool seeding in v1: routine fires run with the full tool
-//! registry (the fire path only restricts tools for `item_type`
-//! `'agent'`/`'kanban'`). Seeding into `agent_tools` would violate
-//! its FK to `agents(id)` — there is no `agents` row for a routine.
+//! Agent-config seeding: an `agent_routines` row is seeded in-txn (Migration
+//! 087) so the RoutineView Agent tab works immediately. No default tools
+//! are seeded — an empty allowlist means "all tools" (kanban D5
+//! semantics), preserving the original full-registry fire behaviour.
+//! Routine mode task_1789505553300_1 (option A, mirror agent_kanban_*).
 //!
 //! Plan: docs/superpowers/plans/2026-09-10-workspace-items-routines.md
 //! Task: task_1789032258828_0.
@@ -131,9 +132,9 @@ fn useCase(
     const item_id = try std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
     errdefer allocator.free(item_id);
 
-    // BEGIN/COMMIT so the 2 INSERTs are atomic (same rationale as the
+    // BEGIN/COMMIT so the 3 INSERTs are atomic (same rationale as the
     // agent create — a crash mid-flow must not leave a
-    // workspace_items row without its routine sibling).
+    // workspace_items row without its routine siblings).
     db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.DatabaseError;
     errdefer {
         db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
@@ -155,6 +156,17 @@ fn useCase(
         \\VALUES (?, ?, COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), ?, ?)
     ,
         &.{ item_id, item_id, input.body.description, input.body.instruction, trimmed_schedule, enabled_str, next_run_at },
+    ) catch return error.DatabaseError;
+
+    // Seed the agent_routines config row so the RoutineView Agent tab
+    // works immediately (mirrors the agent_kanbans seed in
+    // workspace_items_create_kanban.zig). No default tools are seeded:
+    // an empty allowlist means "all tools" (kanban D5 semantics),
+    // which preserves the pre-migration fire behaviour exactly.
+    // INSERT OR IGNORE keeps re-entry safe.
+    db.exec(allocator,
+        "INSERT OR IGNORE INTO agent_routines (id, workspace_item_id) VALUES (?, ?)",
+        &.{ item_id, item_id },
     ) catch return error.DatabaseError;
 
     db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.DatabaseError;
@@ -299,6 +311,7 @@ pub fn workspaceItemsCreateRoutineHandler(
 const sqlite = @import("nalarcore").sqlite;
 const testing = std.testing;
 const Migration084ReplaceRoutinesWithWorkspaceRoutines = @import("../migrations/migration.zig").Migration084ReplaceRoutinesWithWorkspaceRoutines;
+const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -322,6 +335,7 @@ fn setupDb() !TestCtx {
         &[_][]const u8{},
     );
     try Migration084ReplaceRoutinesWithWorkspaceRoutines.up(&db, testing.allocator);
+    try Migration087CreateAgentRoutines.up(&db, testing.allocator);
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -356,6 +370,21 @@ test "create routine: happy path inserts item + routine with next_run_at" {
         try testing.expectEqualStrings("0 9 * * *", row.values[1]);
         try testing.expectEqualStrings("1", row.values[2]);
         try testing.expect(row.values[3].len > 0);
+    }
+    // Agent-config row seeded in-txn (Migration 087) with no default tools.
+    {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_routines", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1", row.values[0]);
+    }
+    {
+        var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_routine_tools", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("0", row.values[0]);
     }
 }
 
