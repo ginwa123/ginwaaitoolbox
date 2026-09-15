@@ -6,8 +6,8 @@ const { getGitChangesMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
 }))
 
-vi.mock('../../api', async () => {
-  const actual = await vi.importActual<typeof import('../../api')>('../../api')
+vi.mock('../../../api', async () => {
+  const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
