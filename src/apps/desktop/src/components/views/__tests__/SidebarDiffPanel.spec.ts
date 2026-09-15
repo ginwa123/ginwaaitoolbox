@@ -1,6 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { createRouter, createMemoryHistory } from 'vue-router'
+
+const testRouter = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+})
 
 const { getGitChangesMock, getGitFileDiffMock, stageGitFilesMock, unstageGitFilesMock } =
   vi.hoisted(() => ({
@@ -58,7 +64,7 @@ describe('SidebarDiffPanel', () => {
   })
 
   it('renders file groups with counts', async () => {
-    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
     expect(wrapper.text()).toContain('Staged Changes (1)')
@@ -68,7 +74,7 @@ describe('SidebarDiffPanel', () => {
   })
 
   it('loads inline diff on file click', async () => {
-    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
@@ -78,13 +84,13 @@ describe('SidebarDiffPanel', () => {
 
   it('shows retry on list failure', async () => {
     getGitChangesMock.mockRejectedValueOnce(new Error('boom'))
-    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     expect(wrapper.find('[data-testid="sidebar-diff-retry"]').exists()).toBe(true)
   })
 
   it('emits refresh on ↻ click so ChatView re-syncs the worktree binding', async () => {
-    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-diff-refresh"]').trigger('click')
     await flushPromises()
@@ -92,7 +98,7 @@ describe('SidebarDiffPanel', () => {
   })
 
   it('stages a file and reloads', async () => {
-    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
     await flushPromises()
     const row = wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]')
     await row.get('button[title="Stage file"]').trigger('click')

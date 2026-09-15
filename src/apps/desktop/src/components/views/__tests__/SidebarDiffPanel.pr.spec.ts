@@ -1,6 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { createRouter, createMemoryHistory } from 'vue-router'
+
+const testRouter = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+})
 
 const { getGitChangesMock, getPrDiffMock, stageGitFilesMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
@@ -56,7 +62,7 @@ describe('SidebarDiffPanel PR mode', () => {
   })
 
   it('switches to PR mode when prUrl is set and lists PR files', async () => {
-    const wrapper = mount(SidebarDiffPanel, {
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42', prProvider: 'github' },
     })
     await flushPromises()
@@ -70,7 +76,7 @@ describe('SidebarDiffPanel PR mode', () => {
   })
 
   it('loads inline diff on PR file click without stage buttons', async () => {
-    const wrapper = mount(SidebarDiffPanel, {
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
@@ -85,7 +91,7 @@ describe('SidebarDiffPanel PR mode', () => {
 
   it('shows retry on PR diff failure', async () => {
     getPrDiffMock.mockRejectedValueOnce(new Error('nope'))
-    const wrapper = mount(SidebarDiffPanel, {
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
@@ -93,7 +99,7 @@ describe('SidebarDiffPanel PR mode', () => {
   })
 
   it('stays in worktree mode when prUrl is empty', async () => {
-    const wrapper = mount(SidebarDiffPanel, { props: { cwd: '/repo', prUrl: '' } })
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo', prUrl: '' } })
     await flushPromises()
     expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
     expect(getPrDiffMock).not.toHaveBeenCalled()

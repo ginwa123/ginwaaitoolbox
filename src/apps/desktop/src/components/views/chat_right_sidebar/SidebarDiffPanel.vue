@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import * as api from '../../../api'
+import { openInNewTab } from '../../../helpers/openInNewTab'
+import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
+import { useContextMenu } from '../../../composables/useContextMenu'
+import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import FileInput from '../../file/FileInput.vue'
 import {
   escapeDiffHtml,
@@ -64,6 +69,61 @@ const isLoadingPr = ref(false)
 const prError = ref<string | null>(null)
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
+
+const router = useRouter()
+
+// Right-click "Open file in new tab" for a file row. Position state +
+// dismiss wiring live in useContextMenu; the row payload (file path)
+// lives here so the menu emit can target it (ChatsList pattern).
+const { menuPos, openAt, close: closeContextMenu } = useContextMenu()
+const contextMenuPath = ref<string | null>(null)
+
+const codeEditorQuery = (path: string): Record<string, string> => ({
+  view: 'code-editor',
+  file: btoa(path),
+  cwd: props.cwd,
+})
+
+const openFileInNewTab = (path: string) => {
+  openInNewTab(router, { path: '/app', query: codeEditorQuery(path) })
+}
+
+const onFileRowContextMenu = (event: MouseEvent, path: string) => {
+  contextMenuPath.value = path
+  openAt(event)
+}
+
+const openMenuFileInBackground = () => {
+  const path = contextMenuPath.value
+  contextMenuPath.value = null
+  closeContextMenu()
+  if (!path) return
+  openFileInNewTab(path)
+}
+
+// Ctrl/Cmd+click and middle-click open the code-editor URL in a real
+// browser tab (the browser gesture); plain click keeps panel behavior.
+const onFileRowClick = (event: MouseEvent, file: api.GitFileChange, staged: boolean) => {
+  if (isBackgroundOpenEvent(event)) {
+    openFileInNewTab(file.path)
+    return
+  }
+  selectFile(file, staged)
+}
+
+const onPrFileRowClick = (event: MouseEvent, file: SplitDiffFile) => {
+  if (isBackgroundOpenEvent(event)) {
+    openFileInNewTab(file.path)
+    return
+  }
+  selectPrFile(file)
+}
+
+const onFileRowAuxClick = (event: MouseEvent, path: string) => {
+  if (event.button !== 1) return
+  event.preventDefault()
+  openFileInNewTab(path)
+}
 
 // Short label for the header: "#42" from /pull/42 or /merge_requests/42,
 // else the URL host. Pure display helper (no network).
@@ -466,7 +526,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                     : 'transparent',
               }"
               :data-testid="`sidebar-pr-file-${file.path}`"
-              @click="selectPrFile(file)"
+              @click="onPrFileRowClick($event, file)"
+              @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+              @auxclick="onFileRowAuxClick($event, file.path)"
             >
               <span class="text-xs">{{ prStatusIcon[file.status] ?? '📄' }}</span>
               <span
@@ -549,7 +611,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                   : 'transparent',
             }"
             :data-testid="`sidebar-diff-file-staged-${file.path}`"
-            @click="selectFile(file, true)"
+            @click="onFileRowClick($event, file, true)"
+            @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+            @auxclick="onFileRowAuxClick($event, file.path)"
           >
             <span class="text-xs">{{ displayStatus(file).icon }}</span>
             <span
@@ -587,7 +651,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                   : 'transparent',
             }"
             :data-testid="`sidebar-diff-file-unstaged-${file.path}`"
-            @click="selectFile(file, false)"
+            @click="onFileRowClick($event, file, false)"
+            @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+            @auxclick="onFileRowAuxClick($event, file.path)"
           >
             <span class="text-xs">{{ displayStatus(file).icon }}</span>
             <span
@@ -625,7 +691,9 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
                   : 'transparent',
             }"
             :data-testid="`sidebar-diff-file-untracked-${file.path}`"
-            @click="selectFile(file, false)"
+            @click="onFileRowClick($event, file, false)"
+            @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
+            @auxclick="onFileRowAuxClick($event, file.path)"
           >
             <span class="text-xs">❓</span>
             <span
@@ -842,6 +910,15 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
         </div>
       </div>
     </div>
+
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      :show-chat="false"
+      show-file
+      @open-file="openMenuFileInBackground"
+    />
 
     <Teleport to="body">
       <div
