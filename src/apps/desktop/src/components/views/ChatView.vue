@@ -69,7 +69,6 @@ import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
 import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
-import ShowPreview from '../tool_outputs/ShowPreview.vue'
 import PresentFiles from '../tool_outputs/PresentFiles.vue'
 import SearchHistory from '../tool_outputs/SearchHistory.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
@@ -166,11 +165,10 @@ interface Message {
   finish_reason?: string
   tool_call_id?: string
   /**
-   * JSON-stringified tool input arguments (e.g. for `show_preview`:
-   * `{content_type, content, title, language, caption}`). Populated
+   * JSON-stringified tool input arguments. Populated
    * by the same `tryUnwrapToolOutput` pipeline that fills
-   * `unwrappedByMessageId`. Used by `ShowPreview` to render
-   * rich previews without re-fetching.
+   * `unwrappedByMessageId`. Used by cards like `PresentFiles`
+   * (`parameters` passthrough) without re-fetching.
    */
   parameters?: string
   is_input?: boolean
@@ -768,10 +766,10 @@ const error = ref<string | null>(null)
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
 
-// show_preview previews render inline inside the chat bubble
-// (see ShowPreview.vue + PreviewContentRenderer.vue). There is no
+// File previews render inline inside the chat bubble
+// (see PresentFiles.vue + PreviewContentRenderer.vue). There is no
 // side panel — wide HTML content offers an "Open in new tab"
-// action via a Blob URL instead.
+// action instead.
 // Whether the VirtualScroller's container is currently scrollable
 // (`scrollHeight > clientHeight`). When the container IS scrollable,
 // the user can scroll to the top to trigger loadMore via the
@@ -3173,7 +3171,11 @@ const compactSession = async () => {
           v-if="!showHeader && !embedded && !chatSidebar.isOpen.value"
           type="button"
           class="absolute top-2 right-2 z-10 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim); background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+          style="
+            color: var(--semantic-text-dim);
+            background-color: var(--semantic-card-bg);
+            border: 1px solid var(--color-border);
+          "
           title="Show changes sidebar (Cmd/Ctrl+B)"
           aria-label="Show changes sidebar"
           @click="chatSidebar.open()"
@@ -3609,24 +3611,13 @@ const compactSession = async () => {
                             :message="msg"
                           />
                           <!--
-                            `show_preview` renders inline in the chat
-                            bubble via `<ShowPreview>` (which parses
-                            the XML envelope into a header line plus
-                            the rich content). HTML previews offer an
-                            "Open in new tab" action for full-width
-                            viewing.
-                          -->
-                          <ShowPreview
-                            v-else-if="msg.tool_name === 'show_preview'"
-                            :content="innerToolData(msg)"
-                            :message-id="msg.id"
-                            :parameters="getParametersForMessage(msg)"
-                          />
-                          <!--
-                            `present_files` renders one downloadable row
-                            per file (images get a thumbnail preview
-                            before download). Cookie-based auth, so plain
-                            `<a href>` / `<img src>` carry credentials.
+                            `present_files` renders one inline-preview
+                            section per file (images full-width, html in
+                            a sandboxed iframe, text via the shared
+                            renderer, pdf/video/audio native) plus a
+                            download action. Cookie-based auth, so plain
+                            `<a href>` / `<img src>` / `<iframe src>`
+                            carry credentials.
                           -->
                           <PresentFiles
                             v-else-if="msg.tool_name === 'present_files'"
@@ -3637,12 +3628,11 @@ const compactSession = async () => {
                             :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                           />
                           <!--
-                            `generate_image` is expandable (not side-panel
-                            based like `show_preview`). The card shows the
-                            prompt + model + size + saved file paths; the
-                            agent's NEXT tool call is `show_preview` with
-                            `path=<image.path>` which actually renders the
-                            image inline. This component is informational
+                            `generate_image` is expandable. The card shows
+                            the prompt + model + size + saved file paths;
+                            the agent's NEXT tool call is `present_files`
+                            with `files=[{path=<image.path>}]` which renders
+                            the image inline. This component is informational
                             metadata only.
                           -->
                           <GenerateImage

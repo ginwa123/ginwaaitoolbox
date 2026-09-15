@@ -4,8 +4,8 @@
   Renders the XML envelope produced by `execute_generate_image` in
   `src/modules/agent/tools/generate_image.zig`. The component is purely
   presentational: no API calls, no store mutations, no navigation. The
-  actual image rendering happens in the NEXT tool call (`show_preview`
-  with `content_type="image"` + `path=<image.path>`), which the agent
+  actual image rendering happens in the NEXT tool call (`present_files`
+  with `files=[{path=<image.path>}]`), which the agent
   invokes immediately after a successful generation. This card's job is
   just to show "what was generated" at-a-glance in the chat bubble —
   prompt + model + size + saved paths + (optional) revised_prompt.
@@ -103,9 +103,7 @@ const args = computed<GenerateImageArgs>(() => {
 
 // ─── Derived display values ───────────────────────────────────────────────
 
-const isSuccess = computed(
-  () => parsed.value.error === null && parsed.value.status === 'generated',
-)
+const isSuccess = computed(() => parsed.value.error === null && parsed.value.status === 'generated')
 
 const statusIndicator = computed(() => (isSuccess.value ? '✓' : '✗'))
 
@@ -186,18 +184,12 @@ const copyPath = async (e: Event, path: string) => {
       </span>
 
       <!-- Right meta -->
-      <span
-        v-if="rightMeta"
-        class="text-[var(--semantic-text-muted)] text-xs"
-      >
+      <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-xs">
         {{ rightMeta }}
       </span>
 
       <!-- Status indicator -->
-      <span
-        class="text-xs font-semibold"
-        :class="isSuccess ? 'text-green-500' : 'text-red-500'"
-      >
+      <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
 
@@ -208,10 +200,7 @@ const copyPath = async (e: Event, path: string) => {
     </div>
 
     <!-- Expanded content -->
-    <div
-      v-if="isExpanded"
-      class="border-t border-[var(--color-border)] bg-black/[0.02]"
-    >
+    <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <!-- Error message -->
       <div
         v-if="parsed.error"
@@ -233,10 +222,7 @@ const copyPath = async (e: Event, path: string) => {
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">
             #{{ img.index }}
           </span>
-          <span
-            class="flex-1 truncate font-mono text-[var(--semantic-text)]"
-            :title="img.path"
-          >
+          <span class="flex-1 truncate font-mono text-[var(--semantic-text)]" :title="img.path">
             {{ img.path }}
           </span>
           <span class="shrink-0 text-[var(--semantic-text-muted)]">

@@ -34,7 +34,7 @@ describe('clampFrameHeight', () => {
     expect(clampFrameHeight(Number.POSITIVE_INFINITY)).toBe(MAX_FRAME_HEIGHT)
   })
 
-  it('honours explicit bounds (the show_preview iframe uses 200..2000)', () => {
+  it('honours explicit bounds (the preview HTML iframe uses 200..2000)', () => {
     expect(clampFrameHeight(10, 200, 2000)).toBe(200)
     expect(clampFrameHeight(5000, 200, 2000)).toBe(2000)
   })
@@ -50,7 +50,7 @@ describe('readAutoResizeHeight', () => {
     ).toBe(812)
   })
 
-  it('ignores another consumer\'s frames (preview vs chat tags)', () => {
+  it("ignores another consumer's frames (preview vs chat tags)", () => {
     expect(
       readAutoResizeHeight(
         msg({ source: PREVIEW_AUTO_RESIZE_SOURCE, height: 812 }),
@@ -109,7 +109,7 @@ describe('findSenderFrame', () => {
 })
 
 describe('autoResizeScript', () => {
-  it('tags the report with the caller\'s source and posts it to the parent', () => {
+  it("tags the report with the caller's source and posts it to the parent", () => {
     const script = autoResizeScript(CHAT_HTML_FRAME_RESIZE_SOURCE)
     expect(script).toContain(JSON.stringify(CHAT_HTML_FRAME_RESIZE_SOURCE))
     expect(script).toContain('parent.postMessage')
@@ -123,9 +123,7 @@ describe('autoResizeScript', () => {
     expect(script.split('</script>').length - 1).toBe(1)
   })
 
-  it('pre-tags the show_preview iframe with its own source', () => {
-    expect(PREVIEW_AUTO_RESIZE_SCRIPT).toContain(
-      JSON.stringify(PREVIEW_AUTO_RESIZE_SOURCE),
-    )
+  it('pre-tags the preview HTML iframe with its own source', () => {
+    expect(PREVIEW_AUTO_RESIZE_SCRIPT).toContain(JSON.stringify(PREVIEW_AUTO_RESIZE_SOURCE))
   })
 })

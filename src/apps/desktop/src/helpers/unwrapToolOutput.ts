@@ -46,8 +46,7 @@ function findTag(haystack: string, tag: string): string | null {
 /**
  * Public re-export of `findTag` for callers that need to extract a
  * single tag from a `<tool>...</tool>` envelope's inner XML without
- * using the full unwrap path. Used by `previewArgs.ts` (the show_preview
- * parameter extractor that handles both XML and legacy-JSON shapes).
+ * using the full unwrap path.
  */
 export { findTag as findXmlTag }
 

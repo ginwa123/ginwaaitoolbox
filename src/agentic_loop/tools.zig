@@ -39,7 +39,6 @@ pub const execGroupElements = @import("tools_exec_group_elements.zig").execGroup
 pub const execSetElementParent = @import("tools_exec_set_element_parent.zig").execSetElementParent;
 pub const execMoveDesignElement = @import("tools_exec_move_design_element.zig").execMoveDesignElement;
 pub const execMoveElementToPage = @import("tools_exec_move_element_to_page.zig").execMoveElementToPage;
-pub const execShowPreview = @import("tools_exec_show_preview.zig").execShowPreview;
 pub const execPresentFiles = @import("tools_exec_present_files.zig").execPresentFiles;
 pub const execGenerateImage = @import("tools_exec_generate_image.zig").execGenerateImage;
 pub const execGetDesignContext = @import("tools_exec_get_design_context.zig").execGetDesignContext;

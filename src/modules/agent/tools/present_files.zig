@@ -1,16 +1,19 @@
 //! `present_files` — an agent tool that presents workspace files of ANY
-//! type (text, jpg/png, pdf, zip, code, etc.) as downloadable cards in
-//! the chat transcript.
+//! type (text, jpg/png, pdf, zip, code, html, etc.) as rich inline-preview
+//! cards in the chat transcript.
 //!
 //! The LLM calls this tool with a list of ABSOLUTE file paths. The
 //! server stats each file (existence, size, mime) and returns an XML
 //! envelope listing them. The frontend's `<PresentFiles>` card renders
-//! one row per file: images (`image/*`) show a thumbnail preview
-//! (served from `GET /api/files/download?disposition=inline`) before
-//! download, everything else shows a generic row. Every row links to
+//! one section per file with an inline preview plus a download action:
+//! images (`image/*`) render full-width, html renders in a sandboxed
+//! iframe, text/markdown/code render fetched source inline, pdf renders
+//! in an embedded frame, video/audio render native players, and anything
+//! else falls back to a generic row. Every row links to
 //! `GET /api/files/download?disposition=attachment` so clicking
 //! downloads the bytes with the original filename (cookie-based auth,
-//! so plain `<a href>` + `<img src>` carry credentials).
+//! so plain `<a href>` + `<img src>` carry credentials). Inline bytes
+//! come from `GET /api/files/download?disposition=inline`.
 //!
 //! Response shape (per project convention, like `generate_image.zig`):
 //!   <present_files>
@@ -26,9 +29,10 @@
 //!   <present_files><error>...</error></present_files>
 //!
 //! Design: docs/plans/2026-09-14-agent-tool-present-files.md
-//! Unlike `show_preview` (1 MiB inline cap, base64 data URLs), this tool
-//! never reads file bytes — only `stat` — so the SSE payload stays tiny
-//! and images render via URL instead of data URI.
+//! This tool never reads file bytes — only `stat` — so the SSE payload
+//! stays tiny and previews render via URL instead of data URI. To show
+//! LLM-generated content inline, first persist it with `write_file`,
+//! then present the saved file.
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -63,9 +67,10 @@ pub const PresentFilesInput = struct {
 /// Top-level tool definition exposed to the LLM.
 pub const present_files_tool_system_prompt =
     \\## Present Files Tool — Behavior
-    \\Use `present_files` to present workspace files (any type: text, images, pdf, zip, code) as downloadable cards in the chat.
+    \\Use `present_files` to present workspace files (any type: text, images, pdf, zip, code, html, video, audio) as inline-preview cards in the chat.
     \\- Provide `files` with ABSOLUTE `path` entries (1-10). Each file must exist and be ≤ 50 MiB.
-    \\- Images (jpg/png/gif/webp) show a thumbnail preview before download; other types show a file row with a download button.
+    \\- The card renders each file inline: images full-width, html in a sandboxed iframe, text/markdown/code as fetched source, pdf embedded, video/audio with native players; anything else shows a file row with a download button.
+    \\- To show generated content inline, first save it with `write_file`, then present the saved file.
     \\- Optional `label` overrides the displayed name; optional `caption` adds a note below the row.
     \\
 ;
@@ -75,15 +80,15 @@ pub const present_files_tool = AgentTool{
     .function = .{
         .name = "present_files",
         .description =
-            \\Present one or more workspace files as downloadable cards in the chat transcript. Use this tool when the user asks to "share", "attach", "present", "send", or "download" a file — or when you just created/edited a file (report, image, export, notes) and want the user to grab it with one click.
+            \\Present one or more workspace files as inline-preview cards in the chat transcript. Use this tool when the user asks to "share", "attach", "present", "send", "show", "preview", "render", or "download" a file — or when you just created/edited a file (report, image, export, notes, html page) and want the user to see it inline with one click to download.
             \\
             \\INPUT: files (required, array of 1-10 objects). Each object: path (required, ABSOLUTE path to an existing file, e.g. "/home/user/report.md"), label (optional, short display name — defaults to the filename), caption (optional, note shown below the row).
             \\
-            \\BEHAVIOUR: The server stats each file (existence, size, mime) and returns metadata only — file bytes are served on demand via GET /api/files/download when the user clicks. Images (jpg/png/gif/webp) render a thumbnail preview in the card before download; every other type (text, code, pdf, zip, etc.) renders a file row with a download button. Files must be ≤ 50 MiB each; missing files, directories, relative paths, and oversized files are rejected with a structured error.
+            \\BEHAVIOUR: The server stats each file (existence, size, mime) and returns metadata only — file bytes are served on demand via GET /api/files/download (disposition=inline for previews, attachment for downloads). The card renders each file inline: images (jpg/png/gif/webp/svg) full-width with click-to-fullscreen, html in a sandboxed iframe with an "open in new tab" action, text/markdown/code (md/txt/json/csv/log/zig/ts/py/js/css) as fetched source with syntax-aware rendering, pdf embedded, video/audio with native players; every other type (zip, etc.) renders a file row with a download button. Files must be ≤ 50 MiB each; missing files, directories, relative paths, and oversized files are rejected with a structured error.
             \\
             \\OUTPUT (XML success envelope): <present_files><status>presented</status><count>N</count><files><file path="..." bytes="..." mime="..." label="..."/>...</files></present_files>. On error: <present_files><error>...</error></present_files>.
             \\
-            \\This tool does NOT write anything to disk and does NOT render inline content — it only lists files for download. To show rich content inline, use `show_preview` instead.
+            \\This tool does NOT write anything to disk — it only presents existing files. To show generated content inline, first save it with `write_file`, then present the saved file.
             ,
         .parameters = .{
             .type = "object",
@@ -104,11 +109,10 @@ pub const present_files_tool = AgentTool{
 //
 // Local helpers — kept private to this file (the project convention
 // is to duplicate `xmlEscape` in every tool file rather than share
-// via a public module — see `kanban_list.zig:115`, `list_memory.zig`,
-// `show_preview.zig:149`).
+// via a public module — see `kanban_list.zig:115`, `list_memory.zig`).
 
 /// Escape XML special characters. Mirrors the helper in
-/// `show_preview.zig` / `kanban_list.zig` / `list_memory.zig`.
+/// `kanban_list.zig` / `list_memory.zig`.
 fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     var result: std.ArrayList(u8) = .empty;
     errdefer result.deinit(allocator);
@@ -329,7 +333,7 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 }
 
 /// Open a fresh `std.Io.Threaded` runtime. Mirrors the setup helper
-/// in `show_preview.zig:653`.
+/// in `kanban_list.zig` (same pattern).
 fn setupIo() std.Io.Threaded {
     const threaded = std.Io.Threaded.init(testing.allocator, .{});
     return threaded;

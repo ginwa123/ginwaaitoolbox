@@ -1,11 +1,10 @@
 <!--
-  PreviewContentRenderer — shared renderer for the rich content of
-  a single `show_preview` agent tool output.
+  PreviewContentRenderer — shared renderer for rich text content
+  (markdown / text / code / image / html).
 
-  Renders the rich content of a single `show_preview` agent tool
-  output inline inside the chat bubble (used by ShowPreview).
-  Supports 5 content types (markdown / text / code / image / html)
-  without copy-paste drift.
+  Renders fetched or inline text content inside the chat bubble (used by
+  PresentFiles for per-file text previews). Supports 5 content types
+  (markdown / text / code / image / html) without copy-paste drift.
 
   HTML previews render in a sandboxed iframe that auto-sizes to fit
   content height, plus an "Open in new tab" button
@@ -17,8 +16,8 @@
     - `contentType`: one of 'markdown' | 'text' | 'code' | 'image' | 'html'.
     - `args`: object with `content`, `title`, `caption`, `language` fields.
       `content` is the raw payload. `title` renders above. `caption`
-      renders below. `language` is required for `code` (matches the
-      schema in show_preview.zig).
+      renders below. `language` selects the code fence hint (matches the
+      `present_files` text-preview convention).
     - `variant` (default 'inline'): kept for backward compat, only
       `'inline'` layout is used (compact chat-bubble layout).
 
@@ -74,7 +73,6 @@ const props = withDefaults(
   { variant: 'inline' },
 )
 
-
 // ─── Iframe ref + auto-resize message handling ──────────────────────
 //
 // The inline iframe auto-sizes to fit its content via a tiny postMessage
@@ -103,8 +101,6 @@ function onIframeMessage(e: MessageEvent) {
   const clampedH = clampFrameHeight(reported, MIN_IFRAME_HEIGHT, MAX_IFRAME_HEIGHT)
   iframe.style.height = `${clampedH}px`
 }
-
-
 
 onMounted(() => {
   if (typeof window !== 'undefined') {
@@ -210,9 +206,15 @@ function openInNewTab() {
     window.open(url, '_blank', 'noopener')
     // Revoke after a delay so the new tab has time to load.
     window.setTimeout(() => {
-      try { URL.revokeObjectURL(url) } catch { /* ignore */ }
+      try {
+        URL.revokeObjectURL(url)
+      } catch {
+        /* ignore */
+      }
     }, 60_000)
-  } catch { /* ignore — popup blocked or blob unsupported */ }
+  } catch {
+    /* ignore — popup blocked or blob unsupported */
+  }
 }
 </script>
 
@@ -226,19 +228,21 @@ function openInNewTab() {
       <span
         v-if="args.language && contentType === 'code'"
         class="ml-2 text-xs text-[var(--semantic-text-muted)] font-normal"
-      >[{{ args.language }}]</span>
+        >[{{ args.language }}]</span
+      >
     </div>
 
-    <div
-      v-if="contentType === 'image'"
-      class="flex justify-center bg-black/[0.04] p-2 rounded"
-    >
+    <div v-if="contentType === 'image'" class="flex justify-center bg-black/[0.04] p-2 rounded">
       <img
         v-if="imageSrc"
         :src="imageSrc"
         :alt="args.title || args.caption || 'Preview image'"
         class="max-w-full max-h-96 object-contain"
-        @error="(e) => { (e.target as HTMLImageElement).style.display = 'none' }"
+        @error="
+          (e) => {
+            ;(e.target as HTMLImageElement).style.display = 'none'
+          }
+        "
       />
       <div v-else class="text-xs text-red-500 italic">
         Image source invalid (expected data: URL or http(s) URL)
@@ -267,14 +271,18 @@ function openInNewTab() {
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
       />
-      <div class="flex items-center justify-end gap-2 px-2 py-1.5 border-t border-[var(--color-border)] bg-black/[0.02]">
+      <div
+        class="flex items-center justify-end gap-2 px-2 py-1.5 border-t border-[var(--color-border)] bg-black/[0.02]"
+      >
         <button
           type="button"
           class="px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text)] text-xs cursor-pointer transition-colors"
           data-testid="preview-open-new-tab-button"
           title="Open HTML preview in a new browser tab"
           @click.stop="openInNewTab"
-        >↗ Open in new tab</button>
+        >
+          ↗ Open in new tab
+        </button>
       </div>
     </div>
 

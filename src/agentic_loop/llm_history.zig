@@ -3059,7 +3059,7 @@ pub fn updateToolResultById(
 /// first LLM call.
 ///
 /// The synthetic content uses an XML envelope (`<interrupted>...</interrupted>`)
-/// so future `show_preview`-style tools can detect + render it
+/// so future rich-preview tools can detect + render it
 /// distinctly. The LLM sees plain text:
 ///
 ///     Tool execution was interrupted by server restart. Please

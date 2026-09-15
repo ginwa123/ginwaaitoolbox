@@ -78,7 +78,7 @@ def test_bundle_get_fresh_returns_defaults(harness: FunctionalHarness) -> None:
         expect=200,
     )
     body = r.json()
-    assert body.get("tools") == ["add_skill", "command", "edit_skill", "get_plan", "glob", "kanban_list", "kanban_move_task", "list_directory", "list_skills", "list_sub_agent", "load_memory", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"], (
+    assert body.get("tools") == ["add_skill", "command", "edit_skill", "get_plan", "glob", "kanban_list", "kanban_move_task", "list_directory", "list_skills", "list_sub_agent", "load_memory", "present_files", "read_file", "remove_file", "remove_skill", "save_memory", "search", "search_history", "search_tool", "spawn_sub_agent", "text_replace", "update_plan", "use_skill", "use_tool", "view_tool", "write_file"], (
         f"fresh kanban should seed defaults, got: {body!r}"
     )
 
@@ -118,11 +118,11 @@ def test_knowledge_create_with_inline_content(harness: FunctionalHarness) -> Non
     kanban_id = _create_kanban(harness, ws_id)
 
     # Seed an extra tool (fresh kanbans seed 24 defaults, so use
-    # show_preview — in UNIFIED_TOOL_REGISTRY but never a default — for a clean 201).
+    # preview_design_page — in UNIFIED_TOOL_REGISTRY but never a default — for a clean 201).
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "show_preview"},
+        json_body={"tool_name": "preview_design_page"},
         expect=201,
     )
 
@@ -150,7 +150,7 @@ def test_knowledge_reorder_reaches_reorder_handler(harness: FunctionalHarness) -
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "show_preview"},
+        json_body={"tool_name": "preview_design_page"},
         expect=201,
     )
 
@@ -196,12 +196,12 @@ def test_tools_duplicate_returns_409(harness: FunctionalHarness) -> None:
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
-    # Fresh kanbans seed 24 defaults — use show_preview (never a default)
+    # Fresh kanbans seed 24 defaults — use preview_design_page (never a default)
     # for a clean first 201.
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "show_preview"},
+        json_body={"tool_name": "preview_design_page"},
         expect=201,
     )
 
@@ -209,7 +209,7 @@ def test_tools_duplicate_returns_409(harness: FunctionalHarness) -> None:
     harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/tools",
-        json_body={"tool_name": "show_preview"},
+        json_body={"tool_name": "preview_design_page"},
         expect=409,
     )
 

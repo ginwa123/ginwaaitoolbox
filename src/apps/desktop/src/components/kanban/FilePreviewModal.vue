@@ -24,11 +24,11 @@
     - File content in a scrollable <pre> with monospace font
     - Loading / error states inline
 
-  Why not use the existing `show_preview` tool?
-    That's for LLM tool output previews (terminal commands, file
-    diffs). File previews from a description are a different UX —
-    they should be inline-modal in the kanban dialog, not floating
-    panels. Keeping them separate avoids polluting the global preview
+  Why not use the `present_files` chat card?
+    That's for LLM tool output previews in the chat transcript.
+    File previews from a description are a different UX —
+    they should be inline-modal in the kanban dialog, not chat cards.
+    Keeping them separate avoids polluting the global preview
     surface.
 -->
 <script setup lang="ts">
@@ -111,7 +111,7 @@ const handleKeydown = (event: KeyboardEvent) => {
         <!-- Backdrop -->
         <div
           class="absolute inset-0 backdrop-blur-md"
-          style="background: rgba(0, 0, 0, 0.6);"
+          style="background: rgba(0, 0, 0, 0.6)"
           @click="handleClose"
         />
 
@@ -131,20 +131,20 @@ const handleKeydown = (event: KeyboardEvent) => {
           <!-- Header -->
           <div
             class="px-5 pt-5 pb-4 shrink-0 flex items-center justify-between gap-3"
-            style="border-bottom: 1px solid var(--color-border);"
+            style="border-bottom: 1px solid var(--color-border)"
           >
             <div class="min-w-0 flex-1">
               <h3
                 id="file-preview-modal-title"
                 class="text-base font-semibold truncate"
-                style="color: var(--semantic-text);"
+                style="color: var(--semantic-text)"
                 data-testid="file-preview-modal-title"
               >
                 📄 {{ filePath }}
               </h3>
               <div
                 class="text-[11px] truncate"
-                style="color: var(--semantic-text-dim);"
+                style="color: var(--semantic-text-dim)"
                 :title="cwd"
                 data-testid="file-preview-modal-cwd"
               >
@@ -156,11 +156,16 @@ const handleKeydown = (event: KeyboardEvent) => {
               @click="handleClose"
               data-testid="file-preview-modal-close"
               class="w-8 h-8 rounded-lg flex items-center justify-center transition-colors duration-200 hover:opacity-80 shrink-0"
-              style="color: var(--semantic-text-muted);"
+              style="color: var(--semantic-text-muted)"
               title="Close"
             >
               <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2"
+                  d="M6 18L18 6M6 6l12 12"
+                />
               </svg>
             </button>
           </div>
@@ -170,12 +175,12 @@ const handleKeydown = (event: KeyboardEvent) => {
             <div
               v-if="isLoading"
               class="text-sm text-center py-8"
-              style="color: var(--semantic-text-dim);"
+              style="color: var(--semantic-text-dim)"
               data-testid="file-preview-modal-loading"
             >
               <div
                 class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
-                style="border-color: var(--color-violet); border-top-color: transparent;"
+                style="border-color: var(--color-violet); border-top-color: transparent"
               />
               Loading file…
             </div>
@@ -195,19 +200,15 @@ const handleKeydown = (event: KeyboardEvent) => {
             <pre
               v-else
               class="text-xs whitespace-pre-wrap break-all"
-              style="
-                color: var(--semantic-text);
-                font-family: var(--font-mono);
-                line-height: 1.6;
-              "
+              style="color: var(--semantic-text); font-family: var(--font-mono); line-height: 1.6"
               data-testid="file-preview-modal-content"
-            >{{ content }}</pre>
+              >{{ content }}</pre>
           </div>
 
           <!-- Footer -->
           <div
             class="px-5 py-3 shrink-0 flex justify-end gap-2"
-            style="border-top: 1px solid var(--color-border);"
+            style="border-top: 1px solid var(--color-border)"
           >
             <button
               type="button"

@@ -112,7 +112,7 @@ pub const set_pull_request_tool = AgentTool{
 // ─── XML helpers ─────────────────────────────────────────────────────────
 //
 // Local `xmlEscape` duplicated per project convention (see
-// show_preview.zig, kanban_list.zig).
+// kanban_list.zig).
 
 fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     var result: std.ArrayList(u8) = .empty;
