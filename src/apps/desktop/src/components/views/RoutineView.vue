@@ -437,23 +437,43 @@ watch(
 </script>
 
 <template>
-  <div class="flex flex-col gap-4 p-5 h-full min-h-0" data-testid="routine-view">
-    <div class="flex items-center gap-2">
-      <span aria-hidden="true" class="text-lg">⏰</span>
-      <h2 class="text-base font-semibold" style="color: var(--semantic-text)">
-        {{ item.name ?? 'Routine' }}
-      </h2>
+  <div
+    class="flex flex-col h-full min-h-0"
+    style="background-color: var(--semantic-content-bg)"
+    data-testid="routine-view"
+  >
+    <!-- Header bar (mirrors KanbanSettingsView; no back button: a routine
+         has no board view to return to — its settings IS the main view). -->
+    <div
+      class="h-14 px-5 flex items-center gap-3 shrink-0"
+      style="border-bottom: 1px solid var(--color-border)"
+    >
+      <h1
+        class="text-base font-semibold flex items-center gap-2"
+        style="color: var(--semantic-text)"
+        data-testid="routine-settings-title"
+      >
+        <span aria-hidden="true">⚙️</span>
+        <span>Routine Settings</span>
+        <span style="color: var(--semantic-text-dim)" class="text-sm font-normal">·</span>
+        <span class="text-sm font-normal ml-1">{{ item.name ?? 'Routine' }}</span>
+      </h1>
     </div>
 
-    <div class="flex gap-1" data-testid="routine-tabs">
+    <!-- Tab strip (same underline-tab styling as kanban). -->
+    <div
+      class="flex gap-1 px-5 pt-3 pb-0 shrink-0"
+      style="border-bottom: 1px solid var(--color-border)"
+      data-testid="routine-tabs"
+    >
       <button
         type="button"
         data-testid="routine-tab-routine"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium"
+        class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
         :style="
           activeTab === 'routine'
-            ? 'background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);'
-            : 'background-color: transparent; border: 1px solid transparent; color: var(--semantic-text-dim);'
+            ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+            : 'background-color: transparent; color: var(--semantic-text-muted);'
         "
         @click="activeTab = 'routine'"
       >
@@ -462,11 +482,11 @@ watch(
       <button
         type="button"
         data-testid="routine-tab-agent"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium"
+        class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
         :style="
           activeTab === 'agent'
-            ? 'background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);'
-            : 'background-color: transparent; border: 1px solid transparent; color: var(--semantic-text-dim);'
+            ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
+            : 'background-color: transparent; color: var(--semantic-text-muted);'
         "
         @click="activeTab = 'agent'"
       >
@@ -474,7 +494,8 @@ watch(
       </button>
     </div>
 
-    <div v-if="activeTab === 'routine'" class="max-w-2xl w-full flex flex-col gap-4 overflow-y-auto" data-testid="routine-form">
+    <div v-if="activeTab === 'routine'" class="px-5 py-4 overflow-y-auto" data-testid="routine-form">
+      <div class="max-w-2xl flex flex-col gap-4">
       <div v-if="loading" class="text-sm" style="color: var(--semantic-text-dim)">
         Loading routine…
       </div>
@@ -593,6 +614,7 @@ watch(
           </button>
         </div>
       </template>
+      </div>
     </div>
 
     <div
