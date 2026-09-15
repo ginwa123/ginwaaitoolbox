@@ -741,3 +741,21 @@ test "set_git_worktree description warns against rm -rf" {
         return error.UncommittedWorkWarningMissing;
     }
 }
+
+test "success SET xml includes PR hint note with set_pull_request" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "<note>") == null) {
+        std.debug.print("!! successSetToXml does not emit a <note> element !!\n", .{});
+        return error.SuccessNoteMissing;
+    }
+    if (std.mem.indexOf(u8, source, "set_pull_request") == null) {
+        std.debug.print("!! success <note> does not mention set_pull_request !!\n", .{});
+        return error.SuccessNoteMissingSetPullRequest;
+    }
+    if (std.mem.indexOf(u8, source, "gh pr create") == null) {
+        std.debug.print("!! success <note> does not mention `gh pr create` !!\n", .{});
+        return error.SuccessNoteMissingGhPrCreate;
+    }
+}

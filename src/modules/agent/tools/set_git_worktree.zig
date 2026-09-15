@@ -887,7 +887,9 @@ pub fn freePathState(allocator: std.mem.Allocator, state: PathState) void {
 
 /// Generate success XML response for the SET path case. `<base>` is
 /// emitted only when a base ref was requested, so the element's absence
-/// keeps meaning "branched from HEAD".
+/// keeps meaning "branched from HEAD". Always emits a `<note>` hint so
+/// the agent knows how to open a PR for this branch (create via
+/// `gh pr create`, then bind via `set_pull_request`).
 fn successSetToXml(allocator: std.mem.Allocator, session_id: []const u8, path: []const u8, branch: []const u8, base: []const u8) []const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
@@ -904,6 +906,7 @@ fn successSetToXml(allocator: std.mem.Allocator, session_id: []const u8, path: [
         appendXmlContent(allocator, &result, base) catch return "";
         result.appendSlice(allocator, "</base>\n") catch return "";
     }
+    result.appendSlice(allocator, "<note>If the user asks to open a pull request, or you want to initialize one for this branch, create it with `gh pr create` (or the Create-PR dialog), then call `set_pull_request` with the PR URL to bind it to this session.</note>\n") catch return "";
     result.appendSlice(allocator, "</worktree>") catch return "";
 
     return result.toOwnedSlice(allocator) catch "";
