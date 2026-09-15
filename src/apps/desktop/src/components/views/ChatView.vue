@@ -1021,6 +1021,15 @@ const gitWorktreeCwd = ref('')
 // (so the branch display reflects the worktree's branch, not the
 // session's original cwd). Falls back to the session's original cwd.
 const effectiveCwd = computed(() => gitWorktreeCwd.value || sessionCwd.value)
+// Branch for the right sidebar. The bottom status bar's `gitStatus` is
+// the single source of truth — the sidebar used to fetch its own branch
+// via getGitChanges, and the two concurrent fetches raced on worktree
+// switches (sidebar showing stale 'main' while the bottom chip already
+// followed the worktree). `undefined` while loading so the sidebar
+// falls back to its own fetched branch instead of flashing 'detached'.
+const sidebarBranch = computed(() =>
+  gitStatus.value ? gitStatus.value.branch || 'detached' : undefined,
+)
 const maxTotalTokens = ref(0)
 const maxCapacityTotalTokens = ref(200000)
 
@@ -1338,6 +1347,7 @@ const handleFallbackJumpToLine = (line: number) => {
 
 // Git status state
 const gitStatus = ref<api.GitStatus | null>(null)
+let gitStatusSeq = 0
 let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null
 
 const checkGitStatus = async () => {
@@ -1345,10 +1355,18 @@ const checkGitStatus = async () => {
     gitStatus.value = null
     return
   }
+  // Stale-response guard: the worktree binding can flip twice in quick
+  // succession (session cwd → worktree A → worktree B). Without the seq
+  // check, the slower fetch for A resolves last and the bottom chip
+  // shows A's branch while the sidebar already follows B.
+  const seq = ++gitStatusSeq
+  const cwd = effectiveCwd.value
   try {
-    const status = await api.getGitStatus(effectiveCwd.value)
+    const status = await api.getGitStatus(cwd)
+    if (seq !== gitStatusSeq) return
     gitStatus.value = status
   } catch (err) {
+    if (seq !== gitStatusSeq) return
     console.error('Failed to check git status:', err)
     gitStatus.value = null
   }
@@ -3398,7 +3416,11 @@ const compactSession = async () => {
         and the last bubbles overlap the FileInput below. This is the
         "no scroll, bubbles overlap input" bug.
       -->
-      <div v-show="!showCenterDiff" ref="messagesWrapperRef" class="relative flex-1 min-h-0 flex flex-col mb-4">
+      <div
+        v-show="!showCenterDiff"
+        ref="messagesWrapperRef"
+        class="relative flex-1 min-h-0 flex flex-col mb-4"
+      >
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
         <button
@@ -4290,7 +4312,9 @@ const compactSession = async () => {
                 "
               >
                 <span>🌿</span>
-                <span style="color: var(--semantic-text)">{{ gitStatus.branch || 'main' }}</span>
+                <span style="color: var(--semantic-text)">{{
+                  gitStatus.branch || 'detached'
+                }}</span>
                 <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
                 <span v-else style="color: var(--color-green)">✓</span>
                 <span class="text-[10px]">▾</span>
@@ -4414,6 +4438,7 @@ const compactSession = async () => {
       v-if="!embedded"
       ref="chatSidebarRef"
       :cwd="effectiveCwd"
+      :branch="sidebarBranch"
       :pr-url="chatPrUrl"
       :pr-provider="chatPrProvider"
       :open="chatSidebar.isOpen.value"
