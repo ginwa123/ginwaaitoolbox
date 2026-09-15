@@ -141,3 +141,36 @@ describe('SidebarDiffPanel file context menu', () => {
     }
   })
 })
+
+describe('SidebarDiffPanel list collapse', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getGitChangesMock.mockResolvedValue(CHANGES)
+    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
+  })
+
+  it('selecting a file collapses the list behind a breadcrumb; back restores', async () => {
+    const wrapper = mount(SidebarDiffPanel, {
+      props: { cwd: '/repo' },
+      global: { plugins: [testRouter] },
+    })
+    await flushPromises()
+    const list = wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]')
+    expect(list.isVisible()).toBe(true)
+    await list.trigger('click')
+    await flushPromises()
+    // List group hidden via v-show (display:none on the group container;
+    // VTU isVisible does not walk ancestors, so assert the container).
+    const rowEl = wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]')
+    expect((rowEl.element.parentElement as HTMLElement).style.display).toBe('none')
+    // Breadcrumb shown with count.
+    const back = wrapper.get('[data-testid="sidebar-diff-back"]')
+    expect(back.text()).toContain('All changes (1)')
+    await back.trigger('click')
+    expect(
+      (wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').element.parentElement as HTMLElement)
+        .style.display,
+    ).not.toBe('none')
+    expect(wrapper.find('[data-testid="sidebar-diff-back"]').exists()).toBe(false)
+  })
+})

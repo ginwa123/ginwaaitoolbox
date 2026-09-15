@@ -42,6 +42,10 @@ describe('ChatRightSidebar', () => {
     await flushPromises()
     const aside = wrapper.get('[data-testid="chat-right-sidebar"]')
     expect(aside.attributes('style')).toContain('320px')
+    // Overlay shell: floats above the chat instead of squeezing it.
+    expect(aside.classes()).toContain('absolute')
+    expect(aside.classes()).toContain('z-30')
+    expect(aside.classes()).not.toContain('hidden')
     expect(wrapper.find('[data-testid="sidebar-diff-panel"]').exists()).toBe(true)
   })
 

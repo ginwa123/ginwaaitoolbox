@@ -3110,7 +3110,7 @@ const compactSession = async () => {
 </script>
 
 <template>
-  <div class="flex h-full w-full">
+  <div class="flex h-full w-full relative">
     <!-- Main Chat Content -->
     <div class="flex flex-col h-full flex-1 min-w-0">
       <!--

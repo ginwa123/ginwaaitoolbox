@@ -454,6 +454,17 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
     </div>
 
     <div class="flex-1 overflow-y-auto min-h-0">
+      <button
+        v-if="selectedPath"
+        type="button"
+        class="w-full text-left px-3 py-1.5 text-xs hover:opacity-70 shrink-0"
+        style="color: var(--semantic-text-dim)"
+        title="Back to file list"
+        data-testid="sidebar-diff-back"
+        @click="selectedPath = null"
+      >
+        ‹ {{ isPrMode ? `All PR files (${prFiles.length})` : `All changes (${changeCount})` }}
+      </button>
       <template v-if="isPrMode">
         <div v-if="isLoadingPr" class="flex items-center justify-center py-8">
           <svg
@@ -508,7 +519,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           >
             Diff truncated at 1MB — showing first files
           </div>
-          <div class="py-1">
+          <div v-show="!selectedPath" class="py-1">
             <div
               class="px-3 py-1 text-xs font-semibold"
               style="color: var(--color-violet)"
@@ -596,7 +607,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
       </div>
 
       <template v-else>
-        <div v-if="stagedFiles.length > 0" class="py-1">
+        <div v-if="stagedFiles.length > 0" v-show="!selectedPath" class="py-1">
           <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-green)">
             Staged Changes ({{ stagedFiles.length }})
           </div>
@@ -636,7 +647,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           </div>
         </div>
 
-        <div v-if="unstagedFiles.length > 0" class="py-1">
+        <div v-if="unstagedFiles.length > 0" v-show="!selectedPath" class="py-1">
           <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-orange)">
             Changes ({{ unstagedFiles.length }})
           </div>
@@ -676,7 +687,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           </div>
         </div>
 
-        <div v-if="untrackedFiles.length > 0" class="py-1">
+        <div v-if="untrackedFiles.length > 0" v-show="!selectedPath" class="py-1">
           <div class="px-3 py-1 text-xs font-semibold" style="color: var(--semantic-text-dim)">
             Untracked ({{ untrackedFiles.length }})
           </div>
@@ -817,7 +828,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           :class="{ 'wrap-on': wordWrap }"
           :style="{
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-            maxHeight: '40vh',
+            /* full-height: diff grows with the overlay panel */
           }"
         >
           <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
