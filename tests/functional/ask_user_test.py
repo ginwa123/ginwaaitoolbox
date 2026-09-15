@@ -1,4 +1,4 @@
-"""Functional wire tests for the `ask_user` agent tool (Migration 087).
+"""Functional wire tests for the `ask_user` agent tool (Migration 088).
 
 Plan: docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md
 
@@ -158,7 +158,7 @@ def _seed_question(
             """,
             (tool_row_id, session_id, _tool_envelope(question_id, question), tool_call_id, now_ns + 1),
         )
-        # The pending question (Migration 087).
+        # The pending question (Migration 088).
         conn.execute(
             """
             INSERT INTO session_pending_question

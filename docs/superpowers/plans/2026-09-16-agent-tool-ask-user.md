@@ -32,7 +32,7 @@
 | 10 | `session_create.zig` is the single funnel for every user-sent message → `emit_run_agent` at line 258. | `session_create.zig:258`; `root.zig:139` | One guard here covers chat send, kanban create-and-run and any API caller (§1.6). |
 | 11 | `updateAndSendToolResult` (`handle_tool.zig:763`) and `sendSSEForMessageById` (`:840`) are **private `fn`**. But their ingredients are public: `llm_history.updateToolResultById`, `llm_history.getMessageById` (`:2422`), `onEventSendLLMHistory`. | quoted in §5 T6 | The answer handler composes the public pieces (~20 lines) rather than widening `handle_tool`'s API. |
 | 12 | Tool registration needs **two** lists (`equips()` + `UNIFIED_TOOL_REGISTRY()`) + the re-export hub; sub-agent stripping is hardcoded in **4** sites; `DEFAULT_AGENT_TOOLS` seeds agent + kanban items; chat mode uses the frontend's `DEFAULT_CHAT_TOOLS`. | `tools_equipped.zig:71,145,280`; `tool_eligibility.zig:113-123`; `workflow.zig:2019`; `progressive_catalog.zig:132,148`; `tools.zig:14-74`; `api/index.ts:1340-1350` | Unchanged from the earlier survey — T4/T8 handle it. |
-| 13 | Migration 086 is the highest; `src/migrations/migration.zig` is a single file. `SqliteBackend.exec` binds `""` as NULL. | `migration.zig:4718-4719`; Migration 079 precedent | Migration 087 + nullable columns + `COALESCE` on read (§4). |
+| 13 | `src/migrations/migration.zig` is a single file; 086 was the highest when this plan was written. `SqliteBackend.exec` binds `""` as NULL. | `migration.zig`; Migration 079 precedent | Migration **088** + nullable columns + `COALESCE` on read (§4). Written as 087; by rebase time `main` had taken 087 for the agent-routines mirror, so the number moved and nothing else. |
 | 14 | Frontend running-state is driven **purely by worker lifetime**: `App.vue` `processingState` ← `worker_created|worker_deleted` → `ChatView.isLLMProcessing` → `FileInput` swaps Stop↔Send. Nothing reads a local streaming flag for it. | `App.vue:12-13,32-51,114-130`; `ChatView.vue:451-454`; `FileInput.vue:794,825` | When the run breaks, the composer returns to **idle** (Send visible, Stop hidden) while the card waits. That is why §1.6 needs the `abandoned` rule. |
 | 15 | Frontend `finish_reason` is a plain `string` with no exhaustive switch; tool cards are dispatched by an exact `msg.tool_name` `v-if` chain; card content comes from `innerToolData(msg)` (the `&lt;data&gt;` inside the `<tool>` envelope) and args from `getParametersForMessage(msg)`. `unwrapToolOutput` ignores unknown inner tags. | `ChatView.vue:180,1424,1693,1946,3211,4178-4420,1575-1603`; `helpers/unwrapToolOutput.ts:61-95` | A `<status>` element inside `<data>` parses fine; the card is one `v-else-if` branch with no helper changes. |
 | 16 | `ToolCardHeader.running` exists (yellow "running…" badge) but is only ever set by `ProgressiveTool.vue`, derived from *empty content*. | `ToolCardHeader.vue:46-59,124-128`; `ProgressiveTool.vue:58` | The `AskUser` card derives its own "waiting for you" badge from `<status>pending</status>` and passes `:running="true"` itself. |
@@ -212,13 +212,13 @@ The composer stays idle and functional (§1.6) — the card is the affordance, a
 | `src/agentic_loop/tools_exec_ask_user.zig` | `execAskUser(ctx, tc) !ToolExecResult` — parse → gate → insert row → return the `pending` envelope immediately |
 | `src/agentic_loop/ask_user_pending.zig` | DB layer (`insert/get/resolve/markAbandoned/hasPending`) + `writeAnswerToToolResultRow` (row rewrite + SSE) + `resumeSession` (the `emit_run_agent` shape) |
 | `src/http_handlers/ask_user_answer.zig` | `POST /api/llm/session/:session_id/answer` |
-| `src/migrations/migration_087_test.zig` | Migration 087 test |
+| — (no separate migration test file) | The migration's columns are covered by the DB-layer tests in `src/agentic_loop/ask_user_pending.zig` and by `tests/functional/ask_user_test.py`, which exercises the real schema through the app. |
 
 **Modified — backend**
 
 | Path | Change |
 |---|---|
-| `src/migrations/migration.zig` | `Migration087AddSessionPendingQuestion` (`version: u32 = 87`) |
+| `src/migrations/migration.zig` | `Migration088AddSessionPendingQuestion` (`version: u32 = 87`) |
 | `src/agentic_loop/tools_equipped.zig` | `+ask_user` in `equips()` and `UNIFIED_TOOL_REGISTRY()`; `+ask_user` in `DEFAULT_AGENT_TOOLS`; new `MAIN_AGENT_ONLY_NAMES` |
 | `src/agentic_loop/tools.zig` | re-export `execAskUser` |
 | `src/agentic_loop/tool_eligibility.zig` | loop `MAIN_AGENT_ONLY_NAMES` instead of the hardcoded `spawn_sub_agent` compare |
@@ -249,7 +249,7 @@ The composer stays idle and functional (§1.6) — the card is the affordance, a
 
 ---
 
-## 4. Data model — Migration 087
+## 4. Data model — Migration 088
 
 ```sql
 CREATE TABLE IF NOT EXISTS session_pending_question (
@@ -288,7 +288,7 @@ Statuses are exactly `pending | answered | skipped | abandoned` — `unavailable
 
 **Tests:** schema contract; one per rejection reason; one per status envelope; the escaping case.
 
-### 5.2 T2 — Migration 087 + DB layer
+### 5.2 T2 — Migration 088 + DB layer
 `src/agentic_loop/ask_user_pending.zig`:
 - `insertPendingQuestion`, `getPendingQuestion(id | tool_call_id)`, `markQuestionStatus(id, status, answer)`, `markAbandonedForSession(session_id)`, `hasPendingQuestion(allocator, db, session_id) bool` (`SELECT 1 … LIMIT 1`, mirroring `hasQueuedMessages`/`isWorkerRunning`).
 - All SELECTs `COALESCE(answer,'')`; the INSERT binds `null` for `answer` (never `""`).
@@ -481,7 +481,7 @@ Written after implementing T1–T9, so the spec matches what actually shipped. E
 
 So `buildAskUserXml` emits the whole question (`header`, `question`, `options`, `allow_free_text`, `multi_select`, `recommended`) in the envelope itself. The card parses that, which has the side benefit the plan wanted anyway: the pending state renders identically live and after a page reload, from one source.
 
-### 11.2 Migration 087 gained one column: `multi_select`
+### 11.2 Migration 088 gained one column: `multi_select`
 
 §4 deliberately avoided storing question-shape columns. That was right for everything except `multi_select`: without it the answer endpoint cannot reject a scalar answer to a multi-select question at the wire boundary, and the only alternative was reverse-parsing the XML `<parameters>` blob. One boolean column is the cheaper, more honest option. `answer` stays NULL-able (Migration 079's empty-slice-as-NULL trap) and is `COALESCE`d on read.
 
@@ -506,7 +506,7 @@ All four are updated. This is the same "two lists to maintain" hazard §0 flags 
 
 `POST /api/llm/session` starts an agent run. A live run's DB transaction then hides this test's externally-seeded rows from the app, and every seeded question looks missing (404). `ask_user_test.py` therefore uses `PUT /api/llm/session/:id` (which auto-creates via `ensureSessionExists`) — exactly why `session_human_touched_at_test._create_session_via_update` exists and documents the same thing.
 
-Related: the test helper's source-read cap had to go from 256 KiB to 1 MiB. `src/migrations/migration.zig` is a single file that grows with every migration (~256 KB as of Migration 087) and crossed the cap, which surfaced as a *bogus* "Migration 043 is missing" failure rather than an I/O error.
+Related: the test helper's source-read cap had to grow. `src/migrations/migration.zig` is a single file that grows with every migration and crossed 256 KiB, which surfaced as a *bogus* "Migration 043 is missing" failure rather than an I/O error (readFileAlloc returns `StreamTooLong`). I raised it to 1 MiB; by the time this branch was rebased, `main` had landed the same fix at 512 KiB, so the rebase dropped mine and kept theirs.
 
 ### 11.6 `awaiting_user` is persisted on the session, not on the assistant row
 

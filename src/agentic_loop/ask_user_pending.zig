@@ -82,7 +82,7 @@ pub const InsertQuestionInput = struct {
     tool_call_id: []const u8,
     llm_history_id: []const u8,
     question: []const u8,
-    /// Whether the human may pick several options (Migration 087's
+    /// Whether the human may pick several options (Migration 088's
     /// `multi_select` column) — the answer endpoint validates the wire shape
     /// against it.
     multi_select: bool = false,
@@ -591,7 +591,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
     var db: sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
-    // The Migration 087 shape: `answer` / `resolved_at` NULL-able on purpose.
+    // The Migration 088 shape: `answer` / `resolved_at` NULL-able on purpose.
     try db.exec(alloc,
         \\CREATE TABLE session_pending_question (
         \\    id TEXT PRIMARY KEY,

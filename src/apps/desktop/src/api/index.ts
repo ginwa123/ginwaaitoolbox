@@ -1711,7 +1711,7 @@ export async function compactSession(
  * `apiFetch` wrapper turns non-2xx into a thrown error which we
  * swallow + log here, so callers always get a typed response).
  */
-// Answer a pending `ask_user` question (Migration 087).
+// Answer a pending `ask_user` question (Migration 088).
 //
 // The ask_user agent tool ends the turn: it records a question and returns
 // immediately. THIS call settles that question, rewrites the tool-result row
@@ -4841,11 +4841,11 @@ export async function disableAgentKanbanTool(
   })
 }
 
-// ─── Agent-Routines Mirror (Migration 087) ─────────────────────────────
+// ─── Agent-Routines Mirror (Migration 088) ─────────────────────────────
 //
 // Mirrors the Agent-Kanbans block above onto routine items. Unlike kanbans,
 // the config row (`agent_routines`) is SEEDED on routine creation and
-// backfilled for pre-existing routines (Migration 087) — same silent-null
+// backfilled for pre-existing routines (Migration 088) — same silent-null
 // contract on 404 kept anyway.
 
 export interface AgentRoutine {

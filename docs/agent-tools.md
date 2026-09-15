@@ -219,7 +219,7 @@ tool-result row (`tool_name='ask_user'`). The answer rewrites that same row in
 place (and emits its `llm_full`), so an open chat flips the card without a
 reload; a page reload re-renders it from history.
 
-**Persistence:** Migration 087 `session_pending_question` — one row per
+**Persistence:** Migration 088 `session_pending_question` — one row per
 question (`session_id`, `tool_call_id`, `llm_history_id`, `question`,
 `multi_select`, `status`, `answer`). `status` is one of
 `pending | answered | skipped | abandoned`; `unavailable` writes no row at all.
