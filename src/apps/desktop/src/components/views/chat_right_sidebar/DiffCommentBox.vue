@@ -29,12 +29,9 @@ export function formatReviewComment(
   );
 }
 
-export interface SavedCommentRange {
+export interface SavedComment {
   start: number;
   end: number;
-}
-
-export interface SavedComment extends SavedCommentRange {
   message: string;
   savedAt: number;
   context: string;
@@ -106,16 +103,6 @@ export function listSavedComments(
     // Storage unavailable — no comments.
   }
   return out;
-}
-
-export function listSavedCommentRanges(
-  cwd: string,
-  filePath: string,
-): SavedCommentRange[] {
-  return listSavedComments(cwd, filePath).map(({ start, end }) => ({
-    start,
-    end,
-  }));
 }
 
 export function deleteSavedComment(

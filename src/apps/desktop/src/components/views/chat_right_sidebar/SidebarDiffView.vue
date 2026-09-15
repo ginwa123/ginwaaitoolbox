@@ -2,7 +2,6 @@
 import { computed, ref, watch } from 'vue'
 import DiffCommentBox, {
   deleteSavedComment,
-  listSavedCommentRanges,
   listSavedComments,
   type DiffCommentSavePayload,
   type SavedComment,
@@ -101,11 +100,6 @@ const closeMiniChat = () => {
 }
 
 const reviewedVersion = ref(0)
-const reviewedRanges = computed(() => {
-  void reviewedVersion.value
-  return listSavedCommentRanges(props.cwd, props.path)
-})
-
 const savedThreads = computed(() => {
   void reviewedVersion.value
   return listSavedComments(props.cwd, props.path)
@@ -160,15 +154,6 @@ watch(
     reviewedVersion.value = 0
   },
 )
-
-function isReviewedLine(line: ParsedDiffLine): boolean {
-  let n: number | undefined
-  if (line.type === 'add') n = line.newLineNum
-  else if (line.type === 'remove') n = line.oldLineNum
-  else return false
-  if (n == null) return false
-  return reviewedRanges.value.some((r) => n >= r.start && n <= r.end)
-}
 
 const handleCommentSave = (payload: DiffCommentSavePayload) => {
   // The inline thread is the confirmation — close the popup and bubble up.
@@ -319,7 +304,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                   color: var(--semantic-text);
                 "
               >
-                <span style="color: var(--color-green); font-weight: bold">+</span><span v-if="isReviewedLine(line)" title="Reviewed — click to view comment" data-testid="diff-reviewed-marker">💬</span>
+                <span style="color: var(--color-green); font-weight: bold">+</span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
@@ -346,7 +331,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                   color: var(--semantic-text);
                 "
               >
-                <span style="color: var(--color-red); font-weight: bold">−</span><span v-if="isReviewedLine(line)" title="Reviewed — click to view comment" data-testid="diff-reviewed-marker">💬</span>
+                <span style="color: var(--color-red); font-weight: bold">−</span>
                 <span v-html="escapeDiffHtml(line.content)"></span>
               </td>
             </tr>
