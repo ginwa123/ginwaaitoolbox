@@ -560,6 +560,10 @@ function startCenterSpy() {
   if (!root || typeof IntersectionObserver === 'undefined') return
   centerSpy = new IntersectionObserver(
     (entries) => {
+      // Ignore late callbacks after stop (chat switch unmounts the
+      // scroll container mid-navigation; writing currentPath then
+      // would fire a stale router.replace racing ChatsList).
+      if (!centerSpy) return
       let best: string | null = null
       let bestRatio = 0
       for (const entry of entries) {
@@ -584,10 +588,16 @@ function stopCenterSpy() {
 }
 
 function syncDiffParam(path: string | null) {
+  // Skip stale writes during chat switch: ChatsList replaces the URL
+  // with the new session at the same time; a second replace from the
+  // dying view races it and corrupts Vue's patch (null vnode).
+  if (route.query.view !== undefined && route.query.view !== 'chat') return
+  const routeSession = route.query.session
+  if (typeof routeSession === 'string' && routeSession !== sessionId.value) return
   const query = { ...route.query }
   if (path) query.diff = encodePathParam(path)
   else delete query.diff
-  void router.replace({ path: route.path, query })
+  router.replace({ path: route.path, query }).catch(() => {})
 }
 
 watch(currentPath, (path) => {
@@ -614,6 +624,9 @@ function onCenterDiffRetry() {
 watch(
   () => effectiveCwd.value,
   () => {
+    // Stop the spy synchronously before clearing: otherwise the
+    // observer fires during teardown and writes a stale ?diff=.
+    stopCenterSpy()
     centerDiff.value = null
     centerFiles.value = []
     currentPath.value = null
