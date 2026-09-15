@@ -20,6 +20,7 @@ const emit = defineEmits<{
   'update:width': [width: number]
   refresh: []
   'show-diff': [selection: DiffSelection]
+  'show-diff-list': [files: DiffSelection[]]
 }>()
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
@@ -106,6 +107,7 @@ defineExpose({
         :pr-provider="prProvider"
         @refresh="() => emit('refresh')"
         @show-diff="(selection) => emit('show-diff', selection)"
+        @show-diff-list="(files) => emit('show-diff-list', files)"
       />
     </div>
   </aside>

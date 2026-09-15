@@ -27,19 +27,20 @@ describe('ChatView center-stage diff', () => {
 
   it('renders the center diff with back/open/retry/review wiring', () => {
     expect(chatViewSrc).toMatch(/data-testid="chat-center-diff"/)
-    expect(chatViewSrc).toMatch(/@back="centerDiff = null"/)
+    expect(chatViewSrc).toMatch(/@click="onCenterDiffBack"/)
     expect(chatViewSrc).toMatch(/@retry="onCenterDiffRetry"/)
     expect(chatViewSrc).toMatch(/@submit-review="onChatSidebarSubmitReview"/)
     expect(chatViewSrc).toMatch(/function onCenterDiffRetry\(\)/)
   })
 
   it('hides messages+composer while the diff shows (state preserved)', () => {
-    expect(chatViewSrc).toMatch(/v-show="!centerDiff" ref="messagesWrapperRef"/)
-    expect(chatViewSrc).toMatch(/v-if="!hideInput"\s*\n\s*v-show="!centerDiff"/)
+    expect(chatViewSrc).toMatch(/v-show="!showCenterDiff" ref="messagesWrapperRef"/)
+    expect(chatViewSrc).toMatch(/v-if="!hideInput"\s*\n\s*v-show="!showCenterDiff"/)
   })
 
   it('drops stale diffs on cwd change', () => {
     expect(chatViewSrc).toMatch(/\(\) => effectiveCwd\.value,/)
     expect(chatViewSrc).toMatch(/centerDiff\.value = null/)
+    expect(chatViewSrc).toMatch(/centerFiles\.value = \[\]/)
   })
 })
