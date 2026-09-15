@@ -3035,6 +3035,79 @@ export async function listGitBranches(repoPath: string): Promise<GitBranchesResp
   }
 }
 
+// ─── Git commits (read-only lazygit-style history) ────────────────────────
+// Wire shape for `GET /api/git/commits?path=<repo>[&limit=][&skip=]` and
+// `GET /api/git/commit?path=<repo>&sha=<sha>`. Read-only: list + detail,
+// no checkout/amend/rebase.
+
+export interface GitCommit {
+  sha: string
+  short_sha: string
+  author: string
+  email: string
+  /** Unix timestamp (seconds). */
+  timestamp: number
+  subject: string
+  body: string
+}
+
+export interface GitCommitsResponse {
+  is_git_repo: boolean
+  branch: string
+  /** Best-effort `rev-list --count HEAD` (0 when unresolvable). */
+  total_count: number
+  commits: GitCommit[]
+}
+
+export async function getGitCommits(
+  cwd: string,
+  limit = 100,
+  skip = 0,
+): Promise<GitCommitsResponse> {
+  const empty: GitCommitsResponse = {
+    is_git_repo: false,
+    branch: '',
+    total_count: 0,
+    commits: [],
+  }
+  const path = (cwd ?? '').trim()
+  if (path === '') return empty
+  try {
+    const params = new URLSearchParams({ path })
+    params.set('limit', String(limit))
+    params.set('skip', String(skip))
+    return await apiFetch<GitCommitsResponse>(`/git/commits?${params}`)
+  } catch (error) {
+    console.error('Failed to list git commits:', error)
+    return empty
+  }
+}
+
+export interface GitCommitFile {
+  status: string
+  path: string
+}
+
+export interface GitCommitDetail extends GitCommit {
+  files: GitCommitFile[]
+}
+
+export async function getGitCommitDetail(
+  cwd: string,
+  sha: string,
+): Promise<GitCommitDetail | null> {
+  const path = (cwd ?? '').trim()
+  const ref = (sha ?? '').trim()
+  if (path === '' || ref === '') return null
+  try {
+    const params = new URLSearchParams({ path, sha: ref })
+    return await apiFetch<GitCommitDetail>(`/git/commit?${params}`)
+  } catch (error) {
+    console.error('Failed to load git commit detail:', error)
+    return null
+  }
+}
+
 // File listing for autocomplete
 export async function listFiles(cwd: string, dirPath?: string): Promise<string[]> {
   try {

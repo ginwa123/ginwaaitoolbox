@@ -2,6 +2,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
+import GitCommits from '../git/GitCommits.vue'
 import type { FolderEntry } from '../../api'
 import * as api from '../../api'
 
@@ -14,7 +15,7 @@ const emit = defineEmits<{
   'file-click': [file: api.GitFileChange, staged: boolean]
   'skill-click': [skill: api.Skill]
   'code-editor-file-click': [file: FolderEntry]
-  'resize': [width: number]
+  resize: [width: number]
 }>()
 
 // Default and bounds for width
@@ -66,6 +67,8 @@ onUnmounted(() => {
 
 // Tab state
 const activeTab = ref<'explorer' | 'git' | 'skills'>('explorer')
+// Read-only history toggle inside the Git tab (Changes | Commits).
+const gitView = ref<'changes' | 'commits'>('changes')
 
 // Git state
 const isGitRepo = ref(false)
@@ -78,17 +81,22 @@ const gitError = ref<string | null>(null)
 
 // Computed
 const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
-const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.value.length > 0 || untrackedFiles.value.length > 0)
+const hasChanges = computed(
+  () =>
+    stagedFiles.value.length > 0 ||
+    unstagedFiles.value.length > 0 ||
+    untrackedFiles.value.length > 0,
+)
 const changesCount = computed(() => stagedFiles.value.length + unstagedFiles.value.length)
 
 // Get status display helpers
 const getStatusIcon = (status: string): string => {
   const icons: Record<string, string> = {
-    'M': '📝',
-    'A': '➕',
-    'D': '🗑️',
-    'R': '🔄',
-    'C': '📋',
+    M: '📝',
+    A: '➕',
+    D: '🗑️',
+    R: '🔄',
+    C: '📋',
     '??': '❓',
   }
   return icons[status] || '📄'
@@ -96,11 +104,11 @@ const getStatusIcon = (status: string): string => {
 
 const getStatusText = (status: string): string => {
   const texts: Record<string, string> = {
-    'M': 'Modified',
-    'A': 'Added',
-    'D': 'Deleted',
-    'R': 'Renamed',
-    'C': 'Copied',
+    M: 'Modified',
+    A: 'Added',
+    D: 'Deleted',
+    R: 'Renamed',
+    C: 'Copied',
     '??': 'Untracked',
   }
   return texts[status] || 'Changed'
@@ -165,27 +173,36 @@ const loadGitStatus = async () => {
 // 30s git poll while a workspace is bound (ChatView.checkGitStatus precedent).
 let gitPoll: ReturnType<typeof setInterval> | null = null
 const stopGitPoll = () => {
-  if (gitPoll) { clearInterval(gitPoll); gitPoll = null }
+  if (gitPoll) {
+    clearInterval(gitPoll)
+    gitPoll = null
+  }
 }
 const startGitPoll = () => {
   stopGitPoll()
   if (!props.cwd) return
-  gitPoll = setInterval(() => { if (props.cwd) void loadGitStatus() }, 30000)
+  gitPoll = setInterval(() => {
+    if (props.cwd) void loadGitStatus()
+  }, 30000)
 }
 
 // Watch for cwd changes
-watch(() => props.cwd, (newCwd) => {
-  if (newCwd) {
-    loadGitStatus()
-    startGitPoll()
-  } else {
-    stopGitPoll()
-    isGitRepo.value = false
-    stagedFiles.value = []
-    unstagedFiles.value = []
-    untrackedFiles.value = []
-  }
-}, { immediate: true })
+watch(
+  () => props.cwd,
+  (newCwd) => {
+    if (newCwd) {
+      loadGitStatus()
+      startGitPoll()
+    } else {
+      stopGitPoll()
+      isGitRepo.value = false
+      stagedFiles.value = []
+      unstagedFiles.value = []
+      untrackedFiles.value = []
+    }
+  },
+  { immediate: true },
+)
 
 // Refresh git status
 const refreshGitStatus = () => {
@@ -226,7 +243,7 @@ const handleSkillClick = (skill: api.Skill) => {
     <!-- Header with tabs -->
     <div
       class="h-10 flex items-center shrink-0"
-      style="border-bottom: 1px solid var(--color-border);"
+      style="border-bottom: 1px solid var(--color-border)"
     >
       <!-- Tab buttons -->
       <div class="flex flex-1">
@@ -236,7 +253,8 @@ const handleSkillClick = (skill: api.Skill) => {
           :style="{
             color: activeTab === 'explorer' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'explorer' ? 'var(--semantic-active-bg)' : 'transparent',
-            borderBottom: activeTab === 'explorer' ? '2px solid var(--color-violet)' : '2px solid transparent'
+            borderBottom:
+              activeTab === 'explorer' ? '2px solid var(--color-violet)' : '2px solid transparent',
           }"
         >
           Explorer
@@ -247,14 +265,15 @@ const handleSkillClick = (skill: api.Skill) => {
           :style="{
             color: activeTab === 'git' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'git' ? 'var(--semantic-active-bg)' : 'transparent',
-            borderBottom: activeTab === 'git' ? '2px solid var(--color-violet)' : '2px solid transparent'
+            borderBottom:
+              activeTab === 'git' ? '2px solid var(--color-violet)' : '2px solid transparent',
           }"
         >
           Git
           <span
             v-if="hasChanges"
             class="px-1.5 py-0.5 rounded text-xs font-medium"
-            style="background-color: var(--color-orange); color: var(--color-bg);"
+            style="background-color: var(--color-orange); color: var(--color-bg)"
           >
             {{ changesCount }}
           </span>
@@ -265,7 +284,8 @@ const handleSkillClick = (skill: api.Skill) => {
           :style="{
             color: activeTab === 'skills' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'skills' ? 'var(--semantic-active-bg)' : 'transparent',
-            borderBottom: activeTab === 'skills' ? '2px solid var(--color-violet)' : '2px solid transparent'
+            borderBottom:
+              activeTab === 'skills' ? '2px solid var(--color-violet)' : '2px solid transparent',
           }"
         >
           🧠 Skills
@@ -277,19 +297,32 @@ const handleSkillClick = (skill: api.Skill) => {
     <div class="flex-1 overflow-y-auto">
       <!-- Explorer tab -->
       <div v-if="activeTab === 'explorer'" class="h-full">
-        <FolderExplorer
-          :cwd="cwd"
-          @file-click="handleExplorerFileClick"
-        />
+        <FolderExplorer :cwd="cwd" @file-click="handleExplorerFileClick" />
       </div>
 
       <!-- Git tab -->
       <div v-else-if="activeTab === 'git'" class="h-full flex flex-col">
         <!-- Loading -->
         <div v-if="isLoadingGit" class="flex-1 flex items-center justify-center">
-          <svg class="animate-spin w-5 h-5" style="color: var(--color-aqua);" viewBox="0 0 24 24" fill="none">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+          <svg
+            class="animate-spin w-5 h-5"
+            style="color: var(--color-aqua)"
+            viewBox="0 0 24 24"
+            fill="none"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            />
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+            />
           </svg>
         </div>
 
@@ -299,7 +332,7 @@ const handleSkillClick = (skill: api.Skill) => {
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
           <span class="text-2xl mb-2">⚠️</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim);">
+          <p class="text-xs" style="color: var(--semantic-text-dim)">
             {{ gitError }}
           </p>
         </div>
@@ -310,134 +343,175 @@ const handleSkillClick = (skill: api.Skill) => {
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
           <span class="text-3xl mb-3">🌿</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim);">
+          <p class="text-xs" style="color: var(--semantic-text-dim)">
             {{ !hasInput ? 'Select a workspace to view git status' : 'Not a git repository' }}
           </p>
         </div>
 
-        <!-- No changes -->
-        <div
-          v-else-if="!hasChanges"
-          class="flex-1 flex flex-col items-center justify-center p-4 text-center"
-        >
-          <span class="text-3xl mb-3">✓</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim);">
-            Working tree clean
-          </p>
-          <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
-            Branch: {{ branch }}
-          </p>
-        </div>
-
-        <!-- Git changes -->
-        <div v-else class="flex-1 overflow-y-auto">
-          <!-- Branch info -->
-          <div
-            class="px-3 py-2 text-xs flex items-center gap-2"
-            style="border-bottom: 1px solid var(--color-border);"
-          >
-            <span style="color: var(--semantic-text-muted);">🌿</span>
-            <span style="color: var(--semantic-text);">{{ branch }}</span>
+        <!-- Repo: Changes | Commits (read-only history) -->
+        <div v-else class="flex-1 flex flex-col min-h-0">
+          <div class="flex shrink-0" style="border-bottom: 1px solid var(--color-border)">
             <button
-              @click="refreshGitStatus"
-              class="ml-auto p-1 rounded hover:opacity-70 transition-opacity"
-              title="Refresh"
+              class="flex-1 px-3 py-1.5 text-xs font-medium transition-colors"
+              :style="{
+                color: gitView === 'changes' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
+                borderBottom:
+                  gitView === 'changes' ? '2px solid var(--color-violet)' : '2px solid transparent',
+              }"
+              @click="gitView = 'changes'"
             >
-              <svg class="w-3 h-3" style="color: var(--semantic-text-dim);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
+              Changes
+            </button>
+            <button
+              class="flex-1 px-3 py-1.5 text-xs font-medium transition-colors"
+              :style="{
+                color: gitView === 'commits' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
+                borderBottom:
+                  gitView === 'commits' ? '2px solid var(--color-violet)' : '2px solid transparent',
+              }"
+              @click="gitView = 'commits'"
+            >
+              Commits
             </button>
           </div>
-
-          <!-- Staged Changes -->
-          <div v-if="stagedFiles.length > 0" class="py-1">
+          <template v-if="gitView === 'changes'">
+            <!-- No changes -->
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
-              style="color: var(--color-green);"
+              v-if="!hasChanges"
+              class="flex-1 flex flex-col items-center justify-center p-4 text-center"
             >
-              Staged Changes ({{ stagedFiles.length }})
+              <span class="text-3xl mb-3">✓</span>
+              <p class="text-xs" style="color: var(--semantic-text-dim)">Working tree clean</p>
+              <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+                Branch: {{ branch }}
+              </p>
             </div>
-            <button
-              v-for="file in stagedFiles"
-              :key="'staged-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
-              @click="handleFileClick(file, true)"
-            >
-              <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
-              <span class="flex-1 truncate text-left" style="color: var(--semantic-text);">
-                {{ file.path }}
-              </span>
-              <span
-                class="text-xs px-1.5 py-0.5 rounded"
-                style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green);"
-              >
-                {{ getDisplayStatus(file).text }}
-              </span>
-            </button>
-          </div>
 
-          <!-- Unstaged Changes -->
-          <div v-if="unstagedFiles.length > 0" class="py-1">
-            <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
-              style="color: var(--color-orange);"
-            >
-              Changes ({{ unstagedFiles.length }})
-            </div>
-            <button
-              v-for="file in unstagedFiles"
-              :key="'unstaged-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
-              @click="handleFileClick(file, false)"
-            >
-              <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
-              <span class="flex-1 truncate text-left" style="color: var(--semantic-text);">
-                {{ file.path }}
-              </span>
-              <span
-                class="text-xs px-1.5 py-0.5 rounded"
-                style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange);"
+            <!-- Git changes -->
+            <div v-else class="flex-1 overflow-y-auto">
+              <!-- Branch info -->
+              <div
+                class="px-3 py-2 text-xs flex items-center gap-2"
+                style="border-bottom: 1px solid var(--color-border)"
               >
-                {{ getDisplayStatus(file).text }}
-              </span>
-            </button>
-          </div>
+                <span style="color: var(--semantic-text-muted)">🌿</span>
+                <span style="color: var(--semantic-text)">{{ branch }}</span>
+                <button
+                  @click="refreshGitStatus"
+                  class="ml-auto p-1 rounded hover:opacity-70 transition-opacity"
+                  title="Refresh"
+                >
+                  <svg
+                    class="w-3 h-3"
+                    style="color: var(--semantic-text-dim)"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2"
+                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                    />
+                  </svg>
+                </button>
+              </div>
 
-          <!-- Untracked Files -->
-          <div v-if="untrackedFiles.length > 0" class="py-1">
-            <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
-              style="color: var(--semantic-text-dim);"
-            >
-              Untracked ({{ untrackedFiles.length }})
+              <!-- Staged Changes -->
+              <div v-if="stagedFiles.length > 0" class="py-1">
+                <div
+                  class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+                  style="color: var(--color-green)"
+                >
+                  Staged Changes ({{ stagedFiles.length }})
+                </div>
+                <button
+                  v-for="file in stagedFiles"
+                  :key="'staged-' + file.path"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+                  @click="handleFileClick(file, true)"
+                >
+                  <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
+                  <span class="flex-1 truncate text-left" style="color: var(--semantic-text)">
+                    {{ file.path }}
+                  </span>
+                  <span
+                    class="text-xs px-1.5 py-0.5 rounded"
+                    style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green)"
+                  >
+                    {{ getDisplayStatus(file).text }}
+                  </span>
+                </button>
+              </div>
+
+              <!-- Unstaged Changes -->
+              <div v-if="unstagedFiles.length > 0" class="py-1">
+                <div
+                  class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+                  style="color: var(--color-orange)"
+                >
+                  Changes ({{ unstagedFiles.length }})
+                </div>
+                <button
+                  v-for="file in unstagedFiles"
+                  :key="'unstaged-' + file.path"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+                  @click="handleFileClick(file, false)"
+                >
+                  <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
+                  <span class="flex-1 truncate text-left" style="color: var(--semantic-text)">
+                    {{ file.path }}
+                  </span>
+                  <span
+                    class="text-xs px-1.5 py-0.5 rounded"
+                    style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange)"
+                  >
+                    {{ getDisplayStatus(file).text }}
+                  </span>
+                </button>
+              </div>
+
+              <!-- Untracked Files -->
+              <div v-if="untrackedFiles.length > 0" class="py-1">
+                <div
+                  class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+                  style="color: var(--semantic-text-dim)"
+                >
+                  Untracked ({{ untrackedFiles.length }})
+                </div>
+                <button
+                  v-for="file in untrackedFiles"
+                  :key="'untracked-' + file.path"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+                  @click="handleFileClick(file, false)"
+                >
+                  <span class="text-base">❓</span>
+                  <span class="flex-1 truncate text-left" style="color: var(--semantic-text-muted)">
+                    {{ file.path }}
+                  </span>
+                  <span
+                    class="text-xs px-1.5 py-0.5 rounded"
+                    style="
+                      background-color: rgba(156, 163, 175, 0.2);
+                      color: var(--semantic-text-dim);
+                    "
+                  >
+                    Untracked
+                  </span>
+                </button>
+              </div>
             </div>
-            <button
-              v-for="file in untrackedFiles"
-              :key="'untracked-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
-              @click="handleFileClick(file, false)"
-            >
-              <span class="text-base">❓</span>
-              <span class="flex-1 truncate text-left" style="color: var(--semantic-text-muted);">
-                {{ file.path }}
-              </span>
-              <span
-                class="text-xs px-1.5 py-0.5 rounded"
-                style="background-color: rgba(156, 163, 175, 0.2); color: var(--semantic-text-dim);"
-              >
-                Untracked
-              </span>
-            </button>
+          </template>
+          <div v-else class="flex-1 min-h-0">
+            <GitCommits :cwd="cwd" />
           </div>
         </div>
       </div>
 
       <!-- Skills tab -->
       <div v-else-if="activeTab === 'skills'" class="h-full">
-        <RightSideBarSkillList 
-          :cwd="cwd" 
-          @skill-click="handleSkillClick" 
-        />
+        <RightSideBarSkillList :cwd="cwd" @skill-click="handleSkillClick" />
       </div>
     </div>
   </div>
