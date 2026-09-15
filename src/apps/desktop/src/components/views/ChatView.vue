@@ -95,7 +95,7 @@ import CompactionCard from '../preview/CompactionCard.vue'
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
 import ChatScrollSlider from '../chat/ChatScrollSlider.vue'
-import { pickActivePillIndex, isPillGroup } from '../chat/activePill'
+import { pickActivePillIndex, isPillGroup, estimateViewportEnd } from '../chat/activePill'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -1510,6 +1510,11 @@ const userPills = computed((): UserPill[] => {
 // lights up while reading, not just after a click-jump.
 const activePillGroupIndex = ref<number | null>(null)
 
+// Must mirror the `:buffer` prop on the <VirtualScroller> below: the
+// scroller renders this many extra items on EACH side of the viewport,
+// so the active-pill anchor compensates by it (see estimateViewportEnd).
+const CHAT_SCROLL_BUFFER = 30
+
 const jumpToUserGroup = (groupIndex: number, key: string) => {
   // Resolve the index by stable groupKey at click time: SSE appends
   // between render and click can shift positional indices.
@@ -2589,13 +2594,22 @@ const handleVirtualScroll = (
   }
   isAtBottom.value = nextIsAtBottom
   // ── Realtime pill highlight ───────────────────────────────────────
-  // Light the rail pill for the topmost visible user group as the user
-  // scrolls (previously the pill only lit on click-jump, so scrolling
-  // never activated any pill). Pure display-ref write — no scroll
-  // writes, so it can't fight the auto-stick logic above.
+  // Light the rail pill for the latest user turn at/above the viewport
+  // BOTTOM as the user scrolls (previously the pill only lit on
+  // click-jump, so scrolling never activated any pill; and anchoring to
+  // the rendered window top lit index 0 whenever the window rendered
+  // from 0 — the overscan buffer above the viewport. See
+  // estimateViewportEnd). Pure display-ref write — no scroll writes,
+  // so it can't fight the auto-stick logic above.
   const range = virtualScrollerRef.value?.effectiveRange
   if (range) {
-    activePillGroupIndex.value = pickActivePillIndex(userPills.value, range.start)
+    const visEnd = estimateViewportEnd(
+      range.start,
+      range.end,
+      messageGroups.value.length,
+      CHAT_SCROLL_BUFFER,
+    )
+    activePillGroupIndex.value = pickActivePillIndex(userPills.value, visEnd)
   }
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
