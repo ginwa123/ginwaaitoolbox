@@ -1,0 +1,114 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { mount, flushPromises } from '@vue/test-utils'
+import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { createRouter, createMemoryHistory } from 'vue-router'
+
+const testRouter = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+})
+
+const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock } = vi.hoisted(() => ({
+  getGitChangesMock: vi.fn(),
+  getGitFileDiffMock: vi.fn(),
+  getPrDiffMock: vi.fn(),
+}))
+
+vi.mock('../../../api', async () => {
+  const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
+  return {
+    ...actual,
+    getGitChanges: getGitChangesMock,
+    getGitFileDiff: getGitFileDiffMock,
+    getPrDiff: getPrDiffMock,
+    stageGitFiles: vi.fn(),
+    unstageGitFiles: vi.fn(),
+  }
+})
+
+const PR_DIFF = `diff --git a/foo.txt b/foo.txt
+index 123..456 100644
+--- a/foo.txt
++++ b/foo.txt
+@@ -1 +1 @@
+-old
++new
+diff --git a/new.txt b/new.txt
+new file mode 100644
+index 0000000..abc1234
+--- /dev/null
++++ b/new.txt
+@@ -0,0 +1 @@
++hello`
+
+const CHANGES = {
+  is_git_repo: true,
+  branch: 'main',
+  has_changes: true,
+  staged_files: [],
+  modified_files: [{ index_status: ' ', worktree_status: 'M', path: 'dirty.txt' }],
+  untracked_files: [],
+}
+
+const DIFF = `diff --git a/dirty.txt b/dirty.txt
+--- a/dirty.txt
++++ b/dirty.txt
+@@ -1,2 +1,2 @@
+ keep
+-old
++new`
+
+describe('SidebarDiffPanel tabs', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    getGitChangesMock.mockResolvedValue(CHANGES)
+    getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
+    getPrDiffMock.mockResolvedValue({
+      pr_url: 'https://github.com/acme/app/pull/42',
+      base: 'main',
+      head: 'feature',
+      diff_content: PR_DIFF,
+      truncated: false,
+    })
+  })
+
+  it('with prUrl shows tabs with PR active by default', async () => {
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="sidebar-tab-pr"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe('false')
+    expect(wrapper.find('[data-testid="sidebar-pr-file-foo.txt"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(false)
+  })
+
+  it('clicking Files loads and renders worktree rows, clicking PR goes back', async () => {
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    expect(getGitChangesMock).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="sidebar-tab-files"]').trigger('click')
+    await flushPromises()
+    expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
+    expect(wrapper.get('[data-testid="sidebar-tab-files"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="sidebar-pr-file-foo.txt"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="sidebar-tab-pr"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="sidebar-tab-pr"]').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="sidebar-pr-file-foo.txt"]').exists()).toBe(true)
+    expect(getPrDiffMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('without prUrl shows no tabs', async () => {
+    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="sidebar-tab-files"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sidebar-tab-pr"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
+  })
+})
