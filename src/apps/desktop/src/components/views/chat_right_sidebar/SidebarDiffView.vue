@@ -137,10 +137,15 @@ function formatSavedTime(ts: number): string {
   }
 }
 
-const editThread = (event: MouseEvent, thread: SavedComment) => {
-  event.stopPropagation()
-  miniChatPosition.value = { x: event.clientX, y: event.clientY }
-  openBoxAtRange(thread.start, thread.end, thread.context)
+const editingKey = ref<string | null>(null)
+const threadKey = (thread: SavedComment) => `${thread.start}-${thread.end}`
+
+const editThread = (thread: SavedComment) => {
+  editingKey.value = threadKey(thread)
+}
+
+const cancelEdit = () => {
+  editingKey.value = null
 }
 
 const deleteThread = (thread: SavedComment) => {
@@ -152,12 +157,13 @@ watch(
   () => props.path,
   () => {
     reviewedVersion.value = 0
+    editingKey.value = null
   },
 )
 
 const handleCommentSave = (payload: DiffCommentSavePayload) => {
-  // The inline thread is the confirmation — close the popup and bubble up.
   closeMiniChat()
+  editingKey.value = null
   reviewedVersion.value++
   emit('comment-saved', payload)
 }
@@ -377,30 +383,50 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       >· {{ formatSavedTime(thread.savedAt) }}</span
                     >
                   </div>
-                  <div
-                    class="text-xs whitespace-pre-wrap mb-1"
-                    style="color: var(--semantic-text)"
-                    data-testid="diff-comment-message"
-                  >
-                    {{ thread.message }}
+                  <div v-if="editingKey === threadKey(thread)">
+                    <DiffCommentBox
+                      :file-path="path"
+                      :start-line="thread.start"
+                      :end-line="thread.end"
+                      :context="thread.context"
+                      :cwd="cwd"
+                      @save="handleCommentSave"
+                    />
+                    <button
+                      type="button"
+                      class="text-xs hover:opacity-70 mt-1"
+                      data-testid="diff-comment-cancel"
+                      @click="cancelEdit"
+                    >
+                      Cancel
+                    </button>
                   </div>
-                  <div class="flex gap-3">
-                    <button
-                      type="button"
-                      class="text-xs hover:opacity-70"
-                      data-testid="diff-comment-edit"
-                      @click="editThread($event, thread)"
+                  <div v-else>
+                    <div
+                      class="text-xs whitespace-pre-wrap mb-1"
+                      style="color: var(--semantic-text)"
+                      data-testid="diff-comment-message"
                     >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      class="text-xs hover:opacity-70"
-                      data-testid="diff-comment-delete"
-                      @click="deleteThread(thread)"
-                    >
-                      Delete
-                    </button>
+                      {{ thread.message }}
+                    </div>
+                    <div class="flex gap-3">
+                      <button
+                        type="button"
+                        class="text-xs hover:opacity-70"
+                        data-testid="diff-comment-edit"
+                        @click="editThread(thread)"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        class="text-xs hover:opacity-70"
+                        data-testid="diff-comment-delete"
+                        @click="deleteThread(thread)"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 </div>
               </td>

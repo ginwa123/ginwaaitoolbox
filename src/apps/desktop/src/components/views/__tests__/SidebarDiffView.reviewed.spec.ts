@@ -130,18 +130,47 @@ describe('SidebarDiffView inline comment threads', () => {
     expect(mountView().find('[data-testid="diff-comment-message"]').text()).toBe('persistent note')
   })
 
-  it('Edit reopens the box at the exact saved range with the saved draft', async () => {
+  it('Edit swaps the thread card to the editor in place, no popup', async () => {
     seedFull(20, 26, 'saved thread text', 'saved ctx lines')
     const wrapper = mountView()
     await wrapper.get('[data-testid="diff-comment-edit"]').trigger('click')
     await flushPromises()
-    const box = wrapper.findComponent(DiffCommentBox)
+    const thread = wrapper.get('[data-testid="diff-comment-thread"]')
+    const box = thread.findComponent(DiffCommentBox)
     expect(box.exists()).toBe(true)
     expect(box.props('startLine')).toBe(20)
     expect(box.props('endLine')).toBe(26)
     expect((box.get('[data-testid=diff-comment-input]').element as HTMLTextAreaElement).value).toBe(
       'saved thread text',
     )
+    expect(thread.find('[data-testid="diff-comment-cancel"]').exists()).toBe(true)
+  })
+
+  it('Cancel closes the editor without changing the thread', async () => {
+    seedFull(20, 26, 'keep me', 'saved ctx lines')
+    const wrapper = mountView()
+    await wrapper.get('[data-testid="diff-comment-edit"]').trigger('click')
+    await flushPromises()
+    const box = wrapper.findComponent(DiffCommentBox)
+    await box.get('[data-testid=diff-comment-input]').setValue('changed mind')
+    await wrapper.get('[data-testid="diff-comment-cancel"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent(DiffCommentBox).exists()).toBe(false)
+    expect(wrapper.get('[data-testid="diff-comment-message"]').text()).toBe('keep me')
+  })
+
+  it('Save from inline edit updates the thread and closes the editor', async () => {
+    seedFull(20, 26, 'before edit', 'saved ctx lines')
+    const wrapper = mountView()
+    await wrapper.get('[data-testid="diff-comment-edit"]').trigger('click')
+    await flushPromises()
+    const box = wrapper.findComponent(DiffCommentBox)
+    await box.get('[data-testid=diff-comment-input]').setValue('after edit')
+    await box.get('[data-testid=diff-comment-save]').trigger('click')
+    await flushPromises()
+    expect(wrapper.emitted('comment-saved')).toHaveLength(1)
+    expect(wrapper.findComponent(DiffCommentBox).exists()).toBe(false)
+    expect(wrapper.get('[data-testid="diff-comment-message"]').text()).toBe('after edit')
   })
 
   it('Delete removes the thread', async () => {
