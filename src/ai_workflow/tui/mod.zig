@@ -42,6 +42,10 @@ pub const stream_snapshot = @import("../../agentic_loop/stream_snapshot.zig");
 // spawn-subagent-refresh-persist) — mirrored on every progress emit,
 // read by http_handlers/subagent_progress_get.zig.
 pub const subagent_progress = @import("../../agentic_loop/subagent_progress.zig");
+// `ask_user` question state + the answer round-trip (Migration 087). The HTTP
+// answer handler and the `session_create` abandon guard both reach it through
+// here.
+pub const ask_user_pending = @import("../../agentic_loop/ask_user_pending.zig");
 
 // Re-export workspace functions from llm_history for backward compatibility
 pub const workspace_items = llm_history;

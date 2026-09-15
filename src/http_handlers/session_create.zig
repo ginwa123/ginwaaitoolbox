@@ -255,6 +255,43 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
     var is_auto_retry_until_stop: []const u8 = "";
     if (parsed.is_auto_retry_until_stop.len > 0) is_auto_retry_until_stop = parsed.is_auto_retry_until_stop;
 
+    // An unanswered `ask_user` question blocks the turn: `handle_tool`
+    // recorded it and the workflow broke instead of looping back. If the human
+    // sends a message INSTEAD of answering, settle the question as
+    // `abandoned` before starting the run — otherwise the model would receive
+    // the <status>pending</status> envelope and might guess, and the user would
+    // be dead-ended until they answered.
+    //
+    // The rewrite of the tool-result row happens inside the helper, and this
+    // guard sits on the single funnel every user-sent message flows through
+    // (chat send, kanban create-and-run, any API caller), so no other caller
+    // can bypass it. `abandoned` is not an answer: the envelope tells the model
+    // explicitly not to guess.
+    if (ai_workflow.ask_user_pending.hasPendingQuestion(alloc, di.db, session_id)) {
+        const abandoned = ai_workflow.ask_user_pending.abandonPendingQuestions(
+            alloc,
+            di.io,
+            di.db,
+            session_id,
+        ) catch |abandon_err| blk: {
+            // Best-effort: a failed settle must not drop the user's message.
+            // The workflow's iteration-top guard still refuses to run while
+            // the question is pending, so the failure mode is "the message
+            // looks like it did nothing", never "the model saw pending".
+            std.log.warn(
+                "[session_create] failed to abandon pending ask_user question for {s}: {s}",
+                .{ session_id, @errorName(abandon_err) },
+            );
+            break :blk @as(usize, 0);
+        };
+        if (abandoned > 0) {
+            std.log.info(
+                "[session_create] abandoned {d} pending ask_user question(s) for {s} — the human moved on",
+                .{ abandoned, session_id },
+            );
+        }
+    }
+
     try di.emit_run_agent(.{
         .session_id = session_id,
         .session_name = session_name,

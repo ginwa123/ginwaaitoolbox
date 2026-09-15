@@ -24,6 +24,9 @@ pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHand
 pub const sessionMarkTouchedHandler = @import("session_mark_touched.zig").sessionMarkTouchedHandler;
 pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
+// POST /api/llm/session/:session_id/answer — resolve a pending `ask_user`
+// question (Migration 087), rewrite its tool-result row and resume the run.
+pub const askUserAnswerHandler = @import("ask_user_answer.zig").askUserAnswerHandler;
 pub const sessionExistHandler = @import("session_exist.zig").sessionExistHandler;
 pub const sessionMessagesHandler = @import("session_messages_get.zig").sessionMessagesHandler;
 // GET /api/llm/session/:session_id/stream — in-flight stream snapshot

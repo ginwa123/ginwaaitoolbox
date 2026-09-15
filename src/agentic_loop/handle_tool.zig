@@ -56,6 +56,9 @@ const ToolContext = struct {
     /// adapter needs it to know which built-ins are not enabled.
     allowed_tools: []const u8 = "",
     is_sub_agent: bool = false,
+    /// The `llm_history` tool-result row for the tool call being dispatched
+    /// (the Phase-1 placeholder). See `tools.ToolExecContext.llm_history_id`.
+    llm_history_id: []const u8 = "",
 };
 
 /// Result of parsing diff_view XML from tool result.
@@ -291,6 +294,9 @@ fn dispatchFromRegistry(ctx: ToolContext, tool_call: agent.ToolCall, exec: tools
         // built-ins are NOT enabled, which needs the resolved allowlist.
         .allowed_tools = ctx.allowed_tools,
         .is_sub_agent = ctx.is_sub_agent,
+        // The Phase-1 placeholder row this result will be written into.
+        // Tools that rewrite their own result later (ask_user) need it.
+        .llm_history_id = ctx.llm_history_id,
     };
     const exec_result = try exec(ctx_local, tool_call);
 
@@ -617,7 +623,7 @@ pub fn handle_tool(
         }
 
         // Build context for dispatch
-        const ctx = ToolContext{
+        var ctx = ToolContext{
             .allocator = allocator,
             .io = io,
             .db = db,
@@ -652,6 +658,11 @@ pub fn handle_tool(
         for (tc) |tool_call| {
             const id_llm_history = list_id_that_was_loaded.items[idx];
             idx += 1;
+            // Let the tool see its own result row — `ask_user` stores this id
+            // so the answer endpoint can rewrite it in place later. `ctx` is
+            // passed by value to the dispatchers, so this per-iteration
+            // mutation cannot leak into the next tool call.
+            ctx.llm_history_id = id_llm_history;
             var tool_result: []const u8 = undefined;
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;

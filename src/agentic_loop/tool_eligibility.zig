@@ -27,6 +27,9 @@ const AgentTool = agent.AgentTool;
 const kanban_list_mod = nalarcore.kanban_list;
 const kanban_move_task_mod = nalarcore.kanban_move_task;
 const kanban_create_task_tool = nalarcore.create_kanban_task;
+// `MAIN_AGENT_ONLY_NAMES` lives with the `ask_user` tool definition so this
+// strip and `spawn_sub_agent`'s parse-time rejection share one list.
+const ask_user_mod = nalarcore.ask_user;
 const set_design_page_mod = nalarcore.set_design_page;
 const add_design_element_mod = nalarcore.add_design_element;
 const update_design_element_mod = nalarcore.update_design_element;
@@ -110,11 +113,15 @@ pub fn allowlistFilter(
         kept = kept[0..count];
     }
 
-    // A sub-agent must not recurse into spawning more sub-agents.
+    // Main-agent-only tools must not reach a sub-agent. `ask_user` would sit
+    // unanswered forever (a sub-agent run has no answer surface) and
+    // `spawn_sub_agent` would recurse. The list lives with the tool that made
+    // a second entry necessary, so this strip and `spawn_sub_agent`'s
+    // parse-time rejection can never disagree about membership.
     if (is_sub_agent) {
         var count: usize = 0;
         for (kept) |tool| {
-            if (!std.mem.eql(u8, tool.function.name, "spawn_sub_agent")) {
+            if (!ask_user_mod.isMainAgentOnly(tool.function.name)) {
                 kept[count] = tool;
                 count += 1;
             }
@@ -272,6 +279,37 @@ test "allowlistFilter: sub-agent strips spawn_sub_agent" {
     const tools = try makeTools(a, &.{ "spawn_sub_agent", "list_sub_agent", "read_file" });
     const kept = try allowlistFilter(a, tools, "", true);
     try expectNames(&.{ "list_sub_agent", "read_file" }, kept);
+}
+
+test "allowlistFilter: sub-agent strips ask_user (no answer surface)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const tools = try makeTools(a, &.{ "ask_user", "read_file", "spawn_sub_agent" });
+    const kept = try allowlistFilter(a, tools, "", true);
+    try expectNames(&.{"read_file"}, kept);
+
+    // …and keeps it for a MAIN agent, which is the whole point.
+    const tools2 = try makeTools(a, &.{ "ask_user", "read_file" });
+    const kept2 = try allowlistFilter(a, tools2, "", false);
+    try expectNames(&.{ "ask_user", "read_file" }, kept2);
+}
+
+test "allowlistFilter: sub-agent strip covers every MAIN_AGENT_ONLY_NAMES entry" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Build a tool list from the list itself, so adding a member to
+    // MAIN_AGENT_ONLY_NAMES without updating this strip fails here.
+    var names_buf: [ask_user_mod.MAIN_AGENT_ONLY_NAMES.len + 1][]const u8 = undefined;
+    @memcpy(names_buf[0..ask_user_mod.MAIN_AGENT_ONLY_NAMES.len], &ask_user_mod.MAIN_AGENT_ONLY_NAMES);
+    names_buf[ask_user_mod.MAIN_AGENT_ONLY_NAMES.len] = "read_file";
+
+    const tools = try makeTools(a, &names_buf);
+    const kept = try allowlistFilter(a, tools, "", true);
+    try expectNames(&.{"read_file"}, kept);
 }
 
 test "allowlistFilter: sub-agent strip applies AFTER the allowlist" {

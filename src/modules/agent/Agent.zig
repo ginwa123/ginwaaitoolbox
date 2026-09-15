@@ -99,6 +99,13 @@ pub const FinishReason = enum {
     tool,
     null,
     assistant,
+    /// Not a provider value: persisted by the agentic loop when a batch
+    /// contained `ask_user`. The tool returned `<status>pending</status>`,
+    /// the loop BROKE instead of looping back, and a new run will resume once
+    /// the human answers. Added to the enum (rather than a free-form string
+    /// like "cancelled") so any future exhaustive `switch` on a finish reason
+    /// fails to compile until it handles this case.
+    awaiting_user,
 
     pub fn from_str(s: ?[]const u8) ?FinishReason {
         if (s == null) return .null;
@@ -109,6 +116,7 @@ pub const FinishReason = enum {
         if (std.mem.eql(u8, str, "content_filter")) return .content_filter;
         if (std.mem.eql(u8, str, "tool")) return .tool;
         if (std.mem.eql(u8, str, "assistant")) return .assistant;
+        if (std.mem.eql(u8, str, "awaiting_user")) return .awaiting_user;
         return null;
     }
 
@@ -121,6 +129,7 @@ pub const FinishReason = enum {
             .tool => "tool",
             .null => "null",
             .assistant => "assistant",
+            .awaiting_user => "awaiting_user",
         };
     }
 };
