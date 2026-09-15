@@ -191,3 +191,30 @@ def test_input_after_exit_is_410(harness: FunctionalHarness) -> None:
         assert "error" in body
     finally:
         harness.http("DELETE", f"/api/terminal/sessions/{session_id}", expect=200)
+
+
+def test_two_sessions_are_isolated(harness: FunctionalHarness) -> None:
+    """Two sessions on the same server never see each other's bytes:
+    a marker sent to A appears only in A's output and vice versa."""
+    a = _create(harness, cwd=str(harness.temp_dir))
+    b = _create(harness, cwd=str(harness.temp_dir))
+    assert a["id"] != b["id"], f"session ids must differ: {a!r} {b!r}"
+    try:
+        marker_a = "ISOLATION-A-6c1e"
+        marker_b = "ISOLATION-B-9f4d"
+        _input(harness, a["id"], f"echo {marker_a}\n")
+        _input(harness, b["id"], f"echo {marker_b}\n")
+
+        out_a = _poll_for(harness, a["id"], marker_a)
+        out_b = _poll_for(harness, b["id"], marker_b)
+        assert marker_b not in out_a.get("data", ""), f"A leaked into B: {out_a!r}"
+        assert marker_a not in out_b.get("data", ""), f"B leaked into A: {out_b!r}"
+
+        # Full-buffer check: replay from 0 still shows no cross-talk.
+        full_a = _output(harness, a["id"], cursor=0)
+        full_b = _output(harness, b["id"], cursor=0)
+        assert marker_b not in full_a.get("data", "")
+        assert marker_a not in full_b.get("data", "")
+    finally:
+        harness.http("DELETE", f"/api/terminal/sessions/{a['id']}", expect=200)
+        harness.http("DELETE", f"/api/terminal/sessions/{b['id']}", expect=200)

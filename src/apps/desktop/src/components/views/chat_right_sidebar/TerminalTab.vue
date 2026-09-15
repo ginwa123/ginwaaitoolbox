@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -17,11 +17,19 @@ const props = defineProps<{
 
 const POLL_MS = 300
 
+interface TermSession {
+  id: string
+  pid: number
+  label: string
+}
+
 const container = ref<HTMLElement | null>(null)
-const sessionId = ref<string | null>(null)
-const pid = ref<number | null>(null)
+const sessions = ref<TermSession[]>([])
+const activeId = ref<string | null>(null)
 const status = ref('connecting…')
-const exited = ref(false)
+const exitedIds = ref<Set<string>>(new Set())
+
+const active = computed(() => sessions.value.find((s) => s.id === activeId.value) ?? null)
 
 let term: Terminal | null = null
 let fit: FitAddon | null = null
@@ -34,6 +42,7 @@ let disposed = false
 let resizeObserver: ResizeObserver | null = null
 let ws: WebSocket | null = null
 let wsOpened = false
+let sessionCounter = 0
 
 const wsUrl = (id: string) => {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -72,20 +81,23 @@ const closeWs = () => {
   }
 }
 
+const markExited = (id: string, exitCode: number | null | undefined) => {
+  exitedIds.value.add(id)
+  if (id !== activeId.value) return
+  status.value =
+    exitCode === null || exitCode === undefined
+      ? 'shell exited'
+      : `shell exited (code ${exitCode}) — Reconnect for a new one`
+  stopPoll()
+  closeWs()
+}
+
 const handleWsMessage = (event: MessageEvent) => {
   const data = event.data
   if (typeof data === 'string') {
     try {
       const msg = JSON.parse(data) as { type?: string; exit_code?: number | null }
-      if (msg.type === 'exit') {
-        exited.value = true
-        status.value =
-          msg.exit_code === null || msg.exit_code === undefined
-            ? 'shell exited'
-            : `shell exited (code ${msg.exit_code}) — Reconnect for a new one`
-        stopPoll()
-        closeWs()
-      }
+      if (msg.type === 'exit' && activeId.value) markExited(activeId.value, msg.exit_code)
     } catch {
       // Non-JSON text — ignore.
     }
@@ -107,7 +119,7 @@ const handleWsMessage = (event: MessageEvent) => {
 }
 
 const connectWs = () => {
-  const id = sessionId.value
+  const id = activeId.value
   if (!id || disposed) return
   closeWs()
   let socket: WebSocket
@@ -139,14 +151,16 @@ const connectWs = () => {
       startPollFallback('socket failed — polling')
     } else {
       wsOpened = false
-      if (!exited.value) startPollFallback('socket closed — polling')
+      if (activeId.value && !exitedIds.value.has(activeId.value)) {
+        startPollFallback('socket closed — polling')
+      }
     }
   }
 }
 
 const sendInput = (data: string) => {
-  const id = sessionId.value
-  if (!id || exited.value) return
+  const id = activeId.value
+  if (!id || (id && exitedIds.value.has(id))) return
   if (ws && wsOpened && ws.readyState === WebSocket.OPEN) {
     try {
       ws.send(JSON.stringify({ type: 'input', data }))
@@ -161,7 +175,8 @@ const sendInput = (data: string) => {
 }
 
 const fitAndResize = async () => {
-  if (!term || !fit || !sessionId.value || exited.value) return
+  const id = activeId.value
+  if (!term || !fit || !id || exitedIds.value.has(id)) return
   try {
     fit.fit()
   } catch {
@@ -180,27 +195,22 @@ const fitAndResize = async () => {
     }
   }
   try {
-    await resizeTerminal(sessionId.value, cols, rows)
+    await resizeTerminal(id, cols, rows)
   } catch {
     // Resize is best-effort; the session keeps running at its old size.
   }
 }
 
 const pollOnce = async () => {
-  if (pollInFlight || !sessionId.value || disposed) return
+  const id = activeId.value
+  if (pollInFlight || !id || disposed) return
   pollInFlight = true
   try {
-    const out = await getTerminalOutput(sessionId.value, cursor)
+    const out = await getTerminalOutput(id, cursor)
+    if (id !== activeId.value) return // switched mid-poll — drop stale bytes
     cursor = out.cursor
     if (out.data) term?.write(out.data.replace(/\n/g, '\r\n'))
-    if (out.exited) {
-      exited.value = true
-      status.value =
-        out.exit_code === null
-          ? 'shell exited'
-          : `shell exited (code ${out.exit_code}) — Reconnect for a new one`
-      stopPoll()
-    }
+    if (out.exited) markExited(id, out.exit_code)
   } catch {
     // Transient poll failure (server restart, session reaped): keep the
     // timer running so a recreated session resumes; surface one line.
@@ -210,53 +220,90 @@ const pollOnce = async () => {
   }
 }
 
-const ensureSession = async () => {
-  if (disposed || sessionId.value) return
-  status.value = 'connecting…'
-  exited.value = false
+const switchSession = (id: string) => {
+  if (id === activeId.value || disposed) return
+  stopPoll()
+  closeWs()
+  term?.clear()
   cursor = 0
+  activeId.value = id
+  if (exitedIds.value.has(id)) {
+    status.value = 'shell exited — Reconnect for a new one'
+    return
+  }
+  status.value = 'connecting…'
+  connectWs()
+}
+
+const newSession = async () => {
+  if (disposed) return
+  status.value = 'connecting…'
   try {
     fit?.fit()
-    const cols = term?.cols ?? 80
-    const rows = term?.rows ?? 24
-    lastCols = cols
-    lastRows = rows
-    const session = await createTerminalSession(props.cwd, { cols, rows })
+    const session = await createTerminalSession(props.cwd, {
+      cols: term?.cols ?? 80,
+      rows: term?.rows ?? 24,
+    })
     if (disposed) {
-      // Unmounted while creating — clean up immediately, no leak.
       await deleteTerminalSession(session.id).catch(() => {})
       return
     }
-    sessionId.value = session.id
-    pid.value = session.pid
-    connectWs()
+    sessionCounter += 1
+    sessions.value.push({ id: session.id, pid: session.pid, label: `term ${sessionCounter}` })
+    switchSession(session.id)
   } catch (err) {
     status.value =
       err instanceof Error ? `failed to start: ${err.message}` : 'failed to start shell'
   }
 }
 
-const dropSession = async () => {
-  stopPoll()
-  closeWs()
-  const id = sessionId.value
-  sessionId.value = null
-  pid.value = null
-  if (id) {
-    await deleteTerminalSession(id).catch(() => {})
+const closeSession = async (id: string) => {
+  const idx = sessions.value.findIndex((s) => s.id === id)
+  if (idx === -1) return
+  const wasActive = id === activeId.value
+  if (wasActive) {
+    stopPoll()
+    closeWs()
+  }
+  sessions.value.splice(idx, 1)
+  exitedIds.value.delete(id)
+  await deleteTerminalSession(id).catch(() => {})
+  if (disposed) return
+  if (sessions.value.length === 0) {
+    // Invariant: always keep one session (no empty state to maintain).
+    term?.clear()
+    await newSession()
+    return
+  }
+  if (wasActive) {
+    const next = sessions.value[Math.min(idx, sessions.value.length - 1)]!
+    term?.clear()
+    cursor = 0
+    activeId.value = next.id
+    if (exitedIds.value.has(next.id)) {
+      status.value = 'shell exited — Reconnect for a new one'
+    } else {
+      status.value = 'connecting…'
+      connectWs()
+    }
   }
 }
 
-const reconnect = async () => {
-  await dropSession()
+const reconnectActive = async () => {
+  const id = activeId.value
+  if (!id) {
+    await newSession()
+    return
+  }
+  const idx = sessions.value.findIndex((s) => s.id === id)
+  stopPoll()
+  closeWs()
+  sessions.value.splice(idx, 1)
+  exitedIds.value.delete(id)
+  await deleteTerminalSession(id).catch(() => {})
+  if (disposed) return
   term?.clear()
-  await ensureSession()
-}
-
-const kill = async () => {
-  await dropSession()
-  exited.value = true
-  status.value = 'session killed — Reconnect for a new one'
+  await newSession()
 }
 
 const clear = () => term?.clear()
@@ -279,16 +326,24 @@ onMounted(() => {
     })
     resizeObserver.observe(container.value)
   }
-  void ensureSession()
+  void newSession()
 })
 
 watch(
   () => props.cwd,
   async (next, prev) => {
     if (next === prev || disposed) return
-    await dropSession()
+    // Cwd scope changed: drop every session and start fresh.
+    stopPoll()
+    closeWs()
+    const ids = sessions.value.map((s) => s.id)
+    sessions.value = []
+    exitedIds.value = new Set()
+    activeId.value = null
+    await Promise.all(ids.map((id) => deleteTerminalSession(id).catch(() => {})))
+    if (disposed) return
     term?.clear()
-    await ensureSession()
+    await newSession()
   },
 )
 
@@ -298,9 +353,10 @@ onUnmounted(() => {
   closeWs()
   resizeObserver?.disconnect()
   resizeObserver = null
-  const id = sessionId.value
-  sessionId.value = null
-  if (id) void deleteTerminalSession(id).catch(() => {})
+  const ids = sessions.value.map((s) => s.id)
+  sessions.value = []
+  activeId.value = null
+  for (const id of ids) void deleteTerminalSession(id).catch(() => {})
   term?.dispose()
   term = null
   fit = null
@@ -310,18 +366,51 @@ onUnmounted(() => {
 <template>
   <div class="flex flex-col h-full min-h-0" data-testid="terminal-tab">
     <div
-      class="flex items-center gap-2 px-3 h-9 shrink-0"
+      class="flex items-center gap-1 px-2 h-8 shrink-0 overflow-x-auto"
       style="border-bottom: 1px solid var(--color-border)"
+      role="tablist"
+      aria-label="Terminal sessions"
     >
-      <span
-        class="text-xs rounded px-2 py-0.5"
-        style="background: var(--semantic-active-bg); color: var(--semantic-text)"
-        data-testid="terminal-session-pill"
+      <button
+        v-for="s in sessions"
+        :key="s.id"
+        type="button"
+        role="tab"
+        :aria-selected="s.id === activeId"
+        class="flex items-center gap-1 text-[11px] rounded px-2 py-0.5 whitespace-nowrap hover:opacity-80"
+        :style="
+          s.id === activeId
+            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
+            : 'color: var(--semantic-text-dim)'
+        "
+        :title="`session ${s.pid}`"
+        data-testid="terminal-session-chip"
+        :data-id="s.id"
+        @click="switchSession(s.id)"
       >
-        {{ pid !== null ? `zsh — ${pid} ●` : 'zsh — …' }}
-      </span>
+        {{ s.label }}{{ exitedIds.has(s.id) ? ' ○' : ' ●' }}
+        <span
+          class="hover:opacity-100 opacity-60 px-0.5"
+          title="Close session"
+          data-testid="terminal-session-close"
+          :data-id="s.id"
+          @click.stop="closeSession(s.id)"
+        >
+          ✕
+        </span>
+      </button>
+      <button
+        type="button"
+        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70 whitespace-nowrap"
+        style="color: var(--semantic-text-dim)"
+        title="New terminal session"
+        data-testid="terminal-new"
+        @click="newSession"
+      >
+        +
+      </button>
       <span
-        class="text-[11px] truncate flex-1"
+        class="text-[11px] truncate flex-1 text-right"
         style="color: var(--semantic-text-dim)"
         data-testid="terminal-cwd"
         :title="cwd"
@@ -332,9 +421,9 @@ onUnmounted(() => {
         type="button"
         class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
-        title="Reconnect (new shell)"
+        title="Reconnect active session (new shell)"
         data-testid="terminal-reconnect"
-        @click="reconnect"
+        @click="reconnectActive"
       >
         ⟲
       </button>
@@ -352,9 +441,9 @@ onUnmounted(() => {
         type="button"
         class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
-        title="Kill session"
+        title="Kill active session"
         data-testid="terminal-kill"
-        @click="kill"
+        @click="() => activeId && closeSession(activeId)"
       >
         ✂
       </button>

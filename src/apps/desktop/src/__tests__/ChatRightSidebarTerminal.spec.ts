@@ -107,14 +107,18 @@ const { FakeWebSocket } = vi.hoisted(() => {
 
 vi.stubGlobal('WebSocket', FakeWebSocket)
 
-// ─── API fakes ─────────────────────────────────────────────────────────────
+// ─── API fakes (incrementing session ids for multi-session tests) ──────────
 
 const apiState = {
+  nextId: 0,
   outputs: [] as Array<{ data: string; cursor: number; exited: boolean; exit_code: number | null }>,
 }
 
 vi.mock('../api', () => ({
-  createTerminalSession: vi.fn(async (cwd: string) => ({ id: 'term-1', pid: 111, cwd })),
+  createTerminalSession: vi.fn(async (cwd: string) => {
+    apiState.nextId += 1
+    return { id: `term-${apiState.nextId}`, pid: 100 + apiState.nextId, cwd }
+  }),
   sendTerminalInput: vi.fn(async () => ({ ok: true, bytes: 3 })),
   getTerminalOutput: vi.fn(async () => {
     return apiState.outputs.shift() ?? { data: '', cursor: 0, exited: false, exit_code: null }
@@ -151,15 +155,18 @@ const firstTerm = () => {
   return term
 }
 
-const firstSocket = () => {
-  const socket = FakeWebSocket.instances[0]!
-  expect(socket).toBeDefined()
-  return socket
+const socketFor = (id: string) => {
+  const matches = FakeWebSocket.instances.filter((s) => s.url.includes(`id=${id}`))
+  expect(matches.length).toBeGreaterThan(0)
+  return matches[matches.length - 1]!
 }
+
+const chips = (wrapper: ReturnType<typeof mount>) =>
+  wrapper.findAll('[data-testid="terminal-session-chip"]')
 
 const encode = (text: string) => new TextEncoder().encode(text)
 
-describe('ChatRightSidebar terminal tab (Phase 3: WS primary)', () => {
+describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
   beforeEach(() => {
     // jsdom 29 dropped localStorage from its default globals.
     Object.defineProperty(globalThis, 'localStorage', {
@@ -169,6 +176,7 @@ describe('ChatRightSidebar terminal tab (Phase 3: WS primary)', () => {
     })
     FakeTerminal.instances = []
     FakeWebSocket.instances = []
+    apiState.nextId = 0
     apiState.outputs = []
     vi.clearAllMocks()
   })
@@ -181,44 +189,98 @@ describe('ChatRightSidebar terminal tab (Phase 3: WS primary)', () => {
     expect(localStorage.getItem('nalar-right-sidebar-panel')).toBe('terminal')
   })
 
-  it('opens a socket after create and writes binary output', async () => {
+  it('auto-creates the first session and streams over its socket', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
     expect(createTerminalSession).toHaveBeenCalledWith('/tmp/toolbox', {
       cols: 80,
       rows: 24,
     })
-    const socket = firstSocket()
-    expect(socket.url).toContain('/api/terminal/ws?id=term-1')
-
+    expect(chips(wrapper)).toHaveLength(1)
+    const socket = socketFor('term-1')
     socket.serverOpen()
     socket.serverMessage(encode('hello'))
     await flush()
     expect(firstTerm().written.join('')).toContain('hello')
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('connected')
-    // Socket primary: no REST polling while the socket is open.
     expect(getTerminalOutput).not.toHaveBeenCalled()
   })
 
-  it('sends typed input as socket JSON (not REST)', async () => {
-    mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+  it('opens a second session with an isolated socket', async () => {
+    const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
-    const socket = firstSocket()
-    socket.serverOpen()
+    socketFor('term-1').serverOpen()
+
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    expect(createTerminalSession).toHaveBeenCalledTimes(2)
+    expect(chips(wrapper)).toHaveLength(2)
+    const socket2 = socketFor('term-2')
+    socket2.serverOpen()
+
+    // Input goes to the active (second) socket only.
     firstTerm().dataHandler?.('ls\n')
     await flush()
-    expect(socket.sent).toContain(JSON.stringify({ type: 'input', data: 'ls\n' }))
+    expect(socket2.sent).toContain(JSON.stringify({ type: 'input', data: 'ls\n' }))
+    expect(socketFor('term-1').sent).toEqual([])
     expect(sendTerminalInput).not.toHaveBeenCalled()
   })
 
-  it('shows the exited state on the socket exit event', async () => {
+  it('switching sessions clears the view and attaches to that session', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
-    const socket = firstSocket()
-    socket.serverOpen()
-    socket.serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
-    await flush(10)
-    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('code 0')
+    socketFor('term-1').serverOpen()
+    socketFor('term-1').serverMessage(encode('first'))
+    await flush()
+    expect(firstTerm().written.join('')).toContain('first')
+
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    socketFor('term-2').serverOpen()
+
+    // Switch back: view cleared, fresh socket for term-1.
+    const clearedBefore = firstTerm().cleared
+    await chips(wrapper)[0]!.trigger('click')
+    await flush()
+    expect(firstTerm().cleared).toBeGreaterThan(clearedBefore)
+    const socketsForOne = FakeWebSocket.instances.filter((s) => s.url.includes('id=term-1'))
+    expect(socketsForOne.length).toBe(2)
+
+    // Input now routes to term-1 again.
+    socketsForOne[1]!.serverOpen()
+    firstTerm().dataHandler?.('pwd\n')
+    await flush()
+    expect(socketsForOne[1]!.sent).toContain(JSON.stringify({ type: 'input', data: 'pwd\n' }))
+  })
+
+  it('closing a background session deletes it and keeps the active one', async () => {
+    const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+    await flush()
+    socketFor('term-1').serverOpen()
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    expect(chips(wrapper)).toHaveLength(2)
+
+    // Close term-1 (background): active term-2 untouched.
+    const closers = wrapper.findAll('[data-testid="terminal-session-close"]')
+    await closers[0]!.trigger('click')
+    await flush()
+    expect(deleteTerminalSession).toHaveBeenCalledWith('term-1')
+    expect(chips(wrapper)).toHaveLength(1)
+    expect(createTerminalSession).toHaveBeenCalledTimes(2) // no replacement needed
+  })
+
+  it('killing the last session auto-starts a fresh one', async () => {
+    const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+    await flush()
+    socketFor('term-1').serverOpen()
+
+    await wrapper.find('[data-testid="terminal-kill"]').trigger('click')
+    await flush()
+    expect(deleteTerminalSession).toHaveBeenCalledWith('term-1')
+    // Invariant: always one session — a replacement is created.
+    expect(createTerminalSession).toHaveBeenCalledTimes(2)
+    expect(chips(wrapper)).toHaveLength(1)
   })
 
   it('falls back to REST polling when the socket fails', async () => {
@@ -232,19 +294,19 @@ describe('ChatRightSidebar terminal tab (Phase 3: WS primary)', () => {
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('polling')
   })
 
-  it('kill closes the socket and deletes the session', async () => {
+  it('shows the exited state on the socket exit event', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
     const socket = firstSocket()
     socket.serverOpen()
-    await wrapper.find('[data-testid="terminal-kill"]').trigger('click')
-    await flush()
-    expect(socket.closed).toBe(true)
-    expect(deleteTerminalSession).toHaveBeenCalledWith('term-1')
-    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('killed')
-
-    await wrapper.find('[data-testid="terminal-reconnect"]').trigger('click')
-    await flush()
-    expect(createTerminalSession).toHaveBeenCalledTimes(2)
+    socket.serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
+    await flush(10)
+    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('code 0')
   })
 })
+
+const firstSocket = () => {
+  const socket = FakeWebSocket.instances[0]!
+  expect(socket).toBeDefined()
+  return socket
+}
