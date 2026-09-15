@@ -365,8 +365,24 @@ const handleDeleteConfirm = () => {
 // Workspace handlers
 const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWorkspace(workspaceId)
 
-/** Right-click "Go to settings" from a workspace item row — same as the header Settings button. */
-const handleGoToSettings = () => emit('navigate', 'settings')
+/**
+ * Right-click "Go to settings" from a workspace item row. Routes to
+ * the item's own settings surface (NOT the global /app/settings page):
+ * kanban items open their KanbanSettingsView (Columns + Agent tabs),
+ * agent items open their AgentView config (Tools / System Prompt /
+ * Knowledge) via the standard item-selection navigation.
+ */
+const handleGoToSettings = (payload: {
+  workspaceId: string
+  itemId: string
+  itemType?: string
+}) => {
+  if (payload.itemType === 'kanban') {
+    router.push({ path: `/app/kanban/${payload.itemId}/settings` })
+    return
+  }
+  void handleSelectItem(payload.workspaceId, payload.itemId)
+}
 
 /**
  * Ctrl/Cmd+click (or middle click) on a workspace item: open a real

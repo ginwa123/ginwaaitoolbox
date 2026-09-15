@@ -89,10 +89,11 @@ const emit = defineEmits<{
   // RenameDesignPageModal. Pure pass-through — same pattern as
   // selectDesignPage / deleteDesignPage.
   renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
-  // Right-click "Go to settings" on the item row. Bubbled via
-  // WorkspaceList to Sidebar, which emits navigate 'settings'
-  // (same as its header Settings button) so AppLayout routes to /app/settings.
-  goToSettings: []
+  // Right-click "Go to settings" on the item row. Carries the
+  // item payload so Sidebar can route per item_type: kanban items
+  // open /app/kanban/:itemId/settings, agent items open their
+  // AgentView config (Tools / System Prompt / Knowledge).
+  goToSettings: [payload: { workspaceId: string; itemId: string; itemType?: string }]
 }>()
 
 // Computed: check if item is expanded (tasks visible)
@@ -238,8 +239,15 @@ const openItemMenuInBackground = () => {
 
 const openItemMenuSettings = () => {
   closeItemMenu()
-  emit('goToSettings')
+  emit('goToSettings', itemMenuPayload())
 }
+
+// Only item types with a dedicated settings surface get the menu
+// entry: kanban boards (KanbanSettingsView: Columns + Agent tabs)
+// and agent items (AgentView: Tools / System Prompt / Knowledge).
+const showItemSettings = computed(
+  () => props.item.item_type === 'kanban' || props.item.item_type === 'agent',
+)
 
 // Right-click "Open in new tab" on a task row. The row only knows
 // workspaceId/itemId/taskId — the item_type is filled in here so
@@ -866,7 +874,7 @@ const handlePinnedDrop = (event: DragEvent) => {
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
-      show-settings
+      :show-settings="showItemSettings"
       @open="openItemMenuInBackground"
       @settings="openItemMenuSettings"
     />
