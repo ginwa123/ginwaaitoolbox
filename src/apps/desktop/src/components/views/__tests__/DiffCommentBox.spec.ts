@@ -86,7 +86,7 @@ describe("DiffCommentBox behavior", () => {
     });
     expect(String(payload["formatted"])).toContain("looks good");
     expect(String(payload["formatted"])).toContain("## Code Review");
-    expect(wrapper.get("[data-testid=diff-comment-saved]").exists()).toBe(true);
+    expect(wrapper.find("[data-testid=diff-comment-saved]").exists()).toBe(true);
   });
 
   it("reload restores the draft from localStorage", async () => {
@@ -109,6 +109,6 @@ describe("DiffCommentBox behavior", () => {
     expect(String(writeText.mock.calls[0]![0])).toContain("## Code Review");
     expect(String(writeText.mock.calls[0]![0])).toContain("nit: rename");
     expect(wrapper.emitted("copy")).toHaveLength(1);
-    expect(wrapper.get("[data-testid=diff-comment-copied]").exists()).toBe(true);
+    expect(wrapper.find("[data-testid=diff-comment-copied]").exists()).toBe(true);
   });
 });
