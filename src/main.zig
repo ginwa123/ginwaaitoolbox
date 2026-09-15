@@ -647,6 +647,24 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsListHandler);
     try gs.router.post("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsCreateHandler);
     try gs.router.delete("/api/agent-kanbans/:kanban_id/tools/:tool_name", ai_mod.http_handlers.agentKanbanToolsDeleteHandler);
+    // Agent-Routines mirror CRUD (Migration 087) — mirrors the agent-kanbans
+    // block above onto routines. Routine mode task_1789505553300_1.
+    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/agent_routine", ai_mod.http_handlers.agentRoutinesGetHandler);
+    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/agent_routine", ai_mod.http_handlers.agentRoutinesUpdateHandler);
+    try gs.router.post("/api/agent-routines/:routine_id/knowledge", ai_mod.http_handlers.agentRoutineKnowledgeCreateHandler);
+    // ORDER MATTERS: literal `/knowledge/reorder` BEFORE
+    // `/knowledge/:knowledge_id` (route-order shadowing — see kanban block).
+    try gs.router.patch("/api/agent-routines/:routine_id/knowledge/reorder", ai_mod.http_handlers.agentRoutineKnowledgeReorderHandler);
+    try gs.router.patch("/api/agent-routines/:routine_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentRoutineKnowledgeUpdateHandler);
+    try gs.router.delete("/api/agent-routines/:routine_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentRoutineKnowledgeDeleteHandler);
+    // NOTE: `reorder` literal MUST be registered BEFORE `:prompt_id`.
+    try gs.router.post("/api/agent-routines/:routine_id/system_prompt", ai_mod.http_handlers.agentRoutineSystemPromptCreateHandler);
+    try gs.router.patch("/api/agent-routines/:routine_id/system_prompt/reorder", ai_mod.http_handlers.agentRoutineSystemPromptReorderHandler);
+    try gs.router.patch("/api/agent-routines/:routine_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentRoutineSystemPromptUpdateHandler);
+    try gs.router.delete("/api/agent-routines/:routine_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentRoutineSystemPromptDeleteHandler);
+    try gs.router.get("/api/agent-routines/:routine_id/tools", ai_mod.http_handlers.agentRoutineToolsListHandler);
+    try gs.router.post("/api/agent-routines/:routine_id/tools", ai_mod.http_handlers.agentRoutineToolsCreateHandler);
+    try gs.router.delete("/api/agent-routines/:routine_id/tools/:tool_name", ai_mod.http_handlers.agentRoutineToolsDeleteHandler);
     // Workspace-level routines (Migration 084, plan
     // 2026-09-10-workspace-items-routines) — first-class
     // `item_type='routine'`. Replaces the deleted per-task routes

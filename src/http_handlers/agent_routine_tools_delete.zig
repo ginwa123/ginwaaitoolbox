@@ -1,0 +1,208 @@
+//! `DELETE /api/agent-routines/:routine_id/tools/:tool_name`.
+//! Removes a tool from the routine's allowlist. Returns `{ok: true}` on
+//! success.
+//!
+//! Mirrors `agent_tools_delete.zig` with substitutions:
+//! table `agent_routine_tools`, parent col `routine_id`.
+//!
+//! Memory: the per-request arena reaps all allocations at request end,
+//! so neither layer needs explicit `free`s.
+//!
+//! Plan: Routine mode task_1789505553300_1 (option A, mirror agent_routine_*)
+//! Task: task_1789505553300_1
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+const gserverz = nalarcore.gserverz;
+const http_response = @import("http_response.zig");
+
+/// Domain-level error set for `useCase`. The handler maps each variant
+/// to an HTTP status code + message via two exhaustive switches.
+pub const ToolDeleteError = error{
+    /// `routine_id` or `tool_name` path param was missing or empty.
+    IdsRequired,
+    /// `db.exec` failed on the DELETE.
+    DeleteFailed,
+};
+
+/// Inputs to the delete-tool use-case.
+pub const ToolDeleteInput = struct {
+    routine_id: []const u8,
+    tool_name: []const u8,
+};
+
+// =====================================================================
+// Use case
+// =====================================================================
+
+/// Delete a tool row for the given agent-routines config. The use-case
+/// is transport-agnostic: it works for both the per-request arena
+/// (production HTTP handler) and `testing.allocator` (unit tests).
+fn useCase(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    input: ToolDeleteInput,
+) ToolDeleteError!void {
+    if (input.routine_id.len == 0 or input.tool_name.len == 0) {
+        return error.IdsRequired;
+    }
+
+    db.exec(allocator,
+        "DELETE FROM agent_routine_tools WHERE tool_name = ? AND routine_id = ?",
+        &[_][]const u8{ input.tool_name, input.routine_id },
+    ) catch return error.DeleteFailed;
+}
+
+// =====================================================================
+// Handler
+// =====================================================================
+
+/// Thin orchestrator over `useCase`.
+pub fn agentRoutineToolsDeleteHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+
+    const di = try nalarcore.getSingleton();
+    const sqlite_db = di.db;
+
+    const routine_id = req.params.get("routine_id") orelse "";
+    const tool_name = req.params.get("tool_name") orelse "";
+
+    useCase(allocator, sqlite_db, .{
+        .routine_id = routine_id,
+        .tool_name = tool_name,
+    }) catch |err| {
+        const status: u16 = switch (err) {
+            error.IdsRequired => 400,
+            error.DeleteFailed => 500,
+        };
+        const message: []const u8 = switch (err) {
+            error.IdsRequired => "routine_id and tool_name required",
+            error.DeleteFailed => "Failed to delete",
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
+        });
+    };
+
+    const data = try std.json.Stringify.valueAlloc(allocator, .{ .ok = true }, .{});
+    return res.jsonResponse(.{ .status_code = 200, .data = data });
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────
+//
+// impl + tests in one file (project convention). Behavioural coverage:
+//
+//   1. Validation: empty routine_id OR tool_name → IdsRequired
+//   2. Happy path: a matching row is removed (scoped by both ids)
+//   3. Idempotency: a non-existent tool_name doesn't error
+
+const sqlite = @import("nalarcore").sqlite;
+const testing = std.testing;
+const Migration087CreateAgentRoutines = @import("../migrations/migration.zig").Migration087CreateAgentRoutines;
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(testing.allocator,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
+        &[_][]const u8{},
+    );
+    try Migration087CreateAgentRoutines.up(&db, testing.allocator);
+
+    // Seed: configured routine + 1 enabled tool.
+    try db.exec(testing.allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('ws_item_1', 'ws_1', 'routine', 'My Routine')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routines (id, workspace_item_id) VALUES ('ws_item_1', 'ws_item_1')",
+        &[_][]const u8{},
+    );
+    try db.exec(testing.allocator,
+        "INSERT INTO agent_routine_tools (id, routine_id, tool_name, enabled) VALUES ('kt_1', 'ws_item_1', 'bash', 1)",
+        &[_][]const u8{},
+    );
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn countTools(
+    db: *sqlite.SqliteBackend,
+    allocator: std.mem.Allocator,
+    routine_id: []const u8,
+) !u32 {
+    var q = try db.query(allocator,
+        "SELECT COUNT(*) FROM agent_routine_tools WHERE routine_id = ?",
+        &[_][]const u8{routine_id},
+    );
+    defer q.deinit();
+    const row = (q.next() catch null) orelse return 0;
+    defer row.deinit(allocator);
+    return try std.fmt.parseInt(u32, row.values[0], 10);
+}
+
+test "useCase: empty routine_id returns IdsRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.IdsRequired,
+        useCase(alloc, &ctx.db, .{ .routine_id = "", .tool_name = "bash" }),
+    );
+}
+
+test "useCase: empty tool_name returns IdsRequired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectError(
+        error.IdsRequired,
+        useCase(alloc, &ctx.db, .{ .routine_id = "ws_item_1", .tool_name = "" }),
+    );
+}
+
+test "useCase: matches scoped by both tool_name AND routine_id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectEqual(@as(u32, 1), try countTools(&ctx.db, alloc, "ws_item_1"));
+
+    try useCase(alloc, &ctx.db, .{ .routine_id = "ws_item_1", .tool_name = "bash" });
+
+    try testing.expectEqual(@as(u32, 0), try countTools(&ctx.db, alloc, "ws_item_1"));
+}
+
+test "useCase: non-matching tool_name is a no-op (no error)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expectEqual(@as(u32, 1), try countTools(&ctx.db, alloc, "ws_item_1"));
+
+    // Non-existent tool — DELETE affects 0 rows, exec returns success.
+    try useCase(alloc, &ctx.db, .{ .routine_id = "ws_item_1", .tool_name = "nonexistent_tool" });
+
+    try testing.expectEqual(@as(u32, 1), try countTools(&ctx.db, alloc, "ws_item_1"));
+}

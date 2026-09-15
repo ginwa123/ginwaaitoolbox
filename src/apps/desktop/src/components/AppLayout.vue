@@ -14,6 +14,7 @@ import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
 import DesignChatDialog from './design/DesignChatDialog.vue'
 import AgentView from './views/AgentView.vue'
+import type { AgnosticKnowledgeRow, AgnosticSystemPromptRow } from './views/AgentView.vue'
 import RoutineView from './views/RoutineView.vue'
 import AgentChatView from './views/AgentChatView.vue'
 import AgentKnowledgeDialog from './dialogs/AgentKnowledgeDialog.vue'
@@ -1195,7 +1196,7 @@ const agentKnowledgeDetailRow = ref<api.AgentKnowledgeRow | null>(null)
 const agentKnowledgeDetailBusy = ref(false)
 const agentKnowledgeDetailError = ref<string | null>(null)
 
-function handleAgentEditKnowledge(row: api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow) {
+function handleAgentEditKnowledge(row: AgnosticKnowledgeRow) {
   if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
   agentKnowledgeDetailRow.value = row as api.AgentKnowledgeRow
   agentKnowledgeDetailError.value = null
@@ -1267,9 +1268,7 @@ function handleAgentAddSystemPrompt() {
   agentSystemPromptDialogOpen.value = true
 }
 
-function handleAgentEditSystemPrompt(
-  row: api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow,
-) {
+function handleAgentEditSystemPrompt(row: AgnosticSystemPromptRow) {
   if (!activeWorkspaceItem.value || activeWorkspaceItem.value.item_type !== 'agent') return
   agentSystemPromptRow.value = row as api.AgentSystemPromptRow
   agentSystemPromptError.value = null

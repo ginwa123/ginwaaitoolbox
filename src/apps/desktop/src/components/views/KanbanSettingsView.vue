@@ -34,6 +34,7 @@ import KanbanColumnEditor from '../kanban/KanbanColumnEditor.vue'
 import InlineEditableText from '../preview/InlineEditableText.vue'
 import WorkspaceItemMemoriesView from './WorkspaceItemMemoriesView.vue'
 import AgentView from './AgentView.vue'
+import type { AgnosticKnowledgeRow, AgnosticSystemPromptRow } from './AgentView.vue'
 import AgentKnowledgeDialog from '../dialogs/AgentKnowledgeDialog.vue'
 import AgentKnowledgeDetailDialog from '../dialogs/AgentKnowledgeDetailDialog.vue'
 import AgentSystemPromptDialog from '../dialogs/AgentSystemPromptDialog.vue'
@@ -264,7 +265,7 @@ async function handleKanbanKnowledgeCreate(filePath: string, label: string, cont
   }
 }
 
-function handleKanbanEditKnowledge(row: api.AgentKnowledgeRow | api.AgentKanbanKnowledgeRow) {
+function handleKanbanEditKnowledge(row: AgnosticKnowledgeRow) {
   // AgentView emits AgnosticKnowledgeRow — for kanban we know it's a kanban row
   kanbanKnowledgeDetailRow.value = row as api.AgentKanbanKnowledgeRow
   kanbanKnowledgeDetailError.value = null
@@ -317,7 +318,7 @@ function handleKanbanAddSystemPrompt() {
   kanbanSystemPromptDialogOpen.value = true
 }
 
-function handleKanbanEditSystemPrompt(row: api.AgentSystemPromptRow | api.AgentKanbanSystemPromptRow) {
+function handleKanbanEditSystemPrompt(row: AgnosticSystemPromptRow) {
   kanbanSystemPromptRow.value = row as api.AgentKanbanSystemPromptRow
   kanbanSystemPromptError.value = null
   kanbanSystemPromptDialogOpen.value = true

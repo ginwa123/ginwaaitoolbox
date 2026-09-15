@@ -615,6 +615,16 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 "[CHECKPOINT] agent_kanbans: session_id={s} is bound to a configured kanban — allowed_tools overridden to '{s}'",
                 .{ params.session_id, copy_allowed_tools },
             );
+        } else if (try maybeOverrideAllowedToolsForRoutine(
+            parent_allocator,
+            db,
+            params.session_id,
+            &copy_allowed_tools,
+        )) {
+            logger.infoFmt(
+                "[CHECKPOINT] agent_routines: session_id={s} is bound to a configured routine — allowed_tools overridden to '{s}'",
+                .{ params.session_id, copy_allowed_tools },
+            );
         }
     }
 
@@ -2396,6 +2406,93 @@ fn maybeOverrideAllowedToolsForKanban(
 
     // D5: configured but zero enabled tools = "not configured" — leave
     // caller defaults untouched. See doc comment above for the flip.
+    if (names.items.len == 0) {
+        return false;
+    }
+
+    // Non-empty: join with ','.
+    out_allowed_tools.* = try std.mem.join(allocator, ",", names.items);
+    return true;
+}
+
+/// Agent-Routines mirror (Migration 087): override `out_allowed_tools`
+/// with the routine's allowlist from `agent_routine_tools` when the
+/// session belongs to a routine WITH an `agent_routines` row.
+///
+/// Resolution is dual-path (mirrors prompts_make_agent_routine_*):
+/// chats under a routine item resolve via workspace_item_tasks, while
+/// routine fires (fire.zig sets sid = routine.id, bypassing the tasks
+/// table) resolve straight through workspace_routines.
+///
+/// Same kanban D5 semantics: missing row or zero enabled tools returns
+/// `false` (caller keeps defaults = all tools), so pre-migration fires
+/// and freshly-seeded routines behave exactly as before. Never passes
+/// `""` to `filterAndMergeTools`.
+///
+/// Routine mode task_1789505553300_1 (option A, mirror agent_kanban_*).
+fn maybeOverrideAllowedToolsForRoutine(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    out_allowed_tools: *[]const u8,
+) !bool {
+    if (session_id.len == 0) return false;
+
+    // Resolve session_id → workspace_item_id (tasks first, then fires).
+    // Duped: row defers are block-scoped, so the slice must be owned here.
+    var workspace_item_id: []const u8 = "";
+    defer if (workspace_item_id.len > 0) allocator.free(workspace_item_id);
+    var q1 = db.query(
+        allocator,
+        "SELECT workspace_item_id FROM workspace_item_tasks WHERE id = ?",
+        &[_][]const u8{session_id},
+    ) catch return false;
+    defer q1.deinit();
+    if ((q1.next() catch null)) |row1| {
+        defer row1.deinit(allocator);
+        workspace_item_id = try allocator.dupe(u8, row1.values[0]);
+    } else {
+        var qf = db.query(
+            allocator,
+            "SELECT workspace_item_id FROM workspace_routines WHERE id = ?",
+            &[_][]const u8{session_id},
+        ) catch return false;
+        defer qf.deinit();
+        const rowf = (qf.next() catch null) orelse return false;
+        defer rowf.deinit(allocator);
+        workspace_item_id = try allocator.dupe(u8, rowf.values[0]);
+    }
+    if (workspace_item_id.len == 0) return false;
+
+    // Only filter when the workspace_item has an agent_routines row.
+    var q2 = db.query(
+        allocator,
+        "SELECT id FROM agent_routines WHERE id = ?",
+        &[_][]const u8{workspace_item_id},
+    ) catch return false;
+    defer q2.deinit();
+    const row2 = (q2.next() catch null) orelse return false;
+    defer row2.deinit(allocator);
+
+    // Fetch the enabled tool_names.
+    var q3 = db.query(allocator,
+        \\SELECT tool_name FROM agent_routine_tools
+        \\WHERE routine_id = ? AND enabled = 1
+        \\ORDER BY tool_name ASC
+    , &[_][]const u8{workspace_item_id}) catch return false;
+    defer q3.deinit();
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit(allocator);
+    }
+    while ((q3.next() catch null)) |r| {
+        defer r.deinit(allocator);
+        try names.append(allocator, try allocator.dupe(u8, r.values[0]));
+    }
+
+    // D5: configured but zero enabled tools = "not configured".
     if (names.items.len == 0) {
         return false;
     }

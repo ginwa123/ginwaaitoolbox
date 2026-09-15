@@ -2,14 +2,14 @@
  * Regression specs for the right-click "Go to settings" work
  * (task_1789493500744_2, PR #521 follow-ups).
  *
- * - Agent items: plain left-click toggles expansion but does NOT
+ * - Agent/routine items: plain left-click toggles expansion but does NOT
  *   emit 'click', so the main view is never yanked into the
- *   settings-looking AgentView (Tools / System Prompt / Knowledge).
+ *   settings-looking config view (AgentView / RoutineView).
  * - Kanban items: left-click still emits 'click' exactly once, so
  *   the board keeps opening (guard against the agent early-return
  *   leaking into other item types).
- * - The context menu shows "Go to settings" for kanban + agent
- *   rows and hides it for folder rows; activating it emits
+ * - The context menu shows "Go to settings" for kanban + agent +
+ *   routine rows and hides it for folder rows; activating it emits
  *   'goToSettings' with the item payload Sidebar routes on.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -79,6 +79,16 @@ describe('WorkspaceItem — agent click is expand-only (no settings redirect)', 
     expect(wrapper.emitted('click')).toBeUndefined()
   })
 
+  it('routine left-click toggles expansion but does NOT emit click', async () => {
+    wrapper = mountItem(makeItem('routine'))
+    const button = wrapper.find('button.flex-1')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    const ws = useWorkspacesStore()
+    expect(ws.expandedItemIds[ITEM_ID]).toBe(true)
+    expect(wrapper.emitted('click')).toBeUndefined()
+  })
+
   it('kanban left-click still emits click exactly once (board opens)', async () => {
     wrapper = mountItem(makeItem('kanban'))
     const button = wrapper.find('button.flex-1')
@@ -109,6 +119,15 @@ describe('WorkspaceItem — agent click is expand-only (no settings redirect)', 
 
   it('context menu shows Go to settings for agent rows', async () => {
     wrapper = mountItem(makeItem('agent'))
+    const button = wrapper.find('button.flex-1')
+    await button.trigger('contextmenu', { clientX: 100, clientY: 200 })
+    await nextTick()
+    const entry = document.body.querySelector('[data-testid="go-to-settings-item"]')
+    expect(entry?.textContent).toContain('Go to settings')
+  })
+
+  it('context menu shows Go to settings for routine rows', async () => {
+    wrapper = mountItem(makeItem('routine'))
     const button = wrapper.find('button.flex-1')
     await button.trigger('contextmenu', { clientX: 100, clientY: 200 })
     await nextTick()

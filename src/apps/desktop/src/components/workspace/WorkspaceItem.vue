@@ -164,12 +164,13 @@ const handleClick = (event?: MouseEvent) => {
   if (props.item.item_type !== 'design' && props.item.item_type !== 'kanban') {
     workspacesStore.toggleExpandedItem(props.item.id)
   }
-  // Agent items never navigate on plain left-click: their main view
-  // IS the Agent config (Tools / System Prompt / Knowledge), so a
-  // click would yank the user into a settings-looking page. Click
-  // only expands/collapses the inline task list; the config opens
-  // via the right-click "Go to settings" entry (new browser tab).
-  if (props.item.item_type === 'agent') return
+  // Agent and routine items never navigate on plain left-click: their main view
+  // IS the config surface (Agent: Tools / System Prompt / Knowledge;
+  // Routine: description / instruction / schedule), so a click would
+  // yank the user into a settings-looking page. Click only
+  // expands/collapses the inline task list; the config opens via the
+  // right-click "Go to settings" entry (new browser tab).
+  if (props.item.item_type === 'agent' || props.item.item_type === 'routine') return
   // Always emit click for external handling (e.g., navigation to
   // the kanban board via activeWorkspaceItemId).
   emit('click', props.item)
@@ -249,10 +250,11 @@ const openItemMenuSettings = () => {
 }
 
 // Only item types with a dedicated settings surface get the menu
-// entry: kanban boards (KanbanSettingsView: Columns + Agent tabs)
-// and agent items (AgentView: Tools / System Prompt / Knowledge).
+// entry: kanban boards (KanbanSettingsView: Columns + Agent tabs),
+// agent items (AgentView: Tools / System Prompt / Knowledge) and
+// routine items (RoutineView: description / instruction / schedule).
 const showItemSettings = computed(
-  () => props.item.item_type === 'kanban' || props.item.item_type === 'agent',
+  () => props.item.item_type === 'kanban' || props.item.item_type === 'agent' || props.item.item_type === 'routine',
 )
 
 // Right-click "Open in new tab" on a task row. The row only knows

@@ -106,6 +106,22 @@ pub const agentKanbanToolsListHandler = @import("agent_kanban_tools_list.zig").a
 pub const agentKanbanToolsCreateHandler = @import("agent_kanban_tools_create.zig").agentKanbanToolsCreateHandler;
 pub const agentKanbanToolsDeleteHandler = @import("agent_kanban_tools_delete.zig").agentKanbanToolsDeleteHandler;
 
+// Agent-Routines mirror (Migration 087, Routine mode task_1789505553300_1
+// option A — mirrors the agent-kanbans block above onto routines).
+pub const agentRoutinesGetHandler = @import("agent_routines_get.zig").agentRoutinesGetHandler;
+pub const agentRoutinesUpdateHandler = @import("agent_routines_update.zig").agentRoutinesUpdateHandler;
+pub const agentRoutineKnowledgeCreateHandler = @import("agent_routine_knowledge_create.zig").agentRoutineKnowledgeCreateHandler;
+pub const agentRoutineKnowledgeUpdateHandler = @import("agent_routine_knowledge_update.zig").agentRoutineKnowledgeUpdateHandler;
+pub const agentRoutineKnowledgeDeleteHandler = @import("agent_routine_knowledge_delete.zig").agentRoutineKnowledgeDeleteHandler;
+pub const agentRoutineKnowledgeReorderHandler = @import("agent_routine_knowledge_reorder.zig").agentRoutineKnowledgeReorderHandler;
+pub const agentRoutineSystemPromptCreateHandler = @import("agent_routine_system_prompt_create.zig").agentRoutineSystemPromptCreateHandler;
+pub const agentRoutineSystemPromptUpdateHandler = @import("agent_routine_system_prompt_update.zig").agentRoutineSystemPromptUpdateHandler;
+pub const agentRoutineSystemPromptDeleteHandler = @import("agent_routine_system_prompt_delete.zig").agentRoutineSystemPromptDeleteHandler;
+pub const agentRoutineSystemPromptReorderHandler = @import("agent_routine_system_prompt_reorder.zig").agentRoutineSystemPromptReorderHandler;
+pub const agentRoutineToolsListHandler = @import("agent_routine_tools_list.zig").agentRoutineToolsListHandler;
+pub const agentRoutineToolsCreateHandler = @import("agent_routine_tools_create.zig").agentRoutineToolsCreateHandler;
+pub const agentRoutineToolsDeleteHandler = @import("agent_routine_tools_delete.zig").agentRoutineToolsDeleteHandler;
+
 // Workspace-level routines (Migration 084, plan
 // 2026-09-10-workspace-items-routines) — first-class
 // `item_type='routine'` beside `agent`. Replaces the deleted

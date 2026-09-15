@@ -146,6 +146,21 @@ _ = @import("../../http_handlers/workspace_items_create_kanban.zig");
     _ = @import("../../http_handlers/agent_kanban_tools_list.zig"); // GET /agent-kanbans/:id/tools
     _ = @import("../../http_handlers/agent_kanban_tools_create.zig"); // POST /agent-kanbans/:id/tools
     _ = @import("../../http_handlers/agent_kanban_tools_delete.zig"); // DELETE /agent-kanbans/:id/tools/:tool_name
+    // Agent-Routines mirror (Migration 087, Routine mode task_1789505553300_1
+    // option A — mirrors the agent-kanbans block above onto routines).
+    _ = @import("../../http_handlers/agent_routines_get.zig"); // GET /items/:id/agent_routine
+    _ = @import("../../http_handlers/agent_routines_update.zig"); // PATCH /items/:id/agent_routine
+    _ = @import("../../http_handlers/agent_routine_knowledge_create.zig"); // POST /agent-routines/:id/knowledge
+    _ = @import("../../http_handlers/agent_routine_knowledge_update.zig"); // PATCH /agent-routines/:id/knowledge/:id
+    _ = @import("../../http_handlers/agent_routine_knowledge_delete.zig"); // DELETE /agent-routines/:id/knowledge/:id
+    _ = @import("../../http_handlers/agent_routine_knowledge_reorder.zig"); // PATCH /agent-routines/:id/knowledge/reorder
+    _ = @import("../../http_handlers/agent_routine_system_prompt_create.zig"); // POST /agent-routines/:id/system_prompt
+    _ = @import("../../http_handlers/agent_routine_system_prompt_update.zig"); // PATCH /agent-routines/:id/system_prompt/:id
+    _ = @import("../../http_handlers/agent_routine_system_prompt_delete.zig"); // DELETE /agent-routines/:id/system_prompt/:id
+    _ = @import("../../http_handlers/agent_routine_system_prompt_reorder.zig"); // PATCH /agent-routines/:id/system_prompt/reorder
+    _ = @import("../../http_handlers/agent_routine_tools_list.zig"); // GET /agent-routines/:id/tools
+    _ = @import("../../http_handlers/agent_routine_tools_create.zig"); // POST /agent-routines/:id/tools
+    _ = @import("../../http_handlers/agent_routine_tools_delete.zig"); // DELETE /agent-routines/:id/tools/:tool_name
 _ = @import("../../http_handlers/workspace_items_create.zig");
 _ = @import("../../http_handlers/kanban_columns_list.zig");
 _ = @import("../../http_handlers/kanban_columns_create.zig");
