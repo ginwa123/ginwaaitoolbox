@@ -76,8 +76,8 @@ const emit = defineEmits<{
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
   // Right-click "Go to settings" from a workspace item row.
-  // Forwarded verbatim to Sidebar, which emits navigate 'settings'.
-  goToSettings: []
+  // Forwarded verbatim to Sidebar, which routes per item_type.
+  goToSettings: [payload: { workspaceId: string; itemId: string; itemType?: string }]
 }>()
 
 const sidebarStore = useSidebarStore()
@@ -667,7 +667,7 @@ const handleItemDragEnd = () => {
             class="first:mt-1.5"
             @click="handleItemClick(workspace.id, $event.id)"
             @open-item-in-background="emit('openItemInBackground', $event)"
-            @go-to-settings="emit('goToSettings')"
+            @go-to-settings="emit('goToSettings', $event)"
             @delete="handleDeleteItem(workspace.id, $event.id)"
             @add-task="handleAddTask(workspace.id, $event)"
             @select-task="handleSelectTask"

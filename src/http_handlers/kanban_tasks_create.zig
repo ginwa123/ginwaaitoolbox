@@ -237,7 +237,12 @@ pub fn kanbanTasksCreateHandler(
             }
             break :blk "0";
         };
-        const profile = parsed.selected_profile_model orelse "";
+        var profile: []const u8 = parsed.selected_profile_model orelse "";
+        if (profile.len == 0) {
+            if (nalarcore.getLlmConfig(di).active_profile) |ap| {
+                profile = ap;
+            }
+        }
         const queue_message = parsed.queue_message orelse "";
         // image_urls on the wire is `||`-joined (Migration 069
         // shape); pass through to the worker pool verbatim.
@@ -1172,5 +1177,36 @@ test "kanban create response task echoes image_urls" {
             .{HANDLER_PATH},
         );
         return error.KanbanCreateRespImageUrlsMissing;
+    }
+}
+
+// =====================================================================
+// selected_profile fallback (bug: "selected profile null on session
+// create even when UI shows Profile Default").
+//
+// The New task dialog sends selected_profile_model="" for "Default"
+// (KanbanTaskDetail.vue resets selectedProfile to "" on every open).
+// Pre-fix this handler persisted "" verbatim (binds as SQL NULL), even
+// when the user had an active profile set — while the sibling chat
+// create path (session_create.zig) snapshots active_profile into the
+// row. Post-fix this handler mirrors that cascade: explicit pick wins,
+// otherwise fall back to the active profile, otherwise "" (backend
+// default, resolved on read via resolveSessionProfileCompat).
+// =====================================================================
+
+test "kanban_tasks_create snapshots active_profile when selected_profile_model is empty" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, "getLlmConfig(di).active_profile") == null) {
+        std.debug.print(
+            "\n!! {s} does not snapshot active_profile on kanban create !!\n" ++
+                "   Mirror session_create.zig: when the dialog sends \"\" (Default),\n" ++
+                "   fall back to getLlmConfig(di).active_profile before the\n" ++
+                "   sessions INSERT, so the row is self-contained.\n",
+            .{HANDLER_PATH},
+        );
+        return error.ActiveProfileFallbackMissing;
     }
 }

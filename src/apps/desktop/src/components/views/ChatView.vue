@@ -94,6 +94,8 @@ import CompactionCard from '../preview/CompactionCard.vue'
 // for agentic-loop error/retry diagnostics (is_error=true SSE events).
 import AgentErrorCard from '../chat/AgentErrorCard.vue'
 import UserPillRail, { type UserPill } from '../chat/UserPillRail.vue'
+import ChatScrollSlider from '../chat/ChatScrollSlider.vue'
+import { pickActivePillIndex, isPillGroup, estimateViewportEnd } from '../chat/activePill'
 import SkillsPopup from '../preview/SkillsPopup.vue'
 import BackgroundCommandsPopup from '../preview/BackgroundCommandsPopup.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -789,6 +791,8 @@ interface VirtualScrollerExposed {
   containerRef: HTMLElement | null
   isPreservingScroll: boolean
   effectiveLoadMoreThreshold: number
+  /** Topmost/bottommost rendered item indices (auto-unwrapped computed). */
+  effectiveRange: { start: number; end: number }
   sizerHeight?: number
   modelTotal?: number
 }
@@ -816,6 +820,10 @@ const fileInputRef = ref<{ focusInput?: () => void } | null>(null)
 const scrollerContainerRef = computed<HTMLElement | null>(
   () => virtualScrollerRef.value?.containerRef ?? null,
 )
+// Stable accessor for ChatScrollSlider: the scroller's containerRef
+// resolves after mount and swaps on chat switch, so the slider takes
+// a function (re-resolved on its interval) instead of a raw element.
+const getChatScrollContainer = (): HTMLElement | null => scrollerContainerRef.value
 const chatScrollStorageKey = computed(() => `chat-scroll-${sessionId.value || props.chatId}`)
 const chatScrollRestore = useChatScrollRestore(scrollerContainerRef, chatScrollStorageKey)
 
@@ -1500,9 +1508,11 @@ const groupKeyForMessageId = (messageId: string): string | null => {
 const userPills = computed((): UserPill[] => {
   const pills: UserPill[] = []
   messageGroups.value.forEach((g, i) => {
-    if (g.role !== 'user') return
+    // Real user turns only: bg-output groups are role=user on the wire
+    // but render as tool cards, compaction envelopes are system
+    // artifacts — neither gets a pill (see isPillGroup).
     const first = g.messages[0]
-    if (first && isCompactionMessage(first)) return
+    if (!isPillGroup(g.role, isBgOnlyGroup(g), !!first && isCompactionMessage(first))) return
     const text = g.messages
       .map((m) => m.content || '')
       .join('\n')
@@ -1513,10 +1523,15 @@ const userPills = computed((): UserPill[] => {
   return pills
 })
 
-// Last pill the user jumped to (highlight). Ref — not scroll-derived —
-// so no extra scroll listener fights the auto-stick logic. Upgrade path:
-// derive from the scroller's exposed effectiveRange when needed.
+// Last pill the user jumped to (highlight). Also driven by scroll (see
+// the realtime update at the end of handleVirtualScroll) so the rail
+// lights up while reading, not just after a click-jump.
 const activePillGroupIndex = ref<number | null>(null)
+
+// Must mirror the `:buffer` prop on the <VirtualScroller> below: the
+// scroller renders this many extra items on EACH side of the viewport,
+// so the active-pill anchor compensates by it (see estimateViewportEnd).
+const CHAT_SCROLL_BUFFER = 30
 
 const jumpToUserGroup = (groupIndex: number, key: string) => {
   // Resolve the index by stable groupKey at click time: SSE appends
@@ -2596,6 +2611,24 @@ const handleVirtualScroll = (
     })
   }
   isAtBottom.value = nextIsAtBottom
+  // ── Realtime pill highlight ───────────────────────────────────────
+  // Light the rail pill for the latest user turn at/above the viewport
+  // BOTTOM as the user scrolls (previously the pill only lit on
+  // click-jump, so scrolling never activated any pill; and anchoring to
+  // the rendered window top lit index 0 whenever the window rendered
+  // from 0 — the overscan buffer above the viewport. See
+  // estimateViewportEnd). Pure display-ref write — no scroll writes,
+  // so it can't fight the auto-stick logic above.
+  const range = virtualScrollerRef.value?.effectiveRange
+  if (range) {
+    const visEnd = estimateViewportEnd(
+      range.start,
+      range.end,
+      messageGroups.value.length,
+      CHAT_SCROLL_BUFFER,
+    )
+    activePillGroupIndex.value = pickActivePillIndex(userPills.value, visEnd)
+  }
   // Persist the current state for the next call's deltas. Done
   // AFTER the logs so the `first-scroll` log captures the raw
   // initial state (with -1 sentinels making the deltas explicit).
@@ -3419,7 +3452,7 @@ const compactSession = async () => {
       <div
         v-show="!showCenterDiff"
         ref="messagesWrapperRef"
-        class="relative flex-1 min-h-0 flex flex-col mb-4"
+        class="relative flex-1 min-h-0 flex flex-col mb-4 messages-scroll-hide-native"
       >
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
@@ -4093,6 +4126,15 @@ const compactSession = async () => {
           :active-group-index="activePillGroupIndex"
           @jump="jumpToUserGroup"
         />
+
+        <!-- Realtime chat slider: continuous draggable scrollbar thumb
+             synced to the VirtualScroller's scroll position (scroll-up
+             moves the thumb in realtime; dragging the thumb scrubs the
+             chat). Sibling of VirtualScroller inside the relative
+             messagesWrapperRef so it never virtualizes. The native
+             scrollbar is hidden for this scroller (see scoped style
+             below) — this thumb IS the scrollbar visual. -->
+        <ChatScrollSlider :get-container="getChatScrollContainer" />
 
         <!-- 2026-08-25 agent-error-card (task_1787663566535_2):
              Agentic-loop error/retry diagnostics. Rendered OUTSIDE the
@@ -4859,5 +4901,20 @@ const compactSession = async () => {
     outline: 2px solid var(--color-violet, #8b5cf6);
     outline-offset: 2px;
   }
+}
+
+/* Realtime chat slider: this scroller's native scrollbar is replaced by
+   the ChatScrollSlider thumb (draggable, scroll-synced). Scrolling
+   itself is untouched (wheel/touch/keyboard still work) — only the
+   native visual is hidden, and only inside this wrapper. */
+.messages-scroll-hide-native :deep(.virtual-scroller) {
+  scrollbar-width: none;
+}
+.messages-scroll-hide-native :deep(.virtual-scroller::-webkit-scrollbar) {
+  display: none;
+}
+/* Make room for the slider track at the extreme right edge. */
+.messages-scroll-hide-native :deep(.user-pill-rail) {
+  right: 18px;
 }
 </style>
