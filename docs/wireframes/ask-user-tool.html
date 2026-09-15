@@ -153,7 +153,8 @@
   <p class="sub">The agent stops mid-run, asks the human a question with selectable options and/or free text,
      and the agentic loop blocks until the human answers.</p>
   <p class="lead">Plan: <code>docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md</code> ·
-     Card lives inline in the transcript, exactly where every other tool card lives.</p>
+     Card lives inline in the transcript, exactly where every other tool card lives.
+     The question is <b>persistent</b> — it survives a reload and is answerable whenever you get to it.</p>
 
   <h2><span class="n">1</span> Where it lives — a real transcript</h2>
   <p class="sub">Agent hits a genuinely ambiguous decision, asks, blocks, resumes with the answer as the tool result.</p>
@@ -223,7 +224,7 @@
                 <button class="btn primary" id="demoSubmit">Send answer</button>
                 <button class="btn ghost" id="demoSkip">Skip</button>
                 <span class="tspacer"></span>
-                <span class="hint">1–3 pick · ⏎ send · esc skip · times out in 15:00</span>
+                <span class="hint">1–3 pick · ⏎ send · esc skip · times out in 30:00</span>
               </div>
             </div>
             <details class="targs"><summary>Arguments</summary>
@@ -408,14 +409,14 @@
           <span class="tspacer"></span><span class="badge muted">timed out</span><span class="tmeta">14:48</span></div>
         <div class="tbody">
           <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
-          <span class="note">No answer within 15 minutes — the agent decided on its own.</span>
+          <span class="note">No answer within 30 minutes — the agent decided on its own.</span>
         </div>
       </div>
     </div>
 
     <!-- unavailable -->
     <div class="cell">
-      <div class="cl"><span><b>unavailable</b></span><span>unattended / no viewer</span></div>
+      <div class="cl"><span><b>unavailable</b></span><span>unattended run only</span></div>
       <div class="tcard solved">
         <div class="thead"><span class="tname">ask_user</span><span class="tprim">Deploy target</span>
           <span class="tspacer"></span><span class="badge muted">no human</span><span class="tmeta">returned instantly</span></div>
@@ -424,8 +425,25 @@
           <span class="note">No human was available — the agent decided on its own and stated the assumption.</span>
         </div>
       </div>
-      <div class="note" style="margin-top:9px">Unattended mode (<code>is_auto_retry_until_stop=1</code>) or no attached
-        SSE viewer → <b>never blocks</b>. This is the guard against a 15-minute hang in a scheduled run.</div>
+      <div class="note" style="margin-top:9px">Only for an <b>unattended run</b> (<code>is_auto_retry_until_stop=1</code>) or a
+        sub-agent. A missing browser tab no longer skips the question — the question is <b>persistent</b>, so the agent
+        waits for a human who may show up later.</div>
+    </div>
+
+    <!-- orphaned -->
+    <div class="cell">
+      <div class="cl"><span><b>orphaned</b></span><span>run died mid-question</span></div>
+      <div class="tcard solved">
+        <div class="thead"><span class="tname">ask_user</span><span class="tprim">Deploy target</span>
+          <span class="tspacer"></span><span class="badge muted">run ended</span><span class="tmeta">not answerable</span></div>
+        <div class="tbody">
+          <p class="qhead" style="color:var(--dim)">Which environment should I deploy to?</p>
+          <span class="note">The run ended before you answered. Re-ask the agent if you still need this.</span>
+        </div>
+      </div>
+      <div class="note" style="margin-top:9px">A persisted question whose owning run is gone (backend restarted, session
+        stopped). The boot sweep marks it once, and a late answer returns <code>410</code> instead of pretending to
+        resume — the card never implies an answer the agent will never read.</div>
     </div>
 
     <!-- error -->
@@ -593,24 +611,37 @@
   <table>
     <tr><th>Situation</th><th>Behaviour</th><th>Why</th></tr>
     <tr><td>Sub-agent calls <code>ask_user</code></td><td><b>stripped at equip time</b>; runtime fallback <code>unavailable</code></td><td>the parent is parked on <code>group.await</code> with no timeout → guaranteed deadlock</td></tr>
-    <tr><td>Unattended run (<code>is_auto_retry_until_stop=1</code>)</td><td><code>unavailable</code> <b>immediately</b></td><td>unattended means "do not ask"; a 15-min hang per question is worse than a wrong assumption</td></tr>
-    <tr><td>No SSE viewer attached</td><td>blocks only for a <b>60 s grace window</b>; extends to full timeout if a viewer attaches</td><td>"nobody watching at t=0" ≠ "no human ever" — the user may be switching tabs</td></tr>
+    <tr><td>Unattended run (<code>is_auto_retry_until_stop=1</code>)</td><td><code>unavailable</code> <b>immediately</b></td><td>unattended means "do not ask"; a long hang per question is worse than a wrong assumption</td></tr>
+    <tr><td>No browser tab attached</td><td><b>still blocks</b> — the question is persistent and answerable whenever the human shows up</td><td>reviewer decision: never give up on the human just because no tab is watching at that instant</td></tr>
     <tr><td>Human presses <b>Stop</b> while pending</td><td>wait loop polls <code>worker.cancelled</code> → <code>cancelled</code> in ≤100 ms</td><td>Stop must never appear to hang</td></tr>
-    <tr><td>Timeout expires</td><td><code>timeout</code> + "pick the most reasonable option, state the assumption"</td><td>the run always makes progress</td></tr>
+    <tr><td>Timeout expires (default 30 min)</td><td><code>timeout</code> + "pick the most reasonable option, state the assumption"</td><td>the run always makes progress; <code>timeout_seconds: 0</code> opts into waiting forever</td></tr>
+    <tr><td>Run dies mid-question</td><td>boot sweep → <code>orphaned</code>; late answer → <code>410</code></td><td>never silently lose the question, never fake a resume</td></tr>
     <tr><td>Model calls it with bad args</td><td><code>success=false</code> + <code>&lt;error&gt;</code></td><td>only malformed input is an error — degraded outcomes are successful calls</td></tr>
   </table>
 
-  <h2><span class="n">6</span> Answers to the four questions that shaped this</h2>
+  <h3>What <code>ask_user</code> does to the turn</h3>
+  <p class="sub" style="margin-top:6px">It does <b>not</b> end the turn. The call arrives as a tool call, so the LLM
+    turn's <code>finish_reason</code> is <code>tool_calls</code> — not <code>stop</code> — and the loop parks
+    <em>inside</em> the tool. The session keeps showing as running (it genuinely is), <b>Stop works normally</b>, and the
+    turn only reaches <code>stop</code> after the tool returns its answer and the loop makes one more LLM call with that
+    answer in context.</p>
+
+  <h2><span class="n">6</span> Decisions locked in review</h2>
   <table>
-    <tr><th>Question</th><th>Decision</th></tr>
+    <tr><th>Question</th><th>Answer</th></tr>
+    <tr><td>Is the question ephemeral or persistent?</td><td><b>Persistent</b> — a durable row, answerable whenever the human shows up. No "no viewer" bail-out.</td></tr>
     <tr><td>How does the card know the question before the tool returns?</td><td>The placeholder row's <b>arguments</b> carry it, plus an ephemeral <code>llm_full</code> frame for status.</td></tr>
-    <tr><td>How does the loop pause?</td><td>A <b>DB poll loop</b> (100 ms) that also polls the existing cancel flag — no condvar, restart-safe, deadlock-free.</td></tr>
+    <tr><td>How does the loop pause?</td><td>A <b>DB poll loop</b> (100 ms) that also polls the existing cancel flag — no condvar, no deadlock.</td></tr>
     <tr><td>How does the answer get back?</td><td><code>POST /api/llm/session/:id/answer</code> → row UPDATE → the loop's next poll returns.</td></tr>
-    <tr><td>What if nobody is there?</td><td>Two-tier gate → <code>unavailable</code> instead of blocking.</td></tr>
+    <tr><td>Where does the answer appear?</td><td><b>Inside the card only</b> — not as a separate user bubble.</td></tr>
+    <tr><td>What does Skip mean?</td><td>The <b>run continues</b>; the tool tells the model not to guess and to stop that line of work.</td></tr>
+    <tr><td>Which modes get the tool?</td><td><b>All modes by default</b> — chat, agent items, kanban items.</td></tr>
+    <tr><td>What if nobody is there?</td><td>Unattended run → <code>unavailable</code> immediately. Otherwise wait (30 min default, or forever if <code>timeout_seconds: 0</code>).</td></tr>
   </table>
 
   <p class="note" style="margin-top:26px">Static wireframe + interactive demo of the pending card.
-     Nothing here is product code — the implementation plan is the deliverable.</p>
+     Nothing here is product code — the implementation plan is the deliverable.
+     Reviewer decisions of 2026-09-16 are folded in (see §6 above).</p>
 </div>
 
 <script>
