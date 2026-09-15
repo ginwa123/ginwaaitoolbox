@@ -481,9 +481,66 @@ const chatSidebarRef = ref<InstanceType<typeof ChatRightSidebar> | null>(null)
 const chatPrUrl = ref('')
 const chatPrProvider = ref('')
 
-async function onChatSidebarSubmitReview(message: string) {
-  if (!sessionId.value || !effectiveCwd.value) return
-  await api.sendChatMessage(sessionId.value, message, effectiveCwd.value)
+// Persisted review comments (agnostic comment-box path). Saved to
+// localStorage instead of sent to the LLM — the diff comment box owns
+// per-line draft persistence; ChatView keeps the appended list (capped
+// at 200 entries).
+interface SavedReviewComment {
+  filePath: string
+  message: string
+  formatted: string
+  savedAt: number
+}
+
+const REVIEW_COMMENTS_KEY = 'diff-review-comments'
+
+function loadSavedReviewComments(): SavedReviewComment[] {
+  try {
+    if (typeof localStorage === 'undefined') return []
+    const raw = localStorage.getItem(REVIEW_COMMENTS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as SavedReviewComment[]
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const savedReviewComments = ref<SavedReviewComment[]>(loadSavedReviewComments())
+
+function persistSavedReviewComments(): void {
+  try {
+    if (typeof localStorage === 'undefined') return
+    localStorage.setItem(REVIEW_COMMENTS_KEY, JSON.stringify(savedReviewComments.value.slice(-200)))
+  } catch {
+    // Best effort — comments stay in memory for the session.
+  }
+}
+
+function appendSavedReviewComment(entry: SavedReviewComment): void {
+  savedReviewComments.value = [...savedReviewComments.value, entry].slice(-200)
+  persistSavedReviewComments()
+}
+
+// Legacy compat: the old mini-chat emitted raw markdown for the LLM.
+// Now it only persists — never calls api.sendChatMessage.
+function onChatSidebarSubmitReview(message: string) {
+  appendSavedReviewComment({ filePath: '', message, formatted: message, savedAt: Date.now() })
+}
+
+function onChatSidebarCommentSaved(payload: {
+  filePath: string
+  startLine: number
+  endLine: number
+  message: string
+  formatted: string
+}) {
+  appendSavedReviewComment({
+    filePath: payload.filePath,
+    message: payload.message,
+    formatted: payload.formatted,
+    savedAt: Date.now(),
+  })
 }
 
 // Sidebar file-row click (or header Open button): open the file in the
@@ -4297,6 +4354,7 @@ const compactSession = async () => {
             @open="onChatSidebarOpenFile"
             @retry="onCenterDiffRetry"
             @submit-review="onChatSidebarSubmitReview"
+            @comment-saved="onChatSidebarCommentSaved"
           />
         </div>
       </div>

@@ -867,6 +867,13 @@ const handleSubmitReview = async (message: string) => {
   closeGitViewer()
 }
 
+const handleCommentSaved = (payload: { filePath: string; message: string; formatted: string }) => {
+  console.log('[AppLayout] Review comment saved:', payload.filePath)
+  // Persisted by DiffCommentBox (localStorage draft) — just close the
+  // viewer. Unlike handleSubmitReview above, this never sends to the LLM.
+  closeGitViewer()
+}
+
 // Git file viewer state
 const gitViewerFile = ref<api.GitFileChange | null>(null)
 const gitViewerStaged = ref(false)
@@ -2506,6 +2513,7 @@ defineExpose({
         :staged="gitViewerStaged"
         @close="closeGitViewer"
         @submit-review="handleSubmitReview"
+        @comment-saved="handleCommentSaved"
       />
 
       <!-- Skill Detail Viewer (shown when view is skill) -->

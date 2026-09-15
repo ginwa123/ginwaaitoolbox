@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import FileInput from '../../file/FileInput.vue'
+import DiffCommentBox, { type DiffCommentSavePayload } from './DiffCommentBox.vue'
 import { escapeDiffHtml, type ParsedDiffLine } from './parseUnifiedDiff'
 
 /**
@@ -18,7 +18,7 @@ const props = defineProps<{
   staged?: boolean
   loading?: boolean
   error?: string | null
-  /** cwd for the review FileInput. */
+  /** cwd for the review DiffCommentBox. */
   cwd: string
   /** Show the back button (center mode). Panel list mode hides it. */
   showBack?: boolean
@@ -30,6 +30,7 @@ const emit = defineEmits<{
   open: [payload: { path: string; line?: number }]
   retry: []
   'submit-review': [message: string]
+  'comment-saved': [payload: DiffCommentSavePayload]
 }>()
 
 const wordWrap = ref(false)
@@ -86,18 +87,12 @@ const closeMiniChat = () => {
   miniChatEndLine.value = 0
 }
 
-const submitMiniChat = (message: string) => {
-  const lineRange =
-    miniChatStartLine.value === miniChatEndLine.value
-      ? `Line ${miniChatStartLine.value}`
-      : `Lines ${miniChatStartLine.value}-${miniChatEndLine.value}`
-  emit(
-    'submit-review',
-    `## Code Review\n**File:** \`${miniChatFilePath.value}\`\n**${lineRange}**\n\n\`\`\`\n${miniChatContent.value}\n\`\`\`\n\n## Review Comment\n\n${message}`,
-  )
-  closeMiniChat()
+const handleCommentSave = (payload: DiffCommentSavePayload) => {
+  // The comment box owns persistence (localStorage draft + Saved
+  // feedback). Keep the popup open showing the saved state and bubble
+  // the structured payload upward. Nothing here sends to the LLM.
+  emit('comment-saved', payload)
 }
-
 const firstAddLine = computed(() => props.lines.find((l) => l.type === 'add')?.newLineNum)
 
 const openFile = () => emit('open', { path: props.path, line: firstAddLine.value })
@@ -314,7 +309,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
             ✕
           </button>
         </div>
-        <FileInput :cwd="cwd" :review-mode="true" @submit="submitMiniChat" />
+        <DiffCommentBox :file-path="miniChatFilePath" :start-line="miniChatStartLine" :end-line="miniChatEndLine" :context="miniChatContent" :cwd="cwd" @save="handleCommentSave" />
       </div>
     </Teleport>
   </div>
