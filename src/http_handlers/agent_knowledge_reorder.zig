@@ -5,7 +5,7 @@
 //! (highest), `ordered_ids[N-1]` becomes position 0 (lowest).
 //!
 //! Layered as:
-//!   - `useCase` — BEGIN/COMMIT transaction, UPDATE each row's
+//!   - `useCase` — tx transaction (db.begin/tx.exec/tx.commit), UPDATE each row's
 //!     position to `len - i` (so a 1-row ordering doesn't land at
 //!     position 0).
 //!   - `agentKnowledgeReorderHandler` — thin orchestrator over
@@ -38,7 +38,7 @@ pub const KnowledgeReorderError = error{
     AgentIdRequired,
     /// Body `ordered_ids` field was empty.
     OrderedIdsRequired,
-    /// `BEGIN` / `COMMIT` failed.
+    /// `begin()` / `commit()` failed.
     TransactionFailed,
     /// One of the per-row `UPDATE` statements failed.
     UpdateFailed,
@@ -55,8 +55,7 @@ pub const KnowledgeReorderInput = struct {
 // =====================================================================
 
 /// Reorder knowledge rows for the given agent. All updates happen
-/// inside a single BEGIN/COMMIT — if any UPDATE fails the whole
-/// reorder rolls back. `ordered_ids[0]` becomes position
+/// inside a single tx — all UPDATEs finalize together via tx.commit(). `ordered_ids[0]` becomes position
 /// `len - 1` (highest), `ordered_ids[len - 1]` becomes position 0
 /// (lowest). Using `len - i` (not `len - i - 1`) ensures a 1-row
 /// ordering lands at position 0 (not position 1) — see the test
@@ -69,22 +68,21 @@ fn useCase(
     if (input.agent_id.len == 0) return error.AgentIdRequired;
     if (input.ordered_ids.len == 0) return error.OrderedIdsRequired;
 
-    db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.TransactionFailed;
-    errdefer {
-        db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
-    }
+    var tx = db.begin() catch return error.TransactionFailed;
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
 
     for (input.ordered_ids, 0..) |id, i| {
         const position: i64 = @intCast(input.ordered_ids.len - 1 - @as(usize, @intCast(i)));
         var pos_buf: [32]u8 = undefined;
         const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
-        db.exec(allocator,
+        tx.exec(allocator,
             "UPDATE agent_knowledge SET position = ?, updated_at = datetime('now') WHERE id = ? AND agent_id = ?",
             &[_][]const u8{ pos_str, id, input.agent_id },
         ) catch return error.UpdateFailed;
     }
 
-    db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.TransactionFailed;
+    tx.commit() catch return error.TransactionFailed;
 }
 
 // =====================================================================

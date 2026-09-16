@@ -140,11 +140,10 @@ fn useCase(
     const item_id = try std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
     defer allocator.free(item_id);
 
-    // BEGIN so workspace_item + columns + agent_kanbans + tools are atomic.
-    db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.InsertFailed;
-    errdefer {
-        db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
-    }
+    // tx so workspace_item + columns + agent_kanbans + tools are atomic.
+    var tx = db.begin() catch return error.InsertFailed;
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
 
     // Compute the new item's position as
     // COALESCE(MAX(position), -1) + 1 within this workspace. The
@@ -154,25 +153,27 @@ fn useCase(
     // column is included so the kanban can act as a cwd root for
     // its child task sessions; NULL is stored when the caller
     // didn't pass a path.
-    db.exec(allocator,
+    tx.exec(allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'kanban', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
         &.{ item_id, input.workspace_id, trimmed_name, path_for_insert, input.workspace_id },
     ) catch return error.InsertFailed;
 
     // Seed the 3 default columns (`todo / in progress / done`).
-    kanban_model.seedDefaultColumns(allocator, db, item_id) catch return error.SeedFailed;
+    // Takes `tx` (not `db`): the tx holds the backend mutex, so a
+    // `db.exec` here would deadlock on the non-reentrant lock.
+    kanban_model.seedDefaultColumns(allocator, .{ .tx = &tx }, item_id) catch return error.SeedFailed;
 
     // Seed the agent_kanbans config row + default tools (command,
     // read_file, write_file) so a fresh board is immediately usable.
     // INSERT OR IGNORE keeps re-entry safe; tools seed uses OR IGNORE
     // per row so it never trips UNIQUE(kanban_id, tool_name).
-    db.exec(allocator,
+    tx.exec(allocator,
         "INSERT OR IGNORE INTO agent_kanbans (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, item_id },
     ) catch return error.SeedFailed;
-    tools_equipped.seedDefaultKanbanTools(allocator, db, item_id) catch return error.SeedFailed;
+    tools_equipped.seedDefaultKanbanTools(allocator, .{ .tx = &tx }, item_id) catch return error.SeedFailed;
 
-    db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.SeedFailed;
+    tx.commit() catch return error.SeedFailed;
 
     // Read back the freshly-seeded columns so the response can
     // include them in the `columns` field of the wire envelope.

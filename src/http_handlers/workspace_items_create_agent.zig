@@ -117,18 +117,17 @@ fn useCase(
     // reap it, but tests use testing.allocator which leak-detects.
     errdefer allocator.free(item_id);
 
-    // BEGIN/COMMIT so the 2 INSERTs are atomic. A crash mid-flow
+    // tx so the 2 INSERTs are atomic. A crash mid-flow
     // would otherwise leave a workspace_items row without an agent
     // sibling (breaking the 1-1 invariant).
-    db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.DatabaseError;
-    errdefer {
-        db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
-    }
+    var tx = db.begin() catch return error.DatabaseError;
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
 
     // 1. INSERT INTO workspace_items with item_type='agent' and a
     //    fresh position. NULLIF(?, '') stores NULL when the caller
     //    didn't pass a path (matching the kanban convention).
-    db.exec(allocator,
+    tx.exec(allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'agent', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
         &.{ item_id, input.workspace_id, trimmed_name, input.body.path, input.workspace_id },
     ) catch return error.DatabaseError;
@@ -136,19 +135,20 @@ fn useCase(
     // 2. INSERT INTO agents with the SAME id (spec D3 — agents.id
     //    shares the workspace_item_id space; UNIQUE(workspace_item_id)
     //    enforces 1-1 at the DB layer).
-    db.exec(allocator,
+    tx.exec(allocator,
         "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, item_id },
     ) catch return error.DatabaseError;
 
     // 3. Seed default tools (command, read_file, write_file) so a fresh
-    //    agent is immediately usable. Inside the same txn — a seed failure
-    //    rolls back the whole create via the errdefer ROLLBACK above.
+    //    agent is immediately usable. Inside the same tx — takes `tx`
+    //    (not `db`): the tx holds the backend mutex, so a `db.exec`
+    //    here would deadlock on the non-reentrant lock.
     //    agent_tools.agent_id references agents.id (= item_id).
-    tools_equipped.seedDefaultAgentTools(allocator, db, item_id) catch return error.DatabaseError;
+    tools_equipped.seedDefaultAgentTools(allocator, .{ .tx = &tx }, item_id) catch return error.DatabaseError;
 
     // COMMIT.
-    db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.DatabaseError;
+    tx.commit() catch return error.DatabaseError;
 
     // Read back the freshly-inserted position (mirrors the kanban
     // CREATE flow — see workspace_items_create_kanban.zig::readInsertedPosition).

@@ -153,7 +153,7 @@ fn nextColumnIdCounter() u64 {
 /// Caller owns the returned slice.
 pub fn addColumn(
     allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
+    db: nalarcore.database.DbOrTx,
     workspace_item_id: []const u8,
     name: []const u8,
     description: []const u8,
@@ -206,7 +206,7 @@ pub fn addColumn(
 /// Settings dialog (Chunk 3).
 pub fn seedDefaultColumns(
     allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
+    db: nalarcore.database.DbOrTx,
     workspace_item_id: []const u8,
 ) !void {
     // Each `addColumn` returns an owned id slice that the caller MUST
@@ -401,7 +401,7 @@ pub fn replaceColumnsWith(
         // it) so we free it immediately — mirrors `seedDefaultColumns`.
         const new_id = try addColumn(
             allocator,
-            db,
+            .{ .db = db },
             target_item_id,
             col.name,
             col.description,
@@ -457,7 +457,7 @@ pub fn appendColumnsFrom(
         // free (mirrors seedDefaultColumns + replaceColumnsWith).
         const new_id = try addColumn(
             allocator,
-            db,
+            .{ .db = db },
             target_item_id,
             col.name,
             col.description,
@@ -741,7 +741,7 @@ test "addColumn inserts at end of position sequence" {
     try s.db.exec(alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) VALUES ('c1', 'item_1', 'todo', 0)", &.{});
 
-    const new_id = try addColumn(alloc, &s.db, "item_1", "review", "", null);
+    const new_id = try addColumn(alloc, .{ .db = &s.db }, "item_1", "review", "", null);
     defer alloc.free(new_id);
     // Generated id is `col_<unix_nanoseconds>` — just sanity-check the prefix.
     try testing.expect(std.mem.startsWith(u8, new_id, "col_"));
@@ -772,7 +772,7 @@ test "seedDefaultColumns creates todo, in progress, done" {
     try s.db.exec(alloc,
         "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('item_1', 'ws_1', 'kanban')", &.{});
 
-    try seedDefaultColumns(alloc, &s.db, "item_1");
+    try seedDefaultColumns(alloc, .{ .db = &s.db }, "item_1");
 
     const cols = try listColumns(alloc, &s.db, "item_1");
     defer freeColumns(alloc, cols);
@@ -1170,8 +1170,7 @@ test "addColumn writes description to the new row" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "in_review", "Awaiting code review", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "in_review", "Awaiting code review", 0,
     );
     defer alloc.free(id);
 
@@ -1189,8 +1188,7 @@ test "updateColumn with only description leaves name unchanged" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "todo", "Not started", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "todo", "Not started", 0,
     );
     defer alloc.free(id);
 
@@ -1211,8 +1209,7 @@ test "updateColumn with only name leaves description unchanged" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "todo", "Not started", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "todo", "Not started", 0,
     );
     defer alloc.free(id);
 
@@ -1231,8 +1228,7 @@ test "updateColumn with both name and description writes both" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "todo", "old", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "todo", "old", 0,
     );
     defer alloc.free(id);
 
@@ -1253,7 +1249,7 @@ test "seedDefaultColumns writes empty descriptions" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try seedDefaultColumns(alloc, &ctx.db, "wi_1");
+    try seedDefaultColumns(alloc, .{ .db = &ctx.db }, "wi_1");
 
     const cols = try listColumns(alloc, &ctx.db, "wi_1");
     defer freeColumns(alloc, cols);
@@ -1278,8 +1274,7 @@ test "updateColumn with empty-string description clears existing description" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "in_review", "Awaiting code review", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "in_review", "Awaiting code review", 0,
     );
     defer alloc.free(id);
 
@@ -1313,8 +1308,7 @@ test "updateColumn with null description leaves existing description unchanged" 
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "todo", "Not started", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "todo", "Not started", 0,
     );
     defer alloc.free(id);
 
@@ -1338,8 +1332,7 @@ test "updateColumn with both empty description and new name writes both" {
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    const id = try addColumn(
-        alloc, &ctx.db, "wi_1", "in_review", "Awaiting code review", 0,
+    const id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_1", "in_review", "Awaiting code review", 0,
     );
     defer alloc.free(id);
 
@@ -1408,7 +1401,7 @@ fn seedColumn(
 ) !void {
     const id = try addColumn(
         alloc,
-        db,
+        .{ .db = db },
         workspace_item_id,
         name,
         description,
@@ -1503,7 +1496,7 @@ test "replaceColumnsWith unassigns tasks on the deleted target columns" {
     // heap-allocated id that we must free (see seedColumn's doc on
     // why an explicit `defer alloc.free` is needed for the returned
     // id to avoid a leak).
-    const legacy_id = try addColumn(alloc, &ctx.db, "wi_tgt", "legacy", "", 0);
+    const legacy_id = try addColumn(alloc, .{ .db = &ctx.db }, "wi_tgt", "legacy", "", 0);
     defer alloc.free(legacy_id);
 
     // Create a task assigned to the target's "legacy" column. After
