@@ -124,6 +124,9 @@ pub const Session = struct {
     exited: bool,
     exit_code: ?i32,
     mutex: std.atomic.Mutex,
+    /// Monotonic last-use stamp (LRU eviction). Touched on every
+    /// read/write/resize/create while holding `mutex`.
+    last_used: u64,
 
     /// Raw PTY master fd (for the WS pump's poll loop). Valid until
     /// `destroySession`.
@@ -143,6 +146,10 @@ var g_mutex: std.atomic.Mutex = .unlocked;
 var g_sessions: std.StringHashMap(*Session) = undefined;
 var g_inited: bool = false;
 var g_id_counter: u64 = 0;
+/// Monotonic clock for LRU stamps (order only, no wall time).
+var g_seq: u64 = 0;
+/// Live session cap (defaults to max_sessions; tests override).
+var g_max_sessions: usize = max_sessions;
 const g_alloc = std.heap.c_allocator;
 
 /// Spin-lock acquire (std.atomic.Mutex has no blocking lock() in
@@ -176,6 +183,59 @@ pub fn sessionCount() usize {
     mutexLock(&g_mutex);
     defer g_mutex.unlock();
     return reg.count();
+}
+
+/// Next LRU stamp (g_mutex-guarded; callers hold a session mutex —
+/// lock order is always session-then-global, never the reverse).
+fn nextSeq() u64 {
+    mutexLock(&g_mutex);
+    defer g_mutex.unlock();
+    g_seq += 1;
+    return g_seq;
+}
+
+fn sessionCap() usize {
+    mutexLock(&g_mutex);
+    defer g_mutex.unlock();
+    return g_max_sessions;
+}
+
+/// Test-only session-cap override (returns the previous cap — restore
+/// with defer). Lets the eviction test run at cap 2 instead of 32.
+pub fn setSessionCapForTest(cap: usize) usize {
+    mutexLock(&g_mutex);
+    defer g_mutex.unlock();
+    const prev = g_max_sessions;
+    g_max_sessions = cap;
+    return prev;
+}
+
+/// Kill least-recently-used sessions until count < cap. Called on
+/// create so the registry never rejects with TooManySessions in
+/// practice (abandoned chat sessions age out instead of blocking new
+/// ones). Victim choice reads last_used without the session lock — a
+/// torn read only mis-picks the victim, never corrupts state.
+fn evictToFit() void {
+    if (comptime !is_pty_os) return;
+    while (true) {
+        const reg = registry();
+        mutexLock(&g_mutex);
+        // Read g_max_sessions directly: sessionCap() would re-lock.
+        if (reg.count() < g_max_sessions) {
+            g_mutex.unlock();
+            return;
+        }
+        var victim: ?*Session = null;
+        var it = reg.valueIterator();
+        while (it.next()) |s| {
+            if (victim == null or s.*.last_used < victim.?.last_used) victim = s.*;
+        }
+        g_mutex.unlock();
+        const v = victim orelse return;
+        // destroySession re-locks internally. SessionNotFound means a
+        // concurrent destroy won the race — stop instead of spinning.
+        destroySession(v.id) catch return;
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -265,13 +325,9 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
         dir.close(io);
     }
 
-    const reg = registry();
-    mutexLock(&g_mutex);
-    if (reg.count() >= max_sessions) {
-        g_mutex.unlock();
-        return error.TooManySessions;
-    }
-    g_mutex.unlock();
+    // LRU eviction keeps creates succeeding at cap (abandoned chat
+    // sessions age out instead of 429ing new ones).
+    evictToFit();
 
     const shell_path: []const u8 = blk: {
         const s = shell_opt orelse "";
@@ -313,8 +369,10 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
         .exited = false,
         .exit_code = null,
         .mutex = .unlocked,
+        .last_used = nextSeq(),
     };
 
+    const reg = registry();
     mutexLock(&g_mutex);
     reg.put(id, session) catch {
         g_mutex.unlock();
@@ -351,6 +409,7 @@ fn childMain(cwd: []const u8, shell_path: []const u8) noreturn {
 pub fn drainSession(s: *Session) void {
     if (comptime !is_pty_os) return;
     mutexLock(&s.mutex);
+    s.last_used = nextSeq();
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -413,6 +472,7 @@ fn decodeStatus(status: c_int) i32 {
 pub fn writeInput(s: *Session, data: []const u8) SessionError!usize {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
     mutexLock(&s.mutex);
+    s.last_used = nextSeq();
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -441,6 +501,7 @@ pub const OutputSlice = struct {
 /// Call `drainSession` first (or use `readOutput`, which does).
 pub fn sliceOutput(s: *Session, cursor: u64) OutputSlice {
     mutexLock(&s.mutex);
+    s.last_used = nextSeq();
     defer s.mutex.unlock();
     const start = @max(cursor, s.base);
     if (start >= s.total) {
@@ -461,6 +522,7 @@ pub fn readOutput(s: *Session, cursor: u64) OutputSlice {
         return .{ .data = &.{}, .cursor = cursor, .exited = true, .exit_code = null };
     }
     mutexLock(&s.mutex);
+    s.last_used = nextSeq();
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -483,6 +545,7 @@ pub fn resizeSession(s: *Session, cols: u16, rows: u16) SessionError!void {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
     if (cols < min_dim or cols > max_dim or rows < min_dim or rows > max_dim) return error.InvalidSize;
     mutexLock(&s.mutex);
+    s.last_used = nextSeq();
     defer s.mutex.unlock();
     if (s.exited) return error.SessionExited;
     var win = Winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
@@ -504,6 +567,7 @@ pub fn destroySession(id: []const u8) SessionError!void {
     const s = entry.value;
 
     mutexLock(&s.mutex);
+    s.last_used = nextSeq();
     const already_exited = s.exited;
     s.mutex.unlock();
     if (!already_exited) _ = kill(s.child_pid, SIGKILL);
@@ -581,6 +645,31 @@ test "empty cwd falls back to the server cwd (posix only)" {
     defer destroySession(info.id) catch {};
     const s = getSession(info.id) orelse return error.SessionNotFound;
     _ = s;
+}
+
+test "create evicts the LRU session at cap (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_cap = setSessionCapForTest(2);
+    defer _ = setSessionCapForTest(prev_cap);
+
+    const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const a_id = try testing.allocator.dupe(u8, a.id);
+    defer testing.allocator.free(a_id);
+    const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+
+    // Touch b so a is unambiguously least-recently-used.
+    const sb = getSession(b.id) orelse return error.SessionNotFound;
+    _ = readOutput(sb, 0);
+
+    const c = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    defer destroySession(c.id) catch {};
+
+    try testing.expect(getSession(a_id) == null);
+    try testing.expect(getSession(b.id) != null);
+    try testing.expect(getSession(c.id) != null);
+    try testing.expectEqual(@as(usize, 2), sessionCount());
+
+    destroySession(b.id) catch {};
 }
 
 test "spawned shell echoes input (posix only)" {

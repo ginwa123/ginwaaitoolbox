@@ -18,6 +18,10 @@ const props = defineProps<{
   prUrl?: string
   /** Effective provider for the attached PR. */
   prProvider?: string
+  /** Per-chat persistence key (ChatView's chatId). When set, terminal
+   * session ids persist in localStorage and re-attach on return;
+   * without it sessions die with the tab (legacy behavior). */
+  sessionKey?: string
 }>()
 
 const emit = defineEmits<{
@@ -179,7 +183,7 @@ defineExpose({
       <!-- Both panels stay mounted (v-show, not v-if) so the PTY
       session survives tab switches; only the visible one paints. -->
       <div v-show="activePanel === 'terminal'" class="h-full min-h-0">
-        <TerminalTab :cwd="cwd" />
+        <TerminalTab :cwd="cwd" :session-key="sessionKey" />
       </div>
       <div v-show="activePanel === 'changes'" class="h-full min-h-0">
         <SidebarDiffPanel

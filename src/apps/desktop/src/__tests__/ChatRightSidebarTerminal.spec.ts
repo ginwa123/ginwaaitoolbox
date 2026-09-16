@@ -9,7 +9,7 @@ import { makeLocalStorageStub } from './helpers'
 // vi.mock factories hoist above class declarations, so the fakes live
 // in vi.hoisted (otherwise "Cannot access before initialization").
 
-const { FakeTerminal, FakeFitAddon } = vi.hoisted(() => {
+const { FakeTerminal, FakeFitAddon, FakeApiError } = vi.hoisted(() => {
   class FakeTerminal {
     static instances: FakeTerminal[] = []
     cols = 80
@@ -47,7 +47,15 @@ const { FakeTerminal, FakeFitAddon } = vi.hoisted(() => {
     }
   }
 
-  return { FakeTerminal, FakeFitAddon }
+  class FakeApiError extends Error {
+    status: number
+    constructor(status = 500) {
+      super(`HTTP ${status}`)
+      this.status = status
+    }
+  }
+
+  return { FakeTerminal, FakeFitAddon, FakeApiError }
 })
 
 vi.mock('@xterm/xterm', () => ({ Terminal: FakeTerminal }))
@@ -111,16 +119,19 @@ vi.stubGlobal('WebSocket', FakeWebSocket)
 
 const apiState = {
   nextId: 0,
+  output404For: null as string | null,
   outputs: [] as Array<{ data: string; cursor: number; exited: boolean; exit_code: number | null }>,
 }
 
 vi.mock('../api', () => ({
+  ApiError: FakeApiError,
   createTerminalSession: vi.fn(async (cwd: string) => {
     apiState.nextId += 1
     return { id: `term-${apiState.nextId}`, pid: 100 + apiState.nextId, cwd }
   }),
   sendTerminalInput: vi.fn(async () => ({ ok: true, bytes: 3 })),
-  getTerminalOutput: vi.fn(async () => {
+  getTerminalOutput: vi.fn(async (id: string) => {
+    if (apiState.output404For === id) throw new FakeApiError(404)
     return apiState.outputs.shift() ?? { data: '', cursor: 0, exited: false, exit_code: null }
   }),
   resizeTerminal: vi.fn(async (_id: string, cols: number, rows: number) => ({
@@ -177,6 +188,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     FakeTerminal.instances = []
     FakeWebSocket.instances = []
     apiState.nextId = 0
+    apiState.output404For = null
     apiState.outputs = []
     vi.clearAllMocks()
   })
@@ -302,6 +314,67 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     socket.serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
     await flush(10)
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('code 0')
+  })
+
+  it('persists sessions per chat key and re-attaches on remount', async () => {
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-abc' },
+    })
+    await flush()
+    socketFor('term-1').serverOpen()
+    expect(localStorage.getItem('nalar-terminal-sessions:chat-abc')).toContain('term-1')
+
+    // Unmount (chat switch): keyed sessions are NOT deleted server-side.
+    wrapper.unmount()
+    await flush()
+    expect(deleteTerminalSession).not.toHaveBeenCalled()
+
+    // Remount: stored id validates via output poll, no new session, WS re-attaches.
+    const wrapper2 = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-abc' },
+    })
+    await flush()
+    expect(createTerminalSession).toHaveBeenCalledTimes(1)
+    expect(getTerminalOutput).toHaveBeenCalledWith('term-1', 0)
+    const reattached = socketFor('term-1')
+    reattached.serverOpen()
+    reattached.serverMessage(encode('back-again'))
+    await flush()
+    expect(FakeTerminal.instances[1]!.written.join('')).toContain('back-again')
+    wrapper2.unmount()
+  })
+
+  it('drops 404 sessions on restore and starts fresh', async () => {
+    localStorage.setItem(
+      'nalar-terminal-sessions:chat-gone',
+      JSON.stringify([{ id: 'old-9', label: 'term 1' }]),
+    )
+    apiState.output404For = 'old-9'
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-gone' },
+    })
+    await flush()
+    // Gone id dropped (no delete call — already gone server-side)…
+    expect(deleteTerminalSession).not.toHaveBeenCalledWith('old-9')
+    // …and a replacement session created + persisted.
+    expect(createTerminalSession).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem('nalar-terminal-sessions:chat-gone')).toContain('term-1')
+    expect(localStorage.getItem('nalar-terminal-sessions:chat-gone')).not.toContain('old-9')
+    wrapper.unmount()
+  })
+
+  it('drops a 404 session hit mid-poll and starts fresh', async () => {
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-evict' },
+    })
+    await flush()
+    socketFor('term-1').serverOpen()
+    // Server loses the session (restart / LRU): next poll 404s.
+    apiState.output404For = 'term-1'
+    firstSocket().serverClose()
+    await flush(10)
+    expect(createTerminalSession).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
   })
 })
 

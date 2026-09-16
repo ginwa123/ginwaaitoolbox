@@ -148,9 +148,12 @@ def test_resize_and_delete(harness: FunctionalHarness) -> None:
 
 
 def test_create_validation(harness: FunctionalHarness) -> None:
-    """Relative/missing cwd is 400; cwd-that-is-a-file is 404."""
+    """Relative cwd is 400; cwd-that-is-a-file is 404; empty cwd falls
+    back to the server cwd (201, not 400) so cwd-less chats work."""
     _create(harness, cwd="relative/path", expect=400)
-    _create(harness, cwd="", expect=400)
+    created = _create(harness, cwd="", expect=201)
+    assert created.get("id"), f"expected a session id: {created!r}"
+    harness.http("DELETE", f"/api/terminal/sessions/{created['id']}", expect=200)
     _create(harness, cwd="/tmp/nalar-terminal-never-exists-9d2c41", expect=404)
 
     r = harness.http("POST", "/api/terminal/sessions", expect=400)
