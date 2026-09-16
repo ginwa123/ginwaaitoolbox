@@ -5226,7 +5226,10 @@ export async function createTerminalSession(
 ): Promise<TerminalSession> {
   return await apiFetch<TerminalSession>(`/terminal/sessions`, {
     method: 'POST',
-    body: JSON.stringify({ cwd, ...opts }),
+    // NOTE: apiFetch stringifies `body` itself — pass the object, NOT
+    // JSON.stringify (double-encoding yields a JSON string the server
+    // rejects with 400; caught live 2026-09-16 via DevTools payload).
+    body: { cwd, ...opts },
     silent: true,
   })
 }
@@ -5242,7 +5245,7 @@ export async function sendTerminalInput(
 ): Promise<{ ok: boolean; bytes: number }> {
   return await apiFetch<{ ok: boolean; bytes: number }>(
     `/terminal/sessions/${encodeURIComponent(id)}/input`,
-    { method: 'POST', body: JSON.stringify({ data }), silent: true },
+    { method: 'POST', body: { data }, silent: true },
   )
 }
 
@@ -5272,7 +5275,7 @@ export async function resizeTerminal(
 ): Promise<{ ok: boolean; cols: number; rows: number }> {
   return await apiFetch<{ ok: boolean; cols: number; rows: number }>(
     `/terminal/sessions/${encodeURIComponent(id)}/resize`,
-    { method: 'POST', body: JSON.stringify({ cols, rows }), silent: true },
+    { method: 'POST', body: { cols, rows }, silent: true },
   )
 }
 
