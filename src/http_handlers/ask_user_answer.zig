@@ -164,16 +164,13 @@ pub fn resolveQuestion(input: ResolveInput) AnswerError!AnswerOutcome {
     }) catch return error.RewriteFailed;
     defer allocator.free(inner);
 
-    const envelope = ask_user_mod.buildAskUserToolEnvelope(allocator, inner) catch return error.RewriteFailed;
-    defer allocator.free(envelope);
-
     ask_user_pending.rewriteToolResultRow(.{
         .allocator = allocator,
         .io = input.io,
         .db = input.db,
         .session_id = input.session_id,
         .llm_history_id = question.llm_history_id,
-        .content = envelope,
+        .inner = inner,
     }) catch return error.RewriteFailed;
 
     return .{
@@ -363,7 +360,7 @@ test "countAnswers: array length vs single value" {
     try testing.expectEqual(@as(usize, 1), countAnswers(a, "[\"a\"]"));
 }
 
-test "ask_user_answer: the resolved envelope is the model-facing tool result" {
+test "ask_user_answer: the resolved envelope satisfies the frontend's contract" {
     const a = testing.allocator;
     const inner = try ask_user_mod.buildAskUserXml(a, .{
         .status = .answered,
@@ -374,7 +371,7 @@ test "ask_user_answer: the resolved envelope is the model-facing tool result" {
     });
     defer a.free(inner);
 
-    const envelope = try ask_user_mod.buildAskUserToolEnvelope(a, inner);
+    const envelope = try ask_user_mod.buildAskUserToolEnvelope(a, "<header>Deploy target</header>", inner);
     defer a.free(envelope);
 
     // Shaped like every other tool result so `unwrapToolOutput` parses it…
@@ -386,4 +383,19 @@ test "ask_user_answer: the resolved envelope is the model-facing tool result" {
     try testing.expect(std.mem.indexOf(u8, envelope, "<answer>staging</answer>") != null);
     // The inner envelope is NOT double-escaped (the wrapper passes data through).
     try testing.expect(std.mem.indexOf(u8, envelope, "&lt;ask_user&gt;") == null);
+}
+
+test "ask_user_answer: <parameters> is mandatory in the envelope" {
+    const a = testing.allocator;
+    const inner = try ask_user_mod.buildAskUserXml(a, .{ .status = .skipped, .question_id = "q_2" });
+    defer a.free(inner);
+
+    const envelope = try ask_user_mod.buildAskUserToolEnvelope(a, "", inner);
+    defer a.free(envelope);
+
+    // The frontend's `unwrapToolOutput` throws unless name AND parameters AND
+    // success are all present — a rewrite without <parameters> made the card
+    // fall back to an empty pending render, so every resolved question looked
+    // unanswered. An empty block still satisfies the parser.
+    try testing.expect(std.mem.indexOf(u8, envelope, "<parameters></parameters>") != null);
 }

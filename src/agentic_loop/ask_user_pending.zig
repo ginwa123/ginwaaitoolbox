@@ -349,16 +349,13 @@ pub fn abandonPendingQuestions(
         });
         defer allocator.free(inner);
 
-        const envelope = try ask_user_mod.buildAskUserToolEnvelope(allocator, inner);
-        defer allocator.free(envelope);
-
         try rewriteToolResultRow(.{
             .allocator = allocator,
             .io = io,
             .db = db,
             .session_id = session_id,
             .llm_history_id = q.llm_history_id,
-            .content = envelope,
+            .inner = inner,
         });
         settled += 1;
     }
@@ -408,26 +405,74 @@ pub const RewriteToolResultInput = struct {
     session_id: []const u8,
     /// The `llm_history` row to overwrite (the `ask_user` tool result).
     llm_history_id: []const u8,
-    /// The full `<tool>…</tool>` envelope for the resolved status.
-    content: []const u8,
+    /// The inner `<ask_user>…</ask_user>` envelope for the resolved status.
+    /// The outer `<tool>` wrapper is built here so callers cannot get the
+    /// envelope shape wrong (see `buildAskUserToolEnvelope`).
+    inner: []const u8,
 };
+
+/// Read a row's `response_content` (owned). Null when the row is gone.
+fn readRowContent(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    row_id: []const u8,
+) !?[]u8 {
+    var rows = try db.query(
+        allocator,
+        "SELECT COALESCE(response_content, '') FROM llm_history WHERE id = ? LIMIT 1",
+        &.{row_id},
+    );
+    defer rows.deinit();
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        return try allocator.dupe(u8, row.values[0]);
+    }
+    return null;
+}
+
+/// Lift the `<parameters>` BODY out of an existing `<tool>` envelope so a
+/// rewrite can re-emit it. Returns "" when the block is absent (a legacy row),
+/// which still produces a valid — if argument-less — envelope.
+fn extractParametersBody(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+    const open = "<parameters>";
+    const close = "</parameters>";
+    const start = std.mem.indexOf(u8, content, open) orelse return allocator.dupe(u8, "");
+    const body_start = start + open.len;
+    const end = std.mem.indexOf(u8, content[body_start..], close) orelse return allocator.dupe(u8, "");
+    return allocator.dupe(u8, content[body_start .. body_start + end]);
+}
 
 /// Step 2 of the answer round-trip: overwrite the tool-result row in place
 /// with the resolved envelope and push the row's SSE update so an open
 /// `ChatView` flips the card without a reload.
+///
+/// The `<parameters>` block of the row being replaced is preserved: the
+/// arguments of a tool call never change, and the frontend's envelope parser
+/// REQUIRES the tag (a rewrite without it renders no card state at all).
 ///
 /// The SSE emit is best-effort (logged, never propagated): a failed card
 /// refresh must not roll back a valid answer or block the resume. The
 /// UPDATE itself IS fatal — see the module doc: the resume must not start
 /// while the model would still read `pending`.
 pub fn rewriteToolResultRow(input: RewriteToolResultInput) !void {
-    try llm_history.updateToolResultById(input.allocator, input.io, input.db, input.llm_history_id, .{
-        .content = input.content,
+    const allocator = input.allocator;
+
+    const previous = try readRowContent(allocator, input.db, input.llm_history_id);
+    defer if (previous) |p| allocator.free(p);
+
+    const params = try extractParametersBody(allocator, previous orelse "");
+    defer allocator.free(params);
+
+    const envelope = try ask_user_mod.buildAskUserToolEnvelope(allocator, params, input.inner);
+    defer allocator.free(envelope);
+
+    try llm_history.updateToolResultById(allocator, input.io, input.db, input.llm_history_id, .{
+        .content = envelope,
         .diffview_before = null,
         .diffview_after = null,
     });
 
-    emitRowById(input.allocator, input.db, input.session_id, input.llm_history_id);
+    emitRowById(allocator, input.db, input.session_id, input.llm_history_id);
 }
 
 /// Emit the `llm_full` frame for one `llm_history` row.
@@ -819,4 +864,94 @@ test "ask_user_pending: newQuestionId is prefixed and unique" {
     defer a.free(id);
     try testing.expect(std.mem.startsWith(u8, id, "q_"));
     try testing.expect(id.len > 3);
+}
+
+test "ask_user_pending: extractParametersBody lifts the block, or returns empty" {
+    const a = testing.allocator;
+
+    // The normal case: handle_tool's Phase-1 placeholder carries the args.
+    {
+        const body = try extractParametersBody(
+            a,
+            "<tool><name>ask_user</name><parameters><question>Q?</question></parameters>" ++
+                "<success>true</success><data><ask_user>…</ask_user></data></tool>",
+        );
+        defer a.free(body);
+        try testing.expectEqualStrings("<question>Q?</question>", body);
+    }
+
+    // A rewrite whose row has no <parameters> (legacy) must still work — the
+    // envelope just carries an empty block.
+    {
+        const body = try extractParametersBody(a, "<tool><name>x</name><data>y</data></tool>");
+        defer a.free(body);
+        try testing.expectEqualStrings("", body);
+    }
+
+    // An unterminated block is treated as absent rather than swallowing the
+    // rest of the row.
+    {
+        const body = try extractParametersBody(a, "<tool><parameters>unterminated");
+        defer a.free(body);
+        try testing.expectEqualStrings("", body);
+    }
+}
+
+test "ask_user_pending: a rewrite preserves <parameters> so the card can parse it" {
+    const a = testing.allocator;
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    // Only the columns this test touches; the real table comes from Migration
+    // 001+. `diffview_*` + `is_loading` are needed because
+    // `updateToolResultById` names them in its UPDATE.
+    try s.db.exec(a,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    response_content TEXT,
+        \\    role TEXT,
+        \\    tool_name TEXT,
+        \\    diffview_before TEXT,
+        \\    diffview_after TEXT,
+        \\    is_loading INTEGER NOT NULL DEFAULT 0
+        \\)
+    , &.{});
+
+    // The row handle_tool would have written, then the rewrite the answer
+    // endpoint performs.
+    const placeholder =
+        "<tool><name>ask_user</name><parameters><header>Deploy target</header></parameters>" ++
+        "<success>true</success><data><ask_user><status>pending</status></ask_user></data></tool>";
+    try s.db.exec(a,
+        \\INSERT INTO llm_history (id, session_id, model, response_content, role, tool_name)
+        \\VALUES ('row_1', 'sess_1', 'm', ?, 'tool', 'ask_user')
+    , &.{placeholder});
+
+    const inner = try ask_user_mod.buildAskUserXml(a, .{
+        .status = .skipped,
+        .question_id = "q_1",
+        .question = "Which environment?",
+    });
+    defer a.free(inner);
+
+    try rewriteToolResultRow(.{
+        .allocator = a,
+        .io = s.threaded.io(),
+        .db = &s.db,
+        .session_id = "sess_1",
+        .llm_history_id = "row_1",
+        .inner = inner,
+    });
+
+    const after = (try readRowContent(a, &s.db, "row_1")).?;
+    defer a.free(after);
+    try testing.expect(std.mem.indexOf(u8, after, "<status>skipped</status>") != null);
+    // The contract the frontend's unwrapToolOutput enforces. Without this the
+    // card falls back to an empty pending render and never shows the outcome.
+    try testing.expect(std.mem.indexOf(u8, after, "<parameters><header>Deploy target</header></parameters>") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "<name>ask_user</name>") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "<success>true</success>") != null);
 }

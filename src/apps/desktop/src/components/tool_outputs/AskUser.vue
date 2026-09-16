@@ -146,6 +146,13 @@ const parsed = computed<ParsedEnvelope>(() => {
       return { ...fallback, state: 'invalid', error: unwrapped.error ?? 'ask_user failed' }
     }
     if (unwrapped?.data) return parseInner(unwrapped.data, fallback)
+    // `unwrapToolOutput` throws when the envelope is missing one of
+    // name/parameters/success, and ChatView then hands us the RAW envelope.
+    // Recover the `<data>` payload by slicing instead of giving up: a card
+    // that cannot read its own state renders as a bare "pending" question,
+    // which is exactly how a resolved question looked unanswered.
+    const data = tag(raw, 'data')
+    if (data !== null) return parseInner(data, fallback)
     return fallback
   }
 
@@ -189,7 +196,12 @@ function parseInner(inner: string, fallback: ParsedEnvelope): ParsedEnvelope {
 // Local interaction state
 // ---------------------------------------------------------------------------
 
-const isExpanded = ref(props.expanded ?? false)
+// Expanded by default while the question is UNANSWERED: an inline card that
+// hides the thing the human must act on is a card nobody acts on. Once it is
+// resolved the card behaves like every other tool card (a one-line summary
+// that the user can expand), and a user who collapses a pending question keeps
+// it collapsed — this is only the initial value.
+const isExpanded = ref<boolean>(props.expanded === true || parsed.value.state === 'pending')
 const submitting = ref(false)
 const sendFailed = ref(false)
 /** Set after a successful POST so the card flips even if the SSE frame is missed. */
@@ -255,6 +267,26 @@ function toggleOption(option: string): void {
 function chooseFreeText(): void {
   usingFreeText.value = true
   selected.value = []
+}
+
+/**
+ * Answer text is often a sentence or three (an id, a path, a caveat), so the
+ * box grows with what is typed instead of staying two lines tall. Capped so a
+ * pasted essay cannot push the composer off screen.
+ */
+const FREETEXT_MAX_PX = 220
+
+function autoGrow(event: Event): void {
+  const el = event.target as HTMLTextAreaElement | null
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, FREETEXT_MAX_PX)}px`
+}
+
+/** Typing in the box IS choosing free text; also let the box grow. */
+function onFreeTextInput(event: Event): void {
+  usingFreeText.value = true
+  autoGrow(event)
 }
 
 /** The exact body the endpoint validates. */
@@ -414,13 +446,19 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
       @update:expanded="isExpanded = $event"
     />
 
-    <!-- Collapsed one-liner: the resolved outcome. -->
+    <!-- Collapsed one-liner: the resolved outcome, for every resolved state. -->
     <div
-      v-if="!isExpanded && state === 'answered'"
+      v-if="!isExpanded && state !== 'pending' && state !== 'invalid'"
       class="px-2 pb-2 font-sans text-xs"
       style="color: var(--semantic-text-dim)"
+      data-testid="ask-user-collapsed-summary"
     >
-      ✓ {{ answerChip }}
+      <template v-if="state === 'answered'">✓ {{ answerChip }}</template>
+      <template v-else-if="state === 'skipped'">skipped — the agent will not guess</template>
+      <template v-else-if="state === 'abandoned'">you moved on — the agent will not guess</template>
+      <template v-else-if="state === 'unavailable'"
+        >no human available — the agent decided</template
+      >
     </div>
 
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
@@ -485,14 +523,18 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
           </label>
           <textarea
             v-model="freeText"
-            rows="2"
+            rows="3"
             data-testid="ask-user-freetext"
-            class="w-full rounded-md border bg-transparent px-2 py-1.5 font-sans text-xs"
-            style="border-color: var(--color-border); color: var(--semantic-text)"
-            placeholder="type here…"
+            class="w-full resize-y rounded-md border bg-transparent px-2 py-1.5 font-sans text-xs leading-relaxed"
+            style="
+              border-color: var(--color-border);
+              color: var(--semantic-text);
+              min-height: 4.5rem;
+            "
+            placeholder="Type your answer…"
             :disabled="submitting"
             @focus="chooseFreeText()"
-            @input="usingFreeText = true"
+            @input="onFreeTextInput($event)"
             @keydown.enter.exact.prevent="submit(false)"
           />
         </div>

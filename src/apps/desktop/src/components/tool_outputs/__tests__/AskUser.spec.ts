@@ -176,6 +176,74 @@ describe('AskUser — rendering', () => {
     expect(wrapper.attributes('data-state')).toBe('invalid')
     wrapper.unmount()
   })
+
+  it('reads the outcome from a <tool> envelope that LOST its <parameters> block', () => {
+    // The answer endpoint rewrites the tool row in place. An early version
+    // emitted `<tool><name>…</name><success>true</success><data>…` with no
+    // <parameters>, which makes `unwrapToolOutput` throw — ChatView then hands
+    // the card the raw envelope, and without this fallback the card rendered a
+    // bare PENDING question: every resolved question looked unanswered.
+    const raw =
+      '<tool><name>ask_user</name><success>true</success>' +
+      `<data>${resolvedEnvelope('skipped')}</data></tool>`
+    const wrapper = mountCard(raw)
+
+    expect(wrapper.attributes('data-state')).toBe('skipped')
+    expect(wrapper.find('[data-testid="ask-user-skipped"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('disables every input once the question is skipped', () => {
+    // Requested behaviour: a skipped question must not stay interactive.
+    // (The header's expand/collapse toggle is still a <button> — that one is
+    // fine: the settled card stays inspectable.)
+    const wrapper = mountCard(resolvedEnvelope('skipped'))
+
+    expect(wrapper.find('[data-testid="ask-user-send"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ask-user-skip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ask-user-freetext"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ask-user-other-radio"]').exists()).toBe(false)
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('expands itself while the question is unanswered, and collapses once resolved', () => {
+    // An inline card that hides the thing the human must act on is a card
+    // nobody acts on — so a PENDING question ignores `expanded: false`.
+    const pending = mountCard(pendingEnvelope(), { expanded: false })
+    expect(pending.find('[data-testid="ask-user-send"]').exists()).toBe(true)
+    expect(pending.text()).toContain('Which environment should I deploy to?')
+    pending.unmount()
+
+    // A resolved card behaves like every other tool card: a one-line summary.
+    const resolved = mountCard(resolvedEnvelope('answered', '<answer>staging</answer>'), {
+      expanded: false,
+    })
+    expect(resolved.find('[data-testid="ask-user-collapsed-summary"]').text()).toContain('staging')
+    expect(resolved.find('[data-testid="ask-user-answer-chip"]').exists()).toBe(false)
+    resolved.unmount()
+
+    // …including for the non-answered outcomes, which used to render nothing.
+    const skipped = mountCard(resolvedEnvelope('skipped'), { expanded: false })
+    expect(skipped.find('[data-testid="ask-user-collapsed-summary"]').text()).toContain('skipped')
+    skipped.unmount()
+  })
+
+  it('honours an explicit expand for a resolved card', () => {
+    const wrapper = mountCard(resolvedEnvelope('skipped'), { expanded: true })
+    expect(wrapper.find('[data-testid="ask-user-skipped"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('gives the free-text box room for a real answer', () => {
+    const wrapper = mountCard(pendingEnvelope({ options: [] }))
+    const box = wrapper.find('[data-testid="ask-user-freetext"]')
+    // Three rows of `text-xs` plus a min-height, not the original two-line sliver.
+    expect(box.attributes('rows')).toBe('3')
+    expect(box.attributes('style')).toContain('min-height')
+    wrapper.unmount()
+  })
 })
 
 describe('AskUser — the wire body', () => {
