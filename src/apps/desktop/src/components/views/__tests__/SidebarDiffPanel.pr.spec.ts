@@ -8,9 +8,10 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getPrDiffMock, stageGitFilesMock } = vi.hoisted(() => ({
+const { getGitChangesMock, getPrDiffMock, getPrStatusMock, stageGitFilesMock } = vi.hoisted(() => ({
   getGitChangesMock: vi.fn(),
   getPrDiffMock: vi.fn(),
+  getPrStatusMock: vi.fn(),
   stageGitFilesMock: vi.fn(),
 }))
 
@@ -21,6 +22,7 @@ vi.mock('../../../api', async () => {
     getGitChanges: getGitChangesMock,
     getGitFileDiff: vi.fn(),
     getPrDiff: getPrDiffMock,
+    getPrStatus: getPrStatusMock,
     stageGitFiles: stageGitFilesMock,
     unstageGitFiles: vi.fn(),
   }
@@ -59,10 +61,30 @@ describe('SidebarDiffPanel PR mode', () => {
       diff_content: PR_DIFF,
       truncated: false,
     })
+    getPrStatusMock.mockResolvedValue({
+      status: 'open',
+      state: 'OPEN',
+      title: 'Test',
+      pr_url: 'https://github.com/acme/app/pull/42',
+      number: 42,
+      mergeable: '',
+      merge_state: '',
+      head_ref: 'feature',
+      base_ref: 'main',
+      author: 'acme',
+      created_at: '',
+      updated_at: '',
+      merged_at: '',
+      closed_at: '',
+      additions: 0,
+      deletions: 0,
+      changed_files: 2,
+    })
   })
 
   it('switches to PR mode when prUrl is set and lists PR files', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42', prProvider: 'github' },
     })
     await flushPromises()
@@ -76,7 +98,8 @@ describe('SidebarDiffPanel PR mode', () => {
   })
 
   it('emits show-diff on PR file click without stage buttons', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
@@ -95,7 +118,8 @@ describe('SidebarDiffPanel PR mode', () => {
 
   it('shows retry on PR diff failure', async () => {
     getPrDiffMock.mockRejectedValueOnce(new Error('nope'))
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
     })
     await flushPromises()
@@ -103,10 +127,42 @@ describe('SidebarDiffPanel PR mode', () => {
   })
 
   it('stays in worktree mode when prUrl is empty', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo', prUrl: '' } })
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: '' },
+    })
     await flushPromises()
     expect(getGitChangesMock).toHaveBeenCalledWith('/repo')
     expect(getPrDiffMock).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="sidebar-pr-link"]').exists()).toBe(false)
+  })
+
+  it('shows Merged badge and notice when PR is merged', async () => {
+    getPrStatusMock.mockResolvedValueOnce({
+      status: 'merged',
+      state: 'MERGED',
+      title: 'Test',
+      pr_url: 'https://github.com/acme/app/pull/42',
+      number: 42,
+      mergeable: '',
+      merge_state: '',
+      head_ref: 'feature',
+      base_ref: 'main',
+      author: 'acme',
+      created_at: '',
+      updated_at: '',
+      merged_at: '',
+      closed_at: '',
+      additions: 0,
+      deletions: 0,
+      changed_files: 2,
+    })
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42', prProvider: 'github' },
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="sidebar-pr-status"]').text()).toBe('Merged')
+    expect(wrapper.find('[data-testid="sidebar-pr-merged-notice"]').exists()).toBe(true)
   })
 })

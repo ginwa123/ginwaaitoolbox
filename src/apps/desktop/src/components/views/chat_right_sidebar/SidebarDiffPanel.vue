@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
@@ -93,6 +93,12 @@ const prHead = ref('')
 const prTruncated = ref(false)
 const isLoadingPr = ref(false)
 const prError = ref<string | null>(null)
+// Live merge state from GET /api/git/pr/status (`gh pr view`).
+// Empty = unknown (fetch failed or not yet loaded) — badge hidden.
+const prStatus = ref('')
+const prStatusTitle = ref('')
+let prSeq = 0
+let prPollTimer: number | undefined
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
 
@@ -162,6 +168,22 @@ const prLabel = computed(() => {
   }
 })
 
+// Badge text/color for the live merge state. Unknown state hides it.
+const prStatusLabel = computed(() => {
+  if (prStatus.value === 'merged') return 'Merged'
+  if (prStatus.value === 'closed') return 'Closed'
+  if (prStatus.value === 'open') return 'Open'
+  return ''
+})
+
+const prStatusStyle = computed(() => {
+  if (prStatus.value === 'merged')
+    return { backgroundColor: 'var(--color-violet)', color: 'var(--color-bg)' }
+  if (prStatus.value === 'closed')
+    return { backgroundColor: 'var(--semantic-error)', color: 'var(--color-bg)' }
+  return { backgroundColor: 'var(--color-green)', color: 'var(--color-bg)' }
+})
+
 const loadPrDiff = async () => {
   if (!props.cwd || !isPrMode.value) {
     prFiles.value = []
@@ -197,6 +219,37 @@ const loadPrDiff = async () => {
   } finally {
     isLoadingPr.value = false
   }
+}
+
+// Merge-state sync: `gh pr view` via GET /api/git/pr/status. Runs
+// alongside loadPrDiff on every PR-tab load and on a 30s poll while
+// the PR tab is visible, so a GitHub merge flips the badge without
+// a manual refresh. Failures are silent — the diff is still useful
+// and the badge simply stays hidden (unknown state).
+const loadPrStatus = async () => {
+  if (!props.cwd || !isPrMode.value) {
+    prStatus.value = ''
+    prStatusTitle.value = ''
+    return
+  }
+  const seq = ++prSeq
+  try {
+    const data = await api.getPrStatus(props.cwd, props.prUrl ?? '', {
+      provider: props.prProvider || undefined,
+    })
+    if (seq !== prSeq) return
+    prStatus.value = (data.status || data.state || '').toLowerCase()
+    prStatusTitle.value = data.title || ''
+  } catch {
+    if (seq !== prSeq) return
+    prStatus.value = ''
+    prStatusTitle.value = ''
+  }
+}
+
+const retryPr = () => {
+  void loadPrDiff()
+  void loadPrStatus()
 }
 
 const selectPrFile = (file: SplitDiffFile) => {
@@ -325,9 +378,17 @@ const loadFullList = async (cwd: string = props.cwd) => {
 // Per-tab lazy load: each side fetches once until cwd/prUrl changes.
 const loadTab = async (tab: 'files' | 'pr', force = false) => {
   if (!force && loadedTabs.value.has(tab)) return
-  if (tab === 'pr') await loadPrDiff()
+  if (tab === 'pr') await Promise.all([loadPrDiff(), loadPrStatus()])
   else await loadGitStatus()
   loadedTabs.value.add(tab)
+}
+
+// Current-tab reload for the sidebar ↻ path (ChatRightSidebar.refresh
+// delegates here). Unlike loadGitStatus-only refresh, this also
+// re-syncs PR merge state when the PR tab is visible.
+const refreshCurrentTab = async () => {
+  if (showPr.value) await loadTab('pr', true)
+  else await loadTab('files', true)
 }
 
 const setActiveTab = (tab: 'files' | 'pr') => {
@@ -418,9 +479,26 @@ watch(
 
 onMounted(() => {
   void loadTab(activeTab.value, true)
+  // Poll merge state while the PR tab is visible so a GitHub merge
+  // flips the badge without a manual refresh. Status-only (cheap
+  // `gh pr view`); the heavier diff refetches on explicit refresh.
+  prPollTimer = window.setInterval(() => {
+    if (showPr.value) void loadPrStatus()
+  }, 30000)
 })
 
-defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
+onUnmounted(() => {
+  if (prPollTimer !== undefined) window.clearInterval(prPollTimer)
+})
+
+defineExpose({
+  loadGitStatus,
+  loadPrDiff,
+  loadPrStatus,
+  loadDiff,
+  refresh: refreshCurrentTab,
+  changeCount,
+})
 </script>
 
 <template>
@@ -487,6 +565,15 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
       >
         {{ prLabel }}
       </a>
+      <span
+        v-if="prStatusLabel"
+        class="px-1.5 py-0.5 rounded text-xs font-medium shrink-0"
+        :style="prStatusStyle"
+        :title="prStatusTitle || prStatusLabel"
+        data-testid="sidebar-pr-status"
+      >
+        {{ prStatusLabel }}
+      </span>
       <span
         v-if="prBase || prHead"
         class="text-xs truncate"
@@ -592,7 +679,7 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
             class="mt-3 px-3 py-1.5 text-sm rounded"
             style="background: var(--color-green); color: var(--color-bg)"
             data-testid="sidebar-pr-retry"
-            @click="loadPrDiff"
+            @click="retryPr"
           >
             Retry
           </button>
@@ -605,6 +692,28 @@ defineExpose({ loadGitStatus, loadPrDiff, loadDiff, changeCount })
           <p class="text-xs" style="color: var(--semantic-text-dim)">No PR changes found</p>
         </div>
         <template v-else>
+          <div
+            v-if="prStatus === 'merged'"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"
+            style="
+              background-color: color-mix(in srgb, var(--color-violet) 15%, transparent);
+              color: var(--semantic-text);
+            "
+            data-testid="sidebar-pr-merged-notice"
+          >
+            Merged — this PR was merged on GitHub. The diff below is the final state.
+          </div>
+          <div
+            v-else-if="prStatus === 'closed'"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"
+            style="
+              background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+              color: var(--semantic-text);
+            "
+            data-testid="sidebar-pr-closed-notice"
+          >
+            Closed — this PR was closed on GitHub without merging.
+          </div>
           <div v-if="prTruncated" class="px-3 py-1 text-xs" style="color: var(--semantic-text-dim)">
             Diff truncated at 1MB — showing first files
           </div>

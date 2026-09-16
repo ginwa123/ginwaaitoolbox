@@ -4149,6 +4149,42 @@ export async function getPrDiff(
   return await apiFetch<GitPrDiff>(`/git/pr/diff?${params.toString()}`)
 }
 
+// PR status API — open/merged/closed state for the attached PR
+// (GET /api/git/pr/status via `gh pr view`). The PR tab polls this
+// so a merge on GitHub flips the badge without a manual refresh.
+export interface GitPrStatus {
+  pr_url: string
+  number: number
+  title: string
+  state: string
+  status: string // open | closed | merged (lowercased by backend)
+  mergeable: string
+  merge_state: string
+  head_ref: string
+  base_ref: string
+  author: string
+  created_at: string
+  updated_at: string
+  merged_at: string
+  closed_at: string
+  additions: number
+  deletions: number
+  changed_files: number
+}
+
+export async function getPrStatus(
+  cwd: string,
+  prUrl: string,
+  opts?: { provider?: string },
+): Promise<GitPrStatus> {
+  const params = new URLSearchParams({
+    path: cwd,
+    pr: prUrl,
+  })
+  if (opts?.provider) params.set('provider', opts.provider)
+  return await apiFetch<GitPrStatus>(`/git/pr/status?${params.toString()}`, { silent: true })
+}
+
 // Read file content API (for CodeEditor)
 export interface ReadFileResponse {
   content: string
@@ -5027,7 +5063,6 @@ export async function disableAgentRoutineTool(
     method: 'DELETE',
   })
 }
-
 
 // ─── Session background processes (bg-completion) ────────────────────────────
 // Backend: background_processes_list.zig + background_process_log_get.zig

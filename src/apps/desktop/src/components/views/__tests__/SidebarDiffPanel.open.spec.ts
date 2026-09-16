@@ -8,11 +8,14 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock } = vi.hoisted(() => ({
-  getGitChangesMock: vi.fn(),
-  getGitFileDiffMock: vi.fn(),
-  getPrDiffMock: vi.fn(),
-}))
+const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
+  () => ({
+    getGitChangesMock: vi.fn(),
+    getGitFileDiffMock: vi.fn(),
+    getPrDiffMock: vi.fn(),
+    getPrStatusMock: vi.fn(),
+  }),
+)
 
 vi.mock('../../../api', async () => {
   const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
@@ -21,6 +24,7 @@ vi.mock('../../../api', async () => {
     getGitChanges: getGitChangesMock,
     getGitFileDiff: getGitFileDiffMock,
     getPrDiff: getPrDiffMock,
+    getPrStatus: getPrStatusMock,
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
   }
@@ -55,20 +59,48 @@ describe('SidebarDiffPanel show-diff', () => {
       diff_content: DIFF,
       truncated: false,
     })
+    getPrStatusMock.mockResolvedValue({
+      status: 'open',
+      state: 'OPEN',
+      title: 'Test',
+      pr_url: 'https://github.com/acme/app/pull/42',
+      number: 42,
+      mergeable: '',
+      merge_state: '',
+      head_ref: 'feature',
+      base_ref: 'main',
+      author: 'acme',
+      created_at: '',
+      updated_at: '',
+      merged_at: '',
+      closed_at: '',
+      additions: 0,
+      deletions: 0,
+      changed_files: 2,
+    })
   })
 
   it('emits show-diff with parsed payload on worktree file-row click', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] }, props: { cwd: '/repo' } })
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo' },
+    })
     await flushPromises()
     await wrapper.get('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').trigger('click')
     await flushPromises()
     const emitted = wrapper.emitted('show-diff')
     expect(emitted).toHaveLength(1)
-    expect(emitted![0]![0]).toMatchObject({ path: 'dirty.txt', staged: false, added: 1, removed: 1 })
+    expect(emitted![0]![0]).toMatchObject({
+      path: 'dirty.txt',
+      staged: false,
+      added: 1,
+      removed: 1,
+    })
   })
 
   it('emits show-diff on PR file-row click', async () => {
-    const wrapper = mount(SidebarDiffPanel, { global: { plugins: [testRouter] },
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
       props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/1' },
     })
     await flushPromises()

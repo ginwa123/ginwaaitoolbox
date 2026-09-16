@@ -60,7 +60,16 @@ const close = () => emit('update:open', false)
 // getGitChanges calls could resolve out of order (stale branch wins).
 
 defineExpose({
-  refresh: () => panelRef.value?.loadGitStatus(),
+  // Reload the panel's current tab (PR tab re-syncs merge state too).
+  // Falls back to git status for older panel refs without refresh().
+  refresh: () => {
+    const panel = panelRef.value as unknown as {
+      refresh?: () => unknown
+      loadGitStatus?: () => unknown
+    } | null
+    if (panel?.refresh) return panel.refresh()
+    return panel?.loadGitStatus?.()
+  },
   reloadDiff: () => panelRef.value?.loadDiff(),
 })
 </script>
