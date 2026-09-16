@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
@@ -28,8 +28,6 @@ const sessions = ref<TermSession[]>([])
 const activeId = ref<string | null>(null)
 const status = ref('connecting…')
 const exitedIds = ref<Set<string>>(new Set())
-
-const active = computed(() => sessions.value.find((s) => s.id === activeId.value) ?? null)
 
 let term: Terminal | null = null
 let fit: FitAddon | null = null
@@ -318,6 +316,13 @@ onMounted(() => {
   })
   fit = new FitAddon()
   term.loadAddon(fit)
+  // Test hook (dev only): functional_ui tests drive a real browser and
+  // assert on the terminal buffer, which xterm renders to <canvas> (no
+  // DOM text to query). Exposes the live Terminal for buffer reads;
+  // never set in production builds.
+  if (import.meta.env.DEV) {
+    ;(window as unknown as { __nalarTerm?: Terminal }).__nalarTerm = term
+  }
   if (container.value) {
     term.open(container.value)
     term.onData((data) => sendInput(data))
@@ -357,6 +362,9 @@ onUnmounted(() => {
   sessions.value = []
   activeId.value = null
   for (const id of ids) void deleteTerminalSession(id).catch(() => {})
+  if (import.meta.env.DEV) {
+    ;(window as unknown as { __nalarTerm?: Terminal }).__nalarTerm = undefined
+  }
   term?.dispose()
   term = null
   fit = null

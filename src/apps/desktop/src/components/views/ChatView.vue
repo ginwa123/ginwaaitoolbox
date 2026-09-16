@@ -3919,6 +3919,7 @@ const compactSession = async () => {
           "
           title="Show changes sidebar (Cmd/Ctrl+B)"
           aria-label="Show changes sidebar"
+          data-testid="chat-sidebar-open"
           @click="chatSidebar.open()"
         >
           ◫
