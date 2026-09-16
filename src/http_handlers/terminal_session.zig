@@ -95,6 +95,7 @@ extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int
 extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]?[*:0]const u8) c_int;
 extern "c" fn _exit(status: c_int) noreturn;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
+extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
 extern "c" fn kill(pid: c_int, sig: c_int) c_int;
 extern "c" fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
 extern "c" fn nanosleep(req: *const Timespec, rem: ?*Timespec) c_int;
@@ -244,13 +245,23 @@ fn defaultShell() []const u8 {
 }
 
 fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_opt: ?u16, rows_opt: ?u16) SessionError!SessionInfo {
-    const dims = try validateCreate(cwd, cols_opt, rows_opt);
+    // Empty cwd (fresh standalone chats have no session cwd yet):
+    // fall back to the server process cwd, mirroring the agent shell
+    // tools' optional-cwd behavior. Never fail closed here — an empty
+    // string from the frontend must still yield a working shell.
+    var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const eff_cwd: []const u8 = if (cwd.len == 0) blk: {
+        const ptr = getcwd(&cwd_buf, cwd_buf.len) orelse return error.CwdNotDir;
+        break :blk std.mem.span(ptr);
+    } else cwd;
+
+    const dims = try validateCreate(eff_cwd, cols_opt, rows_opt);
     try validateShell(shell_opt);
 
-    // cwd must exist and be a directory (checked before fork so the
+    // eff_cwd must exist and be a directory (checked before fork so the
     // child never has to report it).
     {
-        var dir = std.Io.Dir.openDirAbsolute(io, cwd, .{}) catch return error.CwdNotDir;
+        var dir = std.Io.Dir.openDirAbsolute(io, eff_cwd, .{}) catch return error.CwdNotDir;
         dir.close(io);
     }
 
@@ -276,7 +287,7 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
     if (pid == 0) {
         // Child: never return. NUL-terminate via stack copies (no
         // allocator use after fork).
-        childMain(cwd, shell_path);
+        childMain(eff_cwd, shell_path);
     }
 
     // Parent.
@@ -561,6 +572,15 @@ test "decodeStatus maps normal exits and signals" {
     try testing.expectEqual(@as(i32, 0), decodeStatus(0));
     // Killed by SIGKILL (9): 0x0009 -> -9.
     try testing.expectEqual(@as(i32, -9), decodeStatus(0x0009));
+}
+
+test "empty cwd falls back to the server cwd (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+
+    const info = try createSession(testing.io, "", "/bin/sh", 80, 24);
+    defer destroySession(info.id) catch {};
+    const s = getSession(info.id) orelse return error.SessionNotFound;
+    _ = s;
 }
 
 test "spawned shell echoes input (posix only)" {
