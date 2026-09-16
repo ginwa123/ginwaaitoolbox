@@ -145,21 +145,21 @@ const parsed = computed<ParsedEnvelope>(() => {
     if (unwrapped && !unwrapped.success) {
       return { ...fallback, state: 'invalid', error: unwrapped.error ?? 'ask_user failed' }
     }
-    if (unwrapped?.data) return parseInner(unwrapped.data, fallback)
+    if (unwrapped?.data) return parseInner(unwrapped.data)
     // `unwrapToolOutput` throws when the envelope is missing one of
     // name/parameters/success, and ChatView then hands us the RAW envelope.
     // Recover the `<data>` payload by slicing instead of giving up: a card
     // that cannot read its own state renders as a bare "pending" question,
     // which is exactly how a resolved question looked unanswered.
     const data = tag(raw, 'data')
-    if (data !== null) return parseInner(data, fallback)
+    if (data !== null) return parseInner(data)
     return fallback
   }
 
-  return parseInner(raw, fallback)
+  return parseInner(raw)
 })
 
-function parseInner(inner: string, fallback: ParsedEnvelope): ParsedEnvelope {
+function parseInner(inner: string): ParsedEnvelope {
   const status = (tag(inner, 'status') ?? '').trim()
 
   // Unknown / missing status degrades to a readable completed card rather
@@ -388,23 +388,6 @@ const rightMeta = computed(() => {
       return 'no human'
     default:
       return null
-  }
-})
-
-const statusLabel = computed(() => {
-  switch (state.value) {
-    case 'pending':
-      return 'waiting for you'
-    case 'answered':
-      return 'answered'
-    case 'skipped':
-      return 'skipped'
-    case 'abandoned':
-      return 'moved on'
-    case 'unavailable':
-      return 'no human'
-    default:
-      return 'invalid'
   }
 })
 
