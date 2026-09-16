@@ -164,3 +164,26 @@ answer "why" in one plain sentence, or not exist at all.
 Plan-doc references belong in the plan file and the PR description —
 not inline in source.
 
+
+## Frontend — Every View Switch Must Update the Browser URL
+
+Any in-app navigation — tab switches, view toggles, dialog opens that
+represent a distinct view — MUST sync to the browser URL (route path or
+query param, e.g. `?panel=files|pr|commits` in `SidebarDiffPanel.vue`
+via `readTabParam`/`syncTabParam` + `router.replace`). A view that only
+lives in component state is unreachable by refresh, Back/Forward, and
+shared links.
+
+Why: the commits tab first shipped as a local `showCommits` boolean —
+switching Files → Commits left the URL unchanged, so refresh lost the
+view and Back/Forward skipped it. The fix folded the tab into the
+existing `?panel=` param so mount restores it.
+
+- ✅ New tab/toggle reuses the view's existing URL param (extend the
+  union, don't invent a second param).
+- ✅ Mount reads the param back (deep-linkable); clicks write it
+  (`router.replace`, not `push`, for tab switches).
+- ✅ Cover with a spec: click asserts the query value, mount-with-query
+  asserts the restored view (see `SidebarDiffPanel.tabs.spec.ts`).
+- ❌ Local-only `ref` booleans for view state in routed components.
+

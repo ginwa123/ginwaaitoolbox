@@ -8,14 +8,14 @@ const testRouter = createRouter({
   routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
 })
 
-const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock } = vi.hoisted(
-  () => ({
+const { getGitChangesMock, getGitFileDiffMock, getPrDiffMock, getPrStatusMock, getGitCommitsMock } =
+  vi.hoisted(() => ({
     getGitChangesMock: vi.fn(),
     getGitFileDiffMock: vi.fn(),
     getPrDiffMock: vi.fn(),
     getPrStatusMock: vi.fn(),
-  }),
-)
+    getGitCommitsMock: vi.fn(),
+  }))
 
 vi.mock('../../../api', async () => {
   const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
@@ -25,6 +25,8 @@ vi.mock('../../../api', async () => {
     getGitFileDiff: getGitFileDiffMock,
     getPrDiff: getPrDiffMock,
     getPrStatus: getPrStatusMock,
+    getGitCommits: getGitCommitsMock,
+    getGitCommitDetail: vi.fn().mockResolvedValue(null),
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
   }
@@ -66,6 +68,12 @@ describe('SidebarDiffPanel tabs', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     getGitChangesMock.mockResolvedValue(CHANGES)
+    getGitCommitsMock.mockResolvedValue({
+      is_git_repo: true,
+      branch: 'main',
+      total_count: 1,
+      commits: [],
+    })
     getGitFileDiffMock.mockResolvedValue({ path: 'dirty.txt', diff_content: DIFF, staged: false })
     getPrDiffMock.mockResolvedValue({
       pr_url: 'https://github.com/acme/app/pull/42',
@@ -195,5 +203,65 @@ describe('SidebarDiffPanel tabs', () => {
     expect(restored.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(
       true,
     )
+  })
+
+  it('commits tab syncs ?panel=commits to the URL and mount restores it', async () => {
+    const makeRouter = async (query: Record<string, string>) => {
+      const r = createRouter({
+        history: createMemoryHistory(),
+        routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+      })
+      await r.push({ path: '/', query })
+      await r.isReady()
+      return r
+    }
+    const router = await makeRouter({})
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [router] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    await wrapper.get('[data-testid="sidebar-tab-commits"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.panel).toBe('commits')
+    expect(wrapper.get('[data-testid="sidebar-tab-commits"]').attributes('aria-selected')).toBe(
+      'true',
+    )
+    expect(getGitCommitsMock).toHaveBeenCalledWith('/repo', 100, 0)
+
+    const commitsRouter = await makeRouter({ panel: 'commits' })
+    const restored = mount(SidebarDiffPanel, {
+      global: { plugins: [commitsRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    expect(restored.get('[data-testid="sidebar-tab-commits"]').attributes('aria-selected')).toBe(
+      'true',
+    )
+    // Restoring commits must not fetch the files tab.
+    expect(getGitChangesMock).not.toHaveBeenCalled()
+  })
+
+  it('without prUrl the header toggle switches to commits and syncs the URL', async () => {
+    const r = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div/>' } }],
+    })
+    await r.push({ path: '/', query: {} })
+    await r.isReady()
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [r] },
+      props: { cwd: '/repo' },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="sidebar-tab-commits"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="sidebar-diff-commits-toggle"]').trigger('click')
+    await flushPromises()
+    expect(r.currentRoute.value.query.panel).toBe('commits')
+    expect(getGitCommitsMock).toHaveBeenCalledWith('/repo', 100, 0)
+    await wrapper.get('[data-testid="sidebar-diff-commits-toggle"]').trigger('click')
+    await flushPromises()
+    expect(r.currentRoute.value.query.panel).toBe('files')
+    expect(wrapper.find('[data-testid="sidebar-diff-file-unstaged-dirty.txt"]').exists()).toBe(true)
   })
 })
