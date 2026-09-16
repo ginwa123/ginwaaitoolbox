@@ -250,6 +250,55 @@ def test_answer_rewrites_the_tool_row_and_resumes_the_run(harness: FunctionalHar
     assert _wait_for_worker(harness, session_id), "no worker row after answering"
 
 
+def test_rewritten_row_satisfies_the_frontend_envelope_contract(
+    harness: FunctionalHarness,
+) -> None:
+    """The card parses the row with `unwrapToolOutput`, which THROWS unless the
+    envelope has `<name>`, `<parameters>` and `<success>`.
+
+    An earlier version of the rewrite emitted `<tool><name>…</name><success>` —
+    no `<parameters>` — so every resolved question fell back to an empty
+    "pending" card: it looked unanswered and its inputs stayed live.
+    """
+    session_id = _create_session(harness)
+    question_id, row_id = _seed_question(harness, session_id)
+
+    harness.http(
+        "POST",
+        f"/api/llm/session/{session_id}/answer",
+        json_body={"question_id": question_id, "answer": "staging"},
+        expect=200,
+    )
+
+    content = _tool_row_content(harness, row_id)
+    for required in ("<tool>", "<name>ask_user</name>", "<parameters>", "</parameters>", "<success>true</success>"):
+        assert required in content, f"{required!r} missing from the rewritten row: {content}"
+    # The parameters block is preserved from the placeholder, not dropped.
+    assert "Deploy target" in content, content
+    # And the payload the card renders is inside <data>.
+    assert "<data><ask_user>" in content, content
+    assert content.endswith("</tool>"), content
+
+
+def test_skipped_question_rewrites_the_row_too(harness: FunctionalHarness) -> None:
+    """Same contract on the Skip path — the card must be able to show `skipped`
+    and disable its inputs."""
+    session_id = _create_session(harness)
+    question_id, row_id = _seed_question(harness, session_id)
+
+    harness.http(
+        "POST",
+        f"/api/llm/session/{session_id}/answer",
+        json_body={"question_id": question_id, "skip": True},
+        expect=200,
+    )
+
+    content = _tool_row_content(harness, row_id)
+    assert "<status>skipped</status>" in content, content
+    assert "<parameters>" in content, content
+    assert "<success>true</success>" in content, content
+
+
 def test_double_answer_is_idempotent_and_resumes_once(harness: FunctionalHarness) -> None:
     """A double-click (or a retry after a lost 200) must never 4xx."""
     session_id = _create_session(harness)
@@ -406,6 +455,9 @@ def test_a_new_message_instead_of_an_answer_settles_it_as_abandoned(
     assert "<status>abandoned</status>" in content, content
     # The whole point: the model never sees the pending envelope.
     assert "<status>pending</status>" not in content, content
+    # …and the card can still read it (see the envelope-contract test).
+    assert "<parameters>" in content, content
+    assert "<success>true</success>" in content, content
 
     # And any later answer for it is refused rather than re-resumed.
     late = harness.http(

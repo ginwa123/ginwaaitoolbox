@@ -284,16 +284,24 @@ pub fn buildAskUserXml(allocator: std.mem.Allocator, xml: AskUserXml) ![]u8 {
 }
 
 /// Wrap an inner `<ask_user>…</ask_user>` envelope in the standard
-/// `<tool>…</tool>` shape every tool result uses, so the frontend's
-/// `unwrapToolOutput` parses it and the model reads it as a normal result.
+/// `<tool>…</tool>` shape every tool result uses.
+///
+/// `parameters_xml` is the `<parameters>` BODY (already XML — the arguments as
+/// `jsonArgsToXml` produces them), re-emitted verbatim. The tag is mandatory:
+/// the frontend's `unwrapToolOutput` throws when `name`, `parameters` or
+/// `success` is missing, so an envelope without it makes the card fall back to
+/// an empty "pending" render (it cannot read the resolved status at all).
+/// `handle_tool`'s Phase-1 placeholder always carries one, which is why
+/// `rewriteToolResultRow` lifts the block out of the row it is replacing
+/// rather than rebuilding it from nothing.
 ///
 /// `inner` is deliberately NOT XML-escaped: it is the tool-specific XML body,
 /// and escaping it would make the frontend render raw text instead of a card.
-pub fn buildAskUserToolEnvelope(allocator: std.mem.Allocator, inner: []const u8) ![]u8 {
+pub fn buildAskUserToolEnvelope(allocator: std.mem.Allocator, parameters_xml: []const u8, inner: []const u8) ![]u8 {
     return std.fmt.allocPrint(
         allocator,
-        "<tool><name>" ++ ASK_USER_TOOL_NAME ++ "</name><success>true</success><data>{s}</data></tool>",
-        .{inner},
+        "<tool><name>" ++ ASK_USER_TOOL_NAME ++ "</name><parameters>{s}</parameters><success>true</success><data>{s}</data></tool>",
+        .{ parameters_xml, inner },
     );
 }
 

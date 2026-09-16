@@ -146,6 +146,13 @@ const parsed = computed<ParsedEnvelope>(() => {
       return { ...fallback, state: 'invalid', error: unwrapped.error ?? 'ask_user failed' }
     }
     if (unwrapped?.data) return parseInner(unwrapped.data, fallback)
+    // `unwrapToolOutput` throws when the envelope is missing one of
+    // name/parameters/success, and ChatView then hands us the RAW envelope.
+    // Recover the `<data>` payload by slicing instead of giving up: a card
+    // that cannot read its own state renders as a bare "pending" question,
+    // which is exactly how a resolved question looked unanswered.
+    const data = tag(raw, 'data')
+    if (data !== null) return parseInner(data, fallback)
     return fallback
   }
 
@@ -255,6 +262,26 @@ function toggleOption(option: string): void {
 function chooseFreeText(): void {
   usingFreeText.value = true
   selected.value = []
+}
+
+/**
+ * Answer text is often a sentence or three (an id, a path, a caveat), so the
+ * box grows with what is typed instead of staying two lines tall. Capped so a
+ * pasted essay cannot push the composer off screen.
+ */
+const FREETEXT_MAX_PX = 220
+
+function autoGrow(event: Event): void {
+  const el = event.target as HTMLTextAreaElement | null
+  if (!el) return
+  el.style.height = 'auto'
+  el.style.height = `${Math.min(el.scrollHeight, FREETEXT_MAX_PX)}px`
+}
+
+/** Typing in the box IS choosing free text; also let the box grow. */
+function onFreeTextInput(event: Event): void {
+  usingFreeText.value = true
+  autoGrow(event)
 }
 
 /** The exact body the endpoint validates. */
@@ -485,14 +512,18 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
           </label>
           <textarea
             v-model="freeText"
-            rows="2"
+            rows="3"
             data-testid="ask-user-freetext"
-            class="w-full rounded-md border bg-transparent px-2 py-1.5 font-sans text-xs"
-            style="border-color: var(--color-border); color: var(--semantic-text)"
-            placeholder="type here…"
+            class="w-full resize-y rounded-md border bg-transparent px-2 py-1.5 font-sans text-xs leading-relaxed"
+            style="
+              border-color: var(--color-border);
+              color: var(--semantic-text);
+              min-height: 4.5rem;
+            "
+            placeholder="Type your answer…"
             :disabled="submitting"
             @focus="chooseFreeText()"
-            @input="usingFreeText = true"
+            @input="onFreeTextInput($event)"
             @keydown.enter.exact.prevent="submit(false)"
           />
         </div>

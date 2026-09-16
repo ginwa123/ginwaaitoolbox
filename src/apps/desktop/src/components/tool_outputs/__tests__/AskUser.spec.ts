@@ -176,6 +176,46 @@ describe('AskUser — rendering', () => {
     expect(wrapper.attributes('data-state')).toBe('invalid')
     wrapper.unmount()
   })
+
+  it('reads the outcome from a <tool> envelope that LOST its <parameters> block', () => {
+    // The answer endpoint rewrites the tool row in place. An early version
+    // emitted `<tool><name>…</name><success>true</success><data>…` with no
+    // <parameters>, which makes `unwrapToolOutput` throw — ChatView then hands
+    // the card the raw envelope, and without this fallback the card rendered a
+    // bare PENDING question: every resolved question looked unanswered.
+    const raw =
+      '<tool><name>ask_user</name><success>true</success>' +
+      `<data>${resolvedEnvelope('skipped')}</data></tool>`
+    const wrapper = mountCard(raw)
+
+    expect(wrapper.attributes('data-state')).toBe('skipped')
+    expect(wrapper.find('[data-testid="ask-user-skipped"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('disables every input once the question is skipped', () => {
+    // Requested behaviour: a skipped question must not stay interactive.
+    // (The header's expand/collapse toggle is still a <button> — that one is
+    // fine: the settled card stays inspectable.)
+    const wrapper = mountCard(resolvedEnvelope('skipped'))
+
+    expect(wrapper.find('[data-testid="ask-user-send"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ask-user-skip"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ask-user-freetext"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="ask-user-other-radio"]').exists()).toBe(false)
+    expect(wrapper.find('textarea').exists()).toBe(false)
+    expect(wrapper.find('input[type="radio"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('gives the free-text box room for a real answer', () => {
+    const wrapper = mountCard(pendingEnvelope({ options: [] }))
+    const box = wrapper.find('[data-testid="ask-user-freetext"]')
+    // Three rows of `text-xs` plus a min-height, not the original two-line sliver.
+    expect(box.attributes('rows')).toBe('3')
+    expect(box.attributes('style')).toContain('min-height')
+    wrapper.unmount()
+  })
 })
 
 describe('AskUser — the wire body', () => {
