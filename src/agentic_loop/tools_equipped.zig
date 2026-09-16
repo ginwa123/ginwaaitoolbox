@@ -335,7 +335,7 @@ pub const DEFAULT_KANBAN_TOOLS: []const []const u8 = &.{
 /// the 3 rows in one call can't collide on the PK).
 pub fn seedDefaultAgentTools(
     allocator: std.mem.Allocator,
-    db: anytype,
+    db: nalarcore.DbOrTx,
     agent_id: []const u8,
 ) !void {
     const ts = helpers.unixTimestampNanos();
@@ -354,7 +354,7 @@ pub fn seedDefaultAgentTools(
 /// (`akt_<nanos>_<index>`, UNIQUE(kanban_id, tool_name)).
 pub fn seedDefaultKanbanTools(
     allocator: std.mem.Allocator,
-    db: anytype,
+    db: nalarcore.DbOrTx,
     kanban_id: []const u8,
 ) !void {
     const ts = helpers.unixTimestampNanos();

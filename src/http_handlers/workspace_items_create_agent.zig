@@ -145,7 +145,7 @@ fn useCase(
     //    (not `db`): the tx holds the backend mutex, so a `db.exec`
     //    here would deadlock on the non-reentrant lock.
     //    agent_tools.agent_id references agents.id (= item_id).
-    tools_equipped.seedDefaultAgentTools(allocator, &tx, item_id) catch return error.DatabaseError;
+    tools_equipped.seedDefaultAgentTools(allocator, .{ .tx = &tx }, item_id) catch return error.DatabaseError;
 
     // COMMIT.
     tx.commit() catch return error.DatabaseError;

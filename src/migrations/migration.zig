@@ -324,9 +324,9 @@ pub const Migration020AddWorkerExtraFields = struct {
         // out at prepare time — see sqlite3_prepare_v2: "near
         // 'EXISTS': syntax error"), so we wrap each ADD COLUMN in a
         // pragma_table_info check.
-        try addColumnIfMissing(db, allocator, "worker", "working_directory", "working_directory TEXT");
-        try addColumnIfMissing(db, allocator, "worker", "last_activity", "last_activity INTEGER DEFAULT (strftime('%s', 'now'))");
-        try addColumnIfMissing(db, allocator, "worker", "last_activity_description", "last_activity_description TEXT");
+        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "working_directory", "working_directory TEXT");
+        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "last_activity", "last_activity INTEGER DEFAULT (strftime('%s', 'now'))");
+        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "last_activity_description", "last_activity_description TEXT");
     }
 };
 
@@ -1045,7 +1045,7 @@ pub const Migration052DropSessionIdFromWorkspaceItemTasks = struct {
         // session id). For fresh-DB users the column never exists, so
         // the raw `DROP COLUMN` would crash with "no such column:
         // session_id".
-        try dropColumnIfExists(db, allocator, "workspace_item_tasks", "session_id");
+        try dropColumnIfExists(.{ .db = db }, allocator, "workspace_item_tasks", "session_id");
         // The session_id index (created in Migration 034) is now
         // unused and would just slow writes down. Drop it.
         try db.exec(allocator,
@@ -1333,16 +1333,16 @@ pub const Migration056UpgradeDesignPagesToFileModel = struct {
         // Upgrade path: drop legacy `html` column from Migration 055
         // if present. SQLite 3.35+ supports DROP COLUMN. No-op on
         // fresh DBs.
-        try dropColumnIfExists(db, allocator, "design_pages", "html");
+        try dropColumnIfExists(.{ .db = db }, allocator, "design_pages", "html");
 
         // Ensure the 4 new position columns exist. On fresh DBs the
         // CREATE TABLE above already declares them with the same
         // defaults, so these are no-ops; on legacy DBs they're new
         // columns being backfilled with sensible defaults.
-        try addColumnIfMissing(db, allocator, "design_pages", "width", "width INTEGER NOT NULL DEFAULT 1440");
-        try addColumnIfMissing(db, allocator, "design_pages", "height", "height INTEGER NOT NULL DEFAULT 1024");
-        try addColumnIfMissing(db, allocator, "design_pages", "x", "x INTEGER NOT NULL DEFAULT 0");
-        try addColumnIfMissing(db, allocator, "design_pages", "y", "y INTEGER NOT NULL DEFAULT 0");
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "width", "width INTEGER NOT NULL DEFAULT 1440");
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "height", "height INTEGER NOT NULL DEFAULT 1024");
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "x", "x INTEGER NOT NULL DEFAULT 0");
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_pages", "y", "y INTEGER NOT NULL DEFAULT 0");
 
         // CREATE design_page_elements (new in v5/v6). Always new —
         // no upgrade path needed.
@@ -1443,27 +1443,27 @@ pub const Migration057AddDesignElementProperties = struct {
         // them, so for fresh-DB installs we add them here via
         // addColumnIfMissing (which is a no-op on a DB that already
         // has them, e.g. after a partial migration).
-        try addColumnIfMissing(db, allocator, "design_page_elements", "type",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "type",
             "type TEXT NOT NULL DEFAULT 'rectangle'");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "rotation",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "rotation",
             "rotation REAL NOT NULL DEFAULT 0");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "fill",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "fill",
             "fill TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "stroke",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "stroke",
             "stroke TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "stroke_width",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "stroke_width",
             "stroke_width INTEGER NOT NULL DEFAULT 0");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "corner_radius",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "corner_radius",
             "corner_radius INTEGER NOT NULL DEFAULT 0");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "opacity",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "opacity",
             "opacity REAL NOT NULL DEFAULT 1.0");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "text_content",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "text_content",
             "text_content TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "text_style",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "text_style",
             "text_style TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "image_url",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "image_url",
             "image_url TEXT NOT NULL DEFAULT ''");
-        try addColumnIfMissing(db, allocator, "design_page_elements", "parent_id",
+        try addColumnIfMissing(.{ .db = db }, allocator, "design_page_elements", "parent_id",
             "parent_id TEXT");
 
         // Analyze so the query planner sees the new columns on
@@ -1640,7 +1640,7 @@ pub const MigrationManager = struct {
 /// `definition` is provided by the caller who already knows the
 /// full DDL line.)
 pub fn addColumnIfMissing(
-    db: anytype,
+    db: nalarcore.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1684,7 +1684,7 @@ pub fn addColumnIfMissing(
 /// no-op for fresh-DB users while still removing the column for
 /// legacy users who do have it.
 pub fn dropColumnIfExists(
-    db: anytype,
+    db: nalarcore.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1738,7 +1738,7 @@ pub fn dropColumnIfExists(
 ///     index renames separately via `DROP INDEX IF EXISTS old_name;
 ///     CREATE INDEX IF NOT EXISTS new_name ON table(new_name);`.
 pub fn renameColumnIfExists(
-    db: anytype,
+    db: nalarcore.DbOrTx,
     allocator: std.mem.Allocator,
     table: []const u8,
     old_column: []const u8,
@@ -2112,7 +2112,7 @@ pub const Migration059AddCreatedIso = struct {
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         // 1. Add the column (regular TEXT, nullable).
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "llm_history",
             "created_iso",
@@ -2293,7 +2293,7 @@ pub const Migration062AddTaskDescription = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "workspace_item_tasks",
             "description",
@@ -2343,7 +2343,7 @@ pub const Migration063AddSessionAutoRetry = struct {
         // and avoids NULL handling at the API edge (NULL → COALESCE
         // default would still work, but NOT NULL is more honest).
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "sessions",
             "is_auto_retry_until_stop",
@@ -2353,7 +2353,7 @@ pub const Migration063AddSessionAutoRetry = struct {
         // the first value (see workflow.zig's new
         // `updateSessionLastFinishReason` call site, Chunk 2 Task 2.1).
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "sessions",
             "last_finish_reason",
@@ -2438,7 +2438,7 @@ pub const Migration065AddTaskHumanTouchedAt = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "workspace_item_tasks",
             "last_human_touched_at",
@@ -2505,7 +2505,7 @@ pub const Migration066AddDesignPageTaskFk = struct {
         //    INSERTs from `design_model.setDesignPage` populate it
         //    at create time.
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "design_pages",
             "workspace_item_task_id",
@@ -2675,7 +2675,7 @@ pub const Migration067AddTaskTags = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "workspace_item_tasks",
             "tags",
@@ -2748,7 +2748,7 @@ pub const Migration068AddToolCallLoading = struct {
         //    the canonical CREATE TABLE in earlier migrations doesn't
         //    include it yet.
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "llm_history",
             "is_loading",
@@ -2882,7 +2882,7 @@ pub const Migration069AddTaskImageUrls = struct {
         // "TEXT NOT NULL DEFAULT ''". See project memory
         // `addColumnIfMissing-requires-name-type`.
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "workspace_item_tasks",
             "image_urls",
@@ -2940,7 +2940,7 @@ pub const Migration071AddTaskCwd = struct {
         // "TEXT NOT NULL DEFAULT ''". See project memory
         // `addColumnIfMissing-requires-name-type`.
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "workspace_item_tasks",
             "cwd",
@@ -3074,8 +3074,8 @@ pub const Migration072ExtractKanbanTable = struct {
         // safe pattern (used in Migration 052) — fresh-DB users who
         // walked the canonical schema may not have these columns if
         // we eventually move them out of the canonical CREATE TABLE.
-        try dropColumnIfExists(&tx, allocator, "workspace_item_tasks", "kanban_column_id");
-        try dropColumnIfExists(&tx, allocator, "workspace_item_tasks", "kanban_position");
+        try dropColumnIfExists(.{ .tx = &tx }, allocator, "workspace_item_tasks", "kanban_column_id");
+        try dropColumnIfExists(.{ .tx = &tx }, allocator, "workspace_item_tasks", "kanban_position");
 
         // Commit the transaction. After this, Migration 072 is "done"
         // and the new schema is durable.
@@ -3159,10 +3159,10 @@ pub const Migration074AddLlmHistoryCacheTokenColumns = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         // Anthropic cache WRITE breakdown (billed at ~1.25x input rate). Default 0 for legacy rows + non-Anthropic profiles.
-        try addColumnIfMissing(db, allocator, "llm_history", "cache_creation_input_tokens", "cache_creation_input_tokens INTEGER DEFAULT 0");
+        try addColumnIfMissing(.{ .db = db }, allocator, "llm_history", "cache_creation_input_tokens", "cache_creation_input_tokens INTEGER DEFAULT 0");
 
         // Anthropic cache READ breakdown (billed at ~0.1x input rate, but still tokens the model processed -- folded into `prompt_tokens` + `total_tokens` by Agent.parse_anthropic_stream_chunk). Default 0 for legacy rows + non-Anthropic profiles.
-        try addColumnIfMissing(db, allocator, "llm_history", "cache_read_input_tokens", "cache_read_input_tokens INTEGER DEFAULT 0");
+        try addColumnIfMissing(.{ .db = db }, allocator, "llm_history", "cache_read_input_tokens", "cache_read_input_tokens INTEGER DEFAULT 0");
     }
 };
 
@@ -3260,11 +3260,11 @@ pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
 
         // 5 column renames — order doesn't matter logically, but
         // keep the order alphabetical by table for diff readability.
-        try renameColumnIfExists(&tx, allocator, "llm_history", "created_at", "created_at_nano");
-        try renameColumnIfExists(&tx, allocator, "logs", "created_at", "created_at_nano");
-        try renameColumnIfExists(&tx, allocator, "session_skills", "loaded_at", "loaded_at_nano");
-        try renameColumnIfExists(&tx, allocator, "worker", "last_activity", "last_activity_nano");
-        try renameColumnIfExists(&tx, allocator, "workspace_item_tasks", "last_human_touched_at", "last_human_touched_at_nano");
+        try renameColumnIfExists(.{ .tx = &tx }, allocator, "llm_history", "created_at", "created_at_nano");
+        try renameColumnIfExists(.{ .tx = &tx }, allocator, "logs", "created_at", "created_at_nano");
+        try renameColumnIfExists(.{ .tx = &tx }, allocator, "session_skills", "loaded_at", "loaded_at_nano");
+        try renameColumnIfExists(.{ .tx = &tx }, allocator, "worker", "last_activity", "last_activity_nano");
+        try renameColumnIfExists(.{ .tx = &tx }, allocator, "workspace_item_tasks", "last_human_touched_at", "last_human_touched_at_nano");
 
         // 2 index renames — SQLite doesn't have `ALTER INDEX … RENAME
         // TO …`, and the index's auto-generated name doesn't auto-
@@ -4043,7 +4043,7 @@ pub const Migration079AddContentToAgentKnowledge = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "agent_knowledge",
             "content",
@@ -4205,7 +4205,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         //    so re-running is a no-op (the canonical pattern from
         //    Migrations 020 / 052 / 065 / 066 / 067 / 074).
         try addColumnIfMissing(
-            &tx,
+            .{ .tx = &tx },
             allocator,
             "workspaces",
             "user_id",
@@ -4214,7 +4214,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
 
         // 5. sessions.user_id — same shape as workspaces.user_id.
         try addColumnIfMissing(
-            &tx,
+            .{ .tx = &tx },
             allocator,
             "sessions",
             "user_id",
@@ -4551,7 +4551,7 @@ pub const Migration082AddSessionHumanTouchedAt = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "sessions",
             // The SQL column name and the `column` probe arg must match
@@ -4577,14 +4577,14 @@ pub const Migration083AddReasoningIdAndEncryptedContent = struct {
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "llm_history",
             "reasoning_id",
             "reasoning_id TEXT",
         );
         try addColumnIfMissing(
-            db,
+            .{ .db = db },
             allocator,
             "llm_history",
             "reasoning_encrypted_content",
@@ -4716,8 +4716,8 @@ pub const Migration086AddSessionPrUrl = struct {
         // pr_provider holds the effective provider resolved at write time
         // ("github" | "gitlab" | "generic") so reads stay deterministic on
         // self-hosted forges where host-based detection would misroute.
-        try addColumnIfMissing(db, allocator, "sessions", "pr_url", "pr_url TEXT");
-        try addColumnIfMissing(db, allocator, "sessions", "pr_provider", "pr_provider TEXT");
+        try addColumnIfMissing(.{ .db = db }, allocator, "sessions", "pr_url", "pr_url TEXT");
+        try addColumnIfMissing(.{ .db = db }, allocator, "sessions", "pr_provider", "pr_provider TEXT");
     }
 };
 

@@ -144,7 +144,7 @@ fn useCase(
     // real free on other allocators).
     const new_id = kanban_model.addColumn(
         allocator,
-        db,
+        .{ .db = db },
         input.item_id,
         input.name,
         input.description,

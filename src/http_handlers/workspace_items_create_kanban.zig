@@ -161,7 +161,7 @@ fn useCase(
     // Seed the 3 default columns (`todo / in progress / done`).
     // Takes `tx` (not `db`): the tx holds the backend mutex, so a
     // `db.exec` here would deadlock on the non-reentrant lock.
-    kanban_model.seedDefaultColumns(allocator, &tx, item_id) catch return error.SeedFailed;
+    kanban_model.seedDefaultColumns(allocator, .{ .tx = &tx }, item_id) catch return error.SeedFailed;
 
     // Seed the agent_kanbans config row + default tools (command,
     // read_file, write_file) so a fresh board is immediately usable.
@@ -171,7 +171,7 @@ fn useCase(
         "INSERT OR IGNORE INTO agent_kanbans (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, item_id },
     ) catch return error.SeedFailed;
-    tools_equipped.seedDefaultKanbanTools(allocator, &tx, item_id) catch return error.SeedFailed;
+    tools_equipped.seedDefaultKanbanTools(allocator, .{ .tx = &tx }, item_id) catch return error.SeedFailed;
 
     tx.commit() catch return error.SeedFailed;
 
