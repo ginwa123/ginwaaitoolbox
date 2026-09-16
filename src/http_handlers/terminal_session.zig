@@ -14,6 +14,12 @@
 //! dropped first); readers poll with an absolute byte cursor, so a
 //! re-mounted frontend resumes without loss or replay.
 //!
+//! Lifetime: UNLIMITED sessions (no cap, no LRU kills). A session ages
+//! out only after `idle_timeout_s` (24h) with ZERO interaction — every
+//! open (attach flush), poll, input, and resize refreshes its age, so
+//! a terminal you look at never dies under you. The sweep runs lazily
+//! on create + read (no background thread).
+//!
 //! Platform scope: Linux + macOS only. Every other OS gets
 //! `error.UnsupportedPlatform` (mapped to 501 by the endpoint files).
 //! All libc symbols are declared as `extern "c"` (no `@cImport`, so no
@@ -34,7 +40,10 @@ pub const is_pty_os: bool = switch (builtin.os.tag) {
     else => false,
 };
 
-pub const max_sessions: usize = 32;
+/// Seconds of zero interaction after which an abandoned session is
+/// reaped (24h). Any open (attach flush), poll, input, or resize
+/// refreshes the age — only truly untouched sessions die.
+pub const idle_timeout_s: i64 = 24 * 3600;
 pub const buffer_cap: usize = 256 * 1024;
 pub const default_cols: u16 = 80;
 pub const default_rows: u16 = 24;
@@ -47,7 +56,6 @@ pub const SessionError = error{
     CwdNotDir,
     InvalidShell,
     InvalidSize,
-    TooManySessions,
     SessionNotFound,
     SessionExited,
     SpawnFailed,
@@ -96,6 +104,9 @@ extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]?[*:0]const u8) c_int;
 extern "c" fn _exit(status: c_int) noreturn;
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]const u8;
 extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*:0]u8;
+/// Wall-clock seconds (libc `time`, portable incl. msvcrt). Only used
+/// for idle aging — coarse seconds are plenty.
+extern "c" fn time(t: ?*i64) i64;
 extern "c" fn kill(pid: c_int, sig: c_int) c_int;
 extern "c" fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
 extern "c" fn nanosleep(req: *const Timespec, rem: ?*Timespec) c_int;
@@ -124,9 +135,10 @@ pub const Session = struct {
     exited: bool,
     exit_code: ?i32,
     mutex: std.atomic.Mutex,
-    /// Monotonic last-use stamp (LRU eviction). Touched on every
-    /// read/write/resize/create while holding `mutex`.
-    last_used: u64,
+    /// Wall-clock seconds of the last interaction (open/poll/input/
+    /// resize/create). Sessions older than the idle timeout with zero
+    /// interaction are reaped by the lazy sweep.
+    last_active_s: i64,
 
     /// Raw PTY master fd (for the WS pump's poll loop). Valid until
     /// `destroySession`.
@@ -146,10 +158,8 @@ var g_mutex: std.atomic.Mutex = .unlocked;
 var g_sessions: std.StringHashMap(*Session) = undefined;
 var g_inited: bool = false;
 var g_id_counter: u64 = 0;
-/// Monotonic clock for LRU stamps (order only, no wall time).
-var g_seq: u64 = 0;
-/// Live session cap (defaults to max_sessions; tests override).
-var g_max_sessions: usize = max_sessions;
+/// Live idle timeout in seconds (tests override via setter).
+var g_idle_timeout_s: i64 = idle_timeout_s;
 const g_alloc = std.heap.c_allocator;
 
 /// Spin-lock acquire (std.atomic.Mutex has no blocking lock() in
@@ -185,56 +195,50 @@ pub fn sessionCount() usize {
     return reg.count();
 }
 
-/// Next LRU stamp (g_mutex-guarded; callers hold a session mutex —
-/// lock order is always session-then-global, never the reverse).
-fn nextSeq() u64 {
-    mutexLock(&g_mutex);
-    defer g_mutex.unlock();
-    g_seq += 1;
-    return g_seq;
+/// Wall-clock seconds (libc `time`). Coarse seconds are plenty for
+/// idle aging. Referenced from touch paths that are live on every OS
+/// (REST handlers are registered unconditionally) — `time` exists in
+/// msvcrt too, so Windows codegen stays clean.
+fn nowSeconds() i64 {
+    return time(null);
 }
 
-fn sessionCap() usize {
+/// Test-only idle-timeout override in seconds (returns the previous
+/// value — restore with defer).
+pub fn setIdleTimeoutForTest(timeout_s: i64) i64 {
     mutexLock(&g_mutex);
     defer g_mutex.unlock();
-    return g_max_sessions;
-}
-
-/// Test-only session-cap override (returns the previous cap — restore
-/// with defer). Lets the eviction test run at cap 2 instead of 32.
-pub fn setSessionCapForTest(cap: usize) usize {
-    mutexLock(&g_mutex);
-    defer g_mutex.unlock();
-    const prev = g_max_sessions;
-    g_max_sessions = cap;
+    const prev = g_idle_timeout_s;
+    g_idle_timeout_s = timeout_s;
     return prev;
 }
 
-/// Kill least-recently-used sessions until count < cap. Called on
-/// create so the registry never rejects with TooManySessions in
-/// practice (abandoned chat sessions age out instead of blocking new
-/// ones). Victim choice reads last_used without the session lock — a
-/// torn read only mis-picks the victim, never corrupts state.
-fn evictToFit() void {
+/// Reap sessions with zero interaction older than the idle timeout.
+/// Runs lazily on create + read (no background thread): abandoned
+/// shells age out, while anything you open, poll, type in, or resize
+/// stays alive via its refreshed stamp. Victim stamps are read without
+/// the session lock — a torn read only mis-picks a victim, never
+/// corrupts state.
+fn sweepIdle() void {
     if (comptime !is_pty_os) return;
-    while (true) {
-        const reg = registry();
-        mutexLock(&g_mutex);
-        // Read g_max_sessions directly: sessionCap() would re-lock.
-        if (reg.count() < g_max_sessions) {
-            g_mutex.unlock();
-            return;
+    const now = nowSeconds();
+    const reg = registry();
+    mutexLock(&g_mutex);
+    // Read g_idle_timeout_s directly: idleTimeout() would re-lock.
+    const timeout = g_idle_timeout_s;
+    var victims = std.ArrayList(*Session).empty;
+    defer victims.deinit(g_alloc);
+    var it = reg.iterator();
+    while (it.next()) |entry| {
+        const s = entry.value_ptr.*;
+        if (now - s.last_active_s > timeout) {
+            victims.append(g_alloc, s) catch break;
         }
-        var victim: ?*Session = null;
-        var it = reg.valueIterator();
-        while (it.next()) |s| {
-            if (victim == null or s.*.last_used < victim.?.last_used) victim = s.*;
-        }
-        g_mutex.unlock();
-        const v = victim orelse return;
-        // destroySession re-locks internally. SessionNotFound means a
-        // concurrent destroy won the race — stop instead of spinning.
-        destroySession(v.id) catch return;
+    }
+    g_mutex.unlock();
+    for (victims.items) |v| {
+        // SessionNotFound means a concurrent destroy won the race.
+        destroySession(v.id) catch continue;
     }
 }
 
@@ -325,9 +329,9 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
         dir.close(io);
     }
 
-    // LRU eviction keeps creates succeeding at cap (abandoned chat
-    // sessions age out instead of 429ing new ones).
-    evictToFit();
+    // Lazy idle sweep: abandoned shells age out instead of
+    // accumulating forever (no cap, no LRU kills).
+    sweepIdle();
 
     const shell_path: []const u8 = blk: {
         const s = shell_opt orelse "";
@@ -369,7 +373,7 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
         .exited = false,
         .exit_code = null,
         .mutex = .unlocked,
-        .last_used = nextSeq(),
+        .last_active_s = nowSeconds(),
     };
 
     const reg = registry();
@@ -409,7 +413,7 @@ fn childMain(cwd: []const u8, shell_path: []const u8) noreturn {
 pub fn drainSession(s: *Session) void {
     if (comptime !is_pty_os) return;
     mutexLock(&s.mutex);
-    s.last_used = nextSeq();
+    s.last_active_s = nowSeconds();
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -472,7 +476,7 @@ fn decodeStatus(status: c_int) i32 {
 pub fn writeInput(s: *Session, data: []const u8) SessionError!usize {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
     mutexLock(&s.mutex);
-    s.last_used = nextSeq();
+    s.last_active_s = nowSeconds();
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -501,7 +505,7 @@ pub const OutputSlice = struct {
 /// Call `drainSession` first (or use `readOutput`, which does).
 pub fn sliceOutput(s: *Session, cursor: u64) OutputSlice {
     mutexLock(&s.mutex);
-    s.last_used = nextSeq();
+    s.last_active_s = nowSeconds();
     defer s.mutex.unlock();
     const start = @max(cursor, s.base);
     if (start >= s.total) {
@@ -521,8 +525,11 @@ pub fn readOutput(s: *Session, cursor: u64) OutputSlice {
     if (comptime !is_pty_os) {
         return .{ .data = &.{}, .cursor = cursor, .exited = true, .exit_code = null };
     }
+    // Every poll refreshes ages and reaps the long-idle (open terminal
+    // = activity, so visible sessions never die under you).
+    sweepIdle();
     mutexLock(&s.mutex);
-    s.last_used = nextSeq();
+    s.last_active_s = nowSeconds();
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -545,7 +552,7 @@ pub fn resizeSession(s: *Session, cols: u16, rows: u16) SessionError!void {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
     if (cols < min_dim or cols > max_dim or rows < min_dim or rows > max_dim) return error.InvalidSize;
     mutexLock(&s.mutex);
-    s.last_used = nextSeq();
+    s.last_active_s = nowSeconds();
     defer s.mutex.unlock();
     if (s.exited) return error.SessionExited;
     var win = Winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
@@ -567,7 +574,7 @@ pub fn destroySession(id: []const u8) SessionError!void {
     const s = entry.value;
 
     mutexLock(&s.mutex);
-    s.last_used = nextSeq();
+    s.last_active_s = nowSeconds();
     const already_exited = s.exited;
     s.mutex.unlock();
     if (!already_exited) _ = kill(s.child_pid, SIGKILL);
@@ -647,29 +654,28 @@ test "empty cwd falls back to the server cwd (posix only)" {
     _ = s;
 }
 
-test "create evicts the LRU session at cap (posix only)" {
+test "idle sweep reaps untouched sessions, keeps active ones (posix only)" {
     if (comptime !is_pty_os) return error.SkipZigTest;
-    const prev_cap = setSessionCapForTest(2);
-    defer _ = setSessionCapForTest(prev_cap);
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
 
     const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
     const a_id = try testing.allocator.dupe(u8, a.id);
     defer testing.allocator.free(a_id);
     const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    defer destroySession(b.id) catch {};
 
-    // Touch b so a is unambiguously least-recently-used.
+    // Backdate a past the timeout; touch b so it stays fresh.
+    const sa = getSession(a_id) orelse return error.SessionNotFound;
+    mutexLock(&sa.mutex);
+    sa.last_active_s -= 7200;
+    sa.mutex.unlock();
     const sb = getSession(b.id) orelse return error.SessionNotFound;
     _ = readOutput(sb, 0);
 
-    const c = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
-    defer destroySession(c.id) catch {};
-
+    sweepIdle();
     try testing.expect(getSession(a_id) == null);
     try testing.expect(getSession(b.id) != null);
-    try testing.expect(getSession(c.id) != null);
-    try testing.expectEqual(@as(usize, 2), sessionCount());
-
-    destroySession(b.id) catch {};
 }
 
 test "spawned shell echoes input (posix only)" {
