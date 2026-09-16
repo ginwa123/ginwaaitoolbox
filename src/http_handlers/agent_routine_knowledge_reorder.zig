@@ -30,7 +30,7 @@ pub const KnowledgeReorderError = error{
     RoutineIdRequired,
     /// Body `ordered_ids` field was empty.
     OrderedIdsRequired,
-    /// `BEGIN` / `COMMIT` failed.
+    /// `begin()` / `commit()` failed.
     TransactionFailed,
     /// One of the per-row `UPDATE` statements failed.
     UpdateFailed,
@@ -58,22 +58,21 @@ fn useCase(
     if (input.routine_id.len == 0) return error.RoutineIdRequired;
     if (input.ordered_ids.len == 0) return error.OrderedIdsRequired;
 
-    db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.TransactionFailed;
-    errdefer {
-        db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
-    }
+    var tx = db.begin() catch return error.TransactionFailed;
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
 
     for (input.ordered_ids, 0..) |id, i| {
         const position: i64 = @intCast(input.ordered_ids.len - 1 - @as(usize, @intCast(i)));
         var pos_buf: [32]u8 = undefined;
         const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
-        db.exec(allocator,
+        tx.exec(allocator,
             "UPDATE agent_routine_knowledges SET position = ?, updated_at = datetime('now') WHERE id = ? AND routine_id = ?",
             &[_][]const u8{ pos_str, id, input.routine_id },
         ) catch return error.UpdateFailed;
     }
 
-    db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.TransactionFailed;
+    tx.commit() catch return error.TransactionFailed;
 }
 
 // =====================================================================

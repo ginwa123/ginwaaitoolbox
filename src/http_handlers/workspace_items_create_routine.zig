@@ -132,15 +132,14 @@ fn useCase(
     const item_id = try std.fmt.allocPrint(allocator, "item_{d}", .{timestamp_ns});
     errdefer allocator.free(item_id);
 
-    // BEGIN/COMMIT so the 3 INSERTs are atomic (same rationale as the
+    // tx so the 3 INSERTs are atomic (same rationale as the
     // agent create — a crash mid-flow must not leave a
     // workspace_items row without its routine siblings).
-    db.exec(allocator, "BEGIN", &[_][]const u8{}) catch return error.DatabaseError;
-    errdefer {
-        db.exec(allocator, "ROLLBACK", &[_][]const u8{}) catch {};
-    }
+    var tx = db.begin() catch return error.DatabaseError;
+    defer tx.commitOrRollback() catch {};
+    errdefer tx.rollback() catch {};
 
-    db.exec(allocator,
+    tx.exec(allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'routine', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
         &.{ item_id, input.workspace_id, trimmed_name, input.body.path, input.workspace_id },
     ) catch return error.DatabaseError;
@@ -151,7 +150,7 @@ fn useCase(
     // `sqlite-backend-empty-slice-binds-as-null`). next_run_at is
     // nullable so a plain `?` bind is correct ("" → NULL).
     const enabled_str: []const u8 = if (input.body.enabled) "1" else "0";
-    db.exec(allocator,
+    tx.exec(allocator,
         \\INSERT INTO workspace_routines (id, workspace_item_id, description, instruction, schedule, enabled, next_run_at)
         \\VALUES (?, ?, COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), ?, ?)
     ,
@@ -164,12 +163,12 @@ fn useCase(
     // an empty allowlist means "all tools" (kanban D5 semantics),
     // which preserves the pre-migration fire behaviour exactly.
     // INSERT OR IGNORE keeps re-entry safe.
-    db.exec(allocator,
+    tx.exec(allocator,
         "INSERT OR IGNORE INTO agent_routines (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, item_id },
     ) catch return error.DatabaseError;
 
-    db.exec(allocator, "COMMIT", &[_][]const u8{}) catch return error.DatabaseError;
+    tx.commit() catch return error.DatabaseError;
 
     const position = readInsertedPosition(allocator, db, item_id);
 

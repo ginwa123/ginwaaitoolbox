@@ -1640,7 +1640,7 @@ pub const MigrationManager = struct {
 /// `definition` is provided by the caller who already knows the
 /// full DDL line.)
 pub fn addColumnIfMissing(
-    db: *SqliteBackend,
+    db: anytype,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1684,7 +1684,7 @@ pub fn addColumnIfMissing(
 /// no-op for fresh-DB users while still removing the column for
 /// legacy users who do have it.
 pub fn dropColumnIfExists(
-    db: *SqliteBackend,
+    db: anytype,
     allocator: std.mem.Allocator,
     table: []const u8,
     column: []const u8,
@@ -1738,7 +1738,7 @@ pub fn dropColumnIfExists(
 ///     index renames separately via `DROP INDEX IF EXISTS old_name;
 ///     CREATE INDEX IF NOT EXISTS new_name ON table(new_name);`.
 pub fn renameColumnIfExists(
-    db: *SqliteBackend,
+    db: anytype,
     allocator: std.mem.Allocator,
     table: []const u8,
     old_column: []const u8,
@@ -2969,7 +2969,7 @@ pub const Migration071AddTaskCwd = struct {
 /// Task: task_1786527996378 (kanban: sprint bulan juni → "move column
 ///   workspace_item_tasks table").
 ///
-/// Steps (inside a single BEGIN..COMMIT for atomicity — a crash mid-
+/// Steps (inside a single tx for atomicity — a crash mid-
 /// migration would otherwise leave the DB with both new and old
 /// columns populated, which the model layer's `LEFT JOIN` would
 /// silently drop data from):
@@ -2992,21 +2992,17 @@ pub const Migration072ExtractKanbanTable = struct {
     pub const name = "extract_kanban_table";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Wrap in BEGIN..COMMIT so the CREATE+INSERT+DROP sequence is
+        // Wrap in a tx (db.begin/tx.exec/tx.commit) so the CREATE+INSERT+DROP sequence is
         // atomic. Without the wrapper, SQLite auto-commits each step
         // and a crash between step 3 (backfill) and step 5 (DROP
         // COLUMN) would leave the DB with both new and old columns
         // populated.
-        try db.exec(allocator, "BEGIN", &.{});
-        errdefer {
-            // If anything below errors, rollback best-effort. The
-            // errdefer doesn't run on the success path (the explicit
-            // COMMIT runs first).
-            db.exec(allocator, "ROLLBACK", &.{}) catch {};
-        }
+        var tx = try db.begin();
+        defer tx.commitOrRollback() catch {};
+        errdefer tx.rollback() catch {};
 
         // Step 1: CREATE kanban (idempotent via IF NOT EXISTS)
-        try db.exec(allocator,
+        try tx.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS kanban (
             \\    workspace_item_task_id TEXT PRIMARY KEY,
             \\    kanban_column_id       TEXT NOT NULL,
@@ -3019,7 +3015,7 @@ pub const Migration072ExtractKanbanTable = struct {
         , &[_][]const u8{});
 
         // Step 2: per-column ordering index
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_kanban_column_position " ++
             "ON kanban(kanban_column_id, kanban_position)",
             &[_][]const u8{},
@@ -3032,7 +3028,7 @@ pub const Migration072ExtractKanbanTable = struct {
         // (SQLITE_LOCKED) error fires when an unfinished WRITE
         // transaction is touching a table that another statement
         // (here, DROP INDEX) needs an exclusive lock on.
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "DROP INDEX IF EXISTS idx_tasks_column_position",
             &[_][]const u8{},
         );
@@ -3059,12 +3055,12 @@ pub const Migration072ExtractKanbanTable = struct {
                 "WHERE name = 'kanban_column_id'",
             .{},
         ) catch return error.BufferTooSmall;
-        var q = try db.query(allocator, check_sql, &.{});
+        var q = try tx.query(allocator, check_sql, &.{});
         defer q.deinit();
         if (try q.next()) |row| {
             // Source columns still exist — first run, do the backfill.
             row.deinit(allocator);
-            try db.exec(allocator,
+            try tx.exec(allocator,
                 \\INSERT OR IGNORE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position)
                 \\SELECT t.id, t.kanban_column_id, COALESCE(t.kanban_position, 0)
                 \\FROM workspace_item_tasks t
@@ -3078,12 +3074,12 @@ pub const Migration072ExtractKanbanTable = struct {
         // safe pattern (used in Migration 052) — fresh-DB users who
         // walked the canonical schema may not have these columns if
         // we eventually move them out of the canonical CREATE TABLE.
-        try dropColumnIfExists(db, allocator, "workspace_item_tasks", "kanban_column_id");
-        try dropColumnIfExists(db, allocator, "workspace_item_tasks", "kanban_position");
+        try dropColumnIfExists(&tx, allocator, "workspace_item_tasks", "kanban_column_id");
+        try dropColumnIfExists(&tx, allocator, "workspace_item_tasks", "kanban_position");
 
         // Commit the transaction. After this, Migration 072 is "done"
         // and the new schema is durable.
-        try db.exec(allocator, "COMMIT", &[_][]const u8{});
+        try tx.commit();
 
         // ANALYZE so the query planner sees the new index (mirrors
         // Migration 051 / 041 / 042 / 043 / 048 / 049 / 050).
@@ -3253,43 +3249,41 @@ pub const Migration075RenameTimestampColumnsToNanoSuffix = struct {
     pub const name = "rename_timestamp_columns_to_nano_suffix";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // Wrap in BEGIN..COMMIT so the 5 renames + 2 index swaps are
+        // Wrap in a tx (db.begin/tx.exec/tx.commit) so the 5 renames + 2 index swaps are
         // atomic. A crash mid-migration would otherwise leave the DB
         // with some columns renamed and others not, breaking every
         // SQL site that targets the old names. SQLite auto-commits
         // each statement otherwise.
-        try db.exec(allocator, "BEGIN", &.{});
-        errdefer {
-            // Best-effort rollback on any error below.
-            db.exec(allocator, "ROLLBACK", &.{}) catch {};
-        }
+        var tx = try db.begin();
+        defer tx.commitOrRollback() catch {};
+        errdefer tx.rollback() catch {};
 
         // 5 column renames — order doesn't matter logically, but
         // keep the order alphabetical by table for diff readability.
-        try renameColumnIfExists(db, allocator, "llm_history", "created_at", "created_at_nano");
-        try renameColumnIfExists(db, allocator, "logs", "created_at", "created_at_nano");
-        try renameColumnIfExists(db, allocator, "session_skills", "loaded_at", "loaded_at_nano");
-        try renameColumnIfExists(db, allocator, "worker", "last_activity", "last_activity_nano");
-        try renameColumnIfExists(db, allocator, "workspace_item_tasks", "last_human_touched_at", "last_human_touched_at_nano");
+        try renameColumnIfExists(&tx, allocator, "llm_history", "created_at", "created_at_nano");
+        try renameColumnIfExists(&tx, allocator, "logs", "created_at", "created_at_nano");
+        try renameColumnIfExists(&tx, allocator, "session_skills", "loaded_at", "loaded_at_nano");
+        try renameColumnIfExists(&tx, allocator, "worker", "last_activity", "last_activity_nano");
+        try renameColumnIfExists(&tx, allocator, "workspace_item_tasks", "last_human_touched_at", "last_human_touched_at_nano");
 
         // 2 index renames — SQLite doesn't have `ALTER INDEX … RENAME
         // TO …`, and the index's auto-generated name doesn't auto-
         // update on the column rename. DROP + CREATE under the new
         // name. The `IF NOT EXISTS` on the CREATE is defensive
         // (after a re-run, the new index already exists).
-        try db.exec(allocator, "DROP INDEX IF EXISTS idx_logs_created_at", &.{});
-        try db.exec(allocator,
+        try tx.exec(allocator, "DROP INDEX IF EXISTS idx_logs_created_at", &.{});
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_logs_created_at_nano ON logs(created_at_nano DESC)",
             &.{});
 
-        try db.exec(allocator, "DROP INDEX IF EXISTS idx_worker_last_activity", &.{});
-        try db.exec(allocator,
+        try tx.exec(allocator, "DROP INDEX IF EXISTS idx_worker_last_activity", &.{});
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_worker_last_activity_nano ON worker(last_activity_nano DESC)",
             &.{});
 
         // Commit the transaction. After this, Migration 075 is
         // "done" and the new schema is durable.
-        try db.exec(allocator, "COMMIT", &[_][]const u8{});
+        try tx.commit();
 
         // ANALYZE so the query planner sees the renamed indexes
         // (mirrors Migration 041/042/043/051 pattern).
@@ -4124,7 +4118,7 @@ pub const Migration076CreateSessionPlan = struct {
     //   7. Backfill every legacy row (workspaces.user_id, sessions.user_id)
     //      WHERE user_id IS NULL → user_id = 'user_system'.
     //
-    // Why BEGIN..COMMIT wraps the whole thing
+    // Why a tx wraps the whole thing
     // ───────────────────────────────────────
     // 6 operations that must commit together. A crash mid-migration would
     // otherwise leave a half-built schema (e.g. users exists but
@@ -4159,18 +4153,14 @@ pub const Migration077AddUsersAndRbacSchema = struct {
     pub const name = "add_users_and_rbac_schema";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
-        // BEGIN..COMMIT — atomic; see "Why BEGIN..COMMIT" in the
+        // tx (db.begin/tx.exec/tx.commit) — atomic; see "Why the tx" in the
         // docstring above.
-        try db.exec(allocator, "BEGIN", &.{});
-        errdefer {
-            // Best-effort rollback on any error below. The errdefer
-            // doesn't fire on the success path (the explicit COMMIT runs
-            // first).
-            db.exec(allocator, "ROLLBACK", &.{}) catch {};
-        }
+        var tx = try db.begin();
+        defer tx.commitOrRollback() catch {};
+        errdefer tx.rollback() catch {};
 
         // 1. users — identity table.
-        try db.exec(allocator,
+        try tx.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS users (
             \\    id TEXT PRIMARY KEY,
             \\    email TEXT NOT NULL UNIQUE,
@@ -4185,7 +4175,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         , &[_][]const u8{});
 
         // 2. user_companies — org / tenant entity.
-        try db.exec(allocator,
+        try tx.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS user_companies (
             \\    id TEXT PRIMARY KEY,
             \\    name TEXT NOT NULL,
@@ -4199,7 +4189,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         , &[_][]const u8{});
 
         // 3. user_company_members — many-to-many user ↔ company.
-        try db.exec(allocator,
+        try tx.exec(allocator,
             \\CREATE TABLE IF NOT EXISTS user_company_members (
             \\    user_id TEXT NOT NULL,
             \\    user_company_id TEXT NOT NULL,
@@ -4215,7 +4205,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         //    so re-running is a no-op (the canonical pattern from
         //    Migrations 020 / 052 / 065 / 066 / 067 / 074).
         try addColumnIfMissing(
-            db,
+            &tx,
             allocator,
             "workspaces",
             "user_id",
@@ -4224,7 +4214,7 @@ pub const Migration077AddUsersAndRbacSchema = struct {
 
         // 5. sessions.user_id — same shape as workspaces.user_id.
         try addColumnIfMissing(
-            db,
+            &tx,
             allocator,
             "sessions",
             "user_id",
@@ -4232,35 +4222,35 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         );
 
         // 6. Indexes — 6 total. CREATE INDEX IF NOT EXISTS is idempotent.
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_user_companies_slug ON user_companies(slug)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_user_companies_active ON user_companies(is_active)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_user_company_members_user ON user_company_members(user_id)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_user_company_members_company ON user_company_members(user_company_id)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_workspaces_user_id ON workspaces(user_id)",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id)",
             &[_][]const u8{});
 
         // 7. Default user_system — INSERT OR IGNORE makes it idempotent.
         //    See the spec §3.6 for the full reasoning (password_hash
         //    sentinel, is_active=0, system@local reserved per RFC 6762).
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "INSERT OR IGNORE INTO users (id, email, name, password_hash, role, is_active) " ++
                 "VALUES ('user_system', 'system@local', 'System', '!disabled', 'admin', 0)",
             &[_][]const u8{});
@@ -4271,15 +4261,15 @@ pub const Migration077AddUsersAndRbacSchema = struct {
         //    re-run: rows that already have user_id set are not
         //    touched. On a fresh DB with zero legacy rows, both UPDATEs
         //    are no-ops.
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "UPDATE workspaces SET user_id = 'user_system' WHERE user_id IS NULL",
             &[_][]const u8{});
-        try db.exec(allocator,
+        try tx.exec(allocator,
             "UPDATE sessions SET user_id = 'user_system' WHERE user_id IS NULL",
             &[_][]const u8{});
 
         // Commit the transaction. After this, the new schema is durable.
-        try db.exec(allocator, "COMMIT", &[_][]const u8{});
+        try tx.commit();
 
         // Refresh query-planner stats so the new indexes are picked on
         // pre-existing databases (mirrors the ANALYZE-after-CREATE-INDEX
