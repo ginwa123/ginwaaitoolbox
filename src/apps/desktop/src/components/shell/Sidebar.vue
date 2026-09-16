@@ -875,7 +875,12 @@ const createAndOpenStandardChat = async (workspaceId: string, itemId: string) =>
 // Agent-mode items (`item_type === 'agent'`) skip the picker entirely
 // (2026-09-09): an agent item IS a chat container, so `+` directly
 // creates a Standard Chat and opens it — no Routine / Memory choice.
+//
+// Routine items have no task list — the + button is hidden in
+// WorkspaceItem.vue, but guard here too so a programmatic call
+// can't open the picker under a scheduler-owned parent.
 const handleAddTask = (workspaceId: string, item: WorkspaceItem) => {
+  if (item.item_type === 'routine') return
   if (item.item_type === 'agent') {
     void createAndOpenStandardChat(workspaceId, item.id)
     return
