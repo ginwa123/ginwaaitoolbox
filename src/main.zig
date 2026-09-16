@@ -568,6 +568,7 @@ pub fn main(init: std.process.Init) !void {
     try gs.router.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
     try gs.router.get("/api/git/commits", ai_mod.http_handlers.gitCommitsListHandler);
     try gs.router.get("/api/git/commit", ai_mod.http_handlers.gitCommitDetailHandler);
+    try gs.router.get("/api/git/commit/file", ai_mod.http_handlers.gitCommitFileDiffHandler);
     try gs.router.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
     try gs.router.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
     try gs.router.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);

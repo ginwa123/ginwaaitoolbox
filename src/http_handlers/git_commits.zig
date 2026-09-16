@@ -317,6 +317,101 @@ pub fn gitCommitDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
     return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeGitCommitDetailResponse(allocator, response) });
 }
 
+/// Validate a `file` query param for the commit file-diff endpoint. The
+/// value reaches git as an argv element after `--` (never a shell
+/// string), so this guards against flag injection and path escape.
+/// Returns null on success, or an error message. Pure.
+pub fn validateCommitFile(file: []const u8) ?[]const u8 {
+    if (file.len == 0) return "file is required";
+    if (file.len > 4096) return "file exceeds 4096 characters";
+    if (std.mem.indexOfScalar(u8, file, 0) != null) return "file contains a null byte";
+    if (file[0] == '-') return "file must not start with '-'";
+    if (std.fs.path.isAbsolute(file)) return "file must be relative";
+    if (std.mem.indexOf(u8, file, "..") != null) return "file must not contain '..' segments";
+    for (file) |c| {
+        if (c < 0x20 or c == 0x7f) return "file contains a control character";
+    }
+    return null;
+}
+
+/// HTTP handler for `GET /api/git/commit/file?path=<repo>&sha=<sha>&file=<path>`.
+///
+/// 200: `{ "sha": ..., "path": ..., "diff_content": "<unified diff>" }`
+/// with the file's diff at that commit (`git diff <sha>^ <sha> -- <file>`,
+/// falling back to `git show` for root commits without a parent). 400 on
+/// missing/invalid params; 404 when the path is not a repo or the SHA
+/// does not resolve. Read-only — powers the clickable file rows in the
+/// commits view.
+pub fn gitCommitFileDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+    const io = ctx.io;
+
+    const path_param = req.query.get("path") orelse {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing path parameter" }) });
+    };
+    if (validateRepoPath(path_param)) |err_msg| {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
+    }
+    const sha_param = req.query.get("sha") orelse {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing sha parameter" }) });
+    };
+    if (validateSha(sha_param)) |err_msg| {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
+    }
+    const file_param = req.query.get("file") orelse {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Missing file parameter" }) });
+    };
+    if (validateCommitFile(file_param)) |err_msg| {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = err_msg }) });
+    }
+
+    const git_dir_check = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", path_param, "rev-parse", "--git-dir" },
+    }) catch {
+        return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "not a git repository" }) });
+    };
+    if (git_dir_check.term.exited != 0) {
+        return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "not a git repository" }) });
+    }
+
+    // Resolve the SHA first so an unknown ref is a 404, not an empty diff.
+    const verify_result = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", path_param, "rev-parse", "--verify", sha_param },
+    }) catch {
+        return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "commit not found" }) });
+    };
+    if (verify_result.term.exited != 0) {
+        return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "commit not found" }) });
+    }
+
+    var diff_content: []const u8 = "";
+    const parent_ref = try std.fmt.allocPrint(allocator, "{s}^", .{sha_param});
+    if (std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", path_param, "diff", parent_ref, sha_param, "--", file_param },
+    })) |diff_result| {
+        if (diff_result.term.exited == 0 or diff_result.term.exited == 1) {
+            diff_content = diff_result.stdout;
+        }
+    } else |_| {}
+    if (diff_content.len == 0) {
+        // Root commit (no parent) or merge — `git show` always renders.
+        if (std.process.run(allocator, io, .{
+            .argv = &.{ "git", "-C", path_param, "show", "--format=", sha_param, "--", file_param },
+        })) |show_result| {
+            if (show_result.term.exited == 0 or show_result.term.exited == 1) {
+                diff_content = show_result.stdout;
+            }
+        } else |_| {}
+    }
+
+    const response = http_response.GitCommitFileDiffResponse{
+        .sha = sha_param,
+        .path = file_param,
+        .diff_content = diff_content,
+    };
+    return res.jsonResponse(.{ .status_code = 200, .data = try http_response.makeGitCommitFileDiffResponse(allocator, response) });
+}
+
 // ===== Tests =====
 const testing = std.testing;
 const text_normalize = @import("helpers").text_normalize;
@@ -405,6 +500,54 @@ test "validateSha accepts hex and rejects flags and junk" {
     try testing.expect(validateSha("-C/etc") != null);
     try testing.expect(validateSha("ab") != null);
     try testing.expect(validateSha("zzzz") != null);
+}
+
+test "validateCommitFile accepts relative paths and rejects escapes" {
+    try testing.expect(validateCommitFile("src/main.zig") == null);
+    try testing.expect(validateCommitFile("a b/c.txt") == null);
+    try testing.expect(validateCommitFile("") != null);
+    try testing.expect(validateCommitFile("--output=/tmp/x") != null);
+    try testing.expect(validateCommitFile("/etc/passwd") != null);
+    try testing.expect(validateCommitFile("../escape.zig") != null);
+    try testing.expect(validateCommitFile("a\nb") != null);
+}
+
+test "git_commit file-diff handler is exported from mod.zig" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, MOD_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "pub const gitCommitFileDiffHandler") == null) {
+        std.debug.print("!! mod.zig does not export gitCommitFileDiffHandler !!\n", .{});
+        return error.GitCommitFileDiffExportMissing;
+    }
+}
+
+test "git commit file-diff route is registered in main.zig" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, MAIN_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "/api/git/commit/file") == null) {
+        std.debug.print("!! main.zig does not register /api/git/commit/file !!\n", .{});
+        return error.GitCommitFileDiffRouteMissing;
+    }
+    if (std.mem.indexOf(u8, source, "gitCommitFileDiffHandler") == null) {
+        std.debug.print("!! main.zig does not reference gitCommitFileDiffHandler !!\n", .{});
+        return error.GitCommitFileDiffHandlerRefMissing;
+    }
+}
+
+test "http_response.zig defines GitCommitFileDiffResponse" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HTTP_RESP_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "GitCommitFileDiffResponse") == null) {
+        std.debug.print("!! http_response.zig does not define GitCommitFileDiffResponse !!\n", .{});
+        return error.GitCommitFileDiffResponseTypeMissing;
+    }
+    if (std.mem.indexOf(u8, source, "makeGitCommitFileDiffResponse") == null) {
+        std.debug.print("!! http_response.zig does not define makeGitCommitFileDiffResponse !!\n", .{});
+        return error.GitCommitFileDiffResponseHelperMissing;
+    }
 }
 
 test "git_commits handlers are exported from mod.zig" {

@@ -159,3 +159,74 @@ def test_commits_param_validation(harness: FunctionalHarness) -> None:
         expect=400,
         timeout_s=15.0,
     )
+
+
+def test_commit_file_diff(harness: FunctionalHarness, commits_cwd: Path) -> None:
+    """GET /commit/file returns the unified diff of one file at one commit."""
+    listed = harness.http(
+        "GET",
+        "/api/git/commits",
+        params={"path": str(commits_cwd)},
+        expect=200,
+        timeout_s=15.0,
+    ).json()
+    sha = listed["commits"][0]["sha"]
+    body = harness.http(
+        "GET",
+        "/api/git/commit/file",
+        params={"path": str(commits_cwd), "sha": sha, "file": "a.txt"},
+        expect=200,
+        timeout_s=15.0,
+    ).json()
+    assert body["sha"] == sha
+    assert body["path"] == "a.txt"
+    assert "-two" in body["diff_content"]
+    assert "+three" in body["diff_content"]
+    assert "@@" in body["diff_content"]
+
+
+def test_commit_file_diff_root_commit(
+    harness: FunctionalHarness, commits_cwd: Path
+) -> None:
+    """The first commit has no parent — the show-fallback still renders."""
+    listed = harness.http(
+        "GET",
+        "/api/git/commits",
+        params={"path": str(commits_cwd)},
+        expect=200,
+        timeout_s=15.0,
+    ).json()
+    sha = listed["commits"][-1]["sha"]
+    body = harness.http(
+        "GET",
+        "/api/git/commit/file",
+        params={"path": str(commits_cwd), "sha": sha, "file": "a.txt"},
+        expect=200,
+        timeout_s=15.0,
+    ).json()
+    assert "+one" in body["diff_content"]
+
+
+def test_commit_file_diff_validation(harness: FunctionalHarness) -> None:
+    """Missing file, flag-like file, and traversal are 400s."""
+    harness.http(
+        "GET",
+        "/api/git/commit/file",
+        params={"path": "/tmp", "sha": "3bc0e389"},
+        expect=400,
+        timeout_s=15.0,
+    )
+    harness.http(
+        "GET",
+        "/api/git/commit/file",
+        params={"path": "/tmp", "sha": "3bc0e389", "file": "--output=x"},
+        expect=400,
+        timeout_s=15.0,
+    )
+    harness.http(
+        "GET",
+        "/api/git/commit/file",
+        params={"path": "/tmp", "sha": "3bc0e389", "file": "../escape"},
+        expect=400,
+        timeout_s=15.0,
+    )

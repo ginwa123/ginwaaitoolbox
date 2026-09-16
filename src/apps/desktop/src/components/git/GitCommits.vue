@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import * as api from '../../api'
+import {
+  escapeDiffHtml,
+  parseUnifiedDiff,
+  type ParsedDiffLine,
+} from '../views/chat_right_sidebar/parseUnifiedDiff'
 
 const props = defineProps<{
   cwd?: string
@@ -22,7 +27,15 @@ const error = ref<string | null>(null)
 const selectedSha = ref<string | null>(null)
 const detailCache = ref<Record<string, api.GitCommitDetail>>({})
 const detailLoading = ref<string | null>(null)
+// Per-file unified diffs, keyed `${sha}::${path}`. Read-only inline view:
+// click a touched file to expand its diff at that commit.
+const fileDiffCache = ref<Record<string, ParsedDiffLine[]>>({})
+const fileDiffLoading = ref<Record<string, boolean>>({})
+const fileDiffError = ref<Record<string, boolean>>({})
+const openFileKey = ref<string | null>(null)
 const hasMore = ref(false)
+
+const fileKey = (sha: string, path: string): string => `${sha}::${path}`
 
 const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
 const loadedCount = computed(() => commits.value.length)
@@ -127,6 +140,44 @@ const ensureDetail = async (commit: api.GitCommit) => {
 const statusIcon = (status: string): string => {
   const icons: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄', C: '📋' }
   return icons[status] ?? '📄'
+}
+
+const toggleFile = (commit: api.GitCommit, file: api.GitCommitFile) => {
+  const key = fileKey(commit.sha, file.path)
+  if (openFileKey.value === key) {
+    openFileKey.value = null
+    return
+  }
+  openFileKey.value = key
+  void ensureFileDiff(commit, file, key)
+}
+
+const ensureFileDiff = async (commit: api.GitCommit, file: api.GitCommitFile, key: string) => {
+  if (!props.cwd || fileDiffCache.value[key]) return
+  fileDiffLoading.value = { ...fileDiffLoading.value, [key]: true }
+  fileDiffError.value = { ...fileDiffError.value, [key]: false }
+  try {
+    const diff = await api.getGitCommitFileDiff(props.cwd, commit.sha, file.path)
+    if (diff) {
+      const parsed = parseUnifiedDiff(diff.diff_content)
+      fileDiffCache.value = { ...fileDiffCache.value, [key]: parsed.lines }
+    } else {
+      fileDiffError.value = { ...fileDiffError.value, [key]: true }
+    }
+  } catch {
+    fileDiffError.value = { ...fileDiffError.value, [key]: true }
+  } finally {
+    const loading = { ...fileDiffLoading.value }
+    delete loading[key]
+    fileDiffLoading.value = loading
+  }
+}
+
+const diffLineStyle = (line: ParsedDiffLine): Record<string, string> => {
+  if (line.type === 'add') return { backgroundColor: 'rgba(34, 197, 94, 0.12)' }
+  if (line.type === 'remove') return { backgroundColor: 'rgba(239, 68, 68, 0.12)' }
+  if (line.type === 'hunk') return { color: 'var(--color-aqua)' }
+  return {}
 }
 
 watch(
@@ -290,16 +341,59 @@ defineExpose({ refresh })
               v-else-if="detailCache[commit.sha]?.files?.length"
               class="mt-1 flex flex-col gap-0.5"
             >
-              <div
-                v-for="file in detailCache[commit.sha]?.files ?? []"
-                :key="file.path"
-                class="flex items-center gap-2 text-xs"
-              >
-                <span>{{ statusIcon(file.status) }}</span>
-                <span class="truncate" style="color: var(--semantic-text)" :title="file.path">
-                  {{ file.path }}
-                </span>
-              </div>
+              <template v-for="file in detailCache[commit.sha]?.files ?? []" :key="file.path">
+                <button
+                  class="w-full flex items-center gap-2 text-xs text-left rounded px-1 py-0.5 transition-colors hover:bg-white/5"
+                  :title="`Show diff at ${commit.short_sha}`"
+                  @click="toggleFile(commit, file)"
+                >
+                  <span>{{ statusIcon(file.status) }}</span>
+                  <span
+                    class="flex-1 truncate"
+                    style="color: var(--semantic-text)"
+                    :title="file.path"
+                  >
+                    {{ file.path }}
+                  </span>
+                  <span style="color: var(--semantic-text-dim)">
+                    {{ openFileKey === fileKey(commit.sha, file.path) ? '▾' : '▸' }}
+                  </span>
+                </button>
+                <div
+                  v-if="openFileKey === fileKey(commit.sha, file.path)"
+                  class="ml-4 rounded overflow-x-auto font-mono"
+                  style="border: 1px solid var(--color-border); font-size: 11px"
+                >
+                  <div
+                    v-if="fileDiffLoading[fileKey(commit.sha, file.path)]"
+                    class="px-2 py-1.5"
+                    style="color: var(--semantic-text-dim)"
+                  >
+                    Loading diff…
+                  </div>
+                  <div
+                    v-else-if="fileDiffError[fileKey(commit.sha, file.path)]"
+                    class="px-2 py-1.5"
+                    style="color: var(--semantic-error)"
+                  >
+                    Failed to load diff
+                  </div>
+                  <div
+                    v-else-if="(fileDiffCache[fileKey(commit.sha, file.path)] ?? []).length === 0"
+                    class="px-2 py-1.5"
+                    style="color: var(--semantic-text-dim)"
+                  >
+                    No changes
+                  </div>
+                  <div
+                    v-for="line in fileDiffCache[fileKey(commit.sha, file.path)] ?? []"
+                    :key="line.lineIndex"
+                    class="px-2 whitespace-pre"
+                    :style="diffLineStyle(line)"
+                    v-html="escapeDiffHtml(line.content)"
+                  />
+                </div>
+              </template>
             </div>
           </div>
         </template>
