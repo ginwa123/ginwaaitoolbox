@@ -7,13 +7,27 @@ import {
   type ParsedDiffLine,
 } from '../views/chat_right_sidebar/parseUnifiedDiff'
 
-const props = defineProps<{
-  cwd?: string
-}>()
+const props = withDefaults(
+  defineProps<{
+    cwd?: string
+    /**
+     * When true (default) a file click expands its diff inline below the
+     * row — the only view available to hosts without a center column
+     * (RightSidebar). When false the row emits `commit-file-click` instead
+     * and the host renders the diff itself (SidebarDiffPanel forwards it
+     * to ChatView's center column, like worktree/PR file rows).
+     */
+    inlineFileDiff?: boolean
+  }>(),
+  { inlineFileDiff: true },
+)
 
 const emit = defineEmits<{
   'commit-click': [commit: api.GitCommit]
+  'commit-file-click': [payload: { commit: api.GitCommit; file: api.GitCommitFile }]
 }>()
+
+const inlineDiff = computed(() => props.inlineFileDiff ?? true)
 
 const PAGE_SIZE = 100
 
@@ -143,6 +157,10 @@ const statusIcon = (status: string): string => {
 }
 
 const toggleFile = (commit: api.GitCommit, file: api.GitCommitFile) => {
+  if (!inlineDiff.value) {
+    emit('commit-file-click', { commit, file })
+    return
+  }
   const key = fileKey(commit.sha, file.path)
   if (openFileKey.value === key) {
     openFileKey.value = null
@@ -360,7 +378,7 @@ defineExpose({ refresh })
                   </span>
                 </button>
                 <div
-                  v-if="openFileKey === fileKey(commit.sha, file.path)"
+                  v-if="inlineDiff && openFileKey === fileKey(commit.sha, file.path)"
                   class="ml-4 rounded overflow-x-auto font-mono"
                   style="border: 1px solid var(--color-border); font-size: 11px"
                 >

@@ -448,6 +448,40 @@ const selectFile = (file: api.GitFileChange, staged: boolean) => {
   void loadDiff()
 }
 
+// Commit-history file click (GitCommits with inline-file-diff=false):
+// fetch the file's unified diff at that commit and show it in ChatView's
+// center column — the same show-diff flow as worktree/PR file rows.
+// Rename rows carry "old -> new"; the diff is fetched for the new side.
+const onCommitFileClick = async (payload: { commit: api.GitCommit; file: api.GitCommitFile }) => {
+  if (!props.cwd) return
+  const rawPath = payload.file.path
+  const diffPath = rawPath.includes(' -> ') ? (rawPath.split(' -> ').pop() ?? rawPath) : rawPath
+  selectedPath.value = diffPath
+  selectedStaged.value = false
+  try {
+    const diff = await api.getGitCommitFileDiff(props.cwd, payload.commit.sha, diffPath)
+    if (!diff) throw new Error('empty diff')
+    const parsed = parseUnifiedDiff(diff.diff_content)
+    emit('show-diff', {
+      path: diffPath,
+      staged: false,
+      lines: parsed.lines,
+      added: parsed.added,
+      removed: parsed.removed,
+    })
+  } catch (err) {
+    console.error('Failed to load commit file diff:', err)
+    emit('show-diff', {
+      path: diffPath,
+      staged: false,
+      lines: [],
+      added: 0,
+      removed: 0,
+      error: 'Failed to load commit file diff',
+    })
+  }
+}
+
 const stageFile = async (file: api.GitFileChange) => {
   if (!props.cwd || isStaging.value) return
   isStaging.value = true
@@ -683,7 +717,7 @@ defineExpose({
     </div>
 
     <div v-if="showCommits && !showPr" class="flex-1 min-h-0">
-      <GitCommits :cwd="cwd" />
+      <GitCommits :cwd="cwd" :inline-file-diff="false" @commit-file-click="onCommitFileClick" />
     </div>
     <div v-else class="flex-1 overflow-y-auto min-h-0">
       <template v-if="showPr">

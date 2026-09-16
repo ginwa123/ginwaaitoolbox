@@ -136,4 +136,28 @@ describe('GitCommits', () => {
     expect(wrapper.text()).toContain('old')
     expect(wrapper.text()).toContain('new')
   })
+
+  it('emits commit-file-click instead of fetching when inline is off', async () => {
+    const wrapper = mount(GitCommits, {
+      props: { cwd: '/repo', inlineFileDiff: false },
+    })
+    await flushPromises()
+    getGitCommitDetailMock.mockResolvedValue({
+      ...COMMITS.commits[0],
+      files: [{ status: 'M', path: 'src/main.zig' }],
+    })
+    const commitRow = wrapper.findAll('button').find((b) => b.text().includes('prefetch older'))
+    await commitRow!.trigger('click')
+    await flushPromises()
+    const fileRow = wrapper.findAll('button').find((b) => b.text().includes('src/main.zig'))
+    await fileRow!.trigger('click')
+    await flushPromises()
+    expect(getGitCommitFileDiffMock).not.toHaveBeenCalled()
+    const emitted = wrapper.emitted('commit-file-click')
+    expect(emitted).toHaveLength(1)
+    expect(emitted![0]![0]).toEqual({
+      commit: COMMITS.commits[0],
+      file: { status: 'M', path: 'src/main.zig' },
+    })
+  })
 })
