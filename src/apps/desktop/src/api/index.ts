@@ -5196,3 +5196,94 @@ export async function getBackgroundProcessLog(
     { silent: true },
   )
 }
+
+// ─── Right-sidebar terminal (PTY over REST + poll) ───────────────────────────
+// Backend: terminal_create/input/output/resize/delete.zig (in-memory PTY
+// registry, no migration). All fns pass `silent: true` — output is a
+// ~300ms poll, so a toast on every transient failure would be noise.
+// Callers render inline state instead.
+
+export interface TerminalSession {
+  id: string
+  pid: number
+}
+
+export interface TerminalOutput {
+  data: string
+  cursor: number
+  exited: boolean
+  exit_code: number | null
+}
+
+/**
+ * Spawn a shell on a fresh PTY.
+ *
+ * POST /api/terminal/sessions { cwd, shell?, cols?, rows? } -> 201 { id, pid }
+ */
+export async function createTerminalSession(
+  cwd: string,
+  opts: { shell?: string; cols?: number; rows?: number } = {},
+): Promise<TerminalSession> {
+  return await apiFetch<TerminalSession>(`/terminal/sessions`, {
+    method: 'POST',
+    body: JSON.stringify({ cwd, ...opts }),
+    silent: true,
+  })
+}
+
+/**
+ * Write keystrokes to the PTY.
+ *
+ * POST /api/terminal/sessions/:id/input { data } -> 200 { ok, bytes }
+ */
+export async function sendTerminalInput(
+  id: string,
+  data: string,
+): Promise<{ ok: boolean; bytes: number }> {
+  return await apiFetch<{ ok: boolean; bytes: number }>(
+    `/terminal/sessions/${encodeURIComponent(id)}/input`,
+    { method: 'POST', body: JSON.stringify({ data }), silent: true },
+  )
+}
+
+/**
+ * Poll output since `cursor`.
+ *
+ * GET /api/terminal/sessions/:id/output?cursor=N
+ * -> 200 { data, cursor, exited, exit_code }
+ */
+export async function getTerminalOutput(id: string, cursor = 0): Promise<TerminalOutput> {
+  const params = new URLSearchParams({ cursor: String(cursor) })
+  return await apiFetch<TerminalOutput>(
+    `/terminal/sessions/${encodeURIComponent(id)}/output?${params}`,
+    { silent: true },
+  )
+}
+
+/**
+ * Resize the PTY window.
+ *
+ * POST /api/terminal/sessions/:id/resize { cols, rows } -> 200 { ok, cols, rows }
+ */
+export async function resizeTerminal(
+  id: string,
+  cols: number,
+  rows: number,
+): Promise<{ ok: boolean; cols: number; rows: number }> {
+  return await apiFetch<{ ok: boolean; cols: number; rows: number }>(
+    `/terminal/sessions/${encodeURIComponent(id)}/resize`,
+    { method: 'POST', body: JSON.stringify({ cols, rows }), silent: true },
+  )
+}
+
+/**
+ * Kill the shell and drop the session.
+ *
+ * DELETE /api/terminal/sessions/:id -> 200 { ok }
+ */
+export async function deleteTerminalSession(id: string): Promise<{ ok: boolean }> {
+  return await apiFetch<{ ok: boolean }>(`/terminal/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    silent: true,
+  })
+}

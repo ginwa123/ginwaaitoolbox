@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import SidebarDiffPanel from './SidebarDiffPanel.vue'
+import TerminalTab from './TerminalTab.vue'
 import type { DiffSelection } from './parseUnifiedDiff'
 
 const props = defineProps<{
@@ -28,6 +29,34 @@ const emit = defineEmits<{
 }>()
 
 const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
+
+const STORAGE_KEY_PANEL = 'nalar-right-sidebar-panel'
+
+type SidebarPanel = 'changes' | 'terminal'
+
+function loadPanel(): SidebarPanel {
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const q = params.get('sidebar')
+    if (q === 'terminal' || q === 'changes') return q
+    const saved = localStorage.getItem(STORAGE_KEY_PANEL)
+    if (saved === 'terminal' || saved === 'changes') return saved
+  } catch {
+    // Non-browser (tests/SSR) — fall through to default.
+  }
+  return 'changes'
+}
+
+const activePanel = ref<SidebarPanel>(loadPanel())
+
+const setPanel = (panel: SidebarPanel) => {
+  activePanel.value = panel
+  try {
+    localStorage.setItem(STORAGE_KEY_PANEL, panel)
+  } catch {
+    // ignore
+  }
+}
 
 const isResizing = ref(false)
 
@@ -110,17 +139,60 @@ defineExpose({
         ✕
       </button>
     </div>
+    <div
+      class="flex items-center gap-1 px-3 pt-2 shrink-0"
+      role="tablist"
+      aria-label="Right sidebar panel"
+    >
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="activePanel === 'changes'"
+        class="flex-1 text-center text-xs rounded-t px-2 py-1.5"
+        :style="
+          activePanel === 'changes'
+            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
+            : 'color: var(--semantic-text-dim)'
+        "
+        data-testid="chat-right-sidebar-tab-changes"
+        @click="setPanel('changes')"
+      >
+        Files changed
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="activePanel === 'terminal'"
+        class="flex-1 text-center text-xs rounded-t px-2 py-1.5"
+        :style="
+          activePanel === 'terminal'
+            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
+            : 'color: var(--semantic-text-dim)'
+        "
+        data-testid="chat-right-sidebar-tab-terminal"
+        @click="setPanel('terminal')"
+      >
+        ⌁ Terminal
+      </button>
+    </div>
     <div class="flex-1 min-h-0">
-      <SidebarDiffPanel
-        ref="panelRef"
-        :cwd="cwd"
-        :branch="branch"
-        :pr-url="prUrl"
-        :pr-provider="prProvider"
-        @refresh="() => emit('refresh')"
-        @show-diff="(selection) => emit('show-diff', selection)"
-        @show-diff-list="(files) => emit('show-diff-list', files)"
-      />
+      <!-- Both panels stay mounted (v-show, not v-if) so the PTY
+      session survives tab switches; only the visible one paints. -->
+      <div v-show="activePanel === 'terminal'" class="h-full min-h-0">
+        <TerminalTab :cwd="cwd" />
+      </div>
+      <div v-show="activePanel === 'changes'" class="h-full min-h-0">
+        <SidebarDiffPanel
+          ref="panelRef"
+          :cwd="cwd"
+          :branch="branch"
+          :pr-url="prUrl"
+          :pr-provider="prProvider"
+          @refresh="() => emit('refresh')"
+          @show-diff="(selection) => emit('show-diff', selection)"
+          @show-diff-list="(files) => emit('show-diff-list', files)"
+        />
+      </div>
     </div>
   </aside>
 </template>

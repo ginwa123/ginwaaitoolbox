@@ -15,14 +15,10 @@ import tailwindcss from '@tailwindcss/vite'
 const apiProxyTarget = process.env.VITE_API_PROXY_TARGET ?? 'http://localhost:8081'
 
 export default defineConfig({
-  plugins: [
-    vue(),
-    vueDevTools(),
-    tailwindcss(),
-  ],
+  plugins: [vue(), vueDevTools(), tailwindcss()],
   resolve: {
     alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
   optimizeDeps: {
@@ -44,6 +40,10 @@ export default defineConfig({
       '/api': {
         target: apiProxyTarget, // Override-able via VITE_API_PROXY_TARGET env var
         changeOrigin: true,
+        // WS for the right-sidebar terminal (/api/terminal/ws). Prod is
+        // same-origin (nalar serves the webapp itself); dev needs this
+        // or the socket falls back to REST polling.
+        ws: true,
         // We take over writing the downstream response ourselves so
         // http-proxy does not buffer the upstream SSE body. The
         // previous version set `x-no-proxy-buffering` (a CloudFront-
