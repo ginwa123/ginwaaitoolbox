@@ -153,7 +153,7 @@ fn nextColumnIdCounter() u64 {
 /// Caller owns the returned slice.
 pub fn addColumn(
     allocator: std.mem.Allocator,
-    db: nalarcore.DbOrTx,
+    db: nalarcore.database.DbOrTx,
     workspace_item_id: []const u8,
     name: []const u8,
     description: []const u8,
@@ -206,7 +206,7 @@ pub fn addColumn(
 /// Settings dialog (Chunk 3).
 pub fn seedDefaultColumns(
     allocator: std.mem.Allocator,
-    db: nalarcore.DbOrTx,
+    db: nalarcore.database.DbOrTx,
     workspace_item_id: []const u8,
 ) !void {
     // Each `addColumn` returns an owned id slice that the caller MUST

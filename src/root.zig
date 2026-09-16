@@ -621,51 +621,6 @@ pub const sqlite = @import("databases").sqlite;
 // `Db` IS `SqliteBackend` when sqlite-only, so existing
 // `*sqlite.SqliteBackend` signatures keep compiling during migration.
 pub const database = @import("databases").database;
-/// Explicit backend-or-transaction handle for helpers that run both
-/// outside a tx (`db`) and inside one (`tx`). Prefer this over
-/// `anytype`: every accepted type is listed here and dispatch is an
-/// exhaustive switch, so misuse fails to compile at the call site.
-/// Construct with `.{ .db = db }` or `.{ .tx = &tx }`.
-pub const DbOrTx = union(enum) {
-    db: *sqlite.SqliteBackend,
-    tx: *sqlite.SqliteBackend.Transaction,
-
-    pub fn exec(
-        self: DbOrTx,
-        allocator: std.mem.Allocator,
-        sql: []const u8,
-        argv: []const []const u8,
-    ) sqlite.Error!void {
-        switch (self) {
-            .db => |d| return d.exec(allocator, sql, argv),
-            .tx => |t| return t.exec(allocator, sql, argv),
-        }
-    }
-
-    pub fn query(
-        self: DbOrTx,
-        allocator: std.mem.Allocator,
-        sql: []const u8,
-        argv: []const []const u8,
-    ) sqlite.Error!sqlite.SqliteBackend.Rows {
-        switch (self) {
-            .db => |d| return d.query(allocator, sql, argv),
-            .tx => |t| return t.query(allocator, sql, argv),
-        }
-    }
-
-    pub fn queryRow(
-        self: DbOrTx,
-        allocator: std.mem.Allocator,
-        sql: []const u8,
-        argv: []const []const u8,
-    ) sqlite.Error!sqlite.SqliteBackend.Row {
-        switch (self) {
-            .db => |d| return d.queryRow(allocator, sql, argv),
-            .tx => |t| return t.queryRow(allocator, sql, argv),
-        }
-    }
-};
 pub const bash_tool = @import("modules/agent/tools/bash.zig");
 pub const pwsh_tool = @import("modules/agent/tools/pwsh.zig");
 pub const command_tool = @import("modules/agent/tools/command.zig");
