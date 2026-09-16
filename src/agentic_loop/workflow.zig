@@ -9,6 +9,10 @@ const models = @import("models.zig");
 pub const on_event_sent = @import("on_event_sent.zig");
 const tool_registry = @import("tools_equipped.zig");
 const handle_tool = @import("handle_tool.zig").handle_tool;
+const ask_user_pending = @import("ask_user_pending.zig");
+// `MAIN_AGENT_ONLY_NAMES` (spawn_sub_agent, ask_user) — the tools a sub-agent
+// must not re-equip via `use_tool`.
+const ask_user_mod = nalarcore.ask_user;
 const notifications = nalarcore.notifications_mod;
 
 const sqlite = nalarcore.sqlite;
@@ -862,6 +866,20 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             break;
         }
 
+        // A run must never proceed while a question is unanswered: the model
+        // would receive the <status>pending</status> envelope and might guess.
+        // The `session_create` funnel settles a pending question as
+        // `abandoned` before any user-initiated run, and the `.tool_calls` arm
+        // below breaks immediately after asking — this guard covers the third
+        // path, a scheduler-started run (e.g. `wakeSessionForCompletion`).
+        if (ask_user_pending.hasPendingQuestion(allocator, db, copy_session_id)) {
+            logger.infoFmt(
+                "[CHECKPOINT] ask_user question still pending — ending the run session_id={s}",
+                .{copy_session_id},
+            );
+            break;
+        }
+
         // Get queued messages from DB
         var queued_messages = try getQueueMessage(GetQueueMessageInput{
             .allocator = allocator,
@@ -1510,6 +1528,47 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 // stays allocated for the run's lifetime as the fallback if
                 // a future iteration's re-read fails.
                 try handle_tool(allocator, io, db, logger, copy_session_id, copy_parent_session_id, eff.model, copy_cwd, loop_counter, res_dynamic_agent, &agent_temperature, &isThinking, config.api_key, config.base_url, config, environment, active_loops, live_selected_profile_model, copy_allowed_tools, copy_is_sub_agent);
+
+                // `ask_user` ends the turn rather than parking the loop. The
+                // tool recorded a pending question and returned
+                // `<status>pending</status>`; the batch's rows are already
+                // complete (handle_tool's Phase 1 gave every tool call its own
+                // role=tool row), so the chain stays valid and the resume run —
+                // started when the human answers — reads that same row with the
+                // answer in it.
+                //
+                // Deliberately NO `hasQueuedMessages` guard here (unlike
+                // `.stop` below): a queued message must not start another
+                // iteration while a question is pending, because the loop would
+                // hand the model the <status>pending</status> envelope and it
+                // might guess. `session_create` settles the question as
+                // `abandoned` before any user-initiated run for the same reason.
+                if (ask_user_pending.hasPendingQuestion(allocator, db, copy_session_id)) {
+                    // Overwrite the `tool_calls` value persisted at the top of
+                    // this iteration: as far as anything reading the session is
+                    // concerned, this turn ended waiting on the human. The
+                    // assistant row keeps `tool_calls` — that IS what the LLM
+                    // returned, and the frontend's TOOLS-pill logic keys off it.
+                    llm_history.updateSessionLastFinishReason(allocator, db, copy_session_id, agent.FinishReason.awaiting_user.to_str()) catch |err| {
+                        logger.warnFmt(
+                            "[workflow] failed to persist last_finish_reason=awaiting_user: {s}",
+                            .{@errorName(err)},
+                        );
+                    };
+                    logger.infoFmt(
+                        "[CHECKPOINT] ask_user pending — ending the turn session_id={s} loop_counter={d}",
+                        .{ copy_session_id, loop_counter },
+                    );
+                    try deleteWorker(DeleteWorkerInput{
+                        .allocator = allocator,
+                        .db = db,
+                        .logger = logger,
+                        .session_id = copy_session_id,
+                        .event_bus = event_bus,
+                        .is_emit_sse = true,
+                    });
+                    break;
+                }
             } else {
                 retry_count += 1;
                 // Capture the unexpected finish_reason as a synthetic
@@ -2026,7 +2085,7 @@ pub fn filterAndMergeTools(
     // allowlist excluded them — that is the point of `use_tool`.
     for (progressive_equipped) |name| {
         if (seen.contains(name)) continue;
-        if (is_sub_agent and std.mem.eql(u8, name, "spawn_sub_agent")) continue;
+        if (is_sub_agent and ask_user_mod.isMainAgentOnly(name)) continue;
         for (registered) |tool| {
             if (std.mem.eql(u8, tool.function.name, name)) {
                 try seen.put(allocator, name, {});

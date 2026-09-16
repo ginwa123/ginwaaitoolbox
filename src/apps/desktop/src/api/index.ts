@@ -1347,6 +1347,10 @@ export const DEFAULT_CHAT_TOOLS = [
   'save_memory',
   'list_skills',
   'use_skill',
+  // Interactive: ask the human a question (ends the turn until they answer).
+  // Seeded in every mode by default — without it here the tool would be
+  // silently filtered out of plain chat sessions.
+  'ask_user',
 ].join(',')
 
 export async function sendChatMessage(
@@ -1707,6 +1711,39 @@ export async function compactSession(
  * `apiFetch` wrapper turns non-2xx into a thrown error which we
  * swallow + log here, so callers always get a typed response).
  */
+// Answer a pending `ask_user` question (Migration 088).
+//
+// The ask_user agent tool ends the turn: it records a question and returns
+// immediately. THIS call settles that question, rewrites the tool-result row
+// the model will read, and starts a new run so the conversation resumes.
+//
+// `question_id` is preferred; `tool_call_id` is the fallback the card always
+// has (it is on the tool row). Idempotent — answering an already-answered
+// question returns 200 with the stored status, so a double-click or a
+// retry-after-timeout is never an error.
+export async function answerAskUser(
+  sessionId: string,
+  body: {
+    question_id?: string
+    tool_call_id?: string
+    answer?: string
+    skip?: boolean
+  },
+): Promise<{ success: boolean; status?: string; answer?: string; resumed?: boolean }> {
+  try {
+    return await apiFetch<{ success: boolean; status: string; answer: string; resumed: boolean }>(
+      `/llm/session/${sessionId}/answer`,
+      { method: 'POST', body },
+    )
+  } catch (error) {
+    // The card renders a Retry affordance; the question row stays `pending`
+    // server-side (the endpoint never resumes a run whose answer did not
+    // land first), so a retry is safe.
+    console.error('Failed to answer ask_user question:', error)
+    return { success: false }
+  }
+}
+
 export async function stopSession(
   sessionId: string,
 ): Promise<{ success: boolean; session_id?: string }> {
@@ -4840,11 +4877,11 @@ export async function disableAgentKanbanTool(
   })
 }
 
-// ─── Agent-Routines Mirror (Migration 087) ─────────────────────────────
+// ─── Agent-Routines Mirror (Migration 088) ─────────────────────────────
 //
 // Mirrors the Agent-Kanbans block above onto routine items. Unlike kanbans,
 // the config row (`agent_routines`) is SEEDED on routine creation and
-// backfilled for pre-existing routines (Migration 087) — same silent-null
+// backfilled for pre-existing routines (Migration 088) — same silent-null
 // contract on 404 kept anyway.
 
 export interface AgentRoutine {

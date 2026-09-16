@@ -181,3 +181,69 @@ If `pwsh` is not on `$PATH`, the spawn fails with `FileNotFound` — same shape 
 }
 ```
 ```
+## `ask_user`
+
+Stops the turn to ask the human a question, with 2–6 selectable options
+and/or a free-text answer. Use it only when a decision is genuinely blocked
+on the human and guessing wrong would waste real work — not to confirm
+something you can verify yourself.
+
+The call **ends the turn**. `ask_user` returns immediately, the agentic loop
+breaks, and the question waits in the transcript for as long as it takes the
+human to answer (there is **no timeout**: nothing is parked in memory, so a
+question can wait a week at no cost). Answering rewrites this tool call's
+result row in place and starts a **new run** that continues with the answer
+in context.
+
+**Input** (JSON object):
+- `question` (required): the question. Ask exactly one; put context in the text
+- `header` (optional): card title, ≤ 40 characters
+- `options` (optional): 2–6 short strings. Each option **is** the answer value. Omit for a free-text-only question
+- `allow_free_text` (optional, default `true`): also offer an "Other — type your own answer" box
+- `multi_select` (optional, default `false`): let the human pick several options
+- `recommended` (optional): must exactly match one of `options`; rendered as a chip
+
+**Output to LLM** (XML envelope inside `<data>`):
+- Pending (returned immediately, and what the card renders): `<ask_user><status>pending</status><question_id>q_…</question_id><header>…</header><question>…</question><allow_free_text>true</allow_free_text><multi_select>false</multi_select><recommended>…</recommended><options><option>…</option></options><instruction>…</instruction></ask_user>`
+- Answered (written in place by the answer endpoint): `…<status>answered</status><answer>staging</answer><answers_count>1</answers_count>`
+- Skipped: `…<status>skipped</status><instruction>The human declined to answer. Do not guess…</instruction>`
+- Abandoned: `…<status>abandoned</status><instruction>The human moved on without answering. Do not guess…</instruction>`
+- No human (unattended run / sub-agent, returned immediately, **no row written**): `…<status>unavailable</status><reason>no_human</reason><instruction>Choose the most reasonable option yourself…</instruction>`
+- Error (malformed input only, e.g. `recommended` not in `options`): `<tool><name>ask_user</name>…<success>false</success><error>…</error></tool>`
+
+`skipped` / `abandoned` / `unavailable` are **successful** calls with a
+degraded outcome, never `<error>`.
+
+**SSE event:** none — the card renders from the standard `llm_full`
+tool-result row (`tool_name='ask_user'`). The answer rewrites that same row in
+place (and emits its `llm_full`), so an open chat flips the card without a
+reload; a page reload re-renders it from history.
+
+**Persistence:** Migration 088 `session_pending_question` — one row per
+question (`session_id`, `tool_call_id`, `llm_history_id`, `question`,
+`multi_select`, `status`, `answer`). `status` is one of
+`pending | answered | skipped | abandoned`; `unavailable` writes no row at all.
+
+**HTTP:** `POST /api/llm/session/:session_id/answer` with
+`{question_id | tool_call_id, answer, skip}`. The order inside the handler is
+load-bearing: mark the row resolved → rewrite the tool-result row → *then*
+`emit_run_agent(skip_initial_queue_message=true)`. A run started first would
+hand the model `<status>pending</status>` and it might guess. Idempotent —
+answering an already-resolved question returns 200 with the stored status.
+Errors: 400 (no key / empty answer / scalar answer to a multi-select), 403
+(another session's question), 404 (unknown question).
+
+**Never ask:** a sub-agent (stripped at equip time, rejected outright by
+`spawn_sub_agent`, and `unavailable` at runtime) or an unattended run
+(`sessions.is_auto_retry_until_stop=1`).
+
+**If the human sends a message instead of answering:** the `session_create`
+guard settles the question as `abandoned` and rewrites its row first, so the
+session is never dead-ended and the model is told not to guess.
+
+**Frontend rendering:** `AskUser.vue` — radio list (or checkboxes for
+multi-select) with digit shortcuts, an "Other" textarea, Send / Skip, a
+"waiting for you" badge while pending, and resolved states for
+answered / skipped / abandoned / unavailable. The pending card carries the
+whole question in its envelope, so it renders identically live and after a
+reload.

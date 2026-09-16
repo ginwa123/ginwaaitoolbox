@@ -58,6 +58,11 @@ const search_tool_mod = nalarcore.search_tool;
 const list_directory_mod = nalarcore.list_directory;
 const semantic_search_mod = nalarcore.semantic_search;
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
+// 2026-09-16 — ask_user: the interactive tool that ends the turn to ask the
+// human a question. Main-agent-only (a sub-agent has no answer surface), so
+// it is listed in `ask_user.MAIN_AGENT_ONLY_NAMES` and stripped for
+// sub-agent sessions by `tool_eligibility`.
+const ask_user_mod = nalarcore.ask_user;
 const kanban_create_task_tool = nalarcore.create_kanban_task;
 const command_tool_mod = nalarcore.command_tool;
 // Progressive tool search: search_tool / view_tool / use_tool. Pure tool data
@@ -103,6 +108,8 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         set_git_worktree_mod.set_git_worktree_tool,
         set_pull_request_mod.set_pull_request_tool,
         present_files_mod.present_files_tool,
+        // Interactive: asks the human and ends the turn.
+        ask_user_mod.ask_user_tool,
 
         // kanban only
         kanban_list_mod.kanban_list_tool,
@@ -146,6 +153,13 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
     return &.{
         // === AGENT CONTROL (main agent only) ===
         .{ .name = "spawn_sub_agent", .exec = tools.execSpawnSubAgent, .tool_def = spawn_sub_agent_tool.spawn_sub_agent_tool },
+
+        // === INTERACTIVE (main agent only) ===
+        // ask_user ends the turn so the human can answer in their own time.
+        // A sub-agent has no answer surface, so it is stripped for sub-agent
+        // sessions (`ask_user.MAIN_AGENT_ONLY_NAMES`) AND rejected outright by
+        // spawn_sub_agent's parse-time validation.
+        .{ .name = "ask_user", .exec = tools.execAskUser, .tool_def = ask_user_mod.ask_user_tool },
 
         // === PLAN TOOLS ===
         // 2026-08-19 — session_plan agent tools (Task 4 of
@@ -292,6 +306,9 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // for context-aware tools
     update_plan_mod.update_plan_tool.function.name,
     get_plan_mod.get_plan_tool.function.name,
+
+    // interactive — ask the human and end the turn
+    ask_user_mod.ask_user_tool.function.name,
 
     // for memory tools // addon
     save_memory_mod.save_memory_tool.function.name,

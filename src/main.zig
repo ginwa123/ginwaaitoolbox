@@ -451,6 +451,12 @@ pub fn main(init: std.process.Init) !void {
     // uses /api/llm/*). Same no-shadowing argument as above.
     try gs.router.post("/api/llm/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
     try gs.router.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
+    // `ask_user` answer route. Route order: the literal `answer` tail differs
+    // from every sibling tail (messages, queue_messages, stream, stop,
+    // touched), so there is no `matchRoute` shadowing risk — and it is
+    // registered after the `/messages` + `/queue_messages` siblings anyway,
+    // per the "longer, more-specific paths after their prefix sibling" rule.
+    try gs.router.post("/api/llm/session/:session_id/answer", ai_mod.http_handlers.askUserAnswerHandler);
 
     // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
 

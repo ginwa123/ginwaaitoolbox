@@ -1,0 +1,822 @@
+//! `ask_user` state + the answer round-trip.
+//!
+//! ## Why this module exists
+//!
+//! The `ask_user` tool does NOT block the agentic loop. It writes one row
+//! here and returns a `<status>pending</status>` envelope immediately; the
+//! workflow then BREAKS the turn (see the `.tool_calls` arm in
+//! `workflow.zig`). The human answers later, on their own schedule, and
+//! `POST /api/llm/session/:id/answer` (see `http_handlers/ask_user_answer.zig`)
+//! does three things in a load-bearing order:
+//!
+//!   1. mark this row `answered` / `skipped` / `abandoned`;
+//!   2. **rewrite the tool-result `llm_history` row in place** so the model
+//!      reads the answer as a normal tool result;
+//!   3. start a fresh run so the conversation resumes.
+//!
+//! Step 2 MUST precede step 3. `handle_tool`'s Phase-1 rows are written with
+//! `is_feed_to_llm = 1`, so a run that starts first would hand the model
+//! `<status>pending</status>` and it might guess. If step 2 fails the caller
+//! must leave the row `pending` and return an error, so a Retry is safe —
+//! never emit the run anyway.
+//!
+//! There is deliberately no `expires_at` / timeout: nothing is held open, so
+//! a question may wait indefinitely for the same cost.
+
+const std = @import("std");
+const nalarcore = @import("nalarcore");
+
+const sqlite = nalarcore.sqlite;
+const llm_history = nalarcore.llm_history;
+const ask_user_mod = nalarcore.ask_user;
+const on_event_sent = @import("on_event_sent.zig");
+const is_worker_running = @import("is_worker_running.zig");
+const testing = std.testing;
+
+const Status = ask_user_mod.Status;
+
+/// One row of `session_pending_question`. Owned strings; `deinit` frees.
+pub const PendingQuestion = struct {
+    id: []const u8,
+    session_id: []const u8,
+    tool_call_id: []const u8,
+    llm_history_id: []const u8,
+    question: []const u8,
+    multi_select: bool,
+    status: []const u8,
+    /// COALESCEd to "" on read — an empty answer is never stored (validation
+    /// rejects it), so "" here means "not answered yet".
+    answer: []const u8,
+
+    pub fn deinit(self: *const PendingQuestion, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.tool_call_id);
+        allocator.free(self.llm_history_id);
+        allocator.free(self.question);
+        allocator.free(self.status);
+        allocator.free(self.answer);
+    }
+};
+
+/// `q_<nanoseconds>` — same shape as the other row ids in this codebase
+/// (`at_<nanos>`, `sess_<nanos>`). Uniqueness is additionally guaranteed by
+/// the UNIQUE(tool_call_id) index, which is the invariant that actually
+/// matters (one question per tool call).
+pub fn newQuestionId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
+    return std.fmt.allocPrint(allocator, "q_{d}", .{std.Io.Timestamp.now(io, .real).nanoseconds});
+}
+
+/// `SqliteBackend.exec` binds every argument as a string; SQLite's column
+/// affinity converts it for INTEGER columns. Keeping this in one place means
+/// no call site has to remember the cast.
+fn intArg(allocator: std.mem.Allocator, v: i64) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{d}", .{v});
+}
+
+pub const InsertQuestionInput = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    tool_call_id: []const u8,
+    llm_history_id: []const u8,
+    question: []const u8,
+    /// Whether the human may pick several options (Migration 088's
+    /// `multi_select` column) — the answer endpoint validates the wire shape
+    /// against it.
+    multi_select: bool = false,
+    /// Optional pre-generated id (tests pass a fixed one). Generated when null.
+    id: ?[]const u8 = null,
+};
+
+/// Insert the pending row and return its id (caller-owned).
+///
+/// `INSERT OR IGNORE` + the UNIQUE(tool_call_id) index make a re-exec
+/// idempotent: if this tool call already has a question (a retry after a
+/// transient failure), the existing row wins and its id comes back.
+pub fn insertPendingQuestion(input: InsertQuestionInput) ![]u8 {
+    const allocator = input.allocator;
+    const id_owned: ?[]u8 = if (input.id) |given| try allocator.dupe(u8, given) else null;
+    defer if (id_owned) |s| allocator.free(s);
+    const id = id_owned orelse try newQuestionId(allocator, input.io);
+    defer if (id_owned == null) allocator.free(id);
+
+    const created_at = try intArg(allocator, @intCast(std.Io.Timestamp.now(input.io, .real).nanoseconds));
+    defer allocator.free(created_at);
+
+    try input.db.exec(
+        allocator,
+        \\INSERT OR IGNORE INTO session_pending_question
+        \\    (id, session_id, tool_call_id, llm_history_id, question, multi_select, status, answer, created_at, resolved_at)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL)
+    ,
+        &.{
+            id,
+            input.session_id,
+            input.tool_call_id,
+            input.llm_history_id,
+            input.question,
+            if (input.multi_select) "1" else "0",
+            Status.pending.to_str(),
+            created_at,
+        },
+    );
+
+    // Whether we inserted or the OR IGNORE skipped an existing row, the
+    // authoritative id is whatever the tool_call_id now resolves to.
+    if (try getPendingQuestionByToolCall(allocator, input.db, input.session_id, input.tool_call_id)) |existing| {
+        defer existing.deinit(allocator);
+        return allocator.dupe(u8, existing.id);
+    }
+    return allocator.dupe(u8, id);
+}
+
+const SELECT_COLUMNS =
+    \\SELECT id, session_id, tool_call_id, llm_history_id, question, COALESCE(multi_select, 0), status, COALESCE(answer, '')
+    \\FROM session_pending_question
+;
+
+fn rowToQuestion(row: anytype, allocator: std.mem.Allocator) !PendingQuestion {
+    return .{
+        .id = try allocator.dupe(u8, row.values[0]),
+        .session_id = try allocator.dupe(u8, row.values[1]),
+        .tool_call_id = try allocator.dupe(u8, row.values[2]),
+        .llm_history_id = try allocator.dupe(u8, row.values[3]),
+        .question = try allocator.dupe(u8, row.values[4]),
+        .multi_select = !std.mem.eql(u8, row.values[5], "0"),
+        .status = try allocator.dupe(u8, row.values[6]),
+        .answer = try allocator.dupe(u8, row.values[7]),
+    };
+}
+
+/// Look up by question id. Caller frees via `deinit`.
+pub fn getPendingQuestion(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    question_id: []const u8,
+) !?PendingQuestion {
+    const sql = SELECT_COLUMNS ++ " WHERE id = ? LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{question_id});
+    defer rows.deinit();
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        return try rowToQuestion(row, allocator);
+    }
+    return null;
+}
+
+/// Look up by (session, tool call). The fallback key for a client that only
+/// has the tool row in hand (the card's `tool_call_id`).
+pub fn getPendingQuestionByToolCall(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    tool_call_id: []const u8,
+) !?PendingQuestion {
+    const sql = SELECT_COLUMNS ++ " WHERE session_id = ? AND tool_call_id = ? LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{ session_id, tool_call_id });
+    defer rows.deinit();
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        return try rowToQuestion(row, allocator);
+    }
+    return null;
+}
+
+/// Move a question to a terminal (or back to pending) status.
+///
+/// `answer` is stored only when non-null and non-empty. An empty slice binds
+/// as SQL NULL in this backend anyway (Migration 079's trap), and validation
+/// upstream already rejects a blank answer — so passing `""` here would be a
+/// silent no-op, which is why the parameter is optional rather than a slice.
+pub fn markQuestionStatus(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    question_id: []const u8,
+    status: Status,
+    answer: ?[]const u8,
+) !void {
+    const resolved_at = try intArg(allocator, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds));
+    defer allocator.free(resolved_at);
+
+    if (status == .pending) {
+        try db.exec(
+            allocator,
+            "UPDATE session_pending_question SET status = ?, answer = NULL, resolved_at = NULL WHERE id = ?",
+            &.{ status.to_str(), question_id },
+        );
+        return;
+    }
+
+    try db.exec(
+        allocator,
+        "UPDATE session_pending_question SET status = ?, answer = ?, resolved_at = ? WHERE id = ?",
+        &.{
+            status.to_str(),
+            answer orelse "",
+            resolved_at,
+            question_id,
+        },
+    );
+}
+
+/// Resolve every still-pending question for a session as `abandoned`.
+///
+/// Used by the `session_create` guard: the human sent a different message
+/// instead of answering, so the question is settled (the model is told not to
+/// guess) and their message can run. Returns how many rows changed.
+pub fn markAbandonedForSession(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !usize {
+    const pending = Status.pending.to_str();
+    const abandoned = Status.abandoned.to_str();
+    const resolved_at = try intArg(allocator, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds));
+    defer allocator.free(resolved_at);
+
+    // Count first — after the UPDATE the rows are indistinguishable from
+    // questions abandoned earlier in the session's life.
+    var changed: usize = 0;
+    {
+        var rows = try db.query(
+            allocator,
+            "SELECT COUNT(*) FROM session_pending_question WHERE session_id = ? AND status = ?",
+            &.{ session_id, pending },
+        );
+        defer rows.deinit();
+        if (try rows.next()) |row| {
+            defer row.deinit(allocator);
+            changed = std.fmt.parseInt(usize, row.values[0], 10) catch 0;
+        }
+    }
+    if (changed == 0) return 0;
+
+    try db.exec(
+        allocator,
+        "UPDATE session_pending_question SET status = ?, resolved_at = ? WHERE session_id = ? AND status = ?",
+        &.{
+            abandoned,
+            resolved_at,
+            session_id,
+            pending,
+        },
+    );
+    return changed;
+}
+
+/// The hot-path predicate: is this session waiting on the human?
+///
+/// Called at the top of every agentic-loop iteration and before every
+/// user-initiated run. `SELECT 1 … LIMIT 1` on the indexed
+/// (session_id, status) pair — the same shape as `hasQueuedMessages`.
+pub fn hasPendingQuestion(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    const sql = "SELECT 1 FROM session_pending_question WHERE session_id = ? AND status = 'pending' LIMIT 1";
+    var rows = db.query(allocator, sql, &.{session_id}) catch return false;
+    defer rows.deinit();
+    if (rows.next() catch return false) |row| {
+        defer row.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
+/// True when the session opted into unattended mode (Migration 063).
+///
+/// Unattended means "do not ask": the `ask_user` tool returns `unavailable`
+/// immediately so the model decides in the SAME run and the run completes.
+/// A scheduled/routine job must never leave a question nobody will answer.
+pub fn isUnattended(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    var rows = db.query(
+        allocator,
+        "SELECT COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ? LIMIT 1",
+        &.{session_id},
+    ) catch return false;
+    defer rows.deinit();
+    if (rows.next() catch return false) |row| {
+        defer row.deinit(allocator);
+        return std.mem.eql(u8, row.values[0], "1");
+    }
+    return false;
+}
+
+/// Settle every pending question for a session as `abandoned`, rewriting each
+/// question's tool-result row so the model reads "the human moved on" instead
+/// of `<status>pending</status>`.
+///
+/// This is what the `session_create` guard calls: the human sent a message
+/// instead of answering. Returns how many questions were settled.
+///
+/// Every write here is best-effort in spirit but error-propagating in
+/// practice: a failure leaves that question pending, and the workflow's
+/// iteration-top guard then refuses to run — so the failure mode is "the
+/// message appears to do nothing", never "the model saw `pending` and guessed".
+pub fn abandonPendingQuestions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !usize {
+    // `listRecentQuestions` returns pending rows (always) plus rows resolved
+    // in the last minute; we only settle the pending ones.
+    const all = try listRecentQuestions(allocator, io, db, session_id);
+    defer {
+        for (all) |q| q.deinit(allocator);
+        allocator.free(all);
+    }
+
+    var settled: usize = 0;
+    for (all) |q| {
+        if (!std.mem.eql(u8, q.status, Status.pending.to_str())) continue;
+
+        try markQuestionStatus(allocator, io, db, q.id, .abandoned, null);
+
+        const inner = try ask_user_mod.buildAskUserXml(allocator, .{
+            .status = .abandoned,
+            .question_id = q.id,
+            .question = q.question,
+        });
+        defer allocator.free(inner);
+
+        const envelope = try ask_user_mod.buildAskUserToolEnvelope(allocator, inner);
+        defer allocator.free(envelope);
+
+        try rewriteToolResultRow(.{
+            .allocator = allocator,
+            .io = io,
+            .db = db,
+            .session_id = session_id,
+            .llm_history_id = q.llm_history_id,
+            .content = envelope,
+        });
+        settled += 1;
+    }
+    return settled;
+}
+
+/// All questions the frontend still needs for a session: everything pending
+/// (answered whenever), plus rows resolved in the last minute so a card that
+/// was just answered rehydrates in its resolved state after a reload.
+pub fn listRecentQuestions(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]PendingQuestion {
+    const cutoff = try intArg(allocator, @intCast(std.Io.Timestamp.now(io, .real).nanoseconds - std.time.ns_per_min));
+    defer allocator.free(cutoff);
+    // `SqliteBackend` binds every argument as TEXT, so a bare `?` next to an
+    // INTEGER expression has no column affinity on either side — and SQLite
+    // orders INTEGER before TEXT, making `resolved_at >= '1789…'` always
+    // false. CAST restores the numeric comparison.
+    const sql = SELECT_COLUMNS ++
+        " WHERE session_id = ? AND (status = 'pending' OR COALESCE(resolved_at, 0) >= CAST(? AS INTEGER)) ORDER BY created_at ASC";
+    var rows = try db.query(allocator, sql, &.{ session_id, cutoff });
+    defer rows.deinit();
+
+    var out: std.ArrayList(PendingQuestion) = .empty;
+    errdefer {
+        for (out.items) |q| q.deinit(allocator);
+        out.deinit(allocator);
+    }
+    while (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        try out.append(allocator, try rowToQuestion(row, allocator));
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+// ============================================================================
+// The answer round-trip
+// ============================================================================
+
+pub const RewriteToolResultInput = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    /// The `llm_history` row to overwrite (the `ask_user` tool result).
+    llm_history_id: []const u8,
+    /// The full `<tool>…</tool>` envelope for the resolved status.
+    content: []const u8,
+};
+
+/// Step 2 of the answer round-trip: overwrite the tool-result row in place
+/// with the resolved envelope and push the row's SSE update so an open
+/// `ChatView` flips the card without a reload.
+///
+/// The SSE emit is best-effort (logged, never propagated): a failed card
+/// refresh must not roll back a valid answer or block the resume. The
+/// UPDATE itself IS fatal — see the module doc: the resume must not start
+/// while the model would still read `pending`.
+pub fn rewriteToolResultRow(input: RewriteToolResultInput) !void {
+    try llm_history.updateToolResultById(input.allocator, input.io, input.db, input.llm_history_id, .{
+        .content = input.content,
+        .diffview_before = null,
+        .diffview_after = null,
+    });
+
+    emitRowById(input.allocator, input.db, input.session_id, input.llm_history_id);
+}
+
+/// Emit the `llm_full` frame for one `llm_history` row.
+///
+/// Mirrors `handle_tool.zig`'s private `sendSSEForMessageById`: the wire
+/// `tool_call_id` is the ORIGINAL LLM id, not the row id — using the row id
+/// here broke `spawn_sub_agent` live progress once already (2026-09-01 fix),
+/// and the card keys its own state off `tool_call_id`.
+fn emitRowById(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    id: []const u8,
+) void {
+    // Owned by `getMessageById`; freed below.
+    const msg = llm_history.getMessageById(allocator, db, session_id, id) catch return;
+    if (msg == null) return;
+    const m = msg.?;
+    defer {
+        allocator.free(m.id);
+        allocator.free(m.session_id);
+        allocator.free(m.model);
+        allocator.free(m.created_at);
+        allocator.free(m.response_content);
+        allocator.free(m.finish_reason);
+        allocator.free(m.role);
+        allocator.free(m.tools);
+        if (m.reasoning_content) |r| allocator.free(r);
+        allocator.free(m.agent);
+        allocator.free(m.session_name);
+        allocator.free(m.tool_name);
+        if (m.parent_session_id) |p| allocator.free(p);
+        if (m.diffview_before) |d| allocator.free(d);
+        if (m.diffview_after) |d| allocator.free(d);
+        if (m.image_urls) |urls| {
+            for (urls) |u| allocator.free(u);
+            allocator.free(urls);
+        }
+        if (m.tool_call_id) |t| allocator.free(t);
+    }
+
+    on_event_sent.onEventSendLLMHistory(allocator, .{
+        .id = m.id,
+        .session_id = m.session_id,
+        .model = m.model,
+        .cwd = "",
+        .content = m.response_content,
+        .reasoning_content = m.reasoning_content,
+        .role = m.role,
+        .finish_reason = m.finish_reason,
+        .tool_calls_json = null,
+        .tool_call_id = m.tool_call_id orelse m.id,
+        .tool_name = m.tool_name,
+        .agent_name = m.agent,
+        .loop_index = m.loop_index,
+        .temperature = m.temperature,
+        .is_thinking = m.is_thinking,
+        .is_input = false,
+        .is_output = true,
+        .parent_session_id = m.parent_session_id,
+        .parent_id = session_id,
+        .diffview_before = m.diffview_before,
+        .diffview_after = m.diffview_after,
+        .total_tokens = m.total_tokens,
+        .image_url = null,
+        .session_skills = null,
+    }) catch |err| {
+        std.log.warn("ask_user: SSE emit for row {s} failed: {s}", .{ m.id, @errorName(err) });
+    };
+}
+
+pub const SessionRunFields = struct {
+    name: []const u8,
+    cwd: []const u8,
+    selected_profile_model: []const u8,
+    is_auto_retry_until_stop: []const u8,
+
+    pub fn deinit(self: *const SessionRunFields, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.cwd);
+        allocator.free(self.selected_profile_model);
+        allocator.free(self.is_auto_retry_until_stop);
+    }
+};
+
+/// Read the `sessions` columns `emit_run_agent` needs. Missing row → safe
+/// empty defaults (`insert_worker` upserts the session anyway), matching
+/// `start_agent.zig` step 3 / `wakeSessionForCompletion`.
+pub fn loadSessionRunFields(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) !SessionRunFields {
+    var rows = try db.query(
+        allocator,
+        "SELECT COALESCE(name, ''), COALESCE(cwd, ''), COALESCE(selected_profile_model, ''), COALESCE(is_auto_retry_until_stop, '0') FROM sessions WHERE id = ?",
+        &.{session_id},
+    );
+    defer rows.deinit();
+    if (try rows.next()) |row| {
+        defer row.deinit(allocator);
+        return .{
+            .name = try allocator.dupe(u8, row.values[0]),
+            .cwd = try allocator.dupe(u8, row.values[1]),
+            .selected_profile_model = try allocator.dupe(u8, row.values[2]),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[3]),
+        };
+    }
+    return .{
+        .name = try allocator.dupe(u8, ""),
+        .cwd = try allocator.dupe(u8, ""),
+        .selected_profile_model = try allocator.dupe(u8, ""),
+        .is_auto_retry_until_stop = try allocator.dupe(u8, "0"),
+    };
+}
+
+/// Step 3 of the answer round-trip: resume the conversation.
+///
+/// `skip_initial_queue_message = true` is the established "start a run on an
+/// existing session without queueing a user message" flag
+/// (`start_agent.zig`, `wakeSessionForCompletion`) — exactly what a resume
+/// is. `emit_run_agent` dupes every string synchronously, so the caller's
+/// arena-backed fields are safe.
+///
+/// Guarded by `isWorkerRunning`: a double-click on Send answer must not start
+/// two runs. Returns false when a run was already in flight.
+pub fn resumeSession(
+    di: *nalarcore.ContextIPCTui,
+    allocator: std.mem.Allocator,
+    session_id: []const u8,
+) !bool {
+    if (is_worker_running.isWorkerRunning(allocator, di.db, session_id)) return false;
+
+    const fields = try loadSessionRunFields(allocator, di.db, session_id);
+    defer fields.deinit(allocator);
+
+    try di.emit_run_agent(.{
+        .session_id = session_id,
+        .session_name = fields.name,
+        .queue_message = "",
+        .cwd = fields.cwd,
+        .body_message = "",
+        .allowed_tools = "",
+        .image_urls = "",
+        .selected_profile_model = fields.selected_profile_model,
+        .is_auto_retry_until_stop = fields.is_auto_retry_until_stop,
+        .skip_initial_queue_message = true,
+    });
+    return true;
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    // The Migration 088 shape: `answer` / `resolved_at` NULL-able on purpose.
+    try db.exec(alloc,
+        \\CREATE TABLE session_pending_question (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    tool_call_id TEXT NOT NULL,
+        \\    llm_history_id TEXT NOT NULL,
+        \\    question TEXT NOT NULL,
+        \\    multi_select INTEGER NOT NULL DEFAULT 0,
+        \\    status TEXT NOT NULL DEFAULT 'pending',
+        \\    answer TEXT,
+        \\    created_at INTEGER NOT NULL,
+        \\    resolved_at INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        "CREATE UNIQUE INDEX idx_spq_tool_call ON session_pending_question(tool_call_id)",
+        &.{},
+    );
+    try db.exec(alloc,
+        "CREATE INDEX idx_spq_session_status ON session_pending_question(session_id, status)",
+        &.{},
+    );
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn insertOne(s: anytype, id: []const u8, session: []const u8, tool_call: []const u8) ![]u8 {
+    return insertPendingQuestion(.{
+        .allocator = testing.allocator,
+        .io = s.threaded.io(),
+        .db = &s.db,
+        .session_id = session,
+        .tool_call_id = tool_call,
+        .llm_history_id = "row_1",
+        .question = "Which environment?",
+        .id = id,
+    });
+}
+
+test "ask_user_pending: insert + read back, with a NULL answer coalesced to empty" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    const id = try insertOne(&s, "q_1", "s1", "call_1");
+    defer testing.allocator.free(id);
+    try testing.expectEqualStrings("q_1", id);
+
+    const q = (try getPendingQuestion(testing.allocator, &s.db, "q_1")).?;
+    defer q.deinit(testing.allocator);
+    try testing.expectEqualStrings("s1", q.session_id);
+    try testing.expectEqualStrings("call_1", q.tool_call_id);
+    try testing.expectEqualStrings("row_1", q.llm_history_id);
+    try testing.expectEqualStrings("Which environment?", q.question);
+    try testing.expectEqualStrings("pending", q.status);
+    // The empty-slice-binds-as-NULL guard: NULL round-trips as "", not a crash.
+    try testing.expectEqualStrings("", q.answer);
+}
+
+test "ask_user_pending: hasPendingQuestion tracks the status" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+
+    try testing.expect(!hasPendingQuestion(a, &s.db, "s1"));
+
+    const id = try insertOne(&s, "q_1", "s1", "call_1");
+    defer a.free(id);
+    try testing.expect(hasPendingQuestion(a, &s.db, "s1"));
+    // Session scoping.
+    try testing.expect(!hasPendingQuestion(a, &s.db, "s2"));
+
+    try markQuestionStatus(a, s.threaded.io(), &s.db, "q_1", .answered, "staging");
+    try testing.expect(!hasPendingQuestion(a, &s.db, "s1"));
+}
+
+test "ask_user_pending: answering stores the value and clears pending" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+
+    const id = try insertOne(&s, "q_1", "s1", "call_1");
+    defer a.free(id);
+    try markQuestionStatus(a, s.threaded.io(), &s.db, "q_1", .answered, "staging");
+
+    const q = (try getPendingQuestion(a, &s.db, "q_1")).?;
+    defer q.deinit(a);
+    try testing.expectEqualStrings("answered", q.status);
+    try testing.expectEqualStrings("staging", q.answer);
+    try testing.expect(!hasPendingQuestion(a, &s.db, "s1"));
+}
+
+test "ask_user_pending: skipped and abandoned are distinct statuses" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+
+    const id1 = try insertOne(&s, "q_1", "s1", "call_1");
+    defer a.free(id1);
+    try markQuestionStatus(a, s.threaded.io(), &s.db, "q_1", .skipped, null);
+    const q1 = (try getPendingQuestion(a, &s.db, "q_1")).?;
+    defer q1.deinit(a);
+    try testing.expectEqualStrings("skipped", q1.status);
+
+    const id2 = try insertOne(&s, "q_2", "s1", "call_2");
+    defer a.free(id2);
+    try markQuestionStatus(a, s.threaded.io(), &s.db, "q_2", .abandoned, null);
+    const q2 = (try getPendingQuestion(a, &s.db, "q_2")).?;
+    defer q2.deinit(a);
+    try testing.expectEqualStrings("abandoned", q2.status);
+}
+
+test "ask_user_pending: UNIQUE(tool_call_id) makes a re-exec idempotent" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+
+    const first = try insertOne(&s, "q_1", "s1", "call_1");
+    defer a.free(first);
+    // A retry of the same tool call, even with a different proposed id,
+    // must resolve to the row that already exists.
+    const second = try insertOne(&s, "q_2", "s1", "call_1");
+    defer a.free(second);
+    try testing.expectEqualStrings("q_1", second);
+
+    try testing.expectEqual(@as(usize, 1), try countRows(&s));
+}
+
+fn countRows(s: anytype) !usize {
+    var rows = try s.db.query(testing.allocator, "SELECT COUNT(*) FROM session_pending_question", &.{});
+    defer rows.deinit();
+    if (try rows.next()) |row| {
+        defer row.deinit(testing.allocator);
+        return std.fmt.parseInt(usize, row.values[0], 10);
+    }
+    return 0;
+}
+
+test "ask_user_pending: markAbandonedForSession resolves only that session's pending rows" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+
+    const id1 = try insertOne(&s, "q_1", "s1", "call_1");
+    defer a.free(id1);
+    const id2 = try insertOne(&s, "q_2", "s1", "call_2");
+    defer a.free(id2);
+    const id3 = try insertOne(&s, "q_3", "s2", "call_3");
+    defer a.free(id3);
+    // An already-answered row must not be resurrected as abandoned.
+    try markQuestionStatus(a, s.threaded.io(), &s.db, "q_2", .answered, "staging");
+
+    _ = try markAbandonedForSession(a, s.threaded.io(), &s.db, "s1");
+
+    try testing.expect(!hasPendingQuestion(a, &s.db, "s1"));
+    const q1 = (try getPendingQuestion(a, &s.db, "q_1")).?;
+    defer q1.deinit(a);
+    try testing.expectEqualStrings("abandoned", q1.status);
+    const q2 = (try getPendingQuestion(a, &s.db, "q_2")).?;
+    defer q2.deinit(a);
+    try testing.expectEqualStrings("answered", q2.status);
+    try testing.expectEqualStrings("staging", q2.answer);
+    // Untouched session.
+    try testing.expect(hasPendingQuestion(a, &s.db, "s2"));
+    const q3 = (try getPendingQuestion(a, &s.db, "q_3")).?;
+    defer q3.deinit(a);
+    try testing.expectEqualStrings("pending", q3.status);
+}
+
+test "ask_user_pending: getPendingQuestionByToolCall finds the row the card names" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+
+    const id = try insertOne(&s, "q_1", "s1", "call_abc");
+    defer a.free(id);
+
+    const q = (try getPendingQuestionByToolCall(a, &s.db, "s1", "call_abc")).?;
+    defer q.deinit(a);
+    try testing.expectEqualStrings("q_1", q.id);
+
+    // Wrong session / unknown call → not found, never a wrong row.
+    try testing.expect((try getPendingQuestionByToolCall(a, &s.db, "s2", "call_abc")) == null);
+    try testing.expect((try getPendingQuestionByToolCall(a, &s.db, "s1", "nope")) == null);
+}
+
+test "ask_user_pending: listRecentQuestions returns pending + just-resolved rows" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+    const a = testing.allocator;
+    const io = s.threaded.io();
+
+    const id1 = try insertOne(&s, "q_1", "s1", "call_1");
+    defer a.free(id1);
+    const id2 = try insertOne(&s, "q_2", "s1", "call_2");
+    defer a.free(id2);
+    try markQuestionStatus(a, io, &s.db, "q_2", .answered, "staging");
+
+    // A row resolved long ago (outside the 60s window) must not come back.
+    try s.db.exec(a,
+        "INSERT INTO session_pending_question (id, session_id, tool_call_id, llm_history_id, question, multi_select, status, answer, created_at, resolved_at) VALUES ('q_old','s1','call_old','row_1','old',0,'answered','x',1,1)",
+        &.{});
+
+    const list = try listRecentQuestions(a, io, &s.db, "s1");
+    defer {
+        for (list) |q| q.deinit(a);
+        a.free(list);
+    }
+    try testing.expectEqual(@as(usize, 2), list.len);
+    try testing.expectEqualStrings("q_1", list[0].id); // pending first (created_at ASC)
+    try testing.expectEqualStrings("q_2", list[1].id); // just-resolved
+}
+
+test "ask_user_pending: newQuestionId is prefixed and unique" {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    defer threaded.deinit();
+    const a = testing.allocator;
+    const id = try newQuestionId(a, threaded.io());
+    defer a.free(id);
+    try testing.expect(std.mem.startsWith(u8, id, "q_"));
+    try testing.expect(id.len > 3);
+}

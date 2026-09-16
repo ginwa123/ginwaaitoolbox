@@ -59,6 +59,9 @@ pub const execSpawnSubAgent = @import("tools_exec_spawn_sub_agent.zig").execSpaw
 pub const execUpdatePlan = @import("tools_exec_update_plan.zig").execUpdatePlan;
 pub const execGetPlan = @import("tools_exec_get_plan.zig").execGetPlan;
 pub const execListSubAgent = @import("tools_exec_list_sub_agent.zig").execListSubAgent;
+// 2026-09-16 — ask_user: ends the turn so the human can answer in their own
+// time; the answer rewrites this call's tool-result row and resumes a run.
+pub const execAskUser = @import("tools_exec_ask_user.zig").execAskUser;
 // 2026-08-28 — add_mcp_server agent tool (Step 3 of 2026-08-28-add-mcp-server-agent-tool.md).
 // Lets the LLM register a new MCP server (stdio in v1) in the live config +
 // persist to disk + hot-reload `di.llm_config`. MCP tools are progressive:
@@ -126,6 +129,13 @@ pub const ToolExecContext = struct {
     /// uses for the anti-recursion strip; the catalog honours it too so a
     /// sub-agent cannot discover its way back to `spawn_sub_agent`.
     is_sub_agent: bool = false,
+    /// The `llm_history` tool-result row this dispatch belongs to (set by
+    /// `handle_tool` Phase 3 from its placeholder list). Needed by tools
+    /// whose result is written AGAIN later, outside the dispatch — the
+    /// `ask_user` answer endpoint rewrites this exact row in place when the
+    /// human replies. Empty when the caller has no such row (tests, direct
+    /// dispatch), which is why it defaults.
+    llm_history_id: []const u8 = "",
 };
 
 /// Set by `use_tool` when it actually INSERTed a `session_progressive_tool`
