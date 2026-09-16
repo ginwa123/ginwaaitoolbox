@@ -294,6 +294,21 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('polling')
   })
 
+  it('REST input triggers an immediate output poll (no 300ms wait)', async () => {
+    mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+    await flush()
+    // Force the REST fallback path.
+    firstSocket().serverError()
+    await flush(10)
+    vi.clearAllMocks()
+    // Type: input goes via REST, then an output poll fires immediately
+    // (the 300ms interval can't have elapsed during flush).
+    firstTerm().dataHandler?.('y')
+    await flush()
+    expect(sendTerminalInput).toHaveBeenCalledWith('term-1', 'y')
+    expect(getTerminalOutput).toHaveBeenCalled()
+  })
+
   it('shows the exited state on the socket exit event', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
