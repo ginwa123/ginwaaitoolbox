@@ -196,7 +196,12 @@ function parseInner(inner: string, fallback: ParsedEnvelope): ParsedEnvelope {
 // Local interaction state
 // ---------------------------------------------------------------------------
 
-const isExpanded = ref(props.expanded ?? false)
+// Expanded by default while the question is UNANSWERED: an inline card that
+// hides the thing the human must act on is a card nobody acts on. Once it is
+// resolved the card behaves like every other tool card (a one-line summary
+// that the user can expand), and a user who collapses a pending question keeps
+// it collapsed — this is only the initial value.
+const isExpanded = ref<boolean>(props.expanded === true || parsed.value.state === 'pending')
 const submitting = ref(false)
 const sendFailed = ref(false)
 /** Set after a successful POST so the card flips even if the SSE frame is missed. */
@@ -441,13 +446,19 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
       @update:expanded="isExpanded = $event"
     />
 
-    <!-- Collapsed one-liner: the resolved outcome. -->
+    <!-- Collapsed one-liner: the resolved outcome, for every resolved state. -->
     <div
-      v-if="!isExpanded && state === 'answered'"
+      v-if="!isExpanded && state !== 'pending' && state !== 'invalid'"
       class="px-2 pb-2 font-sans text-xs"
       style="color: var(--semantic-text-dim)"
+      data-testid="ask-user-collapsed-summary"
     >
-      ✓ {{ answerChip }}
+      <template v-if="state === 'answered'">✓ {{ answerChip }}</template>
+      <template v-else-if="state === 'skipped'">skipped — the agent will not guess</template>
+      <template v-else-if="state === 'abandoned'">you moved on — the agent will not guess</template>
+      <template v-else-if="state === 'unavailable'"
+        >no human available — the agent decided</template
+      >
     </div>
 
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
