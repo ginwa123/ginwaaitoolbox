@@ -162,4 +162,23 @@ describe('WorkspaceItem — agent click is expand-only (no settings redirect)', 
       [{ workspaceId: WS_ID, itemId: ITEM_ID, name: 'Test Item', itemType: 'kanban' }],
     ])
   })
+
+  it('routine items hide the + (Add Task) button', async () => {
+    wrapper = mountItem(makeItem('routine'))
+    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="Add Task"]').exists()).toBe(false)
+  })
+
+  it('kanban items hide the + (Add Task) button', async () => {
+    wrapper = mountItem(makeItem('kanban'))
+    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(false)
+  })
+
+  it('agent/folder items keep the + (Add Task) button', async () => {
+    wrapper = mountItem(makeItem('agent'))
+    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(true)
+    wrapper?.unmount()
+    wrapper = mountItem(makeItem('folder', { path: '/abs/path' }))
+    expect(wrapper.find('[data-testid="add-task-button"]').exists()).toBe(true)
+  })
 })

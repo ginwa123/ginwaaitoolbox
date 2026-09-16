@@ -671,11 +671,16 @@ const handlePinnedDrop = (event: DragEvent) => {
           />
         </button>
         <!-- Add Task + Delete Item buttons. The `+` (Add Task) is
-             hidden for kanban items (2026-09-09): kanban tasks are
+             hidden for kanban + routine items: kanban tasks are
              created from inside the kanban view (column "+ Add" →
              KanbanTaskDetailDialog), so the sidebar picker would
-             bypass the board context. Agent/folder/design items keep
-             the `+`. The `×` (Delete Item) stays visible for all
+             bypass the board context; routine items are single-run
+             configs (RoutineView: description / instruction /
+             schedule) with no task list to append to, so the
+             picker (Standard Chat / Memory) would create orphan
+             chats under a scheduler-owned parent.
+             Agent/folder/design/memory items keep the `+`. The `×`
+             (Delete Item) stays visible for all
              item_types (see cascade note below).
              Previously
              the kanban and design item_types were excluded from the
@@ -701,12 +706,13 @@ const handlePinnedDrop = (event: DragEvent) => {
              (only runs for item_type='design'). -->
         <template v-if="true">
           <button
-            v-if="item.item_type !== 'kanban'"
+            v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
             @click="handleAddTask"
             class="w-7 h-7 text-xl leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim);"
             title="Add Task"
             aria-label="Add Task"
+            data-testid="add-task-button"
           >
             +
           </button>
