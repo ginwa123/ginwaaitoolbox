@@ -243,6 +243,7 @@ pub const gitWorktreeInfoHandler = @import("git_worktree_info.zig").gitWorktreeI
 pub const gitBranchesListHandler = @import("git_branches_list.zig").gitBranchesListHandler;
 pub const gitCommitsListHandler = @import("git_commits.zig").gitCommitsListHandler;
 pub const gitCommitDetailHandler = @import("git_commits.zig").gitCommitDetailHandler;
+pub const gitCommitFileDiffHandler = @import("git_commits.zig").gitCommitFileDiffHandler;
 pub const gitPrCreateHandler = @import("git_pr_create.zig").gitPrCreateHandler;
 pub const gitPrDiffHandler = @import("git_pr_diff.zig").gitPrDiffHandler;
 pub const gitPrStatusHandler = @import("git_pr_status.zig").gitPrStatusHandler;

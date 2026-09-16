@@ -60,8 +60,6 @@ let loadSeq = 0
 
 const selectedPath = ref<string | null>(null)
 const selectedStaged = ref(false)
-// Read-only history toggle (Changes | Commits) for the non-PR view.
-const showCommits = ref(false)
 
 const changeCount = computed(
   () => stagedFiles.value.length + unstagedFiles.value.length + untrackedFiles.value.length,
@@ -70,12 +68,12 @@ const changeCount = computed(
 const router = useRouter()
 const route = useRoute()
 
-const readTabParam = (): 'files' | 'pr' | null => {
+const readTabParam = (): 'files' | 'pr' | 'commits' | null => {
   const v = route.query.panel
-  return v === 'files' || v === 'pr' ? v : null
+  return v === 'files' || v === 'pr' || v === 'commits' ? v : null
 }
 
-const syncTabParam = (tab: 'files' | 'pr' | null) => {
+const syncTabParam = (tab: 'files' | 'pr' | 'commits' | null) => {
   const query = { ...route.query }
   if (tab) query.panel = tab
   else delete query.panel
@@ -83,7 +81,25 @@ const syncTabParam = (tab: 'files' | 'pr' | null) => {
 }
 
 const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
-const activeTab = ref<'files' | 'pr'>(isPrMode.value ? (readTabParam() ?? 'pr') : 'files')
+// Every view switch lands in the URL (?panel=files|pr|commits) so refresh,
+// Back/Forward, and shared links restore the same panel. The commits tab
+// is valid with or without an attached PR; ?panel=pr without a prUrl
+// still falls back to files (pre-commits behavior).
+// The route read is guarded: hosts like ChatRightSidebar mount this panel
+// without a router (see ChatRightSidebar.spec.ts), where useRoute has no
+// current route — mount must never crash there.
+const initialTab = (): 'files' | 'pr' | 'commits' => {
+  let param: 'files' | 'pr' | 'commits' | null = null
+  try {
+    param = readTabParam()
+  } catch {
+    param = null
+  }
+  if (isPrMode.value) return param ?? 'pr'
+  return param === 'commits' ? 'commits' : 'files'
+}
+const activeTab = ref<'files' | 'pr' | 'commits'>(initialTab())
+const showCommits = computed(() => activeTab.value === 'commits')
 const showTabs = computed(() => isPrMode.value)
 const showPr = computed(() => isPrMode.value && activeTab.value === 'pr')
 const loadedTabs = ref(new Set<string>())
@@ -292,8 +308,7 @@ const onRefreshClick = () => {
   // changed, so a stale-cwd click self-heals instead of re-showing
   // the old branch.
   emit('refresh')
-  if (showPr.value) void loadTab('pr', true)
-  else void loadTab('files', true)
+  void refreshCurrentTab()
 }
 
 const loadGitStatus = async () => {
@@ -376,10 +391,12 @@ const loadFullList = async (cwd: string = props.cwd) => {
 }
 
 // Per-tab lazy load: each side fetches once until cwd/prUrl changes.
-const loadTab = async (tab: 'files' | 'pr', force = false) => {
+// The commits tab needs no panel-level fetch — GitCommits.vue loads
+// (and paginates) itself when it mounts.
+const loadTab = async (tab: 'files' | 'pr' | 'commits', force = false) => {
   if (!force && loadedTabs.value.has(tab)) return
   if (tab === 'pr') await Promise.all([loadPrDiff(), loadPrStatus()])
-  else await loadGitStatus()
+  else if (tab === 'files') await loadGitStatus()
   loadedTabs.value.add(tab)
 }
 
@@ -388,10 +405,11 @@ const loadTab = async (tab: 'files' | 'pr', force = false) => {
 // re-syncs PR merge state when the PR tab is visible.
 const refreshCurrentTab = async () => {
   if (showPr.value) await loadTab('pr', true)
+  else if (showCommits.value) await loadTab('commits', true)
   else await loadTab('files', true)
 }
 
-const setActiveTab = (tab: 'files' | 'pr') => {
+const setActiveTab = (tab: 'files' | 'pr' | 'commits') => {
   activeTab.value = tab
   syncTabParam(tab)
   void loadTab(tab)
@@ -430,6 +448,40 @@ const selectFile = (file: api.GitFileChange, staged: boolean) => {
   void loadDiff()
 }
 
+// Commit-history file click (GitCommits with inline-file-diff=false):
+// fetch the file's unified diff at that commit and show it in ChatView's
+// center column — the same show-diff flow as worktree/PR file rows.
+// Rename rows carry "old -> new"; the diff is fetched for the new side.
+const onCommitFileClick = async (payload: { commit: api.GitCommit; file: api.GitCommitFile }) => {
+  if (!props.cwd) return
+  const rawPath = payload.file.path
+  const diffPath = rawPath.includes(' -> ') ? (rawPath.split(' -> ').pop() ?? rawPath) : rawPath
+  selectedPath.value = diffPath
+  selectedStaged.value = false
+  try {
+    const diff = await api.getGitCommitFileDiff(props.cwd, payload.commit.sha, diffPath)
+    if (!diff) throw new Error('empty diff')
+    const parsed = parseUnifiedDiff(diff.diff_content)
+    emit('show-diff', {
+      path: diffPath,
+      staged: false,
+      lines: parsed.lines,
+      added: parsed.added,
+      removed: parsed.removed,
+    })
+  } catch (err) {
+    console.error('Failed to load commit file diff:', err)
+    emit('show-diff', {
+      path: diffPath,
+      staged: false,
+      lines: [],
+      added: 0,
+      removed: 0,
+      error: 'Failed to load commit file diff',
+    })
+  }
+}
+
 const stageFile = async (file: api.GitFileChange) => {
   if (!props.cwd || isStaging.value) return
   isStaging.value = true
@@ -465,13 +517,14 @@ watch(
     const has = (url ?? '').trim().length > 0
     if (had !== has) {
       if (has) activeTab.value = readTabParam() ?? 'pr'
-      else {
+      else if (activeTab.value === 'pr') {
+        // Leaving PR mode drops back to files and clears the param;
+        // a commits tab survives (it needs no PR).
         activeTab.value = 'files'
         syncTabParam(null)
       }
     }
     selectedPath.value = null
-    showCommits.value = false
     loadedTabs.value.clear()
     void loadTab(activeTab.value, true)
   },
@@ -546,6 +599,25 @@ defineExpose({
         @click="setActiveTab('pr')"
       >
         Pull request{{ prFiles.length > 0 ? ` (${prFiles.length})` : '' }}
+      </button>
+      <button
+        type="button"
+        class="text-xs px-2 py-1 rounded hover:opacity-80"
+        data-testid="sidebar-tab-commits"
+        role="tab"
+        :aria-selected="activeTab === 'commits'"
+        :style="
+          activeTab === 'commits'
+            ? {
+                color: 'var(--semantic-text)',
+                fontWeight: 600,
+                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+              }
+            : { color: 'var(--semantic-text)', opacity: '0.6' }
+        "
+        @click="setActiveTab('commits')"
+      >
+        Commits
       </button>
     </div>
     <div
@@ -628,7 +700,7 @@ defineExpose({
         style="color: var(--semantic-text-dim)"
         :title="showCommits ? 'Show changed files' : 'Show commit history'"
         data-testid="sidebar-diff-commits-toggle"
-        @click="showCommits = !showCommits"
+        @click="setActiveTab(showCommits ? 'files' : 'commits')"
       >
         {{ showCommits ? 'Files' : 'Commits' }}
       </button>
@@ -645,7 +717,7 @@ defineExpose({
     </div>
 
     <div v-if="showCommits && !showPr" class="flex-1 min-h-0">
-      <GitCommits :cwd="cwd" />
+      <GitCommits :cwd="cwd" :inline-file-diff="false" @commit-file-click="onCommitFileClick" />
     </div>
     <div v-else class="flex-1 overflow-y-auto min-h-0">
       <template v-if="showPr">

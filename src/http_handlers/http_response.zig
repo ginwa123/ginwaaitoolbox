@@ -793,6 +793,20 @@ pub fn makeGitCommitDetailResponse(allocator: std.mem.Allocator, response: GitCo
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }
 
+// ─── Git commit file-diff types ───────────────────────────────────────────
+// Wire shape for `GET /api/git/commit/file?path=<repo>&sha=<sha>&file=<path>`.
+// Unified diff of one file at one commit; powers the clickable file rows
+// in the commits view.
+pub const GitCommitFileDiffResponse = struct {
+    sha: []const u8 = "",
+    path: []const u8 = "",
+    diff_content: []const u8 = "",
+};
+
+pub fn makeGitCommitFileDiffResponse(allocator: std.mem.Allocator, response: GitCommitFileDiffResponse) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, response, .{});
+}
+
 // Profile types
 pub const LlmProfileResponse = struct {
     name: []const u8,

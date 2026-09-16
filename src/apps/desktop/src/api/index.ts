@@ -3145,6 +3145,36 @@ export async function getGitCommitDetail(
   }
 }
 
+export interface GitCommitFileDiff {
+  sha: string
+  path: string
+  diff_content: string
+}
+
+/**
+ * Unified diff of one file at one commit (`git diff <sha>^ <sha>`,
+ * root-commit fallback via `git show`). Powers the clickable file rows
+ * in the commits view. Returns null on any failure so the row can show
+ * an inline error instead of crashing.
+ */
+export async function getGitCommitFileDiff(
+  cwd: string,
+  sha: string,
+  file: string,
+): Promise<GitCommitFileDiff | null> {
+  const path = (cwd ?? '').trim()
+  const ref = (sha ?? '').trim()
+  const target = (file ?? '').trim()
+  if (path === '' || ref === '' || target === '') return null
+  try {
+    const params = new URLSearchParams({ path, sha: ref, file: target })
+    return await apiFetch<GitCommitFileDiff>(`/git/commit/file?${params}`)
+  } catch (error) {
+    console.error('Failed to load git commit file diff:', error)
+    return null
+  }
+}
+
 // File listing for autocomplete
 export async function listFiles(cwd: string, dirPath?: string): Promise<string[]> {
   try {
