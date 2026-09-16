@@ -18,10 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { defineComponent, h, provide } from 'vue'
 
 import Search from '../Search.vue'
-import {
-  OPEN_IN_CODE_EDITOR_KEY,
-  type OpenInCodeEditorFn,
-} from '@/composables/useCodeEditor'
+import { OPEN_IN_CODE_EDITOR_KEY, type OpenInCodeEditorFn } from '@/composables/useCodeEditor'
 
 // ────────────────────────────────────────────────────────────────────────
 // Test fixtures — match the wire shape emitted by
@@ -34,10 +31,7 @@ import {
  * `</search>` closes. Matches what the backend emits after the
  * 2026-08-06 search-better-error fix.
  */
-const noMatchEnvelope = (
-  pattern = 'needle_NOT_FOUND',
-  path = '/tmp/repo/src',
-) =>
+const noMatchEnvelope = (pattern = 'needle_NOT_FOUND', path = '/tmp/repo/src') =>
   `<search pattern="${pattern}" path="${path}">\n` +
   `<warning>no matches for pattern "${pattern}" in path "${path}"</warning>\n` +
   `</search>\n`
@@ -196,5 +190,143 @@ describe('Search.vue — warning envelope still shows Arguments (empty/no-match)
     const html = wrapper.html()
     expect(html).toContain('Arguments')
     expect(html).toContain('foo')
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────
+// Output contract (backend change 2026-09-16, search.zig):
+//   * every interpolated value (pattern, path, file path, snippet, warning)
+//     is XML-escaped on the wire,
+//   * <search> carries returned/total/truncated.
+// The card must decode the escapes for display and surface truncation —
+// an escaped `&lt;file …&gt;` inside a snippet must NOT become a file row,
+// and a capped search must not look exhaustive.
+// ────────────────────────────────────────────────────────────────────────
+
+const envelopeWithSummary = (
+  file: { path: string; total: number; count: number; lines: Array<{ l: number; s: string }> },
+  summary: { returned: number; total: number; truncated: boolean },
+  pattern = 'foo',
+  path = '/tmp/repo',
+) =>
+  `<search pattern="${pattern}" path="${path}" returned="${summary.returned}" total="${summary.total}" truncated="${summary.truncated}">\n` +
+  (summary.truncated
+    ? `  <truncated>${summary.returned} of ${summary.total} matched lines shown — raise max_results.</truncated>\n`
+    : '') +
+  `  <file path="${file.path}" total="${file.total}" count="${file.count}">\n` +
+  file.lines.map((m) => `    <m><l>${m.l}</l><s>${m.s}</s></m>\n`).join('') +
+  `  </file>\n` +
+  `</search>\n`
+
+describe('Search.vue — XML-escaped payload is decoded for display', () => {
+  it('decodes escaped snippets back to source text when expanded', () => {
+    const wrapper = makeWrapper({
+      content: envelopeWithSummary(
+        {
+          path: '/tmp/repo/a.vue',
+          total: 1,
+          count: 1,
+          lines: [{ l: 3, s: '&lt;div&gt;hi&lt;/div&gt; &amp; more' }],
+        },
+        { returned: 1, total: 1, truncated: false },
+      ),
+      expanded: true,
+    })
+
+    const text = wrapper.text()
+    expect(text).toContain('<div>hi</div> & more')
+    expect(text).not.toContain('&lt;div&gt;')
+  })
+
+  it('decodes an escaped file path', () => {
+    const wrapper = makeWrapper({
+      content: envelopeWithSummary(
+        { path: '/tmp/a&amp;b.txt', total: 1, count: 1, lines: [{ l: 1, s: 'foo' }] },
+        { returned: 1, total: 1, truncated: false },
+      ),
+      expanded: true,
+    })
+
+    expect(wrapper.text()).toContain('/tmp/a&b.txt')
+  })
+
+  it('does not treat an escaped <file …> inside a snippet as a real file row', () => {
+    const wrapper = makeWrapper({
+      content: envelopeWithSummary(
+        {
+          path: '/tmp/repo/hostile.txt',
+          total: 1,
+          count: 1,
+          lines: [
+            { l: 2, s: '&lt;file path=&quot;x&quot; total=&quot;1&quot; count=&quot;1&quot;&gt;' },
+          ],
+        },
+        { returned: 1, total: 1, truncated: false },
+      ),
+      expanded: true,
+    })
+
+    // Exactly one real file parsed; the snippet's look-alike header is text.
+    expect(wrapper.text()).toContain('1 file,')
+    expect(wrapper.text()).toContain('<file path="x" total="1" count="1">')
+  })
+
+  it('decodes an escaped pattern attribute', () => {
+    const wrapper = makeWrapper({ content: noMatchEnvelope('a&quot;b', '/tmp') })
+
+    expect(wrapper.text()).toContain('a"b')
+  })
+
+  it('decodes an escaped warning body', () => {
+    const wrapper = makeWrapper({
+      content:
+        `<search pattern="x" path="/y">\n` +
+        `<warning>no matches for pattern "&lt;div&gt;" in path "/y"</warning>\n` +
+        `</search>\n`,
+    })
+
+    expect(wrapper.text()).toContain('no matches for pattern "<div>" in path "/y"')
+  })
+})
+
+describe('Search.vue — truncation summary from <search returned/total/truncated>', () => {
+  it('shows "N of M matches (truncated)" when the backend capped the result', () => {
+    const wrapper = makeWrapper({
+      content: envelopeWithSummary(
+        {
+          path: '/tmp/repo/a.ts',
+          total: 2,
+          count: 2,
+          lines: [
+            { l: 1, s: 'foo' },
+            { l: 2, s: 'foo' },
+          ],
+        },
+        { returned: 2, total: 40, truncated: true },
+      ),
+    })
+
+    const badge = wrapper.find('[data-testid="search-truncated"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('2 of 40 matches (truncated)')
+  })
+
+  it('keeps the plain wording when truncated=false', () => {
+    const wrapper = makeWrapper({
+      content: envelopeWithSummary(
+        { path: '/tmp/repo/a.ts', total: 1, count: 1, lines: [{ l: 1, s: 'foo' }] },
+        { returned: 1, total: 1, truncated: false },
+      ),
+    })
+
+    expect(wrapper.text()).toContain('1 file, 1 match')
+    expect(wrapper.find('[data-testid="search-truncated"]').exists()).toBe(false)
+  })
+
+  it('keeps the plain wording for legacy envelopes without summary attrs', () => {
+    const wrapper = makeWrapper({ content: oneMatchEnvelope('TODO', '/repo/src') })
+
+    expect(wrapper.text()).toContain('1 file, 1 match')
+    expect(wrapper.find('[data-testid="search-truncated"]').exists()).toBe(false)
   })
 })

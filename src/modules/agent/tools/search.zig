@@ -5,6 +5,11 @@ const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 const sanitize = @import("helpers").sanitize;
+/// XML-escape helper (5 metacharacters + XML-illegal control bytes). Shared
+/// with the other tool envelopes; search output interpolates two ATTRIBUTES
+/// (`pattern=`, `path=`) and two TEXT nodes (`<file path=…>`, `<s>…</s>`)
+/// straight from file content and model-supplied args, so it must escape.
+const xmlEscape = @import("helpers").xml_escape;
 
 pub const SearchError = error{
     /// Pattern was an empty string — almost certainly a caller bug, not a
@@ -25,6 +30,12 @@ pub const SearchError = error{
     /// found" which looks identical to a real no-match and confuses the
     /// LLM. Treat as a caller bug.
     InvalidMaxResults,
+    /// head or tail was 0. `head=0` / `tail=0` also look identical to a
+    /// real no-match, so they are rejected the same way as max_results=0.
+    InvalidHeadTail,
+    /// The `glob` filter contained a NUL byte — rg copies the value into a
+    /// C string, so everything after the NUL would be silently dropped.
+    GlobContainsNulByte,
     /// ripgrep could not parse the pattern as a valid regex (exit 2
     /// with a "regex parse error" / "regex error" signature in stderr).
     RegexParseError,
@@ -130,6 +141,10 @@ pub const SearchMatch = struct {
     snippet: []const u8,
 };
 
+/// Default byte length of a rendered snippet. See
+/// SearchInput.snippet_max_chars.
+pub const default_snippet_max_chars: usize = 240;
+
 /// Internal struct for grouped file matches
 const MatchInFile = struct {
     line_number: usize,
@@ -169,6 +184,24 @@ pub const SearchInput = struct {
     /// argv branch and the snippet-rendering logic; for Chunk 1 this
     /// field exists in the struct but has no effect on rg's behavior.
     only_matching: bool = false,
+    /// Long-line window, in bytes. rg's `lines.text` is the ENTIRE line —
+    /// not a preview — so one minified bundle / single-line JSON blob match
+    /// can be megabytes and swallow the whole tool-output budget (the agent
+    /// loop truncates a tool result at 20 KB, mid-XML, hiding every other
+    /// file in the result). Snippets longer than this are windowed around
+    /// the first match with `...` markers. 0 disables windowing.
+    /// null → default_snippet_max_chars (240).
+    snippet_max_chars: ?usize = null,
+    /// When true, appends `--hidden` to rg's argv: dotfiles and dotdirs
+    /// (.github/workflows/, .env) become searchable. rg skips hidden entries
+    /// by default, and `--no-ignore` does NOT change that — it only disables
+    /// ignore-FILE filtering (.gitignore/.ignore/.rgignore).
+    hidden: bool = false,
+    /// ripgrep `--glob` filter, e.g. "*.zig", "*.vue", "!test_*.zig".
+    /// Passed as ONE argv element (`--glob=<pattern>`) so a value starting
+    /// with `-` can never be read as a flag. The cheapest way to cut noise
+    /// when searching a polyglot tree.
+    glob: ?[]const u8 = null,
     /// Deadline for one rg invocation in milliseconds (null → 30s default,
     /// clamped to 1h). 0 fails fast with error.Timeout. Without a bound a
     /// single slow scan (Windows Defender + NTFS) blocked the agent worker
@@ -181,7 +214,19 @@ pub const SearchInput = struct {
 
 pub const SearchResult = struct {
     matches: std.ArrayList(SearchMatch),
-    content: []const u8,
+    /// No-match warning body (`<warning>…</warning>`); empty whenever at
+    /// least one row was collected. Only the formatters' empty-matches
+    /// branch reads it — the success path renders `matches` directly, so
+    /// building a second text dump of every row (which this field used to
+    /// hold) was pure waste.
+    warning: []const u8 = "",
+    /// Number of match EVENTS rg produced (one per matched line). Compared
+    /// against `matches.items.len` this exposes silent truncation: the
+    /// caller can tell "50 matches" from "50 of 9,000".
+    total_matches: usize = 0,
+    /// True when `matches` holds fewer ROWS than `total_matches` because a
+    /// cap stopped collection (max_results / head / tail).
+    truncated: bool = false,
 
     pub fn deinit(self: *SearchResult, allocator: std.mem.Allocator) void {
         for (self.matches.items) |m| {
@@ -189,7 +234,7 @@ pub const SearchResult = struct {
             allocator.free(m.snippet);
         }
         self.matches.deinit(allocator);
-        allocator.free(self.content);
+        allocator.free(self.warning);
     }
 };
 
@@ -229,12 +274,70 @@ fn getMatchedLines(obj: *const std.json.ObjectMap) ?usize {
 /// codebases will still fit) but small enough to bound the worst case.
 pub const max_output_hard_limit: usize = 100 * 1024 * 1024;
 
+/// True for rg's per-match JSON lines. rg emits one COMPACT object per line
+/// (`{"type":"match","data":{…}}` — no spaces), so a substring test is
+/// enough. Used to keep counting match events after the row cap is reached,
+/// without paying for another JSON parse of every remaining line.
+fn lineIsMatchEvent(line: []const u8) bool {
+    return std.mem.indexOf(u8, line, "\"type\":\"match\"") != null;
+}
+
+/// Window `text` to at most `cap` bytes, biased left of `offset` (the byte
+/// offset of the first match inside `text`), with `...` markers where
+/// content was dropped, then trim surrounding whitespace. Returns a fresh
+/// allocation the caller owns.
+///
+/// Why this exists: rg's `lines.text` is the WHOLE line, not a preview. A
+/// minified bundle or a single-line JSON blob can be hundreds of KB, and one
+/// such match used to consume the entire result budget (the agent loop
+/// truncates tool output at 20 KB — mid-XML — so every other file in the
+/// result disappeared). `cap == 0` disables the window.
+fn windowSnippet(allocator: std.mem.Allocator, text: []const u8, offset: usize, cap: usize) ![]u8 {
+    if (cap == 0 or text.len <= cap) {
+        return try allocator.dupe(u8, std.mem.trim(u8, text, &std.ascii.whitespace));
+    }
+
+    const off = if (offset > text.len) text.len else offset;
+    const before = cap / 3;
+    var start: usize = if (off > before) off - before else 0;
+    var end: usize = start + cap;
+    if (end > text.len) {
+        end = text.len;
+        start = if (end > cap) end - cap else 0;
+    }
+    // Never split a UTF-8 sequence: skip forward off a continuation byte for
+    // the start, back off to one for the end.
+    while (start < text.len and (text[start] & 0xC0) == 0x80) start += 1;
+    while (end < text.len and end > start and (text[end] & 0xC0) == 0x80) end -= 1;
+
+    const body = std.mem.trim(u8, text[start..end], &std.ascii.whitespace);
+    const prefix: []const u8 = if (start > 0) "..." else "";
+    const suffix: []const u8 = if (end < text.len) "..." else "";
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, prefix);
+    try out.appendSlice(allocator, body);
+    try out.appendSlice(allocator, suffix);
+    return try out.toOwnedSlice(allocator);
+}
+
 pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, input: SearchInput) !SearchResult {
     // === Up-front validation (no ripgrep invocation if any fail) ===
 
     // Validate head/tail are mutually exclusive
     if (input.head != null and input.tail != null) {
         return error.HeadAndTailMutuallyExclusive;
+    }
+
+    // head=0 / tail=0 select zero rows while still reporting success —
+    // indistinguishable from a real "no match", so reject them the same way
+    // max_results=0 is rejected.
+    if (input.head) |head_n| {
+        if (head_n == 0) return error.InvalidHeadTail;
+    }
+    if (input.tail) |tail_n| {
+        if (tail_n == 0) return error.InvalidHeadTail;
     }
 
     // Pattern must be non-empty. ripgrep accepts empty patterns but the
@@ -248,6 +351,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         return error.PatternContainsNulByte;
     }
 
+    // Same NUL hazard for the glob filter: rg copies argv into C strings,
+    // so anything after a NUL would be silently dropped from the filter.
+    if (input.glob) |glob_pattern| {
+        if (std.mem.indexOfScalar(u8, glob_pattern, 0) != null) {
+            return error.GlobContainsNulByte;
+        }
+    }
+
     // Validate max_output bounds up-front. Zero is meaningless; over the
     // hard ceiling risks OOM.
     const max_output = input.max_output orelse 1024 * 1024;
@@ -258,6 +369,8 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // is almost certainly a caller bug.
     const max_results = input.max_results orelse 50;
     if (max_results == 0) return error.InvalidMaxResults;
+
+    const snippet_max_chars = input.snippet_max_chars orelse default_snippet_max_chars;
 
     const rg_binary = input.rg_binary orelse "rg";
     const timeout_ms = input.timeout_ms orelse default_search_timeout_ms;
@@ -290,6 +403,10 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // allocate per-flag, only the ArrayList's backing storage.
     var args: std.ArrayList([]const u8) = .empty;
     defer args.deinit(allocator);
+    // `--glob=<pattern>` is one argv element, so a value that starts with
+    // `-` cannot be reinterpreted as another flag.
+    var glob_arg: ?[]u8 = null;
+    defer if (glob_arg) |owned| allocator.free(owned);
 
     try args.append(allocator, rg_binary);
     try args.append(allocator, "--json");
@@ -298,6 +415,19 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     try args.append(allocator, "--no-messages");
     if (!input.respect_ignore_files) {
         try args.append(allocator, "--no-ignore");
+    }
+    if (input.hidden) {
+        // rg skips dotfiles/dotdirs unless --hidden is passed. --no-ignore
+        // only disables ignore-FILE filtering, so without this flag
+        // `.github/workflows/…` stays invisible even with
+        // respect_ignore_files=false.
+        try args.append(allocator, "--hidden");
+    }
+    if (input.glob) |glob_pattern| {
+        if (glob_pattern.len > 0) {
+            glob_arg = try std.fmt.allocPrint(allocator, "--glob={s}", .{glob_pattern});
+            try args.append(allocator, glob_arg.?);
+        }
     }
     if (input.word_boundary) {
         // -w: only match whole words (word-boundary semantics).
@@ -501,6 +631,20 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     var file_stats = std.StringHashMap(usize).init(allocator);
     defer file_stats.deinit();
 
+    // Row cap + collection mode. `head` keeps the FIRST row_cap matches,
+    // `tail` keeps the LAST row_cap matches of the whole stream, and neither
+    // means "max_results rows". max_results stays a hard upper bound in all
+    // three modes (both head and tail are validated non-zero above).
+    const mode_requested: usize = if (input.head) |head_n| head_n else if (input.tail) |tail_n| tail_n else max_results;
+    const row_cap: usize = if (mode_requested < max_results) mode_requested else max_results;
+    const tail_mode = input.tail != null;
+    // Match EVENTS seen (not rows kept) — the honest denominator for
+    // `total=`/`truncated=` in the rendered envelope.
+    var seen_total: usize = 0;
+    // Cleared once row_cap rows are collected; from then on the loop only
+    // counts match events instead of JSON-parsing every remaining line.
+    var collecting = true;
+
     const stdout_slice: []const u8 = stdout_data.items;
     var line_start: usize = 0;
     var current_file: ?[]const u8 = null;
@@ -510,6 +654,14 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         const line = stdout_slice[line_start..line_end];
 
         if (line.len > 0) {
+            if (!collecting) {
+                // Row cap reached — only the total count matters now, and
+                // rg's raw line tells us a match event cheaply.
+                if (lineIsMatchEvent(line)) seen_total += 1;
+                line_start = line_end + 1;
+                continue;
+            }
+
             const parsed = std.json.parseFromSlice(std.json.Value, arena_allocator, line, .{}) catch continue;
 
             if (parsed.value.object.get("type")) |type_val| {
@@ -522,10 +674,19 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                         }
                     }
                 } else if (type_val == .string and std.mem.eql(u8, type_val.string, "match")) {
+                    // Counted as soon as the event is recognised (not at
+                    // append time) so `total=` matches what the cheap
+                    // substring scan counts once collection stops.
+                    seen_total += 1;
                     if (parsed.value.object.get("data")) |data| {
                         if (data == .object) {
                             var match_file: []const u8 = "";
                             var match_snippet: []const u8 = "";
+                            // Byte offset of the first submatch inside
+                            // `match_snippet` — drives the long-line window.
+                            // 0 is correct for the --only-matching paths
+                            // (the snippet IS the match).
+                            var snippet_offset: usize = 0;
                             // Tracks whether match_snippet is a heap-owned
                             // allocation we must free (true only when built
                             // from the comma-joined multi-submatch path).
@@ -606,6 +767,19 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                                 if (getTextFromJson(&data.object, "lines")) |lines_text| {
                                     match_snippet = lines_text;
                                 }
+                                // First submatch offset (relative to
+                                // lines.text) — rg's JSON gives us the match
+                                // position for free; without it a windowed
+                                // snippet could cut the match itself out.
+                                if (data.object.get("submatches")) |submatches_val| {
+                                    if (submatches_val == .array and submatches_val.array.items.len > 0) {
+                                        if (submatches_val.array.items[0].object.get("start")) |start_val| {
+                                            if (start_val == .integer and start_val.integer >= 0) {
+                                                snippet_offset = @intCast(start_val.integer);
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             if (data.object.get("line_number")) |ln| {
@@ -645,19 +819,54 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                                 // heap allocation (it's a toOwnedSlice),
                                 // so we always own the result.
                                 const sanitized_snippet = sanitize.sanitizeUtf8(allocator, match_snippet) catch continue;
-                                errdefer allocator.free(sanitized_snippet);
+                                defer allocator.free(sanitized_snippet);
 
                                 const owned_file = try allocator.dupe(u8, match_file);
                                 errdefer allocator.free(owned_file);
+
+                                // Window the (now valid-UTF-8) snippet so a
+                                // single long line can never swallow the
+                                // result budget. Fresh allocation → we own
+                                // it on every path.
+                                const windowed_snippet = windowSnippet(allocator, sanitized_snippet, snippet_offset, snippet_max_chars) catch {
+                                    allocator.free(owned_file);
+                                    continue;
+                                };
+                                errdefer allocator.free(windowed_snippet);
 
                                 const match = SearchMatch{
                                     .file = owned_file,
                                     .line_number = line_num,
                                     .file_total_lines = 0,
-                                    .snippet = sanitized_snippet,
+                                    .snippet = windowed_snippet,
                                 };
-                                try matches.append(allocator, match);
-                                if (matches.items.len >= max_results) break;
+
+                                if (tail_mode) {
+                                    // Last-N semantics: keep the NEWEST
+                                    // row_cap rows and evict the oldest, so
+                                    // `tail` means "last N of the whole
+                                    // search" rather than "last N of the
+                                    // first max_results". The row cap keeps
+                                    // memory bounded no matter how many
+                                    // matches rg streams past.
+                                    if (matches.items.len == row_cap) {
+                                        allocator.free(matches.items[0].file);
+                                        allocator.free(matches.items[0].snippet);
+                                        _ = matches.orderedRemove(0);
+                                    }
+                                    try matches.append(allocator, match);
+                                } else {
+                                    try matches.append(allocator, match);
+                                    if (matches.items.len >= row_cap) {
+                                        // Row cap reached: stop JSON-parsing
+                                        // the rest of rg's (already buffered)
+                                        // output. The cheap substring scan at
+                                        // the top of the loop keeps counting
+                                        // match events so `total=` stays
+                                        // honest about the truncation.
+                                        collecting = false;
+                                    }
+                                }
                             }
                         }
                     }
@@ -683,122 +892,139 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         }
     }
 
-    // Apply head/tail slicing after max_results limit
-    if (input.head) |head_n| {
-        if (head_n < matches.items.len) {
-            // Keep only first head_n matches
-            const to_remove = matches.items.len - head_n;
-            for (0..to_remove) |i| {
-                const idx = matches.items.len - 1 - i;
-                allocator.free(matches.items[idx].file);
-                allocator.free(matches.items[idx].snippet);
-            }
-            matches.shrinkRetainingCapacity(head_n);
-        }
-    } else if (input.tail) |tail_n| {
-        if (tail_n < matches.items.len) {
-            // Keep only last tail_n matches
-            const start_idx = matches.items.len - tail_n;
-            for (0..start_idx) |i| {
-                allocator.free(matches.items[i].file);
-                allocator.free(matches.items[i].snippet);
-            }
-            // Shift remaining to start
-            const kept = matches.items[start_idx..];
-            matches.shrinkRetainingCapacity(tail_n);
-            @memcpy(matches.items, kept);
-        }
-    }
+    const truncated = seen_total > matches.items.len;
 
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
-
-    for (matches.items) |m| {
-        const line = try std.fmt.allocPrint(allocator, "{s}:{d}:{s}\n", .{ m.file, m.line_number, m.snippet });
-        try output.appendSlice(allocator, line);
-        allocator.free(line);
-    }
-
+    // No-match warning body. Built ONLY when nothing was collected — the
+    // formatters render `matches` directly on the success path, so there is
+    // no second text dump of every row any more. Both interpolated values are
+    // XML-escaped: they come straight from the model.
+    var warning: []const u8 = "";
+    errdefer if (warning.len > 0) allocator.free(warning);
     if (matches.items.len == 0) {
+        const escaped_pattern = try xmlEscape(allocator, input.pattern);
+        defer allocator.free(escaped_pattern);
+        const escaped_path = try xmlEscape(allocator, input.path);
+        defer allocator.free(escaped_path);
         if (stderr_data.items.len > 0) {
             // ripgrep surfaced an error (regex parse error, permission
             // denied, etc). Surface stderr verbatim — it already names the
-            // root cause. Don't append pattern/path because the stderr is
-            // the source of truth.
-            try output.appendSlice(allocator, "<warning>");
-            try output.appendSlice(allocator, stderr_data.items);
-            try output.appendSlice(allocator, "</warning>");
+            // root cause. Escaped so a path containing XML metacharacters
+            // cannot corrupt the envelope.
+            const escaped_stderr = try xmlEscape(allocator, stderr_data.items);
+            defer allocator.free(escaped_stderr);
+            warning = try std.fmt.allocPrint(allocator, "<warning>{s}</warning>", .{escaped_stderr});
         } else {
             // Clean no-match (rg exit code 1, empty stderr). Include the
             // pattern + path the LLM passed so the operator can see exactly
-            // what was searched — without this the frontend falls back to
-            // "unknown pattern not found" and the operator can't tell
-            // whether the LLM typed a typo or just got unlucky. See
+            // what was searched — see
             // docs/superpowers/plans/2026-08-06-search-better-error.md.
-            try output.appendSlice(allocator, "<warning>no matches for pattern \"");
-            try output.appendSlice(allocator, input.pattern);
-            try output.appendSlice(allocator, "\" in path \"");
-            try output.appendSlice(allocator, input.path);
-            try output.appendSlice(allocator, "\"</warning>");
+            warning = try std.fmt.allocPrint(
+                allocator,
+                "<warning>no matches for pattern \"{s}\" in path \"{s}\"</warning>",
+                .{ escaped_pattern, escaped_path },
+            );
         }
     }
 
     return SearchResult{
         .matches = matches,
-        .content = try output.toOwnedSlice(allocator),
+        .warning = warning,
+        .total_matches = seen_total,
+        .truncated = truncated,
     };
 }
 
-/// Multiple matches in the same file are grouped together under a <file> element
-/// Wrapped in <search> tag containing the pattern and path used
+/// Multiple matches in the same file are grouped together under a <file>
+/// element, wrapped in a <search> tag carrying the pattern/path plus the
+/// collection summary (`returned` / `total` / `truncated`).
+///
+/// Every value lifted from file content or model args (pattern, path, file
+/// paths, snippets) is XML-escaped: the wire contract is XML, and an
+/// un-escaped `</s></m>` inside a snippet — a perfectly ordinary thing to
+/// search for — used to truncate the snippet for every regex-based consumer.
 pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
-    // Opening <search> tag with pattern and path
-    try output.appendSlice(allocator, "<search pattern=\"");
-    try output.appendSlice(allocator, pattern);
-    try output.appendSlice(allocator, "\" path=\"");
-    try output.appendSlice(allocator, search_path);
-    try output.appendSlice(allocator, "\">\n");
+    const escaped_pattern = try xmlEscape(allocator, pattern);
+    defer allocator.free(escaped_pattern);
+    const escaped_path = try xmlEscape(allocator, search_path);
+    defer allocator.free(escaped_path);
+
+    // Opening <search> tag: args + collection summary. The summary is what
+    // turns silent truncation into a fact the caller can act on — before it,
+    // a capped result (max_results / head / tail) was indistinguishable from
+    // an exhaustive one.
+    const summary = try std.fmt.allocPrint(
+        allocator,
+        "<search pattern=\"{s}\" path=\"{s}\" returned=\"{d}\" total=\"{d}\" truncated=\"{s}\">\n",
+        .{
+            escaped_pattern,
+            escaped_path,
+            result.matches.items.len,
+            result.total_matches,
+            if (result.truncated) "true" else "false",
+        },
+    );
+    defer allocator.free(summary);
+    try output.appendSlice(allocator, summary);
 
     if (result.matches.items.len == 0) {
-        // No matches — include the warning body (which now carries the
-        // pattern + path the LLM passed) inside the <search> tag. The
-        // frontend's parser relies on pattern="..." path="..." being
-        // present so it can render the actual args in the toast header;
-        // if we close the tag here without the body, the operator sees
-        // "unknown" / "unknown" in the chatview (the bug this commit
-        // fixes). See docs/superpowers/plans/2026-08-06-search-better-error.md.
-        try output.appendSlice(allocator, result.content);
+        // No matches — include the warning body (which carries the pattern +
+        // path the LLM passed) inside the <search> tag. The frontend's
+        // parser relies on pattern="..." path="..." being present so it can
+        // render the actual args in the card header; if we close the tag
+        // here without the body, the operator sees "unknown" / "unknown"
+        // (the bug fixed on 2026-08-06). See
+        // docs/superpowers/plans/2026-08-06-search-better-error.md.
+        try output.appendSlice(allocator, result.warning);
         try output.appendSlice(allocator, "\n");
         try output.appendSlice(allocator, "</search>\n");
         return try output.toOwnedSlice(allocator);
     }
 
-    // Group matches by file
-    var file_groups = std.StringHashMap(std.ArrayList(MatchInFile)).init(allocator);
-    defer {
-        var it = file_groups.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.*.deinit(allocator);
-        }
-        file_groups.deinit();
+    if (result.truncated) {
+        const hint = try std.fmt.allocPrint(
+            allocator,
+            "  <truncated>{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.</truncated>\n",
+            .{ result.matches.items.len, result.total_matches },
+        );
+        defer allocator.free(hint);
+        try output.appendSlice(allocator, hint);
     }
 
-    // Collect all matches grouped by file
+    // Group matches by file, PRESERVING rg's output order. A StringHashMap
+    // iterator (the previous shape) yields hash order, so an identical search
+    // could serialize a different byte sequence — and, once the agent loop's
+    // 20 KB tool-output cap cuts the payload, a different SUBSET of files —
+    // on every run.
+    const FileGroup = struct {
+        path: []const u8,
+        matches: std.ArrayList(MatchInFile) = .empty,
+    };
+    var groups: std.ArrayList(FileGroup) = .empty;
+    defer {
+        for (groups.items) |*group| group.matches.deinit(allocator);
+        groups.deinit(allocator);
+    }
+    var group_index = std.StringHashMap(usize).init(allocator);
+    defer group_index.deinit();
+
+    // Collect all matches grouped by file (insertion order = rg's order).
     for (result.matches.items) |m| {
-        const file_entry = try file_groups.getOrPut(m.file);
-        if (!file_entry.found_existing) {
-            file_entry.value_ptr.* = std.ArrayList(MatchInFile).empty;
+        const index_entry = try group_index.getOrPut(m.file);
+        if (!index_entry.found_existing) {
+            index_entry.value_ptr.* = groups.items.len;
+            try groups.append(allocator, .{ .path = m.file });
         }
-        try file_entry.value_ptr.append(allocator, .{
+        try groups.items[index_entry.value_ptr.*].matches.append(allocator, .{
             .line_number = m.line_number,
             .snippet = m.snippet,
         });
     }
 
-    // Get total_lines for each file
+    // Per-file matched-line count (rg's `stats.matched_lines` for THIS
+    // search — not the file's line count, see the tool description).
     var file_totals = std.StringHashMap(usize).init(allocator);
     defer file_totals.deinit();
 
@@ -808,39 +1034,33 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
         }
     }
 
-    // Output grouped format
-    var it = file_groups.iterator();
-    while (it.next()) |entry| {
-        const file_path = entry.key_ptr.*;
-        const matches_in_file = entry.value_ptr.*;
+    // Output grouped format (in rg's file order).
+    for (groups.items) |group| {
+        const total = file_totals.get(group.path) orelse 0;
+        const escaped_file = try xmlEscape(allocator, std.mem.trim(u8, group.path, &std.ascii.whitespace));
+        defer allocator.free(escaped_file);
 
-        const total = file_totals.get(file_path) orelse 0;
-        const trimmed_path = std.mem.trim(u8, file_path, &std.ascii.whitespace);
+        // File header. The attribute ORDER (path, total, count) is a wire
+        // contract with the frontend parsers (Search.vue, renderResponse.ts).
+        const header = try std.fmt.allocPrint(
+            allocator,
+            "  <file path=\"{s}\" total=\"{d}\" count=\"{d}\">\n",
+            .{ escaped_file, total, group.matches.items.len },
+        );
+        defer allocator.free(header);
+        try output.appendSlice(allocator, header);
 
-        // File header
-        try output.appendSlice(allocator, "  <file path=\"");
-        try output.appendSlice(allocator, trimmed_path);
-        try output.appendSlice(allocator, "\" total=\"");
-        const total_str = try std.fmt.allocPrint(allocator, "{d}", .{total});
-        try output.appendSlice(allocator, total_str);
-        allocator.free(total_str);
-        try output.appendSlice(allocator, "\" count=\"");
-        const count_str = try std.fmt.allocPrint(allocator, "{d}", .{matches_in_file.items.len});
-        try output.appendSlice(allocator, count_str);
-        allocator.free(count_str);
-        try output.appendSlice(allocator, "\">\n");
-
-        // Each match in this file
-        for (matches_in_file.items) |m| {
-            const trimmed_snippet = std.mem.trim(u8, m.snippet, &std.ascii.whitespace);
-            const match_xml = try std.fmt.allocPrint(allocator,
-                \\    <m><l>{d}</l><s>{s}</s></m>\n
-            , .{
-                m.line_number,
-                trimmed_snippet,
-            });
+        // Each match in this file.
+        for (group.matches.items) |m| {
+            const escaped_snippet = try xmlEscape(allocator, std.mem.trim(u8, m.snippet, &std.ascii.whitespace));
+            defer allocator.free(escaped_snippet);
+            const match_xml = try std.fmt.allocPrint(
+                allocator,
+                "    <m><l>{d}</l><s>{s}</s></m>\n",
+                .{ m.line_number, escaped_snippet },
+            );
+            defer allocator.free(match_xml);
             try output.appendSlice(allocator, match_xml);
-            allocator.free(match_xml);
         }
 
         try output.appendSlice(allocator, "  </file>\n");
@@ -860,34 +1080,58 @@ pub fn search_result_to_string_flat(allocator: std.mem.Allocator, result: Search
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
-    try output.appendSlice(allocator, "<search pattern=\"");
-    try output.appendSlice(allocator, pattern);
-    try output.appendSlice(allocator, "\" path=\"");
-    try output.appendSlice(allocator, search_path);
-    try output.appendSlice(allocator, "\" group_by_file=\"false\">\n");
+    const escaped_pattern = try xmlEscape(allocator, pattern);
+    defer allocator.free(escaped_pattern);
+    const escaped_path = try xmlEscape(allocator, search_path);
+    defer allocator.free(escaped_path);
+
+    // Args + collection summary (see search_result_to_string_grouped).
+    const summary = try std.fmt.allocPrint(
+        allocator,
+        "<search pattern=\"{s}\" path=\"{s}\" returned=\"{d}\" total=\"{d}\" truncated=\"{s}\" group_by_file=\"false\">\n",
+        .{
+            escaped_pattern,
+            escaped_path,
+            result.matches.items.len,
+            result.total_matches,
+            if (result.truncated) "true" else "false",
+        },
+    );
+    defer allocator.free(summary);
+    try output.appendSlice(allocator, summary);
 
     if (result.matches.items.len == 0) {
         // No matches — include the warning body inside the <search> tag
         // (see search_result_to_string_grouped comment for rationale).
-        try output.appendSlice(allocator, result.content);
+        try output.appendSlice(allocator, result.warning);
         try output.appendSlice(allocator, "\n");
         try output.appendSlice(allocator, "</search>\n");
         return try output.toOwnedSlice(allocator);
     }
 
+    if (result.truncated) {
+        const hint = try std.fmt.allocPrint(
+            allocator,
+            "  <truncated>{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.</truncated>\n",
+            .{ result.matches.items.len, result.total_matches },
+        );
+        defer allocator.free(hint);
+        try output.appendSlice(allocator, hint);
+    }
+
     for (result.matches.items) |m| {
-        const trimmed_snippet = std.mem.trim(u8, m.snippet, &std.ascii.whitespace);
-        const trimmed_path = std.mem.trim(u8, m.file, &std.ascii.whitespace);
-        const match_xml = try std.fmt.allocPrint(allocator,
-            \\  <m><f>{s}</f><l>{d}</l><s>{s}</s></m>
-        , .{
-            trimmed_path,
-            m.line_number,
-            trimmed_snippet,
-        });
+        const escaped_snippet = try xmlEscape(allocator, std.mem.trim(u8, m.snippet, &std.ascii.whitespace));
+        defer allocator.free(escaped_snippet);
+        const escaped_file = try xmlEscape(allocator, std.mem.trim(u8, m.file, &std.ascii.whitespace));
+        defer allocator.free(escaped_file);
+        const match_xml = try std.fmt.allocPrint(
+            allocator,
+            "  <m><f>{s}</f><l>{d}</l><s>{s}</s></m>",
+            .{ escaped_file, m.line_number, escaped_snippet },
+        );
+        defer allocator.free(match_xml);
         try output.appendSlice(allocator, match_xml);
         try output.appendSlice(allocator, "\n");
-        allocator.free(match_xml);
     }
 
     try output.appendSlice(allocator, "</search>\n");
@@ -900,6 +1144,10 @@ pub const search_tool_system_prompt =
     \\Use `search` for full-text code search. Always prefer this over `bash` with `rg`/`grep`.
     \\- Returns structured XML with file paths + line numbers, respects `.gitignore`.
     \\- Use `word_boundary`, `literal`, `only_matching` flags as needed.
+    \\- Narrow noisy trees with `glob` (e.g. `*.zig`) instead of post-filtering mentally.
+    \\- Check `truncated="true"` / `<truncated>` on the result: it means more matched lines
+    \\  exist than were shown. Raise `max_results`, or narrow `pattern`/`path`/`glob`.
+    \\- Snippets are windowed to `snippet_max_chars` (default 240) and XML-escaped.
     \\- Bound results with `max_results`/`max_output`.
     \\
 ;
@@ -942,26 +1190,39 @@ pub const search_tool = AgentTool{
         \\  fallback, but first check whether the flag has a parameter here.
         \\
         \\RESPONSE FORMAT
-        \\Results are wrapped in a <search> tag with pattern/path attributes.
-        \\By default matches are grouped per file (<file> wrapper):
+        \\Results are wrapped in a <search> tag carrying the args plus the
+        \\collection summary:
         \\
-        \\<search pattern="regex" path="path">
-        \\  <file path="path/to/file.zig" total="100" count="3">
+        \\<search pattern="regex" path="path" returned="2" total="2" truncated="false">
+        \\  <file path="path/to/file.zig" total="3" count="2">
         \\    <m><l>10</l><s>snippet at line 10</s></m>
         \\    <m><l>25</l><s>snippet at line 25</s></m>
         \\  </file>
         \\</search>
         \\
-        \\Field meanings: `total` = the file's total line count. `count` =
-        \\number of matches in this file. `l` = match line number (1-indexed).
-        \\`s` = snippet (~100 chars of context around the match).
+        \\Field meanings:
+        \\- `returned` = rows in this response; `total` = matched lines rg
+        \\  found in the WHOLE search; `truncated` = "returned < total".
+        \\  ALWAYS check `truncated`: when it is true your result is a window
+        \\  (max_results / head / tail cut it), NOT the complete answer. A
+        \\  `<truncated>N of M …</truncated>` line restates it in prose.
+        \\- `l` = match line number (1-indexed).
+        \\- `s` = the matching line, windowed to snippet_max_chars (default
+        \\  240) around the match with "..." markers when the line is longer.
+        \\- On <file>: `total` = matched lines in that file for THIS search,
+        \\  `count` = rows shown for it (check `returned`/`total` above for the
+        \\  search-wide picture; use read_file for a file's real line count).
         \\
-        \\No matches returns: <search pattern="..." path="..."></search>
-        \\(empty body).
+        \\No matches returns: <search pattern="..." path="..." returned="0"
+        \\total="0" truncated="false"><warning>no matches for pattern "..." in
+        \\path "..."</warning></search>.
+        \\
+        \\Values are XML-escaped (&lt; &gt; &amp; &quot; &apos;) — a snippet
+        \\containing "</s></m>" comes back as "&lt;/s&gt;&lt;/m&gt;".
         \\
         \\Set `group_by_file: false` for a flat list (one <m> per match, no
         \\<file> wrapper):
-        \\<search pattern="..." path="..." group_by_file="false">
+        \\<search pattern="..." path="..." returned="1" total="1" truncated="false" group_by_file="false">
         \\  <m><f>path/to/file.zig</f><l>10</l><s>snippet</s></m>
         \\</search>
         \\
@@ -988,8 +1249,19 @@ pub const search_tool = AgentTool{
         \\- Pattern must be non-empty and contain no NUL bytes.
         \\- max_results and max_output must be > 0.
         \\- max_output is hard-capped at 100MB.
+        \\- head/tail must be > 0 and are mutually exclusive. Both are still
+        \\  bounded by max_results (the hard row cap); `tail` scans the whole
+        \\  match stream and keeps the newest rows, so it means "last N of the
+        \\  search", not "last N of the first max_results".
         \\- respect_ignore_files (default true): set false to search
-        \\  gitignored paths (build/, node_modules/, .git/, target/, vendor/).
+        \\  gitignored paths (build/, node_modules/, target/, vendor/). NOTE:
+        \\  rg still skips HIDDEN entries — that flag does NOT reach .git/ or
+        \\  .github/; pass hidden=true for those.
+        \\- hidden (default false): adds --hidden so dotfiles/dotdirs match.
+        \\- glob: ripgrep --glob filter (e.g. "*.zig", "!test_*") — the
+        \\  cheapest way to cut noise in a polyglot tree.
+        \\- snippet_max_chars (default 240, 0 = no cap): long lines are
+        \\  windowed around the match instead of being returned whole.
         ,
         .parameters = .{
             .type = "object",
@@ -1007,17 +1279,17 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "max_results",
                     .type = "number",
-                    .description = "Max matches to return. Default: 50. Must be > 0.",
+                    .description = "Hard cap on rows returned. Default: 50. Must be > 0. When it bites, the result reports truncated=\"true\" + a <truncated> hint.",
                 },
                 .{
                     .name = "head",
                     .type = "number",
-                    .description = "Return first N matches from result set. Mutually exclusive with tail.",
+                    .description = "Return the first N matches (stops collecting early). Still bounded by max_results. Mutually exclusive with tail. Must be > 0.",
                 },
                 .{
                     .name = "tail",
                     .type = "number",
-                    .description = "Return last N matches from result set. Mutually exclusive with head.",
+                    .description = "Return the last N matches of the WHOLE search: the collector scans to the end and keeps the newest rows (bounded by max_results). Mutually exclusive with head. Must be > 0.",
                 },
                 .{
                     .name = "max_output",
@@ -1037,7 +1309,7 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "respect_ignore_files",
                     .type = "boolean",
-                    .description = "Respect .gitignore/.ignore/.rgignore. Default: true. Set false to search gitignored paths (build/, node_modules/, .git/, etc.).",
+                    .description = "Respect .gitignore/.ignore/.rgignore. Default: true. Set false to search gitignored paths (build/, node_modules/, target/, vendor/). NOTE: rg still skips hidden entries — use `hidden` for .git/ and .github/.",
                 },
                 .{
                     .name = "word_boundary",
@@ -1053,6 +1325,21 @@ pub const search_tool = AgentTool{
                     .name = "only_matching",
                     .type = "boolean",
                     .description = "Return only the matched substring (-o flag), not the full surrounding line. Useful for short tokens in noisy lines. Default: false.",
+                },
+                .{
+                    .name = "snippet_max_chars",
+                    .type = "number",
+                    .description = "Max bytes per snippet before it is windowed around the match (default 240). rg returns the WHOLE matching line, so a minified bundle line can be enormous. 0 disables windowing.",
+                },
+                .{
+                    .name = "hidden",
+                    .type = "boolean",
+                    .description = "Also search hidden files/dirs (.github/, .env, .gitignore) via --hidden. Default: false. NOTE: respect_ignore_files=false does NOT imply this — rg skips hidden entries either way.",
+                },
+                .{
+                    .name = "glob",
+                    .type = "string",
+                    .description = "ripgrep --glob filter, e.g. '*.zig', '*.vue', '!test_*'. Cheapest way to cut noise in a polyglot repo.",
                 },
                 .{
                     .name = "timeout_ms",
@@ -2653,7 +2940,7 @@ test "search: search_result_to_string_flat with no matches emits empty header" {
 
     const result = search.SearchResult{
         .matches = std.ArrayList(search.SearchMatch).empty,
-        .content = "<warning>pattern not found</warning>",
+        .warning = "<warning>pattern not found</warning>",
     };
 
     const flat = try search.search_result_to_string_flat(
@@ -2704,10 +2991,10 @@ test "search: executeSearch no-match warning includes the actual pattern and pat
     // The warning body MUST contain the literal pattern + path the LLM
     // passed so the operator can see what was searched (fix for the
     // "unknown" / "unknown pattern not found" rendering bug).
-    try testing.expect(std.mem.indexOf(u8, result.content, "needle_NOT_FOUND") != null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "empty.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "<warning>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.content, "</warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.warning, "needle_NOT_FOUND") != null);
+    try testing.expect(std.mem.indexOf(u8, result.warning, "empty.txt") != null);
+    try testing.expect(std.mem.indexOf(u8, result.warning, "<warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.warning, "</warning>") != null);
 }
 
 test "search: search_result_to_string_grouped no-match wraps warning in <search pattern=\"...\" path=\"...\">" {
@@ -2719,7 +3006,7 @@ test "search: search_result_to_string_grouped no-match wraps warning in <search 
     // "needle_NO..."). Body text is the durable source of truth.
     const result = search.SearchResult{
         .matches = std.ArrayList(search.SearchMatch).empty,
-        .content = "<warning>no matches for pattern \"needle_NOT_FOUND\" in path \"/tmp/x\"</warning>",
+        .warning = "<warning>no matches for pattern \"needle_NOT_FOUND\" in path \"/tmp/x\"</warning>",
     };
 
     const grouped = try search.search_result_to_string_grouped(
@@ -2751,7 +3038,7 @@ test "search: search_result_to_string_flat no-match wraps warning in <search pat
 
     const result = search.SearchResult{
         .matches = std.ArrayList(search.SearchMatch).empty,
-        .content = "<warning>no matches for pattern \"foo\" in path \"bar\"</warning>",
+        .warning = "<warning>no matches for pattern \"foo\" in path \"bar\"</warning>",
     };
 
     const flat = try search.search_result_to_string_flat(
@@ -2797,7 +3084,7 @@ test "search: search_result_to_string_flat renders file/line/snippet per match" 
 
     const result = search.SearchResult{
         .matches = owned_matches,
-        .content = "",
+        .warning = "",
     };
 
     const flat = try search.search_result_to_string_flat(
@@ -2835,7 +3122,7 @@ test "search: search_result_to_string_grouped with no matches emits empty header
 
     const result = search.SearchResult{
         .matches = std.ArrayList(search.SearchMatch).empty,
-        .content = "<warning>pattern not found</warning>",
+        .warning = "<warning>pattern not found</warning>",
     };
 
     const grouped = try search.search_result_to_string_grouped(
@@ -2874,7 +3161,7 @@ test "search: search_result_to_string_grouped renders <file> wrappers" {
 
     const result = search.SearchResult{
         .matches = owned_matches,
-        .content = "",
+        .warning = "",
     };
 
     const grouped = try search.search_result_to_string_grouped(
@@ -3017,6 +3304,8 @@ test "agentic_loop/tools_exec_search.zig maps new SearchErrors to LLM-friendly m
     try testing.expect(std.mem.indexOf(u8, source, "error.InvalidMaxOutput") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.MaxOutputTooLarge") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.InvalidMaxResults") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.InvalidHeadTail") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.GlobContainsNulByte") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.RegexParseError") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.PathError") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.Timeout") != null);
@@ -3088,4 +3377,667 @@ test "search: bogus rg_binary returns RgNotFound (not generic PathError)" {
 
 test "search: default search timeout is 30s" {
     try testing.expectEqual(@as(u64, 30_000), search.default_search_timeout_ms);
+}
+
+// =============================================================================
+// Output-contract tests — the result envelope's honesty.
+//
+// These pin the four defects that made the rendered result misleading:
+//   1. silent truncation (a capped result looked exhaustive),
+//   2. unbounded snippets (one long line ate the whole tool-output budget),
+//   3. un-escaped interpolation (a snippet could inject XML tags),
+//   4. hash-ordered file groups (same search, different bytes per run),
+// plus the head/tail collection modes that replace the old post-hoc slice
+// (whose shift-down `@memcpy` aborted on aliasing when len < 2 * tail).
+// =============================================================================
+
+/// Absolute path of a `testing.tmpDir`. Zig 0.16's `TmpDir.sub_path` holds
+/// only the random basename, so tests resolve the real path and search "."
+/// inside it (same pattern as the behavioral tests above).
+fn resolveTmpDir(dir: std.Io.Dir, io: std.Io, buf: []u8) ![]const u8 {
+    const len = try dir.realPath(io, buf);
+    return buf[0..len];
+}
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var idx: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, idx, needle)) |found| {
+        count += 1;
+        idx = found + 1;
+    }
+    return count;
+}
+
+/// `count` lines of "<prefix> line <n>" — one match event per line.
+fn buildMatchingLines(allocator: std.mem.Allocator, count: u32, prefix: []const u8) ![]u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const line = try std.fmt.allocPrint(allocator, "{s} line {d}\n", .{ prefix, i });
+        defer allocator.free(line);
+        try buf.appendSlice(allocator, line);
+    }
+    return try buf.toOwnedSlice(allocator);
+}
+
+test "search: head = 0 returns InvalidHeadTail without spawning rg" {
+    const result = search.executeSearch(testing.allocator, testing.io, "/tmp", .{
+        .pattern = "foo",
+        .path = ".",
+        .head = 0,
+    });
+    try testing.expectError(error.InvalidHeadTail, result);
+}
+
+test "search: tail = 0 returns InvalidHeadTail without spawning rg" {
+    const result = search.executeSearch(testing.allocator, testing.io, "/tmp", .{
+        .pattern = "foo",
+        .path = ".",
+        .tail = 0,
+    });
+    try testing.expectError(error.InvalidHeadTail, result);
+}
+
+test "search: max_results truncation is reported (returned/total/truncated + <truncated>)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const content = try buildMatchingLines(allocator, 20, "foo");
+    defer allocator.free(content);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "many.txt", .data = content });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .max_results = 3,
+    });
+    defer result.deinit(allocator);
+
+    // 3 rows kept, 20 match events seen — the difference is the truncation.
+    try testing.expectEqual(@as(usize, 3), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 20), result.total_matches);
+    try testing.expect(result.truncated);
+
+    const grouped = try search.search_result_to_string_grouped(allocator, result, "foo", ".");
+    defer allocator.free(grouped);
+
+    try testing.expect(std.mem.indexOf(u8, grouped, "returned=\"3\" total=\"20\" truncated=\"true\"") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "<truncated>3 of 20 matched lines shown") != null);
+}
+
+test "search: complete result reports truncated=false and no <truncated> block" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "one.txt", .data = "foo only here\n" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+
+    try testing.expect(!result.truncated);
+    try testing.expectEqual(@as(usize, 1), result.total_matches);
+
+    const grouped = try search.search_result_to_string_grouped(allocator, result, "foo", ".");
+    defer allocator.free(grouped);
+
+    try testing.expect(std.mem.indexOf(u8, grouped, "returned=\"1\" total=\"1\" truncated=\"false\"") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "<truncated>") == null);
+}
+
+test "search: head keeps the FIRST N matches and reports the truncation" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const content = try buildMatchingLines(allocator, 5, "foo");
+    defer allocator.free(content);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "five.txt", .data = content });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .head = 2,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+    try testing.expectEqual(@as(usize, 2), result.matches.items[1].line_number);
+    try testing.expectEqual(@as(usize, 5), result.total_matches);
+    try testing.expect(result.truncated);
+}
+
+test "search: tail keeps the LAST N matches of the whole search (aliasing-panic regression)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const content = try buildMatchingLines(allocator, 10, "foo");
+    defer allocator.free(content);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "ten.txt", .data = content });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    // tail = 8 with 10 matches is the exact shape that used to abort: the
+    // post-hoc slice shifted the kept rows down with an aliasing @memcpy
+    // (src = items[2..], dst = items[0..]), which Zig 0.16 rejects outright.
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .tail = 8,
+    });
+    defer result.deinit(allocator);
+
+    // The NEWEST 8 of 10 lines: 3..10 (the first two were evicted).
+    try testing.expectEqual(@as(usize, 8), result.matches.items.len);
+    for (result.matches.items, 3..) |m, expected_line| {
+        try testing.expectEqual(expected_line, m.line_number);
+    }
+    try testing.expectEqual(@as(usize, 10), result.total_matches);
+    try testing.expect(result.truncated);
+}
+
+test "search: tail scans past max_results (last N is not last-N-of-the-first-max_results)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const content = try buildMatchingLines(allocator, 12, "foo");
+    defer allocator.free(content);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "twelve.txt", .data = content });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+        .tail = 2,
+        .max_results = 5,
+    });
+    defer result.deinit(allocator);
+
+    // The last two lines of the FILE (11 and 12), not of the first 5 rows.
+    try testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 11), result.matches.items[0].line_number);
+    try testing.expectEqual(@as(usize, 12), result.matches.items[1].line_number);
+}
+
+test "search: glob filter narrows the matches to matching file names" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "a.zig", .data = "GLOB_MARKER here\n" });
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "b.txt", .data = "GLOB_MARKER here\n" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var only_zig = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "GLOB_MARKER",
+        .path = ".",
+        .glob = "*.zig",
+    });
+    defer only_zig.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), only_zig.matches.items.len);
+    try testing.expectEqualStrings("a.zig", stripDotSlash(only_zig.matches.items[0].file));
+
+    var none = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "GLOB_MARKER",
+        .path = ".",
+        .glob = "*.rs",
+    });
+    defer none.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 0), none.matches.items.len);
+}
+
+test "search: glob with a NUL byte returns GlobContainsNulByte without spawning rg" {
+    const result = search.executeSearch(testing.allocator, testing.io, "/tmp", .{
+        .pattern = "foo",
+        .path = ".",
+        .glob = &[_]u8{ '*', 0, 'z' },
+    });
+    try testing.expectError(error.GlobContainsNulByte, result);
+}
+
+test "search: hidden = true reaches dotdirs, default does not" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.createDirPath(io, ".dotdir");
+    try tmpdir.dir.writeFile(io, .{ .sub_path = ".dotdir/hidden.txt", .data = "HIDDEN_MARKER\n" });
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "visible.txt", .data = "HIDDEN_MARKER\n" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var default_run = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "HIDDEN_MARKER",
+        .path = ".",
+    });
+    defer default_run.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), default_run.matches.items.len);
+    try testing.expectEqualStrings("visible.txt", stripDotSlash(default_run.matches.items[0].file));
+
+    var with_hidden = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "HIDDEN_MARKER",
+        .path = ".",
+        .hidden = true,
+    });
+    defer with_hidden.deinit(allocator);
+    try testing.expectEqual(@as(usize, 2), with_hidden.matches.items.len);
+}
+
+test "search: respect_ignore_files = false does NOT reach hidden dirs (doc claim guard)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.createDirPath(io, ".github");
+    try tmpdir.dir.writeFile(io, .{ .sub_path = ".github/workflow.yml", .data = "CI_MARKER\n" });
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "visible.txt", .data = "CI_MARKER\n" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    // --no-ignore disables ignore-FILE filtering only; rg still skips hidden
+    // entries. The tool description used to claim `.git/` becomes searchable
+    // with respect_ignore_files=false — it does not.
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "CI_MARKER",
+        .path = ".",
+        .respect_ignore_files = false,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    try testing.expectEqualStrings("visible.txt", stripDotSlash(result.matches.items[0].file));
+}
+
+test "search: snippets are XML-escaped (no tag injection, no phantom <file> rows)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    // The exact text that used to corrupt the payload: a snippet containing
+    // `</s></m>` closed the <m> element early for every regex-based consumer,
+    // and a snippet containing a `<file path=…>` header looked like a real
+    // file row to the frontend.
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "hostile.txt",
+        .data = "</s></m>\n<file path=\"x\" total=\"1\" count=\"1\">\na & b \"quoted\"\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = ".",
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+    try testing.expectEqual(@as(usize, 3), result.matches.items.len);
+
+    const grouped = try search.search_result_to_string_grouped(allocator, result, ".", ".");
+    defer allocator.free(grouped);
+
+    try testing.expect(std.mem.indexOf(u8, grouped, "&lt;/s&gt;&lt;/m&gt;") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "&lt;file path=&quot;x&quot; total=&quot;1&quot; count=&quot;1&quot;&gt;") != null);
+    try testing.expect(std.mem.indexOf(u8, grouped, "a &amp; b &quot;quoted&quot;") != null);
+
+    // Exactly one raw `</s></m>` per rendered row — nothing extra leaked in
+    // from the snippets.
+    try testing.expectEqual(@as(usize, 3), countOccurrences(grouped, "</s></m>"));
+    // And exactly one real <file …> header: the snippet's fake one is escaped.
+    try testing.expectEqual(@as(usize, 1), countOccurrences(grouped, "<file path=\""));
+}
+
+test "search: pattern attribute is XML-escaped so the header stays parseable" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "q.txt", .data = "say \"hello\" now\n" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    const pattern = "\"hello\"";
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = pattern,
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+
+    const grouped = try search.search_result_to_string_grouped(allocator, result, pattern, ".");
+    defer allocator.free(grouped);
+
+    // `pattern="` + a raw quote would have terminated the attribute early;
+    // the escaped form keeps the frontend's /pattern="([^"]+)"/ parseable.
+    try testing.expect(std.mem.indexOf(u8, grouped, "pattern=\"&quot;hello&quot;\"") != null);
+}
+
+test "search: long lines are windowed around the match (default cap)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const line = blk: {
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendNTimes(allocator, 'x', 400);
+        try buf.appendSlice(allocator, "NEEDLE");
+        try buf.appendNTimes(allocator, 'y', 400);
+        try buf.append(allocator, '\n');
+        break :blk try buf.toOwnedSlice(allocator);
+    };
+    defer allocator.free(line);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "long.txt", .data = line });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "NEEDLE",
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 1), result.matches.items.len);
+    const snippet = result.matches.items[0].snippet;
+    // Windowed (cap + the two "..." markers), still containing the match and
+    // marked on both sides so the reader knows text was elided.
+    try testing.expect(snippet.len <= search.default_snippet_max_chars + 8);
+    try testing.expect(std.mem.indexOf(u8, snippet, "NEEDLE") != null);
+    try testing.expect(std.mem.startsWith(u8, snippet, "..."));
+    try testing.expect(std.mem.endsWith(u8, snippet, "..."));
+}
+
+test "search: snippet_max_chars = 0 disables the window" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const line = blk: {
+        var buf: std.ArrayList(u8) = .empty;
+        try buf.appendNTimes(allocator, 'x', 400);
+        try buf.appendSlice(allocator, "NEEDLE");
+        try buf.appendNTimes(allocator, 'y', 400);
+        try buf.append(allocator, '\n');
+        break :blk try buf.toOwnedSlice(allocator);
+    };
+    defer allocator.free(line);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "long.txt", .data = line });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "NEEDLE",
+        .path = ".",
+        .snippet_max_chars = 0,
+    });
+    defer result.deinit(allocator);
+
+    // Whole line back (806 bytes), no elision markers.
+    const snippet = result.matches.items[0].snippet;
+    try testing.expectEqual(@as(usize, 806), snippet.len);
+    try testing.expect(!std.mem.startsWith(u8, snippet, "..."));
+}
+
+test "search: windowing never splits a multi-byte UTF-8 sequence" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    // 3-byte chars on both sides: the naive byte window (offset - cap/3)
+    // lands mid-sequence, so the boundary backoff has to fix it up.
+    const euro = "\u{20AC}";
+    const line = blk: {
+        var buf: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < 100) : (i += 1) try buf.appendSlice(allocator, euro);
+        try buf.appendSlice(allocator, "NEEDLE");
+        i = 0;
+        while (i < 100) : (i += 1) try buf.appendSlice(allocator, euro);
+        try buf.append(allocator, '\n');
+        break :blk try buf.toOwnedSlice(allocator);
+    };
+    defer allocator.free(line);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "utf8.txt", .data = line });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "NEEDLE",
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+
+    const snippet = result.matches.items[0].snippet;
+    try testing.expect(std.unicode.utf8ValidateSlice(snippet));
+    try testing.expect(std.mem.indexOf(u8, snippet, "NEEDLE") != null);
+}
+
+test "search: grouped output preserves the collector's file order (was hash order)" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    for ([_][]const u8{ "a.txt", "b.txt", "c.txt" }) |name| {
+        try tmpdir.dir.writeFile(io, .{ .sub_path = name, .data = "ORDER_MARKER\n" });
+    }
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "ORDER_MARKER",
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+    try testing.expectEqual(@as(usize, 3), result.matches.items.len);
+
+    // First-seen order in the collector == rg's own order.
+    var expected: [3][]const u8 = undefined;
+    var expected_len: usize = 0;
+    for (result.matches.items) |m| {
+        var known = false;
+        for (expected[0..expected_len]) |seen| {
+            if (std.mem.eql(u8, seen, m.file)) known = true;
+        }
+        if (!known) {
+            expected[expected_len] = m.file;
+            expected_len += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 3), expected_len);
+
+    const grouped = try search.search_result_to_string_grouped(allocator, result, "ORDER_MARKER", ".");
+    defer allocator.free(grouped);
+
+    // Each <file> header must appear in that same order (a StringHashMap
+    // iterator — the old implementation — yields hash order instead).
+    var cursor: usize = 0;
+    for (expected[0..expected_len]) |file_path| {
+        const needle = try std.fmt.allocPrint(allocator, "<file path=\"{s}\"", .{file_path});
+        defer allocator.free(needle);
+        const found = std.mem.indexOfPos(u8, grouped, cursor, needle);
+        try testing.expect(found != null);
+        cursor = found.? + needle.len;
+    }
+}
+
+test "search: <file> total= is matched lines for this search, not the file's line count" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    // Six lines, two of them matching.
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "six.txt",
+        .data = "foo first\nplain\nplain\nfoo fourth\nplain\nplain\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "foo",
+        .path = ".",
+    });
+    defer result.deinit(allocator);
+
+    const grouped = try search.search_result_to_string_grouped(allocator, result, "foo", ".");
+    defer allocator.free(grouped);
+
+    // rg's stats.matched_lines for this search (2) — NOT the file's 6 lines.
+    // Pinned because the tool description used to promise the file length,
+    // which sent the model to read_file with the wrong pagination budget.
+    try testing.expect(std.mem.indexOf(u8, grouped, "total=\"2\" count=\"2\"") != null);
+}
+
+test "search.zig escapes every interpolated value via helpers.xml_escape" {
+    const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, pattern)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, search_path)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, group.path)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, m.snippet)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, m.file)") != null);
+}
+
+test "search.zig reports the collection summary on <search>" {
+    const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "returned=\\\"{d}\\\" total=\\\"{d}\\\" truncated=\\\"{s}\\\"") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "<truncated>{d} of {d} matched lines shown") != null);
+}
+
+test "search.zig collects tail without an aliasing @memcpy shift" {
+    const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
+    defer testing.allocator.free(source);
+
+    // Split needle: the joined form must not appear literally in THIS test,
+    // or the source scan would match its own assertion.
+    const alias_shift = "@memcpy(matches" ++ ".items";
+    // The old post-hoc tail slice shifted rows with a @memcpy whose src/dst
+    // alias whenever len < 2 * tail — an abort in Zig 0.16.
+    try testing.expect(std.mem.indexOf(u8, source, alias_shift) == null);
+    // Newest-row retention instead.
+    try testing.expect(std.mem.indexOf(u8, source, "orderedRemove(0)") != null);
+}
+
+test "search: tool schema documents the new params and drops the stale claims" {
+    // Assert against the RUNTIME schema (not a source scan) so the needles
+    // below cannot match this test's own text.
+    var saw_hidden = false;
+    var saw_glob = false;
+    var saw_snippet_cap = false;
+    for (search.search_tool.function.parameters.properties) |prop| {
+        if (std.mem.eql(u8, prop.name, "hidden")) saw_hidden = true;
+        if (std.mem.eql(u8, prop.name, "glob")) saw_glob = true;
+        if (std.mem.eql(u8, prop.name, "snippet_max_chars")) saw_snippet_cap = true;
+
+        // No param may still promise that respect_ignore_files reaches .git/
+        // (it does not — that needs `hidden`), and none may still describe
+        // the snippet as "~100 chars".
+        try testing.expect(std.mem.indexOf(u8, prop.description, "gitignored paths (build/, node_modules/, .git/") == null);
+        try testing.expect(std.mem.indexOf(u8, prop.description, "~100 chars") == null);
+    }
+    try testing.expect(saw_hidden);
+    try testing.expect(saw_glob);
+    try testing.expect(saw_snippet_cap);
+
+    const desc = search.search_tool.function.description;
+    // Stale claims retired: `s` is windowed (not "~100 chars"), and
+    // respect_ignore_files=false does NOT reach .git/.
+    try testing.expect(std.mem.indexOf(u8, desc, "~100 chars") == null);
+    try testing.expect(std.mem.indexOf(u8, desc, "gitignored paths (build/, node_modules/, .git/") == null);
+    // New contract is spelled out for the model.
+    try testing.expect(std.mem.indexOf(u8, desc, "truncated") != null);
+    try testing.expect(std.mem.indexOf(u8, desc, "snippet_max_chars") != null);
 }
