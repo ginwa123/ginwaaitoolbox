@@ -160,6 +160,28 @@ pub fn terminalWsHandler(
     if (id.len == 0) return;
     const session = terminal_session.getSession(id) orelse return;
 
+    // No PTY on this OS (Windows): close handshake runs on return.
+    // NOTE: this MUST be an if/else on the comptime condition — a bare
+    // `if (comptime !is_pty_os) return;` does NOT prune the code below
+    // for codegen (verified: lld-link still sees `poll`), only the
+    // untaken if/else branch is dropped. The raw `poll` extern is
+    // absent from msvcrt, so any live reference breaks the Windows
+    // build (CI run 35031625755).
+    if (comptime terminal_session.is_pty_os) {
+        return pumpPosix(server, allocator, client_fd, id, session);
+    } else {
+        return;
+    }
+}
+
+/// Connection pump (POSIX only — see the comptime gate above).
+fn pumpPosix(
+    server: *gserverz.GinwaServer,
+    allocator: std.mem.Allocator,
+    client_fd: i32,
+    id: []const u8,
+    session: *terminal_session.Session,
+) !void {
     // Attach flush: everything currently buffered, then stream.
     {
         const out = terminal_session.readOutput(session, 0);
