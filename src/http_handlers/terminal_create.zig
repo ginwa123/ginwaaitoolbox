@@ -1,9 +1,11 @@
 //! `POST /api/terminal/sessions` — spawn a shell on a fresh PTY.
 //!
-//! Body: `{ cwd, shell?, cols?, rows? }` where `cwd` is a required
-//! absolute directory path, `shell` an optional absolute shell path
-//! (`$SHELL` → `/bin/bash` → `/bin/sh` fallback when omitted/empty),
-//! and `cols`/`rows` the initial window size (default 80x24).
+//! Body: `{ cwd, shell?, cols?, rows? }` where `cwd` is an absolute
+//! directory path (empty falls back to the server process cwd — fresh
+//! standalone chats have no session cwd yet), `shell` an optional
+//! absolute shell path (`$SHELL` → `/bin/bash` → `/bin/sh` fallback
+//! when omitted/empty), and `cols`/`rows` the initial window size
+//! (default 80x24).
 //!
 //! Success: 201 `{ id, pid }`. `id` is the opaque session handle for
 //! every other terminal endpoint. Errors: 400 (bad cwd/shell/size),
