@@ -4723,7 +4723,9 @@ const compactSession = async () => {
             <!-- Compact button -->
             <button
               @click="compactSession"
-              :disabled="isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId"
+              :disabled="
+                isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId
+              "
               class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
               :class="
                 isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId
@@ -4912,9 +4914,9 @@ const compactSession = async () => {
                 >skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span
               >
             </button>
-            <!-- Background commands pill — self-contained: polls the
-                 session's background_processes every 5s + refreshes on
-                 queue SSE events; hidden when nothing is running. -->
+            <!-- Background commands pill — self-contained: SSE push via
+                 `background_process_created/completed` + queue fallback +
+                 resync refetch; hidden when nothing is running. -->
             <BackgroundCommandsPopup v-if="sessionId" :session-id="sessionId" />
           </div>
         </div>

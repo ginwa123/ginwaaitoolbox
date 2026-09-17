@@ -28,6 +28,7 @@ pub const delete_worker = @import("../../agentic_loop/delete_worker.zig");
 // delete_worker above: never @import the file directly from the
 // scheduler, or the exe module ends up owning it twice).
 pub const background_process = @import("../../agentic_loop/background_process.zig");
+pub const background_process_events = @import("../../agentic_loop/background_process_events.zig");
 pub const routines = @import("routines/mod.zig");
 pub const startup = @import("../../agentic_loop/startup.zig");
 pub const kanban_model = @import("../../agentic_loop/kanban_model.zig");

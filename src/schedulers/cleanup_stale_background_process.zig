@@ -250,6 +250,18 @@ pub fn notifySingleBackgroundCompletion(args: NotifySingleBackgroundCompletionAr
         return false;
     };
 
+    // Push the list change so the frontend drops its 5s poll and relies
+    // on SSE. Emitted AFTER the queue insert succeeds (same tick that
+    // deletes the row) — covers both the immediate watcher thread and
+    // the per-minute cron fallback, which share this function.
+    nalarcore.ai_mod.background_process_events.emitCompleted(
+        allocator,
+        event_bus,
+        args.session_id,
+        args.pid_num,
+        args.command,
+    );
+
     return true;
 }
 
