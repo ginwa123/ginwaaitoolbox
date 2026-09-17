@@ -267,7 +267,6 @@ def test_llm_test_unreachable_returns_send_failure() -> None:
 
 # ─── Test 7: upstream 401 surfaces status in details ────────────────────
 
-
 def test_llm_test_upstream_401_returns_status_in_details() -> None:
     """A 401 from upstream (e.g. revoked key) returns `{ok: false}`
     with `details` naming the status so the modal shows WHY.
@@ -285,6 +284,69 @@ def test_llm_test_upstream_401_returns_status_in_details() -> None:
         assert result.get("ok") is False, f"unexpected response: {result}"
         assert "http 401" in result.get("details", ""), (
             f"details should name the status, got: {result}"
+        )
+    finally:
+        harness.teardown()
+        server.shutdown()
+
+
+# ─── Test 8: probe sends x-opencode-session (all styles) ────────────────
+
+
+def test_llm_test_probe_sends_opencode_session_anthropic() -> None:
+    """Regression for the Edit-profile Test button 400
+    `{"type":"error","error":{"type":"MissingSessionID",...}}`:
+    the anthropic-style probe must carry `x-opencode-session` or
+    Console Go rejects it before routing. Replays the EXACT JSON body
+    the frontend sends (see LlmConfigModal.vue onTest).
+    """
+    server = _start_stub(200, {
+        "id": "msg_1",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+    })
+    harness = FunctionalHarness.boot(stub_llm_profile=True)
+    try:
+        port = server.server_address[1]
+        result = _post_test(harness, {
+            "model": "stub-claude",
+            "base_url": f"http://127.0.0.1:{port}/v1/messages",
+            "api_key": "sk-ant-test",
+            "url_style": "anthropic",
+        })
+        assert result.get("ok") is True, f"unexpected response: {result}"
+        state: _StubState = server.state  # type: ignore[attr-defined]
+        assert state.last_headers.get("x-opencode-session"), (
+            f"anthropic probe must send x-opencode-session, got: {state.last_headers}"
+        )
+    finally:
+        harness.teardown()
+        server.shutdown()
+
+
+def test_llm_test_probe_sends_opencode_session_openai() -> None:
+    """Same header contract for the openai style — the gateway may
+    require it there too, and the extra header is ignored by direct
+    providers.
+    """
+    server = _start_stub(200, {
+        "id": "chatcmpl-1",
+        "choices": [{"message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}],
+    })
+    harness = FunctionalHarness.boot(stub_llm_profile=True)
+    try:
+        port = server.server_address[1]
+        result = _post_test(harness, {
+            "model": "stub-model",
+            "base_url": f"http://127.0.0.1:{port}/v1/chat/completions",
+            "api_key": "sk-test-stub",
+            "url_style": "openai",
+        })
+        assert result.get("ok") is True, f"unexpected response: {result}"
+        state: _StubState = server.state  # type: ignore[attr-defined]
+        assert state.last_headers.get("x-opencode-session"), (
+            f"openai probe must send x-opencode-session, got: {state.last_headers}"
         )
     finally:
         harness.teardown()
