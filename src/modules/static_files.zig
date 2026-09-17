@@ -46,6 +46,15 @@ pub const StaticDirConfig = struct {
     ///   /apple           → does NOT match
     ///   /api/app         → does NOT match
     spa_fallback_prefix: ?[]const u8 = null,
+    /// Second SPA fallback prefix (e.g. `"/login"`).
+    ///
+    /// The login page lives outside `/app` (so it renders without the
+    /// app shell), but it is still a client-side route served from the
+    /// same `index.html`. Without this, refreshing at
+    /// `/login?redirect=/app` 404s because no `/login` file exists on
+    /// disk. Same matching + asset-guard semantics as
+    /// `spa_fallback_prefix`.
+    spa_fallback_prefix2: ?[]const u8 = null,
 };
 
 /// Result of a static-file lookup. The handler converts this into an HTTP response.
@@ -263,6 +272,11 @@ pub fn resolve(
             if (looksLikeAssetPath(clean_path)) return .not_found;
             if (cfg.spa_fallback_prefix) |prefix| {
                 if (pathMatchesSpaPrefix(clean_path, prefix)) {
+                    return resolveRootIndexHtml(io, cfg, root_dir);
+                }
+            }
+            if (cfg.spa_fallback_prefix2) |prefix2| {
+                if (pathMatchesSpaPrefix(clean_path, prefix2)) {
                     return resolveRootIndexHtml(io, cfg, root_dir);
                 }
             }

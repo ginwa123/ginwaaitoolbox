@@ -399,6 +399,11 @@ pub fn main(init: std.process.Init) !void {
             // src/apps/desktop/src/router/index.ts — `path: '/app'`
             // and descendants. Must stay in sync if the SPA moves.
             .spa_fallback_prefix = "/app",
+            // Second fallback for the standalone login page (`/login`
+            // renders outside the app shell but from the same
+            // index.html). Without it, refreshing at
+            // /login?redirect=/app 404s.
+            .spa_fallback_prefix2 = "/login",
         };
         static_dir_cfg = cfg;
 
