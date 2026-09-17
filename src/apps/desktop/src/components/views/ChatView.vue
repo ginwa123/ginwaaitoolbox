@@ -458,10 +458,11 @@ const isLLMProcessing = computed(() => !!processingState.value[sessionId.value])
 const messageCursor = ref<string | null>(null)
 // 2026-09-09 user-pill pagination fix: 1000 rows per page defeated
 // pagination (slow TTFB with base64 image_urls + tool JSON, memory
-// spike, VirtualScroller height-estimate blowup). 500 keeps the
-// initial paint reasonable while covering long chats in one page
-// and letting the load-more threshold drive the rest.
-const PAGE_SIZE = 500
+// spike, VirtualScroller height-estimate blowup) — cut to 100 in #434,
+// raised to 500, then back to 1000 per user request. Large pages risk
+// the original TTFB/memory tradeoff; the load-more threshold still
+// drives the rest for histories beyond one page.
+const PAGE_SIZE = 1000
 
 // ── Sub-agent peek ────────────────────────────────────────────────
 // Owns the slide-over panel for watching a single sub-agent's
