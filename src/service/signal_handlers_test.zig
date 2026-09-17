@@ -45,6 +45,7 @@ test "POSIX SIGTERM handler triggers callback" {
     if (builtin.os.tag == .windows) return;
     if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
 
+    signal_handlers.resetForTests();
     callback_fired.store(false, .release);
     signal_handlers.installSigtermHandler(testCallback);
 
@@ -57,4 +58,23 @@ test "POSIX SIGTERM handler triggers callback" {
     _ = std.c.nanosleep(&ts, null);
 
     try testing.expect(callback_fired.load(.acquire));
+    signal_handlers.resetForTests();
+}
+
+test "POSIX SIGINT handler triggers callback (Ctrl+C graceful shutdown)" {
+    if (builtin.os.tag == .windows) return;
+    if (builtin.os.tag != .linux and builtin.os.tag != .macos) return;
+
+    signal_handlers.resetForTests();
+    callback_fired.store(false, .release);
+    signal_handlers.installShutdownHandlers(testCallback);
+
+    // Send SIGINT to ourselves — the foreground Ctrl+C path.
+    _ = std.c.kill(std.c.getpid(), std.c.SIG.INT);
+
+    var ts = std.posix.timespec{ .sec = 0, .nsec = 100_000_000 };
+    _ = std.c.nanosleep(&ts, null);
+
+    try testing.expect(callback_fired.load(.acquire));
+    signal_handlers.resetForTests();
 }
