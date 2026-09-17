@@ -167,9 +167,16 @@ const sendInput = (data: string) => {
       // Fall through to REST.
     }
   }
-  sendTerminalInput(id, data).catch(() => {
-    status.value = 'input failed — retrying…'
-  })
+  sendTerminalInput(id, data)
+    .then(() => {
+      // Immediate poll after input: the echo would otherwise wait up
+      // to POLL_MS for the next tick (the "slow typing" feel on the
+      // REST fallback path). pollInFlight dedupes overlap.
+      void pollOnce()
+    })
+    .catch(() => {
+      status.value = 'input failed — retrying…'
+    })
 }
 
 const fitAndResize = async () => {
