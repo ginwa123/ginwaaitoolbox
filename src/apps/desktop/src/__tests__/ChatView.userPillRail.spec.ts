@@ -48,10 +48,11 @@ describe('pagination — cursor advances on loadMore', () => {
     expect(source).toMatch(/\.filter\(\(m\) => !seenIds\.has\(m\.id\)\)/)
   })
 
-  it('uses a small page size (not 1000)', async () => {
+  it('uses a full page size of 1000', async () => {
     const source = await readChatViewSource()
-    expect(source).toMatch(/const PAGE_SIZE = 100\b/)
-    expect(source).not.toMatch(/const PAGE_SIZE = 1000/)
+    expect(source).toMatch(/const PAGE_SIZE = 1000\b/)
+    expect(source).not.toMatch(/const PAGE_SIZE = 500\b/)
+    expect(source).not.toMatch(/const PAGE_SIZE = 100\b/)
   })
 })
 
