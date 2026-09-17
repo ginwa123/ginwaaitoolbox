@@ -2,6 +2,7 @@
 import { ref, provide, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import * as api from './api'
+import TopLoadingBar from './components/shell/TopLoadingBar.vue'
 import { installSseBus, useSseBus } from './helpers/sseBus'
 import { useTabsStore } from './stores/tabs'
 import { useNavigationStore } from './stores/navigation'
@@ -149,5 +150,6 @@ onUnmounted(() => {
 </script>
 
 <template>
+  <TopLoadingBar />
   <router-view />
 </template>
