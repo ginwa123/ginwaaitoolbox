@@ -437,6 +437,48 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
+
+  it('waits for late cwd instead of spawning twice', async () => {
+    // Mount before effectiveCwd resolves (the chat-return race): one
+    // session, created with the resolved dir — not fallback + recreate.
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '', sessionKey: 'chat-late-cwd' },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    await wrapper.setProps({ cwd: '/real/dir' })
+    // Real wait (not just flush): awaitCwd polls on 50ms sleeps, which
+    // flush()'s setTimeout(0) rounds never advance past.
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await flush(10)
+    expect(createTerminalSession).toHaveBeenCalledTimes(1)
+    expect(createTerminalSession).toHaveBeenCalledWith('/real/dir', {
+      cols: 80,
+      rows: 24,
+    })
+    wrapper.unmount()
+  })
+
+  it('late cwd resolution does not drop restored sessions', async () => {
+    localStorage.setItem(
+      'nalar-terminal-sessions:chat-restore-cwd',
+      JSON.stringify([{ id: 'term-9', label: 'term 9' }]),
+    )
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '', sessionKey: 'chat-restore-cwd' },
+    })
+    await flush()
+    // Restored by id without waiting for cwd, no fresh session.
+    expect(createTerminalSession).not.toHaveBeenCalled()
+    expect(chips(wrapper)).toHaveLength(1)
+
+    // Cwd arriving late must not wipe the restored session.
+    await wrapper.setProps({ cwd: '/real/dir' })
+    await flush(10)
+    expect(createTerminalSession).not.toHaveBeenCalled()
+    expect(chips(wrapper)).toHaveLength(1)
+    expect(deleteTerminalSession).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
 })
 
 const firstSocket = () => {
