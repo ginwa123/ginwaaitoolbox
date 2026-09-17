@@ -11,7 +11,10 @@
 //! (rc=-11). The harness would then wait full SIGTERM + SIGKILL
 //! deadlines (10s per test × 64 tests ≈ 10 min of CI waste). The
 //! `/test/shutdown` endpoint is a test-only convenience; production
-//! uses `SIGTERM` via the `nalar service` daemon.
+//! uses SIGINT (Ctrl+C) / SIGTERM via `signal_handlers`
+//! (`installShutdownHandlers` in main), which calls the same
+//! `GinwaServer.shutdown()` and lets `listen()` return into the
+//! `cronjob_manager.stop() / sse_manager.stop() / defer` unwind.
 //!
 //! Layered as `useCase` (call shutdown + schedule exit) and a thin
 //! handler that maps the outcome to the JSON response.

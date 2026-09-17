@@ -29,6 +29,19 @@ const cleanup_stale_background_process = nalarcore.cleanup_stale_background_proc
 const state_file = nalarcore.state_file;
 const main_service = nalarcore.main_service;
 
+// Graceful shutdown (Ctrl+C / SIGTERM): the live server pointer the
+// signal handler closes. Set once after `GinwaServer.init`, cleared
+// never — the handler is process-lifetime. The callback runs IN SIGNAL
+// CONTEXT so it only calls `shutdown()` (bool store + shutdown(2) /
+// close(2), both async-signal-safe): no logging, no allocation.
+var shutdown_server: ?*gserverz.GinwaServer = null;
+var shutdown_requested: std.atomic.Value(bool) = .init(false);
+
+fn handleShutdownSignal() void {
+    shutdown_requested.store(true, .seq_cst);
+    if (shutdown_server) |gs| gs.shutdown();
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const environment = init.environ_map;
@@ -352,6 +365,18 @@ pub fn main(init: std.process.Init) !void {
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
     gs.enable_h2c = enable_h2c;
+
+    // Graceful shutdown: Ctrl+C (SIGINT) and SIGTERM close the listener
+    // via `GinwaServer.shutdown()`, which unblocks `listen()` so the
+    // post-listen shutdown below runs. Without this, SIGINT kills the
+    // process with the default disposition and no cleanup runs at all
+    // (truncated responses, unjoined threads, uncheckpointed WAL).
+    // Second signal force-exits (130) via signal_handlers' two-hit
+    // guard. See the post-listen block for why the signal path exits
+    // instead of unwinding the `defer` chain.
+    shutdown_server = gs;
+    shutdown_requested.store(false, .seq_cst);
+    nalarcore.signal_handlers.installShutdownHandlers(handleShutdownSignal);
 
     // TLS context built during flag parsing (validated there, adopted here).
     if (tls_ctx) |ctx| gs.setTlsCtx(ctx);
@@ -871,7 +896,46 @@ pub fn main(init: std.process.Init) !void {
 
     try gs.listen(); // blocks until the server is stopped
 
-    // Clean shutdown after listen() returns (after shutdown endpoint is called).
+    // Clean shutdown after listen() returns (shutdown endpoint, SIGINT
+    // Ctrl+C, or SIGTERM). The signal path sets `shutdown_requested`
+    // in the handler above, so log here (signal-safe code can't log
+    // itself).
+    if (shutdown_requested.load(.seq_cst)) {
+        std.log.info("shutdown signal received — listener closed, flushing in-flight requests", .{});
+        // Signal path exits here instead of running the stops + `defer`
+        // chain below. Two measured reasons:
+        //
+        // 1. Full unwind segfaults: returning normally runs `defer
+        //    group.cancel(io)` + `dbSqlite.deinit()` + registry
+        //    teardowns while Io worker threads are still draining —
+        //    Zig 0.16's Threaded Io then panics
+        //    (`assert(old_status.num_running > 0)` in
+        //    `Io/Threaded.zig:start`, reproduced as an instant SIGSEGV
+        //    after SIGINT on an idle server).
+        //
+        // 2. The stops themselves race signal-interrupted workers:
+        //    calling `cronjob_manager.stop() / sse_manager.stop()` here
+        //    reproduced `thread N panic: reached unreachable code` in
+        //    5 of 6 runs, while skipping them is panic-free in 6 of 6
+        //    (same binary, same idle server). The joins are unnecessary
+        //    on this path anyway — nothing is freed afterwards, so no
+        //    thread can outlive its context; `exit(0)` reaps everything.
+        //
+        // So: the listener is already closed (no new connections),
+        // in-flight requests keep running on the live Io runtime
+        // during a short flush, then `exit(0)` — the same shape as the
+        // `/test/shutdown` endpoint (which exits 50ms after its own
+        // `shutdown()` call). SQLite runs in WAL mode so
+        // uncheckpointed frames replay safely on next boot — the same
+        // crash-consistency guarantee the test endpoint relies on. A
+        // second signal during the flush force-exits (130) straight
+        // from the handler.
+        helpers.sleepMillis(50);
+        std.process.exit(0);
+    }
+
+    // Normal return (only the `/test/shutdown` endpoint reaches here —
+    // the signal path exits above).
     //
     // Order matters: the cronjob manager started in listen() runs a
     // background thread that ticks every 1s and dereferences context

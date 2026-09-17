@@ -965,6 +965,7 @@ test {
     // doesn't trigger discovery.
     _ = @import("modules/config/Config.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
+    _ = @import("service/signal_handlers_test.zig"); // SIGINT+SIGTERM graceful-shutdown contracts
 }
 
 // ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───

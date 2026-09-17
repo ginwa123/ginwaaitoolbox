@@ -38,8 +38,14 @@ const builtin = @import("builtin");
 pub const ShutdownCallback = *const fn () void;
 
 // Module-level storage for the registered callback. There's only ever
-// one SIGTERM handler per process, so a single global is sufficient.
+// one shutdown handler per process, so a single global is sufficient.
 var global_callback: ?ShutdownCallback = null;
+
+// Counts received shutdown signals. The first SIGINT/SIGTERM runs the
+// graceful callback (close listener, drain, stop workers). A second
+// signal while shutdown is already in flight force-exits so a hung
+// drain can never trap the user (standard Ctrl+C-twice UX).
+var shutdown_signal_count: std.atomic.Value(u8) = .init(0);
 
 // =============================================================================
 // POSIX signal handler
@@ -51,8 +57,25 @@ var global_callback: ?ShutdownCallback = null;
 // a regular Zig function (NOT `extern "c"` which forbids a body).
 // The signal parameter type must be the SIG enum, not a raw c_int,
 // to match std.c.Sigaction.handler_fn signature.
-fn handle_sigterm(_: std.c.SIG) callconv(.c) void {
+//
+// Handles both SIGTERM (daemon `service stop`, docker stop, systemd)
+// and SIGINT (foreground Ctrl+C). Only async-signal-safe work happens
+// here: an atomic increment plus the registered callback, which must
+// itself stay signal-safe (in practice: `GinwaServer.shutdown()` —
+// a bool store plus shutdown(2)/close(2), both async-signal-safe).
+fn handle_shutdown_signal(_: std.c.SIG) callconv(.c) void {
+    const count = shutdown_signal_count.fetchAdd(1, .seq_cst);
+    if (count >= 1) {
+        // Second signal while graceful shutdown is already running:
+        // force-exit so a stuck drain can't trap the process.
+        std.process.exit(130);
+    }
     if (global_callback) |cb| cb();
+}
+
+// Kept for the old name — same handler, now shared by SIGTERM+SIGINT.
+fn handle_sigterm(sig: std.c.SIG) callconv(.c) void {
+    handle_shutdown_signal(sig);
 }
 
 // =============================================================================
@@ -87,8 +110,11 @@ const win32_apis = if (builtin.os.tag == .windows) struct {
 /// `SetConsoleCtrlHandler`. We treat every event type the same way:
 /// fire the shutdown callback and return TRUE so the OS doesn't fall
 /// through to its default handler (which would kill the process).
+/// Second event while a drain is in flight force-exits (Ctrl+C-twice).
 fn handle_console_ctrl(dwCtrlType: u32) callconv(.winapi) u32 {
     _ = dwCtrlType; // we don't differentiate — every ctrl event = "shut down gracefully"
+    const count = shutdown_signal_count.fetchAdd(1, .seq_cst);
+    if (count >= 1) std.process.exit(130);
     if (global_callback) |cb| cb();
     return win32_apis.BOOL_TRUE;
 }
@@ -99,8 +125,10 @@ fn handle_console_ctrl(dwCtrlType: u32) callconv(.winapi) u32 {
 
 /// Install a SIGTERM-equivalent handler that invokes `callback`.
 ///
-/// POSIX: registers for `SIGTERM` via `std.posix.sigaction` with
-/// `SA_RESTART` so interrupted syscalls resume automatically.
+/// POSIX: registers for BOTH `SIGTERM` (daemon `service stop`, docker
+/// stop, systemd) and `SIGINT` (foreground Ctrl+C) via
+/// `std.posix.sigaction` with `SA_RESTART` so interrupted syscalls
+/// resume automatically.
 ///
 /// Windows: registers for all console-ctrl events via
 /// `SetConsoleCtrlHandler(HandlerRoutine, TRUE)`. The routine fires the
@@ -109,28 +137,51 @@ fn handle_console_ctrl(dwCtrlType: u32) callconv(.winapi) u32 {
 ///
 /// Comptime-dispatched on `builtin.os.tag` so the unused platform's
 /// code is fully eliminated by the compiler.
+///
+/// The callback runs IN SIGNAL CONTEXT — it must stay async-signal-safe
+/// (no allocation, no logging, no mutex). `GinwaServer.shutdown()` meets
+/// that bar (bool store + shutdown(2)/close(2)). A second signal while
+/// the first is still draining force-exits with code 130.
 pub fn installSigtermHandler(callback: ShutdownCallback) void {
     global_callback = callback;
+    // Reset the two-hit counter so reinstalling (tests, restarts)
+    // starts from a clean first-signal state.
+    shutdown_signal_count.store(0, .seq_cst);
     switch (builtin.os.tag) {
-        .linux, .macos => installSigtermHandlerPosix(),
+        .linux, .macos => installShutdownHandlersPosix(),
         .windows => installSigtermHandlerWindows(),
         else => @compileError("signal_handlers.installSigtermHandler: unsupported platform " ++ @tagName(builtin.os.tag)),
     }
 }
 
-fn installSigtermHandlerPosix() void {
+/// Preferred alias — same as `installSigtermHandler`, named for what it
+/// does (graceful shutdown on SIGINT+SIGTERM / console-ctrl).
+pub const installShutdownHandlers = installSigtermHandler;
+
+/// Reset test-only state (callback + signal counter) without touching
+/// the installed sigactions. Unit tests call this between cases so one
+/// test's SIGINT doesn't trip the next test's two-hit force-exit.
+pub fn resetForTests() void {
+    global_callback = null;
+    shutdown_signal_count.store(0, .seq_cst);
+}
+
+fn installShutdownHandlersPosix() void {
     // std.posix.sigaction expects std.c.Sigaction (the libc struct).
     // Using std.os.linux.Sigaction produces a type-mismatch error
     // because the flag/mask types differ slightly between libc and
     // the raw syscall header.
     var sa: std.c.Sigaction = .{
-        .handler = .{ .handler = handle_sigterm },
+        .handler = .{ .handler = handle_shutdown_signal },
         .mask = std.mem.zeroes(std.c.sigset_t),
         .flags = std.c.SA.RESTART,
     };
     // std.posix.sigaction returns void in Zig 0.16 — do NOT wrap in try.
     // The 2nd arg is `?*const Sigaction`; we have a mutable pointer.
+    // Register BOTH: SIGTERM (service stop / docker / systemd) and
+    // SIGINT (foreground Ctrl+C) share one graceful callback.
     std.posix.sigaction(std.c.SIG.TERM, &sa, null);
+    std.posix.sigaction(std.c.SIG.INT, &sa, null);
 }
 
 fn installSigtermHandlerWindows() void {
