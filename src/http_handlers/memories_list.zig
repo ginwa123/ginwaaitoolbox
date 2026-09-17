@@ -173,7 +173,7 @@ test "memories_crud routes are registered in main.zig" {
             std.debug.print(
                 "\n!! {s} does not reference `{s}` !!\n" ++
                     "   The handler exists in mod.zig but is not registered with\n" ++
-                    "   the router. Add the `gs.router.{{get,post,put,delete}}` call.\n",
+                    "   the router. Add the `authed.{{get,post,put,delete}}` call.\n",
                 .{ MAIN_PATH, name },
             );
             return error.RouteRegistrationMissing;
@@ -182,10 +182,10 @@ test "memories_crud routes are registered in main.zig" {
 
     // The 4 expected routes.
     const routes = [_][]const u8{
-        "gs.router.get(\"/api/memories/:name\"",
-        "gs.router.post(\"/api/memories\"",
-        "gs.router.put(\"/api/memories/:name\"",
-        "gs.router.delete(\"/api/memories/:name\"",
+        "authed.get(\"/api/memories/:name\"",
+        "authed.post(\"/api/memories\"",
+        "authed.put(\"/api/memories/:name\"",
+        "authed.delete(\"/api/memories/:name\"",
     };
     for (routes) |route| {
         if (std.mem.indexOf(u8, source, route) == null) {

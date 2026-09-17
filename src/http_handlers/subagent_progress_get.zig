@@ -204,7 +204,7 @@ test "main.zig registers GET subagent/progress/:tool_call_id" {
     // Fresh `/api/subagent/...` prefix: no sibling `:param` routes
     // exist under it, so no shadowing risk — but pin the exact
     // registration so a future refactor can't silently drop it.
-    const progress_route = "gs.router.get(\"/api/subagent/progress/:tool_call_id\", ai_mod.http_handlers.subAgentProgressGetHandler)";
+    const progress_route = "authed.get(\"/api/subagent/progress/:tool_call_id\", ai_mod.http_handlers.subAgentProgressGetHandler)";
 
     if (std.mem.indexOf(u8, source, progress_route) == null) {
         std.debug.print(

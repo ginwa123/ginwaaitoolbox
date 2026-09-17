@@ -365,8 +365,8 @@ test "main.zig registers GET tasks/:task_id after the list route" {
     // single-task route must come after the list route so the list
     // path (`/tasks`) is never shadowed — and vice versa, the longer
     // `:task_id` path must exist at all.
-    const list_route = "gs.router.get(\"/api/workspaces/:workspace_id/items/:item_id/tasks\", ai_mod.http_handlers.tasksListHandler)";
-    const get_route = "gs.router.get(\"/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id\", ai_mod.http_handlers.tasksGetHandler)";
+    const list_route = "authed.get(\"/api/workspaces/:workspace_id/items/:item_id/tasks\", ai_mod.http_handlers.tasksListHandler)";
+    const get_route = "authed.get(\"/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id\", ai_mod.http_handlers.tasksGetHandler)";
 
     const list_idx = std.mem.indexOf(u8, source, list_route) orelse {
         std.debug.print("\n!! list route missing from {s} !!\n", .{MAIN_PATH});

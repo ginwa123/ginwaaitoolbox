@@ -31,6 +31,7 @@ const std = @import("std");
 const nalar_core = @import("nalarcore");
 const gserverz = nalar_core.gserverz;
 const ai_mod = nalar_core.ai_mod;
+const auth_common = @import("auth_common.zig");
 
 /// Forward an SSE event to every client registered under `routing_key`.
 ///
@@ -229,6 +230,19 @@ pub fn unifiedEventsStreamHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+
+    // Manual auth gate: kabelweb sse() does not run middleware.
+    if (nalar_core.getSingleton()) |di_gate| {
+        if (di_gate.auth_enabled) {
+            const tok = auth_common.parseSessionToken(req.headers) orelse {
+                return res.jsonResponse(.{ .status_code = 401, .data = "{\"error\":\"Unauthenticated\"}" });
+            };
+            const sess = auth_common.lookupSession(allocator, di_gate.db, tok) orelse {
+                return res.jsonResponse(.{ .status_code = 401, .data = "{\"error\":\"Unauthenticated\"}" });
+            };
+            auth_common.freeSessionLookup(allocator, sess);
+        }
+    } else |_| {}
 
     // 1. Parse ?channels=
     const raw_channels = req.query.get("channels") orelse {

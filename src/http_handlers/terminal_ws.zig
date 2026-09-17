@@ -28,6 +28,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const terminal_session = @import("terminal_session.zig");
+const auth_common = @import("auth_common.zig");
 const ws_frames = gserverz.ws_frames;
 
 const PollFd = extern struct {
@@ -153,6 +154,14 @@ pub fn terminalWsHandler(
     client_id: *[16]u8,
 ) !void {
     _ = client_id;
+    // Manual auth gate: kabelweb ws() does not run middleware.
+    if (nalarcore.getSingleton()) |di| {
+        if (di.auth_enabled) {
+            const tok = auth_common.parseSessionToken(req.headers) orelse return;
+            const sess = auth_common.lookupSession(ctx.allocator, di.db, tok) orelse return;
+            auth_common.freeSessionLookup(ctx.allocator, sess);
+        }
+    } else |_| {}
     const server: *gserverz.GinwaServer = @ptrCast(@alignCast(server_ptr));
     const allocator = ctx.allocator;
 

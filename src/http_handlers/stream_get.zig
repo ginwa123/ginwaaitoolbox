@@ -186,8 +186,8 @@ test "main.zig registers GET session/:id/stream after sibling routes" {
     // the specific routes after the list route is the existing pattern.
     // We pin the new route to sit with its siblings so a future reorder
     // that puts the bare list route last doesn't silently shadow it.
-    const messages_route = "gs.router.get(\"/api/llm/session/:session_id/messages\", ai_mod.http_handlers.sessionMessagesHandler)";
-    const stream_route = "gs.router.get(\"/api/llm/session/:session_id/stream\", ai_mod.http_handlers.streamGetHandler)";
+    const messages_route = "authed.get(\"/api/llm/session/:session_id/messages\", ai_mod.http_handlers.sessionMessagesHandler)";
+    const stream_route = "authed.get(\"/api/llm/session/:session_id/stream\", ai_mod.http_handlers.streamGetHandler)";
 
     _ = std.mem.indexOf(u8, source, messages_route) orelse {
         std.debug.print("\n!! messages route missing from {s} !!\n", .{MAIN_PATH});

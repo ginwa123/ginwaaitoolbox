@@ -626,7 +626,7 @@ test "main.zig registers POST columns/:column_id/run_all_agents in the columns f
     const source = try readSource(allocator, MAIN_PATH);
     defer allocator.free(source);
 
-    const route = "gs.router.post(\"/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id/run_all_agents\", ai_mod.http_handlers.runAllAgentsHandler)";
+    const route = "authed.post(\"/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id/run_all_agents\", ai_mod.http_handlers.runAllAgentsHandler)";
     const route_idx = std.mem.indexOf(u8, source, route) orelse {
         std.debug.print(
             "\n!! {s} does not register the run_all_agents route !!\n" ++
@@ -642,7 +642,7 @@ test "main.zig registers POST columns/:column_id/run_all_agents in the columns f
     // (main.zig:503,526-533,540) — matchRoute walks routes in
     // registration order (router.zig:182), so nesting under /tasks/
     // risks shadowing by the :task_id param routes.
-    const anchor = "gs.router.delete(\"/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id\", ai_mod.http_handlers.kanbanColumnsDeleteHandler)";
+    const anchor = "authed.delete(\"/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id\", ai_mod.http_handlers.kanbanColumnsDeleteHandler)";
     const anchor_idx = std.mem.indexOf(u8, source, anchor) orelse {
         std.debug.print("\n!! columns DELETE anchor route missing from {s} !!\n", .{MAIN_PATH});
         return error.ColumnsAnchorMissing;

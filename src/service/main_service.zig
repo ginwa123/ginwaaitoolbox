@@ -37,6 +37,8 @@ pub const Subcommand = union(enum) {
         /// This is the path the nalar-desktop webview points at when in
         /// "attach to user-started nalar" mode.
         static_dir: ?[]const u8 = null,
+        /// Opt-in auth enforcement (mirrors top-level `--auth`).
+        auth_enabled: bool = false,
     },
     stop: struct { graceful_timeout_ms: u32 = 5000 },
     status: void,
@@ -44,6 +46,7 @@ pub const Subcommand = union(enum) {
         port: u16 = 8081,
         graceful_timeout_ms: u32 = 5000,
         static_dir: ?[]const u8 = null,
+        auth_enabled: bool = false,
     },
 };
 
@@ -64,6 +67,7 @@ pub fn parseServiceSubcommand(
         var port: u16 = 8081;
         var no_static_dir = false;
         var static_dir: ?[]const u8 = null;
+        var auth_enabled = false;
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
@@ -77,6 +81,8 @@ pub fn parseServiceSubcommand(
                 i += 1;
                 if (i >= args.len) return error.MissingValue;
                 static_dir = args[i];
+            } else if (std.mem.eql(u8, arg, "--auth")) {
+                auth_enabled = true;
             } else return error.UnknownSubcommand;
         }
         return .{
@@ -84,6 +90,7 @@ pub fn parseServiceSubcommand(
                 .port = port,
                 .no_static_dir = no_static_dir,
                 .static_dir = static_dir,
+                .auth_enabled = auth_enabled,
             },
         };
     }
@@ -111,6 +118,7 @@ pub fn parseServiceSubcommand(
         var port: u16 = 8081;
         var graceful_timeout_ms: u32 = 5000;
         var static_dir: ?[]const u8 = null;
+        var auth_enabled = false;
         var i: usize = 1;
         while (i < args.len) : (i += 1) {
             const arg = args[i];
@@ -130,12 +138,15 @@ pub fn parseServiceSubcommand(
                 i += 1;
                 if (i >= args.len) return error.MissingValue;
                 static_dir = args[i];
+            } else if (std.mem.eql(u8, arg, "--auth")) {
+                auth_enabled = true;
             } else return error.UnknownSubcommand;
         }
         return .{ .restart = .{
             .port = port,
             .graceful_timeout_ms = graceful_timeout_ms,
             .static_dir = static_dir,
+            .auth_enabled = auth_enabled,
         } };
     }
 

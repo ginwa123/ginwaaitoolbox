@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '../components/AppLayout.vue'
+import LoginView from '../views/LoginView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -7,6 +8,12 @@ const router = createRouter({
     {
       path: '/',
       redirect: '/app',
+    },
+    {
+      path: '/login',
+      name: 'login',
+      component: LoginView,
+      meta: { public: true },
     },
     {
       path: '/app',
@@ -49,6 +56,52 @@ const router = createRouter({
       redirect: '/app',
     },
   ],
+})
+
+// Auth guard: when the backend runs with `--auth`, every `/app*`
+// view requires a valid `nalar_session` cookie. Anonymous visits
+// redirect to `/login?redirect=<target>` (router.replace, so Back
+// skips the bounce); authed visits to `/login` bounce back to the
+// target. Public when auth is off (`/api/auth/me` 200 +
+// auth_enabled=false) — no redirect. Every view switch stays in the
+// URL (repo rule), so refresh/Back/shared links keep working.
+router.beforeEach(async (to) => {
+  if (to.meta.public) {
+    // Leaving /login while authed? Bounce to the redirect target.
+    if (to.name === 'login') {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
+        if (res.ok) {
+          const data = await res.json().catch(() => null)
+          if (data && data.authenticated === true) {
+            const r = to.query.redirect
+            const target = typeof r === 'string' && r.startsWith('/') ? r : '/app'
+            return { path: target, replace: true }
+          }
+        }
+      } catch {
+        /* offline — show login */
+      }
+    }
+    return true
+  }
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
+    if (res.ok) {
+      const data = await res.json().catch(() => null)
+      // Auth disabled on server → open access, no redirect.
+      if (data && data.auth_enabled === false) return true
+      if (data && data.authenticated === true) return true
+    }
+    if (res.status === 401) {
+      return { path: '/login', query: { redirect: to.fullPath }, replace: true }
+    }
+    // Non-401 error (offline/500): let the view render; apiFetch
+    // toasts will surface the failure. Avoids login-loop on outage.
+    return true
+  } catch {
+    return true
+  }
 })
 
 export default router

@@ -43,6 +43,12 @@ pub const systemFolderHandler = @import("system_folder.zig").systemFolderHandler
 pub const filesDownloadHandler = @import("files_download.zig").filesDownloadHandler;
 pub const healthHandler = @import("health.zig").healthHandler;
 pub const shutdownHandler = @import("shutdown.zig").shutdownHandler;
+// Opt-in `--auth` (login page + session cookie + middleware).
+pub const authLoginHandler = @import("auth_login.zig").authLoginHandler;
+pub const authLogoutHandler = @import("auth_session.zig").authLogoutHandler;
+pub const authMeHandler = @import("auth_session.zig").authMeHandler;
+pub const authMiddleware = @import("auth_middleware.zig").authMiddleware;
+pub const authIsAuthorized = @import("auth_middleware.zig").isAuthorized;
 
 // Workspace handlers (stub implementations for desktop app compatibility)
 pub const workspacesListHandler = @import("workspaces_list.zig").workspacesListHandler;
