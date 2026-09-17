@@ -77,6 +77,20 @@ export async function apiFetch<T = unknown>(url: string, opts: ApiFetchOptions =
 
     if (!response.ok) {
       const responseBody = await response.text().catch(() => '')
+      // Auth enforcement: expired/revoked session mid-use → bounce to
+      // /login?redirect=<current> (router guard covers boot; this covers
+      // in-app expiry). Skip for auth endpoints themselves and when
+      // already on /login to avoid loops.
+      if (response.status === 401 && !url.startsWith('/auth/')) {
+        try {
+          const loc = globalThis.location
+          if (loc && !loc.pathname.startsWith('/login')) {
+            loc.href = `/login?redirect=${encodeURIComponent(loc.pathname + loc.search)}`
+          }
+        } catch {
+          /* non-browser (vitest) — no redirect */
+        }
+      }
 
       if (!silent) {
         const parsedError = tryParseJsonErrorField(responseBody)

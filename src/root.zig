@@ -97,6 +97,11 @@ pub const ContextIPCTui = struct {
 
     static_dir_path: ?[]const u8 = null,
 
+    /// Opt-in auth enforcement, set from `--auth` CLI flag.
+    /// When false, all endpoints are open (legacy single-user mode).
+    /// When true, API + static + ws/sse require a valid `nalar_session` cookie.
+    auth_enabled: bool = false,
+
     /// Process-global MCP stdio registry, cached here so every call site
     /// goes through the singleton struct (`di.mcp_stdio_registry`) instead
     /// of calling `StdioRegistry.global(allocator)` with its own allocator

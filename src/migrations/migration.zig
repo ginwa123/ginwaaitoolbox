@@ -1985,6 +1985,10 @@ pub const allMigrations: []const Migration = &.{
     // creates is independent, so only the version constant moved.)
     // Plan: docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md.
     .{ .version = Migration088AddSessionPendingQuestion.version, .name = Migration088AddSessionPendingQuestion.name, .up = Migration088AddSessionPendingQuestion.up },
+    // Migration 089 — `auth_sessions` for opt-in `--auth` login sessions.
+    // One row per active cookie (token_hash -> user_id + expiry).
+    // Stores only SHA-256(token), never the raw token.
+    .{ .version = Migration089AuthSessions.version, .name = Migration089AuthSessions.name, .up = Migration089AuthSessions.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4781,6 +4785,46 @@ pub const Migration088AddSessionPendingQuestion = struct {
         // every user-sent message.
         try db.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_spq_session_status ON session_pending_question(session_id, status)",
+            &[_][]const u8{},
+        );
+    }
+};
+
+// ============================================================================
+// Migration 089 — auth_sessions for opt-in `--auth` login sessions.
+// ============================================================================
+//
+// One row per active login cookie: token_hash (SHA-256 of the opaque
+// `nalar_session` cookie value) -> user_id + expiry. `users` (Migration
+// 077) tells us who exists; this table tells us who is currently logged
+// in, on which device, until when.
+//
+// Why a table instead of stateless JWT: server-side logout/revoke,
+// per-device sessions, expiry purge, and last_seen audit. Storing only
+// the hash means a DB leak does not equal session hijack.
+//
+// Idempotency: CREATE TABLE/INDEX IF NOT EXISTS. One statement per exec.
+pub const Migration089AuthSessions = struct {
+    pub const version: u32 = 89;
+    pub const name = "auth_sessions";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS auth_sessions (
+            \\    token_hash TEXT PRIMARY KEY,
+            \\    user_id TEXT NOT NULL,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    expires_at DATETIME NOT NULL,
+            \\    last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id)",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)",
             &[_][]const u8{},
         );
     }

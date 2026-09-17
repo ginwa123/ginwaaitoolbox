@@ -38,6 +38,7 @@ pub fn main(init: std.process.Init) !void {
     // plan): if argv[1] == "service", route the rest of argv to the
     // service module and exit before doing any other init.
     if (try dispatchServiceSubcommand(allocator, io, environment, init)) return;
+    if (try dispatchCreateAdmin(allocator, io, environment, init)) return;
 
     // ─── CLI flags, parsed BEFORE anything with side effects ─────────────────
     // `LlmConfig.init` (below) starts the routine scheduler on a background
@@ -58,6 +59,10 @@ pub fn main(init: std.process.Init) !void {
     var tls_cert_path: ?[]const u8 = null;
     var tls_key_path: ?[]const u8 = null;
     var tls_selfsigned = false;
+    // Opt-in auth. `--auth` enables login enforcement (login page +
+    // session cookie + middleware). Off by default so existing
+    // single-user setups keep working with zero behavior change.
+    var auth_enabled = false;
 
     // A peer that vanishes mid-write must not kill the process: OpenSSL writes
     // through plain write(2) (no MSG_NOSIGNAL available), so EPIPE becomes
@@ -122,11 +127,14 @@ pub fn main(init: std.process.Init) !void {
             }
         } else if (std.mem.eql(u8, arg, "--tls-selfsigned")) {
             tls_selfsigned = true;
+        } else if (std.mem.eql(u8, arg, "--auth")) {
+            auth_enabled = true;
         } else if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned]\n", .{});
+            std.debug.print("Usage: nalar [--port PORT] [--static-dir DIR] [--http2 h2c|off] [--tls CERT KEY | --tls-selfsigned] [--auth]\n", .{});
             std.debug.print("  --port PORT          Port to run the HTTP server on (0 = pick a random free port; default: 8081, or random when web_launch_enabled is on)\n", .{});
             std.debug.print("  --static-dir DIR     Serve files from DIR at HTTP / (e.g. for a webapp)\n", .{});
             std.debug.print("  --http2 h2c|off      Also accept HTTP/2 cleartext (h2c) clients on the same port (default: off)\n", .{});
+            std.debug.print("  --auth               Require login (session cookie + middleware). When off, all endpoints are open.\n", .{});
             return;
         }
     }
@@ -251,6 +259,7 @@ pub fn main(init: std.process.Init) !void {
     // Applied AFTER the struct literal above — assigning before it would be
     // clobbered by the whole-struct initialisation (the field defaults to null).
     if (static_dir_opt) |dir_arg| ctxParent.static_dir_path = dir_arg;
+    ctxParent.auth_enabled = auth_enabled;
 
     _ = try nalarcore.setSingleton(ctxParent);
 
@@ -417,52 +426,63 @@ pub fn main(init: std.process.Init) !void {
     );
 
     ctxParent.server = gs;
-    // // try gs.router.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
-    // // try gs.router.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
-    // // try gs.router.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
+    // Opt-in `--auth`: all `/api` routes registered via `authed` run
+    // `authMiddleware` (401 when no valid `nalar_session` cookie).
+    // Auth endpoints themselves stay on `gs.router` (unprotected) and
+    // are registered BEFORE any `:param` routes to avoid matchRoute
+    // shadowing (`/api/auth/login` is a literal that must precede
+    // `/api/session/:session_id`-style params).
+    var authed = gs.router.group("");
+    try authed.use(ai_mod.http_handlers.authMiddleware);
+    try gs.router.post("/api/auth/login", ai_mod.http_handlers.authLoginHandler);
+    try gs.router.post("/api/auth/logout", ai_mod.http_handlers.authLogoutHandler);
+    try gs.router.get("/api/auth/me", ai_mod.http_handlers.authMeHandler);
+    // // try authed.get("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
+    // // try authed.post("/api/stream/:session_id/disconnect", http_handlers.sseDisconnectHandler, .{});
+    // // try authed.get("/api/stream/:session_id", http_handlers.streamHandler, .{});
     // // try gs.router.options("/api/session", http_handlers.corsPreflightHandler, .{});
-    try gs.router.post("/api/session", ai_mod.http_handlers.sessionCreateHandler);
-    try gs.router.put("/api/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
+    try authed.post("/api/session", ai_mod.http_handlers.sessionCreateHandler);
+    try authed.put("/api/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
     // Mark-as-seen (yellow stale-dot fix): stamping
     // `sessions.last_human_touched_at_nano` when the user opens a chat.
     // POST differs in method from the sibling PUT/GET on the overlapping
     // prefix, and the literal `touched` tail differs from `messages` —
     // no shadowing risk.
-    try gs.router.post("/api/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
-    try gs.router.get("/api/session", ai_mod.http_handlers.sessionListHandler);
+    try authed.post("/api/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
+    try authed.get("/api/session", ai_mod.http_handlers.sessionListHandler);
     //
-    // // try gs.router.get("/api/session/stream", http_handlers.sessionStreamHandler, ctxParent);
-    try gs.router.get("/api/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
-    // try gs.router.get("/api/session/exists/:session_id", http_handlers.sessionExistHandler, ctxParent);
-    // try gs.router.get("/api/session/latest", http_handlers.sessionLatestHandler, ctxParent);
-    // try gs.router.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
-    // try gs.router.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, ctxParent);
-    // try gs.router.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, ctxParent);
-    // try gs.router.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, ctxParent);
-    // try gs.router.get("/api/ping/:session_id", http_handlers.pingHandler, ctxParent);
+    // // try authed.get("/api/session/stream", http_handlers.sessionStreamHandler, ctxParent);
+    try authed.get("/api/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
+    // try authed.get("/api/session/exists/:session_id", http_handlers.sessionExistHandler, ctxParent);
+    // try authed.get("/api/session/latest", http_handlers.sessionLatestHandler, ctxParent);
+    // try authed.post("/api/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
+    // try authed.post("/api/session/:session_id/compact", http_handlers.sessionCompactHandler, ctxParent);
+    // try authed.get("/api/session/:session_id/queue/messages", http_handlers.sessionQueueGetHandler, ctxParent);
+    // try authed.delete("/api/session/:session_id/queue/message", http_handlers.sessionQueueDeleteHandler, ctxParent);
+    // try authed.get("/api/ping/:session_id", http_handlers.pingHandler, ctxParent);
     //
     // // Worker API
-    try gs.router.get("/api/workers", ai_mod.http_handlers.workerListHandler);
+    try authed.get("/api/workers", ai_mod.http_handlers.workerListHandler);
     //
     // // LLM API aliases (desktop app uses /api/llm/*)
-    try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
-    try gs.router.put("/api/llm/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
+    try authed.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
+    try authed.put("/api/llm/session/:session_id", ai_mod.http_handlers.sessionUpdateHandler);
     // LLM-alias prefix of the mark-as-seen endpoint above (desktop app
     // uses /api/llm/*). Same no-shadowing argument as above.
-    try gs.router.post("/api/llm/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
-    try gs.router.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
+    try authed.post("/api/llm/session/:session_id/touched", ai_mod.http_handlers.sessionMarkTouchedHandler);
+    try authed.post("/api/llm/session/:session/stop", ai_mod.http_handlers.sessionStopHandler);
     // `ask_user` answer route. Route order: the literal `answer` tail differs
     // from every sibling tail (messages, queue_messages, stream, stop,
     // touched), so there is no `matchRoute` shadowing risk — and it is
     // registered after the `/messages` + `/queue_messages` siblings anyway,
     // per the "longer, more-specific paths after their prefix sibling" rule.
-    try gs.router.post("/api/llm/session/:session_id/answer", ai_mod.http_handlers.askUserAnswerHandler);
+    try authed.post("/api/llm/session/:session_id/answer", ai_mod.http_handlers.askUserAnswerHandler);
 
-    // try gs.router.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
+    // try authed.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
 
-    try gs.router.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
-    try gs.router.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
-    try gs.router.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
+    try authed.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
+    try authed.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
+    try authed.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
     // Session background-process endpoints (bg-completion): list + log
     // tail for `command background=true` rows. Registered next to
     // queue_messages. No shadowing risk: the `background_processes`
@@ -470,18 +490,18 @@ pub fn main(init: std.process.Init) !void {
     // `queue_messages`, `stream`), and the longer `:pid/log` route is
     // registered AFTER the list route (route-order rule — longer,
     // more-specific paths after their prefix sibling).
-    try gs.router.get("/api/llm/session/:session_id/background_processes", ai_mod.http_handlers.backgroundProcessesListHandler);
-    try gs.router.get("/api/llm/session/:session_id/background_processes/:pid/log", ai_mod.http_handlers.backgroundProcessLogGetHandler);
+    try authed.get("/api/llm/session/:session_id/background_processes", ai_mod.http_handlers.backgroundProcessesListHandler);
+    try authed.get("/api/llm/session/:session_id/background_processes/:pid/log", ai_mod.http_handlers.backgroundProcessLogGetHandler);
     // Right-sidebar terminal (PTY over REST + poll). Fresh
     // `/api/terminal/` prefix — no `:param` siblings exist under it,
     // so no matchRoute shadowing risk (router walks registration
     // order). Literal `sessions` is registered before the `:id`
     // routes (route-order rule).
-    try gs.router.post("/api/terminal/sessions", ai_mod.http_handlers.terminalCreateHandler);
-    try gs.router.post("/api/terminal/sessions/:id/input", ai_mod.http_handlers.terminalInputHandler);
-    try gs.router.get("/api/terminal/sessions/:id/output", ai_mod.http_handlers.terminalOutputHandler);
-    try gs.router.post("/api/terminal/sessions/:id/resize", ai_mod.http_handlers.terminalResizeHandler);
-    try gs.router.delete("/api/terminal/sessions/:id", ai_mod.http_handlers.terminalDeleteHandler);
+    try authed.post("/api/terminal/sessions", ai_mod.http_handlers.terminalCreateHandler);
+    try authed.post("/api/terminal/sessions/:id/input", ai_mod.http_handlers.terminalInputHandler);
+    try authed.get("/api/terminal/sessions/:id/output", ai_mod.http_handlers.terminalOutputHandler);
+    try authed.post("/api/terminal/sessions/:id/resize", ai_mod.http_handlers.terminalResizeHandler);
+    try authed.delete("/api/terminal/sessions/:id", ai_mod.http_handlers.terminalDeleteHandler);
     // Duplex PTY socket — attaches to a live session id (?id=) for
     // binary output frames + JSON control frames. First (and only) WS
     // route: fresh `/api/terminal/` prefix, literal `ws` segment, so
@@ -492,14 +512,14 @@ pub fn main(init: std.process.Init) !void {
     // stream_snapshot registry so a re-mounted ChatView can resume a
     // mid-stream session. Registered AFTER the sibling /messages +
     // /queue_messages routes (route-order rule).
-    try gs.router.get("/api/llm/session/:session_id/stream", ai_mod.http_handlers.streamGetHandler);
+    try authed.get("/api/llm/session/:session_id/stream", ai_mod.http_handlers.streamGetHandler);
     // Live spawn-batch snapshot (task_1788505292766_1
     // spawn-subagent-refresh-persist) — serves `{ tool_call_id,
     // progress[] }` from the in-memory subagent_progress registry so a
     // refreshed ChatView can rehydrate running rows for placeholder
     // spawn cards. Fresh `/api/subagent/...` prefix: no sibling
     // `:param` routes exist under it, so no shadowing risk.
-    try gs.router.get("/api/subagent/progress/:tool_call_id", ai_mod.http_handlers.subAgentProgressGetHandler);
+    try authed.get("/api/subagent/progress/:tool_call_id", ai_mod.http_handlers.subAgentProgressGetHandler);
     // Unified SSE endpoint — single EventSource for all event families
     // (workers, sessions, kanban_column, kanban_task, per-session llm +
     // queue_messages). Replaces the 5 dedicated routes that previously
@@ -509,54 +529,54 @@ pub fn main(init: std.process.Init) !void {
     // Test-only SSE emit (dev_sse_emit.zig) — gated by NALAR_TEST_SSE_EMIT=1,
     // 404 when off. Functional UI tests use it to drive the chatview's
     // SSE streaming path without a real LLM.
-    try gs.router.post("/api/dev/sse/emit_llm", ai_mod.http_handlers.devSseEmitLlmHandler);
-    // try gs.router.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
+    try authed.post("/api/dev/sse/emit_llm", ai_mod.http_handlers.devSseEmitLlmHandler);
+    // try authed.post("/api/llm/session/:session_id/cancel", http_handlers.sessionCancelHandler, ctxParent);
     //
     // // Desktop app routes (system, health, workspaces)
     try gs.router.get("/health", ai_mod.http_handlers.healthHandler);
-    try gs.router.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
-    try gs.router.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
-    try gs.router.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
+    try authed.get("/api/skills", ai_mod.http_handlers.skillsListHandler);
+    try authed.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
+    try authed.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
 
     // Memories routes
-    try gs.router.get("/api/memories", ai_mod.http_handlers.memoriesListHandler);
-    try gs.router.get("/api/memories/:name", ai_mod.http_handlers.memoryDetailHandler);
-    try gs.router.post("/api/memories", ai_mod.http_handlers.memoryCreateHandler);
-    try gs.router.put("/api/memories/:name", ai_mod.http_handlers.memoryUpdateHandler);
-    try gs.router.delete("/api/memories/:name", ai_mod.http_handlers.memoryDeleteHandler);
+    try authed.get("/api/memories", ai_mod.http_handlers.memoriesListHandler);
+    try authed.get("/api/memories/:name", ai_mod.http_handlers.memoryDetailHandler);
+    try authed.post("/api/memories", ai_mod.http_handlers.memoryCreateHandler);
+    try authed.put("/api/memories/:name", ai_mod.http_handlers.memoryUpdateHandler);
+    try authed.delete("/api/memories/:name", ai_mod.http_handlers.memoryDeleteHandler);
 
     // Local Memories routes — scoped to <cwd>/.nalar/memories/. The
     // `cwd` is provided in the request body (POST/PUT) or query
     // string (GET/DELETE); handlers fall back to the nalar server's
     // own CWD via `io.realPath` when no explicit cwd is provided.
-    try gs.router.get("/api/local-memories", ai_mod.http_handlers.localMemoriesListHandler);
-    try gs.router.get("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDetailHandler);
-    try gs.router.post("/api/local-memories", ai_mod.http_handlers.localMemoryCreateHandler);
-    try gs.router.put("/api/local-memories/:name", ai_mod.http_handlers.localMemoryUpdateHandler);
-    try gs.router.delete("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDeleteHandler);
+    try authed.get("/api/local-memories", ai_mod.http_handlers.localMemoriesListHandler);
+    try authed.get("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDetailHandler);
+    try authed.post("/api/local-memories", ai_mod.http_handlers.localMemoryCreateHandler);
+    try authed.put("/api/local-memories/:name", ai_mod.http_handlers.localMemoryUpdateHandler);
+    try authed.delete("/api/local-memories/:name", ai_mod.http_handlers.localMemoryDeleteHandler);
 
     // Nalar config routes (reads/writes config.json as nalar.json mapping)
-    try gs.router.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
-    try gs.router.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
-    try gs.router.delete("/api/config/nalar/profiles/:name", ai_mod.http_handlers.nalarConfigProfileDeleteHandler);
+    try authed.get("/api/config/nalar", ai_mod.http_handlers.nalarConfigGetHandler);
+    try authed.put("/api/config/nalar", ai_mod.http_handlers.nalarConfigPutHandler);
+    try authed.delete("/api/config/nalar/profiles/:name", ai_mod.http_handlers.nalarConfigProfileDeleteHandler);
 
     // OS notification test endpoint — fires a real OS notification so
     // the user can verify their system can display them.
-    try gs.router.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);
+    try authed.post("/api/notify/test", ai_mod.http_handlers.notifyTestHandler);
 
     // Browser-mode (web launch) status — read-only: reports the
     // `web_launch_enabled` flag + live bound port/URL for the settings
     // General tab pill. Literal path, no `:param` siblings — no
     // matchRoute shadowing risk (router.zig walks registration order).
     // Plan 2026-09-10-web-launch-toggle.
-    try gs.router.get("/api/web/status", ai_mod.http_handlers.webStatusHandler);
+    try authed.get("/api/web/status", ai_mod.http_handlers.webStatusHandler);
 
     // MCP server "Test" probe — fires a tools/list request against a
     // candidate config without persisting anything. Used by the
     // Add/Edit MCP server modal's "Test" button so the user can
     // verify command + args + env + cwd (or URL + headers) actually
     // work before clicking Save.
-    try gs.router.post("/api/mcp/test", ai_mod.http_handlers.mcpTestHandler);
+    try authed.post("/api/mcp/test", ai_mod.http_handlers.mcpTestHandler);
 
     // LLM profile "Test" probe — fires one minimal non-streaming chat
     // call against a candidate profile without persisting anything.
@@ -564,48 +584,48 @@ pub fn main(init: std.process.Init) !void {
     // can verify model + base_url + api_key + url_style actually work
     // before clicking Save. Literal path with no `:param` siblings —
     // no matchRoute shadowing risk (router.zig walks registration order).
-    try gs.router.post("/api/llm/test", ai_mod.http_handlers.llmTestHandler);
+    try authed.post("/api/llm/test", ai_mod.http_handlers.llmTestHandler);
 
     // Frontend error log endpoints — capture unhandled JS exceptions,
     // unhandled promise rejections, and existing console.error / console.warn
     // calls from the nalar-desktop webapp. See
     // docs/plans/2026-07-17-frontend-error-logs-design.md.
-    try gs.router.post("/api/logs", ai_mod.http_handlers.frontendLogPostHandler);
-    try gs.router.get("/api/logs", ai_mod.http_handlers.frontendLogGetHandler);
+    try authed.post("/api/logs", ai_mod.http_handlers.frontendLogPostHandler);
+    try authed.get("/api/logs", ai_mod.http_handlers.frontendLogGetHandler);
 
-    try gs.router.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
-    try gs.router.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
-    try gs.router.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);
-    try gs.router.get("/api/git/file/read", ai_mod.http_handlers.gitFileReadHandler);
-    try gs.router.post("/api/git/stage", ai_mod.http_handlers.gitStageHandler);
-    try gs.router.post("/api/git/unstage", ai_mod.http_handlers.gitUnstageHandler);
-    try gs.router.get("/api/git/worktree/info", ai_mod.http_handlers.gitWorktreeInfoHandler);
-    try gs.router.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
-    try gs.router.get("/api/git/commits", ai_mod.http_handlers.gitCommitsListHandler);
-    try gs.router.get("/api/git/commit", ai_mod.http_handlers.gitCommitDetailHandler);
-    try gs.router.get("/api/git/commit/file", ai_mod.http_handlers.gitCommitFileDiffHandler);
-    try gs.router.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
-    try gs.router.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
-    try gs.router.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
-    try gs.router.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
+    try authed.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
+    try authed.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
+    try authed.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);
+    try authed.get("/api/git/file/read", ai_mod.http_handlers.gitFileReadHandler);
+    try authed.post("/api/git/stage", ai_mod.http_handlers.gitStageHandler);
+    try authed.post("/api/git/unstage", ai_mod.http_handlers.gitUnstageHandler);
+    try authed.get("/api/git/worktree/info", ai_mod.http_handlers.gitWorktreeInfoHandler);
+    try authed.get("/api/git/branches", ai_mod.http_handlers.gitBranchesListHandler);
+    try authed.get("/api/git/commits", ai_mod.http_handlers.gitCommitsListHandler);
+    try authed.get("/api/git/commit", ai_mod.http_handlers.gitCommitDetailHandler);
+    try authed.get("/api/git/commit/file", ai_mod.http_handlers.gitCommitFileDiffHandler);
+    try authed.post("/api/git/pr", ai_mod.http_handlers.gitPrCreateHandler);
+    try authed.get("/api/git/pr/status", ai_mod.http_handlers.gitPrStatusHandler);
+    try authed.get("/api/git/pr/diff", ai_mod.http_handlers.gitPrDiffHandler);
+    try authed.get("/api/system/folder", ai_mod.http_handlers.systemFolderHandler);
     // File download for the `present_files` agent tool card
     // (PresentFiles.vue). Literal path under a fresh `/api/files/`
     // prefix — no `:param` siblings exist under it, so no matchRoute
     // shadowing risk (router walks registration order). Plan:
     // docs/plans/2026-09-14-agent-tool-present-files.md
-    try gs.router.get("/api/files/download", ai_mod.http_handlers.filesDownloadHandler);
-    try gs.router.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);
-    try gs.router.post("/api/workspaces", ai_mod.http_handlers.workspacesCreateHandler);
-    try gs.router.post("/api/workspaces/reorder", ai_mod.http_handlers.workspacesReorderHandler);
-    try gs.router.get("/api/workspaces/:id", ai_mod.http_handlers.workspaceGetHandler);
-    try gs.router.put("/api/workspaces/:id", ai_mod.http_handlers.workspaceUpdateHandler);
-    try gs.router.delete("/api/workspaces/:id", ai_mod.http_handlers.workspaceDeleteHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsCreateHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsListHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/reorder", ai_mod.http_handlers.workspaceItemsReorderHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsGetHandler);
-    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsUpdateHandler);
-    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsDeleteHandler);
+    try authed.get("/api/files/download", ai_mod.http_handlers.filesDownloadHandler);
+    try authed.get("/api/workspaces", ai_mod.http_handlers.workspacesListHandler);
+    try authed.post("/api/workspaces", ai_mod.http_handlers.workspacesCreateHandler);
+    try authed.post("/api/workspaces/reorder", ai_mod.http_handlers.workspacesReorderHandler);
+    try authed.get("/api/workspaces/:id", ai_mod.http_handlers.workspaceGetHandler);
+    try authed.put("/api/workspaces/:id", ai_mod.http_handlers.workspaceUpdateHandler);
+    try authed.delete("/api/workspaces/:id", ai_mod.http_handlers.workspaceDeleteHandler);
+    try authed.post("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsCreateHandler);
+    try authed.get("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsListHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/reorder", ai_mod.http_handlers.workspaceItemsReorderHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsGetHandler);
+    try authed.put("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/items/:item_id", ai_mod.http_handlers.workspaceItemsDeleteHandler);
 
     // Kanban workspace-item endpoints (item_type='kanban').
     //   POST   /items/kanban                       — create a kanban + seed 3 default columns
@@ -615,116 +635,116 @@ pub fn main(init: std.process.Init) !void {
     //   DELETE /items/:item_id/kanban/columns/:cid — delete a column
     //   PATCH  /items/:item_id/tasks/:task_id/move — move a task across columns
     // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
-    try gs.router.post("/api/workspaces/:workspace_id/items/kanban", ai_mod.http_handlers.workspaceItemsCreateKanbanHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/kanban", ai_mod.http_handlers.workspaceItemsCreateKanbanHandler);
     // Design workspace-item endpoint (item_type='design').
     //   POST   /items/design                       — create a design (path is required;
     //                                              see design_items_create.zig)
     // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md
     //   Chunk 8 (AppLayout + Sidebar Wiring).
-    try gs.router.post("/api/workspaces/:workspace_id/items/design", ai_mod.http_handlers.workspaceItemsCreateDesignHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/design", ai_mod.http_handlers.workspaceItemsCreateDesignHandler);
     // Agent Mode workspace-item endpoint (item_type='agent') + sub-resources.
     // Plan: docs/superpowers/plans/2026-08-15-agent-mode.md
     // Task: task_1786962724740_0
-    try gs.router.post("/api/workspaces/:workspace_id/items/agent", ai_mod.http_handlers.workspaceItemsCreateAgentHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsGetHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsUpdateHandler);
-    try gs.router.post("/api/agents/:agent_id/knowledge", ai_mod.http_handlers.agentKnowledgeCreateHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/agent", ai_mod.http_handlers.workspaceItemsCreateAgentHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/agent", ai_mod.http_handlers.agentsUpdateHandler);
+    try authed.post("/api/agents/:agent_id/knowledge", ai_mod.http_handlers.agentKnowledgeCreateHandler);
     // ORDER MATTERS: the literal `/knowledge/reorder` route MUST be
     // registered BEFORE `/knowledge/:knowledge_id` — matchRoute walks
     // routes in registration order, so the param route would otherwise
     // capture PATCH /knowledge/reorder with knowledge_id="reorder".
-    try gs.router.patch("/api/agents/:agent_id/knowledge/reorder", ai_mod.http_handlers.agentKnowledgeReorderHandler);
-    try gs.router.patch("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeUpdateHandler);
-    try gs.router.delete("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeDeleteHandler);
+    try authed.patch("/api/agents/:agent_id/knowledge/reorder", ai_mod.http_handlers.agentKnowledgeReorderHandler);
+    try authed.patch("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeUpdateHandler);
+    try authed.delete("/api/agents/:agent_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKnowledgeDeleteHandler);
     // Agent system-prompt CRUD (Migration 080). NOTE: `reorder` literal
     // MUST be registered BEFORE `:prompt_id` — the router walks routes in
     // registration order and `:prompt_id` would otherwise capture the
     // literal "reorder" segment (same shadowing trap as knowledge above).
-    try gs.router.post("/api/agents/:agent_id/system_prompt", ai_mod.http_handlers.agentSystemPromptCreateHandler);
-    try gs.router.patch("/api/agents/:agent_id/system_prompt/reorder", ai_mod.http_handlers.agentSystemPromptReorderHandler);
-    try gs.router.patch("/api/agents/:agent_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentSystemPromptUpdateHandler);
-    try gs.router.delete("/api/agents/:agent_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentSystemPromptDeleteHandler);
-    try gs.router.get("/api/agent-tools/registry", ai_mod.http_handlers.agentToolsRegistryHandler);
-    try gs.router.get("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsListHandler);
-    try gs.router.post("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsCreateHandler);
-    try gs.router.delete("/api/agents/:agent_id/tools/:tool_name", ai_mod.http_handlers.agentToolsDeleteHandler);
+    try authed.post("/api/agents/:agent_id/system_prompt", ai_mod.http_handlers.agentSystemPromptCreateHandler);
+    try authed.patch("/api/agents/:agent_id/system_prompt/reorder", ai_mod.http_handlers.agentSystemPromptReorderHandler);
+    try authed.patch("/api/agents/:agent_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentSystemPromptUpdateHandler);
+    try authed.delete("/api/agents/:agent_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentSystemPromptDeleteHandler);
+    try authed.get("/api/agent-tools/registry", ai_mod.http_handlers.agentToolsRegistryHandler);
+    try authed.get("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsListHandler);
+    try authed.post("/api/agents/:agent_id/tools", ai_mod.http_handlers.agentToolsCreateHandler);
+    try authed.delete("/api/agents/:agent_id/tools/:tool_name", ai_mod.http_handlers.agentToolsDeleteHandler);
     // Agent-Kanbans mirror CRUD (Migration 081) — mirrors the agent block
     // above onto kanban boards. Plan:
     // docs/superpowers/plans/2026-08-25-agent-kanbans-mirror.md
     // Task: task_1787597624259_2.
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/agent_kanban", ai_mod.http_handlers.agentKanbansGetHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/agent_kanban", ai_mod.http_handlers.agentKanbansUpdateHandler);
-    try gs.router.post("/api/agent-kanbans/:kanban_id/knowledge", ai_mod.http_handlers.agentKanbanKnowledgeCreateHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/agent_kanban", ai_mod.http_handlers.agentKanbansGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/agent_kanban", ai_mod.http_handlers.agentKanbansUpdateHandler);
+    try authed.post("/api/agent-kanbans/:kanban_id/knowledge", ai_mod.http_handlers.agentKanbanKnowledgeCreateHandler);
     // ORDER MATTERS: the literal `/knowledge/reorder` route MUST be
     // registered BEFORE `/knowledge/:knowledge_id` — matchRoute walks
     // routes in registration order (same shadowing trap as the agent
     // knowledge routes above).
-    try gs.router.patch("/api/agent-kanbans/:kanban_id/knowledge/reorder", ai_mod.http_handlers.agentKanbanKnowledgeReorderHandler);
-    try gs.router.patch("/api/agent-kanbans/:kanban_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKanbanKnowledgeUpdateHandler);
-    try gs.router.delete("/api/agent-kanbans/:kanban_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKanbanKnowledgeDeleteHandler);
+    try authed.patch("/api/agent-kanbans/:kanban_id/knowledge/reorder", ai_mod.http_handlers.agentKanbanKnowledgeReorderHandler);
+    try authed.patch("/api/agent-kanbans/:kanban_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKanbanKnowledgeUpdateHandler);
+    try authed.delete("/api/agent-kanbans/:kanban_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentKanbanKnowledgeDeleteHandler);
     // NOTE: `reorder` literal MUST be registered BEFORE `:prompt_id`
     // (same shadowing trap as knowledge above).
-    try gs.router.post("/api/agent-kanbans/:kanban_id/system_prompt", ai_mod.http_handlers.agentKanbanSystemPromptCreateHandler);
-    try gs.router.patch("/api/agent-kanbans/:kanban_id/system_prompt/reorder", ai_mod.http_handlers.agentKanbanSystemPromptReorderHandler);
-    try gs.router.patch("/api/agent-kanbans/:kanban_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentKanbanSystemPromptUpdateHandler);
-    try gs.router.delete("/api/agent-kanbans/:kanban_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentKanbanSystemPromptDeleteHandler);
-    try gs.router.get("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsListHandler);
-    try gs.router.post("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsCreateHandler);
-    try gs.router.delete("/api/agent-kanbans/:kanban_id/tools/:tool_name", ai_mod.http_handlers.agentKanbanToolsDeleteHandler);
+    try authed.post("/api/agent-kanbans/:kanban_id/system_prompt", ai_mod.http_handlers.agentKanbanSystemPromptCreateHandler);
+    try authed.patch("/api/agent-kanbans/:kanban_id/system_prompt/reorder", ai_mod.http_handlers.agentKanbanSystemPromptReorderHandler);
+    try authed.patch("/api/agent-kanbans/:kanban_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentKanbanSystemPromptUpdateHandler);
+    try authed.delete("/api/agent-kanbans/:kanban_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentKanbanSystemPromptDeleteHandler);
+    try authed.get("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsListHandler);
+    try authed.post("/api/agent-kanbans/:kanban_id/tools", ai_mod.http_handlers.agentKanbanToolsCreateHandler);
+    try authed.delete("/api/agent-kanbans/:kanban_id/tools/:tool_name", ai_mod.http_handlers.agentKanbanToolsDeleteHandler);
     // Agent-Routines mirror CRUD (Migration 087) — mirrors the agent-kanbans
     // block above onto routines. Routine mode task_1789505553300_1.
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/agent_routine", ai_mod.http_handlers.agentRoutinesGetHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/agent_routine", ai_mod.http_handlers.agentRoutinesUpdateHandler);
-    try gs.router.post("/api/agent-routines/:routine_id/knowledge", ai_mod.http_handlers.agentRoutineKnowledgeCreateHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/agent_routine", ai_mod.http_handlers.agentRoutinesGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/agent_routine", ai_mod.http_handlers.agentRoutinesUpdateHandler);
+    try authed.post("/api/agent-routines/:routine_id/knowledge", ai_mod.http_handlers.agentRoutineKnowledgeCreateHandler);
     // ORDER MATTERS: literal `/knowledge/reorder` BEFORE
     // `/knowledge/:knowledge_id` (route-order shadowing — see kanban block).
-    try gs.router.patch("/api/agent-routines/:routine_id/knowledge/reorder", ai_mod.http_handlers.agentRoutineKnowledgeReorderHandler);
-    try gs.router.patch("/api/agent-routines/:routine_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentRoutineKnowledgeUpdateHandler);
-    try gs.router.delete("/api/agent-routines/:routine_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentRoutineKnowledgeDeleteHandler);
+    try authed.patch("/api/agent-routines/:routine_id/knowledge/reorder", ai_mod.http_handlers.agentRoutineKnowledgeReorderHandler);
+    try authed.patch("/api/agent-routines/:routine_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentRoutineKnowledgeUpdateHandler);
+    try authed.delete("/api/agent-routines/:routine_id/knowledge/:knowledge_id", ai_mod.http_handlers.agentRoutineKnowledgeDeleteHandler);
     // NOTE: `reorder` literal MUST be registered BEFORE `:prompt_id`.
-    try gs.router.post("/api/agent-routines/:routine_id/system_prompt", ai_mod.http_handlers.agentRoutineSystemPromptCreateHandler);
-    try gs.router.patch("/api/agent-routines/:routine_id/system_prompt/reorder", ai_mod.http_handlers.agentRoutineSystemPromptReorderHandler);
-    try gs.router.patch("/api/agent-routines/:routine_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentRoutineSystemPromptUpdateHandler);
-    try gs.router.delete("/api/agent-routines/:routine_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentRoutineSystemPromptDeleteHandler);
-    try gs.router.get("/api/agent-routines/:routine_id/tools", ai_mod.http_handlers.agentRoutineToolsListHandler);
-    try gs.router.post("/api/agent-routines/:routine_id/tools", ai_mod.http_handlers.agentRoutineToolsCreateHandler);
-    try gs.router.delete("/api/agent-routines/:routine_id/tools/:tool_name", ai_mod.http_handlers.agentRoutineToolsDeleteHandler);
+    try authed.post("/api/agent-routines/:routine_id/system_prompt", ai_mod.http_handlers.agentRoutineSystemPromptCreateHandler);
+    try authed.patch("/api/agent-routines/:routine_id/system_prompt/reorder", ai_mod.http_handlers.agentRoutineSystemPromptReorderHandler);
+    try authed.patch("/api/agent-routines/:routine_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentRoutineSystemPromptUpdateHandler);
+    try authed.delete("/api/agent-routines/:routine_id/system_prompt/:prompt_id", ai_mod.http_handlers.agentRoutineSystemPromptDeleteHandler);
+    try authed.get("/api/agent-routines/:routine_id/tools", ai_mod.http_handlers.agentRoutineToolsListHandler);
+    try authed.post("/api/agent-routines/:routine_id/tools", ai_mod.http_handlers.agentRoutineToolsCreateHandler);
+    try authed.delete("/api/agent-routines/:routine_id/tools/:tool_name", ai_mod.http_handlers.agentRoutineToolsDeleteHandler);
     // Workspace-level routines (Migration 084, plan
     // 2026-09-10-workspace-items-routines) — first-class
     // `item_type='routine'`. Replaces the deleted per-task routes
     // (`POST .../tasks/:task_id/run`, `GET /api/routines`).
-    try gs.router.post("/api/workspaces/:workspace_id/items/routine", ai_mod.http_handlers.workspaceItemsCreateRoutineHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesGetHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesUpdateHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/routines/:routine_id/run", ai_mod.http_handlers.workspaceRoutinesRunHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
-    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsDeleteHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id/run_all_agents", ai_mod.http_handlers.runAllAgentsHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/routine", ai_mod.http_handlers.workspaceItemsCreateRoutineHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesUpdateHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/routines/:routine_id/run", ai_mod.http_handlers.workspaceRoutinesRunHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsDeleteHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id/run_all_agents", ai_mod.http_handlers.runAllAgentsHandler);
     // Copy a kanban spec (column structure) from one kanban to another
     // (Chunk 2 of copy-kanban plan). Body: `{mode: "replace" | "append"}`.
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/copy_spec_from/:source_item_id", ai_mod.http_handlers.kanbanCopySpecHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move", ai_mod.http_handlers.tasksMoveHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/copy_spec_from/:source_item_id", ai_mod.http_handlers.kanbanCopySpecHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/move", ai_mod.http_handlers.tasksMoveHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksListHandler);
     // Single-task GET for the kanban Task details dialog (plan:
     // docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md).
     // Registered AFTER the list route — matchRoute walks routes in
     // registration order (router.zig route-order rule).
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksGetHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksGetHandler);
     // Kanban task tag autocomplete (Chunk 1 of plan
     // docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
     // Paginated suggestions for the kanban task detail dialog's tag chip
     // input. Ordered by frequency DESC, then last_used_at DESC. Query
     // params: ?limit=N (default 8, max 50) &offset=K. Response:
     // { tags: [{name,count,last_used_at}], has_more }.
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/kanban/tags", ai_mod.http_handlers.kanbanTagsListHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/kanban/tags", ai_mod.http_handlers.kanbanTagsListHandler);
     // Kanban-scoped task create endpoint with mode='create' | mode='create_and_run' discriminator.
     // Mirrors the generic /tasks POST but rejects 404 when the parent item is not a kanban.
     // Plan: docs/superpowers/plans/2026-08-14-kanban-task-create-endpoints.md
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/kanban/tasks", ai_mod.http_handlers.kanbanTasksCreateHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
-    try gs.router.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/tasks", ai_mod.http_handlers.kanbanTasksCreateHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/tasks", ai_mod.http_handlers.tasksCreateHandler);
+    try authed.put("/api/workspaces/tasks/:task_id", ai_mod.http_handlers.tasksUpdateByIdHandler);
     // Migration 069 (2026-08-06) removed the filesystem-backed
     // kanban-task attachment endpoints (POST + GET wildcard). Task
     // images now live inline on `workspace_item_tasks.image_urls` as
@@ -732,8 +752,8 @@ pub fn main(init: std.process.Init) !void {
     // `*` wildcard GET route, no `<path>/.nalar/attachments/<task>/`
     // clutter on disk. The frontend reads each image via
     // `<img :src="task.imageUrls[i]">`.
-    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
-    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
+    try authed.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksDeleteHandler);
     // NOTE: the per-task routine fire route (`POST .../tasks/:task_id/run`)
     // was deleted with the per-task `routines` table (Migration 084, plan
     // 2026-09-10-workspace-items-routines). Workspace-level routines fire
@@ -744,15 +764,15 @@ pub fn main(init: std.process.Init) !void {
     // new user message. Distinct from POST /api/llm/session (always
     // queues a message). See
     // http_handlers/start_agent.zig for the full contract.
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/start_agent", ai_mod.http_handlers.startAgentHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/pin", ai_mod.http_handlers.taskPinHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/start_agent", ai_mod.http_handlers.startAgentHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/pin", ai_mod.http_handlers.taskPinHandler);
     // Chunk 3 of kanban-task-notification-icon: stamp the
     // `last_human_touched_at` column so the kanban card UI flips the
     // "AI finished — awaiting review" dot to the green "reviewed"
     // checkmark the moment a user opens the task. PUT (idempotent
     // re-stamp is harmless — see plan docs/plans/2026-07-26-kanban-task-notification-icon.md).
-    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/touched", ai_mod.http_handlers.taskMarkHumanTouchedHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/tasks/reorder_pinned", ai_mod.http_handlers.tasksReorderPinnedHandler);
+    try authed.put("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/touched", ai_mod.http_handlers.taskMarkHumanTouchedHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/tasks/reorder_pinned", ai_mod.http_handlers.tasksReorderPinnedHandler);
     // NOTE: `GET /api/routines` (per-task global listing) was deleted with
     // the per-task `routines` table (Migration 084, plan
     // 2026-09-10-workspace-items-routines). It now 404s.
@@ -773,46 +793,46 @@ pub fn main(init: std.process.Init) !void {
     //   POST   /design/pages/:pid/elements/:eid/resize     — single-element resize (no cascade)
     // See docs/superpowers/plans/2026-07-08-design-mode-redesign.md (Chunk 3.5)
     // and docs/superpowers/plans/2026-08-06-split-move-resize.md.
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesListHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesCreateHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesGetHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesUpdateHandler);
-    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesDeleteHandler); // 2026-07-25-design-page-delete-button (Chunk 1)
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements", ai_mod.http_handlers.designElementsCreateHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesListHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages", ai_mod.http_handlers.designPagesCreateHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id", ai_mod.http_handlers.designPagesDeleteHandler); // 2026-07-25-design-page-delete-button (Chunk 1)
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements", ai_mod.http_handlers.designElementsCreateHandler);
     // Group 2+ elements into a new group/frame parent. Single
     // transactional endpoint that creates the parent + reparents
     // the children atomically. See docs/superpowers/plans/
     // 2026-07-28-grouped-layers.md (Chunk 3).
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/group", ai_mod.http_handlers.designElementsGroupHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/reorder", ai_mod.http_handlers.designElementsReorderHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/reparent-batch", ai_mod.http_handlers.designElementsReparentBatchHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/ungroup", ai_mod.http_handlers.designElementsUngroupHandler);
-    try gs.router.put("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsUpdateHandler);
-    try gs.router.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsDeleteHandler);
-    try gs.router.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlGetHandler);
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlUpdateHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/group", ai_mod.http_handlers.designElementsGroupHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/reorder", ai_mod.http_handlers.designElementsReorderHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/reparent-batch", ai_mod.http_handlers.designElementsReparentBatchHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/ungroup", ai_mod.http_handlers.designElementsUngroupHandler);
+    try authed.put("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id", ai_mod.http_handlers.designElementsDeleteHandler);
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/html", ai_mod.http_handlers.designElementsHtmlUpdateHandler);
     // DEPRECATED — see design_elements_translate.zig + design_elements_resize.zig.
-    try gs.router.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/geometry", ai_mod.http_handlers.designElementsGeometryUpdateHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/geometry-batch", ai_mod.http_handlers.designElementsGeometryBatchHandler);
+    try authed.patch("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/geometry", ai_mod.http_handlers.designElementsGeometryUpdateHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/geometry-batch", ai_mod.http_handlers.designElementsGeometryBatchHandler);
     // NEW (2026-08-06) — replaces /geometry with two distinct endpoints:
     // /translate (move) and /resize.
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/translate", ai_mod.http_handlers.designElementsTranslateHandler);
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/resize", ai_mod.http_handlers.designElementsResizeHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/translate", ai_mod.http_handlers.designElementsTranslateHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/resize", ai_mod.http_handlers.designElementsResizeHandler);
     // Server-side cascade move. Each item's (dx, dy) recursively applies
     // to every transitive descendant of that item's element in one
     // SQL transaction. See
     // docs/superpowers/plans/2026-08-06-move-element-with-descendants.md (Chunk 2, Task 2.2).
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/move-batch", ai_mod.http_handlers.designElementsMoveBatchHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/move-batch", ai_mod.http_handlers.designElementsMoveBatchHandler);
     // Cross-page element relocate. Changes the element's `page_id` from
     // `:page_id` (path) to a target page in the body. Cascades to
     // transitive descendants when `apply_to_children=true` (default).
     // Plan: docs/superpowers/plans/2026-08-06-move-element-to-page.md (Chunk 2).
-    try gs.router.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/move-to-page", ai_mod.http_handlers.designElementsMoveToPageHandler);
+    try authed.post("/api/workspaces/:workspace_id/items/:item_id/design/pages/:page_id/elements/:element_id/move-to-page", ai_mod.http_handlers.designElementsMoveToPageHandler);
 
-    // testing debug
-    try gs.router.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
-    try gs.router.get("/test/sessions/client_ids", ai_mod.http_handlers.sessionToClientIdsHandler);
-    try gs.router.get("/test/system-prompt/:session_id", ai_mod.http_handlers.systemPromptGetHandler);
+    // testing debug (gated by auth middleware when `--auth` is on)
+    try authed.post("/test/shutdown", ai_mod.http_handlers.shutdownHandler);
+    try authed.get("/test/sessions/client_ids", ai_mod.http_handlers.sessionToClientIdsHandler);
+    try authed.get("/test/system-prompt/:session_id", ai_mod.http_handlers.systemPromptGetHandler);
 
     _ = try event_bus.subscribe(ai_mod.ai_workflow.RunParamsNew, "ai_worker_flow", ai_mod.ai_workflow.CallbackAiWorkerFlow.callback);
     ctxParent.server.sse_manager.on_disconnect = ai_mod.handleClientDisconnect;
@@ -992,6 +1012,112 @@ fn dispatchServiceSubcommand(
             };
         },
     }
+    return true;
+}
+
+/// Dispatch `nalar create-admin --email E [--password P] [--name N] [--force]`.
+/// Bootstraps the first admin for opt-in `--auth` mode. Opens the same
+/// SQLite DB + runs migrations (so it works on fresh installs), refuses
+/// when an active admin already exists unless `--force`.
+/// Returns true when handled (main should exit).
+fn dispatchCreateAdmin(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environment: *const std.process.Environ.Map,
+    init: std.process.Init,
+) !bool {
+    const args = init.minimal.args;
+    var it = try std.process.Args.Iterator.initAllocator(args, allocator);
+    defer it.deinit();
+    _ = it.next(); // argv[0]
+    const arg1 = it.next() orelse return false;
+    if (!std.mem.eql(u8, arg1, "create-admin")) return false;
+
+    var email: ?[]const u8 = null;
+    var password: ?[]const u8 = null;
+    var name: []const u8 = "";
+    var force = false;
+    while (it.next()) |a| {
+        if (std.mem.eql(u8, a, "--email")) {
+            email = it.next() orelse {
+                std.log.err("create-admin: --email requires a value", .{});
+                return error.InvalidArgs;
+            };
+        } else if (std.mem.eql(u8, a, "--password")) {
+            password = it.next() orelse {
+                std.log.err("create-admin: --password requires a value", .{});
+                return error.InvalidArgs;
+            };
+        } else if (std.mem.eql(u8, a, "--name")) {
+            name = it.next() orelse {
+                std.log.err("create-admin: --name requires a value", .{});
+                return error.InvalidArgs;
+            };
+        } else if (std.mem.eql(u8, a, "--force")) {
+            force = true;
+        } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
+            std.debug.print("Usage: nalar create-admin --email E [--password P] [--name N] [--force]\n", .{});
+            return true;
+        } else {
+            std.log.err("create-admin: unknown flag '{s}'", .{a});
+            return error.InvalidArgs;
+        }
+    }
+    const email_v = email orelse {
+        std.log.err("create-admin: --email is required", .{});
+        return error.InvalidArgs;
+    };
+    if (std.mem.indexOfScalar(u8, email_v, '@') == null) {
+        std.log.err("create-admin: --email must contain '@'", .{});
+        return error.InvalidArgs;
+    }
+    const password_v = password orelse {
+        std.log.err("create-admin: --password is required (pass via env in scripts)", .{});
+        return error.InvalidArgs;
+    };
+    if (password_v.len < 8) {
+        std.log.err("create-admin: password must be at least 8 characters", .{});
+        return error.InvalidArgs;
+    }
+
+    const db_path = try helpers.db_path.getDbPath(allocator, io, @constCast(environment));
+    defer allocator.free(db_path);
+    var dbSqlite: database.Db = .{};
+    defer dbSqlite.deinit();
+    try database.open(&dbSqlite, io, .{ .sqlite_path = db_path });
+    var mm = migration.MigrationManager.init(allocator, &dbSqlite);
+    defer mm.deinit();
+    try migration.registerAllMigrations(&mm);
+    try mm.runMigrations();
+
+    if (!force) {
+        var q = try dbSqlite.query(allocator, "SELECT 1 FROM users WHERE role = 'admin' AND is_active = 1 LIMIT 1", &.{});
+        defer q.deinit();
+        if ((try q.next()) != null) {
+            std.log.err("create-admin: an active admin already exists (use --force to add another)", .{});
+            return error.InvalidArgs;
+        }
+    }
+
+    var hash_buf: [256]u8 = undefined;
+    const hash_slice = std.crypto.pwhash.bcrypt.strHash(password_v, .{
+        .params = .{ .rounds_log = 10, .silently_truncate_password = true },
+        .encoding = .crypt,
+    }, &hash_buf, io) catch {
+        std.log.err("create-admin: password hashing failed", .{});
+        return error.InvalidArgs;
+    };
+    const ts = std.Io.Timestamp.now(io, .real);
+    const id = try std.fmt.allocPrint(allocator, "user_{d}", .{@divTrunc(ts.nanoseconds, 1_000_000)});
+    defer allocator.free(id);
+    dbSqlite.exec(allocator,
+        "INSERT INTO users (id, email, name, password_hash, role, is_active) VALUES (?, ?, COALESCE(?, ''), ?, 'admin', 1)",
+        &[_][]const u8{ id, email_v, name, hash_slice },
+    ) catch {
+        std.log.err("create-admin: insert failed (email may already exist)", .{});
+        return error.InvalidArgs;
+    };
+    std.debug.print("create-admin: admin '{s}' created\n", .{email_v});
     return true;
 }
 
