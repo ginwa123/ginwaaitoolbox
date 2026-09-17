@@ -213,9 +213,16 @@ const sendInput = (data: string) => {
       // Fall through to REST.
     }
   }
-  sendTerminalInput(id, data).catch(() => {
-    status.value = 'input failed — retrying…'
-  })
+  sendTerminalInput(id, data)
+    .then(() => {
+      // Immediate poll after input: the echo would otherwise wait up
+      // to POLL_MS for the next tick (the "slow typing" feel on the
+      // REST fallback path). pollInFlight dedupes overlap.
+      void pollOnce()
+    })
+    .catch(() => {
+      status.value = 'input failed — retrying…'
+    })
 }
 
 const fitAndResize = async () => {
@@ -294,12 +301,20 @@ const switchSession = (id: string) => {
   term?.clear()
   cursor = 0
   activeId.value = id
-  if (exitedIds.value.has(id)) {
-    status.value = 'shell exited — Reconnect for a new one'
-    return
-  }
+  // Always (re-)attach: the server flushes the buffered history first,
+  // then sends the exit event for dead shells — so switching back to
+  // an exited session still shows its history, not an empty view.
   status.value = 'connecting…'
   connectWs()
+}
+
+const maxLabelNum = () => {
+  let max = 0
+  for (const s of sessions.value) {
+    const m = /(\d+)\s*$/.exec(s.label)
+    if (m) max = Math.max(max, parseInt(m[1]!, 10))
+  }
+  return max
 }
 
 const newSession = async () => {
@@ -350,7 +365,9 @@ const restoreOrCreate = async () => {
   }
   if (disposed) return
   sessions.value = alive
-  sessionCounter = alive.length
+  // Continue numbering past the highest restored label (stored labels
+  // may be non-sequential after closes — alive.length would collide).
+  sessionCounter = Math.max(alive.length, maxLabelNum())
   saveStored()
   if (alive.length === 0) {
     await newSession()

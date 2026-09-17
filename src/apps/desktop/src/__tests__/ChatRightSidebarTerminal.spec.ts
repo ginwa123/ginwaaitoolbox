@@ -306,6 +306,21 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('polling')
   })
 
+  it('REST input triggers an immediate output poll (no 300ms wait)', async () => {
+    mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+    await flush()
+    // Force the REST fallback path.
+    firstSocket().serverError()
+    await flush(10)
+    vi.clearAllMocks()
+    // Type: input goes via REST, then an output poll fires immediately
+    // (the 300ms interval can't have elapsed during flush).
+    firstTerm().dataHandler?.('y')
+    await flush()
+    expect(sendTerminalInput).toHaveBeenCalledWith('term-1', 'y')
+    expect(getTerminalOutput).toHaveBeenCalled()
+  })
+
   it('shows the exited state on the socket exit event', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await flush()
@@ -373,6 +388,52 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     apiState.output404For = 'term-1'
     firstSocket().serverClose()
     await flush(10)
+    expect(createTerminalSession).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('numbers new sessions past restored labels (no duplicate chips)', async () => {
+    localStorage.setItem(
+      'nalar-terminal-sessions:chat-nums',
+      JSON.stringify([
+        { id: 'a', label: 'term 2' },
+        { id: 'b', label: 'term 5' },
+      ]),
+    )
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-nums' },
+    })
+    await flush()
+    expect(chips(wrapper)).toHaveLength(2)
+
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    const labels = chips(wrapper).map((c) => c.text())
+    expect(labels).toHaveLength(3)
+    expect(labels.join(' ')).toContain('term 6')
+    expect(new Set(labels).size).toBe(labels.length)
+    wrapper.unmount()
+  })
+
+  it('switching back to an exited session re-attaches for history', async () => {
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-exit-hist' },
+    })
+    await flush()
+    socketFor('term-1').serverOpen()
+    socketFor('term-1').serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
+    await flush(10)
+
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    socketFor('term-2').serverOpen()
+
+    // Switch back: a FRESH socket attaches (server flushes the dead
+    // shell's buffer first), no session is recreated.
+    await chips(wrapper)[0]!.trigger('click')
+    await flush()
+    const socketsForOne = FakeWebSocket.instances.filter((s) => s.url.includes('id=term-1'))
+    expect(socketsForOne.length).toBe(2)
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
