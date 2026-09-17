@@ -11,6 +11,7 @@
 -->
 <script setup lang="ts">
 import ChatView from './ChatView.vue'
+import SessionSlider from '../SessionSlider.vue'
 
 interface Props {
   task: { id: string; name?: string; task_type?: string }
@@ -37,7 +38,7 @@ function handleClose() {
     data-testid="agent-chat-view"
   >
     <div
-      class="px-5 py-3 flex items-center justify-between shrink-0"
+      class="relative px-5 py-3 flex items-center justify-between shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
       <h3 class="text-sm font-semibold" style="color: var(--semantic-text)">
@@ -52,6 +53,16 @@ function handleClose() {
       >
         ✕ Close
       </button>
+      <!-- Same per-session worker indicator the sidebar/task rows show:
+           a yellow sliding bar pinned to the header's bottom edge while
+           processingState[task.id] is true. The key matches the inner
+           ChatView's session id (it strips a leading `chat-`, and we
+           pass the raw task id, so both resolve to task.id). -->
+      <SessionSlider
+        :session-id="props.task.id"
+        test-id="agent-chat-slider"
+        style="--row-px: 1.25rem"
+      />
     </div>
     <div class="flex-1 min-h-0">
       <ChatView

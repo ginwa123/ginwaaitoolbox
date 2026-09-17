@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, ref, type Ref } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import AgentChatView from '../components/views/AgentChatView.vue'
 
@@ -20,7 +20,8 @@ vi.mock('../components/views/ChatView.vue', () => ({
 
 function mountChatView(props: Record<string, unknown> = {}) {
   document.body.innerHTML = ''
-  return mount(AgentChatView, {
+  const processingState: Ref<Record<string, boolean>> = ref({})
+  const wrapper = mount(AgentChatView, {
     attachTo: document.body,
     props: {
       task: { id: 'task_1', name: 'Test Chat' },
@@ -29,7 +30,11 @@ function mountChatView(props: Record<string, unknown> = {}) {
       cwd: '/tmp/agent',
       ...props,
     },
+    global: {
+      provide: { processingState },
+    },
   })
+  return { wrapper, processingState }
 }
 
 describe('AgentChatView', () => {
@@ -48,7 +53,7 @@ describe('AgentChatView', () => {
   })
 
   it('emits close when close button clicked', async () => {
-    const wrapper = mountChatView()
+    const { wrapper } = mountChatView()
     await nextTick()
     const closeBtn = document.querySelector('[data-testid="agent-chat-close"]') as HTMLButtonElement
     closeBtn.click()
@@ -68,5 +73,29 @@ describe('AgentChatView', () => {
     const root = document.querySelector('[data-testid="agent-chat-view"]') as HTMLElement
     expect(root.getAttribute('style')).toContain('--semantic-content-bg')
     expect(root.getAttribute('style')).not.toContain('--semantic-card-bg')
+  })
+
+  it('hides the header loading slider while the session is idle', async () => {
+    mountChatView()
+    await nextTick()
+    const slider = document.querySelector('[data-testid="agent-chat-slider"]')
+    expect(slider).toBeTruthy()
+    expect(slider?.getAttribute('aria-busy')).toBe('false')
+  })
+
+  it('shows the header loading slider while the session is processing', async () => {
+    const { processingState } = mountChatView()
+    processingState.value = { task_1: true }
+    await nextTick()
+    const slider = document.querySelector('[data-testid="agent-chat-slider"]')
+    expect(slider?.getAttribute('aria-busy')).toBe('true')
+  })
+
+  it('keeps the slider hidden when a different session is processing', async () => {
+    const { processingState } = mountChatView()
+    processingState.value = { some_other_task: true }
+    await nextTick()
+    const slider = document.querySelector('[data-testid="agent-chat-slider"]')
+    expect(slider?.getAttribute('aria-busy')).toBe('false')
   })
 })
