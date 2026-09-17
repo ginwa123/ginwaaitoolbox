@@ -45,6 +45,16 @@
 //! endpoints, stub upstreams in tests) — the auth header is simply
 //! omitted in that case.
 //!
+//! Session: every probe sends `x-opencode-session: nalar-llm-test-probe`
+//! so Console Go / OpenCode Zen gateways can route it. Without the
+//! header the gateway rejects the probe with 400
+//! `{"type":"error","error":{"type":"MissingSessionID",...}}` — the
+//! exact failure in the Edit-profile Test button for `url_style:
+//! "anthropic"`. The value is a fixed probe id (not a real
+//! conversation); extra headers are ignored by direct providers
+//! (OpenAI / Ollama / MiniMax), matching how `Agent.callStreaming`
+//! only omits the header when `sessionId` is empty.
+//!
 //! **Timeout model**: `custom_http_client`'s `timeout_ms` (libcurl
 //! handles cancellation at the OS level), 15s per probe.
 
@@ -73,6 +83,13 @@ const PROBE_PROMPT: []const u8 = "Reply with exactly: ok";
 /// Max reply bytes carried on the wire. The probe asks for 16 tokens;
 /// 200 bytes is plenty and keeps the modal payload small.
 const MAX_REPLY_LEN: usize = 200;
+
+/// Stable session id sent as `x-opencode-session` on every Test probe.
+/// Console Go / OpenCode Zen gateways require the header for routing
+/// and prompt caching — see https://opencode.ai/docs/go/#where-can-i-use-it
+/// and `Agent.sessionId`. The probe has no real conversation, so a fixed
+/// id is enough to satisfy the gateway; direct providers ignore it.
+const PROBE_SESSION_ID: []const u8 = "nalar-llm-test-probe";
 
 /// Candidate profile fields. Mirrors the frontend's `LlmTestRequest`
 /// shape in `src/apps/desktop/src/api/index.ts`. Extra fields sent by
@@ -286,6 +303,12 @@ fn useCase(
         header_buf[header_count] = .{ .name = "Authorization", .value = auth_value.? };
         header_count += 1;
     }
+    // Console Go / Zen routing requires `x-opencode-session` on every
+    // request (see PROBE_SESSION_ID). The chat path sends the real
+    // conversation id via `Agent.sessionId`; the probe has none, so it
+    // sends the fixed probe id. Harmless for direct providers.
+    header_buf[header_count] = .{ .name = "x-opencode-session", .value = PROBE_SESSION_ID };
+    header_count += 1;
 
     const start_ns = helpers.monotonicTimestampNanos();
     const result = custom_http_client.post(
@@ -563,4 +586,24 @@ test "llm_test.zig probe timeout is 15_000 ms" {
         "15_000",
     );
     try testing.expect(found);
+}
+
+test "llm_test probe sends x-opencode-session (Console Go requires it)" {
+    // Regression guard for the Edit-profile Test button 400
+    // `{"type":"error","error":{"type":"MissingSessionID",...}}`:
+    // the probe must carry the session header or Console Go rejects
+    // it before auth/routing. Asserts both the header name and the
+    // stable probe id constant exist in the useCase header block.
+    const has_header = try sourceContains(
+        testing.allocator,
+        "src/http_handlers/llm_test.zig",
+        "x-opencode-session",
+    );
+    try testing.expect(has_header);
+    const has_probe_id = try sourceContains(
+        testing.allocator,
+        "src/http_handlers/llm_test.zig",
+        "PROBE_SESSION_ID",
+    );
+    try testing.expect(has_probe_id);
 }
