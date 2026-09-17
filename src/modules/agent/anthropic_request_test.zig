@@ -308,3 +308,24 @@ test "regression: buildJsonOpenAIRequest keeps 'stream_options.include_usage' ve
     // OpenAI keeps stream_options.include_usage=true.
     try testing.expect(std.mem.indexOf(u8, body, "\"stream_options\":{\"include_usage\":true}") != null);
 }
+
+// ============================================================================
+// Regression: callStreaming auth headers per UrlStyle
+// ============================================================================
+
+fn agentSourceContains(needle: []const u8) !bool {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, "src/modules/agent/Agent.zig", testing.allocator, .limited(1024 * 1024));
+    defer testing.allocator.free(raw);
+    return std.mem.indexOf(u8, raw, needle) != null;
+}
+
+test "callStreaming: anthropic style sends x-api-key + anthropic-version (not only Bearer)" {
+    // Regression for `AuthError: Missing API key` on anthropic-style
+    // chat (e.g. opencode.ai/zen/go/v1/messages): callStreaming sent
+    // only `Authorization: Bearer`, which Anthropic-style upstreams
+    // ignore. The header block must branch on UrlStyle and emit the
+    // Anthropic auth headers, mirroring the Test probe in llm_test.zig.
+    try testing.expect(try agentSourceContains("x-api-key"));
+    try testing.expect(try agentSourceContains("anthropic-version"));
+    try testing.expect(try agentSourceContains("is_anthropic"));
+}

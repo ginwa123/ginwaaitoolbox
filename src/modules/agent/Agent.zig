@@ -2838,12 +2838,25 @@ pub const Agent = struct {
             return error.InvalidUri;
         }
 
-        // 3. Compose auth header.
-        const auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
-            self.log_error("concat auth", err, null);
-            return error.OutOfMemory;
-        };
-        defer self.allocator.free(auth_value);
+        // 3. Compose auth headers per UrlStyle.
+        // Anthropic-style endpoints (native Anthropic API, relays like
+        // api.minimax.io/anthropic, opencode.ai/zen/go) authenticate with
+        // `x-api-key` + `anthropic-version: 2023-06-01`, NOT
+        // `Authorization: Bearer` — mirroring the Test probe in
+        // llm_test.zig. Sending only Bearer makes the upstream answer
+        // `{"type":"error","error":{"type":"AuthError","message":
+        // "Missing API key."}}` on the stream with 0 chunks, which the
+        // SSE loop below surfaces as StreamInterrupted. OpenAI styles
+        // keep the existing Bearer header byte-identical to before.
+        const is_anthropic = std.mem.eql(u8, self.UrlStyle, "anthropic");
+        var auth_value: ?[]u8 = null;
+        defer if (auth_value) |v| self.allocator.free(v);
+        if (!is_anthropic) {
+            auth_value = std.mem.concat(self.allocator, u8, &.{ "Bearer ", self.apiKey }) catch |err| {
+                self.log_error("concat auth", err, null);
+                return error.OutOfMemory;
+            };
+        }
 
         // 4. Build the custom_http_client.Request.
         // OpenCode Go / Zen routing requires a stable per-conversation
@@ -2853,21 +2866,31 @@ pub const Agent = struct {
         // below surfaces as "stream ended without finish_reason after
         // 0 chunk(s)". Only emit when non-empty so non-Go providers
         // see a byte-identical request to before.
-        const headers_with_session = [_]custom_http_client.Header{
-            .{ .name = "authorization", .value = auth_value },
-            .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "accept-encoding", .value = "identity" },
-            .{ .name = "x-opencode-session", .value = self.sessionId },
-        };
-        const headers_without_session = [_]custom_http_client.Header{
-            .{ .name = "authorization", .value = auth_value },
-            .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "accept-encoding", .value = "identity" },
-        };
+        var header_buf: [8]custom_http_client.Header = undefined;
+        var header_count: usize = 0;
+        header_buf[header_count] = .{ .name = "content-type", .value = "application/json" };
+        header_count += 1;
+        if (is_anthropic) {
+            header_buf[header_count] = .{ .name = "anthropic-version", .value = "2023-06-01" };
+            header_count += 1;
+            if (self.apiKey.len > 0) {
+                header_buf[header_count] = .{ .name = "x-api-key", .value = self.apiKey };
+                header_count += 1;
+            }
+        } else {
+            header_buf[header_count] = .{ .name = "authorization", .value = auth_value.? };
+            header_count += 1;
+        }
+        header_buf[header_count] = .{ .name = "accept-encoding", .value = "identity" };
+        header_count += 1;
+        if (self.sessionId.len > 0) {
+            header_buf[header_count] = .{ .name = "x-opencode-session", .value = self.sessionId };
+            header_count += 1;
+        }
         const req = custom_http_client.Request{
             .method = .POST,
             .url = uri_str,
-            .headers = if (self.sessionId.len > 0) &headers_with_session else &headers_without_session,
+            .headers = header_buf[0..header_count],
             .body = json_body,
         };
 
