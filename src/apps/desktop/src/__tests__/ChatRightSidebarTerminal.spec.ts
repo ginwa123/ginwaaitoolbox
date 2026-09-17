@@ -391,6 +391,52 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
+
+  it('numbers new sessions past restored labels (no duplicate chips)', async () => {
+    localStorage.setItem(
+      'nalar-terminal-sessions:chat-nums',
+      JSON.stringify([
+        { id: 'a', label: 'term 2' },
+        { id: 'b', label: 'term 5' },
+      ]),
+    )
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-nums' },
+    })
+    await flush()
+    expect(chips(wrapper)).toHaveLength(2)
+
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    const labels = chips(wrapper).map((c) => c.text())
+    expect(labels).toHaveLength(3)
+    expect(labels.join(' ')).toContain('term 6')
+    expect(new Set(labels).size).toBe(labels.length)
+    wrapper.unmount()
+  })
+
+  it('switching back to an exited session re-attaches for history', async () => {
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-exit-hist' },
+    })
+    await flush()
+    socketFor('term-1').serverOpen()
+    socketFor('term-1').serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
+    await flush(10)
+
+    await wrapper.find('[data-testid="terminal-new"]').trigger('click')
+    await flush()
+    socketFor('term-2').serverOpen()
+
+    // Switch back: a FRESH socket attaches (server flushes the dead
+    // shell's buffer first), no session is recreated.
+    await chips(wrapper)[0]!.trigger('click')
+    await flush()
+    const socketsForOne = FakeWebSocket.instances.filter((s) => s.url.includes('id=term-1'))
+    expect(socketsForOne.length).toBe(2)
+    expect(createTerminalSession).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
 })
 
 const firstSocket = () => {
