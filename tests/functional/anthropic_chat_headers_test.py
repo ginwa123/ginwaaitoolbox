@@ -207,6 +207,15 @@ def test_anthropic_chat_turn_sends_x_api_key_not_bearer(
         with state.lock:
             seen = list(state.requests)
         assert seen, "stub upstream received no requests"
+        # First turn of a plain (non-kanban) session also fires
+        # generateSessionNameNew (workflow.zig loop_counter == 1), so
+        # the stub must see at least 2 POSTs: naming + the turn. This
+        # pins the session-naming path that was reported broken on
+        # anthropic style — it shares callStreaming, so the same
+        # header fix covers it.
+        assert len(seen) >= 2, (
+            f"expected naming + turn POSTs (>=2), got {len(seen)}"
+        )
         for i, req in enumerate(seen):
             headers = req["headers"]
             assert headers.get("x-api-key") == "sk-ant-test", (
