@@ -1,32 +1,59 @@
 <template>
   <div class="login-wrap">
     <form class="login-card" @submit.prevent="onSubmit">
-      <h1>Nalar Login</h1>
+      <div class="login-brand">
+        <span class="login-mark">A</span>
+        <div>
+          <h1>Welcome back</h1>
+          <p class="login-sub">Sign in to AnakMagang</p>
+        </div>
+      </div>
       <p v-if="authDisabled" class="muted">
         Auth is disabled on this server — you should not see this page.
       </p>
-      <label>
-        Email
-        <input v-model="email" type="email" autocomplete="username" required :disabled="busy" />
-      </label>
-      <label>
-        Password
+      <label class="field">
+        <span>Email</span>
         <input
-          v-model="password"
-          type="password"
-          autocomplete="current-password"
+          v-model="email"
+          type="email"
+          autocomplete="username"
+          placeholder="you@example.com"
           required
           :disabled="busy"
         />
       </label>
-      <p v-if="error" class="error">{{ error }}</p>
-      <button type="submit" :disabled="busy">{{ busy ? 'Signing in…' : 'Sign in' }}</button>
+      <label class="field">
+        <span>Password</span>
+        <div class="password-row">
+          <input
+            v-model="password"
+            :type="showPassword ? 'text' : 'password'"
+            autocomplete="current-password"
+            placeholder="••••••••"
+            required
+            :disabled="busy"
+          />
+          <button
+            type="button"
+            class="ghost-btn"
+            :disabled="busy"
+            :aria-label="showPassword ? 'Hide password' : 'Show password'"
+            @click="showPassword = !showPassword"
+          >
+            {{ showPassword ? 'Hide' : 'Show' }}
+          </button>
+        </div>
+      </label>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <button type="submit" class="primary-btn" :disabled="busy || !canSubmit">
+        {{ busy ? 'Signing in…' : 'Sign in' }}
+      </button>
     </form>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 const route = useRoute()
@@ -36,6 +63,9 @@ const password = ref('')
 const error = ref('')
 const busy = ref(false)
 const authDisabled = ref(false)
+const showPassword = ref(false)
+
+const canSubmit = computed(() => email.value.trim().length > 0 && password.value.length > 0)
 
 function redirectTarget(): string {
   const r = route.query.redirect
@@ -62,6 +92,7 @@ onMounted(async () => {
 })
 
 async function onSubmit() {
+  if (!canSubmit.value || busy.value) return
   error.value = ''
   busy.value = true
   try {
@@ -90,46 +121,133 @@ async function onSubmit() {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
+  padding: 24px;
+  background: var(--semantic-content-bg);
+  color: var(--semantic-text);
 }
 .login-card {
   display: flex;
   flex-direction: column;
+  gap: 14px;
+  width: 360px;
+  max-width: 100%;
+  padding: 28px;
+  border-radius: 14px;
+  background: var(--semantic-card-bg);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+.login-brand {
+  display: flex;
+  align-items: center;
   gap: 12px;
-  width: 320px;
-  padding: 24px;
-  border: 1px solid var(--border, #282727);
-  border-radius: 12px;
+}
+.login-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 18px;
+  color: var(--semantic-text);
+  background: var(--color-bg-dim);
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
 }
 .login-card h1 {
-  font-size: 20px;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   margin: 0;
+  color: var(--semantic-text);
 }
-.login-card label {
+.login-sub {
+  font-size: 13px;
+  margin: 2px 0 0;
+  color: var(--semantic-text-muted);
+}
+.field {
   display: flex;
   flex-direction: column;
   gap: 6px;
   font-size: 13px;
+  font-weight: 500;
+  color: var(--semantic-text-muted);
 }
-.login-card input {
-  padding: 8px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border, #282727);
+.field input {
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-dim);
+  color: var(--semantic-text);
+  font-size: 14px;
+  outline: none;
+  width: 100%;
+  box-sizing: border-box;
+}
+.field input::placeholder {
+  color: var(--semantic-text-dim);
+}
+.field input:focus {
+  border-color: var(--semantic-link);
+}
+.field input:disabled {
+  opacity: 0.6;
+}
+.password-row {
+  display: flex;
+  gap: 8px;
+}
+.password-row input {
+  flex: 1;
+  min-width: 0;
+}
+.ghost-btn {
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid var(--color-border);
   background: transparent;
-  color: inherit;
+  color: var(--semantic-text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ghost-btn:hover:not(:disabled) {
+  color: var(--semantic-text);
+  border-color: var(--color-border-light);
 }
 .error {
-  color: #e5484d;
+  color: var(--semantic-error);
   font-size: 13px;
   margin: 0;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--semantic-error) 35%, transparent);
 }
 .muted {
   font-size: 13px;
-  opacity: 0.7;
+  color: var(--semantic-text-muted);
   margin: 0;
 }
-button {
-  padding: 9px 12px;
-  border-radius: 8px;
+.primary-btn {
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: none;
+  background: var(--semantic-accent);
+  color: #12120f;
+  font-size: 14px;
+  font-weight: 650;
   cursor: pointer;
+}
+.primary-btn:hover:not(:disabled) {
+  background: var(--semantic-accent-hover);
+}
+.primary-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 </style>

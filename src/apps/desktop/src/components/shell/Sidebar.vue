@@ -71,7 +71,9 @@ const emit = defineEmits<{
 const DEFAULT_NEW_CHAT_NAME = 'New Chat'
 
 // ─── Chats State (moved from ChatsList) ──────────────────────────────────────
-const navItems = ref<Array<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }>>([])
+const navItems = ref<
+  Array<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }>
+>([])
 const chatsLoading = ref(false)
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
@@ -79,7 +81,7 @@ const chatsSortDirection = ref<'asc' | 'desc'>('desc')
 
 // Expose method to update chat ID
 const updateChatId = (oldId: string, newId: string) => {
-  const chatItem = navItems.value.find(item => item.id === oldId)
+  const chatItem = navItems.value.find((item) => item.id === oldId)
   if (chatItem) {
     chatItem.id = newId
   }
@@ -163,7 +165,9 @@ const showAddDesignDialog = ref(false)
 const showAddMemoryDialog = ref(false)
 const addMemoryTargetWorkspaceId = ref<string | null>(null)
 const showDeleteConfirm = ref(false)
-const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () => void } | null>(null)
+const deleteConfirmConfig = ref<{ title: string; message: string; onConfirm: () => void } | null>(
+  null,
+)
 const showRenameWorkspaceModal = ref(false)
 const renameTargetWorkspaceId = ref<string | null>(null)
 const renameTargetName = ref('')
@@ -259,14 +263,15 @@ const _loadChats = async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     navItems.value = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
-      name: session.session_name || 'New Chat',      icon: '💬',
+      name: session.session_name || 'New Chat',
+      icon: '💬',
       active: savedSessionId === session.session_id,
     }))
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
 
     // If we found and activated a saved chat, restore it in AppLayout
-    const activeItem = navItems.value.find(item => item.active)
+    const activeItem = navItems.value.find((item) => item.active)
     if (activeItem) {
       navigationStore.setActiveChatName(activeItem.name)
       emit('navigate', `chat-${activeItem.id}`, activeItem.name)
@@ -284,7 +289,12 @@ const _loadMoreChats = async () => {
   if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) return
   chatsLoading.value = true
   try {
-    const data = await api.getChats('created_at', chatsSortDirection.value, 20, chatsNextCursor.value)
+    const data = await api.getChats(
+      'created_at',
+      chatsSortDirection.value,
+      20,
+      chatsNextCursor.value,
+    )
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const newItems = (data.sessions || []).map((session: any) => ({
       id: session.session_id,
@@ -314,6 +324,41 @@ const _loadMoreChats = async () => {
 const toggleCollapse = () => emit('toggle-collapse')
 const goToSettings = () => emit('navigate', 'settings')
 
+// Auth state — controls the Logout button in the sidebar header.
+// Hidden when the backend runs without `--auth` (`auth_enabled=false`).
+const authEnabled = ref(false)
+const loggingOut = ref(false)
+
+async function refreshAuthState() {
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
+    if (!res.ok) return
+    const data = await res.json().catch(() => null)
+    authEnabled.value = !!data?.auth_enabled
+  } catch {
+    /* offline — leave logout hidden */
+  }
+}
+
+async function handleLogout() {
+  if (loggingOut.value) return
+  loggingOut.value = true
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+  } catch {
+    /* session already dead server-side — still bounce to login */
+  } finally {
+    loggingOut.value = false
+    await router.replace('/login')
+  }
+}
+
+if (typeof window !== 'undefined') {
+  refreshAuthState()
+  window.addEventListener('focus', refreshAuthState)
+  onUnmounted(() => window.removeEventListener('focus', refreshAuthState))
+}
+
 // Handle navigation events from ChatsList component
 const handleChatsNavigate = (id: string, chatName?: string) => {
   if (id === 'delete-chat') {
@@ -323,7 +368,7 @@ const handleChatsNavigate = (id: string, chatName?: string) => {
       openDeleteConfirm({
         title: 'Delete Chat',
         message: 'Delete this chat?',
-        onConfirm: () => chatsListRef.value?.removeChat(chatId)
+        onConfirm: () => chatsListRef.value?.removeChat(chatId),
       })
     }
   } else if (id.startsWith('chat-')) {
@@ -430,8 +475,8 @@ const handleOpenTaskInBackground = (payload: {
 
 const handleSelectItem = async (workspaceId: string, itemId: string) => {
   workspacesStore.setActiveTask(null)
-  const workspace = workspacesStore.workspaces.find(ws => ws.id === workspaceId)
-  const item = workspace?.items.find(i => i.id === itemId)
+  const workspace = workspacesStore.workspaces.find((ws) => ws.id === workspaceId)
+  const item = workspace?.items.find((i) => i.id === itemId)
   if (item?.path && !item.isLoaded && !item.isLoading) {
     await workspacesStore.fetchFolderContents(workspaceId, itemId)
   }
@@ -505,7 +550,7 @@ const handleDeleteWorkspace = (workspaceId: string) => {
   openDeleteConfirm({
     title: 'Delete Workspace',
     message: 'Delete workspace and all items?',
-    onConfirm: () => workspacesStore.removeWorkspace(workspaceId)
+    onConfirm: () => workspacesStore.removeWorkspace(workspaceId),
   })
 }
 
@@ -513,7 +558,7 @@ const handleDeleteItem = (workspaceId: string, itemId: string) => {
   openDeleteConfirm({
     title: 'Delete Project',
     message: 'Delete this project?',
-    onConfirm: () => workspacesStore.removeWorkspaceItem(workspaceId, itemId)
+    onConfirm: () => workspacesStore.removeWorkspaceItem(workspaceId, itemId),
   })
 }
 
@@ -542,7 +587,11 @@ const handleAddItem = (workspaceId: string, itemType: string) => {
 
 const handleCreateItem = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
-    const itemId = await workspacesStore.addWorkspaceItem(addItemTargetWorkspaceId.value, name, path)
+    const itemId = await workspacesStore.addWorkspaceItem(
+      addItemTargetWorkspaceId.value,
+      name,
+      path,
+    )
     if (itemId) await workspacesStore.fetchFolderContents(addItemTargetWorkspaceId.value, itemId)
   }
 }
@@ -560,11 +609,7 @@ const handleCreateItem = async (name: string, path: string) => {
 // tools in.
 const handleCreateKanban = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
-    await workspacesStore.addKanbanItem(
-      addItemTargetWorkspaceId.value,
-      name,
-      path,
-    )
+    await workspacesStore.addKanbanItem(addItemTargetWorkspaceId.value, name, path)
   }
   showAddKanbanDialog.value = false
 }
@@ -586,11 +631,7 @@ const handleCloseAddKanbanDialog = () => {
 // docs/superpowers/plans/2026-06-13-design-mode.md.
 const handleCreateDesign = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
-    await workspacesStore.addDesignItem(
-      addItemTargetWorkspaceId.value,
-      name,
-      path,
-    )
+    await workspacesStore.addDesignItem(addItemTargetWorkspaceId.value, name, path)
   }
   showAddDesignDialog.value = false
 }
@@ -604,11 +645,7 @@ const handleCloseAddDesignDialog = () => {
 const showAddAgentDialog = ref(false)
 const handleCreateAgent = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
-    await workspacesStore.addAgentItem(
-      addItemTargetWorkspaceId.value,
-      name,
-      path,
-    )
+    await workspacesStore.addAgentItem(addItemTargetWorkspaceId.value, name, path)
   }
   showAddAgentDialog.value = false
 }
@@ -622,11 +659,7 @@ const handleCloseAddAgentDialog = () => {
 const showAddRoutineItemDialog = ref(false)
 const handleCreateRoutineItem = async (name: string, path: string) => {
   if (addItemTargetWorkspaceId.value) {
-    await workspacesStore.addRoutineItem(
-      addItemTargetWorkspaceId.value,
-      name,
-      path,
-    )
+    await workspacesStore.addRoutineItem(addItemTargetWorkspaceId.value, name, path)
   }
   showAddRoutineItemDialog.value = false
 }
@@ -697,10 +730,13 @@ const handleCreateMemory = async (name: string, _content: string, path: string) 
   console.info(`[Sidebar] local memory created: ${name} at ${path}`)
 }
 
-const handleAddWorkspace = () => showAddWorkspaceModal.value = true
+const handleAddWorkspace = () => (showAddWorkspaceModal.value = true)
 const handleCreateWorkspace = (name: string) => workspacesStore.addWorkspace(name)
-const handleCloseModal = () => showAddWorkspaceModal.value = false
-const handleCloseAddItemDialog = () => { showAddItemDialog.value = false; addItemTargetWorkspaceId.value = null }
+const handleCloseModal = () => (showAddWorkspaceModal.value = false)
+const handleCloseAddItemDialog = () => {
+  showAddItemDialog.value = false
+  addItemTargetWorkspaceId.value = null
+}
 
 const handleRenameWorkspace = (workspaceId: string, currentName: string) => {
   renameTargetWorkspaceId.value = workspaceId
@@ -947,10 +983,7 @@ const handleCloseAddTaskPicker = () => {
 // no chat session (the .md file IS the content; the AI reads it
 // on the next chat in this workspace). The task row shows up in
 // the sidebar's task list where the user can inspect it.
-const handleCreateMemoryTask = async (
-  name: string,
-  content: string,
-) => {
+const handleCreateMemoryTask = async (name: string, content: string) => {
   const workspaceId = addMemoryTaskWorkspaceId.value
   const itemId = addMemoryTaskItemId.value
   if (!workspaceId || !itemId) return
@@ -979,7 +1012,7 @@ const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) =
   openDeleteConfirm({
     title: 'Delete Task',
     message: 'Delete this task?',
-    onConfirm: () => workspacesStore.deleteTask(workspaceId, itemId, taskId)
+    onConfirm: () => workspacesStore.deleteTask(workspaceId, itemId, taskId),
   })
 }
 
@@ -1003,62 +1036,62 @@ const handleSelectTask = async (taskId: string) => {
     if (chatsListRef.value) {
       chatsListRef.value.resetActiveChat()
     }
-  // NEW (better-url-browser, 2026-08-06): APPEND the URL instead
-  // of REPLACE. The user reported "when click task in kanban, no
-  // need replace url, but append the url browser" — clicking a
-  // kanban task used to write a lean `?view=task&task=X&itemId=Y`
-  // URL via router.replace, which (a) dropped the workspace +
-  // per-column sort context the user was on, and (b) clobbered the
-  // browser history so the back button skipped the kanban URL.
-  //
-  // Now we PUSH the new URL with the current route.query spread
-  // underneath, then override `view`, `task`, and `itemId`. This:
-  //   1. Preserves the breadcrumb (workspaceId / pageId / sorts)
-  //      so a refresh of the task URL still carries the kanban
-  //      context, matching the sidebar's mental model of "I'm on
-  //      kanban X, opened task Y from column Z".
-  //   2. Keeps the previous URL in the browser history so the back
-  //      button returns naturally to the kanban URL (no need to
-  //      manually pre-fill `savedSortsParam` for back-restore).
-  //   3. Still works for deep links — if the user landed on the
-  //      task URL via bookmark with NO workspace context, the
-  //      spread copies nothing and the resulting URL stays lean.
-  //
-  // The `savedSortsParam` snapshot above remains the close-restore
-  // fallback for cases where AppLayout's handleCloseTaskView runs
-  // WITHOUT the URL having preserved context (e.g. an older URL
-  // pattern that lands on task without kanban context).
-  //
-  // NEW (add-workspace-id-params, 2026-08-06): always include
-  // workspaceId + itemId + pageId from the active store state, with
-  // the URL breadcrumb as a fallback. Pre-fix the URL could end up
-  // as `?view=task&task=X&itemId=Y` (no workspaceId) when the user
-  // landed on a kanban URL that didn't include workspaceId — sharing
-  // / refreshing that URL lost the workspace context. The helper
-  // reads from the store FIRST (authoritative source) and falls back
-  // to the current URL only when no active store state exists.
-  //
-  // `await router.push(...)` is critical: Vue Router updates the
-  // route ref asynchronously (during the navigation guard / scroll
-  // sequence). Awaiting ensures the URL is `view=task&task=X` by
-  // the time any subsequent watcher fires. Even with the flag
-  // guard, awaiting is the cleanest close — the flag's `finally`
-  // clears only after the navigation is committed.
-  const query = buildTaskUrlQuery({
-    taskId,
-    activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
-    activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
-    activeDesignPageId: workspacesStore.activeDesignPageId,
-    activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-    currentQuery: route.query,
-  })
-  // handleSelectTask uses router.push (NOT replace) so the previous
-  // kanban / design URL stays in the browser history and the back
-  // button returns naturally (better-url-browser, 2026-08-06). The
-  // `itemId` derived from `activeWorkspaceItemId` is included via the
-  // helper's store-derived value (NOT the `parentItemId` we computed
-  // above — they should be equal but the store is authoritative).
-  await router.push({ path: '/app', query })
+    // NEW (better-url-browser, 2026-08-06): APPEND the URL instead
+    // of REPLACE. The user reported "when click task in kanban, no
+    // need replace url, but append the url browser" — clicking a
+    // kanban task used to write a lean `?view=task&task=X&itemId=Y`
+    // URL via router.replace, which (a) dropped the workspace +
+    // per-column sort context the user was on, and (b) clobbered the
+    // browser history so the back button skipped the kanban URL.
+    //
+    // Now we PUSH the new URL with the current route.query spread
+    // underneath, then override `view`, `task`, and `itemId`. This:
+    //   1. Preserves the breadcrumb (workspaceId / pageId / sorts)
+    //      so a refresh of the task URL still carries the kanban
+    //      context, matching the sidebar's mental model of "I'm on
+    //      kanban X, opened task Y from column Z".
+    //   2. Keeps the previous URL in the browser history so the back
+    //      button returns naturally to the kanban URL (no need to
+    //      manually pre-fill `savedSortsParam` for back-restore).
+    //   3. Still works for deep links — if the user landed on the
+    //      task URL via bookmark with NO workspace context, the
+    //      spread copies nothing and the resulting URL stays lean.
+    //
+    // The `savedSortsParam` snapshot above remains the close-restore
+    // fallback for cases where AppLayout's handleCloseTaskView runs
+    // WITHOUT the URL having preserved context (e.g. an older URL
+    // pattern that lands on task without kanban context).
+    //
+    // NEW (add-workspace-id-params, 2026-08-06): always include
+    // workspaceId + itemId + pageId from the active store state, with
+    // the URL breadcrumb as a fallback. Pre-fix the URL could end up
+    // as `?view=task&task=X&itemId=Y` (no workspaceId) when the user
+    // landed on a kanban URL that didn't include workspaceId — sharing
+    // / refreshing that URL lost the workspace context. The helper
+    // reads from the store FIRST (authoritative source) and falls back
+    // to the current URL only when no active store state exists.
+    //
+    // `await router.push(...)` is critical: Vue Router updates the
+    // route ref asynchronously (during the navigation guard / scroll
+    // sequence). Awaiting ensures the URL is `view=task&task=X` by
+    // the time any subsequent watcher fires. Even with the flag
+    // guard, awaiting is the cleanest close — the flag's `finally`
+    // clears only after the navigation is committed.
+    const query = buildTaskUrlQuery({
+      taskId,
+      activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
+      activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+      activeDesignPageId: workspacesStore.activeDesignPageId,
+      activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+      currentQuery: route.query,
+    })
+    // handleSelectTask uses router.push (NOT replace) so the previous
+    // kanban / design URL stays in the browser history and the back
+    // button returns naturally (better-url-browser, 2026-08-06). The
+    // `itemId` derived from `activeWorkspaceItemId` is included via the
+    // helper's store-derived value (NOT the `parentItemId` we computed
+    // above — they should be equal but the store is authoritative).
+    await router.push({ path: '/app', query })
   } finally {
     workspacesStore.isNavigatingToTask = false
   }
@@ -1087,11 +1120,7 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   const colPagination = item.columnPagination ?? {}
   for (const [columnId, state] of Object.entries(colPagination)) {
     if (state.hasMore && !state.isLoading) {
-      void workspacesStore.loadMoreTasksForColumn(
-        workspaceId,
-        itemId,
-        columnId,
-      )
+      void workspacesStore.loadMoreTasksForColumn(workspaceId, itemId, columnId)
       return
     }
   }
@@ -1111,10 +1140,7 @@ const handleReorderWorkspaces = (orderedIds: string[]) => {
 // does the optimistic update + API call + silent rollback on
 // error. Plan:
 // docs/superpowers/plans/2026-06-16-workspace-item-position-reorder.md
-const handleReorderWorkspaceItems = (
-  workspaceId: string,
-  orderedItemIds: string[],
-) => {
+const handleReorderWorkspaceItems = (workspaceId: string, orderedItemIds: string[]) => {
   workspacesStore.reorderWorkspaceItems(workspaceId, orderedItemIds)
 }
 
@@ -1123,12 +1149,7 @@ const handleReorderWorkspaceItems = (
 // pin/unpin and drag-reorder of the pinned subset, both forwarded
 // from <WorkspaceItem> via <WorkspaceList>. The store actions
 // perform the optimistic update + API call + silent rollback.
-const handlePinTask = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-  isPinned: boolean,
-) => {
+const handlePinTask = (workspaceId: string, itemId: string, taskId: string, isPinned: boolean) => {
   workspacesStore.pinTask(workspaceId, itemId, taskId, isPinned)
 }
 
@@ -1157,11 +1178,7 @@ const handlePinTask = (
 // `handleNavigate('workspace', ...)` does `router.replace(...)`
 // which switches the URL view off task/chat back to workspace.
 // Once on workspace view, the watcher syncs pageId too.
-const handleSelectDesignPage = (
-  workspaceId: string,
-  itemId: string,
-  pageId: string,
-) => {
+const handleSelectDesignPage = (workspaceId: string, itemId: string, pageId: string) => {
   // WorkspaceItem already activated the item + set the page.
   // We intentionally don't re-call setActiveWorkspaceItem here
   // to avoid duplicate AppLayout re-renders (WorkspaceItem's
@@ -1185,11 +1202,7 @@ const handleSelectDesignPage = (
 // `deleteDesignPage` action still handles cache + active-page
 // fallback + error notification; we just gate it behind the same
 // confirm dialog so a stray click can't nuke a page.
-const handleDeleteDesignPage = (
-  workspaceId: string,
-  itemId: string,
-  pageId: string,
-) => {
+const handleDeleteDesignPage = (workspaceId: string, itemId: string, pageId: string) => {
   openDeleteConfirm({
     title: 'Delete Page',
     message: 'Delete this design page? This cannot be undone.',
@@ -1210,10 +1223,7 @@ const handleDeleteDesignPage = (
 // behaviour). Also expands the design item if it isn't already
 // (otherwise the new page row appears collapsed inside the
 // sidebar, which is confusing for the user).
-const handleAddDesignPage = async (
-  workspaceId: string,
-  itemId: string,
-) => {
+const handleAddDesignPage = async (workspaceId: string, itemId: string) => {
   // Expand first so the user sees the new row appear.
   if (workspacesStore.expandedItemIds[itemId] !== true) {
     workspacesStore.toggleExpandedItem(itemId)
@@ -1245,9 +1255,7 @@ const handleAddDesignPage = async (
 // Sidebar/DesignView don't share a common parent module.
 const UNTITLED_BASE = 'Untitled'
 const UNTITLED_PATTERN = /^Untitled (\d+)$/
-function computeNextUntitledName(
-  existingPages: ReadonlyArray<{ name: string }>,
-): string {
+function computeNextUntitledName(existingPages: ReadonlyArray<{ name: string }>): string {
   let hasUnnumbered = false
   let maxNumbered = 0
   for (const p of existingPages) {
@@ -1267,11 +1275,7 @@ function computeNextUntitledName(
   return `${UNTITLED_BASE} ${maxNumbered + 1}`
 }
 
-const handleReorderPinnedTasks = (
-  workspaceId: string,
-  itemId: string,
-  orderedIds: string[],
-) => {
+const handleReorderPinnedTasks = (workspaceId: string, itemId: string, orderedIds: string[]) => {
   workspacesStore.reorderPinnedTasks(workspaceId, itemId, orderedIds)
 }
 
@@ -1335,18 +1339,10 @@ defineExpose({
   selectTask: (taskId: string) => handleSelectTask(taskId),
   deleteTask: (workspaceId: string, itemId: string, taskId: string) =>
     handleDeleteTask(workspaceId, itemId, taskId),
-  renameTask: (
-    workspaceId: string,
-    itemId: string,
-    taskId: string,
-    currentName: string,
-  ) => handleRenameTask(workspaceId, itemId, taskId, currentName),
-  pinTask: (
-    workspaceId: string,
-    itemId: string,
-    taskId: string,
-    isPinned: boolean,
-  ) => handlePinTask(workspaceId, itemId, taskId, isPinned),
+  renameTask: (workspaceId: string, itemId: string, taskId: string, currentName: string) =>
+    handleRenameTask(workspaceId, itemId, taskId, currentName),
+  pinTask: (workspaceId: string, itemId: string, taskId: string, isPinned: boolean) =>
+    handlePinTask(workspaceId, itemId, taskId, isPinned),
 })
 </script>
 
@@ -1363,7 +1359,7 @@ defineExpose({
     <div
       v-if="!isCollapsed"
       class="absolute right-0 top-0 bottom-0 w-1 cursor-col-resize z-10 opacity-0 hover:opacity-100 transition-opacity"
-      style="background: var(--color-violet);"
+      style="background: var(--color-violet)"
       @mousedown="startResize"
     />
 
@@ -1376,14 +1372,19 @@ defineExpose({
       @click="toggleCollapse"
       data-testid="sidebar-collapse-toggle"
       class="absolute -right-2.5 top-16 z-20 w-5 h-5 rounded flex items-center justify-center transition-colors duration-150"
-      style="background: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+      style="background: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       :title="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
       :aria-label="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
     >
       <svg
         class="w-3 h-3 transition-transform duration-150"
-        :style="{ color: 'var(--semantic-text-dim)', transform: isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)' }"
-        fill="none" viewBox="0 0 24 24" stroke="currentColor"
+        :style="{
+          color: 'var(--semantic-text-dim)',
+          transform: isCollapsed ? 'rotate(180deg)' : 'rotate(0deg)',
+        }"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
       >
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
       </svg>
@@ -1397,45 +1398,56 @@ defineExpose({
     <div
       class="h-12 flex items-center shrink-0"
       :class="isCollapsed ? 'justify-center px-0' : 'px-4 justify-between'"
-      style="border-bottom: 1px solid var(--color-border);"
+      style="border-bottom: 1px solid var(--color-border)"
     >
       <div
         v-if="!isCollapsed"
         class="flex items-center gap-2"
         data-testid="sidebar-header-expanded"
       >
-        <span class="text-sm font-semibold tracking-tight" style="color: var(--semantic-text);">AnakMagang</span>
+        <span class="text-sm font-semibold tracking-tight" style="color: var(--semantic-text)"
+          >AnakMagang</span
+        >
       </div>
       <span
         v-else
         class="text-sm font-semibold tracking-tight"
-        style="color: var(--semantic-text);"
+        style="color: var(--semantic-text)"
         title="AnakMagang"
         aria-label="AnakMagang"
         data-testid="sidebar-header-collapsed"
-      >A</span>
-      <button
-        v-if="!isCollapsed"
-        @click="goToSettings"
-        class="text-xs font-medium transition-colors duration-150 hover:text-[--semantic-text]"
-        style="color: var(--semantic-text-dim);"
-        title="Settings"
-        aria-label="Settings"
-        data-testid="sidebar-settings-button"
+        >A</span
       >
-        Settings
-      </button>
+      <div v-if="!isCollapsed" class="flex items-center gap-3">
+        <button
+          @click="goToSettings"
+          class="text-xs font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+          style="color: var(--semantic-text-dim)"
+          title="Settings"
+          aria-label="Settings"
+          data-testid="sidebar-settings-button"
+        >
+          Settings
+        </button>
+        <button
+          v-if="authEnabled"
+          :disabled="loggingOut"
+          @click="handleLogout"
+          class="text-xs font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+          style="color: var(--semantic-text-dim)"
+          title="Log out"
+          aria-label="Log out"
+          data-testid="sidebar-logout-button"
+        >
+          {{ loggingOut ? '…' : 'Logout' }}
+        </button>
+      </div>
     </div>
 
     <!-- Content -->
     <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'p-3'">
-
       <!-- Chats List Component -->
-      <ChatsList
-        ref="chatsListRef"
-        :collapsed="isCollapsed"
-        @navigate="handleChatsNavigate"
-      />
+      <ChatsList ref="chatsListRef" :collapsed="isCollapsed" @navigate="handleChatsNavigate" />
 
       <!-- Workspaces -->
       <div class="flex-1 min-h-0 overflow-hidden">
@@ -1485,9 +1497,11 @@ defineExpose({
             @click="handleToggleWorkspace(workspace.id)"
             data-testid="collapsed-workspace-button"
             class="relative w-9 h-9 rounded-md flex items-center justify-center text-xs font-semibold tracking-tight transition-colors duration-150"
-            :style="workspace.expanded
-              ? 'background: transparent; color: var(--semantic-active-text); border: 1px solid var(--color-border); box-shadow: inset 2px 0 0 0 var(--semantic-active-text);'
-              : 'background: transparent; color: var(--semantic-text-dim); border: 1px solid var(--color-border);'"
+            :style="
+              workspace.expanded
+                ? 'background: transparent; color: var(--semantic-active-text); border: 1px solid var(--color-border); box-shadow: inset 2px 0 0 0 var(--semantic-active-text);'
+                : 'background: transparent; color: var(--semantic-text-dim); border: 1px solid var(--color-border);'
+            "
             :title="workspace.name"
             :aria-label="`Open workspace ${workspace.name}`"
           >
@@ -1497,7 +1511,7 @@ defineExpose({
             @click="handleAddWorkspace"
             data-testid="collapsed-add-workspace-button"
             class="w-9 h-9 rounded-md flex items-center justify-center text-sm transition-colors duration-150 hover:text-[--semantic-text]"
-            style="color: var(--semantic-text-dim);"
+            style="color: var(--semantic-text-dim)"
             title="Add Workspace"
             aria-label="Add Workspace"
           >
@@ -1508,33 +1522,76 @@ defineExpose({
     </nav>
 
     <!-- Modals -->
-    <WorkspaceModal :show="showAddWorkspaceModal" @close="handleCloseModal" @create="handleCreateWorkspace" />
-    <RenameWorkspaceModal :show="showRenameWorkspaceModal" :current-name="renameTargetName" @close="handleCloseRenameModal" @rename="handleConfirmRename" />
-    <RenameTaskModal :show="showRenameTaskModal" :current-name="renameTargetTaskName" @close="handleCloseTaskRenameModal" @rename="handleConfirmTaskRename" />
+    <WorkspaceModal
+      :show="showAddWorkspaceModal"
+      @close="handleCloseModal"
+      @create="handleCreateWorkspace"
+    />
+    <RenameWorkspaceModal
+      :show="showRenameWorkspaceModal"
+      :current-name="renameTargetName"
+      @close="handleCloseRenameModal"
+      @rename="handleConfirmRename"
+    />
+    <RenameTaskModal
+      :show="showRenameTaskModal"
+      :current-name="renameTargetTaskName"
+      @close="handleCloseTaskRenameModal"
+      @rename="handleConfirmTaskRename"
+    />
     <!-- NEW (rename-design-pages, 2026-08-06): ⋮ menu "Rename"
          opens this modal; confirm fires workspaceStore.renameDesignPage
          which PATCHes the page + optimistically updates the local cache. -->
-    <RenameDesignPageModal :show="showRenameDesignPageModal" :current-name="renameTargetDesignPageName" @close="handleCloseDesignPageRenameModal" @rename="handleConfirmDesignPageRename" />
-    <AddItemDialog :show="showAddItemDialog" @close="handleCloseAddItemDialog" @create="handleCreateItem" />
-    <AddKanbanDialog :show="showAddKanbanDialog" @close="handleCloseAddKanbanDialog" @create="handleCreateKanban" />
+    <RenameDesignPageModal
+      :show="showRenameDesignPageModal"
+      :current-name="renameTargetDesignPageName"
+      @close="handleCloseDesignPageRenameModal"
+      @rename="handleConfirmDesignPageRename"
+    />
+    <AddItemDialog
+      :show="showAddItemDialog"
+      @close="handleCloseAddItemDialog"
+      @create="handleCreateItem"
+    />
+    <AddKanbanDialog
+      :show="showAddKanbanDialog"
+      @close="handleCloseAddKanbanDialog"
+      @create="handleCreateKanban"
+    />
     <!-- NEW (design-mode feature): modal for creating a design-mode
          workspace item. Wired to the 'design' itemType in
          handleAddItem (above). See AddDesignDialog.vue for the
          internal flow. Plan:
          docs/superpowers/plans/2026-06-13-design-mode.md. -->
-    <AddDesignDialog :show="showAddDesignDialog" @close="handleCloseAddDesignDialog" @create="handleCreateDesign" />
-    <AddAgentDialog :show="showAddAgentDialog" @close="handleCloseAddAgentDialog" @create="handleCreateAgent" />
+    <AddDesignDialog
+      :show="showAddDesignDialog"
+      @close="handleCloseAddDesignDialog"
+      @create="handleCreateDesign"
+    />
+    <AddAgentDialog
+      :show="showAddAgentDialog"
+      @close="handleCloseAddAgentDialog"
+      @create="handleCreateAgent"
+    />
     <!-- Workspace routines (Migration 084): modal for creating a
          routine-mode workspace item. Wired to the 'routine' itemType
          in handleAddItem (above). -->
-    <AddRoutineItemDialog :show="showAddRoutineItemDialog" @close="handleCloseAddRoutineItemDialog" @create="handleCreateRoutineItem" />
+    <AddRoutineItemDialog
+      :show="showAddRoutineItemDialog"
+      @close="handleCloseAddRoutineItemDialog"
+      @create="handleCreateRoutineItem"
+    />
     <AddMemoryDialog
       :show="showAddMemoryDialog"
       :cwd="addMemoryTargetWorkspaceId ? resolveCwdForMemory(addMemoryTargetWorkspaceId) : ''"
       @close="handleCloseAddMemoryDialog"
       @create="handleCreateMemory"
     />
-    <AddTaskPickerDialog :show="showAddTaskPicker" @close="handleCloseAddTaskPicker" @pick="handleAddTaskPick" />
+    <AddTaskPickerDialog
+      :show="showAddTaskPicker"
+      @close="handleCloseAddTaskPicker"
+      @pick="handleAddTaskPick"
+    />
     <!-- AddTaskDialog was removed in 2026-07-26 — the "Standard Chat"
          path now auto-creates the task + navigates straight to its
          ChatView, no name/description prompt. See handleAddTaskPick.
@@ -1561,5 +1618,7 @@ defineExpose({
 
 <style scoped>
 /* Smooth transitions */
-aside { transition: width 0.2s ease-out; }
+aside {
+  transition: width 0.2s ease-out;
+}
 </style>

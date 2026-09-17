@@ -189,6 +189,55 @@ test "resolve SPA: returns root index.html for nested route /app/chat/session_xy
     try testing.expectEqualStrings("text/html; charset=utf-8", result.file.mime);
 }
 
+test "resolve SPA: second prefix serves index.html for /login (refresh-safe)" {
+    // The standalone login page lives outside /app but from the same
+    // index.html. Refreshing at /login?redirect=/app (query is stripped
+    // before matching, so this is /login) must serve the SPA shell,
+    // not 404.
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html><title>SPA</title>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+        .spa_fallback_prefix2 = "/login",
+    };
+    const result = try static_files.resolve(&cfg, env.io, "/login");
+    defer if (result == .file) allocator.free(result.file.abs_path);
+
+    try testing.expect(result == .file);
+    try testing.expectEqualStrings("text/html; charset=utf-8", result.file.mime);
+}
+
+test "resolve SPA: /login still 404s when second prefix is unset" {
+    // prefix2 defaults to null — callers that only set /app keep the
+    // old behavior for /login.
+    const allocator = testing.allocator;
+    var env = try setupRoot(allocator);
+    defer env.deinit(allocator);
+
+    {
+        const f = try env.tmp_dir.dir.createFile(env.io, "index.html", .{});
+        defer f.close(env.io);
+        try f.writeStreamingAll(env.io, "<!doctype html>");
+    }
+
+    const cfg = static_files.StaticDirConfig{
+        .root_dir = env.root_abs,
+        .allocator = allocator,
+        .spa_fallback_prefix = "/app",
+    };
+    try testing.expect((try static_files.resolve(&cfg, env.io, "/login")) == .not_found);
+}
+
 test "resolve SPA: still returns 404 for missing assets that DO have an extension" {
     // The SPA fallback must NOT silently mask missing JS/CSS/etc. as
     // index.html — that would hide real build/deploy bugs.
