@@ -148,7 +148,15 @@ export interface SseStateInfo {
    *   - `exhausted`        — `maxAttempts` reached (only on `failed`)
    *   - `non-recoverable`  — first-attempt failure (4xx/5xx) (only on `failed`)
    */
-  reason?: 'error' | 'stall' | 'closed' | 'online' | 'visible' | 'manual' | 'exhausted' | 'non-recoverable'
+  reason?:
+    | 'error'
+    | 'stall'
+    | 'closed'
+    | 'online'
+    | 'visible'
+    | 'manual'
+    | 'exhausted'
+    | 'non-recoverable'
 }
 
 export interface SseClientOptions {
@@ -348,6 +356,18 @@ export interface SseClientOptions {
    * Set false to restore log-only behaviour (e.g. for diagnosis).
    */
   stallRecovery?: boolean
+  /**
+   * Max time in ms to wait for the server's `connected` handshake
+   * after (re)starting the EventSource before treating the stream
+   * as dead. Guards against streams that return HTTP 200 + valid
+   * SSE framing but never emit the handshake (e.g. a backend
+   * rejection path that cannot change the already-sent status
+   * code) — without this the client sits in 'connecting' forever.
+   * Heartbeats do NOT reset this timer; only the handshake does.
+   * Default: 15_000. Firing routes through the normal error path
+   * (`failed` on first attempt, backoff retry once ever open).
+   */
+  connectedTimeoutMs?: number
 }
 
 export interface SseClient {
@@ -454,7 +474,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (!debugOn) return
     const t = now()
     const extra_ = extra ? ' ' + JSON.stringify(extra) : ''
-     
+
     console.log(`[sse-client ${iso()} t=${fmtMs(t)}] ${msg}${extra_}`)
   }
   // Track timing of last received event. Initially null = no event yet.
@@ -468,10 +488,15 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // operator can see "data stopped 10s ago" before the eventual
   // onerror fires. Disabled by default; activated via the global
   // toggle below.
-  const stallDetectorOn: boolean = (globalThis as { __sseStallDetector?: boolean }).__sseStallDetector !== false
+  const stallDetectorOn: boolean =
+    (globalThis as { __sseStallDetector?: boolean }).__sseStallDetector !== false
   const stallThresholdMs: number = opts.stallThresholdMs ?? 7_000 // 7s — well below the 15s bug
   const stallRecovery: boolean = opts.stallRecovery ?? true
   let stallTimer: ReturnType<typeof setTimeout> | null = null
+  // Connected-handshake timeout: armed in start(), cleared on the
+  // first `connected` event (or any terminal path). Fires when the
+  // server holds the stream open without ever handshaking.
+  let connectedTimer: ReturnType<typeof setTimeout> | null = null
   // Set to `now()` the first time the stall detector fires during a
   // given open window. Reset on every 'connected' event (so the gap
   // between stall-detected and browser-error is the delta of two
@@ -618,15 +643,18 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // attributed to the server. Tests pin this contract; do not
   // reword the suspect label without updating
   // `sseClient.deeplog.spec.ts`.
-  function formatConclusion(suspect: Suspect, snapshot: {
-    readiness: string
-    networkOnline: boolean | null
-    tabHiddenAtMs: number | null
-    sinceLastEventMs: number
-    lastEventKind: string | null
-    lastCloseReason: string | null
-    lastReconnectReason: string | null
-  }): string {
+  function formatConclusion(
+    suspect: Suspect,
+    snapshot: {
+      readiness: string
+      networkOnline: boolean | null
+      tabHiddenAtMs: number | null
+      sinceLastEventMs: number
+      lastEventKind: string | null
+      lastCloseReason: string | null
+      lastReconnectReason: string | null
+    },
+  ): string {
     const silentFor = Math.round(snapshot.sinceLastEventMs / 100) / 10
     const silentForStr = `${silentFor}s`
     switch (suspect) {
@@ -712,7 +740,8 @@ export function createSseClient(opts: SseClientOptions): SseClient {
         // operator can cross-reference the value with browser
         // DevTools timeline.
         sinceLastCloseMs: lastCloseAtMs !== null ? Math.round(now() - lastCloseAtMs) : null,
-        sinceLastReconnectMs: lastReconnectAtMs !== null ? Math.round(now() - lastReconnectAtMs) : null,
+        sinceLastReconnectMs:
+          lastReconnectAtMs !== null ? Math.round(now() - lastReconnectAtMs) : null,
         lastCloseReason,
         lastReconnectReason,
         constructedBy: constructedAtCaller,
@@ -764,8 +793,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     // would mislead the classifier. Falls back to current
     // readiness if no stall ever fired.
     const readiness =
-      stallFiredAtReadiness ??
-      (['CONNECTING', 'OPEN', 'CLOSED'][es?.readyState ?? 0] ?? 'UNKNOWN')
+      stallFiredAtReadiness ?? ['CONNECTING', 'OPEN', 'CLOSED'][es?.readyState ?? 0] ?? 'UNKNOWN'
     const networkOnline =
       typeof navigator === 'undefined'
         ? null
@@ -774,7 +802,8 @@ export function createSseClient(opts: SseClientOptions): SseClient {
           : null
     const sinceStall = stallFiredAt !== null ? Math.round(now() - stallFiredAt) : null
     const sinceLastCloseMs = lastCloseAtMs !== null ? Math.round(now() - lastCloseAtMs) : null
-    const sinceLastReconnectMs = lastReconnectAtMs !== null ? Math.round(now() - lastReconnectAtMs) : null
+    const sinceLastReconnectMs =
+      lastReconnectAtMs !== null ? Math.round(now() - lastReconnectAtMs) : null
     const suspect = classifyDisconnectSuspect({
       readiness,
       networkOnline,
@@ -856,6 +885,10 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   const setTimeoutFn = opts.setTimeoutFn ?? setTimeout
   const clearTimeoutFn = opts.clearTimeoutFn ?? clearTimeout
   const connectedEventName = opts.connectedEventName ?? 'connected'
+  // Connected-handshake deadline (see the option doc). Heartbeats
+  // must NOT reset this — a stream that pings without handshaking
+  // is exactly the hang this guards against.
+  const connectedTimeoutMs: number = opts.connectedTimeoutMs ?? 15_000
   // Heartbeat data to silently drop from the default 'message' event.
   // Default: 'ping' (matches sse_manager.sendHeartbeat's literal
   // `data: ping\n\n`). `null` disables the filter entirely — see the
@@ -917,7 +950,12 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       // exact moment we receive the server handshake (more
       // diagnostic value than logging every state transition once
       // the connection is stable).
-      log('state', { next, attempt: info.attempt, reason: info.reason, nextDelayMs: info.nextDelayMs })
+      log('state', {
+        next,
+        attempt: info.attempt,
+        reason: info.reason,
+        nextDelayMs: info.nextDelayMs,
+      })
     }
     for (const cb of subscribers) {
       try {
@@ -937,6 +975,27 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       clearTimeoutFn(retryTimer)
       retryTimer = null
     }
+  }
+
+  function clearConnectedTimer(): void {
+    if (connectedTimer !== null) {
+      clearTimeoutFn(connectedTimer)
+      connectedTimer = null
+    }
+  }
+
+  function armConnectedTimer(): void {
+    clearConnectedTimer()
+    connectedTimer = setTimeoutFn(() => {
+      connectedTimer = null
+      if (closed) return
+      // The stream is alive enough to hold the socket but never
+      // handshook (or died before handshaking). Route through the
+      // normal error path so first-attempt hangs land in 'failed'
+      // (badge shows Retry) and post-open hangs back off.
+      log('connected timeout', { attempt, connectedTimeoutMs })
+      handleError({ reason: 'error' })
+    }, connectedTimeoutMs)
   }
 
   function start(): void {
@@ -963,6 +1022,10 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     }
     es = instance
     log('EventSource constructed', { readyState: instance.readyState })
+    // Deadline for the server handshake. Without this, a stream
+    // that never emits `connected` (rejected-but-200, hung proxy)
+    // sits in 'connecting' forever.
+    armConnectedTimer()
 
     instance.addEventListener(connectedEventName, (e: Event) => {
       // Server explicitly confirmed the stream is live. This is
@@ -995,6 +1058,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
       lastEventBytes = raw.length
       eventCount += 1
       hasBeenOpen = true
+      clearConnectedTimer()
       stallFiredAt = null
       stallFiredAtReadiness = null
       log('connected', {
@@ -1007,7 +1071,8 @@ export function createSseClient(opts: SseClientOptions): SseClient {
         // duration of the gap. Useful for diagnosing "the app
         // was closed for X minutes — was the reconnect prompt?".
         sinceLastCloseMs: lastCloseAtMs !== null ? Math.round(now() - lastCloseAtMs) : null,
-        sinceLastReconnectMs: lastReconnectAtMs !== null ? Math.round(now() - lastReconnectAtMs) : null,
+        sinceLastReconnectMs:
+          lastReconnectAtMs !== null ? Math.round(now() - lastReconnectAtMs) : null,
       })
       emitState('open', { attempt, reason: 'manual' })
       // Arm the stall detector AFTER emitState so `state === 'open'`
@@ -1156,6 +1221,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
 
   function handleError(info: { reason: SseStateInfo['reason']; lastError?: Event }): void {
     if (closed) return
+    clearConnectedTimer()
 
     // Close the dead EventSource so it cannot fire onerror again.
     // Browsers fire onerror both on the initial error AND on every
@@ -1293,7 +1359,8 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     // NEW (sse-disconnect-diagnosis): track network restoration.
     // Surfaced in the next diagnostic log so the operator can
     // correlate "network came back" with subsequent reconnects.
-    const wasOfflineForMs = navigatorOfflineAtMs !== null ? Math.round(now() - navigatorOfflineAtMs) : null
+    const wasOfflineForMs =
+      navigatorOfflineAtMs !== null ? Math.round(now() - navigatorOfflineAtMs) : null
     navigatorOfflineAtMs = null
     log('network online', { wasOfflineForMs })
     // Same fast-path: if we were in `reconnecting` because the
@@ -1391,6 +1458,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (closed) return
     closed = true
     clearRetry()
+    clearConnectedTimer()
     if (es) {
       try {
         es.close()
@@ -1402,7 +1470,11 @@ export function createSseClient(opts: SseClientOptions): SseClient {
     if (visibilityTarget && typeof visibilityTarget.removeEventListener === 'function') {
       visibilityTarget.removeEventListener('visibilitychange', onVisibilityChange)
     }
-    if (reconnectOnOnline && onlineTarget && typeof onlineTarget.removeEventListener === 'function') {
+    if (
+      reconnectOnOnline &&
+      onlineTarget &&
+      typeof onlineTarget.removeEventListener === 'function'
+    ) {
       onlineTarget.removeEventListener('online', onOnline)
     }
     if (onlineTarget && typeof onlineTarget.removeEventListener === 'function') {
@@ -1497,10 +1569,12 @@ export function createSseClient(opts: SseClientOptions): SseClient {
 function getCallerStack(): string {
   const stack = new Error('sseClient::captureCaller').stack
   if (!stack) return '(no stack)'
-  return stack
-    .split('\n')
-    .slice(2, 5)
-    .map((line) => line.trim().replace(/^at\s+/, ''))
-    .filter((line) => line.length > 0)
-    .join(' | ') || '(empty stack)'
+  return (
+    stack
+      .split('\n')
+      .slice(2, 5)
+      .map((line) => line.trim().replace(/^at\s+/, ''))
+      .filter((line) => line.length > 0)
+      .join(' | ') || '(empty stack)'
+  )
 }

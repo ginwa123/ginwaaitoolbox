@@ -220,10 +220,33 @@ pub const CallbackUnifiedDesignElementStream = struct {
     }
 };
 
+/// Terminate an SSE stream the handler cannot serve (auth failure,
+/// missing/empty/unknown `?channels=`).
+///
+/// kabelweb sends the `200 text/event-stream` headers AND registers the
+/// fd BEFORE this handler runs, so a bare `return res.jsonResponse(...)`
+/// never reaches the wire — without this call the browser holds an
+/// immortal ping-only stream that never emits `event: connected`, and
+/// the frontend SseClient sits in 'connecting' forever. Sends an
+/// optional terminal named event, then removes the client so the
+/// browser's EventSource errors out promptly instead of hanging.
+fn terminateSseStream(ctx: gserverz.HttpContext, event_name: ?[]const u8, data_json: []const u8) void {
+    const cid = ctx.client_id orelse return;
+    const di = nalar_core.getSingleton() catch return;
+    if (event_name) |name| {
+        var buf: [256]u8 = undefined;
+        const frame = std.fmt.bufPrint(&buf, "event: {s}\ndata: {s}\n\n", .{ name, data_json }) catch return;
+        di.server.sse_manager.sendToClient(cid, frame) catch {};
+    }
+    di.server.sse_manager.removeClient(cid, .explicit_shutdown);
+}
+
 /// SSE stream endpoint — single endpoint for all server-pushed events.
 ///
-/// The `?channels=` query parameter is REQUIRED. Returns HTTP 400
-/// (via the early `res.jsonResponse`) if missing/empty/unknown.
+/// The `?channels=` query parameter is REQUIRED. Missing/empty/unknown
+/// values terminate the stream (see `terminateSseStream` — a JSON error
+/// body can never reach the wire once kabelweb has sent the SSE
+/// headers).
 pub fn unifiedEventsStreamHandler(
     ctx: gserverz.HttpContext,
     req: gserverz.HttpRequest,
@@ -232,12 +255,18 @@ pub fn unifiedEventsStreamHandler(
     const allocator = ctx.allocator;
 
     // Manual auth gate: kabelweb sse() does not run middleware.
+    // The rejection paths terminate the stream explicitly — the 401
+    // JSON below is type-compat only and never reaches the wire
+    // (headers already sent); the `auth_error` event + removeClient
+    // in terminateSseStream are what the browser actually observes.
     if (nalar_core.getSingleton()) |di_gate| {
         if (di_gate.auth_enabled) {
             const tok = auth_common.parseSessionToken(req.headers) orelse {
+                terminateSseStream(ctx, "auth_error", "{\"error\":\"Unauthenticated\"}");
                 return res.jsonResponse(.{ .status_code = 401, .data = "{\"error\":\"Unauthenticated\"}" });
             };
             const sess = auth_common.lookupSession(allocator, di_gate.db, tok) orelse {
+                terminateSseStream(ctx, "auth_error", "{\"error\":\"Unauthenticated\"}");
                 return res.jsonResponse(.{ .status_code = 401, .data = "{\"error\":\"Unauthenticated\"}" });
             };
             auth_common.freeSessionLookup(allocator, sess);
@@ -246,6 +275,7 @@ pub fn unifiedEventsStreamHandler(
 
     // 1. Parse ?channels=
     const raw_channels = req.query.get("channels") orelse {
+        terminateSseStream(ctx, null, "");
         return res.jsonResponse(.{
             .status_code = 400,
             .data = try std.fmt.allocPrint(allocator,
@@ -254,18 +284,24 @@ pub fn unifiedEventsStreamHandler(
         });
     };
     var channels = parseChannels(allocator, raw_channels) catch |err| switch (err) {
-        error.MissingChannels => return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try std.fmt.allocPrint(allocator,
-                \\{{"error":"missing or empty channels query parameter"}}
-            , .{}),
-        }),
-        error.UnknownChannel => return res.jsonResponse(.{
-            .status_code = 400,
-            .data = try std.fmt.allocPrint(allocator,
-                \\{{"error":"unknown channel in {s}"}}
-            , .{raw_channels}),
-        }),
+        error.MissingChannels => {
+            terminateSseStream(ctx, null, "");
+            return res.jsonResponse(.{
+                .status_code = 400,
+                .data = try std.fmt.allocPrint(allocator,
+                    \\{{"error":"missing or empty channels query parameter"}}
+                , .{}),
+            });
+        },
+        error.UnknownChannel => {
+            terminateSseStream(ctx, null, "");
+            return res.jsonResponse(.{
+                .status_code = 400,
+                .data = try std.fmt.allocPrint(allocator,
+                    \\{{"error":"unknown channel in {s}"}}
+                , .{raw_channels}),
+            });
+        },
         error.OutOfMemory => return error.OutOfMemory,
     };
     defer channels.deinit(allocator);
@@ -435,6 +471,46 @@ test "SSE handshake: unified stream handler sends the connected event" {
                 .{ path, connected_handshake_in_source },
             );
             return error.ConnectedHandshakeMissing;
+        }
+    }
+}
+
+// ===== Rejection paths must terminate the stream (2026-09-17) =====
+// kabelweb sends the SSE 200 headers + registers the fd BEFORE the
+// handler runs, so `res.jsonResponse(401/400)` never reaches the wire.
+// Every rejection must call terminateSseStream (terminal event +
+// removeClient) or the browser holds an immortal ping-only stream
+// that never emits `event: connected` — SseClient stuck in
+// 'connecting' forever (production `--auth` with no session cookie).
+
+test "SSE rejection: handler terminates the stream on auth/400 paths" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const source = readSource(allocator, HANDLER_PATH) catch |err| {
+        std.debug.print("\n!! SSE rejection: could not read {s}: {s}\n", .{ HANDLER_PATH, @errorName(err) });
+        return err;
+    };
+    defer allocator.free(source);
+
+    const required = .{
+        "fn terminateSseStream",
+        "auth_error",
+        ".explicit_shutdown",
+        "terminateSseStream(ctx, null",
+    };
+    inline for (required) |needle| {
+        if (std.mem.indexOf(u8, source, needle) == null) {
+            std.debug.print(
+                "\n!! {s} missing {s} !!\n" ++
+                    "   Every SSE rejection (auth failure, missing/unknown channels)\n" ++
+                    "   must terminate the just-registered client — a bare\n" ++
+                    "   res.jsonResponse never reaches the wire (headers already\n" ++
+                    "   sent) and leaves a zombie ping-only stream.\n",
+                .{ HANDLER_PATH, needle },
+            );
+            return error.SseRejectionPathMissing;
         }
     }
 }
