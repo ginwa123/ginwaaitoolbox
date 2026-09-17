@@ -998,6 +998,18 @@ const messages = ref<Message[]>([])
 const isLoading = ref(false)
 const isLoadingMore = ref(false)
 const error = ref<string | null>(null)
+// Ready-gate: true while the initial mount fetch is outstanding (or the
+// session id hasn't been assigned yet). Drives the initializing skeleton
+// + composer disable. Deliberately NOT gated on SSE, git status, stream
+// snapshot, or queued messages — all best-effort/late by design, and
+// waiting on them would wedge the composer disabled after the chat is
+// already usable. Pending drafts (`pending-*`) skip history fetch by
+// design, so they count as ready immediately.
+const isInitializing = computed(
+  () =>
+    !isPendingSession.value &&
+    (!sessionId.value || (isLoading.value && messages.value.length === 0)),
+)
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
 
@@ -3944,9 +3956,51 @@ const compactSession = async () => {
         <!--   </div> -->
         <!-- </div> -->
 
+        <!-- Initializing skeleton — shown while the first history fetch
+             is outstanding (isInitializing): covers the mount gap where
+             sessionId is still empty plus the getChatHistory round-trip.
+             Shimmer rows keep layout stable so the transcript doesn't
+             flash empty-state before content arrives. -->
+        <div
+          v-if="isInitializing"
+          data-testid="chat-initializing-skeleton"
+          class="flex flex-col gap-3 px-4 max-w-4xl mx-auto pt-6 w-full"
+          role="status"
+          aria-label="Loading conversation"
+        >
+          <div
+            v-for="w in ['42%', '88%', '67%']"
+            :key="w"
+            class="h-4 rounded animate-pulse"
+            :style="{ width: w, backgroundColor: 'var(--semantic-card-bg)' }"
+          ></div>
+        </div>
+
+        <!-- Load error — `error` was previously write-only (set on fetch
+             failure but never rendered). Shown only once initializing is
+             over and no messages arrived. -->
+        <div
+          v-if="error && !isInitializing && messageGroups.length === 0"
+          data-testid="chat-load-error"
+          class="flex flex-col items-center justify-center h-full px-4"
+        >
+          <p class="text-sm mb-3" style="color: var(--semantic-text-dim)">{{ error }}</p>
+          <button
+            @click="loadChatHistory()"
+            class="px-4 py-1.5 rounded-full text-xs"
+            style="
+              background-color: var(--semantic-card-bg);
+              border: 1px solid var(--color-border);
+              color: var(--semantic-text);
+            "
+          >
+            Retry
+          </button>
+        </div>
+
         <!-- Empty State -->
         <div
-          v-if="!isLoading && messageGroups.length === 0"
+          v-if="!isInitializing && !isLoading && !error && messageGroups.length === 0"
           class="flex flex-col items-center justify-center h-full px-4"
         >
           <div
@@ -4028,7 +4082,7 @@ const compactSession = async () => {
                pre-rendered rows above/below means the viewport is
                already populated when the fling stops. -->
         <VirtualScroller
-          v-if="isLoading || messageGroups.length > 0"
+          v-if="!isInitializing && (isLoading || messageGroups.length > 0)"
           ref="virtualScrollerRef"
           :items="messageGroups"
           :item-key="groupKey"
@@ -4657,6 +4711,7 @@ const compactSession = async () => {
             :cwd="sessionCwd"
             :queuedMessages="queuedMessages"
             :isLoading="isLoading"
+            :isInitializing="isInitializing"
             :isLLMProcessing="isLLMProcessing"
             @submit="handleFileInputSubmit"
             @files-selected="handleFileInputSubmit"
@@ -4668,10 +4723,10 @@ const compactSession = async () => {
             <!-- Compact button -->
             <button
               @click="compactSession"
-              :disabled="isCompacting || isLoading || isLLMProcessing || !sessionId"
+              :disabled="isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId"
               class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
               :class="
-                isCompacting || isLoading || isLLMProcessing || !sessionId
+                isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId
                   ? 'opacity-50 cursor-not-allowed'
                   : 'hover:scale-105'
               "
@@ -4695,10 +4750,10 @@ const compactSession = async () => {
             <div ref="profilePickerRef" class="relative">
               <button
                 @click.stop="showProfilePicker = !showProfilePicker"
-                :disabled="isUpdatingProfile || !sessionId"
+                :disabled="isUpdatingProfile || isInitializing || !sessionId"
                 class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
                 :class="
-                  isUpdatingProfile || !sessionId
+                  isUpdatingProfile || isInitializing || !sessionId
                     ? 'opacity-50 cursor-not-allowed'
                     : 'hover:scale-105'
                 "

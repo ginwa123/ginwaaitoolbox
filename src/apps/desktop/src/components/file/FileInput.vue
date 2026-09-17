@@ -39,6 +39,15 @@ const props = defineProps<{
    * (GitFileViewer) read and write nothing.
    */
   draftKey?: string
+  /**
+   * True while the parent view is still running its initial load
+   * (ChatView's `isInitializing`: session id unassigned or first history
+   * fetch outstanding). Disables the textarea + send button so the user
+   * can't submit against an unloaded session. Independent from
+   * `isLoading` (which also covers in-flight sends and flips the label
+   * to "Queue").
+   */
+  isInitializing?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -756,7 +765,10 @@ const sendMessage = () => {
       </div>
 
       <textarea ref="chatTextareaRef" v-model="inputText" placeholder="Type a message... (@ to search files)"
+        :disabled="isInitializing"
+        data-testid="chat-message-textarea"
         class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
+        :class="isInitializing ? 'opacity-60 cursor-not-allowed' : ''"
         style="
           background-color: var(--semantic-card-bg);
           color: var(--semantic-text);
@@ -822,10 +834,10 @@ const sendMessage = () => {
         </svg>
         <span>{{ isStopping ? 'Stopping…' : 'Stop' }}</span>
       </button>
-      <button v-if="!isLLMProcessing" type="submit" :disabled="isLoading"
+      <button v-if="!isLLMProcessing" type="submit" :disabled="isLoading || isInitializing"
         data-testid="send-message-button"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
-        :class="isLoading ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
+        :class="isLoading || isInitializing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
         :style="isLoading
           ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border);'
           : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);'">

@@ -6,6 +6,8 @@ import { createSseClient, type SseClient } from '../helpers/sseClient'
 export const API_BASE = '/api'
 
 import { useNotificationStore } from '../stores/notifications'
+import { getActivePinia } from 'pinia'
+import { useLoadingStore } from '../stores/loading'
 
 export class ApiError extends Error {
   constructor(
@@ -22,6 +24,14 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
   body?: unknown
   /** When true, skip the error notification (caller handles UI inline). */
   silent?: boolean
+  /**
+   * When false, skip the top loading bar for this request. Defaults to
+   * true — even `silent: true` requests show the bar (bar = network
+   * activity, toast = error visibility; orthogonal concerns). Pass
+   * `track: false` for background pollers (git status, stream snapshot)
+   * so the bar can idle while they keep polling.
+   */
+  track?: boolean
   /**
    * Timeout in ms for the request. Default: 15_000. Set 0 to disable.
    * Uses `AbortSignal.timeout` when available, otherwise falls back to
@@ -41,7 +51,13 @@ export interface ApiFetchOptions extends Omit<RequestInit, 'body'> {
  * toast is out of scope for v1.
  */
 export async function apiFetch<T = unknown>(url: string, opts: ApiFetchOptions = {}): Promise<T> {
-  const { body, silent, timeoutMs = 15_000, ...init } = opts
+  const { body, silent, track = true, timeoutMs = 15_000, ...init } = opts
+
+  // Top loading bar: count this request while in flight. Guarded by
+  // getActivePinia so specs importing the api module without an
+  // installed pinia keep working — untracked in that case.
+  const loading = track && getActivePinia() ? useLoadingStore() : null
+  loading?.startApi()
 
   // Idle-freeze fix: hung backend must not park the UI forever.
   // Respect a caller-provided signal; otherwise arm a timeout signal.
@@ -110,6 +126,7 @@ export async function apiFetch<T = unknown>(url: string, opts: ApiFetchOptions =
     return (await response.json()) as T
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId)
+    loading?.finishApi()
   }
 }
 

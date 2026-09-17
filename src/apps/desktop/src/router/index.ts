@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '../components/AppLayout.vue'
 import LoginView from '../views/LoginView.vue'
+import { useLoadingStore } from '../stores/loading'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -65,7 +66,22 @@ const router = createRouter({
 // target. Public when auth is off (`/api/auth/me` 200 +
 // auth_enabled=false) — no redirect. Every view switch stays in the
 // URL (repo rule), so refresh/Back/shared links keep working.
+//
+// The top loading bar is driven here: start on beforeEach (covers the
+// async auth check, which is the slowest part of a redirect), finish
+// on afterEach/onError. Lazily resolved inside the guard so the router
+// module never hard-depends on an installed pinia (specs import the
+// router without one).
+function loadingStore() {
+  try {
+    return useLoadingStore()
+  } catch {
+    return null
+  }
+}
+
 router.beforeEach(async (to) => {
+  loadingStore()?.startRoute()
   if (to.meta.public) {
     // Leaving /login while authed? Bounce to the redirect target.
     if (to.name === 'login') {
@@ -102,6 +118,14 @@ router.beforeEach(async (to) => {
   } catch {
     return true
   }
+})
+
+router.afterEach(() => {
+  loadingStore()?.finishRoute()
+})
+
+router.onError(() => {
+  loadingStore()?.finishRoute()
 })
 
 export default router
