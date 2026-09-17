@@ -3530,6 +3530,12 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       // close → ignored).
       'design_page_deleted',
       'close',
+      // Auth rejection (`event: auth_error`, see unified_events_sse.zig
+      // `terminateSseStream`). Without pre-registration the browser
+      // drops it before onEvent ever fires and the client sits in
+      // 'connecting' until the stream closes — indistinguishable
+      // from a dead backend.
+      'auth_error',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -3664,6 +3670,25 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       // would fall through to the default-message JSON buffer below
       // and pollute it with non-JSON bytes.
       if (eventType === 'close') {
+        return
+      }
+
+      // Auth rejection (`event: auth_error`, see unified_events_sse.zig
+      // `terminateSseStream`). The SSE 200 headers are already sent
+      // before the backend checks the session cookie, so a 401 can
+      // never arrive as HTTP status — this event is the rejection
+      // signal. Mirror the fetch-401 path: bounce to /login (the
+      // router guard covers boot; this covers streams that were
+      // never authed or whose session died mid-use).
+      if (eventType === 'auth_error') {
+        try {
+          const loc = globalThis.location
+          if (loc && !loc.pathname.startsWith('/login')) {
+            loc.href = `/login?redirect=${encodeURIComponent(loc.pathname + loc.search)}`
+          }
+        } catch {
+          /* non-browser (vitest) — no redirect */
+        }
         return
       }
 
