@@ -46,6 +46,12 @@ let resizeObserver: ResizeObserver | null = null
 let ws: WebSocket | null = null
 let wsOpened = false
 let sessionCounter = 0
+const mountedAt = Date.now()
+// Mount-time cwd resolution grace: with a git worktree the value
+// resolves as '' -> session dir -> worktree dir on every mount. Flips
+// inside this window are resolution, not scope changes — dropping
+// sessions here is what wiped restored terms on every chat return
+// ("always a new term" with worktrees).
 
 const hasSessionKey = () => (props.sessionKey ?? '').length > 0
 const storageKey = () => `nalar-terminal-sessions:${props.sessionKey}`
@@ -318,9 +324,20 @@ const maxLabelNum = () => {
 }
 
 const awaitCwd = async (): Promise<string> => {
-  if (props.cwd) return props.cwd
+  // Wait for a STABLE cwd: with a git worktree the value resolves as
+  // '' -> session dir -> worktree dir in quick succession. Returning
+  // the first non-empty value would spawn the shell in the wrong dir.
   const start = Date.now()
-  while (!props.cwd && !disposed && Date.now() - start < 2000) {
+  let stableSince = 0
+  let last = ''
+  while (!disposed && Date.now() - start < 2000) {
+    const cur = props.cwd
+    if (cur && cur === last) {
+      if (Date.now() - stableSince >= 300) return cur
+    } else {
+      last = cur
+      stableSince = Date.now()
+    }
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
   return props.cwd
@@ -336,6 +353,10 @@ const newSession = async () => {
     // server-cwd fallback. Restored sessions skip this (re-attach by
     // id needs no cwd).
     const cwd = await awaitCwd()
+    // The wait above can outlive the tab (unmount during the stability
+    // window): never spawn into a dead component — leaked creates
+    // shift every later test's ids and sockets.
+    if (disposed) return
     const session = await createTerminalSession(cwd, {
       cols: term?.cols ?? 80,
       rows: term?.rows ?? 24,
@@ -483,6 +504,10 @@ watch(
     // restored sessions on every chat return ("always a new term").
     // Only a real scope change (dir → different dir) restarts shells.
     if (!prev) return
+    // Mount-time resolution grace (git worktree '' → session → worktree
+    // flips): ignore dir → dir changes inside the grace window, only a
+    // settled scope change restarts shells.
+    if (Date.now() - mountedAt < 3000) return
     // Cwd scope changed: drop every session and start fresh.
     stopPoll()
     closeWs()

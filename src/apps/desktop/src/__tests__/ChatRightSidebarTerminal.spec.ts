@@ -155,6 +155,22 @@ const flush = async (rounds = 5) => {
   }
 }
 
+// Condition-based waits. Session creation needs ~350ms of real time
+// (300ms cwd-stability window); fixed sleeps assert unreliably under
+// load, so wait for the condition instead.
+const waitFor = async (cond: () => boolean, timeoutMs = 8000) => {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) break
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  await flush()
+}
+
+const waitForCreates = async (n: number) => {
+  await waitFor(() => apiState.nextId >= n)
+}
+
 const mountSidebar = () =>
   mount(ChatRightSidebar, {
     props: { cwd: '/tmp/toolbox', open: true, width: 280 },
@@ -199,11 +215,12 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(wrapper.find('[data-testid="terminal-tab"]').exists()).toBe(true)
     await wrapper.find('[data-testid="chat-right-sidebar-tab-terminal"]').trigger('click')
     expect(localStorage.getItem('nalar-right-sidebar-panel')).toBe('terminal')
+    wrapper.unmount()
   })
 
   it('auto-creates the first session and streams over its socket', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    await waitForCreates(1)
     expect(createTerminalSession).toHaveBeenCalledWith('/tmp/toolbox', {
       cols: 80,
       rows: 24,
@@ -216,15 +233,16 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(firstTerm().written.join('')).toContain('hello')
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('connected')
     expect(getTerminalOutput).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('opens a second session with an isolated socket', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
 
     await wrapper.find('[data-testid="terminal-new"]').trigger('click')
-    await flush()
+    await waitForCreates(2)
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     expect(chips(wrapper)).toHaveLength(2)
     const socket2 = socketFor('term-2')
@@ -236,18 +254,19 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(socket2.sent).toContain(JSON.stringify({ type: 'input', data: 'ls\n' }))
     expect(socketFor('term-1').sent).toEqual([])
     expect(sendTerminalInput).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('switching sessions clears the view and attaches to that session', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
     socketFor('term-1').serverMessage(encode('first'))
     await flush()
     expect(firstTerm().written.join('')).toContain('first')
 
     await wrapper.find('[data-testid="terminal-new"]').trigger('click')
-    await flush()
+    await waitForCreates(2)
     socketFor('term-2').serverOpen()
 
     // Switch back: view cleared, fresh socket for term-1.
@@ -263,14 +282,15 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     firstTerm().dataHandler?.('pwd\n')
     await flush()
     expect(socketsForOne[1]!.sent).toContain(JSON.stringify({ type: 'input', data: 'pwd\n' }))
+    wrapper.unmount()
   })
 
   it('closing a background session deletes it and keeps the active one', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
     await wrapper.find('[data-testid="terminal-new"]').trigger('click')
-    await flush()
+    await waitForCreates(2)
     expect(chips(wrapper)).toHaveLength(2)
 
     // Close term-1 (background): active term-2 untouched.
@@ -280,35 +300,38 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(deleteTerminalSession).toHaveBeenCalledWith('term-1')
     expect(chips(wrapper)).toHaveLength(1)
     expect(createTerminalSession).toHaveBeenCalledTimes(2) // no replacement needed
+    wrapper.unmount()
   })
 
   it('killing the last session auto-starts a fresh one', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
 
     await wrapper.find('[data-testid="terminal-kill"]').trigger('click')
-    await flush()
+    await waitForCreates(2)
     expect(deleteTerminalSession).toHaveBeenCalledWith('term-1')
     // Invariant: always one session — a replacement is created.
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     expect(chips(wrapper)).toHaveLength(1)
+    wrapper.unmount()
   })
 
   it('falls back to REST polling when the socket fails', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     apiState.outputs.push({ data: 'fb', cursor: 2, exited: false, exit_code: null })
-    await flush()
+    await waitForCreates(1)
     firstSocket().serverError()
     await flush(10)
     expect(getTerminalOutput).toHaveBeenCalled()
     expect(firstTerm().written.join('')).toContain('fb')
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('polling')
+    wrapper.unmount()
   })
 
   it('REST input triggers an immediate output poll (no 300ms wait)', async () => {
-    mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
+    await waitForCreates(1)
     // Force the REST fallback path.
     firstSocket().serverError()
     await flush(10)
@@ -319,23 +342,25 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     await flush()
     expect(sendTerminalInput).toHaveBeenCalledWith('term-1', 'y')
     expect(getTerminalOutput).toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('shows the exited state on the socket exit event', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    await flush()
+    await waitForCreates(1)
     const socket = firstSocket()
     socket.serverOpen()
     socket.serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
     await flush(10)
     expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('code 0')
+    wrapper.unmount()
   })
 
   it('persists sessions per chat key and re-attaches on remount', async () => {
     const wrapper = mount(TerminalTab, {
       props: { cwd: '/tmp/toolbox', sessionKey: 'chat-abc' },
     })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
     expect(localStorage.getItem('nalar-terminal-sessions:chat-abc')).toContain('term-1')
 
@@ -368,7 +393,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     const wrapper = mount(TerminalTab, {
       props: { cwd: '/tmp/toolbox', sessionKey: 'chat-gone' },
     })
-    await flush()
+    await waitForCreates(1)
     // Gone id dropped (no delete call — already gone server-side)…
     expect(deleteTerminalSession).not.toHaveBeenCalledWith('old-9')
     // …and a replacement session created + persisted.
@@ -382,12 +407,12 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     const wrapper = mount(TerminalTab, {
       props: { cwd: '/tmp/toolbox', sessionKey: 'chat-evict' },
     })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
     // Server loses the session (restart / LRU): next poll 404s.
     apiState.output404For = 'term-1'
     firstSocket().serverClose()
-    await flush(10)
+    await waitForCreates(2)
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
@@ -407,7 +432,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(chips(wrapper)).toHaveLength(2)
 
     await wrapper.find('[data-testid="terminal-new"]').trigger('click')
-    await flush()
+    await waitForCreates(1)
     const labels = chips(wrapper).map((c) => c.text())
     expect(labels).toHaveLength(3)
     expect(labels.join(' ')).toContain('term 6')
@@ -419,13 +444,13 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     const wrapper = mount(TerminalTab, {
       props: { cwd: '/tmp/toolbox', sessionKey: 'chat-exit-hist' },
     })
-    await flush()
+    await waitForCreates(1)
     socketFor('term-1').serverOpen()
     socketFor('term-1').serverMessage(JSON.stringify({ type: 'exit', exit_code: 0 }))
     await flush(10)
 
     await wrapper.find('[data-testid="terminal-new"]').trigger('click')
-    await flush()
+    await waitForCreates(2)
     socketFor('term-2').serverOpen()
 
     // Switch back: a FRESH socket attaches (server flushes the dead
@@ -446,10 +471,7 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     })
     await new Promise((resolve) => setTimeout(resolve, 120))
     await wrapper.setProps({ cwd: '/real/dir' })
-    // Real wait (not just flush): awaitCwd polls on 50ms sleeps, which
-    // flush()'s setTimeout(0) rounds never advance past.
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    await flush(10)
+    await waitForCreates(1)
     expect(createTerminalSession).toHaveBeenCalledTimes(1)
     expect(createTerminalSession).toHaveBeenCalledWith('/real/dir', {
       cols: 80,
@@ -477,6 +499,38 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(createTerminalSession).not.toHaveBeenCalled()
     expect(chips(wrapper)).toHaveLength(1)
     expect(deleteTerminalSession).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('ignores mount-time worktree cwd flips, recreates on real change', async () => {
+    // Git worktree binding resolves as session dir -> worktree dir on
+    // every mount. Those mount-time flips must not wipe the restored
+    // session ("always a new term" with worktrees).
+    localStorage.setItem(
+      'nalar-terminal-sessions:chat-worktree',
+      JSON.stringify([{ id: 'wt-1', label: 'term 1' }]),
+    )
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/session/dir', sessionKey: 'chat-worktree' },
+    })
+    await flush()
+    expect(createTerminalSession).not.toHaveBeenCalled()
+    expect(chips(wrapper)).toHaveLength(1)
+
+    await wrapper.setProps({ cwd: '/worktrees/chat-1' })
+    await flush(10)
+    await wrapper.setProps({ cwd: '/worktrees/chat-1-final' })
+    await flush(10)
+    expect(createTerminalSession).not.toHaveBeenCalled()
+    expect(deleteTerminalSession).not.toHaveBeenCalled()
+    expect(chips(wrapper)).toHaveLength(1)
+
+    // A genuine scope change after the grace window restarts shells.
+    await new Promise((resolve) => setTimeout(resolve, 3100))
+    await wrapper.setProps({ cwd: '/other/project' })
+    await waitForCreates(1)
+    expect(deleteTerminalSession).toHaveBeenCalledWith('wt-1')
+    expect(createTerminalSession).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 })
