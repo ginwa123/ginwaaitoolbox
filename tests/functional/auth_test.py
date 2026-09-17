@@ -154,3 +154,30 @@ def test_create_admin_refuses_second_without_force(default_nalar_bin: Path):
         assert r.returncode != 0
     finally:
         h.teardown()
+
+
+def test_login_refresh_serves_spa_shell(default_nalar_bin: Path, tmp_path: Path):
+    """Refreshing at /login?redirect=/app must serve index.html, not 404.
+
+    Regression: the SPA fallback only covered the /app prefix, so the
+    login redirect target 404'd on refresh (the build has no /login
+    file on disk — only index.html).
+    """
+    static_dir = tmp_path / "webapp"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("<!doctype html><title>SPA</title>")
+    h = FunctionalHarness.boot(default_nalar_bin, extra_args=("--auth", "--static-dir", str(static_dir)))
+    try:
+        status, headers, body = _raw("GET", h.port, "/login?redirect=/app")
+        assert status == 200, body[:200]
+        assert b"SPA" in body
+        status, _, body = _raw("GET", h.port, "/login")
+        assert status == 200
+        # /app fallback still works alongside /login.
+        status, _, _ = _raw("GET", h.port, "/app/settings")
+        assert status == 200
+        # Unrelated paths still 404 (no silent catch-all).
+        status, _, _ = _raw("GET", h.port, "/something-else")
+        assert status == 404
+    finally:
+        h.teardown()
