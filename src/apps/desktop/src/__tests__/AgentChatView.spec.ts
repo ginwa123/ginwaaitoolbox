@@ -61,4 +61,12 @@ describe('AgentChatView', () => {
     await nextTick()
     expect(document.body.textContent).toContain('Agent Chat')
   })
+
+  it('uses the shared content bg so agent chats match standalone + design chats', async () => {
+    mountChatView()
+    await nextTick()
+    const root = document.querySelector('[data-testid="agent-chat-view"]') as HTMLElement
+    expect(root.getAttribute('style')).toContain('--semantic-content-bg')
+    expect(root.getAttribute('style')).not.toContain('--semantic-card-bg')
+  })
 })

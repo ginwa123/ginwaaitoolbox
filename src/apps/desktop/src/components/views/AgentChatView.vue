@@ -28,16 +28,28 @@ function handleClose() {
 </script>
 
 <template>
+  <!-- Wrapper bg must match AppLayout's main-content (--semantic-content-bg, #181616),
+       not --semantic-card-bg (#1D1C19), or agent chats render a warmer/lighter
+       shade than standalone + design chats. -->
   <div
     class="w-full h-full flex flex-col overflow-hidden"
-    style="background-color: var(--semantic-card-bg);"
+    style="background-color: var(--semantic-content-bg)"
     data-testid="agent-chat-view"
   >
-    <div class="px-5 py-3 flex items-center justify-between shrink-0" style="border-bottom: 1px solid var(--color-border);">
-      <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">
+    <div
+      class="px-5 py-3 flex items-center justify-between shrink-0"
+      style="border-bottom: 1px solid var(--color-border)"
+    >
+      <h3 class="text-sm font-semibold" style="color: var(--semantic-text)">
         {{ props.task.name || 'Agent Chat' }}
       </h3>
-      <button type="button" @click="handleClose" data-testid="agent-chat-close" class="text-sm px-2 py-1 rounded" style="color: var(--semantic-text-dim);">
+      <button
+        type="button"
+        @click="handleClose"
+        data-testid="agent-chat-close"
+        class="text-sm px-2 py-1 rounded"
+        style="color: var(--semantic-text-dim)"
+      >
         ✕ Close
       </button>
     </div>
