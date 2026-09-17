@@ -317,12 +317,26 @@ const maxLabelNum = () => {
   return max
 }
 
+const awaitCwd = async (): Promise<string> => {
+  if (props.cwd) return props.cwd
+  const start = Date.now()
+  while (!props.cwd && !disposed && Date.now() - start < 2000) {
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+  return props.cwd
+}
+
 const newSession = async () => {
   if (disposed) return
   status.value = 'connecting…'
   try {
     fit?.fit()
-    const session = await createTerminalSession(props.cwd, {
+    // effectiveCwd resolves shortly after mount (session load); wait
+    // briefly so a fresh shell spawns in the chat dir instead of the
+    // server-cwd fallback. Restored sessions skip this (re-attach by
+    // id needs no cwd).
+    const cwd = await awaitCwd()
+    const session = await createTerminalSession(cwd, {
       cols: term?.cols ?? 80,
       rows: term?.rows ?? 24,
     })
@@ -463,6 +477,12 @@ watch(
   () => props.cwd,
   async (next, prev) => {
     if (next === prev || disposed) return
+    // Initial '' → dir resolution is NOT a scope change: fresh mounts
+    // already waited for cwd in newSession, and restored sessions
+    // re-attach by id (cwd-independent). Dropping here is what wiped
+    // restored sessions on every chat return ("always a new term").
+    // Only a real scope change (dir → different dir) restarts shells.
+    if (!prev) return
     // Cwd scope changed: drop every session and start fresh.
     stopPoll()
     closeWs()
