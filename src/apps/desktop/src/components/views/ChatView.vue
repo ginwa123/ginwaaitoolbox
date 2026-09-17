@@ -4943,6 +4943,7 @@ const compactSession = async () => {
       v-if="!embedded"
       ref="chatSidebarRef"
       :cwd="effectiveCwd"
+      :session-key="chatId"
       :branch="sidebarBranch"
       :pr-url="chatPrUrl"
       :pr-provider="chatPrProvider"

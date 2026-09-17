@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import {
+  ApiError,
   createTerminalSession,
   deleteTerminalSession,
   getTerminalOutput,
@@ -13,6 +14,10 @@ import {
 
 const props = defineProps<{
   cwd: string
+  /** Per-chat persistence key. With it, session ids survive tab/chat
+   * switches via localStorage and re-attach on return; without it
+   * sessions are deleted on unmount. */
+  sessionKey?: string
 }>()
 
 const POLL_MS = 300
@@ -41,6 +46,47 @@ let resizeObserver: ResizeObserver | null = null
 let ws: WebSocket | null = null
 let wsOpened = false
 let sessionCounter = 0
+
+const hasSessionKey = () => (props.sessionKey ?? '').length > 0
+const storageKey = () => `nalar-terminal-sessions:${props.sessionKey}`
+
+interface StoredSession {
+  id: string
+  label: string
+}
+
+const loadStored = (): StoredSession[] => {
+  if (!hasSessionKey()) return []
+  try {
+    const raw = localStorage.getItem(storageKey())
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter(
+        (s): s is StoredSession =>
+          !!s &&
+          typeof (s as StoredSession).id === 'string' &&
+          (s as StoredSession).id.length > 0 &&
+          typeof (s as StoredSession).label === 'string',
+      )
+      .slice(0, 10)
+  } catch {
+    return []
+  }
+}
+
+const saveStored = () => {
+  if (!hasSessionKey()) return
+  try {
+    localStorage.setItem(
+      storageKey(),
+      JSON.stringify(sessions.value.map((s) => ({ id: s.id, label: s.label })).slice(0, 10)),
+    )
+  } catch {
+    // Storage full/blocked — persistence degrades to this tab's lifetime.
+  }
+}
 
 const wsUrl = (id: string) => {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
@@ -216,7 +262,30 @@ const pollOnce = async () => {
     cursor = out.cursor
     if (out.data) term?.write(out.data.replace(/\n/g, '\r\n'))
     if (out.exited) markExited(id, out.exit_code)
-  } catch {
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      // Session vanished server-side (restart / LRU eviction): drop it
+      // and start fresh instead of retrying a dead id forever.
+      const goneId = activeId.value
+      if (goneId && !disposed) {
+        stopPoll()
+        closeWs()
+        sessions.value = sessions.value.filter((s) => s.id !== goneId)
+        exitedIds.value.delete(goneId)
+        saveStored()
+        if (sessions.value.length === 0) {
+          void newSession()
+          return
+        }
+        const next = sessions.value[0]!
+        term?.clear()
+        cursor = 0
+        activeId.value = next.id
+        status.value = 'connecting…'
+        connectWs()
+        return
+      }
+    }
     // Transient poll failure (server restart, session reaped): keep the
     // timer running so a recreated session resumes; surface one line.
     status.value = 'connection lost — retrying…'
@@ -255,11 +324,48 @@ const newSession = async () => {
     }
     sessionCounter += 1
     sessions.value.push({ id: session.id, pid: session.pid, label: `term ${sessionCounter}` })
+    saveStored()
     switchSession(session.id)
   } catch (err) {
     status.value =
       err instanceof Error ? `failed to start: ${err.message}` : 'failed to start shell'
   }
+}
+
+const restoreOrCreate = async () => {
+  if (disposed) return
+  if (!hasSessionKey()) {
+    await newSession()
+    return
+  }
+  const stored = loadStored()
+  if (stored.length === 0) {
+    await newSession()
+    return
+  }
+  // Validate each stored id (server restarts and LRU eviction drop the
+  // in-memory registry). Survivors re-attach below with full scrollback.
+  const alive: TermSession[] = []
+  for (const s of stored) {
+    if (disposed) return
+    try {
+      await getTerminalOutput(s.id, 0)
+      alive.push({ id: s.id, pid: 0, label: s.label })
+    } catch {
+      // 404/gone (or transient failure) — drop the id.
+    }
+  }
+  if (disposed) return
+  sessions.value = alive
+  sessionCounter = alive.length
+  saveStored()
+  if (alive.length === 0) {
+    await newSession()
+    return
+  }
+  activeId.value = alive[0]!.id
+  status.value = 'connecting…'
+  connectWs()
 }
 
 const closeSession = async (id: string) => {
@@ -272,6 +378,7 @@ const closeSession = async (id: string) => {
   }
   sessions.value.splice(idx, 1)
   exitedIds.value.delete(id)
+  saveStored()
   await deleteTerminalSession(id).catch(() => {})
   if (disposed) return
   if (sessions.value.length === 0) {
@@ -305,6 +412,7 @@ const reconnectActive = async () => {
   closeWs()
   sessions.value.splice(idx, 1)
   exitedIds.value.delete(id)
+  saveStored()
   await deleteTerminalSession(id).catch(() => {})
   if (disposed) return
   term?.clear()
@@ -338,7 +446,7 @@ onMounted(() => {
     })
     resizeObserver.observe(container.value)
   }
-  void newSession()
+  void restoreOrCreate()
 })
 
 watch(
@@ -365,10 +473,17 @@ onUnmounted(() => {
   closeWs()
   resizeObserver?.disconnect()
   resizeObserver = null
-  const ids = sessions.value.map((s) => s.id)
+  if (hasSessionKey()) {
+    // Persistent mode: the server keeps the shells alive; only record
+    // the ids so the next mount re-attaches (LRU eviction bounds the
+    // registry server-side).
+    saveStored()
+  } else {
+    const ids = sessions.value.map((s) => s.id)
+    for (const id of ids) void deleteTerminalSession(id).catch(() => {})
+  }
   sessions.value = []
   activeId.value = null
-  for (const id of ids) void deleteTerminalSession(id).catch(() => {})
   if (import.meta.env.DEV) {
     ;(window as unknown as { __nalarTerm?: Terminal }).__nalarTerm = undefined
   }
@@ -398,7 +513,7 @@ onUnmounted(() => {
             ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
             : 'color: var(--semantic-text-dim)'
         "
-        :title="`session ${s.pid}`"
+        :title="`terminal session ${s.label}`"
         data-testid="terminal-session-chip"
         :data-id="s.id"
         @click="switchSession(s.id)"

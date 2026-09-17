@@ -150,3 +150,47 @@ def test_sidebar_terminal_multi_session(ui_harness: UIHarness, page) -> None:
         page.wait_for_function(BUFFER_HAS_MARKER_JS, arg=marker_a, timeout=25000)
     finally:
         _print_errors(errors)
+
+
+def test_sidebar_terminal_persists_across_chat_switch(ui_harness: UIHarness, page) -> None:
+    """Leaving the chat and coming back restores the terminal session.
+
+    The shell keeps running server-side while the chat is closed
+    (ids persist per chat in localStorage); returning re-attaches the
+    socket and the attach-flush replays the scrollback, so the marker
+    from before is visible again without retyping.
+    """
+    h = ui_harness
+    cwd = Path(h.temp_dir) / "term-cwd-persist"
+    cwd.mkdir(exist_ok=True)
+    session_id = _create_session(h, "ui-terminal-persist", str(cwd))
+    chat_url = f"/app?view=chat&session={session_id}"
+
+    errors = _open_chat_and_terminal(page, h, session_id)
+    try:
+        marker = "UI-PERSIST-5a7e"
+        _type_command(page, f"echo {marker}")
+        page.wait_for_function(BUFFER_HAS_MARKER_JS, arg=marker, timeout=25000)
+
+        # Leave the chat (sidebar + tab unmount; sessions must survive).
+        page.goto(h.web_url("/app"), wait_until="load", timeout=30000)
+        page.wait_for_timeout(1000)
+
+        # Return: the marker is back without retyping.
+        page.goto(h.web_url(chat_url), wait_until="load", timeout=30000)
+        page.locator("text=How can I help you?").first.wait_for(timeout=20000, state="visible")
+        # Sidebar open-state persists per chat type — it may already be open.
+        try:
+            page.locator('[data-testid="chat-sidebar-open"]').wait_for(
+                timeout=3000, state="visible"
+            )
+            page.locator('[data-testid="chat-sidebar-open"]').click()
+        except Exception:
+            pass
+        page.locator('[data-testid="chat-right-sidebar"]').wait_for(timeout=10000, state="visible")
+        # Panel tab persists too — clicking terminal is a no-op if active.
+        page.locator('[data-testid="chat-right-sidebar-tab-terminal"]').click()
+        page.locator('[data-testid="terminal-xterm"]').wait_for(timeout=10000, state="visible")
+        page.wait_for_function(BUFFER_HAS_MARKER_JS, arg=marker, timeout=25000)
+    finally:
+        _print_errors(errors)
