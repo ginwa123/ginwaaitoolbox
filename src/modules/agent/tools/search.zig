@@ -5,11 +5,6 @@ const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 const sanitize = @import("helpers").sanitize;
-/// XML-escape helper (5 metacharacters + XML-illegal control bytes). Shared
-/// with the other tool envelopes; search output interpolates two ATTRIBUTES
-/// (`pattern=`, `path=`) and two TEXT nodes (`<file path=…>`, `<s>…</s>`)
-/// straight from file content and model-supplied args, so it must escape.
-const xmlEscape = @import("helpers").xml_escape;
 
 pub const SearchError = error{
     /// Pattern was an empty string — almost certainly a caller bug, not a
@@ -896,23 +891,17 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
 
     // No-match warning body. Built ONLY when nothing was collected — the
     // formatters render `matches` directly on the success path, so there is
-    // no second text dump of every row any more. Both interpolated values are
-    // XML-escaped: they come straight from the model.
+    // no second text dump of every row any more. Values are interpolated
+    // raw: the JSON formatters sanitize control bytes and `std.json`
+    // serialization handles the rest, so no escaping is needed here.
     var warning: []const u8 = "";
     errdefer if (warning.len > 0) allocator.free(warning);
     if (matches.items.len == 0) {
-        const escaped_pattern = try xmlEscape(allocator, input.pattern);
-        defer allocator.free(escaped_pattern);
-        const escaped_path = try xmlEscape(allocator, input.path);
-        defer allocator.free(escaped_path);
         if (stderr_data.items.len > 0) {
             // ripgrep surfaced an error (regex parse error, permission
             // denied, etc). Surface stderr verbatim — it already names the
-            // root cause. Escaped so a path containing XML metacharacters
-            // cannot corrupt the envelope.
-            const escaped_stderr = try xmlEscape(allocator, stderr_data.items);
-            defer allocator.free(escaped_stderr);
-            warning = try std.fmt.allocPrint(allocator, "<warning>{s}</warning>", .{escaped_stderr});
+            // root cause.
+            warning = try std.fmt.allocPrint(allocator, "<warning>{s}</warning>", .{stderr_data.items});
         } else {
             // Clean no-match (rg exit code 1, empty stderr). Include the
             // pattern + path the LLM passed so the operator can see exactly
@@ -921,7 +910,7 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
             warning = try std.fmt.allocPrint(
                 allocator,
                 "<warning>no matches for pattern \"{s}\" in path \"{s}\"</warning>",
-                .{ escaped_pattern, escaped_path },
+                .{ input.pattern, input.path },
             );
         }
     }
@@ -934,70 +923,38 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     };
 }
 
-/// Multiple matches in the same file are grouped together under a <file>
-/// element, wrapped in a <search> tag carrying the pattern/path plus the
-/// collection summary (`returned` / `total` / `truncated`).
+/// Multiple matches in the same file are grouped together under one entry
+/// of the `files` array, inside a JSON object carrying the pattern/path plus
+/// the collection summary (`returned` / `total` / `truncated`).
 ///
-/// Every value lifted from file content or model args (pattern, path, file
-/// paths, snippets) is XML-escaped: the wire contract is XML, and an
-/// un-escaped `</s></m>` inside a snippet — a perfectly ordinary thing to
-/// search for — used to truncate the snippet for every regex-based consumer.
-pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
+/// Every free-text value lifted from file content or model args (pattern,
+/// path, file paths, snippets, warning) is sanitized for control bytes
+/// (NUL/C0 → U+FFFD, which JSON strings cannot hold and which truncates
+/// SQLite TEXT); serialization itself goes through `std.json.Stringify`
+/// so no manual escaping is needed.
+pub fn search_result_to_json_grouped(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
+    const clean_pattern = try sanitizeControlChars(allocator, pattern);
+    defer allocator.free(clean_pattern);
+    const clean_path = try sanitizeControlChars(allocator, search_path);
+    defer allocator.free(clean_path);
 
-    const escaped_pattern = try xmlEscape(allocator, pattern);
-    defer allocator.free(escaped_pattern);
-    const escaped_path = try xmlEscape(allocator, search_path);
-    defer allocator.free(escaped_path);
+    const warning_text = try cleanWarningText(allocator, result.warning);
+    defer if (warning_text) |w| allocator.free(w);
 
-    // Opening <search> tag: args + collection summary. The summary is what
-    // turns silent truncation into a fact the caller can act on — before it,
-    // a capped result (max_results / head / tail) was indistinguishable from
-    // an exhaustive one.
-    const summary = try std.fmt.allocPrint(
-        allocator,
-        "<search pattern=\"{s}\" path=\"{s}\" returned=\"{d}\" total=\"{d}\" truncated=\"{s}\">\n",
-        .{
-            escaped_pattern,
-            escaped_path,
-            result.matches.items.len,
-            result.total_matches,
-            if (result.truncated) "true" else "false",
-        },
-    );
-    defer allocator.free(summary);
-    try output.appendSlice(allocator, summary);
-
-    if (result.matches.items.len == 0) {
-        // No matches — include the warning body (which carries the pattern +
-        // path the LLM passed) inside the <search> tag. The frontend's
-        // parser relies on pattern="..." path="..." being present so it can
-        // render the actual args in the card header; if we close the tag
-        // here without the body, the operator sees "unknown" / "unknown"
-        // (the bug fixed on 2026-08-06). See
-        // docs/superpowers/plans/2026-08-06-search-better-error.md.
-        try output.appendSlice(allocator, result.warning);
-        try output.appendSlice(allocator, "\n");
-        try output.appendSlice(allocator, "</search>\n");
-        return try output.toOwnedSlice(allocator);
-    }
-
-    if (result.truncated) {
-        const hint = try std.fmt.allocPrint(
+    const hint: ?[]const u8 = blk: {
+        if (!result.truncated) break :blk null;
+        break :blk try std.fmt.allocPrint(
             allocator,
-            "  <truncated>{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.</truncated>\n",
+            "{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.",
             .{ result.matches.items.len, result.total_matches },
         );
-        defer allocator.free(hint);
-        try output.appendSlice(allocator, hint);
-    }
+    };
+    defer if (hint) |h| allocator.free(h);
 
     // Group matches by file, PRESERVING rg's output order. A StringHashMap
-    // iterator (the previous shape) yields hash order, so an identical search
-    // could serialize a different byte sequence — and, once the agent loop's
-    // 20 KB tool-output cap cuts the payload, a different SUBSET of files —
-    // on every run.
+    // iterator yields hash order, so an identical search could serialize a
+    // different byte sequence — and, once the agent loop's 20 KB tool-output
+    // cap cuts the payload, a different SUBSET of files — on every run.
     const FileGroup = struct {
         path: []const u8,
         matches: std.ArrayList(MatchInFile) = .empty,
@@ -1034,120 +991,189 @@ pub fn search_result_to_string_grouped(allocator: std.mem.Allocator, result: Sea
         }
     }
 
-    // Output grouped format (in rg's file order).
+    const JsonMatch = struct {
+        line: usize,
+        text: []const u8,
+    };
+    const JsonFile = struct {
+        path: []const u8,
+        total: usize,
+        count: usize,
+        matches: []const JsonMatch,
+    };
+    const JsonGrouped = struct {
+        pattern: []const u8,
+        path: []const u8,
+        returned: usize,
+        total: usize,
+        truncated: bool,
+        truncated_hint: ?[]const u8,
+        grouped: bool,
+        files: []const JsonFile,
+        warning: ?[]const u8,
+    };
+
+    var files = std.ArrayList(JsonFile).empty;
+    defer files.deinit(allocator);
+    var owned_texts = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_texts.items) |t| allocator.free(t);
+        owned_texts.deinit(allocator);
+    }
+    var owned_match_lists = std.ArrayList([]const JsonMatch).empty;
+    defer {
+        for (owned_match_lists.items) |l| allocator.free(l);
+        owned_match_lists.deinit(allocator);
+    }
+
     for (groups.items) |group| {
         const total = file_totals.get(group.path) orelse 0;
-        const escaped_file = try xmlEscape(allocator, std.mem.trim(u8, group.path, &std.ascii.whitespace));
-        defer allocator.free(escaped_file);
-
-        // File header. The attribute ORDER (path, total, count) is a wire
-        // contract with the frontend parsers (Search.vue, renderResponse.ts).
-        const header = try std.fmt.allocPrint(
-            allocator,
-            "  <file path=\"{s}\" total=\"{d}\" count=\"{d}\">\n",
-            .{ escaped_file, total, group.matches.items.len },
-        );
-        defer allocator.free(header);
-        try output.appendSlice(allocator, header);
-
-        // Each match in this file.
+        const clean_file = try sanitizeControlChars(allocator, std.mem.trim(u8, group.path, &std.ascii.whitespace));
+        try owned_texts.append(allocator, clean_file);
+        var jm = std.ArrayList(JsonMatch).empty;
         for (group.matches.items) |m| {
-            const escaped_snippet = try xmlEscape(allocator, std.mem.trim(u8, m.snippet, &std.ascii.whitespace));
-            defer allocator.free(escaped_snippet);
-            const match_xml = try std.fmt.allocPrint(
-                allocator,
-                "    <m><l>{d}</l><s>{s}</s></m>\n",
-                .{ m.line_number, escaped_snippet },
-            );
-            defer allocator.free(match_xml);
-            try output.appendSlice(allocator, match_xml);
+            const clean_snippet = try sanitizeControlChars(allocator, std.mem.trim(u8, m.snippet, &std.ascii.whitespace));
+            try owned_texts.append(allocator, clean_snippet);
+            try jm.append(allocator, .{ .line = m.line_number, .text = clean_snippet });
         }
-
-        try output.appendSlice(allocator, "  </file>\n");
+        const jm_slice = try jm.toOwnedSlice(allocator);
+        try owned_match_lists.append(allocator, jm_slice);
+        try files.append(allocator, .{
+            .path = clean_file,
+            .total = total,
+            .count = group.matches.items.len,
+            .matches = jm_slice,
+        });
     }
 
-    try output.appendSlice(allocator, "</search>\n");
-
-    return try output.toOwnedSlice(allocator);
+    const payload = JsonGrouped{
+        .pattern = clean_pattern,
+        .path = clean_path,
+        .returned = result.matches.items.len,
+        .total = result.total_matches,
+        .truncated = result.truncated,
+        .truncated_hint = hint,
+        .grouped = true,
+        .files = files.items,
+        .warning = warning_text,
+    };
+    return try std.json.Stringify.valueAlloc(allocator, payload, .{});
 }
 
-/// Flat (non-grouped) output: one match per <m> element inside <search>.
-/// Same XML shape as the per-match entries in the grouped output, so the
-/// LLM frontend can iterate over <m> elements uniformly. Used when
-/// SearchInput.group_by_file == false (the LLM doesn't care about which
-/// file a match came from, e.g. when searching a single known file).
-pub fn search_result_to_string_flat(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
+/// Flat (non-grouped) output: one entry per match in a top-level `matches`
+/// array. Same match fields as the grouped entries, plus the file each
+/// match came from. Used when SearchInput.group_by_file == false.
+pub fn search_result_to_json_flat(allocator: std.mem.Allocator, result: SearchResult, pattern: []const u8, search_path: []const u8) ![]const u8 {
+    const clean_pattern = try sanitizeControlChars(allocator, pattern);
+    defer allocator.free(clean_pattern);
+    const clean_path = try sanitizeControlChars(allocator, search_path);
+    defer allocator.free(clean_path);
 
-    const escaped_pattern = try xmlEscape(allocator, pattern);
-    defer allocator.free(escaped_pattern);
-    const escaped_path = try xmlEscape(allocator, search_path);
-    defer allocator.free(escaped_path);
+    const warning_text = try cleanWarningText(allocator, result.warning);
+    defer if (warning_text) |w| allocator.free(w);
 
-    // Args + collection summary (see search_result_to_string_grouped).
-    const summary = try std.fmt.allocPrint(
-        allocator,
-        "<search pattern=\"{s}\" path=\"{s}\" returned=\"{d}\" total=\"{d}\" truncated=\"{s}\" group_by_file=\"false\">\n",
-        .{
-            escaped_pattern,
-            escaped_path,
-            result.matches.items.len,
-            result.total_matches,
-            if (result.truncated) "true" else "false",
-        },
-    );
-    defer allocator.free(summary);
-    try output.appendSlice(allocator, summary);
-
-    if (result.matches.items.len == 0) {
-        // No matches — include the warning body inside the <search> tag
-        // (see search_result_to_string_grouped comment for rationale).
-        try output.appendSlice(allocator, result.warning);
-        try output.appendSlice(allocator, "\n");
-        try output.appendSlice(allocator, "</search>\n");
-        return try output.toOwnedSlice(allocator);
-    }
-
-    if (result.truncated) {
-        const hint = try std.fmt.allocPrint(
+    const hint: ?[]const u8 = blk: {
+        if (!result.truncated) break :blk null;
+        break :blk try std.fmt.allocPrint(
             allocator,
-            "  <truncated>{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.</truncated>\n",
+            "{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.",
             .{ result.matches.items.len, result.total_matches },
         );
-        defer allocator.free(hint);
-        try output.appendSlice(allocator, hint);
+    };
+    defer if (hint) |h| allocator.free(h);
+
+    const JsonMatch = struct {
+        line: usize,
+        text: []const u8,
+        file: []const u8,
+    };
+    const JsonFlat = struct {
+        pattern: []const u8,
+        path: []const u8,
+        returned: usize,
+        total: usize,
+        truncated: bool,
+        truncated_hint: ?[]const u8,
+        grouped: bool,
+        matches: []const JsonMatch,
+        warning: ?[]const u8,
+    };
+
+    var jm = std.ArrayList(JsonMatch).empty;
+    defer jm.deinit(allocator);
+    var owned_texts = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_texts.items) |t| allocator.free(t);
+        owned_texts.deinit(allocator);
     }
 
     for (result.matches.items) |m| {
-        const escaped_snippet = try xmlEscape(allocator, std.mem.trim(u8, m.snippet, &std.ascii.whitespace));
-        defer allocator.free(escaped_snippet);
-        const escaped_file = try xmlEscape(allocator, std.mem.trim(u8, m.file, &std.ascii.whitespace));
-        defer allocator.free(escaped_file);
-        const match_xml = try std.fmt.allocPrint(
-            allocator,
-            "  <m><f>{s}</f><l>{d}</l><s>{s}</s></m>",
-            .{ escaped_file, m.line_number, escaped_snippet },
-        );
-        defer allocator.free(match_xml);
-        try output.appendSlice(allocator, match_xml);
-        try output.appendSlice(allocator, "\n");
+        const clean_snippet = try sanitizeControlChars(allocator, std.mem.trim(u8, m.snippet, &std.ascii.whitespace));
+        try owned_texts.append(allocator, clean_snippet);
+        const clean_file = try sanitizeControlChars(allocator, std.mem.trim(u8, m.file, &std.ascii.whitespace));
+        try owned_texts.append(allocator, clean_file);
+        try jm.append(allocator, .{ .line = m.line_number, .text = clean_snippet, .file = clean_file });
     }
 
-    try output.appendSlice(allocator, "</search>\n");
+    const payload = JsonFlat{
+        .pattern = clean_pattern,
+        .path = clean_path,
+        .returned = result.matches.items.len,
+        .total = result.total_matches,
+        .truncated = result.truncated,
+        .truncated_hint = hint,
+        .grouped = false,
+        .matches = jm.items,
+        .warning = warning_text,
+    };
+    return try std.json.Stringify.valueAlloc(allocator, payload, .{});
+}
 
-    return try output.toOwnedSlice(allocator);
+/// Replace JSON-hostile control bytes (NUL/C0 except tab/LF/CR, plus DEL)
+/// with U+FFFD. File-local: shared helpers are frozen for this migration.
+/// JSON strings cannot hold raw control bytes, and NUL still truncates
+/// SQLite TEXT, so this runs before serialization on every free-text field.
+fn sanitizeControlChars(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (input) |c| {
+        const keep = c == 0x09 or c == 0x0A or c == 0x0D;
+        if ((c < 0x20 and !keep) or c == 0x7F) {
+            try out.appendSlice(allocator, &[_]u8{ 0xEF, 0xBF, 0xBD });
+        } else {
+            try out.append(allocator, c);
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Strip the `<warning>…</warning>` envelope executeSearch builds around
+/// the no-match/stderr body and sanitize the inner text. Returns null when
+/// there is no warning so the JSON field serializes as null.
+fn cleanWarningText(allocator: std.mem.Allocator, warning: []const u8) !?[]u8 {
+    if (warning.len == 0) return null;
+    var inner: []const u8 = warning;
+    if (std.mem.startsWith(u8, inner, "<warning>")) inner = inner["<warning>".len..];
+    if (std.mem.endsWith(u8, inner, "</warning>")) inner = inner[0 .. inner.len - "</warning>".len];
+    if (inner.len == 0) return null;
+    const clean = try sanitizeControlChars(allocator, inner);
+    errdefer allocator.free(clean);
+    if (clean.len == 0) {
+        allocator.free(clean);
+        return null;
+    }
+    return clean;
 }
 
 pub const search_tool_system_prompt =
     \\## Search Tool — Behavior
     \\Use `search` for full-text code search. Always prefer this over `bash` with `rg`/`grep`.
-    \\- Returns structured XML with file paths + line numbers, respects `.gitignore`.
+    \\- Returns structured JSON with file paths + line numbers, respects `.gitignore`.
     \\- Use `word_boundary`, `literal`, `only_matching` flags as needed.
     \\- Narrow noisy trees with `glob` (e.g. `*.zig`) instead of post-filtering mentally.
-    \\- Check `truncated="true"` / `<truncated>` on the result: it means more matched lines
+    \\- Check `truncated=true` / `truncated_hint` on the result: it means more matched lines
     \\  exist than were shown. Raise `max_results`, or narrow `pattern`/`path`/`glob`.
-    \\- Snippets are windowed to `snippet_max_chars` (default 240) and XML-escaped.
+    \\- Snippets are windowed to `snippet_max_chars` (default 240) and control-char sanitized.
     \\- Bound results with `max_results`/`max_output`.
     \\
 ;
@@ -1161,7 +1187,7 @@ pub const search_tool = AgentTool{
         \\`bash grep`, `bash grep -r`, or `bash find` — to search the codebase.
         \\
         \\WHY THIS TOOL OVER `bash rg ...`
-        \\- Structured XML output with line numbers and file paths — no shell
+        \\- Structured JSON output with line numbers and file paths — no shell
         \\  parsing or `rg --line-number --no-heading` flag-juggling required.
         \\- Automatically respects .gitignore / .ignore / .rgignore (skips
         \\  build/, node_modules/, .git/, target/, vendor/).
@@ -1190,41 +1216,40 @@ pub const search_tool = AgentTool{
         \\  fallback, but first check whether the flag has a parameter here.
         \\
         \\RESPONSE FORMAT
-        \\Results are wrapped in a <search> tag carrying the args plus the
+        \\Results are a JSON object carrying the args plus the
         \\collection summary:
         \\
-        \\<search pattern="regex" path="path" returned="2" total="2" truncated="false">
-        \\  <file path="path/to/file.zig" total="3" count="2">
-        \\    <m><l>10</l><s>snippet at line 10</s></m>
-        \\    <m><l>25</l><s>snippet at line 25</s></m>
-        \\  </file>
-        \\</search>
+        \\{"pattern":"regex","path":"path","returned":2,"total":2,
+        \\"truncated":false,"truncated_hint":null,"grouped":true,
+        \\"files":[{"path":"path/to/file.zig","total":3,"count":2,
+        \\"matches":[{"line":10,"text":"snippet at line 10"},
+        \\{"line":25,"text":"snippet at line 25"}]}],"warning":null}
         \\
         \\Field meanings:
         \\- `returned` = rows in this response; `total` = matched lines rg
         \\  found in the WHOLE search; `truncated` = "returned < total".
         \\  ALWAYS check `truncated`: when it is true your result is a window
-        \\  (max_results / head / tail cut it), NOT the complete answer. A
-        \\  `<truncated>N of M …</truncated>` line restates it in prose.
-        \\- `l` = match line number (1-indexed).
-        \\- `s` = the matching line, windowed to snippet_max_chars (default
-        \\  240) around the match with "..." markers when the line is longer.
-        \\- On <file>: `total` = matched lines in that file for THIS search,
-        \\  `count` = rows shown for it (check `returned`/`total` above for the
-        \\  search-wide picture; use read_file for a file's real line count).
+        \\  (max_results / head / tail cut it), NOT the complete answer. The
+        \\  `truncated_hint` string restates it in prose, null otherwise.
+        \\- `files[]` entries carry `path`, `total` (matched lines in that
+        \\  file for THIS search — not the file's line count; use read_file
+        \\  for the real line count), `count` (rows shown), and `matches[]`
+        \\  with `line` (1-indexed) + `text` (windowed to snippet_max_chars,
+        \\  default 240, with "..." markers when the line is longer).
         \\
-        \\No matches returns: <search pattern="..." path="..." returned="0"
-        \\total="0" truncated="false"><warning>no matches for pattern "..." in
-        \\path "..."</warning></search>.
+        \\No matches returns `files: []` (or `matches: []` when
+        \\`group_by_file` is false) plus a `warning` string naming the
+        \\pattern and path that were searched.
         \\
-        \\Values are XML-escaped (&lt; &gt; &amp; &quot; &apos;) — a snippet
-        \\containing "</s></m>" comes back as "&lt;/s&gt;&lt;/m&gt;".
+        \\Values are plain JSON strings (control bytes sanitized) — a snippet
+        \\containing "</s></m>" comes back verbatim in `text`.
         \\
-        \\Set `group_by_file: false` for a flat list (one <m> per match, no
-        \\<file> wrapper):
-        \\<search pattern="..." path="..." returned="1" total="1" truncated="false" group_by_file="false">
-        \\  <m><f>path/to/file.zig</f><l>10</l><s>snippet</s></m>
-        \\</search>
+        \\Set `group_by_file: false` for a flat list (`grouped: false` with
+        \\a top-level `matches[]` of `{line, text, file}` instead of `files`):
+        \\{"pattern":"...","path":"...","returned":1,"total":1,
+        \\"truncated":false,"truncated_hint":null,"grouped":false,
+        \\"matches":[{"line":10,"text":"snippet","file":"path/to/file.zig"}],
+        \\"warning":null}
         \\
         \\MATCHING MODES (all default false; can be combined freely)
         \\- word_boundary: whole-word match. "foo" matches "foo bar" but NOT
@@ -1279,7 +1304,7 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "max_results",
                     .type = "number",
-                    .description = "Hard cap on rows returned. Default: 50. Must be > 0. When it bites, the result reports truncated=\"true\" + a <truncated> hint.",
+                    .description = "Hard cap on rows returned. Default: 50. Must be > 0. When it bites, the result reports truncated=true + a truncated_hint string.",
                 },
                 .{
                     .name = "head",
@@ -1720,7 +1745,9 @@ test "search: binary snippet is sanitized to valid UTF-8" {
     const binary_content: []const u8 = &[_]u8{
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
         0xFF, 0xFE, 0x00, 0x00, // invalid UTF-8 byte sequence
-        'm', 'a', 't', 'c', 'h', '_', 'h', 'e', 'r', 'e', '\n',
+        'm',  'a',  't',  'c',
+        'h',  '_',  'h',  'e',
+        'r',  'e',  '\n',
         0x80, 0x81, 0x82, // more invalid UTF-8
     };
     try tmpdir.dir.writeFile(io, .{
@@ -2888,7 +2915,7 @@ test "search: only_matching = true respects max_results cap" {
     }
 }
 
-test "search: only_matching = true with group_by_file = false renders <s>needle</s> per match" {
+test "search: only_matching = true with group_by_file = false renders text=needle per match" {
     if (!requiresRg()) return;
 
     const allocator = testing.allocator;
@@ -2915,27 +2942,35 @@ test "search: only_matching = true with group_by_file = false renders <s>needle<
 
     try testing.expectEqual(@as(usize, 3), result.matches.items.len);
 
-    const flat = try search.search_result_to_string_flat(
+    const out = try search.search_result_to_json_flat(
         allocator,
         result,
         "needle",
         ".",
     );
-    defer allocator.free(flat);
+    defer allocator.free(out);
 
-    // The flat output contains <m><f>...</f><l>...</l><s>needle</s></m>
-    // for each match. Each <s> is JUST the matched substring (no surrounding
-    // text), confirming only_matching is rendered into the flat XML.
-    try testing.expect(std.mem.indexOf(u8, flat, "<s>needle</s>") != null);
+    // The flat JSON holds one entry per match, each `text` JUST the matched
+    // substring (no surrounding text), confirming only_matching is rendered
+    // into the flat payload.
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expect(root.get("grouped").?.bool == false);
+    const matches = root.get("matches").?.array.items;
+    try testing.expectEqual(@as(usize, 3), matches.len);
+    for (matches) |m| {
+        try testing.expectEqualStrings("needle", m.object.get("text").?.string);
+    }
     // And the snippets do NOT contain surrounding context (e.g. "line1: ").
-    try testing.expect(std.mem.indexOf(u8, flat, "<s>line1:") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "line1:") == null);
 }
 
 // =============================================================================
 // Output format tests (no ripgrep needed — pure formatting)
 // =============================================================================
 
-test "search: search_result_to_string_flat with no matches emits empty header" {
+test "search: search_result_to_json_flat with no matches emits JSON header" {
     const allocator = testing.allocator;
 
     const result = search.SearchResult{
@@ -2943,17 +2978,22 @@ test "search: search_result_to_string_flat with no matches emits empty header" {
         .warning = "<warning>pattern not found</warning>",
     };
 
-    const flat = try search.search_result_to_string_flat(
+    const out = try search.search_result_to_json_flat(
         allocator,
         result,
         "nonexistent_pattern",
         "/tmp",
     );
-    defer allocator.free(flat);
+    defer allocator.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, flat, "pattern=\"nonexistent_pattern\"") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "path=\"/tmp\"") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "group_by_file=\"false\"") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqualStrings("nonexistent_pattern", root.get("pattern").?.string);
+    try testing.expectEqualStrings("/tmp", root.get("path").?.string);
+    try testing.expect(root.get("grouped").?.bool == false);
+    try testing.expectEqual(@as(usize, 0), root.get("matches").?.array.items.len);
+    try testing.expect(std.mem.indexOf(u8, root.get("warning").?.string, "pattern not found") != null);
 }
 
 // =============================================================================
@@ -2997,43 +3037,41 @@ test "search: executeSearch no-match warning includes the actual pattern and pat
     try testing.expect(std.mem.indexOf(u8, result.warning, "</warning>") != null);
 }
 
-test "search: search_result_to_string_grouped no-match wraps warning in <search pattern=\"...\" path=\"...\">" {
+test "search: search_result_to_json_grouped no-match carries pattern/path/warning fields" {
     const allocator = testing.allocator;
 
     // Warning body now includes the pattern + path so the operator sees
-    // what was searched even when the header attributes get truncated by
-    // narrow UIs (the LLM passes "needle_NOT_FOUND" but the toast shows
-    // "needle_NO..."). Body text is the durable source of truth.
+    // what was searched even when narrow UIs truncate the header fields.
+    // Body text is the durable source of truth.
     const result = search.SearchResult{
         .matches = std.ArrayList(search.SearchMatch).empty,
         .warning = "<warning>no matches for pattern \"needle_NOT_FOUND\" in path \"/tmp/x\"</warning>",
     };
 
-    const grouped = try search.search_result_to_string_grouped(
+    const out = try search.search_result_to_json_grouped(
         allocator,
         result,
         "needle_NOT_FOUND",
         "/tmp/x",
     );
-    defer allocator.free(grouped);
+    defer allocator.free(out);
 
-    // The opening <search pattern="..." path="..."> wrapper MUST be present
-    // so the frontend header can extract the actual pattern + path. Before
-    // this fix, the no-match branch closed the tag immediately after the
-    // opening, never emitting pattern/path — the frontend fell back to
-    // "unknown" everywhere.
-    try testing.expect(std.mem.indexOf(u8, grouped, "<search pattern=\"needle_NOT_FOUND\"") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "path=\"/tmp/x\"") != null);
-    // The warning body MUST survive inside the wrapper, not be silently
-    // dropped.
-    try testing.expect(std.mem.indexOf(u8, grouped, "no matches for pattern") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "needle_NOT_FOUND") != null);
-    // And the closing tag MUST come after the warning body.
-    try testing.expect(std.mem.indexOf(u8, grouped, "</warning>") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "</search>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    // The pattern/path fields MUST be present so the frontend header can
+    // render the actual args (before the fix they fell back to "unknown").
+    try testing.expectEqualStrings("needle_NOT_FOUND", root.get("pattern").?.string);
+    try testing.expectEqualStrings("/tmp/x", root.get("path").?.string);
+    try testing.expect(root.get("grouped").?.bool == true);
+    try testing.expectEqual(@as(usize, 0), root.get("files").?.array.items.len);
+    // The warning body MUST survive as the `warning` field.
+    const warning = root.get("warning").?.string;
+    try testing.expect(std.mem.indexOf(u8, warning, "no matches for pattern") != null);
+    try testing.expect(std.mem.indexOf(u8, warning, "needle_NOT_FOUND") != null);
 }
 
-test "search: search_result_to_string_flat no-match wraps warning in <search pattern=\"...\" path=\"...\">" {
+test "search: search_result_to_json_flat no-match carries pattern/path/warning fields" {
     const allocator = testing.allocator;
 
     const result = search.SearchResult{
@@ -3041,22 +3079,25 @@ test "search: search_result_to_string_flat no-match wraps warning in <search pat
         .warning = "<warning>no matches for pattern \"foo\" in path \"bar\"</warning>",
     };
 
-    const flat = try search.search_result_to_string_flat(
+    const out = try search.search_result_to_json_flat(
         allocator,
         result,
         "foo",
         "bar",
     );
-    defer allocator.free(flat);
+    defer allocator.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, flat, "<search pattern=\"foo\"") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "path=\"bar\"") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "no matches for pattern") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "</warning>") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "</search>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqualStrings("foo", root.get("pattern").?.string);
+    try testing.expectEqualStrings("bar", root.get("path").?.string);
+    try testing.expect(root.get("grouped").?.bool == false);
+    try testing.expectEqual(@as(usize, 0), root.get("matches").?.array.items.len);
+    try testing.expect(std.mem.indexOf(u8, root.get("warning").?.string, "no matches for pattern") != null);
 }
 
-test "search: search_result_to_string_flat renders file/line/snippet per match" {
+test "search: search_result_to_json_flat renders file/line/text per match" {
     const allocator = testing.allocator;
 
     const matches = std.ArrayList(search.SearchMatch).empty;
@@ -3087,37 +3128,37 @@ test "search: search_result_to_string_flat renders file/line/snippet per match" 
         .warning = "",
     };
 
-    const flat = try search.search_result_to_string_flat(
+    const out = try search.search_result_to_json_flat(
         allocator,
         result,
         "fn",
         "src",
     );
-    defer allocator.free(flat);
+    defer allocator.free(out);
 
-    // Two <m> elements, one per match
-    var count: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOfPos(u8, flat, idx, "<m>")) |start| {
-        count += 1;
-        idx = start + 1;
-    }
-    try testing.expectEqual(@as(usize, 2), count);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    // Two entries, one per match
+    const items = root.get("matches").?.array.items;
+    try testing.expectEqual(@as(usize, 2), items.len);
 
-    // First match contains foo.zig, line 42, "const x = 1;"
-    try testing.expect(std.mem.indexOf(u8, flat, "<f>foo.zig</f>") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "<l>42</l>") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "const x = 1;") != null);
+    // First match: foo.zig, line 42, "const x = 1;"
+    try testing.expectEqualStrings("foo.zig", items[0].object.get("file").?.string);
+    try testing.expectEqual(@as(i64, 42), items[0].object.get("line").?.integer);
+    try testing.expect(std.mem.indexOf(u8, items[0].object.get("text").?.string, "const x = 1;") != null);
 
-    // Second match contains bar.zig, line 7
-    try testing.expect(std.mem.indexOf(u8, flat, "<f>bar.zig</f>") != null);
-    try testing.expect(std.mem.indexOf(u8, flat, "<l>7</l>") != null);
+    // Second match: bar.zig, line 7
+    try testing.expectEqualStrings("bar.zig", items[1].object.get("file").?.string);
+    try testing.expectEqual(@as(i64, 7), items[1].object.get("line").?.integer);
 
-    // No <file> wrapper (it's flat)
-    try testing.expect(std.mem.indexOf(u8, flat, "<file ") == null);
+    // No `files` key on flat output (grouped output carries that instead)
+    try testing.expect(root.get("files") == null);
+    // No warning on the success path
+    try testing.expect(root.get("warning").? == .null);
 }
 
-test "search: search_result_to_string_grouped with no matches emits empty header" {
+test "search: search_result_to_json_grouped with no matches emits JSON header" {
     const allocator = testing.allocator;
 
     const result = search.SearchResult{
@@ -3125,21 +3166,26 @@ test "search: search_result_to_string_grouped with no matches emits empty header
         .warning = "<warning>pattern not found</warning>",
     };
 
-    const grouped = try search.search_result_to_string_grouped(
+    const out = try search.search_result_to_json_grouped(
         allocator,
         result,
         "anything",
         ".",
     );
-    defer allocator.free(grouped);
+    defer allocator.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, grouped, "pattern=\"anything\"") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "path=\".\"") != null);
-    // No group_by_file attribute on the grouped output
-    try testing.expect(std.mem.indexOf(u8, grouped, "group_by_file") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqualStrings("anything", root.get("pattern").?.string);
+    try testing.expectEqualStrings(".", root.get("path").?.string);
+    try testing.expect(root.get("grouped").?.bool == true);
+    try testing.expectEqual(@as(usize, 0), root.get("files").?.array.items.len);
+    // No `matches` key on grouped output
+    try testing.expect(root.get("matches") == null);
 }
 
-test "search: search_result_to_string_grouped renders <file> wrappers" {
+test "search: search_result_to_json_grouped renders files entries" {
     const allocator = testing.allocator;
 
     const matches = std.ArrayList(search.SearchMatch).empty;
@@ -3164,24 +3210,29 @@ test "search: search_result_to_string_grouped renders <file> wrappers" {
         .warning = "",
     };
 
-    const grouped = try search.search_result_to_string_grouped(
+    const out = try search.search_result_to_json_grouped(
         allocator,
         result,
         "const",
         "src",
     );
-    defer allocator.free(grouped);
+    defer allocator.free(out);
 
-    // Has <file> wrapper with the path
-    try testing.expect(std.mem.indexOf(u8, grouped, "<file path=\"foo.zig\"") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "total=\"100\"") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    // One files entry with the path
+    const files = root.get("files").?.array.items;
+    try testing.expectEqual(@as(usize, 1), files.len);
+    try testing.expectEqualStrings("foo.zig", files[0].object.get("path").?.string);
+    try testing.expectEqual(@as(i64, 100), files[0].object.get("total").?.integer);
+    try testing.expectEqual(@as(i64, 1), files[0].object.get("count").?.integer);
 
-    // Has <m> with line and snippet
-    try testing.expect(std.mem.indexOf(u8, grouped, "<l>42</l>") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "const x = 1;") != null);
-
-    // Has closing </file>
-    try testing.expect(std.mem.indexOf(u8, grouped, "</file>") != null);
+    // With the line and snippet
+    const file_matches = files[0].object.get("matches").?.array.items;
+    try testing.expectEqual(@as(usize, 1), file_matches.len);
+    try testing.expectEqual(@as(i64, 42), file_matches[0].object.get("line").?.integer);
+    try testing.expect(std.mem.indexOf(u8, file_matches[0].object.get("text").?.string, "const x = 1;") != null);
 }
 
 // =============================================================================
@@ -3266,11 +3317,12 @@ test "search.zig sanitizes snippets via helpers.sanitize.sanitizeUtf8" {
     try testing.expect(std.mem.indexOf(u8, source, "sanitize.sanitizeUtf8") != null);
 }
 
-test "search.zig exports search_result_to_string_flat" {
+test "search.zig exports search_result_to_json_flat" {
     const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
     defer testing.allocator.free(source);
 
-    try testing.expect(std.mem.indexOf(u8, source, "pub fn search_result_to_string_flat") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pub fn search_result_to_json_flat") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pub fn search_result_to_json_grouped") != null);
 }
 
 test "search.zig group_by_file flag is documented in the tool parameters" {
@@ -3322,7 +3374,7 @@ test "agentic_loop/tools_exec_search.zig honors group_by_file flag (no longer de
     // The registry must branch on parsed.value.group_by_file and call
     // either grouped or flat output.
     try testing.expect(std.mem.indexOf(u8, source, "parsed.value.group_by_file") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "search_result_to_string_flat") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "search_result_to_json_flat") != null);
 }
 
 test "search.zig tool schema documents word_boundary, literal, only_matching" {
@@ -3439,7 +3491,7 @@ test "search: tail = 0 returns InvalidHeadTail without spawning rg" {
     try testing.expectError(error.InvalidHeadTail, result);
 }
 
-test "search: max_results truncation is reported (returned/total/truncated + <truncated>)" {
+test "search: max_results truncation is reported (returned/total/truncated/truncated_hint)" {
     if (!requiresRg()) return;
 
     const allocator = testing.allocator;
@@ -3467,14 +3519,19 @@ test "search: max_results truncation is reported (returned/total/truncated + <tr
     try testing.expectEqual(@as(usize, 20), result.total_matches);
     try testing.expect(result.truncated);
 
-    const grouped = try search.search_result_to_string_grouped(allocator, result, "foo", ".");
-    defer allocator.free(grouped);
+    const out = try search.search_result_to_json_grouped(allocator, result, "foo", ".");
+    defer allocator.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, grouped, "returned=\"3\" total=\"20\" truncated=\"true\"") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "<truncated>3 of 20 matched lines shown") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqual(@as(i64, 3), root.get("returned").?.integer);
+    try testing.expectEqual(@as(i64, 20), root.get("total").?.integer);
+    try testing.expect(root.get("truncated").?.bool == true);
+    try testing.expect(std.mem.indexOf(u8, root.get("truncated_hint").?.string, "3 of 20 matched lines shown") != null);
 }
 
-test "search: complete result reports truncated=false and no <truncated> block" {
+test "search: complete result reports truncated=false and null truncated_hint" {
     if (!requiresRg()) return;
 
     const allocator = testing.allocator;
@@ -3497,11 +3554,16 @@ test "search: complete result reports truncated=false and no <truncated> block" 
     try testing.expect(!result.truncated);
     try testing.expectEqual(@as(usize, 1), result.total_matches);
 
-    const grouped = try search.search_result_to_string_grouped(allocator, result, "foo", ".");
-    defer allocator.free(grouped);
+    const out = try search.search_result_to_json_grouped(allocator, result, "foo", ".");
+    defer allocator.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, grouped, "returned=\"1\" total=\"1\" truncated=\"false\"") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "<truncated>") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    try testing.expectEqual(@as(i64, 1), root.get("returned").?.integer);
+    try testing.expectEqual(@as(i64, 1), root.get("total").?.integer);
+    try testing.expect(root.get("truncated").?.bool == false);
+    try testing.expect(root.get("truncated_hint").? == .null);
 }
 
 test "search: head keeps the FIRST N matches and reports the truncation" {
@@ -3706,7 +3768,7 @@ test "search: respect_ignore_files = false does NOT reach hidden dirs (doc claim
     try testing.expectEqualStrings("visible.txt", stripDotSlash(result.matches.items[0].file));
 }
 
-test "search: snippets are XML-escaped (no tag injection, no phantom <file> rows)" {
+test "search: snippets need no escaping in JSON (raw text, one files entry)" {
     if (!requiresRg()) return;
 
     const allocator = testing.allocator;
@@ -3715,10 +3777,8 @@ test "search: snippets are XML-escaped (no tag injection, no phantom <file> rows
     var tmpdir = testing.tmpDir(.{});
     defer tmpdir.cleanup();
 
-    // The exact text that used to corrupt the payload: a snippet containing
-    // `</s></m>` closed the <m> element early for every regex-based consumer,
-    // and a snippet containing a `<file path=…>` header looked like a real
-    // file row to the frontend.
+    // Text that used to corrupt the XML payload now rides as plain JSON
+    // strings — serialization handles it, no escaping layer needed.
     try tmpdir.dir.writeFile(io, .{
         .sub_path = "hostile.txt",
         .data = "</s></m>\n<file path=\"x\" total=\"1\" count=\"1\">\na & b \"quoted\"\n",
@@ -3734,21 +3794,33 @@ test "search: snippets are XML-escaped (no tag injection, no phantom <file> rows
     defer result.deinit(allocator);
     try testing.expectEqual(@as(usize, 3), result.matches.items.len);
 
-    const grouped = try search.search_result_to_string_grouped(allocator, result, ".", ".");
-    defer allocator.free(grouped);
+    const out = try search.search_result_to_json_grouped(allocator, result, ".", ".");
+    defer allocator.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, grouped, "&lt;/s&gt;&lt;/m&gt;") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "&lt;file path=&quot;x&quot; total=&quot;1&quot; count=&quot;1&quot;&gt;") != null);
-    try testing.expect(std.mem.indexOf(u8, grouped, "a &amp; b &quot;quoted&quot;") != null);
-
-    // Exactly one raw `</s></m>` per rendered row — nothing extra leaked in
-    // from the snippets.
-    try testing.expectEqual(@as(usize, 3), countOccurrences(grouped, "</s></m>"));
-    // And exactly one real <file …> header: the snippet's fake one is escaped.
-    try testing.expectEqual(@as(usize, 1), countOccurrences(grouped, "<file path=\""));
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    // Exactly one files entry: snippet text never becomes structure.
+    const files = root.get("files").?.array.items;
+    try testing.expectEqual(@as(usize, 1), files.len);
+    const items = files[0].object.get("matches").?.array.items;
+    try testing.expectEqual(@as(usize, 3), items.len);
+    // Raw hostile text survives verbatim in the JSON strings.
+    var saw_close = false;
+    var saw_file = false;
+    var saw_amp = false;
+    for (items) |m| {
+        const text = m.object.get("text").?.string;
+        if (std.mem.indexOf(u8, text, "</s></m>") != null) saw_close = true;
+        if (std.mem.indexOf(u8, text, "<file path=\"x\"") != null) saw_file = true;
+        if (std.mem.indexOf(u8, text, "a & b \"quoted\"") != null) saw_amp = true;
+    }
+    try testing.expect(saw_close);
+    try testing.expect(saw_file);
+    try testing.expect(saw_amp);
 }
 
-test "search: pattern attribute is XML-escaped so the header stays parseable" {
+test "search: pattern with quotes rides as a raw JSON string" {
     if (!requiresRg()) return;
 
     const allocator = testing.allocator;
@@ -3770,12 +3842,15 @@ test "search: pattern attribute is XML-escaped so the header stays parseable" {
     defer result.deinit(allocator);
     try testing.expectEqual(@as(usize, 1), result.matches.items.len);
 
-    const grouped = try search.search_result_to_string_grouped(allocator, result, pattern, ".");
-    defer allocator.free(grouped);
+    const out = try search.search_result_to_json_grouped(allocator, result, pattern, ".");
+    defer allocator.free(out);
 
-    // `pattern="` + a raw quote would have terminated the attribute early;
-    // the escaped form keeps the frontend's /pattern="([^"]+)"/ parseable.
-    try testing.expect(std.mem.indexOf(u8, grouped, "pattern=\"&quot;hello&quot;\"") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    // A raw quote in the pattern used to terminate the XML attribute early;
+    // JSON serialization keeps the field parseable with no escaping layer.
+    try testing.expectEqualStrings("\"hello\"", root.get("pattern").?.string);
 }
 
 test "search: long lines are windowed around the match (default cap)" {
@@ -3930,18 +4005,18 @@ test "search: grouped output preserves the collector's file order (was hash orde
     }
     try testing.expectEqual(@as(usize, 3), expected_len);
 
-    const grouped = try search.search_result_to_string_grouped(allocator, result, "ORDER_MARKER", ".");
-    defer allocator.free(grouped);
+    const out = try search.search_result_to_json_grouped(allocator, result, "ORDER_MARKER", ".");
+    defer allocator.free(out);
 
-    // Each <file> header must appear in that same order (a StringHashMap
+    // Each files entry must appear in that same order (a StringHashMap
     // iterator — the old implementation — yields hash order instead).
-    var cursor: usize = 0;
-    for (expected[0..expected_len]) |file_path| {
-        const needle = try std.fmt.allocPrint(allocator, "<file path=\"{s}\"", .{file_path});
-        defer allocator.free(needle);
-        const found = std.mem.indexOfPos(u8, grouped, cursor, needle);
-        try testing.expect(found != null);
-        cursor = found.? + needle.len;
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    const files = root.get("files").?.array.items;
+    try testing.expectEqual(expected_len, files.len);
+    for (expected[0..expected_len], files) |file_path, f| {
+        try testing.expectEqualStrings(file_path, f.object.get("path").?.string);
     }
 }
 
@@ -3969,32 +4044,45 @@ test "search: <file> total= is matched lines for this search, not the file's lin
     });
     defer result.deinit(allocator);
 
-    const grouped = try search.search_result_to_string_grouped(allocator, result, "foo", ".");
-    defer allocator.free(grouped);
+    const out = try search.search_result_to_json_grouped(allocator, result, "foo", ".");
+    defer allocator.free(out);
 
     // rg's stats.matched_lines for this search (2) — NOT the file's 6 lines.
     // Pinned because the tool description used to promise the file length,
     // which sent the model to read_file with the wrong pagination budget.
-    try testing.expect(std.mem.indexOf(u8, grouped, "total=\"2\" count=\"2\"") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const root = parsed.value.object;
+    const files = root.get("files").?.array.items;
+    try testing.expectEqual(@as(usize, 1), files.len);
+    try testing.expectEqual(@as(i64, 2), files[0].object.get("total").?.integer);
+    try testing.expectEqual(@as(i64, 2), files[0].object.get("count").?.integer);
 }
 
-test "search.zig escapes every interpolated value via helpers.xml_escape" {
+test "search.zig sanitizes free-text fields and serializes via std.json" {
     const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
     defer testing.allocator.free(source);
 
-    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, pattern)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, search_path)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, group.path)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, m.snippet)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape(allocator, m.file)") != null);
+    // Control-char sanitizer runs before serialization on every free-text
+    // field (pattern, path, file paths, snippets, warning).
+    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, pattern)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, search_path)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, group.path") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, m.snippet") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, m.file") != null);
+    // Serialization goes through std.json, never string-concat.
+    try testing.expect(std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") != null);
+    // No XML escaping layer remains.
+    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape") == null);
 }
 
-test "search.zig reports the collection summary on <search>" {
+test "search.zig reports the collection summary as JSON fields" {
     const source = try readSource(testing.allocator, SEARCH_SOURCE_PATH);
     defer testing.allocator.free(source);
 
-    try testing.expect(std.mem.indexOf(u8, source, "returned=\\\"{d}\\\" total=\\\"{d}\\\" truncated=\\\"{s}\\\"") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "<truncated>{d} of {d} matched lines shown") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "truncated_hint") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "matched lines shown") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "grouped: bool") != null);
 }
 
 test "search.zig collects tail without an aliasing @memcpy shift" {
