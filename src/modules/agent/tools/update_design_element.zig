@@ -17,6 +17,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input structure for `update_element` tool.
 ///
@@ -28,7 +30,7 @@ const design_model = nalarcore.ai_mod.design_model;
 pub const UpdateElementInput = struct {
     /// The element id (NOT the page_id). The LLM discovers element
     /// ids via `set_design_page` (the response includes the element
-    /// ids in each `<element id="...">` block).
+    /// ids in each element object's `id` field).
     element_id: []const u8 = "",
     /// New name (optional). Must be unique within the page if changed.
     name: ?[]const u8 = null,
@@ -86,19 +88,19 @@ pub const update_design_element_tool = AgentTool{
     .function = .{
         .name = "update_element",
         .description =
-            \\Partially update an existing element on a design page. ALL fields except `element_id` are OPTIONAL — only the fields you provide are updated; everything else is left unchanged.
-            \\
-            \\This is the tool for moving an element (`x`/`y`), resizing (`width`/`height`), changing properties (fill/rotation/opacity/corner_radius), changing the type, or rewriting the HTML body. For visual layout tweaks, you usually only need to set `x`, `y`, `width`, `height`.
-            \\
-            \\Discover the `element_id` via `set_design_page` — the response includes element ids in each `<element id="...">` attribute.
-            \\
-            \\If you set `html`, the on-disk HTML file at the element's `file_path` is rewritten atomically. If the file is missing (orphan), it's recreated automatically.
-            \\
-            \\Setting `fill` to an empty string "" is treated as "use the default (no fill)" — same as `add_element`.
-            \\
-            \\Returns the full updated element XML (same shape as `add_element`'s response, omits the html body to keep it compact).
-            \\
-            \\On error, recover by: (1) verify `element_id` from a fresh `set_design_page` call; (2) if you set `name`, ensure the new name is unique within the page (use `set_design_page` to check).
+        \\Partially update an existing element on a design page. ALL fields except `element_id` are OPTIONAL — only the fields you provide are updated; everything else is left unchanged.
+        \\
+        \\This is the tool for moving an element (`x`/`y`), resizing (`width`/`height`), changing properties (fill/rotation/opacity/corner_radius), changing the type, or rewriting the HTML body. For visual layout tweaks, you usually only need to set `x`, `y`, `width`, `height`.
+        \\
+        \\Discover the `element_id` via `set_design_page` — the response includes element ids in each element object's `id` field.
+        \\
+        \\If you set `html`, the on-disk HTML file at the element's `file_path` is rewritten atomically. If the file is missing (orphan), it's recreated automatically.
+        \\
+        \\Setting `fill` to an empty string "" is treated as "use the default (no fill)" — same as `add_element`.
+        \\
+        \\Returns the full updated element XML (same shape as `add_element`'s response, omits the html body to keep it compact).
+        \\
+        \\On error, recover by: (1) verify `element_id` from a fresh `set_design_page` call; (2) if you set `name`, ensure the new name is unique within the page (use `set_design_page` to check).
         ,
         .parameters = .{
             .type = "object",
@@ -106,7 +108,7 @@ pub const update_design_element_tool = AgentTool{
                 .{
                     .name = "element_id",
                     .type = "string",
-                    .description = "The element id (NOT the page_id). Find it in the `id=\"...\"` attribute of an `<element>` block in a previous `set_design_page` response.",
+                    .description = "The element id (NOT the page_id). Find it in the `id` field of an element object in a previous `set_design_page` response.",
                 },
                 .{
                     .name = "name",
@@ -195,185 +197,89 @@ pub const update_design_element_tool = AgentTool{
     },
 };
 
-/// Escape XML special characters. Mirrors the helper in
-/// kanban_list.zig / set_design_page.zig / add_design_element.zig
-/// (duplicated locally to keep this tool file self-contained).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
+/// Generate an error JSON object (replaces the old per-tool XML escape +
+/// error envelope helpers).
+/// Generate an error JSON object `{"error":...}` for the tool dispatcher.
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
-/// Generate an error XML response. The error body is wrapped in
-/// `<update_element><error>...</error></update_element>` so the tool
-/// dispatcher can detect it via `<error>` substring search.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<update_element><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></update_element>");
-    return try xml.toOwnedSlice(allocator);
-}
-
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees it.
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it.
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<update_element><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></update_element>");
-    return try xml.toOwnedSlice(allocator);
+    return try errorJSON(allocator, error_msg);
 }
 
-/// Render the canonical "element" XML response shape (same as
-/// `add_design_element.elementToXml` — kept local so each tool file
-/// is self-contained).
-pub fn elementToXml(
+/// Canonical element JSON object (keys mirror the old `<element ... />`
+/// attributes 1:1; attributes omitted-when-empty become explicit nulls).
+pub const ElementJSON = struct {
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    type: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    rotation: f64,
+    opacity: f64,
+    corner_radius: i64,
+    fill: ?[]const u8,
+    stroke: ?[]const u8,
+    text_content: ?[]const u8,
+    text_style: ?[]const u8,
+    image_url: ?[]const u8,
+    file_path: ?[]const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Render the canonical element JSON response shape. Mirrors the old
+/// `<element ... />` attributes from design §6.2 — `html` is intentionally
+/// omitted (the LLM doesn't need the body, and it can be 5+ KB).
+/// Free-text fields are sanitized (NUL/C0 → U+FFFD) before serialization;
+/// `std.json` handles the remaining escaping natively.
+pub fn elementToJSON(
     allocator: std.mem.Allocator,
     elem: design_model.DesignElement,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<element");
-
-    const eid = try xmlEscape(allocator, elem.id);
-    defer allocator.free(eid);
-    try xml.appendSlice(allocator, " id=\"");
-    try xml.appendSlice(allocator, eid);
-    try xml.appendSlice(allocator, "\"");
-
-    const epid = try xmlEscape(allocator, elem.page_id);
-    defer allocator.free(epid);
-    try xml.appendSlice(allocator, " page_id=\"");
-    try xml.appendSlice(allocator, epid);
-    try xml.appendSlice(allocator, "\"");
-
-    const ename = try xmlEscape(allocator, elem.name);
-    defer allocator.free(ename);
-    try xml.appendSlice(allocator, " name=\"");
-    try xml.appendSlice(allocator, ename);
-    try xml.appendSlice(allocator, "\"");
-
-    const etype = try xmlEscape(allocator, elem.elem_type);
-    defer allocator.free(etype);
-    try xml.appendSlice(allocator, " type=\"");
-    try xml.appendSlice(allocator, etype);
-    try xml.appendSlice(allocator, "\"");
-
-    try appendIntAttr(&xml, allocator, "x", elem.x);
-    try appendIntAttr(&xml, allocator, "y", elem.y);
-    try appendIntAttr(&xml, allocator, "width", elem.width);
-    try appendIntAttr(&xml, allocator, "height", elem.height);
-    try appendFloatAttr(&xml, allocator, "rotation", elem.rotation);
-    try appendFloatAttr(&xml, allocator, "opacity", elem.opacity);
-    try appendIntAttr(&xml, allocator, "corner_radius", elem.corner_radius);
-
-    if (elem.fill.len > 0) {
-        const v = try xmlEscape(allocator, elem.fill);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " fill=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    }
-    if (elem.stroke.len > 0) {
-        const v = try xmlEscape(allocator, elem.stroke);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " stroke=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    }
-    if (elem.text_content.len > 0) {
-        const v = try xmlEscape(allocator, elem.text_content);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " text_content=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    }
-    if (elem.text_style.len > 0) {
-        const v = try xmlEscape(allocator, elem.text_style);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " text_style=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    }
-    if (elem.image_url.len > 0) {
-        const v = try xmlEscape(allocator, elem.image_url);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " image_url=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    }
-    if (elem.file_path.len > 0) {
-        const v = try xmlEscape(allocator, elem.file_path);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " file_path=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    }
-
-    try xml.appendSlice(allocator, " created_at=\"");
-    try xml.appendSlice(allocator, elem.created_at);
-    try xml.appendSlice(allocator, "\" updated_at=\"");
-    try xml.appendSlice(allocator, elem.updated_at);
-    try xml.appendSlice(allocator, "\" />");
-
-    return try xml.toOwnedSlice(allocator);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    return try std.json.Stringify.valueAlloc(allocator, ElementJSON{
+        .id = try sanitizeControlChars(a, elem.id),
+        .page_id = try sanitizeControlChars(a, elem.page_id),
+        .name = try sanitizeControlChars(a, elem.name),
+        .type = try sanitizeControlChars(a, elem.elem_type),
+        .x = elem.x,
+        .y = elem.y,
+        .width = elem.width,
+        .height = elem.height,
+        .rotation = elem.rotation,
+        .opacity = elem.opacity,
+        .corner_radius = elem.corner_radius,
+        .fill = try optClean(a, elem.fill),
+        .stroke = try optClean(a, elem.stroke),
+        .text_content = try optClean(a, elem.text_content),
+        .text_style = try optClean(a, elem.text_style),
+        .image_url = try optClean(a, elem.image_url),
+        .file_path = try optClean(a, elem.file_path),
+        .created_at = try sanitizeControlChars(a, elem.created_at),
+        .updated_at = try sanitizeControlChars(a, elem.updated_at),
+    }, .{});
 }
 
-fn appendIntAttr(
-    xml: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    value: i64,
-) !void {
-    var buf: [32]u8 = undefined;
-    const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
-    try xml.appendSlice(allocator, " ");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, "=\"");
-    try xml.appendSlice(allocator, str);
-    try xml.appendSlice(allocator, "\"");
-}
-
-fn appendFloatAttr(
-    xml: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    value: f64,
-) !void {
-    var buf: [64]u8 = undefined;
-    const str = std.fmt.bufPrint(&buf, "{d:.6}", .{value}) catch "0";
-    try xml.appendSlice(allocator, " ");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, "=\"");
-    try xml.appendSlice(allocator, str);
-    try xml.appendSlice(allocator, "\"");
+/// Clean an optional free-text field: empty becomes null, otherwise the
+/// control-char-sanitized copy owned by the caller's arena.
+fn optClean(allocator: std.mem.Allocator, s: []const u8) !?[]u8 {
+    if (s.len == 0) return null;
+    return try sanitizeControlChars(allocator, s);
 }
 
 /// Parse the optional `type` string into an `ElementType` enum.
-/// Returns null when the string is null (no change), or an error XML
+/// Returns null when the string is null (no change), or an error JSON object
 /// when the string is non-null but not one of the 6 valid types.
 fn parseOptionalElementType(_: std.mem.Allocator, type_str: ?[]const u8) !?design_model.ElementType {
     const t = type_str orelse return null;
@@ -387,38 +293,38 @@ fn parseOptionalElementType(_: std.mem.Allocator, type_str: ?[]const u8) !?desig
 }
 
 /// Validate `element_id` is non-empty and has the right `elem_`
-/// prefix. Returns null when shape is correct, or an error XML on
+/// prefix. Returns null when shape is correct, or an error JSON object on
 /// mismatch.
 fn validateElementIdShape(allocator: std.mem.Allocator, element_id: []const u8) !?[]u8 {
     if (element_id.len == 0) {
-        return try errorXml(allocator, "element_id is required (find it in the `id=\"...\"` attribute of an `<element>` block in a previous set_design_page response)");
+        return try errorJSON(allocator, "element_id is required (find it in the `id` field of an element object in a previous set_design_page response)");
     }
     if (std.mem.startsWith(u8, element_id, "item_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id="..."` attribute of an `<element>` block in a `set_design_page` response.
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
         , .{element_id}));
     }
     if (std.mem.startsWith(u8, element_id, "page_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead.
         , .{element_id}));
     }
     if (!std.mem.startsWith(u8, element_id, "elem_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\element_id '{s}' has an unrecognized prefix (expected 'elem_'). update_element expects an element_id from a previous set_design_page response, not a free-form string.
         , .{element_id}));
     }
     return null;
 }
 
-/// Execute the `update_element` tool. Returns an XML string for the
+/// Execute the `update_element` tool. Returns a JSON string for the
 /// LLM.
 ///
-/// On success, the response shape is the same as `add_element`'s
-/// `<element .../>` block (without the wrapping `<page>...</page>`).
+/// On success, the response is the element JSON object (same shape as
+/// `add_element`'s response).
 ///
 /// On error (bad element_id, bad type, DB failure), the response is
-/// wrapped in `<update_element><error>...</error></update_element>`.
+/// `{"error":...}`.
 pub fn executeUpdateElementToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -434,10 +340,9 @@ pub fn executeUpdateElementToString(
     //      error.BadTypeString → malformed string (not one of the 6)
     const parsed_type = parseOptionalElementType(allocator, input.type) catch |err| {
         if (err == error.BadTypeString) {
-            return try errorXml(allocator,
-                "type must be one of: rectangle, ellipse, text, image, frame, group");
+            return try errorJSON(allocator, "type must be one of: rectangle, ellipse, text, image, frame, group");
         }
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: parseOptionalElementType failed: {s}", .{@errorName(err)}));
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: parseOptionalElementType failed: {s}", .{@errorName(err)}));
     };
 
     // 2. Apply the same fill workaround as add_element: empty fill
@@ -468,20 +373,20 @@ pub fn executeUpdateElementToString(
         .text_style = input.text_style,
         .image_url = input.image_url,
     }) catch |err| switch (err) {
-        error.ElementNotFound => return try errorXml(allocator, "element_id does not match any design element — call set_design_page first"),
-        error.FileWriteFailed => return try errorXml(allocator, "could not write the HTML file to disk (permission denied or out of space)"),
-        else => return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: updateElement failed: {s}", .{@errorName(err)})),
+        error.ElementNotFound => return try errorJSON(allocator, "element_id does not match any design element — call set_design_page first"),
+        error.FileWriteFailed => return try errorJSON(allocator, "could not write the HTML file to disk (permission denied or out of space)"),
+        else => return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: updateElement failed: {s}", .{@errorName(err)})),
     };
     defer allocator.free(element_id);
 
     // 4. Re-fetch the full element via getElement so the LLM gets
     //    the canonical state (with file_path, timestamps, etc.).
     const elem = design_model.getElement(allocator, db, element_id) catch |err| {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)}));
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)}));
     };
     defer design_model.freeElement(allocator, elem);
 
-    return try elementToXml(allocator, elem);
+    return try elementToJSON(allocator, elem);
 }
 
 const testing = std.testing;
@@ -511,6 +416,32 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
     allocator.free(raw);
     return normalized;
+}
+
+fn expectJSONFloat(v: std.json.Value, want: f64) !void {
+    const got: f64 = switch (v) {
+        .float => |f| f,
+        .integer => |i| @floatFromInt(i),
+        else => return error.NotANumber,
+    };
+    try testing.expectApproxEqAbs(want, got, 1e-9);
+}
+
+fn expectJSONError(alloc: std.mem.Allocator, str: []const u8, needle: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, str, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(err_val == .string);
+    try testing.expect(contains(err_val.string, needle));
+}
+
+fn expectNoJSONError(alloc: std.mem.Allocator, str: []const u8) !std.json.Parsed(std.json.Value) {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, str, .{});
+    errdefer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    try testing.expect(parsed.value.object.get("error") == null);
+    return parsed;
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
@@ -655,16 +586,13 @@ test "root.zig exposes update_design_element module" {
     }
 }
 
-// ─── XML serialization ───────────────────────────────────────────────────
+// ─── JSON serialization ──────────────────────────────────────────────────
 
-test "errorXml on missing field returns <update_element><error>...</error></update_element>" {
+test "errorJSON on missing field returns an error object" {
     const alloc = testing.allocator;
-    const xml = try update_element.errorXml(alloc, "element_id is required");
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<update_element>"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</update_element>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "element_id is required"));
+    const json = try update_element.errorJSON(alloc, "element_id is required");
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "element_id is required");
 }
 
 // ─── DB integration behavioral tests (in-memory SQLite) ────────────────
@@ -743,22 +671,16 @@ fn setupDbWithElement() !struct {
     const tmpdir_path: []const u8 = tmpdir_buf[0..tmpdir_len];
 
     const item_id_str = "item_design_1";
-    try db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
-        "VALUES (?, 'ws_test', 'design', 'Test Design', ?)",
-        &.{ item_id_str, tmpdir_path });
+    try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
+        "VALUES (?, 'ws_test', 'design', 'Test Design', ?)", &.{ item_id_str, tmpdir_path });
 
     const page_id_str = "page_test_1";
-    try db.exec(alloc,
-        "INSERT INTO design_pages (id, workspace_item_id, name, width, height, position) " ++
-        "VALUES (?, ?, 'Login', 1440, 1024, 0)",
-        &.{ page_id_str, item_id_str });
+    try db.exec(alloc, "INSERT INTO design_pages (id, workspace_item_id, name, width, height, position) " ++
+        "VALUES (?, ?, 'Login', 1440, 1024, 0)", &.{ page_id_str, item_id_str });
 
     const element_id_str = "elem_test_1";
-    try db.exec(alloc,
-        "INSERT INTO design_page_elements (id, page_id, name, file_path, x, y, width, height, type, fill) " ++
-        "VALUES (?, ?, 'card', '/tmp/card.html', 100, 200, 300, 150, 'rectangle', '#ffffff')",
-        &.{ element_id_str, page_id_str });
+    try db.exec(alloc, "INSERT INTO design_page_elements (id, page_id, name, file_path, x, y, width, height, type, fill) " ++
+        "VALUES (?, ?, 'card', '/tmp/card.html', 100, 200, 300, 150, 'rectangle', '#ffffff')", &.{ element_id_str, page_id_str });
 
     return .{
         .db = db,
@@ -783,20 +705,21 @@ test "executeUpdateElementToString updates x and y only" {
         .x = 250,
         .y = 350,
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.startsWith(u8, xml, "<element"));
-    try testing.expect(contains(xml, "id=\"elem_test_1\""));
-    try testing.expect(contains(xml, "x=\"250\""));
-    try testing.expect(contains(xml, "y=\"350\""));
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("elem_test_1", obj.get("id").?.string);
+    try testing.expectEqual(@as(i64, 250), obj.get("x").?.integer);
+    try testing.expectEqual(@as(i64, 350), obj.get("y").?.integer);
     // Other fields stay unchanged.
-    try testing.expect(contains(xml, "width=\"300\""));
-    try testing.expect(contains(xml, "height=\"150\""));
-    try testing.expect(contains(xml, "name=\"card\""));
-    try testing.expect(contains(xml, "type=\"rectangle\""));
-    try testing.expect(contains(xml, "fill=\"#ffffff\""));
-    try testing.expect(!contains(xml, "<error>"));
+    try testing.expectEqual(@as(i64, 300), obj.get("width").?.integer);
+    try testing.expectEqual(@as(i64, 150), obj.get("height").?.integer);
+    try testing.expectEqualStrings("card", obj.get("name").?.string);
+    try testing.expectEqualStrings("rectangle", obj.get("type").?.string);
+    try testing.expectEqualStrings("#ffffff", obj.get("fill").?.string);
 }
 
 test "executeUpdateElementToString updates fill" {
@@ -812,10 +735,12 @@ test "executeUpdateElementToString updates fill" {
         .element_id = s.element_id,
         .fill = "#22c55e",
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "fill=\"#22c55e\""));
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("#22c55e", parsed.value.object.get("fill").?.string);
 }
 
 test "executeUpdateElementToString updates name" {
@@ -831,10 +756,12 @@ test "executeUpdateElementToString updates name" {
         .element_id = s.element_id,
         .name = "primary-card",
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "name=\"primary-card\""));
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("primary-card", parsed.value.object.get("name").?.string);
 }
 
 test "executeUpdateElementToString updates type" {
@@ -850,13 +777,15 @@ test "executeUpdateElementToString updates type" {
         .element_id = s.element_id,
         .type = "ellipse",
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "type=\"ellipse\""));
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("ellipse", parsed.value.object.get("type").?.string);
 }
 
-test "executeUpdateElementToString returns error XML on invalid type" {
+test "executeUpdateElementToString returns error JSON on invalid type" {
     const alloc = testing.allocator;
     var s = try setupDbWithElement();
     defer s.threaded.deinit();
@@ -869,13 +798,12 @@ test "executeUpdateElementToString returns error XML on invalid type" {
         .element_id = s.element_id,
         .type = "hexagon",
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "type"));
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "type must be one of");
 }
 
-test "executeUpdateElementToString returns error XML when element_id is empty" {
+test "executeUpdateElementToString returns error JSON when element_id is empty" {
     const alloc = testing.allocator;
     var s = try setupDbWithElement();
     defer s.threaded.deinit();
@@ -888,13 +816,12 @@ test "executeUpdateElementToString returns error XML when element_id is empty" {
         .element_id = "",
         .x = 100,
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "element_id"));
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "element_id");
 }
 
-test "executeUpdateElementToString returns error XML when element_id has wrong prefix" {
+test "executeUpdateElementToString returns error JSON when element_id has wrong prefix" {
     const alloc = testing.allocator;
     var s = try setupDbWithElement();
     defer s.threaded.deinit();
@@ -907,10 +834,9 @@ test "executeUpdateElementToString returns error XML when element_id has wrong p
         .element_id = "page_1782442554112",
         .x = 100,
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "page_"));
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "page_");
 }
 
 test "executeUpdateElementToString returns ElementNotFound error when element_id doesn't exist" {
@@ -926,10 +852,9 @@ test "executeUpdateElementToString returns ElementNotFound error when element_id
         .element_id = "elem_does_not_exist",
         .x = 100,
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "element_id"));
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "element_id");
 }
 
 test "executeUpdateElementToString with only element_id is a no-op success" {
@@ -946,15 +871,16 @@ test "executeUpdateElementToString with only element_id is a no-op success" {
     const input = update_element.UpdateElementInput{
         .element_id = s.element_id,
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<element"));
-    try testing.expect(contains(xml, "id=\"elem_test_1\""));
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("elem_test_1", obj.get("id").?.string);
     // The state is unchanged.
-    try testing.expect(contains(xml, "x=\"100\""));
-    try testing.expect(contains(xml, "y=\"200\""));
-    try testing.expect(contains(xml, "width=\"300\""));
-    try testing.expect(!contains(xml, "<error>"));
+    try testing.expectEqual(@as(i64, 100), obj.get("x").?.integer);
+    try testing.expectEqual(@as(i64, 200), obj.get("y").?.integer);
+    try testing.expectEqual(@as(i64, 300), obj.get("width").?.integer);
 }
 
 test "executeUpdateElementToString updates rotation and opacity" {
@@ -971,8 +897,10 @@ test "executeUpdateElementToString updates rotation and opacity" {
         .rotation = 45.0,
         .opacity = 0.7,
     };
-    const xml = try update_element.executeUpdateElementToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "rotation=\"45"));
-    try testing.expect(contains(xml, "opacity=\"0.700000\""));
+    const json = try update_element.executeUpdateElementToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    try expectJSONFloat(parsed.value.object.get("rotation").?, 45.0);
+    try expectJSONFloat(parsed.value.object.get("opacity").?, 0.7);
 }

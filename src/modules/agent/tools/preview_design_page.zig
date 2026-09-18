@@ -3,8 +3,8 @@
 //!
 //! Takes `page_id` (required) and an optional `scale` (default 1.0, max 4.0).
 //! Generates an SVG that renders every element on the page using their
-//! design coordinates + visual properties, then wraps the metadata in a
-//! `<show_preview>` envelope (legacy envelope name kept for wire compat;
+//! design coordinates + visual properties, then returns the metadata as a
+//! JSON object (keys mirror the old `<show_preview>` tags 1:1;
 //! content_type="html").
 //!
 //! Per-element rendering:
@@ -23,6 +23,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Hex alphabet for the random suffix of the preview id (kept local —
 /// tool files are self-contained per project convention).
@@ -57,18 +59,18 @@ pub const preview_design_page_tool = AgentTool{
     .function = .{
         .name = "preview_design_page",
         .description =
-            \\Render a design page as an SVG in the side panel so the agent can SEE the design (the "screenshot" tool). Pass `page_id` (required) and an optional `scale` (default 1.0, max 4.0).
-            \\
-            \\Each element renders as the matching SVG shape:
-            \\  - `rectangle` → `<rect>` with fill, stroke, corner_radius, rotation
-            \\  - `ellipse`   → `<ellipse>` with cx, cy, rx, ry
-            \\  - `text`      → `<text>` with x, y (baseline = y + height), text_content
-            \\  - `image`     → `<image>` with href from image_url
-            \\  - `frame`/`group` → `<g>` container; children render inside
-            \\
-            \\Groups/frames nest recursively — a group inside a frame renders inside the frame's `<g>`, etc.
-            \\
-            \\Returns a `<show_preview>` envelope (legacy name, content_type="html") carrying the preview_id so the transcript can reference the render.
+        \\Render a design page as an SVG in the side panel so the agent can SEE the design (the "screenshot" tool). Pass `page_id` (required) and an optional `scale` (default 1.0, max 4.0).
+        \\
+        \\Each element renders as the matching SVG shape:
+        \\  - `rectangle` → `<rect>` with fill, stroke, corner_radius, rotation
+        \\  - `ellipse`   → `<ellipse>` with cx, cy, rx, ry
+        \\  - `text`      → `<text>` with x, y (baseline = y + height), text_content
+        \\  - `image`     → `<image>` with href from image_url
+        \\  - `frame`/`group` → `<g>` container; children render inside
+        \\
+        \\Groups/frames nest recursively — a group inside a frame renders inside the frame's `<g>`, etc.
+        \\
+        \\Returns a JSON object (keys mirror the old `<show_preview>` tags, content_type="html") carrying the preview_id so the transcript can reference the render.
         ,
         .parameters = .{
             .type = "object",
@@ -84,7 +86,7 @@ pub const preview_design_page_tool = AgentTool{
                     .description = "Scale factor applied to the SVG viewBox and every element coordinate. Default 1.0 (matches the design viewport). Range: 0.1 to 4.0. Use smaller values to fit a large page, larger values to zoom in.",
                 },
             },
-            .required = &.{ "page_id" },
+            .required = &.{"page_id"},
         },
         .system_prompt = preview_design_page_tool_system_prompt,
     },
@@ -110,16 +112,10 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     return try result.toOwnedSlice(allocator);
 }
 
-fn errorEnvelope(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<show_preview><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></show_preview>");
-    return try xml.toOwnedSlice(allocator);
+fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
 /// Generate a unique preview id of the form `pv_<unix_ms>_<6 hex>`.
@@ -138,36 +134,25 @@ fn generatePreviewId(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     return std.fmt.allocPrint(allocator, "pv_{d}_{s}", .{ unix_ms, &hex });
 }
 
-/// Build the success envelope `<show_preview><status>shown</status>...`.
+/// Build the success JSON object `{"status":"shown",...}`.
 /// Self-contained copy of the envelope the deleted `show_preview` tool
-/// used (tag name kept for wire compat). Caller owns the slice.
-fn successEnvelope(
+/// used (keys mirror the old `<show_preview>` tags 1:1). Caller owns the slice.
+fn successJSON(
     allocator: std.mem.Allocator,
     preview_id: []const u8,
     content_type: []const u8,
     content_length: usize,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-    try xml.appendSlice(allocator, "<show_preview>");
-    try xml.appendSlice(allocator, "<status>shown</status>");
-    const eid = try xmlEscape(allocator, preview_id);
-    defer allocator.free(eid);
-    try xml.appendSlice(allocator, "<preview_id>");
-    try xml.appendSlice(allocator, eid);
-    try xml.appendSlice(allocator, "</preview_id>");
-    const ect = try xmlEscape(allocator, content_type);
-    defer allocator.free(ect);
-    try xml.appendSlice(allocator, "<content_type>");
-    try xml.appendSlice(allocator, ect);
-    try xml.appendSlice(allocator, "</content_type>");
-    var len_buf: [32]u8 = undefined;
-    const len_str = std.fmt.bufPrint(&len_buf, "{d}", .{content_length}) catch unreachable;
-    try xml.appendSlice(allocator, "<content_length>");
-    try xml.appendSlice(allocator, len_str);
-    try xml.appendSlice(allocator, "</content_length>");
-    try xml.appendSlice(allocator, "</show_preview>");
-    return try xml.toOwnedSlice(allocator);
+    const clean_id = try sanitizeControlChars(allocator, preview_id);
+    defer allocator.free(clean_id);
+    const clean_ct = try sanitizeControlChars(allocator, content_type);
+    defer allocator.free(clean_ct);
+    return try std.json.Stringify.valueAlloc(allocator, .{
+        .status = "shown",
+        .preview_id = clean_id,
+        .content_type = clean_ct,
+        .content_length = content_length,
+    }, .{});
 }
 
 // ─── Build SVG ───────────────────────────────────────────────────────────
@@ -439,10 +424,9 @@ fn appendRotation(
 
 /// Execute `preview_design_page`.
 ///
-/// Returns a `<show_preview>` envelope (legacy tag name, kept for wire
-/// compat):
-///   - success: `<show_preview><status>shown</status>...</show_preview>`
-///   - error:   `<show_preview><error>...</error></show_preview>`
+/// Returns a JSON object (keys mirror the old `<show_preview>` tags 1:1):
+///   - success: `{"status":"shown",...}`
+///   - error:   `{"error":...}`
 ///
 /// `out_preview_id` receives the generated preview id (heap-owned; caller
 /// MUST free). Always populated, even on error, so the caller can log the
@@ -467,12 +451,12 @@ pub fn executePreviewDesignPageToString(
             .{ MAX_SCALE, input.scale },
         );
         defer allocator.free(msg);
-        return try errorEnvelope(allocator, msg);
+        return try errorJSON(allocator, msg);
     }
 
     // Validate page_id
     if (input.page_id.len == 0) {
-        return try errorEnvelope(allocator, "page_id is required");
+        return try errorJSON(allocator, "page_id is required");
     }
 
     // Fetch the page + elements
@@ -483,7 +467,7 @@ pub fn executePreviewDesignPageToString(
             .{ input.page_id, @errorName(err) },
         );
         defer allocator.free(msg);
-        return try errorEnvelope(allocator, msg);
+        return try errorJSON(allocator, msg);
     };
     defer bundle.deinit(allocator);
 
@@ -497,9 +481,9 @@ pub fn executePreviewDesignPageToString(
     const sanitized = try @import("helpers").sanitize.sanitizeUtf8(allocator, svg_content);
     defer allocator.free(sanitized);
 
-    // Wrap in the `<show_preview>` envelope (legacy tag name, kept for
-    // wire compat with existing transcripts).
-    return try successEnvelope(
+    // Return the preview metadata as JSON (keys mirror the old
+    // `<show_preview>` tags 1:1).
+    return try successJSON(
         allocator,
         preview_id,
         "html",

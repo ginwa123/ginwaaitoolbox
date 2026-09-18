@@ -11,6 +11,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input structure for `set_element_parent` tool.
 ///
@@ -38,13 +40,13 @@ pub const set_element_parent_tool = AgentTool{
     .function = .{
         .name = "set_element_parent",
         .description =
-            \\Re-parent an existing design element to a new `group` or `frame`, or back to top-level. This is the inverse of `add_element`'s `parent_id` parameter for existing elements — use it to FIX a previously-created element that landed at the wrong nesting level.
-            \\
-            \\The `element_id` must reference an element on the active page. The `new_parent_id` must reference a `group` or `frame` on the SAME page (leaf types like rectangle, ellipse, text, image cannot contain children — rejected with `ParentNotContainer`). Pass `new_parent_id = null` to move the element to top-level (clears parent_id).
-            \\
-            \\Discover ids via `set_design_page` — each `<element id="...">` block carries the id. The `<element>` block also carries `parent_id="elem_..."` (or `parent_id=""` for top-level), so you can see the current hierarchy.
-            \\
-            \\On error, recover by: (1) verify `element_id` from a fresh `set_design_page` call; (2) verify `new_parent_id` is `group` or `frame` on the same page; (3) pass `null` to unparent.
+        \\Re-parent an existing design element to a new `group` or `frame`, or back to top-level. This is the inverse of `add_element`'s `parent_id` parameter for existing elements — use it to FIX a previously-created element that landed at the wrong nesting level.
+        \\
+        \\The `element_id` must reference an element on the active page. The `new_parent_id` must reference a `group` or `frame` on the SAME page (leaf types like rectangle, ellipse, text, image cannot contain children — rejected with `ParentNotContainer`). Pass `new_parent_id = null` to move the element to top-level (clears parent_id).
+        \\
+        \\Discover ids via `set_design_page` — each element object carries the id in its `id` field. The element object also carries `parent_id` (an element id, or null for top-level), so you can see the current hierarchy.
+        \\
+        \\On error, recover by: (1) verify `element_id` from a fresh `set_design_page` call; (2) verify `new_parent_id` is `group` or `frame` on the same page; (3) pass `null` to unparent.
         ,
         .parameters = .{
             .type = "object",
@@ -52,7 +54,7 @@ pub const set_element_parent_tool = AgentTool{
                 .{
                     .name = "element_id",
                     .type = "string",
-                    .description = "The element id to re-parent (NOT a page_id or workspace_id). Find it in the `id=\"...\"` attribute of an `<element>` block in a previous `set_design_page` response.",
+                    .description = "The element id to re-parent (NOT a page_id or workspace_id). Find it in the `id` field of an element object in a previous `set_design_page` response.",
                 },
                 .{
                     .name = "new_parent_id",
@@ -60,99 +62,58 @@ pub const set_element_parent_tool = AgentTool{
                     .description = "The new parent's element id (a `group` or `frame` on the same page), or null to move to top-level. Pass null for top-level.",
                 },
             },
-            .required = &.{ "element_id" },
+            .required = &.{"element_id"},
         },
         .system_prompt = set_element_parent_tool_system_prompt,
     },
 };
 
-/// Escape XML special characters. Mirrors the helper in
-/// `update_design_element.zig` / `group_design_elements.zig`
-/// (duplicated locally to keep this tool file self-contained).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
+/// Generate an error JSON object (replaces the old per-tool XML escape +
+/// error envelope helpers).
+/// Generate an error JSON object `{"error":...}` for the tool dispatcher.
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
-/// Generate an error XML response. The error body is wrapped in
-/// `<set_element_parent><error>...</error></set_element_parent>` so
-/// the tool dispatcher can detect it via `<error>` substring search.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<set_element_parent><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></set_element_parent>");
-    return try xml.toOwnedSlice(allocator);
-}
-
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees it.
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it.
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<set_element_parent><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></set_element_parent>");
-    return try xml.toOwnedSlice(allocator);
+    return try errorJSON(allocator, error_msg);
 }
 
 /// Validate `element_id` is non-empty and has the right `elem_` prefix.
-/// Returns null when shape is correct, or an error XML on mismatch.
+/// Returns null when shape is correct, or an error JSON object on mismatch.
 fn validateElementIdShape(allocator: std.mem.Allocator, element_id: []const u8) !?[]u8 {
     if (element_id.len == 0) {
-        return try errorXml(allocator, "element_id is required (find it in the `id=\"...\"` attribute of an `<element>` block in a previous set_design_page response)");
+        return try errorJSON(allocator, "element_id is required (find it in the `id` field of an element object in a previous set_design_page response)");
     }
     if (std.mem.startsWith(u8, element_id, "page_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id="..."` attribute of an `<element>` block in a `set_design_page` response.
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
         , .{element_id}));
     }
     if (std.mem.startsWith(u8, element_id, "item_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id="..."` attribute of an `<element>` block in a `set_design_page` response.
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
         , .{element_id}));
     }
     if (!std.mem.startsWith(u8, element_id, "elem_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\element_id '{s}' has an unrecognized prefix (expected 'elem_'). set_element_parent expects an element id from a previous set_design_page response, not a free-form string.
         , .{element_id}));
     }
     return null;
 }
 
-/// Execute the `set_element_parent` tool. Returns an XML string for
+/// Execute the `set_element_parent` tool. Returns a JSON string for
 /// the LLM.
 ///
 /// On success, the response shape is:
-/// ```xml
-/// <set_element_parent>
-///   <element id="elem_..." name="..." parent_id="..." .../>
-/// </set_element_parent>
-/// ```
+/// `{"element":{"id":"elem_...","name":"...","parent_id":"...", ...}}`.
 ///
-/// On error, the response is wrapped in
-/// `<set_element_parent><error>...</error></set_element_parent>`.
+/// On error, the response is `{"error":...}`.
 pub fn executeSetElementParentToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -166,35 +127,30 @@ pub fn executeSetElementParentToString(
     //    the actual UPDATE.
     design_model.setElementParent(allocator, db, input.element_id, input.new_parent_id) catch |err| {
         return switch (err) {
-            error.ElementNotFound => try errorXml(allocator, "element_id does not reference any design element — call set_design_page first"),
-            error.ParentNotFound => try errorXml(allocator, "new_parent_id does not reference any design element — call set_design_page first"),
-            error.ParentNotContainer => try errorXml(allocator, "new_parent_id points to a leaf-type element (rectangle/ellipse/text/image); only `group` or `frame` can contain children"),
-            error.DifferentPages => try errorXml(allocator, "element and new_parent are on different pages; re-parenting across pages is not supported"),
-            error.CycleDetected => try errorXml(allocator, "cycle detected: new_parent is a descendant of element_id (would create a cycle in the group hierarchy)"),
-            else => try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: setElementParent failed: {s}", .{@errorName(err)})),
+            error.ElementNotFound => try errorJSON(allocator, "element_id does not reference any design element — call set_design_page first"),
+            error.ParentNotFound => try errorJSON(allocator, "new_parent_id does not reference any design element — call set_design_page first"),
+            error.ParentNotContainer => try errorJSON(allocator, "new_parent_id points to a leaf-type element (rectangle/ellipse/text/image); only `group` or `frame` can contain children"),
+            error.DifferentPages => try errorJSON(allocator, "element and new_parent are on different pages; re-parenting across pages is not supported"),
+            error.CycleDetected => try errorJSON(allocator, "cycle detected: new_parent is a descendant of element_id (would create a cycle in the group hierarchy)"),
+            else => try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: setElementParent failed: {s}", .{@errorName(err)})),
         };
     };
 
     // 2. Re-fetch the element so the LLM gets the canonical state
     //    (with the new parent_id reflected).
     const elem = design_model.getElement(allocator, db, input.element_id) catch |err| {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)}));
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)}));
     };
     defer design_model.freeElement(allocator, elem);
 
-    // 3. Render the response XML.
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<set_element_parent>");
-
-    // Re-use the elementToXml renderer from add_design_element.zig.
-    const elem_xml = try nalarcore.add_design_element.elementToXml(allocator, elem);
-    defer allocator.free(elem_xml);
-    try xml.appendSlice(allocator, elem_xml);
-
-    try xml.appendSlice(allocator, "</set_element_parent>");
-    return try xml.toOwnedSlice(allocator);
+    // 3. Render the response JSON, re-using the element renderer from
+    //    add_design_element.zig (parsed back into a value so the response
+    //    is built via serialization, never string-concat).
+    const elem_json = try nalarcore.add_design_element.elementToJSON(allocator, elem);
+    defer allocator.free(elem_json);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, elem_json, .{});
+    defer parsed.deinit();
+    return try std.json.Stringify.valueAlloc(allocator, .{ .element = parsed.value }, .{});
 }
 
 const testing = std.testing;
@@ -275,10 +231,8 @@ fn setupDbAndItem() !struct {
     const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
 
     const item_id_const = "item_design_set_parent_tool";
-    try db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
-        "VALUES (?, 'ws_test', 'design', ?)",
-        &.{ item_id_const, tmpdir_path });
+    try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)", &.{ item_id_const, tmpdir_path });
 
     const item_id_slice = try alloc.dupe(u8, item_id_const);
 
@@ -293,6 +247,10 @@ fn setupDbAndItem() !struct {
 fn teardown(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
     db.deinit();
     threaded.deinit();
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
 // ─── Test 1: happy path — re-parent into an existing frame ───────────────
@@ -317,8 +275,14 @@ test "executeSetElementParentToString moves element into existing group" {
         .name = "login-card",
         .elem_type = .frame,
         .html = "<div></div>",
-        .x = 100, .y = 200, .width = 400, .height = 300,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 100,
+        .y = 200,
+        .width = 400,
+        .height = 300,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(group_id);
 
@@ -327,22 +291,32 @@ test "executeSetElementParentToString moves element into existing group" {
         .name = "login-button",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 110, .y = 220, .width = 80, .height = 30,
-        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 110,
+        .y = 220,
+        .width = 80,
+        .height = 30,
+        .fill = "#000000",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(child_id);
 
     // Call the LLM tool.
-    const xml = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
+    const json = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
         .element_id = child_id,
         .new_parent_id = group_id,
     });
-    defer alloc.free(xml);
-    // Tool response shape: `<set_element_parent><element id="..." parent_id="..." .../></set_element_parent>`.
-    // It must NOT contain `<error>` on the happy path.
-    try testing.expect(!std.mem.containsAtLeast(u8, xml, 1, "<error>"));
-    try testing.expect(std.mem.indexOf(u8, xml, "<set_element_parent>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, group_id) != null);
+    defer alloc.free(json);
+    // Tool response shape: `{"element":{...,"parent_id":"elem_..."}}`.
+    // It must NOT contain an `error` key on the happy path.
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    try testing.expect(parsed.value.object.get("error") == null);
+    const el = parsed.value.object.get("element").?.object;
+    try testing.expectEqualStrings(child_id, el.get("id").?.string);
+    try testing.expectEqualStrings(group_id, el.get("parent_id").?.string);
 
     // Verify the DB state directly (round-trip via design_model).
     const got = try design_model.getElement(alloc, &ctx.db, child_id);
@@ -372,8 +346,14 @@ test "executeSetElementParentToString rejects leaf-type parent" {
         .name = "leaf",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 0, .y = 0, .width = 50, .height = 50,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 0,
+        .y = 0,
+        .width = 50,
+        .height = 50,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(leaf_id);
 
@@ -382,18 +362,26 @@ test "executeSetElementParentToString rejects leaf-type parent" {
         .name = "child",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 0, .y = 0, .width = 50, .height = 50,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 0,
+        .y = 0,
+        .width = 50,
+        .height = 50,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(child_id);
 
-    const xml = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
+    const json = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
         .element_id = child_id,
         .new_parent_id = leaf_id,
     });
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "group") != null); // error mentions "group or frame"
+    defer alloc.free(json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "group")); // error mentions "group or frame"
 }
 
 // ─── Test 3: reject non-existent element_id ──────────────────────────────
@@ -418,20 +406,29 @@ test "executeSetElementParentToString rejects non-existent element_id" {
         .name = "group",
         .elem_type = .frame,
         .html = "<div></div>",
-        .x = 0, .y = 0, .width = 100, .height = 100,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(group_id);
 
-    const xml = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
+    const json = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
         .element_id = "elem_does_not_exist",
         .new_parent_id = group_id,
     });
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    defer alloc.free(json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "element_id"));
 }
 
-// ─── Test 4: invalid element_id prefix returns XML error ──────────────────
+// ─── Test 4: invalid element_id prefix returns a JSON error ───────────────
 
 test "executeSetElementParentToString rejects element_id with invalid prefix" {
     const alloc = testing.allocator;
@@ -440,13 +437,15 @@ test "executeSetElementParentToString rejects element_id with invalid prefix" {
     defer alloc.free(ctx.item_id);
     defer alloc.free(ctx.item_path);
 
-    const xml = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
+    const json = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
         .element_id = "not_elem_anything",
         .new_parent_id = "elem_anything",
     });
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "element_id") != null);
+    defer alloc.free(json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "element_id"));
 }
 
 // ─── Test 5: set_element_parent to null moves element to top-level ─────
@@ -471,8 +470,14 @@ test "executeSetElementParentToString with null moves element to top-level" {
         .name = "group",
         .elem_type = .frame,
         .html = "<div></div>",
-        .x = 0, .y = 0, .width = 100, .height = 100,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 0,
+        .y = 0,
+        .width = 100,
+        .height = 100,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(group_id);
 
@@ -491,12 +496,15 @@ test "executeSetElementParentToString with null moves element to top-level" {
     , &.{ page_id, group_id });
 
     // Call set_element_parent with null.
-    const xml = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
+    const json = try set_element_parent.executeSetElementParentToString(alloc, &ctx.db, .{
         .element_id = "elem_inner",
         .new_parent_id = null,
     });
-    defer alloc.free(xml);
-    try testing.expect(!std.mem.containsAtLeast(u8, xml, 1, "<error>"));
+    defer alloc.free(json);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("error") == null);
+    try testing.expect(parsed.value.object.get("element").?.object.get("parent_id").? == .null);
 
     // Verify DB state.
     const got = try design_model.getElement(alloc, &ctx.db, "elem_inner");

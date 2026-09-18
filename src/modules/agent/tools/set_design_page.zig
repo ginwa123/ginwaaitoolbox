@@ -12,6 +12,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input structure for `set_design_page` tool.
 ///
@@ -57,15 +59,15 @@ pub const set_design_page_tool = AgentTool{
     .function = .{
         .name = "set_design_page",
         .description =
-            \\Create or update a page on a design canvas. This tool has dual semantics: it both CREATES a new page (when none exists with this name on this design item) AND returns the current state of the page INCLUDING all its elements. Use this tool to (1) discover what elements already exist on a page, (2) set the page dimensions, or (3) create a new page.
-            \\
-            \\The call is idempotent: re-issuing `set_design_page` with the same (item_id, page_name) REPLACES the existing page's width/height in place. Other connected clients see the change via SSE.
-            \\
-            \\The item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125505579000). The id is the **canonical** lookup key — do NOT pass the human-readable name. The design item is the one with `item_type='design'`.
-            \\
-            \\Page name rules: must be unique per design item, must NOT contain `/` or null bytes (the unique index rejects duplicates with an `<error>` response). Pick clear names: `Login`, `Dashboard`, `Settings`, `Profile`, etc.
-            \\
-            \\On error, recover by: (1) verify the item_id from the Workspace Context (the active design item is the one marked `*(this task)*`); (2) if the item has no path set, the user must open the AddDesign dialog first to set one — you cannot create pages for an unconfigured item.
+        \\Create or update a page on a design canvas. This tool has dual semantics: it both CREATES a new page (when none exists with this name on this design item) AND returns the current state of the page INCLUDING all its elements. Use this tool to (1) discover what elements already exist on a page, (2) set the page dimensions, or (3) create a new page.
+        \\
+        \\The call is idempotent: re-issuing `set_design_page` with the same (item_id, page_name) REPLACES the existing page's width/height in place. Other connected clients see the change via SSE.
+        \\
+        \\The item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125505579000). The id is the **canonical** lookup key — do NOT pass the human-readable name. The design item is the one with `item_type='design'`.
+        \\
+        \\Page name rules: must be unique per design item, must NOT contain `/` or null bytes (the unique index rejects duplicates with an `error` response). Pick clear names: `Login`, `Dashboard`, `Settings`, `Profile`, etc.
+        \\
+        \\On error, recover by: (1) verify the item_id from the Workspace Context (the active design item is the one marked `*(this task)*`); (2) if the item has no path set, the user must open the AddDesign dialog first to set one — you cannot create pages for an unconfigured item.
         ,
         .parameters = .{
             .type = "object",
@@ -97,118 +99,78 @@ pub const set_design_page_tool = AgentTool{
     },
 };
 
-/// Escape XML special characters. Mirrors the helper in
-/// kanban_list.zig / list_memory.zig / list_skills.zig (duplicated
-/// locally to keep this tool file self-contained).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
+/// Generate an error JSON object (replaces the old per-tool XML escape +
+/// error envelope helpers).
+/// Generate an error JSON object `{"error":...}` so the exec wrapper can
+/// detect it via the top-level `error` key and surface the structured
+/// error to the LLM as `success=false`.
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
-/// Generate an error XML response. The error body is wrapped in
-/// `<page><error>...</error></page>` so `tool_registry.execSetDesignPage`
-/// can detect it via `<error>` substring search and surface the
-/// structured error to the LLM as `success=false`.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<page><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></page>");
-    return try xml.toOwnedSlice(allocator);
-}
-
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees it
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it
 /// on return. Used to avoid leaks when the caller's message is an
 /// `allocPrint` result (can't `defer` across a `return`).
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<page><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></page>");
-    return try xml.toOwnedSlice(allocator);
+    return try errorJSON(allocator, error_msg);
 }
 
 /// Detect the two known LLM id-confusion mistakes (task_id or column_id
 /// passed where item_id was expected). Returns null when the shape
-/// looks correct, or a structured error XML describing the exact
+/// looks correct, or a structured error object describing the exact
 /// mistake + the canonical id source.
 ///
 /// This runs BEFORE the DB query so the LLM gets a fast, typed error
-/// instead of a silent failure that produces an empty `<page>` block
+/// instead of a silent failure that produces an empty page object
 /// (which the LLM would interpret as "no elements yet" — wrong).
 pub fn validateItemIdShape(allocator: std.mem.Allocator, item_id: []const u8) !?[]u8 {
     if (item_id.len == 0) {
-        return try errorXml(allocator, "item_id is required (pass the design item's id from the Workspace Context listing)");
+        return try errorJSON(allocator, "item_id is required (pass the design item's id from the Workspace Context listing)");
     }
     // The DB-generated ids use these prefixes (see workspace_items_create.zig
     // for item_, workspace_item_tasks_create.zig for task_,
     // kanban_model.generateColumnId for col_, workspaces_create.zig for ws_).
     // Anything with the wrong prefix is a shape mistake.
     if (std.mem.startsWith(u8, item_id, "task_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like a TASK id (starts with 'task_'). Pass the DESIGN's item_id instead — find it next to the literal text `item_id: ` in the Workspace Context listing. The item_id always starts with 'item_'.
         , .{item_id}));
     }
     if (std.mem.startsWith(u8, item_id, "page_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the DESIGN's item_id instead — find it next to the literal text `item_id: ` in the Workspace Context listing. The item_id always starts with 'item_'.
         , .{item_id}));
     }
     if (std.mem.startsWith(u8, item_id, "elem_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like an ELEMENT id (starts with 'elem_'). Pass the DESIGN's item_id instead — find it next to the literal text `item_id: ` in the Workspace Context listing. The item_id always starts with 'item_'.
         , .{item_id}));
     }
     if (std.mem.startsWith(u8, item_id, "ws_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like a WORKSPACE id (starts with 'ws_'). You probably swapped workspace_id and item_id. The DESIGN's item_id starts with 'item_' — find it next to the literal text `item_id: ` in the Workspace Context listing.
         , .{item_id}));
     }
     if (!std.mem.startsWith(u8, item_id, "item_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' has an unrecognized prefix (expected 'item_'). Workspace-scoped tools expect a design item_id from the Workspace Context listing, not a free-form string.
         , .{item_id}));
     }
     return null;
 }
 
-/// Execute the `set_design_page` tool. Returns an XML string for the
+/// Execute the `set_design_page` tool. Returns a JSON string for the
 /// LLM.
 ///
-/// On success, the response shape is:
-/// ```xml
-/// <page id="page_xxx" name="Login" width="1440" height="1024" position="0">
-///   <element id="elem_yyy" name="login-card" type="rectangle" x="100" y="200"
-///           width="400" height="300" fill="#ffffff" rotation="0" />
-///   ... more elements ...
-/// </page>
-/// ```
+/// On success, the response is the page object with an `elements` array:
+/// `{"id":"page_xxx","name":"Login","width":1440,"height":1024,
+///   "position":0,"elements":[{"id":"elem_yyy",...}, ...]}`.
 ///
 /// On error (item_path missing, page name invalid, DB failure, id
-/// confusion), the response is wrapped in `<page><error>...</error></page>`.
+/// confusion), the response is `{"error":...}`.
 pub fn executeSetDesignPageToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -227,13 +189,13 @@ pub fn executeSetDesignPageToString(
     //    model stores pages under `<item_path>/.nalar/design/<name>/`,
     //    so `/` would escape the parent directory.
     if (input.page_name.len == 0) {
-        return try errorXml(allocator, "page_name is required");
+        return try errorJSON(allocator, "page_name is required");
     }
     if (std.mem.indexOfScalar(u8, input.page_name, '/') != null) {
-        return try errorXml(allocator, "page_name must not contain '/' (it becomes a directory name)");
+        return try errorJSON(allocator, "page_name must not contain '/' (it becomes a directory name)");
     }
     if (std.mem.indexOfScalar(u8, input.page_name, 0) != null) {
-        return try errorXml(allocator, "page_name must not contain null bytes");
+        return try errorJSON(allocator, "page_name must not contain null bytes");
     }
 
     // 2. Resolve width/height defaults (1440 × 1024 = v6 standard
@@ -243,16 +205,16 @@ pub fn executeSetDesignPageToString(
 
     // 3. Idempotent create/update. Returns the page_id of the
     //    existing-or-newly-created page. Errors are surfaced as
-    //    structured <page><error>...</error></page> responses.
+    //    structured {"error":...} responses.
     const page_id = design_model.setDesignPage(allocator, db, .{
         .item_id = input.item_id,
         .page_name = input.page_name,
         .width = width,
         .height = height,
     }) catch |err| switch (err) {
-        error.ItemPathMissing => return try errorXml(allocator, "design item has no path; set one via AddDesignDialog"),
-        error.BadPageName => return try errorXml(allocator, "page_name is invalid (empty or contains illegal characters)"),
-        else => return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: setDesignPage failed: {s}", .{@errorName(err)})),
+        error.ItemPathMissing => return try errorJSON(allocator, "design item has no path; set one via AddDesignDialog"),
+        error.BadPageName => return try errorJSON(allocator, "page_name is invalid (empty or contains illegal characters)"),
+        else => return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: setDesignPage failed: {s}", .{@errorName(err)})),
     };
     defer allocator.free(page_id);
 
@@ -260,185 +222,88 @@ pub fn executeSetDesignPageToString(
     //    (returns a bundled PageWithElements — single query for the
     //    page, single query for the elements).
     var bundle = design_model.getPageWithElements(allocator, db, page_id) catch |err| {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getPageWithElements failed: {s}", .{@errorName(err)}));
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getPageWithElements failed: {s}", .{@errorName(err)}));
     };
     defer bundle.deinit(allocator);
 
-    // 5. Render the XML. The element loop omits `html` (the LLM
+    // 5. Render the JSON. The element list omits `html` (the LLM
     //    doesn't need it) and emits the file_path so the LLM knows
     //    where the on-disk content lives.
-    return try toXml(allocator, bundle.page, bundle.elements);
+    return try toJSON(allocator, bundle.page, bundle.elements);
 }
 
-/// Serialize a page + its elements to the LLM-facing XML string.
+/// Serialize a page + its elements to the LLM-facing JSON string.
 ///
-/// Element shape (per design §6.2 response):
-/// `<element id="elem_xxx" name="login-card" type="rectangle" x="0" y="0"
-///           width="200" height="100" fill="#ffffff" rotation="0"
-///           corner_radius="0" opacity="1.0" file_path="/abs/path/to/.html"
-///           created_at="..." updated_at="..." />`
-///
-/// We use attributes (not nested elements) for the element fields —
-/// matches the spec's `<element .../>` shape and keeps the response
-/// compact when a page has 20+ elements.
-pub fn toXml(
+/// Element shape (per design §6.2 response, keys mirror the old
+/// `<element ... />` attributes 1:1; omitted-when-empty attributes become
+/// explicit nulls). `html` is intentionally omitted — the LLM doesn't need
+/// the body for layout decisions and the body can be 5+ KB.
+pub const PageElementJSON = struct {
+    id: []const u8,
+    name: []const u8,
+    type: []const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    rotation: f64,
+    opacity: f64,
+    fill: ?[]const u8,
+    stroke: ?[]const u8,
+    file_path: ?[]const u8,
+    parent_id: ?[]const u8,
+};
+
+pub const PageJSON = struct {
+    id: []const u8,
+    name: []const u8,
+    width: i64,
+    height: i64,
+    position: i64,
+    elements: []PageElementJSON,
+};
+
+pub fn toJSON(
     allocator: std.mem.Allocator,
     page: design_model.DesignPage,
     elements: []const design_model.DesignElement,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    // Open <page> with the four canonical attributes from §6.1.
-    try xml.appendSlice(allocator, "<page");
-
-    const escaped_id = try xmlEscape(allocator, page.id);
-    defer allocator.free(escaped_id);
-    try xml.appendSlice(allocator, " id=\"");
-    try xml.appendSlice(allocator, escaped_id);
-    try xml.appendSlice(allocator, "\"");
-
-    const escaped_name = try xmlEscape(allocator, page.name);
-    defer allocator.free(escaped_name);
-    try xml.appendSlice(allocator, " name=\"");
-    try xml.appendSlice(allocator, escaped_name);
-    try xml.appendSlice(allocator, "\"");
-
-    var w_buf: [32]u8 = undefined;
-    const w_str = std.fmt.bufPrint(&w_buf, "{d}", .{page.width}) catch "0";
-    try xml.appendSlice(allocator, " width=\"");
-    try xml.appendSlice(allocator, w_str);
-    try xml.appendSlice(allocator, "\"");
-
-    var h_buf: [32]u8 = undefined;
-    const h_str = std.fmt.bufPrint(&h_buf, "{d}", .{page.height}) catch "0";
-    try xml.appendSlice(allocator, " height=\"");
-    try xml.appendSlice(allocator, h_str);
-    try xml.appendSlice(allocator, "\"");
-
-    var pos_buf: [32]u8 = undefined;
-    const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{page.position}) catch "0";
-    try xml.appendSlice(allocator, " position=\"");
-    try xml.appendSlice(allocator, pos_str);
-    try xml.appendSlice(allocator, "\"");
-
-    try xml.appendSlice(allocator, ">");
-
-    // Elements. Each <element .../> is self-closing and carries the
-    // 11 v6 fields from design §5.1 + file_path + timestamps. `html`
-    // is intentionally omitted — the LLM doesn't need the body for
-    // layout decisions and the body can be 5+ KB.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(PageElementJSON) = .empty;
     for (elements) |e| {
-        try xml.appendSlice(allocator, "<element");
-
-        const eid = try xmlEscape(allocator, e.id);
-        defer allocator.free(eid);
-        try xml.appendSlice(allocator, " id=\"");
-        try xml.appendSlice(allocator, eid);
-        try xml.appendSlice(allocator, "\"");
-
-        const ename = try xmlEscape(allocator, e.name);
-        defer allocator.free(ename);
-        try xml.appendSlice(allocator, " name=\"");
-        try xml.appendSlice(allocator, ename);
-        try xml.appendSlice(allocator, "\"");
-
-        const etype = try xmlEscape(allocator, e.elem_type);
-        defer allocator.free(etype);
-        try xml.appendSlice(allocator, " type=\"");
-        try xml.appendSlice(allocator, etype);
-        try xml.appendSlice(allocator, "\"");
-
-        try appendIntAttr(&xml, allocator, "x", e.x);
-        try appendIntAttr(&xml, allocator, "y", e.y);
-        try appendIntAttr(&xml, allocator, "width", e.width);
-        try appendIntAttr(&xml, allocator, "height", e.height);
-        try appendFloatAttr(&xml, allocator, "rotation", e.rotation);
-        try appendFloatAttr(&xml, allocator, "opacity", e.opacity);
-
-        // fill / stroke / text_content / text_style / image_url are
-        // user-provided strings that may contain `&`, `<`, `>`, `"`.
-        // xmlEscape them so the LLM sees the real characters and the
-        // attribute doesn't break.
-        if (e.fill.len > 0) {
-            const v = try xmlEscape(allocator, e.fill);
-            defer allocator.free(v);
-            try xml.appendSlice(allocator, " fill=\"");
-            try xml.appendSlice(allocator, v);
-            try xml.appendSlice(allocator, "\"");
-        }
-        if (e.stroke.len > 0) {
-            const v = try xmlEscape(allocator, e.stroke);
-            defer allocator.free(v);
-            try xml.appendSlice(allocator, " stroke=\"");
-            try xml.appendSlice(allocator, v);
-            try xml.appendSlice(allocator, "\"");
-        }
-
-        // file_path: the on-disk location. Escaped — may contain
-        // spaces, slashes, etc.
-        if (e.file_path.len > 0) {
-            const v = try xmlEscape(allocator, e.file_path);
-            defer allocator.free(v);
-            try xml.appendSlice(allocator, " file_path=\"");
-            try xml.appendSlice(allocator, v);
-            try xml.appendSlice(allocator, "\"");
-        }
-
-        // parent_id: FK to a `group`/`frame` on the same page (empty
-        // string for top-level — the `COALESCE(parent_id, '')` wire
-        // convention, same as the read-back path). Render as an
-        // explicit empty attribute for top-level so the LLM can see
-        // the slot exists.
-        if (e.parent_id.len > 0) {
-            const v = try xmlEscape(allocator, e.parent_id);
-            defer allocator.free(v);
-            try xml.appendSlice(allocator, " parent_id=\"");
-            try xml.appendSlice(allocator, v);
-            try xml.appendSlice(allocator, "\"");
-        } else {
-            try xml.appendSlice(allocator, " parent_id=\"\"");
-        }
-
-        try xml.appendSlice(allocator, " />");
+        try out.append(a, .{
+            .id = try sanitizeControlChars(a, e.id),
+            .name = try sanitizeControlChars(a, e.name),
+            .type = try sanitizeControlChars(a, e.elem_type),
+            .x = e.x,
+            .y = e.y,
+            .width = e.width,
+            .height = e.height,
+            .rotation = e.rotation,
+            .opacity = e.opacity,
+            .fill = try optClean(a, e.fill),
+            .stroke = try optClean(a, e.stroke),
+            .file_path = try optClean(a, e.file_path),
+            .parent_id = try optClean(a, e.parent_id),
+        });
     }
-
-    try xml.appendSlice(allocator, "</page>");
-    return try xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, PageJSON{
+        .id = try sanitizeControlChars(a, page.id),
+        .name = try sanitizeControlChars(a, page.name),
+        .width = page.width,
+        .height = page.height,
+        .position = page.position,
+        .elements = out.items,
+    }, .{});
 }
 
-/// Helper: append ` name="N"` (integer attribute) to the XML
-/// ArrayList. Inline so we don't repeat the bufPrint dance.
-fn appendIntAttr(
-    xml: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    value: i64,
-) !void {
-    var buf: [32]u8 = undefined;
-    const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
-    try xml.appendSlice(allocator, " ");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, "=\"");
-    try xml.appendSlice(allocator, str);
-    try xml.appendSlice(allocator, "\"");
-}
-
-/// Helper: append ` name="F"` (float attribute). Floats use a fixed
-/// format with up to 6 decimal places to keep the XML compact.
-fn appendFloatAttr(
-    xml: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    value: f64,
-) !void {
-    var buf: [64]u8 = undefined;
-    const str = std.fmt.bufPrint(&buf, "{d:.6}", .{value}) catch "0";
-    try xml.appendSlice(allocator, " ");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, "=\"");
-    try xml.appendSlice(allocator, str);
-    try xml.appendSlice(allocator, "\"");
+/// Clean an optional free-text field: empty becomes null, otherwise the
+/// control-char-sanitized copy owned by the caller's arena.
+fn optClean(allocator: std.mem.Allocator, s: []const u8) !?[]u8 {
+    if (s.len == 0) return null;
+    return try sanitizeControlChars(allocator, s);
 }
 
 const testing = std.testing;
@@ -472,6 +337,23 @@ fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
     allocator.free(raw);
     return normalized;
+}
+
+fn expectJSONError(alloc: std.mem.Allocator, str: []const u8, needle: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, str, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(err_val == .string);
+    try testing.expect(contains(err_val.string, needle));
+}
+
+fn expectNoJSONError(alloc: std.mem.Allocator, str: []const u8) !std.json.Parsed(std.json.Value) {
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, str, .{});
+    errdefer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    try testing.expect(parsed.value.object.get("error") == null);
+    return parsed;
 }
 
 fn contains(haystack: []const u8, needle: []const u8) bool {
@@ -626,9 +508,9 @@ test "root.zig exposes set_design_page module" {
     }
 }
 
-// ─── XML serialization behavioral tests (no DB required) ────────────────
+// ─── JSON serialization behavioral tests (no DB required) ────────────────
 
-test "toXml on page with no elements produces <page .../>...</page>" {
+test "toJSON on page with no elements produces an empty elements array" {
     const alloc = testing.allocator;
     const page = design_model.DesignPage{
         .id = try alloc.dupe(u8, "page_abc"),
@@ -649,20 +531,21 @@ test "toXml on page with no elements produces <page .../>...</page>" {
         alloc.free(page.created_at);
         alloc.free(page.updated_at);
     }
-    const xml = try set_design_page.toXml(alloc, page, &.{});
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<page"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</page>"));
-    try testing.expect(contains(xml, "id=\"page_abc\""));
-    try testing.expect(contains(xml, "name=\"Login\""));
-    try testing.expect(contains(xml, "width=\"1440\""));
-    try testing.expect(contains(xml, "height=\"1024\""));
-    try testing.expect(contains(xml, "position=\"0\""));
-    // No <element> blocks for an empty elements slice.
-    try testing.expect(!contains(xml, "<element"));
+    const json = try set_design_page.toJSON(alloc, page, &.{});
+    defer alloc.free(json);
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("page_abc", obj.get("id").?.string);
+    try testing.expectEqualStrings("Login", obj.get("name").?.string);
+    try testing.expectEqual(@as(i64, 1440), obj.get("width").?.integer);
+    try testing.expectEqual(@as(i64, 1024), obj.get("height").?.integer);
+    try testing.expectEqual(@as(i64, 0), obj.get("position").?.integer);
+    // Empty elements slice becomes an empty array.
+    try testing.expectEqual(@as(usize, 0), obj.get("elements").?.array.items.len);
 }
 
-test "toXml renders element attributes with v6 fields" {
+test "toJSON renders element objects with v6 fields" {
     const alloc = testing.allocator;
     const page = design_model.DesignPage{
         .id = try alloc.dupe(u8, "page_abc"),
@@ -710,22 +593,27 @@ test "toXml renders element attributes with v6 fields" {
     };
     defer design_model.freeElement(alloc, elem);
     const elements = [_]design_model.DesignElement{elem};
-    const xml = try set_design_page.toXml(alloc, page, &elements);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<element"));
-    try testing.expect(contains(xml, "id=\"elem_xyz\""));
-    try testing.expect(contains(xml, "name=\"login-card\""));
-    try testing.expect(contains(xml, "type=\"rectangle\""));
-    try testing.expect(contains(xml, "x=\"100\""));
-    try testing.expect(contains(xml, "y=\"200\""));
-    try testing.expect(contains(xml, "width=\"400\""));
-    try testing.expect(contains(xml, "height=\"300\""));
-    try testing.expect(contains(xml, "fill=\"#ffffff\""));
-    try testing.expect(contains(xml, "file_path="));
-    try testing.expect(contains(xml, "parent_id=\"\""));
+    const json = try set_design_page.toJSON(alloc, page, &elements);
+    defer alloc.free(json);
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    const els = obj.get("elements").?.array.items;
+    try testing.expectEqual(@as(usize, 1), els.len);
+    const el = els[0].object;
+    try testing.expectEqualStrings("elem_xyz", el.get("id").?.string);
+    try testing.expectEqualStrings("login-card", el.get("name").?.string);
+    try testing.expectEqualStrings("rectangle", el.get("type").?.string);
+    try testing.expectEqual(@as(i64, 100), el.get("x").?.integer);
+    try testing.expectEqual(@as(i64, 200), el.get("y").?.integer);
+    try testing.expectEqual(@as(i64, 400), el.get("width").?.integer);
+    try testing.expectEqual(@as(i64, 300), el.get("height").?.integer);
+    try testing.expectEqualStrings("#ffffff", el.get("fill").?.string);
+    try testing.expect(el.get("file_path").? != .null);
+    try testing.expect(el.get("parent_id").? == .null);
 }
 
-test "toXml renders parent_id for a nested element" {
+test "toJSON renders parent_id for a nested element" {
     const alloc = testing.allocator;
     const page = design_model.DesignPage{
         .id = try alloc.dupe(u8, "page_abc"),
@@ -774,19 +662,20 @@ test "toXml renders parent_id for a nested element" {
     };
     defer design_model.freeElement(alloc, elem);
     const elements = [_]design_model.DesignElement{elem};
-    const xml = try set_design_page.toXml(alloc, page, &elements);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "parent_id=\"elem_parent_1\""));
+    const json = try set_design_page.toJSON(alloc, page, &elements);
+    defer alloc.free(json);
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    const els = parsed.value.object.get("elements").?.array.items;
+    try testing.expectEqual(@as(usize, 1), els.len);
+    try testing.expectEqualStrings("elem_parent_1", els[0].object.get("parent_id").?.string);
 }
 
-test "errorXml on missing field returns <page><error>...</error></page>" {
+test "errorJSON on missing field returns an error object" {
     const alloc = testing.allocator;
-    const xml = try set_design_page.errorXml(alloc, "item_id is required");
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<page>"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</page>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "item_id is required"));
+    const json = try set_design_page.errorJSON(alloc, "item_id is required");
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "item_id is required");
 }
 
 // ─── DB integration behavioral tests (in-memory SQLite) ────────────────
@@ -869,10 +758,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded, item
     const tmpdir_path = try alloc.dupe(u8, tmpdir_buf[0..tmpdir_len]);
 
     const item_id_str = "item_design_1";
-    try db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
-        "VALUES (?, 'ws_test', 'design', 'Test Design', ?)",
-        &.{ item_id_str, tmpdir_path });
+    try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
+        "VALUES (?, 'ws_test', 'design', 'Test Design', ?)", &.{ item_id_str, tmpdir_path });
 
     return .{
         .db = db,
@@ -894,16 +781,16 @@ test "executeSetDesignPageToString creates a page when none exists" {
         .item_id = s.item_id,
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.startsWith(u8, xml, "<page"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</page>"));
-    try testing.expect(contains(xml, "id=\"page_"));
-    try testing.expect(contains(xml, "name=\"Login\""));
-    try testing.expect(contains(xml, "width=\"1440\""));
-    try testing.expect(contains(xml, "height=\"1024\""));
-    try testing.expect(!contains(xml, "<error>"));
+    var parsed = try expectNoJSONError(alloc, json);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(std.mem.startsWith(u8, obj.get("id").?.string, "page_"));
+    try testing.expectEqualStrings("Login", obj.get("name").?.string);
+    try testing.expectEqual(@as(i64, 1440), obj.get("width").?.integer);
+    try testing.expectEqual(@as(i64, 1024), obj.get("height").?.integer);
 }
 
 test "executeSetDesignPageToString is idempotent on second call with same name" {
@@ -920,10 +807,12 @@ test "executeSetDesignPageToString is idempotent on second call with same name" 
         .width = 800,
         .height = 600,
     };
-    const xml1 = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml1);
-    try testing.expect(contains(xml1, "width=\"800\""));
-    try testing.expect(contains(xml1, "height=\"600\""));
+    const json1 = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json1);
+    var parsed1 = try expectNoJSONError(alloc, json1);
+    defer parsed1.deinit();
+    try testing.expectEqual(@as(i64, 800), parsed1.value.object.get("width").?.integer);
+    try testing.expectEqual(@as(i64, 600), parsed1.value.object.get("height").?.integer);
 
     // Second call with same name → must reuse the same page id (idempotent
     // upsert via setDesignPage), and pick up the new dimensions.
@@ -933,25 +822,20 @@ test "executeSetDesignPageToString is idempotent on second call with same name" 
         .width = 1920,
         .height = 1080,
     };
-    const xml2 = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input2);
-    defer alloc.free(xml2);
-    try testing.expect(contains(xml2, "width=\"1920\""));
-    try testing.expect(contains(xml2, "height=\"1080\""));
+    const json2 = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input2);
+    defer alloc.free(json2);
+    var parsed2 = try expectNoJSONError(alloc, json2);
+    defer parsed2.deinit();
+    try testing.expectEqual(@as(i64, 1920), parsed2.value.object.get("width").?.integer);
+    try testing.expectEqual(@as(i64, 1080), parsed2.value.object.get("height").?.integer);
 
-    // The page id should be the same between the two calls — extract
-    // the id="..." value and compare.
-    const id_start1 = (std.mem.indexOf(u8, xml1, "id=\"") orelse 0) + 4;
-    const id_end1 = std.mem.indexOf(u8, xml1[id_start1..], "\"") orelse xml1.len;
-    const id1 = xml1[id_start1..][0..id_end1];
-
-    const id_start2 = (std.mem.indexOf(u8, xml2, "id=\"") orelse 0) + 4;
-    const id_end2 = std.mem.indexOf(u8, xml2[id_start2..], "\"") orelse xml2.len;
-    const id2 = xml2[id_start2..][0..id_end2];
-
-    try testing.expect(std.mem.eql(u8, id1, id2));
+    // The page id should be the same between the two calls.
+    const id1 = parsed1.value.object.get("id").?.string;
+    const id2 = parsed2.value.object.get("id").?.string;
+    try testing.expectEqualStrings(id1, id2);
 }
 
-test "executeSetDesignPageToString returns error XML when item_id is empty" {
+test "executeSetDesignPageToString returns error JSON when item_id is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -963,13 +847,12 @@ test "executeSetDesignPageToString returns error XML when item_id is empty" {
         .item_id = "",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "item_id"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "item_id");
 }
 
-test "executeSetDesignPageToString returns error XML when item_id looks like a task_id" {
+test "executeSetDesignPageToString returns error JSON when item_id looks like a task_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -981,15 +864,16 @@ test "executeSetDesignPageToString returns error XML when item_id looks like a t
         .item_id = "task_1782442569739",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "task_"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "task_");
     // Should mention the correct id source so the LLM self-corrects.
-    try testing.expect(contains(xml, "item_"));
+    var task_parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer task_parsed.deinit();
+    try testing.expect(contains(task_parsed.value.object.get("error").?.string, "item_"));
 }
 
-test "executeSetDesignPageToString returns error XML when item_id looks like a page_id" {
+test "executeSetDesignPageToString returns error JSON when item_id looks like a page_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1001,13 +885,12 @@ test "executeSetDesignPageToString returns error XML when item_id looks like a p
         .item_id = "page_1782442554112",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "page_"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "page_");
 }
 
-test "executeSetDesignPageToString returns error XML when item_id looks like an elem_id" {
+test "executeSetDesignPageToString returns error JSON when item_id looks like an elem_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1019,13 +902,12 @@ test "executeSetDesignPageToString returns error XML when item_id looks like an 
         .item_id = "elem_1782442554112",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "elem_"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "elem_");
 }
 
-test "executeSetDesignPageToString returns error XML when item_id looks like a workspace_id" {
+test "executeSetDesignPageToString returns error JSON when item_id looks like a workspace_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1037,12 +919,12 @@ test "executeSetDesignPageToString returns error XML when item_id looks like a w
         .item_id = "ws_test",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "WORKSPACE");
 }
 
-test "executeSetDesignPageToString returns error XML when item_id has unrecognized prefix" {
+test "executeSetDesignPageToString returns error JSON when item_id has unrecognized prefix" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1054,13 +936,12 @@ test "executeSetDesignPageToString returns error XML when item_id has unrecogniz
         .item_id = "foo_123",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "unrecognized"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "unrecognized");
 }
 
-test "executeSetDesignPageToString returns error XML when page_name is empty" {
+test "executeSetDesignPageToString returns error JSON when page_name is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1072,13 +953,12 @@ test "executeSetDesignPageToString returns error XML when page_name is empty" {
         .item_id = s.item_id,
         .page_name = "",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "page_name"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "page_name");
 }
 
-test "executeSetDesignPageToString returns error XML when page_name contains '/'" {
+test "executeSetDesignPageToString returns error JSON when page_name contains '/'" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1090,10 +970,9 @@ test "executeSetDesignPageToString returns error XML when page_name contains '/'
         .item_id = s.item_id,
         .page_name = "Login/Foo",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "/"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "/");
 }
 
 test "executeSetDesignPageToString returns ItemPathMissing error when item has no path" {
@@ -1105,18 +984,17 @@ test "executeSetDesignPageToString returns ItemPathMissing error when item has n
     defer alloc.free(s.item_path);
 
     // Insert a second design item WITHOUT a path.
-    try s.db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
-        "VALUES ('item_no_path', 'ws_test', 'design', 'No path', '')",
-        &.{});
+    try s.db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
+        "VALUES ('item_no_path', 'ws_test', 'design', 'No path', '')", &.{});
 
     const input = set_design_page.SetDesignPageInput{
         .item_id = "item_no_path",
         .page_name = "Login",
     };
-    const xml = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "no path"));
-    try testing.expect(contains(xml, "AddDesignDialog"));
+    const json = try set_design_page.executeSetDesignPageToString(alloc, &s.db, input);
+    defer alloc.free(json);
+    try expectJSONError(alloc, json, "no path");
+    var nopath_parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer nopath_parsed.deinit();
+    try testing.expect(contains(nopath_parsed.value.object.get("error").?.string, "AddDesignDialog"));
 }
