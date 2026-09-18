@@ -260,3 +260,27 @@ def test_chat_send_direct_with_video_urls(llm_harness: FunctionalHarness):
     sid = r.json()["id"]
     videos = _user_messages_with_video(llm_harness, sid)
     assert any(MP4 in v for v in videos), f"no user message carries the mp4: {videos!r}"
+
+
+def test_chat_send_with_2mb_video_body_is_accepted(llm_harness: FunctionalHarness):
+    """Regression: session_create rejected bodies > 1 MB with 413.
+
+    A real 1.8 MB mp4 base64-encodes to ~2.4 MB of JSON. The handler
+    gate is now 35 MB (25 MB video cap + base64 inflation); the
+    25 MB video_urls_validation cap stays the user-facing limit.
+    """
+    big_payload = "A" * (2 * 1024 * 1024)
+    r = llm_harness.http(
+        "POST",
+        "/api/llm/session",
+        json_body={
+            "queue_message": "big clip",
+            "video_urls": f"data:video/mp4;base64,{big_payload}",
+        },
+        expect=201,
+    )
+    sid = r.json()["id"]
+    videos = _user_messages_with_video(llm_harness, sid)
+    assert any("data:video/mp4;base64," in v for v in videos), (
+        f"no user message carries the video: {[v[:40] for v in videos]!r}"
+    )
