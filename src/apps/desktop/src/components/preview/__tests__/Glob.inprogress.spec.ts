@@ -25,7 +25,15 @@ describe('Glob.vue — in-progress', () => {
     expect(running.find('[data-testid="glob-running"]').exists()).toBe(true)
     const done = mount(Glob, {
       props: {
-        content: '<glob pattern="**/*.zig" path="/tmp/repo"></glob>',
+        content: {
+          pattern: '**/*.zig',
+          total: 0,
+          returned: 0,
+          offset: 0,
+          truncated: 0,
+          files: [],
+          warning: null,
+        },
         parameters: '<pattern>**/*.zig</pattern>',
       } as never,
     })

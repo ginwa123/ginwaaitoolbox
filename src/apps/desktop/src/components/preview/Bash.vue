@@ -13,7 +13,7 @@
 import ShellTool from './ShellTool.vue'
 
 defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   parameters?: string
 }>()

@@ -55,11 +55,7 @@ export const _resetRenderResponseCache = (): void => {
   cache.clear()
 }
 
-const computeKey = (
-  content: string,
-  role: string,
-  toolName: string | undefined,
-): string => {
+const computeKey = (content: string, role: string, toolName: string | undefined): string => {
   // Pipe delimiter is safe: none of the inputs contain `|` (markdown
   // and tool envelopes are user/LLM text, not pipes).
   return `${role}|${toolName ?? ''}|${content.trim()}`
@@ -201,7 +197,9 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
   // to one line / 80 chars so the collapsed pill stays one line.
   if (tool_name?.startsWith('mcp_')) {
     const unwrappedMcp = tryUnwrapToolOutput(content)
-    const raw = unwrappedMcp === null ? content : (unwrappedMcp.data ?? unwrappedMcp.error ?? '')
+    const dataRaw =
+      unwrappedMcp === null ? content : (unwrappedMcp.data ?? unwrappedMcp.error ?? '')
+    const raw = typeof dataRaw === 'string' ? dataRaw : JSON.stringify(dataRaw)
     if (unwrappedMcp !== null && !unwrappedMcp.success) {
       return `<span class="tool-inline">${tool_name} → ${escapeHtml((unwrappedMcp.error ?? 'error').trim() || 'error')}</span>`
     }
@@ -321,8 +319,10 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
   }
   const statusIcon = unwrapped.success ? '✓' : '✗'
   const statusClass = unwrapped.success ? 'tool-inline-success' : 'tool-inline-error'
+  const dataPreview =
+    typeof unwrapped.data === 'string' ? unwrapped.data : JSON.stringify(unwrapped.data ?? null)
   const preview = unwrapped.success
-    ? unwrapped.data?.slice(0, 80) ?? ''
-    : unwrapped.error ?? 'unknown error'
+    ? dataPreview.slice(0, 80)
+    : (unwrapped.error ?? 'unknown error')
   return `<span class="tool-inline">${tool_name || unwrapped.name} → <span class="${statusClass}">${statusIcon}</span> ${escapeHtml(preview)}${preview.length >= 80 ? '…' : ''}</span>`
 }

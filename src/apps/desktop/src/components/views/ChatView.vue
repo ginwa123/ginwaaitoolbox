@@ -1604,7 +1604,7 @@ const unwrappedByMessageId = computed((): Map<string, UnwrappedToolOutput | null
 // envelope didn't parse (legacy fallback) or if there was an error
 // (the error message is shown via the envelope, not via the inner
 // component's own error path).
-const innerToolData = (m: Message): string => {
+const innerToolData = (m: Message): unknown => {
   const unwrapped = unwrappedByMessageId.value.get(m.id)
   if (unwrapped === null || unwrapped === undefined) return m.content // legacy
   return unwrapped.data ?? m.content // error case: fall back to full content
