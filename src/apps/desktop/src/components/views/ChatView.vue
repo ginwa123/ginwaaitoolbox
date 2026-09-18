@@ -177,6 +177,7 @@ interface Message {
   diffview_before?: string
   diffview_after?: string
   image_urls?: string[]
+  video_urls?: string[]
   tool_calls_json?: string
   finish_reason?: string
   tool_call_id?: string
@@ -996,6 +997,7 @@ const teardownContentShiftRaf = () => {
 // State
 const messages = ref<Message[]>([])
 const isLoading = ref(false)
+const isSendingAttachments = ref(false)
 const isLoadingMore = ref(false)
 const error = ref<string | null>(null)
 // Ready-gate: true while the initial mount fetch is outstanding (or the
@@ -1958,6 +1960,7 @@ const toChatMessages = (
     diffview_before: msg.diffview_before,
     diffview_after: msg.diffview_after,
     image_urls: msg.image_url ? msg.image_url.split('|') : undefined,
+    video_urls: msg.video_url ? msg.video_url.split('|') : undefined,
     finish_reason: msg.finish_reason,
     tool_calls_json: msg.tool_calls_json,
     tool_call_id: msg.tool_call_id,
@@ -3221,7 +3224,8 @@ const connectSse = () => {
       event.reasoning_content ||
       event.tool_call_id ||
       event.tool_name ||
-      (event.image_url && event.image_url.length > 0)
+      (event.image_url && event.image_url.length > 0) ||
+      (event.video_url && event.video_url.length > 0)
     )
     if (event.type === 'full' && event.finish_reason && hasRenderableFullPayload) {
       // 2026-08-25 task_1787668954023_2: any non-error `full` event that
@@ -3265,6 +3269,7 @@ const connectSse = () => {
           existingById.diffview_before = event.diffview_before
           existingById.diffview_after = event.diffview_after
           existingById.image_urls = event.image_url ? event.image_url.split('|') : undefined
+          existingById.video_urls = event.video_url ? event.video_url.split('|') : undefined
           existingById.is_input = event.is_input
           existingById.is_output = event.is_output
           streamingContent.value = ''
@@ -3347,6 +3352,7 @@ const connectSse = () => {
         // for messages without images keeps the v-if="image_urls?.length"
         // check in the template clean.
         image_urls: event.image_url ? event.image_url.split('|') : undefined,
+        video_urls: event.video_url ? event.video_url.split('|') : undefined,
         finish_reason: event.finish_reason,
         tool_call_id: event.tool_call_id,
         // 2026-08-24 (task_1787545088500_6, bug A) — carry the wire
@@ -3742,17 +3748,34 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
 
   const currentSessionId = sessionId.value
 
+  // Converting attachments (especially video, up to 25 MB) to base64
+  // blocks the send for seconds with no feedback. Flip the Send
+  // button into its loading state for the whole convert + POST
+  // window so the user waits instead of double-clicking Send.
+  isSendingAttachments.value = true
   let imageUrls: string[] = []
-  if (files && files.length > 0) {
-    const fileToBase64 = (file: File): Promise<string> => {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = () => resolve(reader.result as string)
-        reader.onerror = reject
-        reader.readAsDataURL(file)
-      })
+  try {
+    if (files && files.length > 0) {
+      const fileToBase64 = (file: File): Promise<string> => {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(reader.result as string)
+          reader.onerror = reject
+          reader.readAsDataURL(file)
+        })
+      }
+      imageUrls = await Promise.all(files.map((f) => fileToBase64(f)))
     }
-    imageUrls = await Promise.all(files.map((f) => fileToBase64(f)))
+  } catch (err) {
+    console.error('Failed to convert attachments:', err)
+    isSendingAttachments.value = false
+    messages.value.push({
+      id: `error-${Date.now()}`,
+      role: 'assistant',
+      content: 'Sorry, I could not read the attached files. Please try again.',
+      timestamp: new Date(),
+    })
+    return
   }
 
   // 2026-08-23 auto-collapse fix — NO optimistic local push.
@@ -3788,6 +3811,8 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
       content: 'Sorry, I encountered an error sending your message. Please try again.',
       timestamp: new Date(),
     })
+  } finally {
+    isSendingAttachments.value = false
   }
 }
 
@@ -4191,13 +4216,16 @@ const compactSession = async () => {
                           :key="userMsg.id || `u-${userMsgIdx}`"
                         >
                           <div
-                            v-if="userMsg.image_urls && userMsg.image_urls.length > 0"
+                            v-if="
+                              (userMsg.image_urls && userMsg.image_urls.length > 0) ||
+                              (userMsg.video_urls && userMsg.video_urls.length > 0)
+                            "
                             class="mb-2"
                           >
                             <div class="flex flex-wrap gap-2">
                               <div
                                 v-for="(imgUrl, imgIdx) in userMsg.image_urls"
-                                :key="imgIdx"
+                                :key="`img-${imgIdx}`"
                                 class="chat-attached-image-thumb"
                                 @click="openImagePreview(imgUrl)"
                               >
@@ -4207,6 +4235,19 @@ const compactSession = async () => {
                                   width="80"
                                   height="80"
                                   class="chat-attached-image-img"
+                                />
+                              </div>
+                              <div
+                                v-for="(vidUrl, vidIdx) in userMsg.video_urls"
+                                :key="`vid-${vidIdx}`"
+                                class="chat-attached-image-thumb"
+                              >
+                                <video
+                                  :src="vidUrl"
+                                  width="160"
+                                  class="chat-attached-image-img"
+                                  controls
+                                  preload="metadata"
                                 />
                               </div>
                             </div>
@@ -4710,7 +4751,7 @@ const compactSession = async () => {
             ref="fileInputRef"
             :cwd="sessionCwd"
             :queuedMessages="queuedMessages"
-            :isLoading="isLoading"
+            :isLoading="isLoading || isSendingAttachments"
             :isInitializing="isInitializing"
             :isLLMProcessing="isLLMProcessing"
             @submit="handleFileInputSubmit"

@@ -1260,6 +1260,7 @@ export interface Message {
   diffview_before?: string
   diffview_after?: string
   image_url?: string
+  video_url?: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
   tool_calls_json?: any
   finish_reason?: string
@@ -1583,6 +1584,9 @@ export interface SseEvent {
   // without attached images (most assistant responses, error paths,
   // tool results that don't carry image data).
   image_url?: string
+  // Pipe-separated video URLs (Migration 090, backend
+  // SseEventLLMHistory.video_url). Split on '|' into video_urls.
+  video_url?: string
   // Live session skills pushed on the SSE wire (backend:
   // sse_on_event_send_llm_history.zig:45 SseEventLLMHistory.session_skills,
   // next to is_error). REST-vs-SSE key note: the REST GET /messages path
@@ -3314,6 +3318,7 @@ export type QueueMessageEvent =
       id: string
       message: string
       image_url?: string
+      video_url?: string
       session_id: string
     }
   | {
