@@ -48,6 +48,17 @@ pub const idle_kill_s: i64 = 30 * 60;
 pub const busy_output_window_s: i64 = 5 * 60;
 pub const max_sessions: u32 = 20;
 pub const buffer_cap: usize = 256 * 1024;
+/// One poll drains at most this many bytes (32 x 8 KiB reads). A
+/// flooding child (`yes`, `cat` huge file, `rg` over a big tree)
+/// is spread across polls instead of starving the WS thread in one
+/// unbounded `while (true)` spin with O(cap) memmove per chunk.
+pub const max_drain_bytes_per_call: usize = 256 * 1024;
+pub const max_drain_iters: usize = 32;
+/// Capacity slack before we give memory back: len stays at
+/// `buffer_cap`, but ArrayList capacity can double once on the way
+/// up. Past this slack we shrink so a burst doesn't pin 512 KiB+
+/// forever under memory pressure (remap-OOM abort at old :515).
+pub const buffer_capacity_slack: usize = 64 * 1024;
 pub const default_cols: u16 = 80;
 pub const default_rows: u16 = 24;
 pub const min_dim: u16 = 2;
@@ -284,6 +295,15 @@ pub fn touchUser(s: *Session) void {
 /// the session lock — a torn read only mis-picks a victim, never
 /// corrupts state.
 fn sweepIdle() void {
+    sweepIdleExcluding(null);
+}
+
+/// Same as sweepIdle but never reaps `exclude`: a poll must not free
+/// its own session mid-call (old readOutput swept first, then locked
+/// the freed pointer — heap UAF surfacing as a remap abort in
+/// appendSlice). The excluded session is reaped later by another
+/// session's sweep once it is truly abandoned.
+fn sweepIdleExcluding(exclude: ?*Session) void {
     if (comptime !is_pty_os) return;
     const now = nowSeconds();
     const reg = registry();
@@ -296,10 +316,13 @@ fn sweepIdle() void {
     var it = reg.iterator();
     while (it.next()) |entry| {
         const s = entry.value_ptr.*;
+        if (exclude) |ex| {
+            if (s == ex) continue;
+        }
         const user_idle = now - s.last_user_active_s > kill_after;
         const abs_idle = now - s.last_active_s > timeout;
         const busy = isBusyByStamps(s.exited, s.last_output_at_s, now);
-        if ((user_idle and !busy) or abs_idle) {
+        if (shouldReap(user_idle, abs_idle, busy)) {
             victims.append(g_alloc, s) catch break;
         }
     }
@@ -339,6 +362,25 @@ pub fn validateShell(shell: ?[]const u8) SessionError!void {
 pub fn parseCursor(raw: ?[]const u8) u64 {
     const s = raw orelse return 0;
     return std.fmt.parseInt(u64, s, 10) catch 0;
+}
+
+/// Pure trim math (unit-tested, no locks, no alloc): how many oldest
+/// bytes to drop when `current_len` exceeds `cap`.
+pub fn trimDropLen(current_len: usize, cap: usize) usize {
+    return if (current_len > cap) current_len - cap else 0;
+}
+
+/// Pure large-chunk math: when a single incoming chunk is bigger than
+/// the whole cap, keep only its tail. Returns the start offset into
+/// the incoming bytes (0 when it fits).
+pub fn tailKeepStart(incoming_len: usize, cap: usize) usize {
+    return if (incoming_len > cap) incoming_len - cap else 0;
+}
+
+/// Pure reap predicate (unit-tested): mirrors sweepIdle's victim test
+/// so the rule stays in one place.
+pub fn shouldReap(user_idle: bool, abs_idle: bool, busy: bool) bool {
+    return (user_idle and !busy) or abs_idle;
 }
 
 // ---------------------------------------------------------------------
@@ -502,16 +544,42 @@ pub fn drainSession(s: *Session) void {
 fn drainLocked(s: *Session) void {
     var pfds = [_]PollFd{.{ .fd = s.master_fd, .events = POLLIN, .revents = 0 }};
     var chunk: [8192]u8 = undefined;
-    while (true) {
+    var drained: usize = 0;
+    var iters: usize = 0;
+    while (iters < max_drain_iters and drained < max_drain_bytes_per_call) {
+        iters += 1;
         if (poll(&pfds, 1, 0) <= 0) return;
         if (pfds[0].revents & POLLIN == 0) return;
         const n = read(s.master_fd, &chunk, chunk.len);
         if (n <= 0) return; // EAGAIN/EIO/closed slave — exit state comes from waitpid.
-        appendLocked(s, chunk[0..@intCast(n)]);
+        const m: usize = @intCast(n);
+        appendLocked(s, chunk[0..m]);
+        drained += m;
     }
 }
 
 fn appendLocked(s: *Session, bytes: []const u8) void {
+    // Huge single chunk (>= cap): skip the transient giant alloc and
+    // keep only the tail. Cursor math preserves the absolute stream:
+    // everything before base' was dropped by the cap.
+    if (bytes.len >= buffer_cap) {
+        const start = tailKeepStart(bytes.len, buffer_cap);
+        s.buf.clearRetainingCapacity();
+        s.buf.appendSlice(g_alloc, bytes[start..]) catch {
+            s.total += bytes.len;
+            s.base = s.total;
+            s.buf.clearRetainingCapacity();
+            s.last_output_at_s = nowSeconds();
+            s.last_output_total = s.total;
+            return;
+        };
+        s.total += bytes.len;
+        s.base = s.total - s.buf.items.len;
+        s.last_output_at_s = nowSeconds();
+        s.last_output_total = s.total;
+        shrinkCapacityLocked(s);
+        return;
+    }
     s.buf.appendSlice(g_alloc, bytes) catch {
         // OOM mid-stream: drop the incoming chunk rather than killing
         // the session; the cursor still advances so readers stay in
@@ -527,11 +595,21 @@ fn appendLocked(s: *Session, bytes: []const u8) void {
     s.last_output_at_s = nowSeconds();
     s.last_output_total = s.total;
     if (s.buf.items.len > buffer_cap) {
-        const drop = s.buf.items.len - buffer_cap;
+        const drop = trimDropLen(s.buf.items.len, buffer_cap);
         // Ordered drop of the oldest bytes.
         std.mem.copyForwards(u8, s.buf.items[0..s.buf.items.len - drop], s.buf.items[drop..]);
         s.buf.items.len -= drop;
         s.base += drop;
+    }
+    shrinkCapacityLocked(s);
+}
+
+/// Give bloated capacity back after a burst. Len stays at the cap;
+/// only the spare allocation is released so the next burst doesn't
+/// remap from a pinned 512 KiB+ base under memory pressure.
+fn shrinkCapacityLocked(s: *Session) void {
+    if (s.buf.capacity > buffer_cap + buffer_capacity_slack) {
+        s.buf.shrinkAndFree(g_alloc, buffer_cap);
     }
 }
 
@@ -613,8 +691,10 @@ pub fn readOutput(s: *Session, cursor: u64) OutputSlice {
     // Every poll reaps the long-idle, but polls do NOT refresh the
     // user stamp — only explicit input/resize/attach does. An
     // open-but-unwatched tab still ages out; a busy one (recent
-    // output) is exempt via isBusyByStamps.
-    sweepIdle();
+    // output) is exempt via isBusyByStamps. The sweep excludes self
+    // so it never frees the caller's session mid-call (UAF that
+    // surfaced as a remap abort in appendSlice).
+    sweepIdleExcluding(s);
     mutexLock(&s.mutex);
     s.last_active_s = nowSeconds();
     defer s.mutex.unlock();
@@ -627,6 +707,47 @@ pub fn readOutput(s: *Session, cursor: u64) OutputSlice {
     const off = start - s.base;
     return .{
         .data = s.buf.items[off..],
+        .cursor = s.total,
+        .exited = s.exited,
+        .exit_code = s.exit_code,
+    };
+}
+
+/// Owned variant of readOutput: drains under the session lock and
+/// dupes the requested tail into `allocator` before unlocking, so the
+/// caller holds no borrow into the live ring buffer. Eliminates the
+/// use-after-free window where a concurrent drain reallocs (remap)
+/// while the caller still reads the old slice.
+pub const OwnedOutput = struct {
+    data: []u8,
+    cursor: u64,
+    exited: bool,
+    exit_code: ?i32,
+};
+
+pub fn readOutputAlloc(allocator: std.mem.Allocator, s: *Session, cursor: u64) !OwnedOutput {
+    if (comptime !is_pty_os) {
+        return .{ .data = try allocator.alloc(u8, 0), .cursor = cursor, .exited = true, .exit_code = null };
+    }
+    sweepIdleExcluding(s);
+    mutexLock(&s.mutex);
+    defer s.mutex.unlock();
+    s.last_active_s = nowSeconds();
+    drainLocked(s);
+    pollExitLocked(s);
+    const start = @max(cursor, s.base);
+    if (start >= s.total) {
+        return .{
+            .data = try allocator.alloc(u8, 0),
+            .cursor = s.total,
+            .exited = s.exited,
+            .exit_code = s.exit_code,
+        };
+    }
+    const off = start - s.base;
+    const owned = try allocator.dupe(u8, s.buf.items[off..]);
+    return .{
+        .data = owned,
         .cursor = s.total,
         .exited = s.exited,
         .exit_code = s.exit_code,
@@ -854,6 +975,91 @@ test "spawned shell echoes input (posix only)" {
         const out = readOutput(s, cursor);
         cursor = out.cursor;
         if (std.mem.indexOf(u8, out.data, "MARKER-7f3a9c") != null) {
+            found = true;
+            break;
+        }
+        if (out.exited) break;
+        sleepMillis(100);
+    }
+    try testing.expect(found);
+}
+
+// ---------------------------------------------------------------------
+// Crash-fix regression tests (TDD: terminal buffer remap abort)
+// ---------------------------------------------------------------------
+
+test "trimDropLen keeps buffer at cap" {
+    try testing.expectEqual(@as(usize, 0), trimDropLen(100, buffer_cap));
+    try testing.expectEqual(@as(usize, 0), trimDropLen(buffer_cap, buffer_cap));
+    try testing.expectEqual(@as(usize, 1), trimDropLen(buffer_cap + 1, buffer_cap));
+    try testing.expectEqual(@as(usize, 8192), trimDropLen(buffer_cap + 8192, buffer_cap));
+}
+
+test "tailKeepStart keeps only the tail of oversized chunks" {
+    try testing.expectEqual(@as(usize, 0), tailKeepStart(100, buffer_cap));
+    try testing.expectEqual(@as(usize, 0), tailKeepStart(buffer_cap, buffer_cap));
+    try testing.expectEqual(@as(usize, 1), tailKeepStart(buffer_cap + 1, buffer_cap));
+    try testing.expectEqual(@as(usize, 8192), tailKeepStart(buffer_cap + 8192, buffer_cap));
+}
+
+test "shouldReap mirrors the sweep victim rule" {
+    try testing.expect(shouldReap(true, false, false));
+    try testing.expect(!shouldReap(true, false, true));
+    try testing.expect(shouldReap(false, true, false));
+    try testing.expect(shouldReap(false, true, true));
+    try testing.expect(!shouldReap(false, false, false));
+}
+
+test "drain budget bounds one poll (no unbounded spin)" {
+    try testing.expect(max_drain_iters * 8192 >= max_drain_bytes_per_call);
+    try testing.expectEqual(@as(usize, 256 * 1024), max_drain_bytes_per_call);
+    try testing.expectEqual(@as(usize, 32), max_drain_iters);
+}
+
+test "readOutput never reaps its own session mid-call (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+    const prev_kill = setIdleKillForTest(1);
+    defer _ = setIdleKillForTest(prev_kill);
+
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const id = try testing.allocator.dupe(u8, info.id);
+    defer testing.allocator.free(id);
+    defer destroySession(id) catch {};
+    const s = getSession(id) orelse return error.SessionNotFound;
+    // User-idle past the 1s kill window, but absolutely fresh: the old
+    // readOutput swept first and freed self before locking (UAF). The
+    // fixed version excludes self from its own sweep.
+    mutexLock(&s.mutex);
+    s.last_user_active_s = nowSeconds() - 3600;
+    s.last_active_s = nowSeconds();
+    s.mutex.unlock();
+
+    _ = readOutput(s, 0);
+    try testing.expect(getSession(id) != null);
+}
+
+test "readOutputAlloc returns an owned copy independent of the ring (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+    const prev_kill = setIdleKillForTest(3600);
+    defer _ = setIdleKillForTest(prev_kill);
+
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    defer destroySession(info.id) catch {};
+    const s = getSession(info.id) orelse return error.SessionNotFound;
+    sleepMillis(500);
+    _ = try writeInput(s, "echo OWNED-COPY-4d2e\n");
+    var cursor: u64 = 0;
+    var found = false;
+    var ticks: usize = 0;
+    while (ticks < 50) : (ticks += 1) {
+        const out = try readOutputAlloc(testing.allocator, s, cursor);
+        defer testing.allocator.free(out.data);
+        cursor = out.cursor;
+        if (std.mem.indexOf(u8, out.data, "OWNED-COPY-4d2e") != null) {
             found = true;
             break;
         }
