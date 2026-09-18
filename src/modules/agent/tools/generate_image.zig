@@ -3,7 +3,7 @@
 //! using DALL-E 2 / DALL-E 3 / gpt-image-1.
 //!
 //! The generated image is saved to `<cwd>/generated_images/img_<ts>_<idx>.png`
-//! and the absolute path is returned in an XML envelope. The agent then
+//! and the absolute path is returned in a JSON payload. The agent then
 //! calls `present_files` with `files=[{path=<path>}]` to display the
 //! image inline in the chat.
 //!
@@ -111,19 +111,19 @@ pub const generate_image_tool = AgentTool{
     .function = .{
         .name = "generate_image",
         .description =
-            \\Generate an image from a text prompt using the OpenAI Images API (POST /v1/images/generations). Supports DALL-E 2, DALL-E 3, and gpt-image-1.
-            \\
-            \\INPUT: prompt (required, string), model (optional, default "dall-e-3"), n (optional, default 1, max 10), size (optional, default "1024x1024"), quality (optional, dall-e-3 only — "standard"|"hd"), style (optional, dall-e-3 only — "vivid"|"natural"), response_format (optional, default "b64_json" — "url"|"b64_json"), user (optional, end-user id).
-            \\
-            \\BEHAVIOUR: Calls the OpenAI Images API using the active profile's api_key and base_url (same auth as chat completion — NO separate key needed). Saves the returned image to <cwd>/generated_images/img_<timestamp>_<index>.png. Creates the directory if missing.
-            \\
-            \\OUTPUT (XML success envelope): <generate_image><status>generated</status><count>N</count><model>...</model><size>...</size><images><image index="0" path="/abs/path/img_xxx.png" bytes="12345" mime="image/png"/></images><revised_prompt>...</revised_prompt></generate_image>. On error: <generate_image><error>HTTP 400: ...OpenAI message...</error></generate_image>.
-            \\
-            \\NEXT STEP: Call `present_files` with files=[{path=<path from the envelope>}] and label=<prompt> (or a truncated version) to display the image inline in the chat. The image is durable on disk, so the user can re-view it later.
-            \\
-            \\IMAGE SIZE NOTE: DALL-E 3 images are 1-5 MB — present them via `present_files` (URL-based preview, no inline byte cap).
-            \\
-            \\AUTH: Active profile's api_key + base_url. Self-hosted DALL-E-compatible endpoints work the same way (just set base_url to the proxy).
+        \\Generate an image from a text prompt using the OpenAI Images API (POST /v1/images/generations). Supports DALL-E 2, DALL-E 3, and gpt-image-1.
+        \\
+        \\INPUT: prompt (required, string), model (optional, default "dall-e-3"), n (optional, default 1, max 10), size (optional, default "1024x1024"), quality (optional, dall-e-3 only — "standard"|"hd"), style (optional, dall-e-3 only — "vivid"|"natural"), response_format (optional, default "b64_json" — "url"|"b64_json"), user (optional, end-user id).
+        \\
+        \\BEHAVIOUR: Calls the OpenAI Images API using the active profile's api_key and base_url (same auth as chat completion — NO separate key needed). Saves the returned image to <cwd>/generated_images/img_<timestamp>_<index>.png. Creates the directory if missing.
+        \\
+        \\OUTPUT (JSON success payload): <generate_image><status>generated</status><count>N</count><model>...</model><size>...</size><images><image index="0" path="/abs/path/img_xxx.png" bytes="12345" mime="image/png"/></images><revised_prompt>...</revised_prompt></generate_image>. On error: <generate_image><error>HTTP 400: ...OpenAI message...</error></generate_image>.
+        \\
+        \\NEXT STEP: Call `present_files` with files=[{path=<path from the envelope>}] and label=<prompt> (or a truncated version) to display the image inline in the chat. The image is durable on disk, so the user can re-view it later.
+        \\
+        \\IMAGE SIZE NOTE: DALL-E 3 images are 1-5 MB — present them via `present_files` (URL-based preview, no inline byte cap).
+        \\
+        \\AUTH: Active profile's api_key + base_url. Self-hosted DALL-E-compatible endpoints work the same way (just set base_url to the proxy).
         ,
         .parameters = .{
             .type = "object",
@@ -137,7 +137,7 @@ pub const generate_image_tool = AgentTool{
                 .{ .name = "response_format", .type = "string", .description = "\"url\" or \"b64_json\" (default). We always save to disk regardless of format. \"b64_json\" is the standard; \"url\" is only useful if you also want the OpenAI URL (which expires after ~60 min)." },
                 .{ .name = "user", .type = "string", .description = "A unique identifier for the end-user. Helps OpenAI detect abuse. Optional." },
             },
-            .required = &.{ "prompt" },
+            .required = &.{"prompt"},
         },
         .system_prompt = generate_image_tool_system_prompt,
     },
@@ -161,7 +161,7 @@ const MODEL_SIZE_TABLE = [_]ModelSizes{
 
 /// Validate that `size` is one of the sizes allowed for `model`.
 /// Returns `null` on success, or an owned error message string on
-/// failure (caller wraps it in the XML error envelope via `toXMLError`).
+/// failure (caller wraps it in the JSON error payload via `toJSONError`).
 ///
 /// Errors are intentionally verbose — they tell the LLM (a) what the
 /// offending input was and (b) what the allowed set is, so it can
@@ -424,90 +424,56 @@ fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
     return try result.toOwnedSlice(allocator);
 }
 
-/// Build the success envelope:
-/// `<generate_image><status>generated</status><count>N</count><model>...</model><size>...</size><images>...</images><revised_prompt>...</revised_prompt></generate_image>`
-pub fn toXMLSuccess(
+/// JSON payload for a generate_image result. `std.json` handles all
+/// escaping — no manual layer.
+pub const GenerateImageJSONImage = struct {
+    index: usize,
+    path: []const u8,
+};
+
+pub const GenerateImageJSON = struct {
+    status: []const u8,
+    count: usize = 0,
+    model: []const u8 = "",
+    size: []const u8 = "",
+    images: []const GenerateImageJSONImage = &.{},
+    revised_prompt: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
+/// Build the success payload:
+/// `{status:"generated", count, model, size, images:[{index, path}], revised_prompt}`.
+/// `revised_prompt` is null when the model doesn't rewrite (DALL-E 2).
+pub fn toJSONSuccess(
     allocator: std.mem.Allocator,
     model: []const u8,
     size: []const u8,
     images: []const SavedImage,
     revised_prompt: ?[]const u8,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<generate_image>");
-    try xml.appendSlice(allocator, "<status>generated</status>");
-
-    // <count>
-    var count_buf: [16]u8 = undefined;
-    const count_str = std.fmt.bufPrint(&count_buf, "{d}", .{images.len}) catch unreachable;
-    try xml.appendSlice(allocator, "<count>");
-    try xml.appendSlice(allocator, count_str);
-    try xml.appendSlice(allocator, "</count>");
-
-    // <model>
-    try xml.appendSlice(allocator, "<model>");
-    const em = try xmlEscape(allocator, model);
-    defer allocator.free(em);
-    try xml.appendSlice(allocator, em);
-    try xml.appendSlice(allocator, "</model>");
-
-    // <size>
-    try xml.appendSlice(allocator, "<size>");
-    const es = try xmlEscape(allocator, size);
-    defer allocator.free(es);
-    try xml.appendSlice(allocator, es);
-    try xml.appendSlice(allocator, "</size>");
-
-    // <images>
-    try xml.appendSlice(allocator, "<images>");
+    const items = try allocator.alloc(GenerateImageJSONImage, images.len);
+    defer allocator.free(items);
     for (images, 0..) |img, i| {
-        try xml.appendSlice(allocator, "<image index=\"");
-        var idx_buf: [16]u8 = undefined;
-        const idx_str = std.fmt.bufPrint(&idx_buf, "{d}", .{i}) catch unreachable;
-        try xml.appendSlice(allocator, idx_str);
-        try xml.appendSlice(allocator, "\" path=\"");
-        const ep = try xmlEscape(allocator, img.path);
-        defer allocator.free(ep);
-        try xml.appendSlice(allocator, ep);
-        try xml.appendSlice(allocator, "\" bytes=\"");
-        var bytes_buf: [32]u8 = undefined;
-        const bytes_str = std.fmt.bufPrint(&bytes_buf, "{d}", .{img.bytes}) catch unreachable;
-        try xml.appendSlice(allocator, bytes_str);
-        try xml.appendSlice(allocator, "\" mime=\"");
-        const emime = try xmlEscape(allocator, img.mime);
-        defer allocator.free(emime);
-        try xml.appendSlice(allocator, emime);
-        try xml.appendSlice(allocator, "\" />");
+        items[i] = .{ .index = i, .path = img.path };
     }
-    try xml.appendSlice(allocator, "</images>");
-
-    // <revised_prompt> (omitted when null — DALL-E 2 doesn't rewrite)
-    if (revised_prompt) |rp| {
-        try xml.appendSlice(allocator, "<revised_prompt>");
-        const erp = try xmlEscape(allocator, rp);
-        defer allocator.free(erp);
-        try xml.appendSlice(allocator, erp);
-        try xml.appendSlice(allocator, "</revised_prompt>");
-    }
-
-    try xml.appendSlice(allocator, "</generate_image>");
-    return try xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, GenerateImageJSON{
+        .status = "generated",
+        .count = images.len,
+        .model = model,
+        .size = size,
+        .images = items,
+        .revised_prompt = revised_prompt,
+    }, .{});
 }
 
-/// Build the error envelope: `<generate_image><error>...</error></generate_image>`.
-/// `error_msg` is XML-escaped before insertion.
-pub fn toXMLError(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<generate_image><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></generate_image>");
-    return try xml.toOwnedSlice(allocator);
+/// Build the error payload: `{status:"error", error:...}`.
+/// Mirrors the old `<generate_image><error>...</error></generate_image>`
+/// fields (just the message) in JSON form.
+pub fn toJSONError(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, GenerateImageJSON{
+        .status = "error",
+        .@"error" = error_msg,
+    }, .{});
 }
 
 // ─── HTTP execution ──────────────────────────────────────────────────────
@@ -520,10 +486,10 @@ pub fn toXMLError(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
 ///   5. POST `<base_url>/images/generations` with `Authorization: Bearer <api_key>`
 ///   6. Parse the JSON response
 ///   7. Save each image to `<cwd>/generated_images/img_<ts>_<idx>.png`
-///   8. Build and return the XML success envelope
+///   8. Build and return the JSON success payload
 ///
 /// On any error (validation, HTTP, parse, save-to-disk), returns an
-/// XML error envelope via `toXMLError`. The LLM sees the failure as
+/// JSON error payload via `toJSONError`. The LLM sees the failure as
 /// `<generate_image><error>...</error></generate_image>` — same wire
 /// shape as a success result, just with `<error>` instead of `<status>`.
 ///
@@ -538,7 +504,7 @@ pub fn execute_generate_image(
 ) ![]u8 {
     // 1. Validate prompt (non-empty)
     if (input.prompt.len == 0) {
-        return toXMLError(allocator, "prompt is required and must be non-empty");
+        return toJSONError(allocator, "prompt is required and must be non-empty");
     }
 
     // 2. Apply defaults
@@ -549,7 +515,7 @@ pub fn execute_generate_image(
     // 3. Validate model + size
     if (try validateModelSize(allocator, model, size)) |err_msg| {
         defer allocator.free(err_msg);
-        return toXMLError(allocator, err_msg);
+        return toJSONError(allocator, err_msg);
     }
 
     // If the user asked for "url" response_format, surface a clear
@@ -563,7 +529,7 @@ pub fn execute_generate_image(
     const json_body = buildJsonRequestBody(allocator, input) catch |err| {
         const msg = try std.fmt.allocPrint(allocator, "buildJsonRequestBody failed: {s}", .{@errorName(err)});
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     };
     defer allocator.free(json_body);
 
@@ -572,7 +538,7 @@ pub fn execute_generate_image(
     const uri_str = std.mem.concat(allocator, u8, &.{ base_url, endpoint }) catch |err| {
         const msg = try std.fmt.allocPrint(allocator, "concat URI failed: {s}", .{@errorName(err)});
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     };
     defer allocator.free(uri_str);
 
@@ -588,7 +554,7 @@ pub fn execute_generate_image(
             .{uri_str},
         );
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     }
 
     // 6. Build auth header + request
@@ -627,7 +593,7 @@ pub fn execute_generate_image(
             .{@errorName(err)},
         );
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     };
     defer response.deinit(allocator);
 
@@ -645,7 +611,7 @@ pub fn execute_generate_image(
             defer allocator.free(extracted);
             try msg_buf.print(allocator, ": {s}", .{extracted});
         }
-        return toXMLError(allocator, msg_buf.items);
+        return toJSONError(allocator, msg_buf.items);
     }
 
     // Enforce the response-size cap BEFORE parsing (a runaway server
@@ -657,7 +623,7 @@ pub fn execute_generate_image(
             .{ response.body.len, MAX_RESPONSE_BYTES },
         );
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     }
 
     // 9. Parse the response
@@ -668,7 +634,7 @@ pub fn execute_generate_image(
             .{@errorName(err)},
         );
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     };
     defer {
         for (images) |img| {
@@ -701,7 +667,7 @@ pub fn execute_generate_image(
                 .{i},
             );
             defer allocator.free(msg);
-            return toXMLError(allocator, msg);
+            return toJSONError(allocator, msg);
         };
 
         const path = saveImageToDisk(allocator, io, cwd, b64, i, "image/png") catch |err| {
@@ -711,7 +677,7 @@ pub fn execute_generate_image(
                 .{ i, @errorName(err) },
             );
             defer allocator.free(msg);
-            return toXMLError(allocator, msg);
+            return toJSONError(allocator, msg);
         };
 
         // Read back the file size so the LLM sees an honest number
@@ -731,14 +697,14 @@ pub fn execute_generate_image(
     // 11. Build the success envelope.
     //     Note: `last_revised` is borrowed from `images[i].revised_prompt`
     //     — we MUST not free it. The `defer` above handles the cleanup.
-    const envelope = toXMLSuccess(allocator, model, size, saved, last_revised) catch |err| {
+    const envelope = toJSONSuccess(allocator, model, size, saved, last_revised) catch |err| {
         const msg = try std.fmt.allocPrint(
             allocator,
-            "toXMLSuccess failed: {s}",
+            "toJSONSuccess failed: {s}",
             .{@errorName(err)},
         );
         defer allocator.free(msg);
-        return toXMLError(allocator, msg);
+        return toJSONError(allocator, msg);
     };
 
     // saved[].path was allocated by std.fs.path.join in saveImageToDisk —
@@ -854,8 +820,8 @@ test "generate_image schema required array contains prompt" {
     // Accept any case where prompt is one of the entries — exact form is
     // "&.{\"prompt\"}" alone or "&.{\"prompt\", ...}".
     const required_lines = [_][]const u8{
-        "required = &.{ \"prompt\" }",
-        "required = &.{ \"prompt\",",
+        "required = &.{\"prompt\"}",
+        "required = &.{\"prompt\",",
     };
     var found = false;
     for (required_lines) |line| {
@@ -1220,59 +1186,62 @@ test "saveImageToDisk rejects when the base64 payload is not valid base64" {
     try testing.expectError(error.InvalidBase64, result);
 }
 
-// ─── toXMLSuccess / toXMLError behavioural tests (4) ─────────────────────
+// ─── toJSONSuccess / toJSONError behavioural tests (4) ─────────────────────
 
-test "toXMLSuccess produces the expected envelope shape" {
+test "toJSONSuccess produces the expected payload shape" {
     const alloc = testing.allocator;
     const images = [_]generate_image.SavedImage{
         .{ .path = "/cwd/generated_images/img_1_0.png", .bytes = 12345, .mime = "image/png" },
     };
-    const xml = try generate_image.toXMLSuccess(alloc, "dall-e-3", "1024x1024", &images, "A cat");
-    defer alloc.free(xml);
+    const payload = try generate_image.toJSONSuccess(alloc, "dall-e-3", "1024x1024", &images, "A cat");
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<generate_image>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<status>generated</status>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<model>dall-e-3</model>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<size>1024x1024</size>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<images>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<image ") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "path=\"/cwd/generated_images/img_1_0.png\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "bytes=\"12345\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "mime=\"image/png\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<revised_prompt>A cat</revised_prompt>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</generate_image>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("generated", obj.get("status").?.string);
+    try testing.expectEqual(@as(i64, 1), obj.get("count").?.integer);
+    try testing.expectEqualStrings("dall-e-3", obj.get("model").?.string);
+    try testing.expectEqualStrings("1024x1024", obj.get("size").?.string);
+    const imgs = obj.get("images").?.array;
+    try testing.expectEqual(@as(usize, 1), imgs.items.len);
+    try testing.expectEqual(@as(i64, 0), imgs.items[0].object.get("index").?.integer);
+    try testing.expectEqualStrings("/cwd/generated_images/img_1_0.png", imgs.items[0].object.get("path").?.string);
+    try testing.expectEqualStrings("A cat", obj.get("revised_prompt").?.string);
+    try testing.expect(obj.get("error").? == .null);
 }
 
-test "toXMLSuccess omits revised_prompt when null (DALL-E 2)" {
+test "toJSONSuccess omits revised_prompt when null (DALL-E 2)" {
     const alloc = testing.allocator;
     const images = [_]generate_image.SavedImage{
         .{ .path = "/x.png", .bytes = 100, .mime = "image/png" },
     };
-    const xml = try generate_image.toXMLSuccess(alloc, "dall-e-2", "512x512", &images, null);
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "revised_prompt") == null);
+    const payload = try generate_image.toJSONSuccess(alloc, "dall-e-2", "512x512", &images, null);
+    defer alloc.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("revised_prompt").? == .null);
 }
 
-test "toXMLSuccess escapes XML special chars in revised_prompt" {
+test "toJSONSuccess keeps special chars raw (JSON needs no XML escaping)" {
     const alloc = testing.allocator;
     const images = [_]generate_image.SavedImage{
         .{ .path = "/x.png", .bytes = 100, .mime = "image/png" },
     };
-    // The prompt contains '<' and '&' which MUST be escaped, else the
-    // envelope is invalid XML.
-    const xml = try generate_image.toXMLSuccess(alloc, "dall-e-3", "1024x1024", &images, "A <cat> & a <dog>");
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "&lt;cat&gt;") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "&amp;") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<cat>") == null);
+    const payload = try generate_image.toJSONSuccess(alloc, "dall-e-3", "1024x1024", &images, "A <cat> & a <dog>");
+    defer alloc.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("A <cat> & a <dog>", parsed.value.object.get("revised_prompt").?.string);
 }
 
-test "toXMLError produces <generate_image><error>...</error></generate_image>" {
+test "toJSONError produces status error with message" {
     const alloc = testing.allocator;
-    const xml = try generate_image.toXMLError(alloc, "HTTP 401: Invalid API key");
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "<generate_image>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>HTTP 401: Invalid API key</error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</generate_image>") != null);
+    const payload = try generate_image.toJSONError(alloc, "HTTP 401: Invalid API key");
+    defer alloc.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("error", obj.get("status").?.string);
+    try testing.expectEqualStrings("HTTP 401: Invalid API key", obj.get("error").?.string);
 }

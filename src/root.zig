@@ -301,7 +301,6 @@ pub const ContextIPCTui = struct {
 
     /// Fetch-once cache readers/writers (plan: mcp-fetch-once-cache).
     /// All three are io-free (spinlock) so workflow + HTTP handlers share them.
-
     pub fn isMcpToolsInit(self: *ContextIPCTui) bool {
         mcpToolsLock(&self.mcp_tools_lock);
         defer mcpToolsUnlock(&self.mcp_tools_lock);
@@ -656,7 +655,6 @@ pub const read_workspace_session_tool = @import("modules/agent/tools/read_worksp
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
-
 // `modules/http/HttpClient.zig` was removed — the project uses the
 // libcurl-backed client inside the `kabelweb` package (imported via
 // `@import("kabelweb").client`; the dep is added in build.zig).
@@ -817,7 +815,6 @@ pub const parse_thinking = @import("modules/config/parse_thinking.zig");
 // a direct cross-module @import (which would duplicate the file across
 // modules — see the cleanup_stale_worker precedent in main.zig).
 pub const web_port = @import("modules/config/web_port.zig");
-pub const helperTool = @import("modules/agent/tools/helper.zig");
 pub const read_file = @import("modules/agent/tools/read_file.zig");
 pub const write_file = @import("modules/agent/tools/write_file.zig");
 pub const remove_file = @import("modules/agent/tools/remove_file.zig");

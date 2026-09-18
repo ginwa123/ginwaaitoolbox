@@ -7,8 +7,8 @@
 //! 2. Call `execute_generate_image(...)` with the active profile's
 //!    `base_url` + `api_key` + the session's `cwd` (all carried on
 //!    `ToolExecContext`)
-//! 3. Wrap the XML envelope (`<generate_image>...</generate_image>`)
-//!    via `wrapToolOutput` — surfacing `<error>` as `success=false`
+//! 3. Wrap the JSON payload (`{status:...}`)
+//!    via `wrapToolOutput` — surfacing `status:"error"` as `success=false`
 //!    to the LLM, mirroring how every other tool handles errors.
 //!
 //! Plan: docs/superpowers/plans/2026-08-14-generate-image-tool.md
@@ -50,8 +50,8 @@ pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 
     // 2. Call the impl with the active profile's API endpoint + the
     //    session's working directory. Any tool-level error (HTTP,
-    //    validation, save-to-disk) is already encoded in the XML
-    //    envelope — we just wrap it.
+    //    validation, save-to-disk) is already encoded in the JSON
+    //    payload — we just wrap it.
     const inner = generate_image_mod.execute_generate_image(
         ctx.allocator,
         ctx.io,
@@ -77,25 +77,34 @@ pub fn execGenerateImage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer ctx.allocator.free(inner);
 
-    // 3. Detect the <error>...</error> shape and surface it to the LLM
-    //    as success=false. The full XML envelope is still passed as
-    //    `data` so the LLM can read the diagnostic.
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse inner.len - err_start;
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(
-            ctx.allocator,
-            "generate_image",
-            tc.function.arguments,
-            false,
-            err_msg,
-            inner,
-        );
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // 3. Detect the {status:"error", error:...} shape and surface it
+    //    to the LLM as success=false. The full JSON payload is still
+    //    passed as `data` so the LLM can read the diagnostic.
+    //    A payload that fails to parse is passed through as success —
+    //    it came straight from the tool impl, not the wire.
+    {
+        const inner_parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch null;
+        if (inner_parsed) |pv| {
+            defer pv.deinit();
+            if (pv.value == .object) {
+                if (pv.value.object.get("error")) |err_val| {
+                    if (err_val != .null and err_val == .string) {
+                        const output = try wrapToolOutput(
+                            ctx.allocator,
+                            "generate_image",
+                            tc.function.arguments,
+                            false,
+                            err_val.string,
+                            inner,
+                        );
+                        return ToolExecResult{ .output = output, .output_allocated = true };
+                    }
+                }
+            }
+        }
     }
 
-    // 4. Success path — pass the envelope through as-is.
+    // 4. Success path — pass the payload through as-is.
     const output = try wrapToolOutput(
         ctx.allocator,
         "generate_image",
