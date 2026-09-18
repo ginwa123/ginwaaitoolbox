@@ -533,6 +533,27 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     expect(createTerminalSession).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
+
+  it('shows a session counter', async () => {
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-counter' },
+    })
+    await waitForCreates(1)
+    const count = wrapper.find('[data-testid="terminal-count"]')
+    expect(count.exists()).toBe(true)
+    expect(count.text()).toContain('1/20')
+    wrapper.unmount()
+  })
+
+  it('surfaces the 429 cap message when the server is full', async () => {
+    vi.mocked(createTerminalSession).mockRejectedValueOnce(new FakeApiError(429))
+    const wrapper = mount(TerminalTab, {
+      props: { cwd: '/tmp/toolbox', sessionKey: 'chat-cap-429' },
+    })
+    await waitFor(() => wrapper.find('[data-testid="terminal-status"]').text().includes('Max 20'))
+    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('Max 20')
+    wrapper.unmount()
+  })
 })
 
 const firstSocket = () => {

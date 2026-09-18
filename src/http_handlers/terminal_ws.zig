@@ -168,6 +168,9 @@ pub fn terminalWsHandler(
     const id = req.query.get("id") orelse return;
     if (id.len == 0) return;
     const session = terminal_session.getSession(id) orelse return;
+    // Attach = explicit user action (tab switch): refresh the user
+    // stamp so switching back to a session keeps it alive.
+    terminal_session.touchUser(session);
 
     // No PTY on this OS (Windows): close handshake runs on return.
     // NOTE: this MUST be an if/else on the comptime condition — a bare

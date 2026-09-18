@@ -44,6 +44,9 @@ pub const is_pty_os: bool = switch (builtin.os.tag) {
 /// reaped (24h). Any open (attach flush), poll, input, or resize
 /// refreshes the age — only truly untouched sessions die.
 pub const idle_timeout_s: i64 = 24 * 3600;
+pub const idle_kill_s: i64 = 30 * 60;
+pub const busy_output_window_s: i64 = 5 * 60;
+pub const max_sessions: u32 = 20;
 pub const buffer_cap: usize = 256 * 1024;
 pub const default_cols: u16 = 80;
 pub const default_rows: u16 = 24;
@@ -54,6 +57,7 @@ pub const SessionError = error{
     UnsupportedPlatform,
     InvalidCwd,
     CwdNotDir,
+    TooManySessions,
     InvalidShell,
     InvalidSize,
     SessionNotFound,
@@ -139,6 +143,16 @@ pub const Session = struct {
     /// resize/create). Sessions older than the idle timeout with zero
     /// interaction are reaped by the lazy sweep.
     last_active_s: i64,
+    /// Wall-clock seconds of the last explicit user action (input,
+    /// resize, attach, create). Background output polls refresh
+    /// `last_active_s` but NOT this stamp, so an open-but-unwatched
+    /// tab still ages out via `idle_kill_s`.
+    last_user_active_s: i64,
+    /// Wall-clock seconds when output last grew + the total cursor at
+    /// that moment. Powers the busy-exempt check: a session producing
+    /// output (dev server, install) is never idle-killed.
+    last_output_at_s: i64,
+    last_output_total: u64,
 
     /// Raw PTY master fd (for the WS pump's poll loop). Valid until
     /// `destroySession`.
@@ -160,6 +174,10 @@ var g_inited: bool = false;
 var g_id_counter: u64 = 0;
 /// Live idle timeout in seconds (tests override via setter).
 var g_idle_timeout_s: i64 = idle_timeout_s;
+/// Live user-idle kill in seconds (tests override via setter).
+var g_idle_kill_s: i64 = idle_kill_s;
+/// Live max sessions (tests override via setter).
+var g_max_sessions: u32 = max_sessions;
 const g_alloc = std.heap.c_allocator;
 
 /// Spin-lock acquire (std.atomic.Mutex has no blocking lock() in
@@ -213,6 +231,52 @@ pub fn setIdleTimeoutForTest(timeout_s: i64) i64 {
     return prev;
 }
 
+/// Test-only user-idle-kill override in seconds.
+pub fn setIdleKillForTest(timeout_s: i64) i64 {
+    mutexLock(&g_mutex);
+    defer g_mutex.unlock();
+    const prev = g_idle_kill_s;
+    g_idle_kill_s = timeout_s;
+    return prev;
+}
+
+/// Test-only max-sessions override.
+pub fn setMaxSessionsForTest(n: u32) u32 {
+    mutexLock(&g_mutex);
+    defer g_mutex.unlock();
+    const prev = g_max_sessions;
+    g_max_sessions = n;
+    return prev;
+}
+
+/// Pure busy predicate over stamps (unit-tested, no locks): a session
+/// is busy when its shell is alive and it produced output within the
+/// busy window. Long runners (`bun run dev`, servers, installs) keep
+/// printing, so they survive the idle kill untouched.
+pub fn isBusyByStamps(exited: bool, last_output_at_s: i64, now_s: i64) bool {
+    if (exited) return false;
+    if (last_output_at_s <= 0) return false;
+    return now_s - last_output_at_s < busy_output_window_s;
+}
+
+/// Locking busy check for a live session.
+pub fn isBusy(s: *Session) bool {
+    mutexLock(&s.mutex);
+    defer s.mutex.unlock();
+    return isBusyByStamps(s.exited, s.last_output_at_s, nowSeconds());
+}
+
+/// Explicit user touch (attach/switch): refreshes both the absolute
+/// and the user-idle stamps. Background polls must NOT call this.
+pub fn touchUser(s: *Session) void {
+    if (comptime !is_pty_os) return;
+    mutexLock(&s.mutex);
+    defer s.mutex.unlock();
+    const now = nowSeconds();
+    s.last_active_s = now;
+    s.last_user_active_s = now;
+}
+
 /// Reap sessions with zero interaction older than the idle timeout.
 /// Runs lazily on create + read (no background thread): abandoned
 /// shells age out, while anything you open, poll, type in, or resize
@@ -224,14 +288,18 @@ fn sweepIdle() void {
     const now = nowSeconds();
     const reg = registry();
     mutexLock(&g_mutex);
-    // Read g_idle_timeout_s directly: idleTimeout() would re-lock.
+    // Read g_* directly: idleTimeout() would re-lock.
     const timeout = g_idle_timeout_s;
+    const kill_after = g_idle_kill_s;
     var victims = std.ArrayList(*Session).empty;
     defer victims.deinit(g_alloc);
     var it = reg.iterator();
     while (it.next()) |entry| {
         const s = entry.value_ptr.*;
-        if (now - s.last_active_s > timeout) {
+        const user_idle = now - s.last_user_active_s > kill_after;
+        const abs_idle = now - s.last_active_s > timeout;
+        const busy = isBusyByStamps(s.exited, s.last_output_at_s, now);
+        if ((user_idle and !busy) or abs_idle) {
             victims.append(g_alloc, s) catch break;
         }
     }
@@ -330,8 +398,17 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
     }
 
     // Lazy idle sweep: abandoned shells age out instead of
-    // accumulating forever (no cap, no LRU kills).
+    // accumulating forever. Sweep first so a reaped slot frees
+    // immediately, then enforce the max-sessions cap with 429.
     sweepIdle();
+    {
+        const reg = registry();
+        mutexLock(&g_mutex);
+        const n = reg.count();
+        const cap = g_max_sessions;
+        g_mutex.unlock();
+        if (n >= cap) return error.TooManySessions;
+    }
 
     const shell_path: []const u8 = blk: {
         const s = shell_opt orelse "";
@@ -374,6 +451,9 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
         .exit_code = null,
         .mutex = .unlocked,
         .last_active_s = nowSeconds(),
+        .last_user_active_s = nowSeconds(),
+        .last_output_at_s = 0,
+        .last_output_total = 0,
     };
 
     const reg = registry();
@@ -439,9 +519,13 @@ fn appendLocked(s: *Session, bytes: []const u8) void {
         s.total += bytes.len;
         s.base = s.total;
         s.buf.clearRetainingCapacity();
+        s.last_output_at_s = nowSeconds();
+        s.last_output_total = s.total;
         return;
     };
     s.total += bytes.len;
+    s.last_output_at_s = nowSeconds();
+    s.last_output_total = s.total;
     if (s.buf.items.len > buffer_cap) {
         const drop = s.buf.items.len - buffer_cap;
         // Ordered drop of the oldest bytes.
@@ -477,6 +561,7 @@ pub fn writeInput(s: *Session, data: []const u8) SessionError!usize {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
     mutexLock(&s.mutex);
     s.last_active_s = nowSeconds();
+    s.last_user_active_s = s.last_active_s;
     defer s.mutex.unlock();
     drainLocked(s);
     pollExitLocked(s);
@@ -525,8 +610,10 @@ pub fn readOutput(s: *Session, cursor: u64) OutputSlice {
     if (comptime !is_pty_os) {
         return .{ .data = &.{}, .cursor = cursor, .exited = true, .exit_code = null };
     }
-    // Every poll refreshes ages and reaps the long-idle (open terminal
-    // = activity, so visible sessions never die under you).
+    // Every poll reaps the long-idle, but polls do NOT refresh the
+    // user stamp — only explicit input/resize/attach does. An
+    // open-but-unwatched tab still ages out; a busy one (recent
+    // output) is exempt via isBusyByStamps.
     sweepIdle();
     mutexLock(&s.mutex);
     s.last_active_s = nowSeconds();
@@ -553,6 +640,7 @@ pub fn resizeSession(s: *Session, cols: u16, rows: u16) SessionError!void {
     if (cols < min_dim or cols > max_dim or rows < min_dim or rows > max_dim) return error.InvalidSize;
     mutexLock(&s.mutex);
     s.last_active_s = nowSeconds();
+    s.last_user_active_s = s.last_active_s;
     defer s.mutex.unlock();
     if (s.exited) return error.SessionExited;
     var win = Winsize{ .ws_row = rows, .ws_col = cols, .ws_xpixel = 0, .ws_ypixel = 0 };
@@ -658,6 +746,8 @@ test "idle sweep reaps untouched sessions, keeps active ones (posix only)" {
     if (comptime !is_pty_os) return error.SkipZigTest;
     const prev_timeout = setIdleTimeoutForTest(3600);
     defer _ = setIdleTimeoutForTest(prev_timeout);
+    const prev_kill = setIdleKillForTest(3600);
+    defer _ = setIdleKillForTest(prev_kill);
 
     const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
     const a_id = try testing.allocator.dupe(u8, a.id);
@@ -665,17 +755,83 @@ test "idle sweep reaps untouched sessions, keeps active ones (posix only)" {
     const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
     defer destroySession(b.id) catch {};
 
-    // Backdate a past the timeout; touch b so it stays fresh.
+    // Backdate a past the timeout (both stamps); touch b's user stamp
+    // so it stays fresh. A bare output poll must NOT save a session.
     const sa = getSession(a_id) orelse return error.SessionNotFound;
     mutexLock(&sa.mutex);
     sa.last_active_s -= 7200;
+    sa.last_user_active_s = sa.last_active_s;
     sa.mutex.unlock();
     const sb = getSession(b.id) orelse return error.SessionNotFound;
+    touchUser(sb);
     _ = readOutput(sb, 0);
 
     sweepIdle();
     try testing.expect(getSession(a_id) == null);
     try testing.expect(getSession(b.id) != null);
+}
+
+test "isBusyByStamps exempts recent output, not exited or stale" {
+    try testing.expect(isBusyByStamps(false, 1000, 1000 + busy_output_window_s - 1));
+    try testing.expect(!isBusyByStamps(false, 1000, 1000 + busy_output_window_s + 1));
+    try testing.expect(!isBusyByStamps(false, 0, 1000));
+    try testing.expect(!isBusyByStamps(true, 1000, 1001));
+}
+
+test "poll does not refresh the user stamp (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    defer destroySession(info.id) catch {};
+    const s = getSession(info.id) orelse return error.SessionNotFound;
+    mutexLock(&s.mutex);
+    s.last_user_active_s -= 100;
+    const user_before = s.last_user_active_s;
+    s.mutex.unlock();
+    _ = readOutput(s, 0);
+    mutexLock(&s.mutex);
+    const user_after = s.last_user_active_s;
+    s.mutex.unlock();
+    try testing.expectEqual(user_before, user_after);
+}
+
+test "busy session survives the user-idle kill (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_kill = setIdleKillForTest(60);
+    defer _ = setIdleKillForTest(prev_kill);
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const id = try testing.allocator.dupe(u8, info.id);
+    defer testing.allocator.free(id);
+    defer destroySession(id) catch {};
+    const s = getSession(id) orelse return error.SessionNotFound;
+    // User idle past the kill window, but output just grew (dev server).
+    mutexLock(&s.mutex);
+    s.last_user_active_s = nowSeconds() - 3600;
+    s.last_active_s = nowSeconds();
+    s.last_output_at_s = nowSeconds();
+    s.last_output_total = s.total + 1;
+    s.mutex.unlock();
+
+    sweepIdle();
+    try testing.expect(getSession(id) != null);
+}
+
+test "max sessions cap rejects over the limit (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_max = setMaxSessionsForTest(2);
+    defer _ = setMaxSessionsForTest(prev_max);
+    const prev_kill = setIdleKillForTest(3600);
+    defer _ = setIdleKillForTest(prev_kill);
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+
+    const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    defer destroySession(a.id) catch {};
+    const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    defer destroySession(b.id) catch {};
+    try testing.expectError(error.TooManySessions, createSession(testing.io, "/tmp", "/bin/sh", 80, 24));
 }
 
 test "spawned shell echoes input (posix only)" {
