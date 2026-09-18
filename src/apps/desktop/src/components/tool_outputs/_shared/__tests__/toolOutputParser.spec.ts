@@ -148,9 +148,13 @@ describe('parseTextReplace', () => {
 
 describe('parseReadFile', () => {
   it('parses success with content and pagination', () => {
-    const r = parseReadFile(
-      '<success>true</success><path>/x</path><content>line1\nline2</content><total_lines>10</total_lines><start_line>1</start_line><end_line>2</end_line>',
-    )
+    const r = parseReadFile({
+      path: '/x',
+      content: 'line1\nline2',
+      total_lines: 10,
+      start_line: 1,
+      end_line: 2,
+    })
     expect(r.path).toBe('/x')
     expect(r.content).toBe('line1\nline2')
     expect(r.totalLines).toBe(10)
@@ -159,15 +163,18 @@ describe('parseReadFile', () => {
     expect(r.success).toBe(true)
   })
   it('returns null numeric fields when missing', () => {
-    const r = parseReadFile('<success>true</success><path>/x</path>')
+    const r = parseReadFile({ path: '/x' })
     expect(r.totalLines).toBeNull()
   })
   it('returns error when not success', () => {
-    const r = parseReadFile(
-      '<success>false</success><path>/x</path><error>permission denied</error>',
-    )
+    const r = parseReadFile({ path: '/x', success: false, error: 'permission denied' })
     expect(r.error).toBe('permission denied')
     expect(r.success).toBe(false)
+  })
+  it('accepts the payload as a JSON string', () => {
+    const r = parseReadFile(JSON.stringify({ path: '/x', content: 'hi' }))
+    expect(r.path).toBe('/x')
+    expect(r.content).toBe('hi')
   })
 })
 
@@ -252,9 +259,12 @@ describe('parseSetGitWorktree', () => {
 
 describe('parseBash', () => {
   it('parses a successful command with stdout', () => {
-    const r = parseBash(
-      '<command>ls</command><stdout>file1\nfile2</stdout><exit_code>0</exit_code><stdout_lines>2</stdout_lines>',
-    )
+    const r = parseBash({
+      command: 'ls',
+      stdout: 'file1\nfile2',
+      exit_code: 0,
+      stdout_lines: 2,
+    })
     expect(r.command).toBe('ls')
     expect(r.stdout).toBe('file1\nfile2')
     expect(r.exitCode).toBe(0)
@@ -262,20 +272,33 @@ describe('parseBash', () => {
     expect(r.timedOut).toBe(false)
   })
   it('parses timeout flag', () => {
-    const r = parseBash('<command>sleep 1</command><timeout>true</timeout>')
+    const r = parseBash({ command: 'sleep 1', timeout: true })
     expect(r.timedOut).toBe(true)
   })
   it('parses exit_code=null when not present', () => {
-    const r = parseBash('<command>x</command>')
+    const r = parseBash({ command: 'x' })
     expect(r.exitCode).toBeNull()
   })
 })
 
 describe('parseSearch', () => {
   it('parses file results with matches', () => {
-    const r = parseSearch(
-      '<file path="/foo/bar.ts" total="42" count="3"><match line="10" snippet="hello" /><match line="20" snippet="world" /></file>',
-    )
+    const r = parseSearch({
+      pattern: 'hello',
+      path: '/foo',
+      files: [
+        {
+          path: '/foo/bar.ts',
+          total: 42,
+          count: 3,
+          matches: [
+            { line: 10, text: 'hello' },
+            { line: 20, text: 'world' },
+          ],
+        },
+      ],
+      warning: null,
+    })
     expect(r.fileResults).toHaveLength(1)
     const fr = r.fileResults[0]!
     expect(fr.path).toBe('/foo/bar.ts')
@@ -286,17 +309,23 @@ describe('parseSearch', () => {
       { lineNumber: 20, snippet: 'world' },
     ])
   })
-  it('decodes XML entities in snippet attribute', () => {
-    const r = parseSearch(
-      '<file path="/x" total="1" count="1"><match line="1" snippet="if a &amp;lt; b" /></file>',
-    )
+  it('renders <>& snippet text verbatim (no entity layer in JSON)', () => {
+    const r = parseSearch({
+      files: [{ path: '/x', total: 1, count: 1, matches: [{ line: 1, text: 'if a < b' }] }],
+    })
     expect(r.fileResults[0]?.matches[0]?.snippet).toBe('if a < b')
   })
-  it('returns error when present (success=false)', () => {
-    const r = parseSearch('<error>timeout</error>')
-    expect(r.success).toBe(false)
-    expect(r.error).toBe('timeout')
+  it('returns empty results for a payload with no files', () => {
+    const r = parseSearch({ pattern: 'x', path: '/y', files: [], warning: 'no matches' })
+    expect(r.success).toBe(true)
+    expect(r.warning).toBe('no matches')
     expect(r.fileResults).toEqual([])
+  })
+  it('reads the truncation summary fields', () => {
+    const r = parseSearch({ returned: 2, total: 40, truncated: true, files: [] })
+    expect(r.returned).toBe(2)
+    expect(r.total).toBe(40)
+    expect(r.truncated).toBe(true)
   })
 })
 
@@ -523,22 +552,23 @@ describe('parseListDirectory', () => {
   })
 })
 
-// 2026-08-14 pwsh-tool: parsePwsh mirrors parseBash (same XML envelope per
+// 2026-08-14 pwsh-tool: parsePwsh mirrors parseBash (same JSON payload per
 // D2 + D10). Wire-contract parity test.
 describe('parsePwsh', () => {
-  const envelope =
-    '<command>Get-ChildItem</command>' +
-    '<stdout>file1\nfile2</stdout>' +
-    '<stderr></stderr>' +
-    '<exit_code>0</exit_code>' +
-    '<truncated>false</truncated>' +
-    '<timeout>false</timeout>' +
-    '<stdout_lines>2</stdout_lines>' +
-    '<stderr_lines>0</stderr_lines>' +
-    '<is_self>false</is_self>'
+  const payload = {
+    command: 'Get-ChildItem',
+    stdout: 'file1\nfile2',
+    stderr: '',
+    exit_code: 0,
+    truncated: false,
+    timeout: false,
+    stdout_lines: 2,
+    stderr_lines: 0,
+    is_self: false,
+  }
 
   it('parses a PowerShell command result with the same shape as parseBash', () => {
-    const r = parsePwsh(envelope)
+    const r = parsePwsh(payload)
     expect(r.command).toBe('Get-ChildItem')
     expect(r.stdout).toBe('file1\nfile2')
     expect(r.exitCode).toBe(0)
@@ -550,29 +580,30 @@ describe('parsePwsh', () => {
   })
 
   it('returns the same ParsedBash shape as parseBash for the same input', () => {
-    // Lock-down test: pwsh + bash share the wire envelope. If a future
+    // Lock-down test: pwsh + bash share the wire payload. If a future
     // refactor diverges them, this assertion fails closed.
-    expect(parsePwsh(envelope)).toEqual(parseBash(envelope))
+    expect(parsePwsh(payload)).toEqual(parseBash(payload))
   })
 })
 
 // unify-command Phase C: `command` (unified shell) reuses the identical
-// 9-tag envelope. `parseBash` / `parsePwsh` specs above are untouched;
+// 9-field payload. `parseBash` / `parsePwsh` specs above are untouched;
 // these cases only lock the new alias + dispatcher branch.
 describe('parseCommand', () => {
-  const envelope =
-    '<command>ls -la</command>' +
-    '<stdout>file1\nfile2</stdout>' +
-    '<stderr></stderr>' +
-    '<exit_code>0</exit_code>' +
-    '<truncated>false</truncated>' +
-    '<timeout>false</timeout>' +
-    '<stdout_lines>2</stdout_lines>' +
-    '<stderr_lines>0</stderr_lines>' +
-    '<is_self>false</is_self>'
+  const payload = {
+    command: 'ls -la',
+    stdout: 'file1\nfile2',
+    stderr: '',
+    exit_code: 0,
+    truncated: false,
+    timeout: false,
+    stdout_lines: 2,
+    stderr_lines: 0,
+    is_self: false,
+  }
 
   it('parses a unified command result with the same shape as parseBash', () => {
-    const r = parseCommand(envelope)
+    const r = parseCommand(payload)
     expect(r.command).toBe('ls -la')
     expect(r.stdout).toBe('file1\nfile2')
     expect(r.exitCode).toBe(0)
@@ -581,17 +612,17 @@ describe('parseCommand', () => {
   })
 
   it('returns the same ParsedBash shape as parseBash for the same input', () => {
-    expect(parseCommand(envelope)).toEqual(parseBash(envelope))
+    expect(parseCommand(payload)).toEqual(parseBash(payload))
   })
 
   it("parseShell('command') equals parseBash for the same input", () => {
-    expect(parseShell('command', envelope)).toEqual(parseBash(envelope))
+    expect(parseShell('command', payload)).toEqual(parseBash(payload))
   })
 
   it('parseShell still dispatches legacy names (bash/pwsh/run_command)', () => {
-    expect(parseShell('bash', envelope)).toEqual(parseBash(envelope))
-    expect(parseShell('pwsh', envelope)).toEqual(parseBash(envelope))
-    expect(parseShell('run_command', envelope)).toEqual(parseBash(envelope))
+    expect(parseShell('bash', payload)).toEqual(parseBash(payload))
+    expect(parseShell('pwsh', payload)).toEqual(parseBash(payload))
+    expect(parseShell('run_command', payload)).toEqual(parseBash(payload))
   })
 })
 

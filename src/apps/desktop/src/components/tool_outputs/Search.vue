@@ -4,10 +4,10 @@ import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 import { extractParam } from '../../helpers/extractParam'
-import { unescapeXml } from './_shared/toolOutputParser'
+import { parseSearch, normalizeToolContent } from './_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   cwd?: string
   parameters?: string
@@ -16,84 +16,38 @@ const props = defineProps<{
 const isExpanded = ref(props.expanded ?? false)
 const openInEditor = useInjectOpenInCodeEditor()
 
-// Parse search pattern and path. The backend XML-escapes both attributes
-// (a raw `"` or `&` in the pattern would otherwise terminate the attribute
-// early), so decode them for display.
-const searchPattern = computed(() => {
-  const match = props.content.match(/pattern="([^"]+)"/)
-  return match ? unescapeXml(match[1] ?? '') : null
-})
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => parseSearch(normalized.value.data))
 
-const searchPath = computed(() => {
-  const match = props.content.match(/path="([^"]+)"/)
-  return match ? unescapeXml(match[1] ?? '') : null
-})
+// Search pattern and path come straight from the JSON data object.
+const searchPattern = computed(() => parsed.value.pattern)
+
+const searchPath = computed(() => parsed.value.path)
 
 // In-progress fallback: prefer envelope, fall back to tool-call parameters
 const displayPattern = computed(
   () => searchPattern.value ?? extractParam(props.parameters, 'pattern'),
 )
 const displayPath = computed(() => searchPath.value ?? extractParam(props.parameters, 'path'))
-const isRunning = computed(() => props.content.trim() === '' && displayPattern.value !== null)
-
-// Parse warning if no matches (XML-escaped on the wire).
-const warningMessage = computed(() => {
-  const match = props.content.match(/<warning>(.*?)<\/warning>/)
-  return match ? unescapeXml(match[1] ?? '') : null
+const isRunning = computed(() => {
+  const c = props.content
+  const isEmpty =
+    c === null ||
+    c === undefined ||
+    (typeof c === 'string' && c.trim() === '') ||
+    (typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0)
+  return isEmpty && displayPattern.value !== null
 })
 
-// Parse error if any
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>(.*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+// Warning when the search found no matches.
+const warningMessage = computed(() => parsed.value.warning)
 
-// Parse all files with matches
-interface SearchMatch {
-  lineNumber: number
-  snippet: string
-}
+// Error from the envelope (ChatView falls back to the full envelope content),
+// if any.
+const errorMessage = computed(() => normalized.value.error)
 
-interface FileResult {
-  path: string
-  total: number
-  count: number
-  matches: SearchMatch[]
-}
-
-const fileResults = computed((): FileResult[] => {
-  const results: FileResult[] = []
-
-  // Match all <file ...>...</file> blocks
-  const fileRegex = /<file path="([^"]+)" total="(\d+)" count="(\d+)">([\s\S]*?)<\/file>/g
-  let match
-
-  while ((match = fileRegex.exec(props.content)) !== null) {
-    // Path + snippet are XML-escaped on the wire (search.zig escapes every
-    // interpolated value), so decode before display. Escaping is also what
-    // keeps a snippet from faking a <file> header or closing </m> early.
-    const filePath = unescapeXml(match[1] ?? '')
-    const total = parseInt(match[2] ?? '', 10) || 0
-    const count = parseInt(match[3] ?? '', 10) || 0
-    const fileContent = match[4] ?? ''
-
-    // Parse individual matches within this file
-    const matches: SearchMatch[] = []
-    const matchRegex = /<m><l>(\d+)<\/l><s>([\s\S]*?)<\/s><\/m>/g
-    let m
-    while ((m = matchRegex.exec(fileContent)) !== null) {
-      matches.push({
-        lineNumber: parseInt(m[1] ?? '', 10) || 0,
-        snippet: unescapeXml(m[2] ?? ''),
-      })
-    }
-
-    results.push({ path: filePath, total, count, matches })
-  }
-
-  return results
-})
+// File results with matches, straight from the JSON data object.
+const fileResults = computed(() => parsed.value.fileResults)
 
 // Total match count across all files
 const totalMatchCount = computed(() => {
@@ -108,10 +62,8 @@ const hasWarning = computed(() => !!warningMessage.value)
 const hasError = computed(() => !!errorMessage.value)
 
 /**
- * Collection summary from the `<search>` element
- * (`returned="N" total="M" truncated="true|false"`). Optional: envelopes
- * persisted before 2026-09-16 carry only pattern/path, so `null` means
- * "unknown" and the header keeps its old wording.
+ * Collection summary (`returned`/`total`/`truncated`). Null when the payload
+ * carries no counts, and the header keeps its plain wording.
  *
  * `truncated` is the operator-visible half of the backend's silent-
  * truncation fix: a capped search (max_results/head/tail) renders
@@ -124,15 +76,9 @@ interface SearchSummary {
 }
 
 const searchSummary = computed((): SearchSummary | null => {
-  const m = props.content.match(
-    /<search\b[^>]*\breturned="(\d+)"[^>]*\btotal="(\d+)"[^>]*\btruncated="(true|false)"/,
-  )
-  if (!m) return null
-  return {
-    returned: parseInt(m[1] ?? '', 10) || 0,
-    total: parseInt(m[2] ?? '', 10) || 0,
-    truncated: m[3] === 'true',
-  }
+  const { returned, total, truncated } = parsed.value
+  if (returned === null || total === null) return null
+  return { returned, total, truncated }
 })
 
 // Arguments guard (mirrors ToolParameters.vue hasArgs): non-empty params
