@@ -42,6 +42,7 @@ const SseEventLLMHistory = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    video_url: ?[]const u8 = null,
     session_skills: ?[]const SkillInfo = null,
     /// True when this event is an agentic-loop diagnostic (retry attempt
     /// or TooManyRetries bail) rather than a real chat turn. The frontend
@@ -76,6 +77,7 @@ pub const OnEventInputLLMHistory = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    video_url: ?[]const u8 = null,
     session_skills: []const SkillInfo,
     /// See SseEventLLMHistory.is_error — threaded through from
     /// InsertLLMHistoriesInput by insert_llm_histories.zig.
@@ -174,6 +176,7 @@ pub fn onEventSendLLMHistory(
         .diffview_before = input.diffview_before,
         .diffview_after = input.diffview_after,
         .image_url = input.image_url,
+        .video_url = input.video_url,
         .session_skills = session_skills_json,
         .is_error = input.is_error,
     };

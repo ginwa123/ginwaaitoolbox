@@ -6,6 +6,7 @@ const ai_mod = nalarcore.ai_mod;
 const llm_history = nalarcore.llm_history;
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
+const video_urls_validation = @import("video_urls_validation.zig");
 
 /// PUT /api/workspaces/tasks/:task_id - Update task by ID only (no workspace/item needed).
 ///
@@ -56,6 +57,10 @@ pub const TaskUpdateError = error{
     /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
     InvalidImageUrls,
     ImageUrlsTooLarge,
+    /// Video urls validation (Migration 090). Same contract with
+    /// a 25 MB cap.
+    InvalidVideoUrls,
+    VideoUrlsTooLarge,
 };
 
 /// Slice of optional fields the client may send. Mirrors
@@ -271,6 +276,35 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
         try sql_buf.appendSlice(allocator,
             "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", image_urls = ");
+        if (validated_urls.len == 0) {
+            try sql_buf.appendSlice(allocator, "''");
+        } else {
+            try sql_buf.appendSlice(allocator, "?");
+            try bind_values.append(allocator, validated_urls);
+        }
+        try sql_buf.appendSlice(allocator, " WHERE id = ?");
+        try bind_values.append(allocator, task_id);
+
+        input.db.exec(allocator, sql_buf.items, bind_values.items) catch return error.FailedToUpdateTask;
+    }
+
+    // Video urls branch (Migration 090 — kanban video urls column).
+    // Same shape as image_urls above: present means overwrite, ""
+    // clears, null leaves unchanged. Validated prefix + 25 MB cap.
+    if (input.body.video_urls) |raw_urls| {
+        const validated_urls = video_urls_validation.validateVideoUrls(raw_urls) catch |err| return switch (err) {
+            error.VideoUrlsTooLarge => error.VideoUrlsTooLarge,
+            error.InvalidVideoUrl => error.InvalidVideoUrls,
+        };
+
+        var sql_buf: std.ArrayList(u8) = .empty;
+        defer sql_buf.deinit(allocator);
+        var bind_values: std.ArrayList([]const u8) = .empty;
+        defer bind_values.deinit(allocator);
+
+        try sql_buf.appendSlice(allocator,
+            "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
+        try sql_buf.appendSlice(allocator, ", video_urls = ");
         if (validated_urls.len == 0) {
             try sql_buf.appendSlice(allocator, "''");
         } else {

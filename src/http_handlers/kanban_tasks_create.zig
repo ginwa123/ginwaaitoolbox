@@ -58,6 +58,7 @@ pub const KanbanTaskCreateBody = struct {
     queue_message: ?[]const u8 = null,
     tags: ?[]const u8 = null,
     image_urls: ?[]const u8 = null,
+    video_urls: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     is_auto_retry_until_stop: ?[]const u8 = null,
     selected_profile_model: ?[]const u8 = null,
@@ -178,6 +179,7 @@ pub fn kanbanTasksCreateHandler(
         .is_auto_retry_until_stop = if (is_create_only) parsed.is_auto_retry_until_stop else null,
         .tags = parsed.tags,
         .image_urls = parsed.image_urls,
+        .video_urls = parsed.video_urls,
         .cwd = parsed.cwd,
     };
 
@@ -195,6 +197,8 @@ pub fn kanbanTasksCreateHandler(
             error.InvalidTags => 400,
             error.InvalidImageUrls => 400,
             error.ImageUrlsTooLarge => 413,
+            error.InvalidVideoUrls => 400,
+            error.VideoUrlsTooLarge => 413,
             error.CwdTooLong, error.CwdNotAbsolute, error.CwdContainsControlChar => 400,
             error.StandardTaskCreateFailed => 500,
             error.OutOfMemory, error.Canceled => 500,
@@ -244,9 +248,10 @@ pub fn kanbanTasksCreateHandler(
             }
         }
         const queue_message = parsed.queue_message orelse "";
-        // image_urls on the wire is `||`-joined (Migration 069
-        // shape); pass through to the worker pool verbatim.
+        // image_urls/video_urls on the wire are `||`-joined (Migration
+        // 069/090 shapes); pass through to the worker pool verbatim.
         const image_urls_wire = parsed.image_urls orelse "";
+        const video_urls_wire = parsed.video_urls orelse "";
 
         sqlite_db.exec(
             allocator,
@@ -281,6 +286,7 @@ pub fn kanbanTasksCreateHandler(
                 .body_message = "",
                 .allowed_tools = "all",
                 .image_urls = image_urls_wire,
+                .video_urls = video_urls_wire,
                 .selected_profile_model = profile,
                 .is_auto_retry_until_stop = normalized,
             }) catch |err| {
@@ -328,21 +334,19 @@ pub fn kanbanTasksCreateHandler(
             // session_created SSE emitted a few lines below.
             // columns: id, session_id, model, response_content,
             // finish_reason, role, agent, parent_id,
-            // parent_session_id, is_input, image_url,
+            // parent_session_id, is_input, image_url, video_url,
             // created_at_nano, created_iso, is_feed_to_llm —
             // every other column uses its DEFAULT. model uses ''
             // literal (NOT NULL constraint + the
             // empty-slice-binds-as-null SQLite backend quirk).
-            // image_url is the `||`-joined wire value (passes
-            // through verbatim; production rows on a real DB use
-            // the same shape).
+            // image_url/video_url are the `||`-joined wire values.
             sqlite_db.exec(
                 allocator,
                 "INSERT INTO llm_history " ++
                     "(id, session_id, model, response_content, finish_reason, role, " ++
-                    "agent, parent_id, parent_session_id, is_input, image_url, " ++
+                    "agent, parent_id, parent_session_id, is_input, image_url, video_url, " ++
                     "is_feed_to_llm, created_at_nano, created_iso) " ++
-                    "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, 1, ?, '')",
+                    "VALUES (?, ?, '', ?, 'null', 'user', 'Agent', ?, ?, 1, ?, ?, 1, ?, '')",
                 &[_][]const u8{
                     id_str,
                     standard_result.task_id,
@@ -350,6 +354,7 @@ pub fn kanbanTasksCreateHandler(
                     standard_result.task_id,
                     standard_result.task_id,
                     image_urls_wire,
+                    video_urls_wire,
                     created_at_str,
                 },
             ) catch |err| {
@@ -406,6 +411,8 @@ pub fn kanbanTasksCreateHandler(
         // valueAlloc copies it into the response JSON.
         // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
         .image_urls = standard_result.image_urls,
+        // Migration 090 — echo persisted video_urls.
+        .video_urls = standard_result.video_urls,
     };
 
     var response_body: ResponseEnvelope = .{ .task = task_resp };

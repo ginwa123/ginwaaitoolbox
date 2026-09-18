@@ -224,6 +224,8 @@ fn useCase(
             // detail dialog gallery + board card thumbnails.
             // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
             .image_urls = task.image_urls,
+            // Migration 090 — kanban video urls. Same contract.
+            .video_urls = task.video_urls,
             // Kanban-task-git-branch: computed on-demand per task
             // from the task's cwd (worktree or item path). The
             // borrowed slice is owned by the per-request arena (the

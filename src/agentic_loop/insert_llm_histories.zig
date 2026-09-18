@@ -115,11 +115,12 @@ pub fn inserLLMHistories(
         \\    tool_name,
         \\    diffview_before,
         \\    diffview_after,
-        \\    image_url
+        \\    image_url,
+        \\    video_url
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -191,7 +192,24 @@ pub fn inserLLMHistories(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    // Join multiple video URLs with || delimiter
+    var video_urls_str: []const u8 = "";
+    var copy_video_urls: ?[]u8 = null;
+    if (input.video_urls) |urls| {
+        if (urls.len > 0) {
+            var combined = std.ArrayList(u8).empty;
+            defer combined.deinit(allocator);
+            for (urls, 0..) |url, i| {
+                if (i > 0) try combined.appendSlice(allocator, "||");
+                try combined.appendSlice(allocator, url);
+            }
+            copy_video_urls = try allocator.dupe(u8, combined.items);
+            video_urls_str = copy_video_urls.?;
+        }
+    }
+    defer if (copy_video_urls) |c| allocator.free(c);
+
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str, video_urls_str };
 
     if (!is_skip_db) {
         try db.exec(allocator, sql, sqlArgs);
@@ -226,6 +244,7 @@ pub fn inserLLMHistories(
                 .is_input = is_input,
                 .is_output = is_output,
                 .image_url = copy_image_urls,
+                .video_url = copy_video_urls,
                 .session_skills = session_skills,
                 .tool_name = copy_tool_name,
                 .total_tokens = input.total_tokens,

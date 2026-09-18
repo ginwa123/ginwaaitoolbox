@@ -516,6 +516,7 @@ pub const SessionMessage = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
+    video_urls: ?[][]const u8 = null,
     tool_call_id: ?[]const u8 = null,
     tool_calls_json: ?[]const u8 = null,
 
@@ -536,6 +537,10 @@ pub const SessionMessage = struct {
         if (self.image_urls) |iums| {
             for (iums) |img| allocator.free(img);
             allocator.free(iums);
+        }
+        if (self.video_urls) |vums| {
+            for (vums) |vid| allocator.free(vid);
+            allocator.free(vums);
         }
         if (self.tool_call_id) |tci| allocator.free(tci);
         if (self.tool_calls_json) |tcj| allocator.free(tcj);
@@ -647,7 +652,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.video_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
             \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
@@ -666,7 +671,7 @@ pub fn getSessionMessagesSorted(
             \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
-            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
+            \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.video_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
             \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
@@ -701,8 +706,8 @@ pub fn getSessionMessagesSorted(
         // git_worktree_cwd at 10, reasoning_content at 11,
         // reasoning_id at 12, reasoning_encrypted_content at 13,
         // diffview_before at 14, diffview_after at 15, image_url at 16,
-        // tool_call_id at 17, tool_calls_json at 18,
-        // selected_profile_model at 19.
+        // video_url at 17, tool_call_id at 18, tool_calls_json at 19,
+        // selected_profile_model at 20.
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
@@ -715,22 +720,22 @@ pub fn getSessionMessagesSorted(
                 git_worktree_cwd = try allocator.dupe(u8, wt_val);
             }
         }
-        // Column indices 20/21 appended after selected_profile_model
-        // at 19 (see SELECT above). Same first-row-only pattern.
+        // Column indices 21/22 appended after selected_profile_model
+        // at 20 (see SELECT above). Same first-row-only pattern.
         if (pr_url == null) {
-            const pr_val = row.values[20];
+            const pr_val = row.values[21];
             if (pr_val.len > 0) {
                 pr_url = try allocator.dupe(u8, pr_val);
             }
         }
         if (pr_provider == null) {
-            const prp_val = row.values[21];
+            const prp_val = row.values[22];
             if (prp_val.len > 0) {
                 pr_provider = try allocator.dupe(u8, prp_val);
             }
         }
         if (selected_profile_model == null) {
-            const spm_val = row.values[19];
+            const spm_val = row.values[20];
             if (spm_val.len > 0) {
                 selected_profile_model = try allocator.dupe(u8, spm_val);
             }
@@ -765,8 +770,22 @@ pub fn getSessionMessagesSorted(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[17].len > 0) try allocator.dupe(u8, row.values[17]) else null,
-            .tool_calls_json = if (row.values[18].len > 0) try allocator.dupe(u8, row.values[18]) else null,
+            .video_urls = if (row.values[17].len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, row.values[17], '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
+            .tool_call_id = if (row.values[18].len > 0) try allocator.dupe(u8, row.values[18]) else null,
+            .tool_calls_json = if (row.values[19].len > 0) try allocator.dupe(u8, row.values[19]) else null,
         };
         try messages.append(allocator, msg);
         row.deinit(allocator);
@@ -1282,6 +1301,7 @@ pub const SaveMessageInput = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
+    video_urls: ?[][]const u8 = null,
     is_feed_to_llm: bool = true,
 };
 
@@ -1367,11 +1387,12 @@ pub fn saveMessage(
         \\    tool_name,
         \\    diffview_before,
         \\    diffview_after,
-        \\    image_url
+        \\    image_url,
+        \\    video_url
         \\) VALUES (
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        \\    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         \\)
     ;
 
@@ -1443,7 +1464,26 @@ pub fn saveMessage(
     }
     defer if (copy_image_urls) |c| allocator.free(c);
 
-    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str };
+    // Join multiple video URLs with || delimiter (empty string binds as
+    // '' literal downstream — never pass a zero-length slice as a bind
+    // arg since SqliteBackend.exec binds "" as NULL).
+    var video_urls_str: []const u8 = "";
+    var copy_video_urls: ?[]u8 = null;
+    if (input.video_urls) |urls| {
+        if (urls.len > 0) {
+            var combined = std.ArrayList(u8).empty;
+            defer combined.deinit(allocator);
+            for (urls, 0..) |url, i| {
+                if (i > 0) try combined.appendSlice(allocator, "||");
+                try combined.appendSlice(allocator, url);
+            }
+            copy_video_urls = try allocator.dupe(u8, combined.items);
+            video_urls_str = copy_video_urls.?;
+        }
+    }
+    defer if (copy_video_urls) |c| allocator.free(c);
+
+    const sqlArgs = &.{ id, copy_session_id, copy_model, copy_content, copy_finish_reason, copy_role, copy_tool_calls, copy_tool_call_id, copy_reasoning, copy_reasoning_id, copy_reasoning_encrypted_content, copy_is_feed_to_llm, copy_agent, loop_index_str, temperature_str, is_thinking_str, created_at_nano, created_iso, copy_parent_session_id, copy_parent_id, prompt_tokens_str, completion_tokens_str, total_tokens_str, cache_creation_input_tokens_str, cache_read_input_tokens_str, if (input.is_input) "1" else "0", if (input.is_output) "1" else "0", copy_tool_name, copy_diffview_before, copy_diffview_after, image_urls_str, video_urls_str };
 
     try db.exec(allocator, sql, sqlArgs);
 
@@ -1487,6 +1527,7 @@ pub fn getMessages(
         \\    COALESCE(h.diffview_before, ''),
         \\    COALESCE(h.diffview_after, ''),
         \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.video_url, ''),
         \\    COALESCE(h.tool_call_id, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
@@ -1503,6 +1544,7 @@ pub fn getMessages(
         const diffview_before_str = row.values[23];
         const diffview_after_str = row.values[24];
         const image_url_str = row.values[25];
+        const video_url_str = row.values[26];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -1543,7 +1585,21 @@ pub fn getMessages(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
+            .video_urls = if (video_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, video_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
+            .tool_call_id = if (row.values[27].len > 0) try allocator.dupe(u8, row.values[27]) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -2340,6 +2396,7 @@ pub fn getLatestMessage(
         \\    COALESCE(h.diffview_before, ''),
         \\    COALESCE(h.diffview_after, ''),
         \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.video_url, ''),
         \\    COALESCE(h.tool_call_id, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
@@ -2357,6 +2414,7 @@ pub fn getLatestMessage(
         const diffview_before_str = row.values[23];
         const diffview_after_str = row.values[24];
         const image_url_str = row.values[25];
+        const video_url_str = row.values[26];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -2397,7 +2455,21 @@ pub fn getLatestMessage(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
+            .video_urls = if (video_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, video_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
+            .tool_call_id = if (row.values[27].len > 0) try allocator.dupe(u8, row.values[27]) else null,
         };
         row.deinit(allocator);
         return history;
@@ -2449,6 +2521,7 @@ pub fn getMessageById(
         \\    COALESCE(h.diffview_before, ''),
         \\    COALESCE(h.diffview_after, ''),
         \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.video_url, ''),
         \\    COALESCE(h.tool_call_id, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
@@ -2464,6 +2537,7 @@ pub fn getMessageById(
         const diffview_before_str = row.values[23];
         const diffview_after_str = row.values[24];
         const image_url_str = row.values[25];
+        const video_url_str = row.values[26];
         const history = TUIHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -2504,7 +2578,21 @@ pub fn getMessageById(
                 }
                 break :blk if (urls.items.len > 0) urls.items else null;
             } else null,
-            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
+            .video_urls = if (video_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, video_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) urls.items else null;
+            } else null,
+            .tool_call_id = if (row.values[27].len > 0) try allocator.dupe(u8, row.values[27]) else null,
         };
         row.deinit(allocator);
         return history;
@@ -3111,10 +3199,11 @@ pub fn resolveStaleLoadingToolResults(
     try db.exec(allocator, sql, &.{session_id});
 }
 
-/// Struct to hold queued message data including image_url
+/// Struct to hold queued message data including image_url/video_url
 pub const QueuedMessage = struct {
     message: []const u8,
     image_url: []const u8,
+    video_url: []const u8 = "",
 };
 
 /// Returns null if no messages queued
@@ -3124,7 +3213,7 @@ pub fn getQueueMessages(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) !?std.ArrayList(QueuedMessage) {
-    const select_sql = "SELECT message, image_url FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
+    const select_sql = "SELECT message, image_url, COALESCE(video_url, '') FROM session_queue_messages WHERE session_id = ? ORDER BY created_at ASC";
     var rows = try db.query(allocator, select_sql, &.{session_id});
     defer rows.deinit();
 
@@ -3133,6 +3222,7 @@ pub fn getQueueMessages(
         for (messages.items) |msg| {
             allocator.free(msg.message);
             allocator.free(msg.image_url);
+            allocator.free(msg.video_url);
         }
         messages.deinit(allocator);
     }
@@ -3140,7 +3230,8 @@ pub fn getQueueMessages(
     while (try rows.next()) |row| {
         const msg = try allocator.dupe(u8, row.values[0]);
         const image_url = try allocator.dupe(u8, row.values[1]);
-        try messages.append(allocator, .{ .message = msg, .image_url = image_url });
+        const video_url = try allocator.dupe(u8, row.values[2]);
+        try messages.append(allocator, .{ .message = msg, .image_url = image_url, .video_url = video_url });
     }
 
     if (messages.items.len == 0) {
@@ -4641,6 +4732,12 @@ pub const WorkspaceItemTaskInfo = struct {
     /// docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md
     image_urls: []u8 = &.{},
 
+    /// `||`-delimited base64 data URLs (Migration 090 — kanban
+    /// video urls column). Empty string is the canonical "no
+    /// videos" sentinel, matching the `image_urls` pattern.
+    /// Owned by the lister; freed by `deinit`.
+    video_urls: []u8 = &.{},
+
     /// Per-task cwd override (Migration 070). Each kanban task can
     /// carry its own cwd path; the session_create handler reads
     /// `task.cwd` before falling back to `workspace_items.path` and
@@ -4681,6 +4778,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.last_finish_reason.len > 0) allocator.free(self.last_finish_reason);
         if (self.tags.len > 0) allocator.free(self.tags);
         if (self.image_urls.len > 0) allocator.free(self.image_urls);
+        if (self.video_urls.len > 0) allocator.free(self.video_urls);
         if (self.cwd.len > 0) allocator.free(self.cwd);
         if (self.git_worktree_cwd.len > 0) allocator.free(self.git_worktree_cwd);
         if (self.git_branch) |gb| allocator.free(gb);
@@ -4753,6 +4851,9 @@ pub fn createWorkspaceItemTask(
     /// on disk that becomes the cwd for this task's chat sessions
     /// (overrides the kanban-level path + the per-session sandbox).
     cwd: ?[]const u8,
+    /// `||`-delimited `data:video/...;base64,...` URLs (Migration 090).
+    /// Same null/empty/literal contract as image_urls above.
+    video_urls: ?[]const u8,
 ) !WorkspaceItemTaskInfo {
     if (!std.mem.eql(u8, task_type, "standard") and !std.mem.eql(u8, task_type, "routine")) {
         return error.InvalidTaskType;
@@ -4791,6 +4892,7 @@ pub fn createWorkspaceItemTask(
     const returned_desc: []const u8 = description orelse "";
     const returned_tags: []const u8 = tags orelse "";
     const returned_image_urls: []const u8 = image_urls orelse "";
+    const returned_video_urls: []const u8 = video_urls orelse "";
     const returned_cwd: []const u8 = cwd orelse "";
     {
         var cols_buf: std.ArrayList(u8) = .empty;
@@ -4849,6 +4951,18 @@ pub fn createWorkspaceItemTask(
             }
         }
 
+        // Migration 090 — same pattern for video_urls.
+        if (video_urls) |u| {
+            if (u.len == 0) {
+                try cols_buf.appendSlice(allocator, ", video_urls");
+                try vals_buf.appendSlice(allocator, ", ''");
+            } else {
+                try cols_buf.appendSlice(allocator, ", video_urls");
+                try vals_buf.appendSlice(allocator, ", ?");
+                try bind_values.append(allocator, u);
+            }
+        }
+
         // Migration 070 — same dynamic-SQL builder pattern for the
         // per-task cwd override. The raw path string is opaque to
         // the DB (TEXT), so we just bind it as a single slice.
@@ -4895,6 +5009,8 @@ pub fn createWorkspaceItemTask(
         // Migration 069 — persist image_urls we just INSERTed. dupe
         // unconditionally so `deinit` can free consistently.
         .image_urls = try allocator.dupe(u8, returned_image_urls),
+        // Migration 090 — persist video_urls we just INSERTed.
+        .video_urls = try allocator.dupe(u8, returned_video_urls),
         // Migration 070 — persist the per-task cwd we just
         // INSERTed. dupe unconditionally so `deinit` can free
         // consistently (the empty-string path also gets duped — a
@@ -5197,7 +5313,7 @@ pub fn getWorkspaceItemTaskById(
     // parent item id and the task id so a task under a different item
     // is never readable through this endpoint (404 at the handler).
     const sql =
-        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
+        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
     ;
 
     var rows = try db.query(allocator, sql, &.{ workspace_item_id, task_id });
@@ -5235,6 +5351,7 @@ pub fn getWorkspaceItemTaskById(
             .git_worktree_cwd = try allocator.dupe(u8, row.values[15]),
             .cwd = try allocator.dupe(u8, row.values[16]),
             .image_urls = try allocator.dupe(u8, row.values[17]),
+            .video_urls = try allocator.dupe(u8, row.values[18]),
         };
         row.deinit(allocator);
         return task;
@@ -5405,7 +5522,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         //       present. The frontend splits on '|' via
         //       normalizeTaskImageUrlsInPlace to render the detail
         //       dialog gallery + board card thumbnails.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5512,6 +5629,8 @@ pub fn listWorkspaceItemTasksWithCursor(
             // the detail dialog gallery + board card thumbnails.
             // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
             .image_urls = try allocator.dupe(u8, row.values[17]),
+            // Video urls (Migration 090): index 18. Same contract.
+            .video_urls = try allocator.dupe(u8, row.values[18]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -5948,7 +6067,8 @@ fn setupDb() !TestCtx {
         \\    last_human_touched_at_nano INTEGER,
         \\    tags TEXT NOT NULL DEFAULT '',
         \\    cwd TEXT NOT NULL DEFAULT '',
-        \\    image_urls TEXT NOT NULL DEFAULT ''
+        \\    image_urls TEXT NOT NULL DEFAULT '',
+        \\    video_urls TEXT NOT NULL DEFAULT ''
         \\)
     , &.{});
     try db.exec(alloc,
@@ -9310,7 +9430,8 @@ test "saveMessage: writes a correct-year (2026-ish) created_iso from current tim
         \\    tool_name TEXT,
         \\    diffview_before TEXT,
         \\    diffview_after TEXT,
-        \\    image_url TEXT
+        \\    image_url TEXT,
+        \\    video_url TEXT
         \\)
     , &.{});
     try db.exec(alloc,
@@ -9397,7 +9518,8 @@ test "saveMessage: created_at column is stored as Unix microseconds (length <= 1
         \\    tool_name TEXT,
         \\    diffview_before TEXT,
         \\    diffview_after TEXT,
-        \\    image_url TEXT
+        \\    image_url TEXT,
+        \\    video_url TEXT
         \\)
     , &.{});
     try db.exec(alloc,

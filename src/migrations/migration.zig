@@ -4836,10 +4836,15 @@ pub const Migration089AuthSessions = struct {
 /// Migration 090 — `workspace_item_tasks.video_urls` + `llm_history.video_url`
 /// + `session_queue_messages.video_url` for full video upload to LLM.
 ///
-/// Mirrors Migration 069 (image_urls): `TEXT NOT NULL DEFAULT ''` with ''
-/// as the canonical "no videos" sentinel. Values are `||`-delimited
-/// `data:video/<mime>;base64,...` URLs validated by
-/// `video_urls_validation.zig` (25 MB cap, allowlisted mimes).
+/// `workspace_item_tasks.video_urls` mirrors Migration 069 (image_urls):
+/// `TEXT NOT NULL DEFAULT ''` with '' as the canonical "no videos"
+/// sentinel (task_update/task_create bind '' as a SQL literal, never as
+/// a `?` arg, since SqliteBackend.exec binds "" as NULL).
+///
+/// `llm_history.video_url` + `session_queue_messages.video_url` mirror
+/// the nullable `image_url TEXT` precedent (M037): saveMessage and
+/// insertQueueMessage bind "" for empty, which lands as NULL and reads
+/// back via COALESCE(col,'').
 pub const Migration090AddVideoUrls = struct {
     pub const version: u32 = 90;
     pub const name = "add_video_urls";
@@ -4857,14 +4862,14 @@ pub const Migration090AddVideoUrls = struct {
             allocator,
             "llm_history",
             "video_url",
-            "video_url TEXT NOT NULL DEFAULT ''",
+            "video_url TEXT",
         );
         try addColumnIfMissing(
             .{ .db = db },
             allocator,
             "session_queue_messages",
             "video_url",
-            "video_url TEXT NOT NULL DEFAULT ''",
+            "video_url TEXT",
         );
     }
 };

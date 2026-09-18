@@ -961,6 +961,9 @@ pub const AgentMessage = struct {
                     if (img.url) |u| allocator.free(u);
                     if (img.detail) |d| allocator.free(d);
                 }
+                if (part.video_url) |vid| {
+                    if (vid.url) |u| allocator.free(u);
+                }
             }
             allocator.free(parts);
         }

@@ -634,6 +634,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
 
     const copy_is_sub_agent = params.is_sub_agent;
     const copy_image_urls = try parent_allocator.dupe(u8, params.image_urls);
+    const copy_video_urls = try parent_allocator.dupe(u8, params.video_urls);
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
     var is_have_queue_message = false;
 
@@ -675,6 +676,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             .session_id = copy_session_id,
             .message = copy_message,
             .image_url = copy_image_urls,
+            .video_url = copy_video_urls,
             .event_bus = event_bus,
             .is_emit_sse = true,
         });
@@ -708,6 +710,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             .session_id = copy_session_id,
             .message = copy_message,
             .image_url = copy_image_urls,
+            .video_url = copy_video_urls,
             .event_bus = event_bus,
             .is_emit_sse = true,
         });
@@ -908,7 +911,8 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 .{ copy_session_id, messages.items.len },
             );
             for (messages.items) |queued| {
-                // Use image_url from database if present, otherwise try to extract from message
+                // Use image_url/video_url from database if present, otherwise
+                // try to extract from message content.
                 var image_urls: ?[][]const u8 = null;
                 if (queued.image_url.len > 0) {
                     // Split by pipe separator
@@ -926,6 +930,26 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                     // Fallback: try to extract from message content
                     image_urls = helpers.image.extractBase64ImageUrls(queued.message, allocator) catch |err| blk: {
                         logger.errFmt("Failed to extract image URLs: {s}", .{@errorName(err)});
+                        break :blk null;
+                    };
+                }
+
+                var video_urls: ?[][]const u8 = null;
+                if (queued.video_url.len > 0) {
+                    var parts = std.mem.splitScalar(u8, queued.video_url, '|');
+                    var urls = std.ArrayList([]const u8).empty;
+                    while (parts.next()) |part| {
+                        if (part.len > 0) {
+                            try urls.append(allocator, try allocator.dupe(u8, part));
+                        }
+                    }
+                    if (urls.items.len > 0) {
+                        video_urls = try urls.toOwnedSlice(allocator);
+                    }
+                } else {
+                    // Fallback: try to extract from message content
+                    video_urls = helpers.video.extractBase64VideoUrls(queued.message, allocator) catch |err| blk: {
+                        logger.errFmt("Failed to extract video URLs: {s}", .{@errorName(err)});
                         break :blk null;
                     };
                 }
@@ -960,6 +984,7 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                         .is_input = true,
                         .is_output = false,
                         .image_urls = image_urls,
+                        .video_urls = video_urls,
                         .created_at = try std.fmt.allocPrint(allocator, "{}", .{std.Io.Timestamp.now(io, .real).nanoseconds}),
                         .is_feed_to_llm = true,
                     },
@@ -2193,6 +2218,7 @@ pub const RunParamsNew = struct {
     allowed_tools: []const u8,
     is_sub_agent: bool = false,
     image_urls: []const u8 = "",
+    video_urls: []const u8 = "",
     selected_profile_model: []const u8 = "",
     inherited_context: []const u8 = "",
     sub_agent_overrides: ?SubAgentOverrides = null,

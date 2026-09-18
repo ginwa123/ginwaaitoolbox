@@ -60,6 +60,7 @@ pub const RequestSession = struct {
     allowed_tools: []const u8 = "",
     body_message: []const u8 = "",
     image_urls: []const u8 = "",
+    video_urls: []const u8 = "",
     selected_profile_model: []const u8 = "", // NEW: name of profile in LlmConfig.profiles_models
     /// Migration 063 — "1" to opt into unattended mode (workflow keeps
     /// retrying past the 10-attempt TooManyRetries bail). Empty string
@@ -232,6 +233,9 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
     var image_urls: []const u8 = "";
     if (parsed.image_urls.len > 0) image_urls = parsed.image_urls;
 
+    var video_urls: []const u8 = "";
+    if (parsed.video_urls.len > 0) video_urls = parsed.video_urls;
+
     var selected_profile_model: []const u8 = "";
     if (parsed.selected_profile_model.len > 0) {
         selected_profile_model = parsed.selected_profile_model;
@@ -300,6 +304,7 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
         .body_message = body_message,
         .allowed_tools = allowed_tools,
         .image_urls = image_urls,
+        .video_urls = video_urls,
         .selected_profile_model = selected_profile_model,
         .is_auto_retry_until_stop = is_auto_retry_until_stop,
     });
