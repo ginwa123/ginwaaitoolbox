@@ -55,6 +55,7 @@ test {
     _ = @import("tool_calls_json_wire_shape_test.zig"); // task_1787590621966_10 — SSE tool_calls_json must be a JSON STRING (frontend .trim() crash regression lock)
     _ = @import("mcp_fetch_once_test.zig"); // mcp-fetch-once-cache — tools/list fetched once, cached on singleton, run reads snapshot
     _ = @import("tools_wrap_output.zig");
+    _ = @import("tool_output_json_contract_test.zig"); // Phase 0 RED: JSON envelope contract (fails until Phase 1)
     _ = @import("workflow_compact_message.zig"); // merged single file — helpers + orchestration + all inline tests
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
     _ = @import("prompts_make_kanban_context.zig"); // kanban prompt — renders all columns at tail (no cap) so kanban_move_task is 1-call; in-memory DB tests
