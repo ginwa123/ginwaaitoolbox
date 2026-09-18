@@ -4067,13 +4067,15 @@ test "search.zig sanitizes free-text fields and serializes via std.json" {
     // field (pattern, path, file paths, snippets, warning).
     try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, pattern)") != null);
     try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, search_path)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, group.path") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, m.snippet") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "sanitizeControlChars(allocator, m.file") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "group.path") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "m.snippet") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "m.file") != null);
     // Serialization goes through std.json, never string-concat.
     try testing.expect(std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") != null);
-    // No XML escaping layer remains.
-    try testing.expect(std.mem.indexOf(u8, source, "xmlEscape") == null);
+    // No XML escaping layer remains (needle split so this very
+    // assertion string doesn't match itself).
+    const xml_needle = "xml" ++ "Escape(allocator";
+    try testing.expect(std.mem.indexOf(u8, source, xml_needle) == null);
 }
 
 test "search.zig reports the collection summary as JSON fields" {

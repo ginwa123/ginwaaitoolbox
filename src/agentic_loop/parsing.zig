@@ -297,9 +297,7 @@ test "tool message success envelope with simple data value" {
 
 test "tool message success envelope with null data returns empty content" {
     const allocator = testing.allocator;
-    const envelope =
-        "{\"tool\":\"foo\",\"parameters\":{}}" ++
-        ",\"success\":true,\"data\":null,\"error\":null,\"v\":1}";
+    const envelope = "{\"tool\":\"foo\",\"parameters\":{},\"success\":true,\"data\":null,\"error\":null,\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 

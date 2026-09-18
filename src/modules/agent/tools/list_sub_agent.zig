@@ -66,7 +66,7 @@ pub const list_sub_agent_tool = AgentTool{
     .function = .{
         .name = "list_sub_agent",
         .description =
-            \\List the subagents configured on your current profile with their full specs (model, tuning, system prompt). Call this before spawn_sub_agent when you are unsure which agent_name values exist or which one fits the job. Absent optional tags mean 'inherits the profile default'. Read-only, no side effects.
+        \\List the subagents configured on your current profile with their full specs (model, tuning, system prompt). Call this before spawn_sub_agent when you are unsure which agent_name values exist or which one fits the job. Absent optional tags mean 'inherits the profile default'. Read-only, no side effects.
         ,
         .parameters = .{
             .type = "object",
@@ -77,28 +77,7 @@ pub const list_sub_agent_tool = AgentTool{
     },
 };
 
-/// Append `s` inside a CDATA section, splitting on the literal `]]>`
-/// sequence (which would otherwise terminate the CDATA section early
-/// and break the XML envelope). Mirrors the `get_plan.zig` slow path
-/// / `enrichCompactionXml` session_skills pattern: close the current
-/// section with the `]]` (already in the data), reopen with
-/// `<![CDATA[`, and emit the literal `>` as content of the new
-/// section. On the wire this reads as `...]]><![CDATA[>...`.
-fn appendCdataSplit(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    if (std.mem.indexOf(u8, s, "]]>") == null) {
-        try out.appendSlice(allocator, s);
-        return;
-    }
-    var rest = s;
-    while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
-        try out.appendSlice(allocator, rest[0..idx]);
-        try out.appendSlice(allocator, "]]><![CDATA[>");
-        rest = rest[idx + 3 ..];
-    }
-    try out.appendSlice(allocator, rest);
-}
-
-/// Execute list_sub_agent. Returns an XML string for the LLM.
+/// Execute list_sub_agent. Returns a JSON string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
 ///
@@ -107,97 +86,60 @@ fn appendCdataSplit(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []
 /// `ctx.selected_profile_model` and forwards it here.
 ///
 /// Empty `profile_name`, a `getProfile` miss, or zero rows (after
-/// skipping empty `sa.name` entries) all yield the `<empty/>` shape
-/// with `<profile>` echoed verbatim.
+/// skipping empty `sa.name` entries) all yield `{"profile":…,"count":0,
+/// "sub_agents":[]}` with `profile` echoed verbatim. Secrets
+/// (`api_key`, `base_url`) are never emitted.
 pub fn executeListSubAgent(
     allocator: std.mem.Allocator,
     config: *const config_mod.LlmConfig,
     profile_name: []const u8,
 ) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
+    const SubAgentJSON = struct {
+        name: []const u8,
+        model: []const u8,
+        url_style: []const u8,
+        thinking: []const u8,
+        temperature: []const u8,
+        max_capacity_tokens: ?u32 = null,
+        compaction_threshold_percent: ?u8 = null,
+        thinking_budget_tokens: ?u32 = null,
+        reasoning_effort: ?[]const u8 = null,
+        system_prompt: []const u8,
+    };
+    const OutJSON = struct {
+        profile: []const u8,
+        count: usize,
+        sub_agents: []SubAgentJSON,
+    };
 
-    try out.appendSlice(allocator, "<list_sub_agent><profile>");
-    try out.appendSlice(allocator, profile_name);
-    try out.appendSlice(allocator, "</profile>");
+    var rows = std.ArrayList(SubAgentJSON).empty;
+    defer rows.deinit(allocator);
 
-    const profile = if (profile_name.len == 0) null else config.getProfile(profile_name);
-    if (profile == null) {
-        try out.appendSlice(allocator, "<empty/></list_sub_agent>");
-        return out.toOwnedSlice(allocator);
-    }
-
-    // Count non-empty names first so <count> is exact.
-    var count: usize = 0;
-    for (profile.?.sub_agents) |sa| {
-        if (sa.name.len == 0) continue;
-        count += 1;
-    }
-    if (count == 0) {
-        try out.appendSlice(allocator, "<empty/></list_sub_agent>");
-        return out.toOwnedSlice(allocator);
-    }
-
-    try out.appendSlice(allocator, "<count>");
-    {
-        const n_str = try std.fmt.allocPrint(allocator, "{d}", .{count});
-        defer allocator.free(n_str);
-        try out.appendSlice(allocator, n_str);
-    }
-    try out.appendSlice(allocator, "</count><sub_agents>");
-
-    for (profile.?.sub_agents) |sa| {
-        if (sa.name.len == 0) continue;
-        try out.appendSlice(allocator, "<sub_agent><name>");
-        try out.appendSlice(allocator, sa.name);
-        try out.appendSlice(allocator, "</name><model>");
-        try out.appendSlice(allocator, sa.model);
-        try out.appendSlice(allocator, "</model><url_style>");
-        try out.appendSlice(allocator, sa.url_style);
-        try out.appendSlice(allocator, "</url_style><thinking>");
-        try out.appendSlice(allocator, sa.thinking);
-        try out.appendSlice(allocator, "</thinking><temperature>");
-        try out.appendSlice(allocator, sa.temperature);
-        try out.appendSlice(allocator, "</temperature>");
-        if (sa.max_capacity_tokens) |v| {
-            try out.appendSlice(allocator, "<max_capacity_tokens>");
-            {
-                const n_str = try std.fmt.allocPrint(allocator, "{d}", .{v});
-                defer allocator.free(n_str);
-                try out.appendSlice(allocator, n_str);
+    if (profile_name.len > 0) {
+        if (config.getProfile(profile_name)) |profile| {
+            for (profile.sub_agents) |sa| {
+                if (sa.name.len == 0) continue;
+                try rows.append(allocator, .{
+                    .name = sa.name,
+                    .model = sa.model,
+                    .url_style = sa.url_style,
+                    .thinking = sa.thinking,
+                    .temperature = sa.temperature,
+                    .max_capacity_tokens = sa.max_capacity_tokens,
+                    .compaction_threshold_percent = sa.compaction_threshold_percent,
+                    .thinking_budget_tokens = sa.thinking_budget_tokens,
+                    .reasoning_effort = sa.reasoning_effort,
+                    .system_prompt = sa.system_prompt,
+                });
             }
-            try out.appendSlice(allocator, "</max_capacity_tokens>");
         }
-        if (sa.compaction_threshold_percent) |v| {
-            try out.appendSlice(allocator, "<compaction_threshold_percent>");
-            {
-                const n_str = try std.fmt.allocPrint(allocator, "{d}", .{v});
-                defer allocator.free(n_str);
-                try out.appendSlice(allocator, n_str);
-            }
-            try out.appendSlice(allocator, "</compaction_threshold_percent>");
-        }
-        if (sa.thinking_budget_tokens) |v| {
-            try out.appendSlice(allocator, "<thinking_budget_tokens>");
-            {
-                const n_str = try std.fmt.allocPrint(allocator, "{d}", .{v});
-                defer allocator.free(n_str);
-                try out.appendSlice(allocator, n_str);
-            }
-            try out.appendSlice(allocator, "</thinking_budget_tokens>");
-        }
-        if (sa.reasoning_effort) |v| {
-            try out.appendSlice(allocator, "<reasoning_effort>");
-            try out.appendSlice(allocator, v);
-            try out.appendSlice(allocator, "</reasoning_effort>");
-        }
-        try out.appendSlice(allocator, "<system_prompt><![CDATA[");
-        try appendCdataSplit(&out, allocator, sa.system_prompt);
-        try out.appendSlice(allocator, "]]></system_prompt></sub_agent>");
     }
 
-    try out.appendSlice(allocator, "</sub_agents></list_sub_agent>");
-    return out.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, OutJSON{
+        .profile = profile_name,
+        .count = rows.items.len,
+        .sub_agents = rows.items,
+    }, .{});
 }
 
 const testing = std.testing;
@@ -292,40 +234,44 @@ test "executeListSubAgent: populated profile returns 2 rows with full prompt ver
     const out = try executeListSubAgent(alloc, &cfg, "dev");
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<list_sub_agent>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "</list_sub_agent>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<profile>dev</profile>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<count>2</count>") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("dev", obj.get("profile").?.string);
+    try testing.expectEqual(@as(i64, 2), obj.get("count").?.integer);
+    const rows = obj.get("sub_agents").?.array.items;
+    try testing.expectEqual(@as(usize, 2), rows.len);
     // >80-char prompt must survive in FULL (no truncation).
-    try testing.expect(std.mem.indexOf(u8, out, "mentoring junior engineers across many languages.") != null);
+    try testing.expect(std.mem.indexOf(u8, rows[0].object.get("system_prompt").?.string, "mentoring junior engineers across many languages.") != null);
     // Tuning verbatim.
-    try testing.expect(std.mem.indexOf(u8, out, "<model>gpt-4o</model>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<thinking>on</thinking>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<temperature>0.2</temperature>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<max_capacity_tokens>128000</max_capacity_tokens>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<compaction_threshold_percent>80</compaction_threshold_percent>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<reasoning_effort>high</reasoning_effort>") != null);
-    // No <empty/> on the populated branch.
-    try testing.expect(std.mem.indexOf(u8, out, "<empty/>") == null);
+    try testing.expectEqualStrings("gpt-4o", rows[0].object.get("model").?.string);
+    try testing.expectEqualStrings("on", rows[0].object.get("thinking").?.string);
+    try testing.expectEqualStrings("0.2", rows[0].object.get("temperature").?.string);
+    try testing.expectEqual(@as(i64, 128000), rows[0].object.get("max_capacity_tokens").?.integer);
+    try testing.expectEqual(@as(i64, 80), rows[0].object.get("compaction_threshold_percent").?.integer);
+    try testing.expectEqualStrings("high", rows[0].object.get("reasoning_effort").?.string);
 }
 
 // ─── Test 2: null-omission — absent optional tags on the sparse row ──────────
 
-test "executeListSubAgent: null optionals omitted, empty strings emitted verbatim" {
+test "executeListSubAgent: null optionals are null, empty strings emitted verbatim" {
     const alloc = testing.allocator;
     var cfg = try testConfig(alloc);
     defer cfg.deinit();
     const out = try executeListSubAgent(alloc, &cfg, "dev");
     defer alloc.free(out);
 
-    // Sparse row renders with empty-string tags verbatim.
-    try testing.expect(std.mem.indexOf(u8, out, "<name>helper</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<model></model>") != null);
-    // Optional tags appear exactly ONCE each (only the populated row).
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "<max_capacity_tokens>"));
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "<compaction_threshold_percent>"));
-    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "<reasoning_effort>"));
-    try testing.expectEqual(@as(usize, 0), std.mem.count(u8, out, "<thinking_budget_tokens>"));
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const rows = parsed.value.object.get("sub_agents").?.array.items;
+    // Sparse row keeps empty-string model verbatim, nulls for absent optionals.
+    try testing.expectEqualStrings("helper", rows[1].object.get("name").?.string);
+    try testing.expectEqualStrings("", rows[1].object.get("model").?.string);
+    try testing.expect(rows[0].object.get("max_capacity_tokens").? == .integer);
+    try testing.expect(rows[1].object.get("max_capacity_tokens").? == .null);
+    try testing.expect(rows[1].object.get("compaction_threshold_percent").? == .null);
+    try testing.expect(rows[1].object.get("reasoning_effort").? == .null);
+    try testing.expect(rows[1].object.get("thinking_budget_tokens").? == .null);
 }
 
 // ─── Test 3: empty-name skip ─────────────────────────────────────────────────
@@ -338,35 +284,40 @@ test "executeListSubAgent: empty sa.name rows are skipped" {
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "ghost") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<count>2</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":2") != null);
 }
 
 // ─── Test 4: unknown profile → <empty/> with verbatim echo ───────────────────
 
-test "executeListSubAgent: unknown profile returns <empty/> with verbatim echo" {
+test "executeListSubAgent: unknown profile returns empty list with verbatim echo" {
     const alloc = testing.allocator;
     var cfg = try testConfig(alloc);
     defer cfg.deinit();
     const out = try executeListSubAgent(alloc, &cfg, "nope");
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<profile>nope</profile>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<empty/>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<count>") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<sub_agents>") == null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("nope", obj.get("profile").?.string);
+    try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
+    try testing.expectEqual(@as(usize, 0), obj.get("sub_agents").?.array.items.len);
 }
 
 // ─── Test 5: empty profile name → <empty/> ───────────────────────────────────
 
-test "executeListSubAgent: empty profile name returns <empty/>" {
+test "executeListSubAgent: empty profile name returns empty list" {
     const alloc = testing.allocator;
     var cfg = try testConfig(alloc);
     defer cfg.deinit();
     const out = try executeListSubAgent(alloc, &cfg, "");
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<profile></profile>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<empty/>") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("", obj.get("profile").?.string);
+    try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
 }
 
 // ─── Test 6: secrets absence ─────────────────────────────────────────────────
@@ -387,11 +338,12 @@ test "executeListSubAgent: never emits api_key/base_url tags or values" {
 
 // ─── Test 7: CDATA split on `]]>` inside system_prompt ───────────────────────
 
-test "executeListSubAgent: splits CDATA on `]]>` inside system_prompt" {
+test "executeListSubAgent: system_prompt with ]]> stays intact in JSON" {
     const alloc = testing.allocator;
     var cfg = try testConfig(alloc);
     defer cfg.deinit();
-    // Patch the first row's prompt to embed a `]]>` boundary.
+    // Patch the first row's prompt to embed a `]]>` boundary (trivially
+    // safe in JSON — no CDATA splitting needed).
     {
         const entry = cfg.profiles_models.getEntry("dev") orelse return error.MissingProfile;
         alloc.free(entry.value_ptr.sub_agents[0].system_prompt);
@@ -400,7 +352,10 @@ test "executeListSubAgent: splits CDATA on `]]>` inside system_prompt" {
     const out = try executeListSubAgent(alloc, &cfg, "dev");
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "before ]]><![CDATA[> after") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+    defer parsed.deinit();
+    const rows = parsed.value.object.get("sub_agents").?.array.items;
+    try testing.expectEqualStrings("before ]]> after", rows[0].object.get("system_prompt").?.string);
 }
 
 // ─── Test 8: JSON schema shape ───────────────────────────────────────────────

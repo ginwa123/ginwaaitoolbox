@@ -236,7 +236,7 @@ test "execAskUser: valid input writes a pending row and returns the pending enve
 
     try testing.expect(res.output_allocated);
     // Wrapped success=true with the pending inner envelope.
-    try testing.expect(std.mem.indexOf(u8, res.output, "<success>true</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"success\":true") != null);
     try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"pending\"") != null);
     try testing.expect(std.mem.indexOf(u8, res.output, "\"question_id\":\"q_") != null);
 
@@ -257,7 +257,7 @@ test "execAskUser: malformed arguments produce a success=false envelope" {
     const res = try execAskUser(c, tc);
     defer res.deinit(a);
 
-    try testing.expect(std.mem.indexOf(u8, res.output, "<success>false</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"success\":false") != null);
     try testing.expect(std.mem.indexOf(u8, res.output, "must exactly match one of the strings in options") != null);
     // Nothing was recorded for a bad call.
     try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));
@@ -275,7 +275,7 @@ test "execAskUser: unparseable arguments produce a success=false envelope" {
     const res = try execAskUser(c, tc);
     defer res.deinit(a);
 
-    try testing.expect(std.mem.indexOf(u8, res.output, "<success>false</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"success\":false") != null);
     try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));
 }
 
@@ -295,7 +295,7 @@ test "execAskUser: unattended session returns unavailable and writes NO row" {
 
     try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"unavailable\"") != null);
     // Successful call, degraded outcome — never `<error>`.
-    try testing.expect(std.mem.indexOf(u8, res.output, "<success>true</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"success\":true") != null);
     try testing.expect(std.mem.indexOf(u8, res.output, "No human is available") != null);
     // The crucial part: a scheduled run leaves nothing dangling.
     try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));

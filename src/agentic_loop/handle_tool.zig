@@ -1316,13 +1316,12 @@ test "wrapToolOutput envelope is round-trip parseable (envelope shape vs fronten
     );
     defer std.testing.allocator.free(envelope);
 
-    try std.testing.expect(std.mem.indexOf(u8, envelope, "<tool>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, envelope, "<name>read_file</name>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, envelope, "<parameters><path>/tmp/foo.txt</path></parameters>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, envelope, "<success>true</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"tool\":\"read_file\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"parameters\":{\"path\":\"/tmp/foo.txt\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"success\":true") != null);
     // Empty data — Phase 3 will UPDATE this row with the real result.
-    try std.testing.expect(std.mem.indexOf(u8, envelope, "<data></data>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, envelope, "<error>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"data\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, envelope, "\"error\":null") != null);
 
     // Unknown tool branch envelope: success=false, error="unknown tools".
     const err_envelope = try wrapToolOutput(
@@ -1335,10 +1334,10 @@ test "wrapToolOutput envelope is round-trip parseable (envelope shape vs fronten
     );
     defer std.testing.allocator.free(err_envelope);
 
-    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<name>totally_made_up_tool</name>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<success>false</success>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<error>unknown tools</error>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "<data>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"tool\":\"totally_made_up_tool\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"success\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"error\":\"unknown tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"data\":null") != null);
 }
 
 // ============================================================================
@@ -1436,7 +1435,7 @@ test "hook seam: pre deny short-circuits with error envelope" {
     const action = runPreHookAction(ctx, "bash", "{}");
     try std.testing.expect(action == .short_circuit);
     defer allocator.free(action.short_circuit);
-    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "<success>false</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "\"success\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "blocked by hook") != null);
 }
 
@@ -1465,7 +1464,7 @@ test "hook seam: pre mock returns success envelope" {
     const action = runPreHookAction(ctx, "bash", "{}");
     try std.testing.expect(action == .short_circuit);
     defer allocator.free(action.short_circuit);
-    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "<success>true</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "\"success\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, action.short_circuit, "mocked output") != null);
 }
 
@@ -1621,7 +1620,7 @@ test "hook dispatch: pre deny skips exec (missing file still denies)" {
     // be a read_file error envelope, with the hook it must be the deny.
     const tc = try readFileCall(dispatch_alloc, "/tmp/nalar-hook-test-does-not-exist-12345.txt");
     const result = try dispatchTool(ctx, tc);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "\"success\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "reads blocked") != null);
 }
 
