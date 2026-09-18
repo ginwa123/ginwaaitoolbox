@@ -230,10 +230,23 @@ pub fn parse_change_agent_input(allocator: std.mem.Allocator, json_str: []const 
     return result;
 }
 
+/// JSON payload for change_agent results.
+pub const AgentNameJSON = struct {
+    name: []const u8,
+};
+
+pub const ChangeAgentJSON = struct {
+    agent_name: []const u8,
+    content: []const u8,
+    loaded: bool,
+    @"error": ?[]const u8 = null,
+    available_agents: ?[]AgentNameJSON = null,
+};
+
 /// Execute the change_agent tool
-/// Returns an XML string with the agent content or error message
+/// Returns an owned JSON string with the agent content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
-pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, input: ChangeAgentInput) ![]const u8 {
+pub fn execute_change_agent_to_json(allocator: std.mem.Allocator, io: std.Io, environment: ?*const std.process.Environ.Map, input: ChangeAgentInput) ![]const u8 {
     // Check if path is provided - load from file
     if (input.path) |path| {
         return loadAgentFromPath(allocator, path);
@@ -248,28 +261,17 @@ pub fn execute_change_agent_to_string(allocator: std.mem.Allocator, io: std.Io, 
     return error.InvalidInput;
 }
 
-/// Generate error XML response
-pub fn xmlError(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<agent>
-        \\  <agent_name></agent_name>
-        \\  <content></content>
-        \\  <loaded>false</loaded>
-        \\  <error>{s}</error>
-        \\</agent>
-    , .{error_msg}) catch "<agent><error>UnknownError</error></agent>";
-}
-
-/// Generate error XML response (comptime, no allocation)
-pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<agent>
-        \\  <agent_name></agent_name>
-        \\  <content></content>
-        \\  <loaded>false</loaded>
-        \\  <error>{s}</error>
-        \\</agent>
-    , .{error_msg}) catch "<agent><error>UnknownError</error></agent>";
+/// Generate error JSON response (owned; caller frees)
+pub fn jsonError(allocator: std.mem.Allocator, error_msg: []const u8) ![]const u8 {
+    const clean = try helpers.sanitize_control_chars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, ChangeAgentJSON{
+        .agent_name = "",
+        .content = "",
+        .loaded = false,
+        .@"error" = clean,
+        .available_agents = null,
+    }, .{});
 }
 
 /// Load agent from absolute file path
@@ -282,15 +284,7 @@ fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
     // a single "Failed to open file" message — acceptable since the
     // downstream consumer just checks `loaded=true`.
     const content = helpers.readFile(allocator, path) catch {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<agent>
-            \\  <agent_name></agent_name>
-            \\  <content></content>
-            \\  <loaded>false</loaded>
-            \\  <error>Failed to open file</error>
-            \\</agent>
-        , .{});
-        return result;
+        return try jsonError(allocator, "Failed to open file");
     };
     defer allocator.free(content);
 
@@ -299,14 +293,17 @@ fn loadAgentFromPath(allocator: std.mem.Allocator, path: []const u8) ![]const u8
     const ext = std.fs.path.extension(filename);
     const agent_name = if (ext.len > 0) filename[0 .. filename.len - ext.len] else filename;
 
-    const result = try std.fmt.allocPrint(allocator,
-        \\<agent>
-        \\  <agent_name>{s}</agent_name>
-        \\  <content>{s}</content>
-        \\  <loaded>true</loaded>
-        \\</agent>
-    , .{ agent_name, content });
-    return result;
+    const clean_name = try helpers.sanitize_control_chars(allocator, agent_name);
+    defer allocator.free(clean_name);
+    const clean_content = try helpers.sanitize_control_chars(allocator, content);
+    defer allocator.free(clean_content);
+    return try std.json.Stringify.valueAlloc(allocator, ChangeAgentJSON{
+        .agent_name = clean_name,
+        .content = clean_content,
+        .loaded = true,
+        .@"error" = null,
+        .available_agents = null,
+    }, .{});
 }
 
 /// Load agent by name from built-in agents
@@ -315,40 +312,39 @@ fn loadAgentByName(allocator: std.mem.Allocator, io: std.Io, environment: ?*cons
     if (agents.parseAgent(allocator, io, environment, agent_name)) |content| {
         defer allocator.free(content);
         // Success - return the agent content
-        const result = try std.fmt.allocPrint(allocator,
-            \\<agent>
-            \\  <agent_name>{s}</agent_name>
-            \\  <content>{s}</content>
-            \\  <loaded>true</loaded>
-            \\</agent>
-        , .{ agent_name, content });
-        return result;
+        const clean_name = try helpers.sanitize_control_chars(allocator, agent_name);
+        defer allocator.free(clean_name);
+        const clean_content = try helpers.sanitize_control_chars(allocator, content);
+        defer allocator.free(clean_content);
+        return try std.json.Stringify.valueAlloc(allocator, ChangeAgentJSON{
+            .agent_name = clean_name,
+            .content = clean_content,
+            .loaded = true,
+            .@"error" = null,
+            .available_agents = null,
+        }, .{});
     } else {
         // Agent not found - list available agents
         const agents_list = agents.listAgents(allocator, io, environment);
         defer agents.freeAgentsList(allocator, agents_list);
 
-        // Build XML string for available agents
-        var available_str: std.ArrayList(u8) = .empty;
-        defer available_str.deinit(allocator);
-
-        for (agents_list) |agent| {
-            try available_str.appendSlice(allocator, "<agent>");
-            try available_str.appendSlice(allocator, agent.name);
-            try available_str.appendSlice(allocator, "</agent>");
+        // Build available-agents array for the JSON payload
+        var available = try allocator.alloc(AgentNameJSON, agents_list.len);
+        defer allocator.free(available);
+        for (agents_list, 0..) |agent, i| {
+            available[i] = .{ .name = agent.name };
         }
 
-        const result = try std.fmt.allocPrint(allocator,
-            \\<agent>
-            \\  <agent_name>{s}</agent_name>
-            \\  <content></content>
-            \\  <loaded>false</loaded>
-            \\  <error>Agent not found</error>
-            \\  <available_agents>{s}</available_agents>
-            \\</agent>
-        , .{ agent_name, available_str.items });
-
-        return result;
+        const clean_name = try helpers.sanitize_control_chars(allocator, agent_name);
+        defer allocator.free(clean_name);
+        const err_msg = "Agent not found";
+        return try std.json.Stringify.valueAlloc(allocator, ChangeAgentJSON{
+            .agent_name = clean_name,
+            .content = "",
+            .loaded = false,
+            .@"error" = err_msg,
+            .available_agents = available,
+        }, .{});
     }
 }
 
@@ -416,4 +412,27 @@ test "change_agent_tool description mentions switching" {
     try std.testing.expect(std.mem.indexOf(u8, desc, "switch") != null or
         std.mem.indexOf(u8, desc, "persona") != null or
         std.mem.indexOf(u8, desc, "different") != null);
+}
+
+test "change_agent jsonError emits JSON error shape" {
+    const allocator = std.testing.allocator;
+    const out = try change_agent.jsonError(allocator, "boom");
+    defer allocator.free(out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.get("loaded").?.bool == false);
+    try std.testing.expectEqualStrings("boom", obj.get("error").?.string);
+    try std.testing.expect(obj.get("available_agents").? == .null);
+}
+
+test "change_agent loadAgentFromPath missing file returns JSON error" {
+    const allocator = std.testing.allocator;
+    const out = try change_agent.execute_change_agent_to_json(allocator, std.testing.io, null, .{ .path = "/nonexistent-dir-xyz/agent.md" });
+    defer allocator.free(out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.get("loaded").?.bool == false);
+    try std.testing.expectEqualStrings("Failed to open file", obj.get("error").?.string);
 }
