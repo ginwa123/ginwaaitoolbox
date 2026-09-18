@@ -15,6 +15,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input shape for `move_element_to_page` tool.
 ///
@@ -49,13 +51,13 @@ pub const move_element_to_page_tool = AgentTool{
     .function = .{
         .name = "move_element_to_page",
         .description =
-            \\Relocate an existing design element from the active page to a different page within the same design item. Use this when the user wants to reorganize elements across the page list — e.g. "move this button to the Checkout page". When `apply_to_children=true` (the default), every transitive descendant of the element moves with it (Figma parity: moving a `group` or `frame` moves the whole subtree). When `apply_to_children=false`, only the root moves; descendants are left behind on the source page as top-level orphans.
-            \\
-            \\The `element_id` must reference an element on the active page. The `new_page_id` must be a sibling page in the same design item — discover siblings via `get_design_context` (the `<pages count="N">` block). Both fields are required. Passing the same page as the active page (`new_page_id == active_page`) returns `SamePage`.
-            \\
-            \\Discover ids via `set_design_page` / `get_design_context` — each `<element>` / `<page>` block carries an `id="..."` attribute.
-            \\
-            \\On error, recover by: (1) verify `element_id` and `new_page_id` are non-empty and correctly prefixed; (2) call `get_design_context` to confirm `new_page_id` exists on the same design item as the active page; (3) on `ElementNotFound`, refresh the active page's element list — the element may have been deleted.
+        \\Relocate an existing design element from the active page to a different page within the same design item. Use this when the user wants to reorganize elements across the page list — e.g. "move this button to the Checkout page". When `apply_to_children=true` (the default), every transitive descendant of the element moves with it (Figma parity: moving a `group` or `frame` moves the whole subtree). When `apply_to_children=false`, only the root moves; descendants are left behind on the source page as top-level orphans.
+        \\
+        \\The `element_id` must reference an element on the active page. The `new_page_id` must be a sibling page in the same design item — discover siblings via `get_design_context` (the `<pages count="N">` block). Both fields are required. Passing the same page as the active page (`new_page_id == active_page`) returns `SamePage`.
+        \\
+        \\Discover ids via `set_design_page` / `get_design_context` — each element / page object carries an `id` field.
+        \\
+        \\On error, recover by: (1) verify `element_id` and `new_page_id` are non-empty and correctly prefixed; (2) call `get_design_context` to confirm `new_page_id` exists on the same design item as the active page; (3) on `ElementNotFound`, refresh the active page's element list — the element may have been deleted.
         ,
         .parameters = .{
             .type = "object",
@@ -63,12 +65,12 @@ pub const move_element_to_page_tool = AgentTool{
                 .{
                     .name = "element_id",
                     .type = "string",
-                    .description = "The element id to move. Find it in the `id=\"...\"` attribute of an `<element>` block in a `set_design_page` or `get_design_context` response.",
+                    .description = "The element id to move. Find it in the `id` field of an element object in a `set_design_page` or `get_design_context` response.",
                 },
                 .{
                     .name = "new_page_id",
                     .type = "string",
-                    .description = "The destination page id. Must be a sibling page in the same design item. Find it in the `id=\"...\"` attribute of a `<page>` block in `get_design_context`.",
+                    .description = "The destination page id. Must be a sibling page in the same design item. Find it in the `id` field of a page object in `get_design_context`.",
                 },
                 .{
                     .name = "apply_to_children",
@@ -82,104 +84,60 @@ pub const move_element_to_page_tool = AgentTool{
     },
 };
 
-/// Escape XML special characters. Mirrors the helper in
-/// `move_design_element.zig` (duplicated locally to keep this tool
-/// file self-contained).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
+/// Error JSON object `{"error":...}` so the tool dispatcher can detect
+/// it via the top-level `error` key.
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
-/// Error XML response wrapped in the `move_element_to_page` envelope so
-/// the tool dispatcher can detect it via `<error>` substring search.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<move_element_to_page><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></move_element_to_page>");
-    return try xml.toOwnedSlice(allocator);
-}
-
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees it.
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it.
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<move_element_to_page><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></move_element_to_page>");
-    return try xml.toOwnedSlice(allocator);
+    return try errorJSON(allocator, error_msg);
 }
 
 /// Validate `element_id` is non-empty and `new_page_id` is non-empty.
-/// Returns null when both are valid, or an error XML on a missing
-/// field.
+/// Returns null when both are valid, or an error JSON object on a
+/// missing field.
 fn validateInputShape(allocator: std.mem.Allocator, input: MoveElementToPageInput) !?[]u8 {
     if (input.element_id.len == 0) {
-        return try errorXml(allocator, "element_id is required (find it in the `id=\"...\"` attribute of an `<element>` block in a `set_design_page` or `get_design_context` response)");
+        return try errorJSON(allocator, "element_id is required (find it in the `id` field of an element object in a `set_design_page` or `get_design_context` response)");
     }
     if (input.new_page_id.len == 0) {
-        return try errorXml(allocator, "new_page_id is required (find it in the `id=\"...\"` attribute of a `<page>` block in `get_design_context`)");
+        return try errorJSON(allocator, "new_page_id is required (find it in the `id` field of a page object in `get_design_context`)");
     }
     if (std.mem.startsWith(u8, input.element_id, "page_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id="..."` attribute of an `<element>` block in a `set_design_page` response.
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
         , .{input.element_id}));
     }
     if (std.mem.startsWith(u8, input.element_id, "item_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead.
         , .{input.element_id}));
     }
     if (!std.mem.startsWith(u8, input.element_id, "elem_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\element_id '{s}' has an unrecognized prefix (expected 'elem_'). move_element_to_page expects an element id from a previous set_design_page or get_design_context response.
         , .{input.element_id}));
     }
     if (!std.mem.startsWith(u8, input.new_page_id, "page_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\new_page_id '{s}' has an unrecognized prefix (expected 'page_'). move_element_to_page expects a page id from a previous get_design_context response.
         , .{input.new_page_id}));
     }
     return null;
 }
 
-/// Execute the `move_element_to_page` tool. Returns an XML string for
+/// Execute the `move_element_to_page` tool. Returns a JSON string for
 /// the LLM.
 ///
 /// On success, the response shape is:
-/// ```xml
-/// <move_element_to_page>
-///   <moved>
-///     <element id="..." page_id="..." name="..." />
-///     ...
-///   </moved>
-/// </move_element_to_page>
-/// ```
+/// `{"moved":[{"id":...,"page_id":...,"name":...,"type":...}, ...]}`.
 ///
-/// On error, the response is wrapped in
-/// `<move_element_to_page><error>...</error></move_element_to_page>`.
+/// On error, the response is `{"error":...}`.
 pub fn executeMoveElementToPageToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -198,52 +156,51 @@ pub fn executeMoveElementToPageToString(
         .apply_to_children = input.apply_to_children,
     }) catch |err| {
         return switch (err) {
-            error.SamePage => try errorXml(allocator, "new_page_id must be a DIFFERENT page from the active page (you tried to move to the same page)"),
-            error.ElementNotFound => try errorXml(allocator, "element_id does not reference any element on the active page — call set_design_page to refresh"),
-            error.PageNotFound => try errorXml(allocator, "new_page_id does not reference any design page — call get_design_context to find the correct page id"),
-            error.CrossDesign => try errorXml(allocator, "new_page_id belongs to a different design item — cross-design moves are not supported"),
-            error.DbError => try errorXml(allocator, "DB: moveElementToPage failed (unexpected SQL error)"),
-            error.OutOfMemory => try errorXml(allocator, "Out of memory"),
-            else => try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveElementToPage failed: {s}", .{@errorName(err)})),
+            error.SamePage => try errorJSON(allocator, "new_page_id must be a DIFFERENT page from the active page (you tried to move to the same page)"),
+            error.ElementNotFound => try errorJSON(allocator, "element_id does not reference any element on the active page — call set_design_page to refresh"),
+            error.PageNotFound => try errorJSON(allocator, "new_page_id does not reference any design page — call get_design_context to find the correct page id"),
+            error.CrossDesign => try errorJSON(allocator, "new_page_id belongs to a different design item — cross-design moves are not supported"),
+            error.DbError => try errorJSON(allocator, "DB: moveElementToPage failed (unexpected SQL error)"),
+            error.OutOfMemory => try errorJSON(allocator, "Out of memory"),
+            else => try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveElementToPage failed: {s}", .{@errorName(err)})),
         };
     };
     defer design_model.freeElements(allocator, updated);
 
-    return try renderSuccessXml(allocator, updated);
+    return try renderSuccessJSON(allocator, updated);
 }
 
-/// Render the success XML response. Lists every moved element
+/// Render the success JSON response. Lists every moved element
 /// (root + descendants) with their `page_id`, `name`, `type`.
-fn renderSuccessXml(
+/// Render the success JSON response. Lists every moved element
+/// (root + descendants) with their `page_id`, `name`, `type`.
+fn renderSuccessJSON(
     allocator: std.mem.Allocator,
     moved: []const design_model.DesignElement,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<move_element_to_page><moved>");
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(MovedElementJSON) = .empty;
     for (moved) |e| {
-        const id_esc = try xmlEscape(allocator, e.id);
-        defer allocator.free(id_esc);
-        const pid_esc = try xmlEscape(allocator, e.page_id);
-        defer allocator.free(pid_esc);
-        const name_esc = try xmlEscape(allocator, e.name);
-        defer allocator.free(name_esc);
-        const type_esc = try xmlEscape(allocator, e.elem_type);
-        defer allocator.free(type_esc);
-        try xml.appendSlice(allocator, "<element id=\"");
-        try xml.appendSlice(allocator, id_esc);
-        try xml.appendSlice(allocator, "\" page_id=\"");
-        try xml.appendSlice(allocator, pid_esc);
-        try xml.appendSlice(allocator, "\" name=\"");
-        try xml.appendSlice(allocator, name_esc);
-        try xml.appendSlice(allocator, "\" type=\"");
-        try xml.appendSlice(allocator, type_esc);
-        try xml.appendSlice(allocator, "\"/>");
+        try out.append(a, .{
+            .id = try sanitizeControlChars(a, e.id),
+            .page_id = try sanitizeControlChars(a, e.page_id),
+            .name = try sanitizeControlChars(a, e.name),
+            .type = try sanitizeControlChars(a, e.elem_type),
+        });
     }
-    try xml.appendSlice(allocator, "</moved></move_element_to_page>");
-    return try xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .moved = out.items }, .{});
 }
+
+/// JSON row for one moved element (keys mirror the old `<element ... />`
+/// attributes 1:1).
+pub const MovedElementJSON = struct {
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    type: []const u8,
+};
 
 const move_element_to_page = @import("move_element_to_page.zig");
 const testing = std.testing;
@@ -326,10 +283,8 @@ fn setupDb() !TestCtx {
     defer alloc.free(tmpdir_path);
 
     const item_id_const = "item_move_to_page_tool";
-    try db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
-        "VALUES (?, 'ws_test', 'design', ?)",
-        &.{ item_id_const, tmpdir_path });
+    try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)", &.{ item_id_const, tmpdir_path });
 
     const item_id_slice = try alloc.dupe(u8, item_id_const);
     return .{
@@ -345,6 +300,10 @@ fn teardownDb(ctx: *TestCtx) void {
     ctx.threaded.deinit();
     testing.allocator.free(ctx.item_id);
     testing.allocator.free(ctx.item_path);
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
 }
 
 // =====================================================================
@@ -402,48 +361,67 @@ test "executeMoveElementToPageToString returns a structured success XML on happy
         .name = "leaf",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 10, .y = 20, .width = 50, .height = 50,
-        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 10,
+        .y = 20,
+        .width = 50,
+        .height = 50,
+        .fill = "#000000",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(elem_id);
 
-    const xml = try move_element_to_page.executeMoveElementToPageToString(
-        alloc, &ctx.db, source_page_id,
+    const json = try move_element_to_page.executeMoveElementToPageToString(
+        alloc,
+        &ctx.db,
+        source_page_id,
         .{ .element_id = elem_id, .new_page_id = target_page_id, .apply_to_children = true },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    // Response shape: <move_element_to_page><moved>...<element/>...</moved>...</move_element_to_page>.
-    try testing.expect(std.mem.indexOf(u8, xml, "<move_element_to_page>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</move_element_to_page>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<moved>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</moved>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, elem_id) != null);
-    try testing.expect(std.mem.indexOf(u8, xml, target_page_id) != null);
+    // Response shape: `{"moved":[{"id":...,"page_id":...,"name":...,"type":...}]}`.
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    try testing.expect(parsed.value.object.get("error") == null);
+    const moved = parsed.value.object.get("moved").?.array.items;
+    try testing.expectEqual(@as(usize, 1), moved.len);
+    const row = moved[0].object;
+    try testing.expectEqualStrings(elem_id, row.get("id").?.string);
+    try testing.expectEqualStrings(target_page_id, row.get("page_id").?.string);
+    try testing.expectEqualStrings("leaf", row.get("name").?.string);
+    try testing.expectEqualStrings("rectangle", row.get("type").?.string);
 }
 
-test "executeMoveElementToPageToString wraps the error in <move_element_to_page><error> on missing element_id" {
+test "executeMoveElementToPageToString returns an error object on missing element_id" {
     const alloc = testing.allocator;
-    const xml = try move_element_to_page.executeMoveElementToPageToString(
-        alloc, undefined, // DB never reached (input validation fails first)
+    const json = try move_element_to_page.executeMoveElementToPageToString(
+        alloc,
+        undefined, // DB never reached (input validation fails first)
         "page_unused",
         .{ .element_id = "", .new_page_id = "page_target", .apply_to_children = true },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<move_element_to_page><error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "element_id is required") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "element_id is required"));
 }
 
-test "executeMoveElementToPageToString rejects bad prefixes via error XML" {
+test "executeMoveElementToPageToString rejects bad prefixes via an error object" {
     const alloc = testing.allocator;
-    const xml = try move_element_to_page.executeMoveElementToPageToString(
-        alloc, undefined,
+    const json = try move_element_to_page.executeMoveElementToPageToString(
+        alloc,
+        undefined,
         "page_unused",
         .{ .element_id = "page_wrong_shape", .new_page_id = "page_target", .apply_to_children = true },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "PAGE id") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "PAGE id"));
 }
