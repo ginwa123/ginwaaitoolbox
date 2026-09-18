@@ -55,11 +55,11 @@ from ui_harness import UIHarness
 
 # ─── Constants ──────────────────────────────────────────────────────────────
 
-#: Seed sizes. newer=100 fills exactly one PAGE_SIZE (ChatView.PAGE_SIZE), so
-#: the initial page reports has_more=true whenever `older` > 0.
-NEWER_COUNT = 100
-OLDER_SINGLE_PAGE = 60  # < PAGE_SIZE → that page is the LAST page (has_more=false)
-OLDER_MULTI_PAGE = 220  # ≥ 2 more pages → pagination must continue
+#: Seed sizes. newer=1000 fills exactly one PAGE_SIZE (ChatView.PAGE_SIZE=1000
+#: since #549), so the initial page reports has_more=true whenever `older` > 0.
+NEWER_COUNT = 1000
+OLDER_SINGLE_PAGE = 600  # < PAGE_SIZE → that page is the LAST page (has_more=false)
+OLDER_MULTI_PAGE = 2200  # ≥ 2 more pages → pagination must continue
 
 #: Paragraph body shared by every seeded message. Deliberately tall (~400-600px
 #: rendered) so 100 messages far exceed the ~900px viewport and the fling has
@@ -191,33 +191,38 @@ _OBSERVE_SCRIPT = r"""
 FLING_STEP_PX = 250
 FLING_MIN_STEPS = 12
 
-#: The fling itself. Steps are sized so several frames land INSIDE the arm
-#: band (a single 40 000 px jump in one frame would step straight over it and
-#: the test would never exercise the prefetch). `targetTop` lets a caller stop
-#: the fling just ABOVE the load-more band — that is how the test observes
-#: "armed but not yet committed".
+#: The fling itself. Steps move up by stepPx per rAF frame from the LIVE
+#: position (not an interpolation from the start): the scroller's anchor
+#: compensation can push scrollTop back down between frames when above-
+#: viewport items measure taller than their estimates, so a fixed-step
+#: interpolation would end early and never reach the band. Iterating until
+#: arrival models a real user, who keeps scrolling until they get to the top.
+#: `targetTop` lets a caller stop the fling just ABOVE the load-more band —
+#: that is how the test observes "armed but not yet committed".
 _FLING_SCRIPT = r"""
 ({ stepPx, targetTop }) => new Promise((resolve) => {
   const el = window.__pickScroller();
   const probe = window.__probe;
   const start = el.scrollTop;
   const target = Math.max(0, targetTop);
-  const travel = Math.max(0, start - target);
-  const steps = Math.max(1, Math.ceil(travel / stepPx));
   const t0 = performance.now();
   probe.tFlingStart = t0;
   probe.samples = [];
-  let i = 0;
+  let frames = 0;
+  // Worst case: ~200 000 px of tall unmeasured history at 250 px/frame
+  // plus compensation pushback between frames. 1500 rAF ≈ 25 s worst
+  // case; the typical fling settles far sooner once items are measured.
+  const maxFrames = 1500;
   const step = () => {
-    i += 1;
-    el.scrollTop = Math.max(target, Math.round(start - travel * (i / steps)));
+    frames += 1;
+    el.scrollTop = Math.max(target, el.scrollTop - stepPx);
     probe.samples.push({ t: performance.now(), scrollTop: el.scrollTop });
-    if (i < steps) {
+    if (el.scrollTop > target && frames < maxFrames) {
       requestAnimationFrame(step);
     } else {
       probe.tArrive = performance.now();
       probe.scrollHeightAtArrive = el.scrollHeight;
-      resolve({ start, arrival: probe.tArrive, steps });
+      resolve({ start, arrival: probe.tArrive, steps: frames });
     }
   };
   requestAnimationFrame(step);
@@ -324,6 +329,7 @@ def test_prefetch_request_is_issued_before_the_scroll_reaches_the_top(ui_harness
 
     band = _commit_band_px(_client_height(page))
     height_before = float(page.evaluate("() => window.__pickScroller().scrollHeight"))
+    preserve_before = sum(1 for l in console_lines if "load-more-preserve-end" in l)
 
     # ── PHASE A — travel down to just ABOVE the band ────────────────────────
     _fling_to(page, target_top=int(band) + FLING_STEP_PX)
@@ -346,9 +352,13 @@ def test_prefetch_request_is_issued_before_the_scroll_reaches_the_top(ui_harness
         f"band: scrollTop={armed[0]['scrollTop']} at request time, band={band:.0f}px. "
         f"requests={probe_a['requests']}"
     )
-    # ARM must be invisible: no prepend yet.
-    assert float(page.evaluate("() => window.__pickScroller().scrollHeight")) <= height_before + 100, (
-        "the armed page was rendered before the user crossed the band — ARM must "
+    # ARM must be invisible: no prepend yet. Assert via the commit log rather
+    # than scrollHeight: with PAGE_SIZE=1000 of tall messages the height model
+    # is still settling during the fling (estimate→measure drift), so a raw
+    # scrollHeight comparison is flaky. A premature commit would log
+    # load-more-preserve-end — ARM alone never does.
+    assert sum(1 for l in console_lines if "load-more-preserve-end" in l) == preserve_before, (
+        "the armed page was committed before the user crossed the band — ARM must "
         "only buffer, never mutate the list"
     )
 

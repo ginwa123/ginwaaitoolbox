@@ -263,20 +263,26 @@ describe('VirtualScroller measurement anchor compensation', () => {
     vi.advanceTimersByTime(60) // flush initial measure pass
 
     // Simulate scrolling UP so a new tall item enters the TOP buffer:
-    // move the viewport up by exactly one estimate-slot (64px). The
-    // visibleRange recomputes; item 99 renders above the viewport with
+    // move the viewport up by exactly two estimate-slots (128px). The
+    // visibleRange recomputes; item 97 renders above the viewport with
     // mocked offsetHeight=3000 (the "one long message"). All other
     // buffer items keep the 64px estimate.
-    mockChildHeights(el, 100, 3000, 64, 99)
-    el.scrollTop = 6400 - 64
+    //
+    // The tall item MUST sit strictly above the anchor (97 < 98): the
+    // anchor rule compensates only indices strictly above the viewport
+    // start — growth at/below the anchor is real content and flows
+    // through uncompensated (see 'ignores measurements at or after the
+    // anchor' above).
+    mockChildHeights(el, 100, 3000, 64, 97)
+    el.scrollTop = 6400 - 128
     el.dispatchEvent(new Event('scroll'))
-    await nextTick() // Vue commits the new window incl. item 99
+    await nextTick() // Vue commits the new window incl. item 97
 
     // NO vi.advanceTimersByTime here — the correction must already be
     // applied synchronously within the pre-paint tick. Final position =
-    // user's own −64px scroll (preserved) + item 99's growth (+2936)
-    // (compensated) = 6336 + 2936.
-    expect(el.scrollTop).toBe(6400 - 64 + (3000 - 64))
+    // user's own −128px scroll (preserved) + item 97's growth (+2936)
+    // (compensated) = 6272 + 2936.
+    expect(el.scrollTop).toBe(6400 - 128 + (3000 - 64))
     wrapper.unmount()
   })
 })
