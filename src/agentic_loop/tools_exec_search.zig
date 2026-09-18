@@ -56,11 +56,10 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
 
     if (search_result.matches.items.len == 0) {
-        // No matches — route through the formatter so the <search
-        // pattern="..." path="..."> wrapper is emitted alongside the
-        // <warning>no matches for pattern "X" in path "Y"</warning>
-        // body. The frontend's parser relies on the wrapper to render
-        // the actual pattern + path in the toast header (without it,
+        // No matches — route through the formatter so the JSON object
+        // carries the pattern/path fields alongside the warning string.
+        // The frontend's parser relies on those fields to render
+        // the actual pattern + path in the toast header (without them,
         // the operator sees "unknown" / "unknown" everywhere — the
         // bug this branch previously masked). See
         // docs/superpowers/plans/2026-08-06-search-better-error.md.
@@ -69,17 +68,17 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // Honor group_by_file flag — was previously dead code (always called
     // the grouped variant). Use the flat variant when the caller asked
     // for ungrouped output. Both branches handle the empty-matches case
-    // by emitting `<search pattern="X" path="Y"><warning>...</warning></search>`
-    // so the frontend always has the wrapper attributes to extract.
+    // by emitting the pattern/path fields plus the warning string
+    // so the frontend always has the fields to extract.
     const inner = if (parsed.value.group_by_file)
-        try search_tool_mod.search_result_to_string_grouped(
+        try search_tool_mod.search_result_to_json_grouped(
             ctx.allocator,
             search_result,
             parsed.value.pattern,
             parsed.value.path,
         )
     else
-        try search_tool_mod.search_result_to_string_flat(
+        try search_tool_mod.search_result_to_json_flat(
             ctx.allocator,
             search_result,
             parsed.value.pattern,
