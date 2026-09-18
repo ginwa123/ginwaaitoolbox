@@ -6,24 +6,17 @@
 //!
 //! Wire shape:
 //!   input:  { content: string }
-//!   output: <update_plan>
-//!            <session_id>...</session_id>
-//!            <updated_at>...</updated_at>
-//!            <plan><![CDATA[
-//!            ...markdown body...
-//!            ]]></plan>
-//!          </update_plan>
-//!   or:     <update_plan><error>...</error></update_plan>
+//!   output: {"session_id":...,"updated_at":...,"plan":"...markdown body..."}
+//!   or:     {"error":...}
 //!
-//! The `<plan>` block carries the just-written content (CDATA-wrapped,
-//! byte-for-byte) so the LLM AND the frontend UI see the same canonical
-//! body back without depending on `parameters` (the agent's input args).
-//! Mirrors `get_plan`'s `<plan><![CDATA[...]]></plan>` shape exactly so
-//! the frontend can reuse the same envelope parser.
+//! The `plan` field carries the just-written content so the LLM AND the
+//! frontend UI see the same canonical body back without depending on
+//! `parameters` (the agent's input args). Mirrors `get_plan`'s `plan`
+//! field exactly so the frontend can reuse the same parser.
 //!
 //! The actual UPSERT lives in `session_plan.savePlan`. This file is a
-//! thin XML wrapper (mirrors the `memory.zig` save_memory pattern — same
-//! successXml/errorXml shape, same XmlEscape for user-trusted content).
+//! thin JSON wrapper (mirrors the `memory.zig` save_memory pattern — same
+//! success/error shape, sanitized user-trusted content).
 //!
 //! Design choices:
 //!   - `session_id` is NOT in the input (D3 — implicit from
@@ -32,12 +25,12 @@
 //!     adapter in Task 4 can wire `ctx.session_id` through.
 //!   - Hard cap is 256 KiB (`session_plan.MAX_PLAN_BYTES`) — see D7.
 //!   - Empty content is rejected (InvalidContent) — distinguishes
-//!     "no plan" (use `get_plan`, see `<empty/>`) from "explicitly clear"
-//!     (caller should not call update_plan with empty; use a final marker
-//!     like `# Plan complete\nAll steps done.` instead).
-//!   - CDATA wrapping (vs. `helpers.xml_escape`) preserves the user's
-//!     exact markdown byte-for-byte; the LLM sees its own plan back
-//!     without any escape substitutions. Same trade-off as `get_plan`.
+//!     "no plan" (use `get_plan`, see `{"empty":true}`) from "explicitly
+//!     clear" (caller should not call update_plan with empty; use a final
+//!     marker like `# Plan complete\nAll steps done.` instead).
+//!   - Plain JSON strings (vs. CDATA) carry the user's markdown; the LLM
+//!     sees its own plan back with only JSON string escaping. Same
+//!     trade-off as `get_plan`.
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -46,7 +39,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 
 const helpers = @import("helpers");
-const xmlEscape = helpers.xml_escape;
+const sanitize = helpers.sanitize_control_chars;
 
 // Import the storage layer directly (the `nalarcore.session_plan`
 // alias is wired up in src/root.zig by Task 4; for the pure-fn layer
@@ -83,37 +76,37 @@ pub const update_plan_tool = AgentTool{
     .function = .{
         .name = "update_plan",
         .description =
-            \\The `update_plan` tool overwrites (UPSERT) the agent's structured task plan for the current session. The plan body is plain markdown with a `- [ ]` (todo) / `- [x]` (done) checklist.
-            \\
-            \\Use `update_plan` to:
-            \\1. Lay out your plan BEFORE you start work, after understanding the user's request.
-            \\2. Overwrite the plan AFTER completing each checklist item, flipping `- [ ]` to `- [x]`.
-            \\
-            \\The plan is automatically re-injected into your system prompt on every iteration,
-            \\so the next agent (after compaction, restart, or sub-agent handoff) sees the
-            \\same structured progress you do.
-            \\
-            \\Format suggestion (the agent is free to adapt):
-            \\```
-            \\## Goal
-            \\<one-line summary>
-            \\
-            \\## Steps
-            \\- [x] Step 1 — done
-            \\- [ ] Step 2 — in progress
-            \\- [ ] Step 3 — pending
-            \\
-            \\## Notes
-            \\<free-form>
-            \\```
-            \\
-            \\Constraints:
-            \\- `content` must be 1 byte – 256 KiB. Empty content is rejected.
-            \\- The tool overwrites the prior plan every time (UPSERT) — there is no merge.
-            \\- `session_id` is implicit (the tool operates on the current session).
-            \\- To "close out" a finished plan, call with a final marker like
-            \\  `# Plan complete\nAll steps done.` — do NOT call with empty content.
-            \\- To read the current plan, use the companion `get_plan` tool.
+        \\The `update_plan` tool overwrites (UPSERT) the agent's structured task plan for the current session. The plan body is plain markdown with a `- [ ]` (todo) / `- [x]` (done) checklist.
+        \\
+        \\Use `update_plan` to:
+        \\1. Lay out your plan BEFORE you start work, after understanding the user's request.
+        \\2. Overwrite the plan AFTER completing each checklist item, flipping `- [ ]` to `- [x]`.
+        \\
+        \\The plan is automatically re-injected into your system prompt on every iteration,
+        \\so the next agent (after compaction, restart, or sub-agent handoff) sees the
+        \\same structured progress you do.
+        \\
+        \\Format suggestion (the agent is free to adapt):
+        \\```
+        \\## Goal
+        \\<one-line summary>
+        \\
+        \\## Steps
+        \\- [x] Step 1 — done
+        \\- [ ] Step 2 — in progress
+        \\- [ ] Step 3 — pending
+        \\
+        \\## Notes
+        \\<free-form>
+        \\```
+        \\
+        \\Constraints:
+        \\- `content` must be 1 byte – 256 KiB. Empty content is rejected.
+        \\- The tool overwrites the prior plan every time (UPSERT) — there is no merge.
+        \\- `session_id` is implicit (the tool operates on the current session).
+        \\- To "close out" a finished plan, call with a final marker like
+        \\  `# Plan complete\nAll steps done.` — do NOT call with empty content.
+        \\- To read the current plan, use the companion `get_plan` tool.
         ,
         .parameters = .{
             .type = "object",
@@ -130,7 +123,7 @@ pub const update_plan_tool = AgentTool{
     },
 };
 
-/// Execute update_plan. Returns an XML string for the LLM.
+/// Execute update_plan. Returns a JSON string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
 ///
@@ -138,9 +131,9 @@ pub const update_plan_tool = AgentTool{
 /// pure fn is testable in isolation. The exec adapter in Task 4 will pull
 /// `session_id` from `ctx.session_id` and forward it here.
 ///
-/// The success envelope echoes the just-written `content` (CDATA-wrapped)
-/// so the LLM AND the frontend UI see the canonical body back. Mirrors
-/// `executeGetPlan`'s `<plan><![CDATA[...]]></plan>` shape.
+/// The success payload echoes the just-written `content` as the `plan`
+/// field so the LLM AND the frontend UI see the canonical body back.
+/// Mirrors `executeGetPlan`'s `plan` field.
 pub fn executeUpdatePlan(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -158,66 +151,37 @@ pub fn executeUpdatePlan(
             error.RowNotFoundAfterInsert => "row missing after UPSERT (DB inconsistency)",
             else => @errorName(err),
         };
-        return errorXml(allocator, msg);
+        return jsonError(allocator, msg);
     };
     defer allocator.free(updated_at);
 
-    return successXml(allocator, session_id, updated_at, input.content);
+    return successJSON(allocator, session_id, updated_at, input.content);
 }
 
-fn successXml(
+fn successJSON(
     allocator: std.mem.Allocator,
     session_id: []const u8,
     updated_at: []const u8,
     content: []const u8,
 ) ![]u8 {
-    const sid_e = try xmlEscape(allocator, session_id);
-    defer allocator.free(sid_e);
-    const ts_e = try xmlEscape(allocator, updated_at);
-    defer allocator.free(ts_e);
+    const clean_sid = try sanitize(allocator, session_id);
+    defer allocator.free(clean_sid);
+    const clean_ts = try sanitize(allocator, updated_at);
+    defer allocator.free(clean_ts);
+    const clean_plan = try sanitize(allocator, content);
+    defer allocator.free(clean_plan);
 
-    // Build the <plan> block in CDATA. Mirrors executeGetPlan.zig so
-    // the frontend can reuse the same envelope parser. CDATA preserves
-    // raw `<`, `>`, `&` bytes verbatim; the only escape we need is the
-    // literal `]]>` sequence (would terminate the CDATA section early).
-    var plan_buf: std.ArrayList(u8) = .empty;
-    defer plan_buf.deinit(allocator);
-
-    try plan_buf.appendSlice(allocator, "<plan><![CDATA[\n");
-    if (std.mem.indexOf(u8, content, "]]>") == null) {
-        // Fast path — append verbatim.
-        try plan_buf.appendSlice(allocator, content);
-    } else {
-        // Slow path — split on each `]]>` boundary, mirroring
-        // session_skills' CDATA escape in enrichCompactionXml. On the
-        // wire this reads as `...]]><![CDATA[>...` — the `>` between
-        // `]]` and `<![CDATA[` is the escaped-then-replayed end of
-        // the original sequence.
-        var rest = content;
-        while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
-            try plan_buf.appendSlice(allocator, rest[0..idx]); // up to but NOT incl "]]"
-            try plan_buf.appendSlice(allocator, "]]><![CDATA[>"); // close, reopen, literal '>'
-            rest = rest[idx + 3 ..];
-        }
-        try plan_buf.appendSlice(allocator, rest);
-    }
-    try plan_buf.appendSlice(allocator, "\n]]></plan>");
-
-    return std.fmt.allocPrint(allocator,
-        "<update_plan>" ++
-        "<session_id>{s}</session_id>" ++
-        "<updated_at>{s}</updated_at>" ++
-        "{s}" ++
-        "</update_plan>",
-        .{ sid_e, ts_e, plan_buf.items });
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .session_id = clean_sid,
+        .updated_at = clean_ts,
+        .plan = clean_plan,
+    }, .{});
 }
 
-fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        "<update_plan><error>{s}</error></update_plan>",
-        .{escaped});
+fn jsonError(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitize(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
 const testing = std.testing;
@@ -246,9 +210,13 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
-// ─── Test 1: success path returns the successXml envelope ──────────────────
+fn parseTestJson(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+}
 
-test "executeUpdatePlan: success returns successXml with session_id + updated_at + <plan> CDATA" {
+// ─── Test 1: success path returns the success payload ──────────────────────
+
+test "executeUpdatePlan: success returns payload with session_id + updated_at + plan" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -261,29 +229,16 @@ test "executeUpdatePlan: success returns successXml with session_id + updated_at
     });
     defer alloc.free(result);
 
-    // Envelope shape:
-    //   <update_plan>
-    //     <session_id>...</session_id>
-    //     <updated_at>...</updated_at>
-    //     <plan><![CDATA[ ...content... ]]></plan>
-    //   </update_plan>
-    try testing.expect(std.mem.indexOf(u8, result, "<update_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</update_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<session_id>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</session_id>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<updated_at>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</updated_at>") != null);
-    // <plan> CDATA block must be present — the frontend reads it
-    // back from here to render the checklist preview.
-    try testing.expect(std.mem.indexOf(u8, result, "<plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<![CDATA[") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "]]></plan>") != null);
-    // Content bytes land verbatim inside CDATA — no XML escaping.
-    try testing.expect(std.mem.indexOf(u8, result, content) != null);
-    // No <error> tag on success.
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") == null);
-    // session_id MUST be echoed (escaped form, but plain alphanumeric here).
-    try testing.expect(std.mem.indexOf(u8, result, session_id) != null);
+    // Payload shape: {"session_id":...,"updated_at":...,"plan":...}.
+    // The frontend reads the `plan` field back to render the checklist.
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings(session_id, obj.get("session_id").?.string);
+    try testing.expect(obj.get("updated_at").?.string.len > 0);
+    try testing.expectEqualStrings(content, obj.get("plan").?.string);
+    // No `error` field on success.
+    try testing.expect(obj.get("error") == null);
 
     // DB read-back — verify the row actually landed with the right content.
     const stored = try session_plan.getPlan(alloc, &ctx.db, session_id);
@@ -291,15 +246,14 @@ test "executeUpdatePlan: success returns successXml with session_id + updated_at
     try testing.expectEqualStrings(content, stored);
 }
 
-// ─── Test 1b: CDATA preserves raw special chars verbatim ───────────────────
+// ─── Test 1b: JSON preserves raw special chars verbatim ───────────────────
 //
-// Mirrors `get_plan_test.zig` "CDATA preserves raw special chars verbatim".
 // The agent may write `<`, `>`, `&` in their plan markdown (e.g. for
-// comparison prose like `arr[i] > 0`). CDATA wrapping means these
-// land byte-for-byte in the envelope — no XML escape substitutions
-// that would complicate the LLM's regex/checklist matching.
+// comparison prose like `arr[i] > 0`). JSON string encoding leaves these
+// untouched — no escape substitutions that would complicate the LLM's
+// regex/checklist matching.
 
-test "executeUpdatePlan: CDATA preserves raw <, >, & inside plan body" {
+test "executeUpdatePlan: JSON preserves raw <, >, & inside plan body" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -319,16 +273,19 @@ test "executeUpdatePlan: CDATA preserves raw <, >, & inside plan body" {
     try testing.expect(std.mem.indexOf(u8, result, "&lt;") == null);
     try testing.expect(std.mem.indexOf(u8, result, "&gt;") == null);
     try testing.expect(std.mem.indexOf(u8, result, "&amp;") == null);
+    // And the parsed field round-trips byte-for-byte.
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    try testing.expectEqualStrings(content, parsed.value.object.get("plan").?.string);
 }
 
-// ─── Test 1c: literal "]]>" inside the body splits the CDATA section ──────
+// ─── Test 1c: literal "]]>" inside the body round-trips through JSON ─────
 //
-// Mirrors `get_plan_test.zig` "splits CDATA on `]]>` boundary inside plan
-// body". The literal `]]>` sequence would terminate the CDATA section
-// early and break the XML envelope — the successXml helper splits it
-// into `]]><![CDATA[>` so the `>` between them becomes plain content.
+// The literal `]]>` sequence needed CDATA splitting under the old XML
+// envelope. JSON strings have no such hazard — the content round-trips
+// byte-for-byte with no transformation.
 
-test "executeUpdatePlan: splits CDATA on ]]> boundary inside plan body" {
+test "executeUpdatePlan: ]]> inside plan body round-trips verbatim" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -340,25 +297,14 @@ test "executeUpdatePlan: splits CDATA on ]]> boundary inside plan body" {
     });
     defer alloc.free(result);
 
-    // The split sequence `]]><![CDATA[>` must appear at least twice
-    // (once per `]]>` in the body) so the envelope stays well-formed.
-    var count: usize = 0;
-    var rest: []const u8 = result;
-    while (std.mem.indexOf(u8, rest, "]]><![CDATA[>")) |idx| {
-        count += 1;
-        rest = rest[idx + "]]><![CDATA[>".len ..];
-    }
-    try testing.expectEqual(@as(usize, 2), count);
-
-    // The envelope MUST still be a single well-formed <plan> block
-    // (not two halves).
-    try testing.expect(std.mem.indexOf(u8, result, "<plan><![CDATA[") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "]]></plan>") != null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    try testing.expectEqualStrings(content, parsed.value.object.get("plan").?.string);
 }
 
 // ─── Test 2: empty content is rejected with a "non-empty" error ────────────
 
-test "executeUpdatePlan: empty content returns errorXml mentioning 'non-empty'" {
+test "executeUpdatePlan: empty content returns error payload mentioning 'non-empty'" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -369,12 +315,11 @@ test "executeUpdatePlan: empty content returns errorXml mentioning 'non-empty'" 
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<update_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "non-empty") != null);
-    // No <session_id> or <updated_at> on error.
-    try testing.expect(std.mem.indexOf(u8, result, "<updated_at>") == null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    try testing.expect(std.mem.indexOf(u8, parsed.value.object.get("error").?.string, "non-empty") != null);
+    // No `session_id` or `updated_at` on error.
+    try testing.expect(parsed.value.object.get("updated_at") == null);
 
     // DB has no row for "any_session".
     const stored = try session_plan.getPlan(alloc, &ctx.db, "any_session");
@@ -384,7 +329,7 @@ test "executeUpdatePlan: empty content returns errorXml mentioning 'non-empty'" 
 
 // ─── Test 3: oversized content is rejected with a "256 KiB" error ──────────
 
-test "executeUpdatePlan: oversized content (> MAX_PLAN_BYTES) returns errorXml mentioning '256 KiB'" {
+test "executeUpdatePlan: oversized content (> MAX_PLAN_BYTES) returns error payload mentioning '256 KiB'" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -400,11 +345,10 @@ test "executeUpdatePlan: oversized content (> MAX_PLAN_BYTES) returns errorXml m
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<update_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</error>") != null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
     // Exact phrasing is '256 KiB' (per the plan's error mapping).
-    try testing.expect(std.mem.indexOf(u8, result, "256 KiB") != null);
+    try testing.expect(std.mem.indexOf(u8, parsed.value.object.get("error").?.string, "256 KiB") != null);
 }
 
 // ─── Test 4: JSON schema shape (name / required / properties) ──────────────

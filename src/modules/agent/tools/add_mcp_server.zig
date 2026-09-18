@@ -14,17 +14,13 @@
 //!     url:      string?,           // reserved for the HTTP follow-up
 //!     headers:  { key: value }[]?, // reserved for the HTTP follow-up
 //!   }
-//!   output: <add_mcp_server>
-//!            <name>...</name>
-//!            <transport>stdio</transport>
-//!            <command>...</command>
-//!            <args><item>...</item>...</args>   // when non-empty
-//!            <cwd>...</cwd>                     // when non-null
-//!            <persisted>true|false</persisted>
-//!            <tools>...</tools>                 // newline-separated, best-effort
-//!            <note>...</note>
-//!          </add_mcp_server>
-//!   or:     <add_mcp_server><error>...</error></add_mcp_server>
+//!   output: {"name":...,"transport":"stdio","command":...,
+//!            "args":[...],            // [] when none
+//!            "cwd":...|null,
+//!            "persisted":"false",      // placeholder; exec wrapper substitutes
+//!            "tools":null,             // exec wrapper fills in best-effort
+//!            "note":...}
+//!   or:     {"error":...}
 //!
 //! Plan: docs/superpowers/plans/2026-08-28-add-mcp-server-agent-tool.md
 //!
@@ -33,13 +29,13 @@
 //! file is the LLM-facing wrapper — JSON schema, input struct, success/
 //! error XML envelopes. The exec adapter in
 //! `src/agentic_loop/tools_exec_add_mcp_server.zig` calls
-//! `executeAddMcpServerToString` (same shape as `memory.zig`'s
+//! `executeAddMcpServerToJSON` (same shape as `memory.zig`'s
 //! `executeAddSkillToString`).
 //!
 //! Notes for the future HTTP branch: the input struct already has
 //! `url` + `headers` fields (optional). The validator rejects any
 //! non-stdio transport today; the HTTP case is a sibling task and will
-//! add its own branch in `executeAddMcpServerToString`. Mirrors the
+//! add its own branch in `executeAddMcpServerToJSON`. Mirrors the
 //! frontend `McpServerModal` wire shape exactly so the LLM-facing
 //! contract doesn't change when HTTP lands.
 
@@ -51,8 +47,7 @@ const config_mod = nalarcore.config;
 const LlmConfig = config_mod.LlmConfig;
 
 const helpers = @import("helpers");
-const xmlEscape = helpers.xml_escape;
-const xmlEscapeAlloc = helpers.xml_escape_alloc;
+const sanitize = helpers.sanitize_control_chars;
 
 /// One MCP header entry (HTTP transport — v1 ignores these but the field
 /// is in the schema so the LLM doesn't have to learn a new shape when HTTP
@@ -111,20 +106,20 @@ pub const add_mcp_server_tool = AgentTool{
     .function = .{
         .name = "add_mcp_server",
         .description =
-            \\The `add_mcp_server` tool registers a new MCP (Model Context Protocol) server so its tools become available to you on the NEXT iteration. Call this when the user asks to add a new MCP server, configure a stdio MCP integration, or register a tool provider the user wants to use.
-            \\
-            \\After a successful call, the new server's tools become discoverable as `mcp_<serverName>_<toolName>` on the next iteration — find them with `search_tool`, then call `use_tool` to make one callable. They are NOT added to your tool list automatically, and until you equip one the just-added server has no callable tools — finish your reply first.
-            \\
-            \\v1 supports the `stdio` transport only (per current scope). The fields you MUST provide for stdio:
-            \\  - `name`     : the server key (letters/digits/`_`/`-` recommended). Must not already exist.
-            \\  - `transport`: `"stdio"`.
-            \\  - `command`  : the binary to spawn (e.g. `"npx"`, `"mcp-hello-world"`).
-            \\  - `args`     : (optional) command-line args, e.g. `["-y", "@upstash/context7-mcp"]`.
-            \\  - `cwd`      : (optional) working directory for the child process.
-            \\
-            \\HTTP transport (`url` + `headers`) is reserved for a sibling task and will return a clear error today.
-            \\
-            \\The tool validates inputs, mutates the live in-memory config, then persists the change to `~/.config/nalar/config.json` (or platform equivalent) so the server survives restart. On success the tool returns the list of tools the new server exposed (best-effort; if the server can't be reached right now, the call still succeeds and you can call its tools on the next iteration).
+        \\The `add_mcp_server` tool registers a new MCP (Model Context Protocol) server so its tools become available to you on the NEXT iteration. Call this when the user asks to add a new MCP server, configure a stdio MCP integration, or register a tool provider the user wants to use.
+        \\
+        \\After a successful call, the new server's tools become discoverable as `mcp_<serverName>_<toolName>` on the next iteration — find them with `search_tool`, then call `use_tool` to make one callable. They are NOT added to your tool list automatically, and until you equip one the just-added server has no callable tools — finish your reply first.
+        \\
+        \\v1 supports the `stdio` transport only (per current scope). The fields you MUST provide for stdio:
+        \\  - `name`     : the server key (letters/digits/`_`/`-` recommended). Must not already exist.
+        \\  - `transport`: `"stdio"`.
+        \\  - `command`  : the binary to spawn (e.g. `"npx"`, `"mcp-hello-world"`).
+        \\  - `args`     : (optional) command-line args, e.g. `["-y", "@upstash/context7-mcp"]`.
+        \\  - `cwd`      : (optional) working directory for the child process.
+        \\
+        \\HTTP transport (`url` + `headers`) is reserved for a sibling task and will return a clear error today.
+        \\
+        \\The tool validates inputs, mutates the live in-memory config, then persists the change to `~/.config/nalar/config.json` (or platform equivalent) so the server survives restart. On success the tool returns the list of tools the new server exposed (best-effort; if the server can't be reached right now, the call still succeeds and you can call its tools on the next iteration).
         ,
         .parameters = .{
             .type = "object",
@@ -177,22 +172,23 @@ pub const add_mcp_server_tool = AgentTool{
 /// reload path lives in the exec wrapper so it can swap `di.llm_config`
 /// atomically (see `tools_exec_add_mcp_server.zig`).
 ///
-/// Returns an XML string for the LLM. The success envelope carries:
-///   - `<name>`, `<transport>`, `<command>` — what was added
-///   - `<args>` (one `<item>` per arg, omitted when none)
-///   - `<cwd>` (omitted when null)
-///   - `<persisted>true|false</persisted>` — disk-write outcome (only the
-///     exec wrapper can persist; pure fn reports `false`)
-///   - `<tools>` — newline-separated `mcp_<server>_<tool>` names the
-///     server exposed (best-effort; absent if list-tools failed)
-///   - `<note>` — operator-facing hint ("server will be available on the
+/// Returns a JSON string for the LLM. The success payload carries:
+///   - `name`, `transport`, `command` — what was added
+///   - `args` — array of argv strings ([] when none)
+///   - `cwd` — null when absent
+///   - `persisted` — disk-write outcome (only the exec wrapper can
+///     persist; pure fn reports `"false"` as a placeholder the wrapper
+///     substitutes)
+///   - `tools` — null here; the exec wrapper fills in the best-effort
+///     `mcp_<server>_<tool>` listing after a successful spawn
+///   - `note` — operator-facing hint ("server will be available on the
 ///     next iteration")
 ///
-/// Error envelope: `<add_mcp_server><error>...</error></add_mcp_server>`.
+/// Error payload: `{"error":...}`.
 ///
 /// `io` is unused today but kept in the signature so the HTTP branch
 /// (which needs HTTP transport) doesn't have to change call sites.
-pub fn executeAddMcpServerToString(
+pub fn executeAddMcpServerToJSON(
     allocator: std.mem.Allocator,
     io: std.Io,
     config: *LlmConfig,
@@ -202,7 +198,7 @@ pub fn executeAddMcpServerToString(
 
     // ── 1. Validate transport + per-transport fields ───────────────────
     if (!std.mem.eql(u8, input.transport, "stdio")) {
-        return errorXml(allocator,
+        return jsonError(allocator,
             \\transport must be "stdio" in v1 — HTTP lands in a sibling task. If you intended stdio, set transport="stdio" and provide a non-empty `command`.
         );
     }
@@ -215,15 +211,13 @@ pub fn executeAddMcpServerToString(
         .cwd = input.cwd,
     }) catch |err| {
         // Free the per-error allocated msg (when present) before returning.
-        // `errorXml` does NOT take ownership of the message slice; it
-        // copies it through xmlEscape. We must free our own copies.
+        // `jsonError` does NOT take ownership of the message slice; it
+        // copies it through the sanitizer. We must free our own copies.
         const owned_msg: ?[]u8 = switch (err) {
             error.InvalidName => null,
             error.InvalidCommand => null,
             error.DuplicateServer => blk: {
-                const m = std.fmt.allocPrint(allocator,
-                    "an MCP server named '{s}' is already configured — choose a different name",
-                    .{input.name}) catch break :blk null;
+                const m = std.fmt.allocPrint(allocator, "an MCP server named '{s}' is already configured — choose a different name", .{input.name}) catch break :blk null;
                 break :blk m;
             },
             else => null,
@@ -236,7 +230,7 @@ pub fn executeAddMcpServerToString(
             error.DuplicateServer => "an MCP server with that name is already configured",
             else => @errorName(err),
         };
-        return errorXml(allocator, owned_msg orelse fallback);
+        return jsonError(allocator, owned_msg orelse fallback);
     };
 
     // No best-effort tools listing here — it would pollute the global
@@ -245,13 +239,13 @@ pub fn executeAddMcpServerToString(
     // leak. The exec wrapper performs the listing AFTER the in-memory
     // mutation succeeds, where process-level registry state is fine.
 
-    // ── 3. Build the success envelope (no <tools> block here; exec
-    // wrapper appends it after a successful listing). ─────────────────
-    return successXml(allocator, input, null);
+    // ── 3. Build the success payload (`tools` stays null here; exec
+    // wrapper fills it in after a successful listing). ───────────────
+    return successJSON(allocator, input);
 }
 
 // ───────────────────────────────────────────────────────────────────────
-// XML envelopes
+// JSON payloads
 // ───────────────────────────────────────────────────────────────────────
 
 // Note on the best-effort `tools/list` listing: it lives in the exec
@@ -261,72 +255,45 @@ pub fn executeAddMcpServerToString(
 // arena with no cleanup path (the global arena is freed only in
 // `deinitGlobal`, which tests never call).
 
-fn successXml(
+fn successJSON(
     allocator: std.mem.Allocator,
     input: AddMcpServerInput,
-    tools_listing: ?[]const u8,
 ) ![]u8 {
-    const name_e = try xmlEscape(allocator, input.name);
-    defer allocator.free(name_e);
-    const transport_e = try xmlEscape(allocator, input.transport);
-    defer allocator.free(transport_e);
-    const command_e = try xmlEscape(allocator, input.command);
-    defer allocator.free(command_e);
+    const clean_name = try sanitize(allocator, input.name);
+    defer allocator.free(clean_name);
+    const clean_transport = try sanitize(allocator, input.transport);
+    defer allocator.free(clean_transport);
+    const clean_command = try sanitize(allocator, input.command);
+    defer allocator.free(clean_command);
 
-    var args_block: std.ArrayList(u8) = .empty;
-    defer args_block.deinit(allocator);
+    var clean_args: std.ArrayList([]u8) = .empty;
+    defer {
+        for (clean_args.items) |a| allocator.free(a);
+        clean_args.deinit(allocator);
+    }
     if (input.args) |a| {
-        try args_block.appendSlice(allocator, "<args>");
-        for (a) |arg| {
-            const arg_e = try xmlEscape(allocator, arg);
-            defer allocator.free(arg_e);
-            const item_str = try std.fmt.allocPrint(allocator, "<item>{s}</item>", .{arg_e});
-            defer allocator.free(item_str);
-            try args_block.appendSlice(allocator, item_str);
-        }
-        try args_block.appendSlice(allocator, "</args>");
+        for (a) |arg| try clean_args.append(allocator, try sanitize(allocator, arg));
     }
 
-    var cwd_block: std.ArrayList(u8) = .empty;
-    defer cwd_block.deinit(allocator);
-    if (input.cwd) |c| {
-        const cwd_e = try xmlEscape(allocator, c);
-        defer allocator.free(cwd_e);
-        const cwd_str = try std.fmt.allocPrint(allocator, "<cwd>{s}</cwd>", .{cwd_e});
-        defer allocator.free(cwd_str);
-        try cwd_block.appendSlice(allocator, cwd_str);
-    }
+    const clean_cwd: ?[]u8 = if (input.cwd) |c| try sanitize(allocator, c) else null;
+    defer if (clean_cwd) |c| allocator.free(c);
 
-    var tools_block: std.ArrayList(u8) = .empty;
-    defer tools_block.deinit(allocator);
-    if (tools_listing) |tl| {
-        const tl_e = try xmlEscape(allocator, tl);
-        defer allocator.free(tl_e);
-        const tools_str = try std.fmt.allocPrint(allocator, "<tools>{s}</tools>", .{tl_e});
-        defer allocator.free(tools_str);
-        try tools_block.appendSlice(allocator, tools_str);
-    }
-
-    return std.fmt.allocPrint(allocator,
-        "<add_mcp_server>" ++
-        "<name>{s}</name>" ++
-        "<transport>{s}</transport>" ++
-        "<command>{s}</command>" ++
-        "{s}" ++ // <args>
-        "{s}" ++ // <cwd>
-        "<persisted>false</persisted>" ++
-        "{s}" ++ // <tools>
-        "<note>MCP server registered in the live config. Its tools will appear as mcp_{s}_&lt;tool&gt; in your next system-prompt rebuild. Disk persistence + live-reload are performed by the exec wrapper.</note>" ++
-        "</add_mcp_server>",
-        .{ name_e, transport_e, command_e, args_block.items, cwd_block.items, tools_block.items, name_e });
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .name = clean_name,
+        .transport = clean_transport,
+        .command = clean_command,
+        .args = clean_args.items,
+        .cwd = clean_cwd,
+        .persisted = "false",
+        .tools = @as(?[]const u8, null),
+        .note = "MCP server registered in the live config. Its tools will appear as mcp_<server>_<tool> in your next system-prompt rebuild. Disk persistence + live-reload are performed by the exec wrapper.",
+    }, .{});
 }
 
-fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        "<add_mcp_server><error>{s}</error></add_mcp_server>",
-        .{escaped});
+fn jsonError(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitize(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -360,14 +327,18 @@ fn fixtureConfig(allocator: std.mem.Allocator) !LlmConfig {
     };
 }
 
+fn parseTestJson(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+}
+
 // ─── Test 1: happy-path stdio entry, success envelope shape ────────────
 
-test "executeAddMcpServerToString: valid stdio entry → success envelope" {
+test "executeAddMcpServerToJSON: valid stdio entry → success payload" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "ctx7",
         .transport = "stdio",
         .command = "npx",
@@ -375,18 +346,19 @@ test "executeAddMcpServerToString: valid stdio entry → success envelope" {
     });
     defer alloc.free(result);
 
-    // Success envelope shape.
-    try testing.expect(std.mem.indexOf(u8, result, "<add_mcp_server>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</add_mcp_server>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<name>ctx7</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<transport>stdio</transport>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<command>npx</command>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<args>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<item>-y</item>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<item>@upstash/context7-mcp</item>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</args>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<persisted>false</persisted>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") == null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("ctx7", obj.get("name").?.string);
+    try testing.expectEqualStrings("stdio", obj.get("transport").?.string);
+    try testing.expectEqualStrings("npx", obj.get("command").?.string);
+    const args = obj.get("args").?.array;
+    try testing.expectEqual(@as(usize, 2), args.items.len);
+    try testing.expectEqualStrings("-y", args.items[0].string);
+    try testing.expectEqualStrings("@upstash/context7-mcp", args.items[1].string);
+    try testing.expectEqualStrings("false", obj.get("persisted").?.string);
+    try testing.expect(obj.get("tools").? == .null);
+    try testing.expect(obj.get("error") == null);
 
     // Typed map populated.
     try testing.expect(cfg.hasMcpServer("ctx7"));
@@ -396,88 +368,94 @@ test "executeAddMcpServerToString: valid stdio entry → success envelope" {
 
 // ─── Test 2: HTTP transport rejected in v1 ──────────────────────────────
 
-test "executeAddMcpServerToString: HTTP transport rejected with clear error" {
+test "executeAddMcpServerToJSON: HTTP transport rejected with clear error" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "remote",
         .transport = "http",
         .url = "https://example.com/mcp",
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
-    // Search for the escaped version (xmlEscape turns " into &quot;)
-    try testing.expect(std.mem.indexOf(u8, result, "transport must be &quot;stdio&quot;") != null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    const err = parsed.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, err, "transport must be") != null);
+    try testing.expect(std.mem.indexOf(u8, err, "stdio") != null);
     // No server added.
     try testing.expect(!cfg.hasMcpServer("remote"));
 }
 
 // ─── Test 3: empty name surfaces InvalidName error ─────────────────────
 
-test "executeAddMcpServerToString: empty name → error envelope" {
+test "executeAddMcpServerToJSON: empty name → error payload" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "",
         .transport = "stdio",
         .command = "x",
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "name is required") != null);
+    const parsed3 = try parseTestJson(alloc, result);
+    defer parsed3.deinit();
+    try testing.expect(std.mem.indexOf(u8, parsed3.value.object.get("error").?.string, "name is required") != null);
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
 }
 
 // ─── Test 4: empty command surfaces InvalidCommand error ───────────────
 
-test "executeAddMcpServerToString: empty command → error envelope" {
+test "executeAddMcpServerToJSON: empty command → error payload" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "ctx",
         .transport = "stdio",
         .command = "",
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "command is required") != null);
+    const parsed4 = try parseTestJson(alloc, result);
+    defer parsed4.deinit();
+    try testing.expect(std.mem.indexOf(u8, parsed4.value.object.get("error").?.string, "command is required") != null);
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
 }
 
 // ─── Test 5: duplicate name surfaces DuplicateServer with the name ──────
 
-test "executeAddMcpServerToString: duplicate name → error mentioning the existing key" {
+test "executeAddMcpServerToJSON: duplicate name → error mentioning the existing key" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
     // First add succeeds.
-    const first = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const first = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "ctx",
         .transport = "stdio",
         .command = "first-cmd",
     });
     defer alloc.free(first);
     // Second add with the same name fails; envelope mentions the key.
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "ctx",
         .transport = "stdio",
         .command = "second-cmd",
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "ctx") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "already configured") != null);
+    const parsed5 = try parseTestJson(alloc, result);
+    defer parsed5.deinit();
+    const err5 = parsed5.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, err5, "ctx") != null);
+    try testing.expect(std.mem.indexOf(u8, err5, "already configured") != null);
     // Original entry preserved.
     const server = cfg.mcpServerConfig("ctx").?;
     try testing.expectEqualStrings("first-cmd", server.command.?);
@@ -507,12 +485,12 @@ test "add_mcp_server_tool JSON schema: name=add_mcp_server, required includes na
 
 // ─── Test 7: cwd emitted in the success envelope when provided ─────────
 
-test "executeAddMcpServerToString: cwd block emitted when provided" {
+test "executeAddMcpServerToJSON: cwd block emitted when provided" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "in-cwd",
         .transport = "stdio",
         .command = "mcp-hello-world",
@@ -520,39 +498,46 @@ test "executeAddMcpServerToString: cwd block emitted when provided" {
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<cwd>/opt/mcp</cwd>") != null);
+    const parsed7 = try parseTestJson(alloc, result);
+    defer parsed7.deinit();
+    try testing.expectEqualStrings("/opt/mcp", parsed7.value.object.get("cwd").?.string);
 }
 
 // ─── Test 8: cwd block omitted when null ────────────────────────────────
 
-test "executeAddMcpServerToString: cwd block omitted when null" {
+test "executeAddMcpServerToJSON: cwd block omitted when null" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "no-cwd",
         .transport = "stdio",
         .command = "mcp-hello-world",
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<cwd>") == null);
+    const parsed8 = try parseTestJson(alloc, result);
+    defer parsed8.deinit();
+    try testing.expect(parsed8.value.object.get("cwd").? == .null);
 }
 
 // ─── Test 9: <args> block omitted when args is null ─────────────────────
 
-test "executeAddMcpServerToString: args block omitted when null" {
+test "executeAddMcpServerToJSON: args block omitted when null" {
     const alloc = testing.allocator;
     var cfg = try fixtureConfig(alloc);
     defer cfg.deinit();
 
-    const result = try add_mcp_server_mod.executeAddMcpServerToString(alloc, testing.io, &cfg, .{
+    const result = try add_mcp_server_mod.executeAddMcpServerToJSON(alloc, testing.io, &cfg, .{
         .name = "no-args",
         .transport = "stdio",
         .command = "mcp-hello-world",
     });
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<args>") == null);
+    const parsed9 = try parseTestJson(alloc, result);
+    defer parsed9.deinit();
+    const args9 = parsed9.value.object.get("args").?.array;
+    try testing.expectEqual(@as(usize, 0), args9.items.len);
 }

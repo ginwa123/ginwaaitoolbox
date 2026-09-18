@@ -71,50 +71,46 @@ pub const index_codebase_tool = AgentTool{
 };
 
 // ============================================================================
-// XML Output Formatting
+// JSON Output Formatting
 // ============================================================================
 
-pub fn toXmlSuccess(allocator: std.mem.Allocator, results: []SearchResultItem) ![]const u8 {
-    if (results.len == 0) {
-        return try allocator.dupe(u8, "<semantic_search>\n<results/>\n</semantic_search>");
+const sanitize = @import("helpers").sanitize_control_chars;
+
+pub fn toJSONSuccess(allocator: std.mem.Allocator, results: []SearchResultItem) ![]u8 {
+    const JsonItem = struct {
+        file_path: []const u8,
+        start_line: u32,
+        end_line: u32,
+        snippet: []const u8,
+        score: f32,
+    };
+    var clean = try allocator.alloc(JsonItem, results.len);
+    defer allocator.free(clean);
+    var owned: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
     }
-
-    var output = std.ArrayList(u8).empty;
-    errdefer output.deinit(allocator);
-
-    try output.appendSlice(allocator, "<semantic_search>\n<results>\n");
-
-    for (results) |r| {
-        const line = try std.fmt.allocPrint(allocator,
-            \\<result>
-            \\<file_path>{s}</file_path>
-            \\<start_line>{d}</start_line>
-            \\<end_line>{d}</end_line>
-            \\<snippet>{s}</snippet>
-            \\<score>{d}</score>
-            \\</result>
-        , .{
-            r.file_path,
-            r.start_line,
-            r.end_line,
-            r.snippet,
-            @as(f64, r.score),
-        });
-        errdefer allocator.free(line);
-        try output.appendSlice(allocator, line);
+    for (results, 0..) |r, i| {
+        const fp = try sanitize(allocator, r.file_path);
+        try owned.append(allocator, fp);
+        const sn = try sanitize(allocator, r.snippet);
+        try owned.append(allocator, sn);
+        clean[i] = .{
+            .file_path = fp,
+            .start_line = r.start_line,
+            .end_line = r.end_line,
+            .snippet = sn,
+            .score = r.score,
+        };
     }
-
-    try output.appendSlice(allocator, "</results>\n</semantic_search>");
-
-    return try output.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, .{ .results = clean }, .{});
 }
 
-pub fn xmlError(allocator: std.mem.Allocator, message: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(
-        allocator,
-        "<semantic_search>\n<error>{s}</error>\n</semantic_search>",
-        .{message},
-    );
+pub fn jsonError(allocator: std.mem.Allocator, message: []const u8) ![]u8 {
+    const clean = try sanitize(allocator, message);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
 pub fn handleSemanticSearch(
@@ -153,7 +149,6 @@ pub fn handleSemanticSearch(
         const limit = limit_param orelse 5;
         const results = indexing.search(allocator, chunks, embeddings_data.embeddings, embeddings_data.dimensions, query_param, limit);
         defer allocator.free(results);
-
     } else {
         // Index doesn't exist - suggest running index_codebase first
     }
@@ -212,7 +207,7 @@ pub fn handleIndexCodebase(
     // // Write chunks
     // indexing.writeChunks(ctx.allocator, ctx.io, index_dir, all_chunks.items) catch |err| {
     //     ctx.logger.errFmt("[index_codebase] Failed to write chunks: {s}", .{@errorName(err)});
-    //     const output = try nalar.semantic_search.xmlError(ctx.allocator, "Failed to write chunks");
+    //     const output = try nalar.semantic_search.jsonError(ctx.allocator, "Failed to write chunks");
     //     return tool_registry.ToolExecResult{ .output = output, .output_allocated = true };
     // };
     //
@@ -231,7 +226,6 @@ pub fn handleIndexCodebase(
     // const summary = try std.fmt.allocPrint(ctx.allocator, "Indexed {d} files, {d} chunks.", .{ files.len, all_chunks.items.len });
     // defer ctx.allocator.free(summary);
     //
-    // const output = try nalar.semantic_search.toXmlSuccess(ctx.allocator, &.{});
+    // const output = try nalar.semantic_search.toJSONSuccess(ctx.allocator, &.{});
     // return tool_registry.ToolExecResult{ .output = output, .output_allocated = true };
 }
-

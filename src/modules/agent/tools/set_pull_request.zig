@@ -67,7 +67,7 @@ pub const set_pull_request_tool = AgentTool{
     .function = .{
         .name = "set_pull_request",
         .description =
-            \\Attach an existing pull/merge-request URL to the current session so the chat's right panel shows the PR's file changes. Works for GitHub (gh CLI), GitLab (glab CLI, incl. self-hosted), and generic forges (pure-git base...head diff, no CLI needed). This tool never creates a PR — only binds one. Pass clear=true to unbind the current PR.
+        \\Attach an existing pull/merge-request URL to the current session so the chat's right panel shows the PR's file changes. Works for GitHub (gh CLI), GitLab (glab CLI, incl. self-hosted), and generic forges (pure-git base...head diff, no CLI needed). This tool never creates a PR — only binds one. Pass clear=true to unbind the current PR.
         ,
         .parameters = .{
             .type = "object",
@@ -109,42 +109,14 @@ pub const set_pull_request_tool = AgentTool{
     },
 };
 
-// ─── XML helpers ─────────────────────────────────────────────────────────
-//
-// Local `xmlEscape` duplicated per project convention (see
-// kanban_list.zig).
+// ─── JSON payloads ─────────────────────────────────────────────────────
 
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-    return try result.toOwnedSlice(allocator);
-}
+const sanitize = @import("helpers").sanitize_control_chars;
 
-fn tag(allocator: std.mem.Allocator, xml: *std.ArrayList(u8), name: []const u8, value: []const u8) !void {
-    const esc = try xmlEscape(allocator, value);
-    defer allocator.free(esc);
-    try xml.appendSlice(allocator, "<");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, ">");
-    try xml.appendSlice(allocator, esc);
-    try xml.appendSlice(allocator, "</");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, ">");
-}
-
-/// Success envelope for attach. `number` is null for generic.
-/// `warning` is null when verification was clean.
-pub fn successSetToXml(
+/// Success payload for attach. `number` is null for generic.
+/// `warning` is null when verification was clean. `base`/`head` echo
+/// generic-mode refs for reference; null when empty.
+pub fn successSetToJSON(
     allocator: std.mem.Allocator,
     session_id: []const u8,
     url: []const u8,
@@ -155,44 +127,38 @@ pub fn successSetToXml(
     base: []const u8,
     head: []const u8,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-    try xml.appendSlice(allocator, "<pull_request>");
-    try tag(allocator, &xml, "session_id", session_id);
-    try xml.appendSlice(allocator, "<attached>true</attached>");
-    try tag(allocator, &xml, "url", url);
-    try tag(allocator, &xml, "provider", provider.toString());
-    if (number) |n| try tag(allocator, &xml, "number", n);
-    try xml.appendSlice(allocator, if (verified) "<verified>true</verified>" else "<verified>false</verified>");
-    if (warning) |w| try tag(allocator, &xml, "warning", w);
-    // Echo generic-mode refs for reference (the pr/diff endpoint accepts
-    // the same values as ?base=/?head= overrides; otherwise it
-    // auto-detects). Omitted when empty.
-    if (base.len > 0) try tag(allocator, &xml, "base", base);
-    if (head.len > 0) try tag(allocator, &xml, "head", head);
-    try xml.appendSlice(allocator, "</pull_request>");
-    return try xml.toOwnedSlice(allocator);
+    const clean_session = try sanitize(allocator, session_id);
+    defer allocator.free(clean_session);
+    const clean_url = try sanitize(allocator, url);
+    defer allocator.free(clean_url);
+    const clean_warning: ?[]u8 = if (warning) |w| try sanitize(allocator, w) else null;
+    defer if (clean_warning) |w| allocator.free(w);
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .session_id = clean_session,
+        .attached = true,
+        .url = clean_url,
+        .provider = provider.toString(),
+        .number = number,
+        .verified = verified,
+        .warning = clean_warning,
+        .base = if (base.len > 0) @as(?[]const u8, base) else null,
+        .head = if (head.len > 0) @as(?[]const u8, head) else null,
+    }, .{});
 }
 
-pub fn successClearToXml(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-    try xml.appendSlice(allocator, "<pull_request>");
-    try tag(allocator, &xml, "session_id", session_id);
-    try xml.appendSlice(allocator, "<cleared>true</cleared>");
-    try xml.appendSlice(allocator, "</pull_request>");
-    return try xml.toOwnedSlice(allocator);
+pub fn successClearToJSON(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    const clean_session = try sanitize(allocator, session_id);
+    defer allocator.free(clean_session);
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .session_id = clean_session,
+        .cleared = true,
+    }, .{});
 }
 
-pub fn xmlError(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-    try xml.appendSlice(allocator, "<pull_request><error>");
-    const esc = try xmlEscape(allocator, msg);
-    defer allocator.free(esc);
-    try xml.appendSlice(allocator, esc);
-    try xml.appendSlice(allocator, "</error></pull_request>");
-    return try xml.toOwnedSlice(allocator);
+pub fn jsonError(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitize(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
 // ─── Validators (pure, no IO) ────────────────────────────────────────────
@@ -255,19 +221,19 @@ pub fn verifyPr(
 // ─── Execute ─────────────────────────────────────────────────────────────
 
 /// Attach (or clear) the session's PR binding. Returns the inner
-/// `<pull_request>` XML string (owned). The exec wrapper persists
-/// `<url>` + `<provider>` to the session on success.
-pub fn executeSetPullRequestToString(
+/// pull_request JSON string (owned). The exec wrapper persists
+/// `url` + `provider` to the session on success.
+pub fn executeSetPullRequestToJSON(
     allocator: std.mem.Allocator,
     io: std.Io,
     session_id: []const u8,
     input: SetPullRequestInput,
 ) ![]u8 {
     if (input.clear) {
-        return try successClearToXml(allocator, session_id);
+        return try successClearToJSON(allocator, session_id);
     }
-    if (validatePrUrl(input.pr_url)) |err| return try xmlError(allocator, err);
-    if (validateProviderOverride(input.provider)) |err| return try xmlError(allocator, err);
+    if (validatePrUrl(input.pr_url)) |err| return try jsonError(allocator, err);
+    if (validateProviderOverride(input.provider)) |err| return try jsonError(allocator, err);
 
     const normalized = try pr_provider.normalizePrUrl(allocator, input.pr_url);
     defer allocator.free(normalized);
@@ -282,7 +248,7 @@ pub fn executeSetPullRequestToString(
         const ref = pr_provider.parsePrRef(normalized, provider) orelse {
             const msg = try std.fmt.allocPrint(allocator, "pr_url does not look like a {s} pull/merge-request URL: {s}", .{ provider.toString(), normalized });
             defer allocator.free(msg);
-            return try xmlError(allocator, msg);
+            return try jsonError(allocator, msg);
         };
         number = ref.number;
     }
@@ -302,12 +268,12 @@ pub fn executeSetPullRequestToString(
                 defer allocator.free(v.detail);
                 const msg = try std.fmt.allocPrint(allocator, "PR verification failed: {s}", .{v.detail});
                 defer allocator.free(msg);
-                return try xmlError(allocator, msg);
+                return try jsonError(allocator, msg);
             },
         }
     }
 
-    return try successSetToXml(allocator, session_id, normalized, provider, number, verified, warning, input.base, input.head);
+    return try successSetToJSON(allocator, session_id, normalized, provider, number, verified, warning, input.base, input.head);
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────
@@ -331,47 +297,62 @@ test "validateProviderOverride accepts empty + known, rejects unknown" {
     try std.testing.expect(validateProviderOverride("bitbucket") != null);
 }
 
-test "execute clear returns cleared envelope" {
-    const alloc = std.testing.allocator;
-    var threaded = std.Io.Threaded.init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    const out = try executeSetPullRequestToString(alloc, io, "s1", .{ .clear = true });
-    defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<cleared>true</cleared>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<session_id>s1</session_id>") != null);
+fn parseTestJson(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, alloc, out, .{});
 }
 
-test "execute invalid url returns error envelope" {
+test "execute clear returns cleared payload" {
     const alloc = std.testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const out = try executeSetPullRequestToString(alloc, io, "s1", .{ .pr_url = "nope", .verify = false });
+    const out = try executeSetPullRequestToJSON(alloc, io, "s1", .{ .clear = true });
     defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.get("cleared").?.bool);
+    try std.testing.expectEqualStrings("s1", obj.get("session_id").?.string);
 }
 
-test "execute github url without verify returns attach envelope" {
+test "execute invalid url returns error payload" {
     const alloc = std.testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const out = try executeSetPullRequestToString(alloc, io, "s9", .{ .pr_url = "https://github.com/acme/app/pull/42/files", .verify = false });
+    const out = try executeSetPullRequestToJSON(alloc, io, "s1", .{ .pr_url = "nope", .verify = false });
     defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<attached>true</attached>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<url>https://github.com/acme/app/pull/42</url>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<provider>github</provider>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<number>42</number>") != null);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.object.get("error").? == .string);
 }
 
-test "execute generic url without verify returns attach envelope without number" {
+test "execute github url without verify returns attach payload" {
     const alloc = std.testing.allocator;
     var threaded = std.Io.Threaded.init(alloc, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const out = try executeSetPullRequestToString(alloc, io, "s1", .{ .pr_url = "https://git.corp.example.com/a/b/changes/9", .verify = false });
+    const out = try executeSetPullRequestToJSON(alloc, io, "s9", .{ .pr_url = "https://github.com/acme/app/pull/42/files", .verify = false });
     defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<provider>generic</provider>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "<number>") == null);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expect(obj.get("attached").?.bool);
+    try std.testing.expectEqualStrings("https://github.com/acme/app/pull/42", obj.get("url").?.string);
+    try std.testing.expectEqualStrings("github", obj.get("provider").?.string);
+    try std.testing.expectEqualStrings("42", obj.get("number").?.string);
+}
+
+test "execute generic url without verify returns attach payload with null number" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const out = try executeSetPullRequestToJSON(alloc, io, "s1", .{ .pr_url = "https://git.corp.example.com/a/b/changes/9", .verify = false });
+    defer alloc.free(out);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("generic", obj.get("provider").?.string);
+    try std.testing.expect(obj.get("number").? == .null);
 }

@@ -43,17 +43,28 @@ pub fn execute_web_search(allocator: std.mem.Allocator, io: std.Io, input: WebSe
     };
 }
 
-/// Convert result to XML string for agent response
-pub fn web_search_result_to_string(allocator: std.mem.Allocator, result: WebSearchResult) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
-        \\<success>{any}</success>
-        \\<content>{s}</content>
-        \\<exit_code>{d}</exit_code>
-    , .{
-        result.success,
-        result.content,
-        result.exit_code,
-    });
+const sanitize = @import("helpers").sanitize_control_chars;
+
+/// Convert result to a JSON string for agent response
+pub fn web_search_result_to_json(allocator: std.mem.Allocator, result: WebSearchResult) ![]u8 {
+    const clean_content = try sanitize(allocator, result.content);
+    defer allocator.free(clean_content);
+    if (result.error_msg) |m| {
+        const clean_err = try sanitize(allocator, m);
+        defer allocator.free(clean_err);
+        return std.json.Stringify.valueAlloc(allocator, .{
+            .success = result.success,
+            .content = clean_content,
+            .exit_code = result.exit_code,
+            .error_msg = clean_err,
+        }, .{});
+    }
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .success = result.success,
+        .content = clean_content,
+        .exit_code = result.exit_code,
+        .error_msg = @as(?[]const u8, null),
+    }, .{});
 }
 
 pub const web_search_tool = AgentTool{
