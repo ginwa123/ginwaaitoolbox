@@ -50,35 +50,24 @@ pub fn execUseSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const output = try wrapToolOutput(ctx.allocator, "use_skill", tc.function.arguments, true, null, inner);
 
     // Check if skill was successfully loaded and extract skill info for auto-save.
-    // The skill_save detection now looks for <success>true</success> in the WRAPPED
-    // envelope, not <loaded>true</loaded> in the inner XML (which is now inside
-    // <data>...</data>).
-    if (std.mem.indexOf(u8, output, "<success>true</success>") != null) {
-        // Extract skill name from <skill_name>...</skill_name>
-        const name_start = (std.mem.indexOf(u8, output, "<skill_name>") orelse 0) + "<skill_name>".len;
-        const name_end = std.mem.indexOf(u8, output[name_start..], "</skill_name>") orelse {
-            return ToolExecResult{ .output = output, .output_allocated = true };
-        };
-        const skill_name = output[name_start .. name_start + name_end];
-
-        // Extract content from <content>...</content>
-        const content_start = (std.mem.indexOf(u8, output, "<content>") orelse 0) + "<content>".len;
-        const content_begin = content_start + "<content>".len;
-        const content_end = std.mem.indexOf(u8, output[content_begin..], "</content>") orelse {
-            return ToolExecResult{ .output = output, .output_allocated = true };
-        };
-        const skill_content = output[content_begin .. content_begin + content_end];
-
-        // Return with skill_save info so handle_tool can auto-save to session_skills
-        return ToolExecResult{
-            .output = output,
-            .output_allocated = true,
-            .skill_save = SkillSaveInfo{
-                .name = skill_name,
-                .content = skill_content,
-            },
-        };
-    }
+    // The inner payload is JSON (`{skill_name, content, loaded, ...}`); parse it
+    // and key off `loaded` instead of substring-matching XML tags.
+    if (std.json.parseFromSlice(skill_tools_mod.UseSkillOutput, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true })) |parsed_inner| {
+        defer parsed_inner.deinit();
+        if (parsed_inner.value.loaded) {
+            const skill_name = try ctx.allocator.dupe(u8, parsed_inner.value.skill_name);
+            const skill_content = try ctx.allocator.dupe(u8, parsed_inner.value.content);
+            // Return with skill_save info so handle_tool can auto-save to session_skills
+            return ToolExecResult{
+                .output = output,
+                .output_allocated = true,
+                .skill_save = SkillSaveInfo{
+                    .name = skill_name,
+                    .content = skill_content,
+                },
+            };
+        }
+    } else |_| {}
 
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -104,14 +93,14 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    // If inner has <error>...</error>, treat as failure
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
+    // If the inner JSON carries an `error`, treat as failure.
+    if (std.json.parseFromSlice(skill_tools_mod.RemoveSkillOutput, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true })) |parsed_inner| {
+        defer parsed_inner.deinit();
+        if (parsed_inner.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
+    } else |_| {}
 
     const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
@@ -133,26 +122,26 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer parsed.deinit();
 
     // executeAddSkillToString returns a plain []const u8 (no error
-    // union); errors are encoded as <error>...</error> in the XML
+    // union); errors are encoded as `error` in the inner JSON object
     // and handled below.
     const inner = skill_tools_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value);
 
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
+    if (std.json.parseFromSlice(skill_tools_mod.AddSkillOutput, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true })) |parsed_inner| {
+        defer parsed_inner.deinit();
+        if (parsed_inner.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, false, err_msg, "");
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
+    } else |_| {}
 
     const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, true, null, inner);
 
     // The registry entry has auto_save_skill = true → the dispatcher in
-    // handle_tool.zig reads `output` to extract <skill_name>...</skill_name>
-    // and <content>...</content>, then saves to session_skills. We return
-    // skill_save (not used directly here, but kept for symmetry with
-    // execUseSkill's auto-save contract — both rely on the dispatcher's
-    // parsing pass over the wrapped output).
+    // handle_tool.zig reads the wrapped JSON `data` (`skill_name`/`content`
+    // keys), then saves to session_skills. We return skill_save (not used
+    // directly here, but kept for symmetry with execUseSkill's auto-save
+    // contract — both rely on the dispatcher's parsing pass over the
+    // wrapped output).
     _ = SkillSaveInfo;
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -178,13 +167,14 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
-        return ToolExecResult{ .output = output, .output_allocated = true };
-    }
+    // If the inner JSON carries an `error`, treat as failure.
+    if (std.json.parseFromSlice(skill_tools_mod.EditSkillOutput, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true })) |parsed_inner| {
+        defer parsed_inner.deinit();
+        if (parsed_inner.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
+    } else |_| {}
 
     const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
