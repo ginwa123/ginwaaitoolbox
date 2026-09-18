@@ -21,15 +21,7 @@ pub const list_memory_tool = AgentTool{
     .type = "function",
     .function = .{
         .name = "list_memory",
-        .description = "List all available memory files. Memories are markdown "
-            ++ "files stored in the global nalar config folder ("
-            ++ "~/.config/nalar/memories/ on Linux, %APPDATA%/nalar/memories/ on "
-            ++ "Windows). The listing returns each memory's filename, title "
-            ++ "(from the first H1 line, or the filename stem if no H1 is "
-            ++ "present), absolute path, and size in bytes. Use read_file "
-            ++ "with the returned path to read a specific memory's contents. "
-            ++ "This tool only lists memories — it does not create, modify, "
-            ++ "or delete them.",
+        .description = "List all available memory files. Memories are markdown " ++ "files stored in the global nalar config folder (" ++ "~/.config/nalar/memories/ on Linux, %APPDATA%/nalar/memories/ on " ++ "Windows). The listing returns each memory's filename, title " ++ "(from the first H1 line, or the filename stem if no H1 is " ++ "present), absolute path, and size in bytes. Use read_file " ++ "with the returned path to read a specific memory's contents. " ++ "This tool only lists memories — it does not create, modify, " ++ "or delete them.",
         .parameters = .{
             .type = "object",
             .properties = &.{},
@@ -37,82 +29,6 @@ pub const list_memory_tool = AgentTool{
         },
     },
 };
-
-/// Escape XML special characters in `s`. Mirrors the helper in
-/// list_skills.zig (duplicated locally to keep the two tools decoupled).
-/// Returns an allocated string the caller must free.
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
-}
-
-/// Serialize a `MemoryInfo` slice to XML for the AI agent tool output.
-///
-/// XML shape (mirrors list_skills.toXml for visual consistency):
-///   <memories>
-///     <memory>
-///       <name>...</name>
-///       <title>...</title>
-///       <path>...</path>
-///       <size>...</size>
-///     </memory>
-///     ...
-///   </memories>
-///
-/// Caller owns the returned memory and must free it with `allocator.free()`.
-pub fn toXml(allocator: std.mem.Allocator, list: []const MemoryInfo) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<memories>");
-
-    for (list) |mem| {
-        try xml.appendSlice(allocator, "<memory>");
-
-        const escaped_name = try xmlEscape(allocator, mem.name);
-        defer allocator.free(escaped_name);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, escaped_name);
-        try xml.appendSlice(allocator, "</name>");
-
-        const escaped_title = try xmlEscape(allocator, mem.title);
-        defer allocator.free(escaped_title);
-        try xml.appendSlice(allocator, "<title>");
-        try xml.appendSlice(allocator, escaped_title);
-        try xml.appendSlice(allocator, "</title>");
-
-        const escaped_path = try xmlEscape(allocator, mem.path);
-        defer allocator.free(escaped_path);
-        try xml.appendSlice(allocator, "<path>");
-        try xml.appendSlice(allocator, escaped_path);
-        try xml.appendSlice(allocator, "</path>");
-
-        try xml.appendSlice(allocator, "<size>");
-        var size_buf: [32]u8 = undefined;
-        const size_str = std.fmt.bufPrint(&size_buf, "{d}", .{mem.size}) catch "0";
-        try xml.appendSlice(allocator, size_str);
-        try xml.appendSlice(allocator, "</size>");
-
-        try xml.appendSlice(allocator, "</memory>");
-    }
-
-    try xml.appendSlice(allocator, "</memories>");
-
-    return try xml.toOwnedSlice(allocator);
-}
 
 /// Serialize a `MemoryInfo` slice to JSON for the HTTP endpoint.
 ///
@@ -124,9 +40,9 @@ pub fn toJson(allocator: std.mem.Allocator, list: []const MemoryInfo) ![]const u
     return std.json.Stringify.valueAlloc(allocator, data, .{});
 }
 
-/// Execute the `list_memory` tool. Returns an XML string for the LLM.
+/// Execute the `list_memory` tool. Returns a JSON string for the LLM.
 ///
-/// Returns `<memories><error>MissingEnvironment</error></memories>` when
+/// Returns `{"memories":[],"error":"MissingEnvironment"}` when
 /// the environment is not available (matches list_skills behavior).
 ///
 /// Caller owns the returned memory and must free it with `allocator.free()`.
@@ -136,14 +52,23 @@ pub fn execute_list_memory(
     environment: ?*const std.process.Environ.Map,
 ) ![]const u8 {
     const env = environment orelse {
-        return allocator.dupe(u8, "<memories><error>MissingEnvironment</error></memories>");
+        return std.json.Stringify.valueAlloc(allocator, struct {
+            memories: []const MemoryInfo = &.{},
+            @"error": []const u8 = "MissingEnvironment",
+        }{}, .{});
     };
 
     const list = memories.listAllMemories(allocator, io, env);
     defer memories.freeMemoriesList(allocator, list);
 
-    return toXml(allocator, list);
+    return toJson(allocator, list);
 }
+
+/// Parsed shape of `execute_list_memory` output, for tests.
+pub const ListMemoryOutput = struct {
+    memories: []MemoryInfo,
+    @"error": ?[]const u8 = null,
+};
 
 const list_memory = @import("list_memory.zig");
 
@@ -156,20 +81,20 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 // Pure serialization tests (no filesystem)
 // -------------------------------------------------------------------------
 
-test "toXml on empty list produces <memories></memories>" {
+test "toJson on empty list produces parsed memories=[] with no error" {
     const alloc = std.testing.allocator;
     const list = &[_]memories.MemoryInfo{};
 
-    const xml = try list_memory.toXml(alloc, list);
-    defer alloc.free(xml);
+    const json = try list_memory.toJson(alloc, list);
+    defer alloc.free(json);
 
-    try std.testing.expect(std.mem.startsWith(u8, xml, "<memories>"));
-    try std.testing.expect(std.mem.endsWith(u8, xml, "</memories>"));
-    // No <memory> elements in an empty list
-    try std.testing.expect(!contains(xml, "<memory>"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.memories.len);
+    try std.testing.expect(parsed.value.@"error" == null);
 }
 
-test "toXml escapes special characters in memory fields" {
+test "toJson carries all four fields per memory, parsed" {
     const alloc = std.testing.allocator;
     const list = &[_]memories.MemoryInfo{
         .{
@@ -180,30 +105,16 @@ test "toXml escapes special characters in memory fields" {
         },
     };
 
-    const xml = try list_memory.toXml(alloc, list);
-    defer alloc.free(xml);
-
-    // The wrapper tags are present
-    try std.testing.expect(contains(xml, "<memories>"));
-    try std.testing.expect(contains(xml, "<memory>"));
-    // Special chars are escaped
-    try std.testing.expect(contains(xml, "&lt;name&gt;"));
-    try std.testing.expect(contains(xml, "&amp; more"));
-    try std.testing.expect(contains(xml, "&quot;"));
-    // Size is rendered as digits
-    try std.testing.expect(contains(xml, "<size>42</size>"));
-}
-
-test "toJson on empty list produces {\"memories\":[]}" {
-    const alloc = std.testing.allocator;
-    const list = &[_]memories.MemoryInfo{};
-
     const json = try list_memory.toJson(alloc, list);
     defer alloc.free(json);
 
-    try std.testing.expect(std.mem.startsWith(u8, json, "{"));
-    try std.testing.expect(std.mem.endsWith(u8, json, "}"));
-    try std.testing.expect(contains(json, "\"memories\":[]"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.memories.len);
+    try std.testing.expectEqualStrings("weird <name>.md", parsed.value.memories[0].name);
+    try std.testing.expectEqualStrings("Title & more", parsed.value.memories[0].title);
+    try std.testing.expectEqualStrings("/path/with \"quotes\"", parsed.value.memories[0].path);
+    try std.testing.expectEqual(@as(u64, 42), parsed.value.memories[0].size);
 }
 
 test "toJson includes all four fields per memory" {
@@ -220,10 +131,13 @@ test "toJson includes all four fields per memory" {
     const json = try list_memory.toJson(alloc, list);
     defer alloc.free(json);
 
-    try std.testing.expect(contains(json, "\"name\":\"user-prefs.md\""));
-    try std.testing.expect(contains(json, "\"title\":\"User Preferences\""));
-    try std.testing.expect(contains(json, "\"path\":\"/home/u/.config/nalar/memories/user-prefs.md\""));
-    try std.testing.expect(contains(json, "\"size\":1024"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.memories.len);
+    try std.testing.expectEqualStrings("user-prefs.md", parsed.value.memories[0].name);
+    try std.testing.expectEqualStrings("User Preferences", parsed.value.memories[0].title);
+    try std.testing.expectEqualStrings("/home/u/.config/nalar/memories/user-prefs.md", parsed.value.memories[0].path);
+    try std.testing.expectEqual(@as(u64, 1024), parsed.value.memories[0].size);
 }
 
 // -------------------------------------------------------------------------
@@ -260,9 +174,10 @@ test "execute_list_memory returns missing-dir empty XML, no crash" {
     const output = try list_memory.execute_list_memory(alloc, io, &env);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.startsWith(u8, output, "<memories>"));
-    try std.testing.expect(std.mem.endsWith(u8, output, "</memories>"));
-    try std.testing.expect(!contains(output, "<memory>"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.memories.len);
+    try std.testing.expect(parsed.value.@"error" == null);
 }
 
 test "execute_list_memory lists .md files in HOME/.config/nalar/memories" {
@@ -318,24 +233,26 @@ test "execute_list_memory lists .md files in HOME/.config/nalar/memories" {
     const output = try list_memory.execute_list_memory(alloc, io, &env);
     defer alloc.free(output);
 
-    // Both .md files should appear
-    try std.testing.expect(contains(output, "user-prefs.md"));
-    try std.testing.expect(contains(output, "User Preferences"));
-    try std.testing.expect(contains(output, "project-notes.md"));
-    try std.testing.expect(contains(output, "Project Notes"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.memories.len);
 
-    // The .txt file should be filtered out
-    try std.testing.expect(!contains(output, "notes.txt"));
-    try std.testing.expect(!contains(output, "should be ignored"));
-
-    // Each file becomes a <memory> element
-    var count: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOfPos(u8, output, idx, "<memory>")) |pos| {
-        count += 1;
-        idx = pos + "<memory>".len;
+    var found_prefs = false;
+    var found_notes = false;
+    for (parsed.value.memories) |mem| {
+        if (std.mem.eql(u8, mem.name, "user-prefs.md")) {
+            found_prefs = true;
+            try std.testing.expectEqualStrings("User Preferences", mem.title);
+        }
+        if (std.mem.eql(u8, mem.name, "project-notes.md")) {
+            found_notes = true;
+            try std.testing.expectEqualStrings("Project Notes", mem.title);
+        }
+        // The .txt file should be filtered out
+        try std.testing.expect(!std.mem.eql(u8, mem.name, "notes.txt"));
     }
-    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expect(found_prefs);
+    try std.testing.expect(found_notes);
 }
 
 test "execute_list_memory falls back to filename stem when no H1 present" {
@@ -365,9 +282,12 @@ test "execute_list_memory falls back to filename stem when no H1 present" {
     const output = try list_memory.execute_list_memory(alloc, io, &env);
     defer alloc.free(output);
 
-    try std.testing.expect(contains(output, "random-name.md"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.memories.len);
+    try std.testing.expectEqualStrings("random-name.md", parsed.value.memories[0].name);
     // Filename stem is used as the title when no H1 exists
-    try std.testing.expect(contains(output, "<title>random-name</title>"));
+    try std.testing.expectEqualStrings("random-name", parsed.value.memories[0].title);
 }
 
 test "execute_list_memory with null environment returns error XML" {
@@ -377,5 +297,8 @@ test "execute_list_memory with null environment returns error XML" {
     const output = try list_memory.execute_list_memory(alloc, io, null);
     defer alloc.free(output);
 
-    try std.testing.expect(contains(output, "<error>MissingEnvironment</error>"));
+    const parsed = try std.json.parseFromSlice(list_memory.ListMemoryOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("MissingEnvironment", parsed.value.@"error" orelse "");
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.memories.len);
 }

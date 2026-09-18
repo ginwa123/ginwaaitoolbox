@@ -16,6 +16,14 @@ const agent = nalarcore.agent;
 const memory_mod = nalarcore.memory;
 const wrapToolOutput = tools.wrapToolOutput;
 
+/// Probe an inner JSON payload for a top-level `"error"` key. The
+/// returned slice borrows from `parsed` — keep it alive through the
+/// `wrapToolOutput` call, then `deinit`. A payload that fails to parse
+/// is treated as success (the producers always emit valid JSON).
+const InnerErrorProbe = struct {
+    @"error": ?[]const u8 = null,
+};
+
 // ─── save_memory ───
 
 pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -42,15 +50,15 @@ pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer ctx.allocator.free(inner);
 
-    // Detect the <save_memory><error>...</error></save_memory> shape and
-    // surface it as a tool failure (so the LLM sees success=false rather
-    // than a successful wrapper around an error body).
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // Detect the {"error":...} shape and surface it as a tool failure
+    // (so the LLM sees success=false rather than a successful wrapper
+    // around an error body).
+    if (std.json.parseFromSlice(InnerErrorProbe, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch null) |probe| {
+        defer probe.deinit();
+        if (probe.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, inner);
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
     }
 
     const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, true, null, inner);
@@ -83,15 +91,15 @@ pub fn execLoadMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer ctx.allocator.free(inner);
 
-    // Detect the <load_memory><error>...</error></load_memory> shape and
-    // surface it as a tool failure (so the LLM sees success=false rather
-    // than a successful wrapper around an error body).
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // Detect the {"error":...} shape and surface it as a tool failure
+    // (so the LLM sees success=false rather than a successful wrapper
+    // around an error body).
+    if (std.json.parseFromSlice(InnerErrorProbe, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch null) |probe| {
+        defer probe.deinit();
+        if (probe.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, inner);
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
     }
 
     const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, true, null, inner);
@@ -163,16 +171,21 @@ test "execSaveMemory: happy path wraps success=true and appends a new row" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>save_memory</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<save_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    const env = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env.deinit();
+    try testing.expectEqualStrings("save_memory", env.value.object.get("tool").?.string);
+    try testing.expect(env.value.object.get("success").?.bool);
+    try testing.expect(env.value.object.get("error").? == .null);
+    // Inner payload rides in "data" with the saved row id.
+    const data = env.value.object.get("data").?.object;
+    try testing.expect(data.get("id").?.string.len > 0);
 
     // Saving the same payload again appends a second row (append-only).
     const result2 = try execSaveMemory(tcx, tc);
     defer if (result2.output_allocated) alloc.free(result2.output);
-    try testing.expect(std.mem.indexOf(u8, result2.output, "<success>true</success>") != null);
+    const env2 = try std.json.parseFromSlice(std.json.Value, alloc, result2.output, .{});
+    defer env2.deinit();
+    try testing.expect(env2.value.object.get("success").?.bool);
 
     var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_memories", &.{});
     defer q.deinit();
@@ -194,6 +207,8 @@ test "execSaveMemory: empty content surfaces inner error as success=false" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
+    const env = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env.deinit();
+    try testing.expect(!env.value.object.get("success").?.bool);
+    try testing.expect(env.value.object.get("error").?.string.len > 0);
 }
