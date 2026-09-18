@@ -99,6 +99,128 @@ export function extractInt(content: string, tag: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+// ─── JSON data-object helpers ──────────────────────────────────────────────
+//
+// Migrated parsers (read_file, shell family, search, ask_user) take the
+// envelope's `data` payload as a parsed object and read fields directly —
+// no tag extraction, no entity decoding (JSON needs none). The helpers
+// below are lenient by design: a JSON string is parsed, a full envelope
+// object (or its JSON string) is unwrapped one level to `.data`, and
+// anything else yields safe defaults so a card never throws.
+
+/** Coerce unknown input to a plain record. Unparseable input → {}. */
+function asRecord(data: unknown): Record<string, unknown> {
+  if (typeof data === 'string') {
+    const trimmed = data.trim()
+    if (trimmed === '') return {}
+    try {
+      return asRecord(JSON.parse(trimmed))
+    } catch {
+      return {}
+    }
+  }
+  if (typeof data === 'object' && data !== null && !Array.isArray(data)) {
+    return data as Record<string, unknown>
+  }
+  return {}
+}
+
+/**
+ * Unwrap one level when the input is a full tool envelope
+ * (`{tool, parameters, success, data, error, v}` or its JSON string)
+ * instead of the bare `data` payload. Otherwise coerce to a record.
+ */
+function unwrapDataRecord(data: unknown): Record<string, unknown> {
+  const record = asRecord(data)
+  if (
+    typeof record.tool === 'string' ||
+    (typeof record.success === 'boolean' && 'data' in record)
+  ) {
+    return asRecord(record.data)
+  }
+  return record
+}
+
+function strField(o: Record<string, unknown>, key: string): string {
+  const v = o[key]
+  if (typeof v === 'string') return v
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return ''
+}
+
+function strOrNullField(o: Record<string, unknown>, key: string): string | null {
+  const v = o[key]
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+function numOrNullField(o: Record<string, unknown>, key: string): number | null {
+  const v = o[key]
+  if (v === null || v === undefined) return null
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v.trim())
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+function boolField(o: Record<string, unknown>, key: string, defaultValue = false): boolean {
+  const v = o[key]
+  if (v === null || v === undefined) return defaultValue
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (t === '') return defaultValue
+    return t === 'true' || t === '1'
+  }
+  if (typeof v === 'number') return v !== 0
+  return defaultValue
+}
+
+/**
+ * Normalized view of whatever a tool card's `content` prop carries:
+ * either the bare `data` object (ChatView's success path) or a full
+ * envelope JSON string/object (ChatView's error fallback, `m.content`).
+ * Empty or unparseable input yields null data with no error (running state).
+ */
+export interface NormalizedToolContent {
+  data: unknown
+  error: string | null
+  success: boolean
+}
+
+export function normalizeToolContent(content: unknown): NormalizedToolContent {
+  const empty: NormalizedToolContent = { data: null, error: null, success: true }
+  if (content === null || content === undefined) return empty
+  if (typeof content === 'string') {
+    if (content.trim() === '') return empty
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(content)
+    } catch {
+      return empty
+    }
+    return normalizeToolContent(parsed)
+  }
+  if (typeof content === 'object' && !Array.isArray(content)) {
+    const o = content as Record<string, unknown>
+    if (typeof o.tool === 'string' || (typeof o.success === 'boolean' && 'data' in o)) {
+      const success = o.success !== false
+      return {
+        data: 'data' in o ? o.data : null,
+        error: success ? null : typeof o.error === 'string' ? o.error : 'tool failed',
+        success,
+      }
+    }
+    return { data: content, error: null, success: true }
+  }
+  return empty
+}
+
 export interface ParsedTextReplace {
   path: string
   before: string
@@ -132,16 +254,17 @@ export interface ParsedReadFile {
   error: string | null
 }
 
-export function parseReadFile(content: string): ParsedReadFile {
-  const success = extractBool(content, 'success', true)
+export function parseReadFile(data: unknown): ParsedReadFile {
+  const o = unwrapDataRecord(data)
+  const success = boolField(o, 'success', true)
   return {
-    path: extractTag(content, 'path') ?? '',
-    content: extractTag(content, 'content') ?? '',
-    totalLines: extractInt(content, 'total_lines'),
-    startLine: extractInt(content, 'start_line'),
-    endLine: extractInt(content, 'end_line'),
+    path: strField(o, 'path'),
+    content: strField(o, 'content'),
+    totalLines: numOrNullField(o, 'total_lines'),
+    startLine: numOrNullField(o, 'start_line'),
+    endLine: numOrNullField(o, 'end_line'),
     success,
-    error: success ? null : extractTag(content, 'error'),
+    error: success ? null : strOrNullField(o, 'error'),
   }
 }
 
@@ -271,66 +394,67 @@ export interface ParsedBash {
   isSelf: boolean
 }
 
-export function parseBash(content: string): ParsedBash {
+export function parseBash(data: unknown): ParsedBash {
+  const o = unwrapDataRecord(data)
   return {
-    command: extractTag(content, 'command'),
-    stdout: extractTag(content, 'stdout') ?? '',
-    stderr: extractTag(content, 'stderr') ?? '',
-    exitCode: extractInt(content, 'exit_code'),
-    truncated: extractBool(content, 'truncated', false),
-    timedOut: extractBool(content, 'timeout', false),
-    stdoutLines: extractInt(content, 'stdout_lines') ?? 0,
-    stderrLines: extractInt(content, 'stderr_lines') ?? 0,
-    isSelf: extractBool(content, 'is_self', false),
+    command: strOrNullField(o, 'command'),
+    stdout: strField(o, 'stdout'),
+    stderr: strField(o, 'stderr'),
+    exitCode: numOrNullField(o, 'exit_code'),
+    truncated: boolField(o, 'truncated', false),
+    timedOut: boolField(o, 'timeout', false),
+    stdoutLines: numOrNullField(o, 'stdout_lines') ?? 0,
+    stderrLines: numOrNullField(o, 'stderr_lines') ?? 0,
+    isSelf: boolField(o, 'is_self', false),
   }
 }
 
 /**
- * Parse a pwsh (PowerShell Core) tool result. Same wire envelope as bash —
- * per plan D2 + D10 the JSON schema is structurally identical, only the
- * `tool_name` field that wraps the envelope differs.
+ * Parse a pwsh (PowerShell Core) tool result. Same JSON `data` shape as bash —
+ * per plan D2 + D10 the schema is structurally identical, only the
+ * `tool` field that wraps the envelope differs.
  *
  * Functionally a clone of `parseBash` so future divergence (e.g. pwsh adds a
- * `<version>` tag for the PowerShell version that ran) is a one-line change
+ * `version` field for the PowerShell version that ran) is a one-line change
  * here. Tests in `toolOutputParser.spec.ts` assert `parsePwsh(x) === parseBash(x)`
  * to catch accidental drift.
  */
-export function parsePwsh(content: string): ParsedBash {
-  return parseBash(content)
+export function parsePwsh(data: unknown): ParsedBash {
+  return parseBash(data)
 }
 
 /**
- * Parse a `command` (unified shell) tool result. Same wire envelope as bash —
- * the unified `command` tool reuses the identical 9-tag envelope
+ * Parse a `command` (unified shell) tool result. Same JSON `data` shape as
+ * bash — the unified `command` tool reuses the identical 9-field payload
  * (`command`/`stdout`/`stderr`/`exit_code`/`truncated`/`timeout`/
- * `stdout_lines`/`stderr_lines`/`is_self`), only the `tool_name` wrapper
- * differs. Functionally an alias of `parseBash` so future envelope
+ * `stdout_lines`/`stderr_lines`/`is_self`), only the `tool` wrapper
+ * differs. Functionally an alias of `parseBash` so future payload
  * divergence is a one-line change here. Tests assert
  * `parseCommand(x) === parseBash(x)` to catch accidental drift.
  * `parseBash` / `parsePwsh` are intentionally left untouched.
  */
-export function parseCommand(content: string): ParsedBash {
-  return parseBash(content)
+export function parseCommand(data: unknown): ParsedBash {
+  return parseBash(data)
 }
 
 /**
  * Dispatcher: parse a tool result based on the `toolName` it was registered
  * under. 'bash' / 'pwsh' / 'run_command' (legacy alias) / 'command'
- * (unified shell) all use the same envelope. New shells with divergent
- * envelope shapes must add their own branch here.
+ * (unified shell) all use the same payload. New shells with divergent
+ * payload shapes must add their own branch here.
  */
-export function parseShell(toolName: string, content: string): ParsedBash {
+export function parseShell(toolName: string, data: unknown): ParsedBash {
   switch (toolName) {
     case 'bash':
-      return parseBash(content)
+      return parseBash(data)
     case 'pwsh':
-      return parsePwsh(content)
+      return parsePwsh(data)
     case 'run_command':
-      return parseBash(content)
+      return parseBash(data)
     case 'command':
-      return parseCommand(content)
+      return parseCommand(data)
     default:
-      return parseBash(content)
+      return parseBash(data)
   }
 }
 
@@ -348,50 +472,43 @@ export interface ParsedSearch {
   error: string | null
   fileResults: FileResult[]
   success: boolean
+  returned: number | null
+  total: number | null
+  truncated: boolean
+  truncatedHint: string | null
 }
 
-export function parseSearch(content: string): ParsedSearch {
-  const warning = extractTag(content, 'warning')
-  const error = extractTag(content, 'error')
-  const success = error === null
-  const pattern = extractTag(content, `pattern="([^"]+)"`)
-  const filePath = extractTag(content, `path="([^"]+)"`)
-  const fileResults: FileResult[] = []
-  const fileRegex = /<file\s+path="([^"]+)"\s+total="(\d+)"\s+count="(\d+)">([\s\S]*?)<\/file>/g
-  let m
-  while ((m = fileRegex.exec(content)) !== null) {
-    const path = m[1] ?? ''
-    const total = parseInt(m[2] ?? '0', 10) || 0
-    const count = parseInt(m[3] ?? '0', 10) || 0
-    const body = m[4] ?? ''
-    const matches: FileResult['matches'] = []
-    const mRegex = /<match\s+line="(\d+)"\s+snippet="([^"]+)"\s*\/>/g
-    let mm
-    while ((mm = mRegex.exec(body)) !== null) {
-      const lineNumber = parseInt(mm[1] ?? '0', 10) || 0
-      const snippet = decodeXmlAttr(mm[2] ?? '')
-      matches.push({ lineNumber, snippet })
+export function parseSearch(data: unknown): ParsedSearch {
+  const o = unwrapDataRecord(data)
+  const filesRaw = Array.isArray(o.files) ? o.files : []
+  const fileResults: FileResult[] = filesRaw.map((f) => {
+    const fr = asRecord(f)
+    const matchesRaw = Array.isArray(fr.matches) ? fr.matches : []
+    return {
+      path: strField(fr, 'path'),
+      total: numOrNullField(fr, 'total') ?? 0,
+      count: numOrNullField(fr, 'count') ?? 0,
+      matches: matchesRaw.map((m) => {
+        const mr = asRecord(m)
+        return {
+          lineNumber: numOrNullField(mr, 'line') ?? 0,
+          snippet: strField(mr, 'text'),
+        }
+      }),
     }
-    fileResults.push({ path, total, count, matches })
-  }
+  })
   return {
-    pattern,
-    path: filePath,
-    warning,
-    error,
+    pattern: strOrNullField(o, 'pattern'),
+    path: strOrNullField(o, 'path'),
+    warning: strOrNullField(o, 'warning'),
+    error: null,
     fileResults,
-    success,
+    success: true,
+    returned: numOrNullField(o, 'returned'),
+    total: numOrNullField(o, 'total'),
+    truncated: boolField(o, 'truncated', false),
+    truncatedHint: strOrNullField(o, 'truncated_hint'),
   }
-}
-
-/** Decode XML attribute value escapes (&amp; first to avoid double-decoding). */
-function decodeXmlAttr(s: string): string {
-  return s
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
 }
 
 export interface ParsedListSkills {
@@ -568,7 +685,12 @@ export function parseGenerateImage(content: string): ParsedGenerateImage {
   }
   const status = extractTag(content, 'status')
   const countRaw = extractTag(content, 'count')
-  const count = countRaw === null ? null : (Number.isFinite(parseInt(countRaw, 10)) ? parseInt(countRaw, 10) : null)
+  const count =
+    countRaw === null
+      ? null
+      : Number.isFinite(parseInt(countRaw, 10))
+        ? parseInt(countRaw, 10)
+        : null
   const model = extractTag(content, 'model')
   const size = extractTag(content, 'size')
   const revisedPrompt = extractTag(content, 'revised_prompt')
@@ -743,7 +865,10 @@ export interface ParsedMcp {
   error: string | null
 }
 
-export function splitMcpToolName(toolName: string): { server: string | null; subTool: string | null } {
+export function splitMcpToolName(toolName: string): {
+  server: string | null
+  subTool: string | null
+} {
   const prefix = 'mcp_'
   if (!toolName.startsWith(prefix)) return { server: null, subTool: null }
   const after = toolName.slice(prefix.length)

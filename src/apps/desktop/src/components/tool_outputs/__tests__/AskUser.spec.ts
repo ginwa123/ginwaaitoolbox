@@ -1,7 +1,7 @@
 /**
  * AskUser.vue — the `ask_user` tool card.
  *
- * The card renders from the inner `<ask_user>…</ask_user>` envelope and, while
+ * The card renders from the JSON `data` object and, while
  * the state is `pending`, POSTs the answer. These tests pin:
  *
  *   1. every state renders (pending single/multi/free-text, answered, skipped,
@@ -26,16 +26,16 @@ import { answerAskUser } from '../../../api'
 
 const mockedAnswer = vi.mocked(answerAskUser)
 
-function pendingEnvelope(
+function pendingData(
   overrides: {
     question?: string
     header?: string
     options?: string[]
     allowFreeText?: boolean
     multiSelect?: boolean
-    recommended?: string
+    recommended?: string | null
   } = {},
-): string {
+): Record<string, unknown> {
   const {
     question = 'Which environment should I deploy to?',
     header = 'Deploy target',
@@ -45,34 +45,32 @@ function pendingEnvelope(
     recommended = 'staging',
   } = overrides
 
-  const optionTags = options.map((o) => `<option>${o}</option>`).join('')
-  return (
-    '<ask_user>' +
-    '<status>pending</status>' +
-    '<question_id>q_1789509583247</question_id>' +
-    `<header>${header}</header>` +
-    `<question>${question}</question>` +
-    `<allow_free_text>${allowFreeText}</allow_free_text>` +
-    `<multi_select>${multiSelect}</multi_select>` +
-    (recommended ? `<recommended>${recommended}</recommended>` : '') +
-    (options.length > 0 ? `<options>${optionTags}</options>` : '') +
-    '<instruction>The human has been asked.</instruction>' +
-    '</ask_user>'
-  )
+  return {
+    status: 'pending',
+    question_id: 'q_1789509583247',
+    header,
+    question,
+    allow_free_text: allowFreeText,
+    multi_select: multiSelect,
+    recommended,
+    options,
+    instruction: 'The human has been asked.',
+  }
 }
 
-function resolvedEnvelope(status: string, extra = ''): string {
-  return (
-    '<ask_user>' +
-    `<status>${status}</status>` +
-    '<question_id>q_1</question_id>' +
-    '<question>Which environment should I deploy to?</question>' +
-    extra +
-    '</ask_user>'
-  )
+function resolvedData(
+  status: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    status,
+    question_id: 'q_1',
+    question: 'Which environment should I deploy to?',
+    ...extra,
+  }
 }
 
-function mountCard(content: string, props: Record<string, unknown> = {}) {
+function mountCard(content: unknown, props: Record<string, unknown> = {}) {
   return mount(AskUser, {
     props: { content, parameters: '{}', expanded: true, sessionId: 'sess_1', ...props },
   })
@@ -89,7 +87,7 @@ afterEach(() => {
 
 describe('AskUser — rendering', () => {
   it('renders the pending state with the question, options and a recommended chip', () => {
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
 
     expect(wrapper.attributes('data-state')).toBe('pending')
     expect(wrapper.text()).toContain('Which environment should I deploy to?')
@@ -100,20 +98,20 @@ describe('AskUser — rendering', () => {
   })
 
   it('marks the card as "waiting for you" while pending', () => {
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
     expect(wrapper.find('[data-testid="tool-card-running"]').exists()).toBe(true)
     wrapper.unmount()
   })
 
   it('hides the free-text box when the model disallowed it', () => {
-    const wrapper = mountCard(pendingEnvelope({ allowFreeText: false }))
+    const wrapper = mountCard(pendingData({ allowFreeText: false }))
     expect(wrapper.find('[data-testid="ask-user-freetext"]').exists()).toBe(false)
     wrapper.unmount()
   })
 
   it('renders a free-text-only question with no option list', () => {
     const wrapper = mountCard(
-      pendingEnvelope({ options: [], recommended: '', question: 'What should I name the branch?' }),
+      pendingData({ options: [], recommended: null, question: 'What should I name the branch?' }),
     )
     expect(wrapper.find('[data-testid="ask-user-option-0"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="ask-user-freetext"]').exists()).toBe(true)
@@ -122,10 +120,8 @@ describe('AskUser — rendering', () => {
     wrapper.unmount()
   })
 
-  it('renders an answered envelope as a resolved chip', () => {
-    const wrapper = mountCard(
-      resolvedEnvelope('answered', '<answer>staging</answer><answers_count>1</answers_count>'),
-    )
+  it('renders an answered payload as a resolved chip', () => {
+    const wrapper = mountCard(resolvedData('answered', { answer: 'staging', answers_count: 1 }))
     expect(wrapper.attributes('data-state')).toBe('answered')
     expect(wrapper.find('[data-testid="ask-user-answer-chip"]').text()).toContain('staging')
     // No interactive affordances left.
@@ -135,10 +131,7 @@ describe('AskUser — rendering', () => {
 
   it('renders a multi-select answer as one chip with every value', () => {
     const wrapper = mountCard(
-      resolvedEnvelope(
-        'answered',
-        '<answer>["zig unit","pytest"]</answer><answers_count>2</answers_count>',
-      ),
+      resolvedData('answered', { answer: '["zig unit","pytest"]', answers_count: 2 }),
     )
     expect(wrapper.find('[data-testid="ask-user-answer-chip"]').text()).toContain('zig unit')
     expect(wrapper.find('[data-testid="ask-user-answer-chip"]').text()).toContain('pytest')
@@ -146,15 +139,15 @@ describe('AskUser — rendering', () => {
   })
 
   it('renders skipped / abandoned / unavailable as distinct muted states', () => {
-    const skipped = mountCard(resolvedEnvelope('skipped'))
+    const skipped = mountCard(resolvedData('skipped'))
     expect(skipped.find('[data-testid="ask-user-skipped"]').text()).toContain('will not guess')
     skipped.unmount()
 
-    const abandoned = mountCard(resolvedEnvelope('abandoned'))
+    const abandoned = mountCard(resolvedData('abandoned'))
     expect(abandoned.find('[data-testid="ask-user-abandoned"]').text()).toContain('moved on')
     abandoned.unmount()
 
-    const unavailable = mountCard(resolvedEnvelope('unavailable', '<reason>no_human</reason>'))
+    const unavailable = mountCard(resolvedData('unavailable'))
     expect(unavailable.find('[data-testid="ask-user-unavailable"]').text()).toContain(
       'No human was available',
     )
@@ -163,8 +156,14 @@ describe('AskUser — rendering', () => {
 
   it('renders a failed call as an invalid state with the backend error', () => {
     const wrapper = mountCard(
-      '<tool><name>ask_user</name><parameters></parameters><success>false</success>' +
-        '<error>recommended must exactly match one of the strings in options</error></tool>',
+      JSON.stringify({
+        tool: 'ask_user',
+        parameters: {},
+        success: false,
+        data: null,
+        error: 'recommended must exactly match one of the strings in options',
+        v: 1,
+      }),
     )
     expect(wrapper.attributes('data-state')).toBe('invalid')
     expect(wrapper.text()).toContain('recommended must exactly match one of the strings in options')
@@ -172,20 +171,24 @@ describe('AskUser — rendering', () => {
   })
 
   it('degrades an unknown status to an invalid card instead of blanking', () => {
-    const wrapper = mountCard(resolvedEnvelope('something_new'))
+    const wrapper = mountCard(resolvedData('something_new'))
     expect(wrapper.attributes('data-state')).toBe('invalid')
     wrapper.unmount()
   })
 
-  it('reads the outcome from a <tool> envelope that LOST its <parameters> block', () => {
-    // The answer endpoint rewrites the tool row in place. An early version
-    // emitted `<tool><name>…</name><success>true</success><data>…` with no
-    // <parameters>, which makes `unwrapToolOutput` throw — ChatView then hands
-    // the card the raw envelope, and without this fallback the card rendered a
-    // bare PENDING question: every resolved question looked unanswered.
-    const raw =
-      '<tool><name>ask_user</name><success>true</success>' +
-      `<data>${resolvedEnvelope('skipped')}</data></tool>`
+  it('reads the outcome from an envelope that LOST its parameters block', () => {
+    // The answer endpoint rewrites the tool row in place. A variant emits
+    // an envelope with no `parameters`, which makes `unwrapToolOutput`
+    // throw — ChatView then hands the card the raw envelope string, and
+    // without this fallback the card rendered a bare PENDING question:
+    // every resolved question looked unanswered.
+    const raw = JSON.stringify({
+      tool: 'ask_user',
+      success: true,
+      data: resolvedData('skipped'),
+      error: null,
+      v: 1,
+    })
     const wrapper = mountCard(raw)
 
     expect(wrapper.attributes('data-state')).toBe('skipped')
@@ -193,11 +196,24 @@ describe('AskUser — rendering', () => {
     wrapper.unmount()
   })
 
+  it('accepts the data payload as a JSON string', () => {
+    const wrapper = mountCard(JSON.stringify(pendingData()))
+    expect(wrapper.attributes('data-state')).toBe('pending')
+    expect(wrapper.text()).toContain('Which environment should I deploy to?')
+    wrapper.unmount()
+  })
+
+  it('renders <>& in the question verbatim without entity decoding', () => {
+    const wrapper = mountCard(pendingData({ question: 'Deploy <staging> & "prod"?' }))
+    expect(wrapper.text()).toContain('Deploy <staging> & "prod"?')
+    wrapper.unmount()
+  })
+
   it('disables every input once the question is skipped', () => {
     // Requested behaviour: a skipped question must not stay interactive.
     // (The header's expand/collapse toggle is still a <button> — that one is
     // fine: the settled card stays inspectable.)
-    const wrapper = mountCard(resolvedEnvelope('skipped'))
+    const wrapper = mountCard(resolvedData('skipped'))
 
     expect(wrapper.find('[data-testid="ask-user-send"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="ask-user-skip"]').exists()).toBe(false)
@@ -211,13 +227,13 @@ describe('AskUser — rendering', () => {
   it('expands itself while the question is unanswered, and collapses once resolved', () => {
     // An inline card that hides the thing the human must act on is a card
     // nobody acts on — so a PENDING question ignores `expanded: false`.
-    const pending = mountCard(pendingEnvelope(), { expanded: false })
+    const pending = mountCard(pendingData(), { expanded: false })
     expect(pending.find('[data-testid="ask-user-send"]').exists()).toBe(true)
     expect(pending.text()).toContain('Which environment should I deploy to?')
     pending.unmount()
 
     // A resolved card behaves like every other tool card: a one-line summary.
-    const resolved = mountCard(resolvedEnvelope('answered', '<answer>staging</answer>'), {
+    const resolved = mountCard(resolvedData('answered', { answer: 'staging' }), {
       expanded: false,
     })
     expect(resolved.find('[data-testid="ask-user-collapsed-summary"]').text()).toContain('staging')
@@ -225,19 +241,19 @@ describe('AskUser — rendering', () => {
     resolved.unmount()
 
     // …including for the non-answered outcomes, which used to render nothing.
-    const skipped = mountCard(resolvedEnvelope('skipped'), { expanded: false })
+    const skipped = mountCard(resolvedData('skipped'), { expanded: false })
     expect(skipped.find('[data-testid="ask-user-collapsed-summary"]').text()).toContain('skipped')
     skipped.unmount()
   })
 
   it('honours an explicit expand for a resolved card', () => {
-    const wrapper = mountCard(resolvedEnvelope('skipped'), { expanded: true })
+    const wrapper = mountCard(resolvedData('skipped'), { expanded: true })
     expect(wrapper.find('[data-testid="ask-user-skipped"]').exists()).toBe(true)
     wrapper.unmount()
   })
 
   it('gives the free-text box room for a real answer', () => {
-    const wrapper = mountCard(pendingEnvelope({ options: [] }))
+    const wrapper = mountCard(pendingData({ options: [] }))
     const box = wrapper.find('[data-testid="ask-user-freetext"]')
     // Three rows of `text-xs` plus a min-height, not the original two-line sliver.
     expect(box.attributes('rows')).toBe('3')
@@ -249,7 +265,7 @@ describe('AskUser — rendering', () => {
 describe('AskUser — the wire body', () => {
   it('POSTs question_id + the picked option for a single-select question', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: 'production' })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
 
     await wrapper.find('[data-testid="ask-user-option-1"]').trigger('click')
     await wrapper.find('[data-testid="ask-user-send"]').trigger('click')
@@ -264,7 +280,7 @@ describe('AskUser — the wire body', () => {
 
   it('POSTs a JSON array for a multi-select question', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: '["a","b"]' })
-    const wrapper = mountCard(pendingEnvelope({ multiSelect: true, options: ['a', 'b', 'c'] }))
+    const wrapper = mountCard(pendingData({ multiSelect: true, options: ['a', 'b', 'c'] }))
 
     await wrapper.find('[data-testid="ask-user-option-0"]').trigger('click')
     await wrapper.find('[data-testid="ask-user-option-2"]').trigger('click')
@@ -283,7 +299,7 @@ describe('AskUser — the wire body', () => {
       status: 'answered',
       answer: 'staging, but skip 087',
     })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
 
     const textarea = wrapper.find('[data-testid="ask-user-freetext"]')
     await textarea.setValue('staging, but skip 087')
@@ -298,7 +314,7 @@ describe('AskUser — the wire body', () => {
 
   it('POSTs skip:true (and no answer) for Skip', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'skipped' })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
 
     await wrapper.find('[data-testid="ask-user-skip"]').trigger('click')
 
@@ -310,7 +326,7 @@ describe('AskUser — the wire body', () => {
   })
 
   it('does not POST while nothing is selected', async () => {
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
     await wrapper.find('[data-testid="ask-user-send"]').trigger('click')
     expect(mockedAnswer).not.toHaveBeenCalled()
     wrapper.unmount()
@@ -318,7 +334,7 @@ describe('AskUser — the wire body', () => {
 
   it('flips the card locally once the POST succeeds (a dropped SSE frame cannot strand it)', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: 'staging' })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
 
     await wrapper.find('[data-testid="ask-user-option-0"]').trigger('click')
     await wrapper.find('[data-testid="ask-user-send"]').trigger('click')
@@ -331,7 +347,7 @@ describe('AskUser — the wire body', () => {
 
   it('shows a Retry affordance when the POST fails, and keeps the selection', async () => {
     mockedAnswer.mockResolvedValue({ success: false })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
 
     await wrapper.find('[data-testid="ask-user-option-1"]').trigger('click')
     await wrapper.find('[data-testid="ask-user-send"]').trigger('click')
@@ -355,7 +371,7 @@ describe('AskUser — the wire body', () => {
 describe('AskUser — keyboard', () => {
   it('digits pick an option, Enter sends, Escape skips', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: 'production' })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
     // The card listens on `window`.
     const dispatch = (key: string) =>
       window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
@@ -376,7 +392,7 @@ describe('AskUser — keyboard', () => {
 
   it('ignores digits beyond the option count', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: 'x' })
-    const wrapper = mountCard(pendingEnvelope({ options: ['a', 'b'] }))
+    const wrapper = mountCard(pendingData({ options: ['a', 'b'] }))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '9', bubbles: true }))
     await flush()
     // Nothing selected → Send is a no-op → no POST.
@@ -387,7 +403,7 @@ describe('AskUser — keyboard', () => {
 
   it('stops listening once the question is resolved', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: 'staging' })
-    const wrapper = mountCard(pendingEnvelope())
+    const wrapper = mountCard(pendingData())
     window.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true }))
     await flush()
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))

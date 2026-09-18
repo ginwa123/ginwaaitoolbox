@@ -1,55 +1,79 @@
 import { describe, it, expect } from 'vitest'
 import { unwrapToolOutput, tryUnwrapToolOutput } from './unwrapToolOutput'
 
+const successEnvelope = JSON.stringify({
+  tool: 'read_file',
+  parameters: { path: '/foo' },
+  success: true,
+  data: { path: '/foo', content: 'hello' },
+  error: null,
+  v: 1,
+})
+
+const errorEnvelope = JSON.stringify({
+  tool: 'read_file',
+  parameters: { path: '/missing' },
+  success: false,
+  data: null,
+  error: 'File not found',
+  v: 1,
+})
+
 describe('unwrapToolOutput', () => {
-  it('parses a success envelope with inner data', () => {
-    // Parameters are XML (converted from JSON on the backend), not a JSON string
-    const wrapped =
-      '<tool><name>read_file</name><parameters><path>/foo</path></parameters><success>true</success><data><path>/foo</path><content>hello</content></data></tool>'
-    const result = unwrapToolOutput(wrapped)
+  it('parses a success envelope with object data', () => {
+    const result = unwrapToolOutput(successEnvelope)
     expect(result.name).toBe('read_file')
-    expect(result.parameters).toBe('<path>/foo</path>') // un-escaped XML
     expect(result.success).toBe(true)
     expect(result.error).toBeNull()
-    expect(result.data).toBe('<path>/foo</path><content>hello</content>') // un-escaped
+    expect(result.data).toEqual({ path: '/foo', content: 'hello' })
   })
 
-  it('parses an error envelope', () => {
-    const wrapped =
-      '<tool><name>read_file</name><parameters></parameters><success>false</success><error>File not found</error></tool>'
-    const result = unwrapToolOutput(wrapped)
+  it('re-stringifies object parameters so ToolParameters keeps working', () => {
+    const result = unwrapToolOutput(successEnvelope)
+    expect(JSON.parse(result.parameters)).toEqual({ path: '/foo' })
+  })
+
+  it('parses an error envelope with null data and string error', () => {
+    const result = unwrapToolOutput(errorEnvelope)
     expect(result.name).toBe('read_file')
     expect(result.success).toBe(false)
-    expect(result.error).toBe('File not found')
     expect(result.data).toBeNull()
+    expect(result.error).toBe('File not found')
   })
 
-  it('throws on malformed envelope', () => {
-    expect(() => unwrapToolOutput('<error>something</error>')).toThrow('MalformedToolEnvelope')
-    expect(() => unwrapToolOutput('not xml at all')).toThrow('MalformedToolEnvelope')
-    expect(() => unwrapToolOutput('<tool><name>foo</name>')).toThrow('MalformedToolEnvelope')
+  it('throws MalformedToolEnvelope on non-JSON input', () => {
+    expect(() => unwrapToolOutput('<tool><name>foo</name></tool>')).toThrow('MalformedToolEnvelope')
+    expect(() => unwrapToolOutput('not json at all')).toThrow('MalformedToolEnvelope')
+    expect(() => unwrapToolOutput('[1,2,3]')).toThrow('MalformedToolEnvelope')
+  })
+
+  it('throws MalformedToolEnvelope when required fields are missing', () => {
+    expect(() => unwrapToolOutput('{}')).toThrow('MalformedToolEnvelope')
+    expect(() => unwrapToolOutput(JSON.stringify({ tool: 'x' }))).toThrow('MalformedToolEnvelope')
+    expect(() =>
+      unwrapToolOutput(JSON.stringify({ tool: 'x', parameters: {}, success: 'yes' })),
+    ).toThrow('MalformedToolEnvelope')
   })
 
   it('tryUnwrapToolOutput returns null on malformed input', () => {
     expect(tryUnwrapToolOutput('garbage')).toBeNull()
     expect(
       tryUnwrapToolOutput(
-        '<tool><name>read_file</name><parameters></parameters><success>true</success><data>ok</data></tool>',
+        '<tool><name>foo</name><parameters></parameters><success>true</success></tool>',
       ),
-    ).toEqual({
-      name: 'read_file',
-      parameters: '',
-      success: true,
-      error: null,
-      data: 'ok',
-    })
+    ).toBeNull()
   })
 
-  it('unescapes XML entities in parameters and data', () => {
-    const wrapped =
-      '<tool><name>bash</name><parameters><command>echo &lt;hi&gt;</command></parameters><success>true</success><data><stdout>&lt;hi&gt; &amp; &quot;world&quot;</stdout></data></tool>'
-    const result = unwrapToolOutput(wrapped)
-    expect(result.parameters).toBe('<command>echo <hi></command>')
-    expect(result.data).toBe('<stdout><hi> & "world"</stdout>')
+  it('preserves <>& characters inside data without entity decoding', () => {
+    const raw = JSON.stringify({
+      tool: 'bash',
+      parameters: {},
+      success: true,
+      data: { stdout: '<hi> & "world"' },
+      error: null,
+      v: 1,
+    })
+    const result = unwrapToolOutput(raw)
+    expect((result.data as { stdout: string }).stdout).toBe('<hi> & "world"')
   })
 })
