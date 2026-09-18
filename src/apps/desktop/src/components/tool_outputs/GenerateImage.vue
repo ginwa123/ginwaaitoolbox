@@ -44,6 +44,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import {
+  normalizeToolContent,
   parseGenerateImage,
   type ParsedGenerateImage,
 } from '@/components/tool_outputs/_shared/toolOutputParser'
@@ -57,7 +58,7 @@ const props = defineProps<{
    * because the backend's `wrapToolOutput` always wraps the impl's
    * `<generate_image>...</generate_image>` response verbatim.
    */
-  content: string
+  content: unknown
   /**
    * The JSON-stringified tool-call arguments (e.g.
    * `'{"prompt":"a cat",...}'`). Used to display the prompt in the
@@ -80,7 +81,14 @@ const isExpanded = ref(props.expanded ?? false)
 // so the same regexes don't drift between the parser test and the
 // component. Always XML — never JSON.
 
-const parsed = computed<ParsedGenerateImage>(() => parseGenerateImage(props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed<ParsedGenerateImage>(() => {
+  const p = parseGenerateImage(normalized.value.data)
+  if (normalized.value.error) {
+    return { ...p, error: normalized.value.error }
+  }
+  return p
+})
 
 // ─── Parameter parsing (header context) ───────────────────────────────────
 

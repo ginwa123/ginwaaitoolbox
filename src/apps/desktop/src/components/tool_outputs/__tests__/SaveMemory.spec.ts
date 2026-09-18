@@ -51,19 +51,12 @@ const makeSuccessContent = (
   const id = opts.id ?? 'mem_aabbccdd11223344'
   const created = opts.created_at ?? '2026-08-06 10:00:00'
   const updated = opts.updated_at ?? '2026-08-06 10:05:00'
-  return [
-    `<save_memory>`,
-    `<id>${id}</id>`,
-    `<created_at>${created}</created_at>`,
-    `<updated_at>${updated}</updated_at>`,
-    `</save_memory>`,
-  ].join('')
+  return { id, created_at: created, updated_at: updated }
 }
 
-const makeErrorContent = (msg = 'content exceeds the 1 MiB per-memory cap') =>
-  `<save_memory><error>${msg}</error></save_memory>`
+const makeErrorContent = (msg = 'content exceeds the 1 MiB per-memory cap') => ({ error: msg })
 
-const makeEmptyContent = () => `<save_memory></save_memory>`
+const makeEmptyContent = () => ({})
 
 // ────────────────────────────────────────────────────────────────────────
 // Tests

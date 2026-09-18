@@ -19,29 +19,23 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import KanbanMove from '../components/tool_outputs/KanbanMove.vue'
 
-const SUCCESS_XML = `<kanban_move>
-<success>true</success>
-<task_id>task_1782549179378</task_id>
-<task_name>fix-blocking-sse-call</task_name>
-<column_id>col_1782442554114534970</column_id>
-<column_name>in progress</column_name>
-<position>0</position>
-</kanban_move>`
+const SUCCESS_XML = {
+  success: true,
+  task_id: 'task_1782549179378',
+  task_name: 'fix-blocking-sse-call',
+  column_id: 'col_1782442554114534970',
+  column_name: 'in progress',
+  position: 0,
+}
 
-const ERROR_XML = `<kanban_move>
-<success>false</success>
-<error>TaskNotFound: task_9999</error>
-</kanban_move>`
+const ERROR_XML = { success: false, error: 'TaskNotFound: task_9999' }
 
-const MISSING_FIELD_ERROR = `<kanban_move>
-<success>false</success>
-<error>Missing required field: workspace_id</error>
-</kanban_move>`
+const MISSING_FIELD_ERROR = { success: false, error: 'Missing required field: workspace_id' }
 
-const AMBIGUOUS_ERROR = `<kanban_move>
-<success>false</success>
-<error>Ambiguous column name: 'done' matches 2 columns - pass target_column_id</error>
-</kanban_move>`
+const AMBIGUOUS_ERROR = {
+  success: false,
+  error: "Ambiguous column name: 'done' matches 2 columns - pass target_column_id",
+}
 
 describe('KanbanMove', () => {
   let wrapper: ReturnType<typeof mount> | null = null

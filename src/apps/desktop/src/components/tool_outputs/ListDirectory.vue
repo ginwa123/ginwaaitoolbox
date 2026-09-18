@@ -40,13 +40,13 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { parseListDirectory } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseListDirectory } from './_shared/toolOutputParser'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   cwd?: string
   parameters?: string
@@ -58,7 +58,19 @@ const openInEditor = useInjectOpenInCodeEditor()
 // Single parser pass — reuses the typed `ParsedListDirectory` from the
 // project-wide parser. Handles both the inner-data shape and the
 // outer-<tool>-envelope error fallback (see ChatView.innerToolData).
-const parsed = computed(() => parseListDirectory(props.content))
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseListDirectory(normalized.value.data)
+  if (normalized.value.error) {
+    return { ...p, success: false, error: normalized.value.error }
+  }
+  return p
+})
 
 // ---- Derived display values ------------------------------------------------
 
@@ -75,7 +87,7 @@ const displayPath = computed((): string | null => {
 
 // Running: empty envelope content, but we know the path.
 const isRunning = computed(() => {
-  return props.content.trim().length === 0 && displayPath.value !== null
+  return isEmptyContent(props.content) && displayPath.value !== null
 })
 
 const path = computed(() => displayPath.value)

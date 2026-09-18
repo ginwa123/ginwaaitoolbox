@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import KanbanMove from '../KanbanMove.vue'
 
-const makeWrapper = (props: { content: string; parameters?: string }) =>
+const makeWrapper = (props: { content: unknown; parameters?: string }) =>
   mount(KanbanMove, { props: props as never })
 
 describe('KanbanMove.vue — in-progress placeholder', () => {
@@ -21,7 +21,14 @@ describe('KanbanMove.vue — in-progress placeholder', () => {
 
   it('prefers content when completed', () => {
     const wrapper = makeWrapper({
-      content: '<kanban_move><success>true</success><task_id>task_1</task_id><task_name>from-content</task_name><column_id>col_1</column_id><column_name>in progress</column_name><position>0</position></kanban_move>',
+      content: {
+        success: true,
+        task_id: 'task_1',
+        task_name: 'from-content',
+        column_id: 'col_1',
+        column_name: 'in progress',
+        position: 0,
+      },
       parameters: '<task_id>task_2</task_id><target_column_name>done</target_column_name>',
     })
     const html = wrapper.html()

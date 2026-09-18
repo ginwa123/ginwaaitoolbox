@@ -17,104 +17,58 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import KanbanList from '../components/tool_outputs/KanbanList.vue'
 
-const SUCCESS_XML = `<kanban>
-<workspace_id>ws_1779002584293_e52cd134532e1f00</workspace_id>
-<item_id>item_1782442554104741821</item_id>
-<columns>
-<column>
-<id>col_1782442554112968570</id>
-<name>todo</name>
-<position>0</position>
-<task_count>2</task_count>
-</column>
-<column>
-<id>col_1782442554114534970</id>
-<name>in progress</name>
-<position>1</position>
-<task_count>3</task_count>
-</column>
-<column>
-<id>col_1782442554115179957</id>
-<name>done</name>
-<position>2</position>
-<task_count>0</task_count>
-</column>
-</columns>
-<tasks>
-<task>
-<id>task_1782319202279</id>
-<name>squash-merge-pr-38-to-main</name>
-<column_id>col_1782442554112968570</column_id>
-<column_name>todo</column_name>
-<position>0</position>
-</task>
-<task>
-<id>task_1782551466784</id>
-<name>stream-idle-timeout-increase</name>
-<column_id>col_1782442554112968570</column_id>
-<column_name>todo</column_name>
-<position>1</position>
-</task>
-<task>
-<id>task_1782549179378</id>
-<name>implement-kanban-status-prompt</name>
-<column_id>col_1782442554114534970</column_id>
-<column_name>in progress</column_name>
-<position>0</position>
-</task>
-<task>
-<id>task_1782568979811</id>
-<name>tool-component-output</name>
-<column_id>col_1782442554114534970</column_id>
-<column_name>in progress</column_name>
-<position>1</position>
-</task>
-<task>
-<id>task_1782569378361</id>
-<name>kanban-sse-auto-move</name>
-<column_id>col_1782442554114534970</column_id>
-<column_name>in progress</column_name>
-<position>2</position>
-</task>
-<task>
-<id>task_orphan_42</id>
-<name>orphan-task-with-no-column</name>
-<column_id></column_id>
-<column_name></column_name>
-<position>0</position>
-</task>
-</tasks>
-</kanban>`
+const SUCCESS_XML = {
+  workspace_id: 'ws_1779002584293_e52cd134532e1f00',
+  item_id: 'item_1782442554104741821',
+  columns: [
+    { id: 'col_1782442554112968570', name: 'todo', position: 0, task_count: 2 },
+    { id: 'col_1782442554114534970', name: 'in progress', position: 1, task_count: 3 },
+    { id: 'col_1782442554115179957', name: 'done', position: 2, task_count: 0 },
+  ],
+  tasks: [
+    { id: 'task_1782319202279', name: 'squash-merge-pr-38-to-main', column_id: 'col_1782442554112968570', column_name: 'todo', position: 0 },
+    { id: 'task_1782551466784', name: 'stream-idle-timeout-increase', column_id: 'col_1782442554112968570', column_name: 'todo', position: 1 },
+    { id: 'task_1782549179378', name: 'implement-kanban-status-prompt', column_id: 'col_1782442554114534970', column_name: 'in progress', position: 0 },
+    { id: 'task_1782568979811', name: 'tool-component-output', column_id: 'col_1782442554114534970', column_name: 'in progress', position: 1 },
+    { id: 'task_1782569378361', name: 'kanban-sse-auto-move', column_id: 'col_1782442554114534970', column_name: 'in progress', position: 2 },
+    { id: 'task_orphan_42', name: 'orphan-task-with-no-column', column_id: null, column_name: null, position: 0 },
+  ],
+  total_count: 6,
+  limit: 50,
+  offset: 0,
+  has_more: false,
+  hint: null,
+}
 
-const EMPTY_BOARD_XML = `<kanban>
-<workspace_id>ws_1779002584293_e52cd134532e1f00</workspace_id>
-<item_id>item_empty_42</item_id>
-<columns></columns>
-<tasks></tasks>
-<hint>This kanban item has no columns (0 columns). The user may have deleted all columns, or the kanban was just created and columns haven't been seeded yet.</hint>
-</kanban>`
+const EMPTY_BOARD_XML = {
+  workspace_id: 'ws_1779002584293_e52cd134532e1f00',
+  item_id: 'item_empty_42',
+  columns: [],
+  tasks: [],
+  total_count: 0,
+  limit: 50,
+  offset: 0,
+  has_more: false,
+  hint: "This kanban item has no columns (0 columns). The user may have deleted all columns, or the kanban was just created and columns haven't been seeded yet.",
+}
 
-const ERROR_XML = `<kanban>
-<error>item_id 'item_9999' matches no workspace_item (or the item isn't a kanban). Verify the id from the Workspace Context listing.</error>
-</kanban>`
+const ERROR_XML = {
+  error: "item_id 'item_9999' matches no workspace_item (or the item isn't a kanban). Verify the id from the Workspace Context listing.",
+}
 
-const MISSING_FIELD_ERROR = `<kanban>
-<error>Missing required field: workspace_id</error>
-</kanban>`
+const MISSING_FIELD_ERROR = { error: 'Missing required field: workspace_id' }
 
-const NO_TASKS_BUT_HAS_COLUMNS = `<kanban>
-<workspace_id>ws_1779002584293_e52cd134532e1f00</workspace_id>
-<item_id>item_empty_tasks</item_id>
-<columns>
-<column>
-<id>col_1</id>
-<name>todo</name>
-<position>0</position>
-<task_count>0</task_count>
-</column>
-</columns>
-<tasks></tasks>
-</kanban>`
+const NO_TASKS_BUT_HAS_COLUMNS = {
+  workspace_id: 'ws_1779002584293_e52cd134532e1f00',
+  item_id: 'item_empty_tasks',
+  columns: [{ id: 'col_1', name: 'todo', position: 0, task_count: 0 }],
+  tasks: [],
+  total_count: 0,
+  limit: 50,
+  offset: 0,
+  has_more: false,
+  hint: null,
+}
 
 describe('KanbanList', () => {
   let wrapper: ReturnType<typeof mount> | null = null
@@ -140,16 +94,17 @@ describe('KanbanList', () => {
   })
 
   it('uses singular forms correctly (1 column, 1 task)', () => {
-    const oneEach = `<kanban>
-<workspace_id>ws_1</workspace_id>
-<item_id>item_1</item_id>
-<columns>
-<column><id>col_1</id><name>todo</name><position>0</position><task_count>1</task_count></column>
-</columns>
-<tasks>
-<task><id>task_1</id><name>only task</name><column_id>col_1</column_id><column_name>todo</column_name><position>0</position></task>
-</tasks>
-</kanban>`
+    const oneEach = {
+      workspace_id: 'ws_1',
+      item_id: 'item_1',
+      columns: [{ id: 'col_1', name: 'todo', position: 0, task_count: 1 }],
+      tasks: [{ id: 'task_1', name: 'only task', column_id: 'col_1', column_name: 'todo', position: 0 }],
+      total_count: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      hint: null,
+    }
     wrapper = mount(KanbanList, {
       props: { content: oneEach, expanded: false },
     })

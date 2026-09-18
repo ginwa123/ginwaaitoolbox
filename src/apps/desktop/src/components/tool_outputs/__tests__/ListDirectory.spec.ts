@@ -46,27 +46,34 @@ const makeSuccessContent = (opts: {
     { name: 'README.md', path: '/proj/README.md', is_directory: false, is_symlink: false },
     { name: 'main.zig', path: '/proj/main.zig', is_directory: false, is_symlink: false },
   ]
-  const inner = entries
-    .map((e) => {
-      const tag = e.is_directory ? 'directory' : 'file'
-      return `<${tag} name="${e.name}" path="${e.path}" is_symlink="${e.is_symlink ?? false}"/>`
-    })
-    .join('')
-  return `<directory_listing path="${path}" count="${entries.length}">${inner}</directory_listing>`
+  return {
+    path,
+    count: entries.length,
+    entries: entries.map((e) => ({
+      name: e.name,
+      path: e.path,
+      is_directory: e.is_directory,
+      is_symlink: e.is_symlink ?? false,
+    })),
+  }
 }
 
 const makeErrorContent = (msg = 'list_directory failed: PathNotFound') =>
-  // innerToolData falls back to the full <tool> envelope on error —
-  // see ChatView.vue:1123-1127. The component must still find the
-  // <error> tag and render it.
-  `<tool><name>list_directory</name><parameters>{"path":"/missing"}</parameters>` +
-  `<success>false</success><error>${msg}</error></tool>`
+  // normalizeToolContent unwraps the full envelope; the component reads
+  // the error from the normalized payload.
+  JSON.stringify({
+    tool: 'list_directory',
+    parameters: { path: '/missing' },
+    success: false,
+    data: null,
+    error: msg,
+    v: 1,
+  })
 
-const makeEmptyContent = (path = '/empty') =>
-  `<directory_listing path="${path}" count="0"></directory_listing>`
+const makeEmptyContent = (path = '/empty') => ({ path, count: 0, entries: [] })
 
 const makeWrapper = (
-  props: { content: string; cwd?: string; expanded?: boolean },
+  props: { content: unknown; cwd?: string; expanded?: boolean },
   provideOpenInEditor?: OpenInCodeEditorFn,
 ) => {
   if (provideOpenInEditor) {

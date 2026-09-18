@@ -16,29 +16,18 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import SetGitWorktree from '../components/tool_outputs/SetGitWorktree.vue'
 
-const SET_SUCCESS = `<worktree>
-<session_id>session_123</session_id>
-<created>true</created>
-<path>/abs/.worktrees/auth-fix</path>
-<branch>worktree/auth-fix</branch>
-</worktree>`
+const SET_SUCCESS = {
+  created: true,
+  path: '/abs/.worktrees/auth-fix',
+  branch: 'worktree/auth-fix',
+  error: null,
+}
 
-const CLEAR_SUCCESS = `<worktree>
-<session_id>session_123</session_id>
-<cleared>true</cleared>
-</worktree>`
+const CLEAR_SUCCESS = { cleared: true, error: null }
 
-const ERROR_XML = `<worktree>
-<session_id>session_123</session_id>
-<created>false</created>
-<error>path is required (or pass clear=true)</error>
-</worktree>`
+const ERROR_XML = { created: false, error: 'path is required (or pass clear=true)' }
 
-const PATH_ONLY = `<worktree>
-<session_id>session_123</session_id>
-<created>true</created>
-<path>/tmp/x</path>
-</worktree>`
+const PATH_ONLY = { created: true, path: '/tmp/x', error: null }
 
 describe('SetGitWorktree', () => {
   let wrapper: ReturnType<typeof mount> | null = null

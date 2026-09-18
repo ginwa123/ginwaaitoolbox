@@ -30,10 +30,10 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
-import { parseSearchTool, parseUseTool, parseViewTool } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseSearchTool, parseUseTool, parseViewTool } from './_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   toolName: string
   parameters?: string
   expanded?: boolean
@@ -45,11 +45,17 @@ const isSearch = computed(() => props.toolName === 'search_tool')
 const isView = computed(() => props.toolName === 'view_tool')
 const isUse = computed(() => props.toolName === 'use_tool')
 
-const search = computed(() => parseSearchTool(props.content))
-const view = computed(() => parseViewTool(props.content))
-const use = computed(() => parseUseTool(props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const search = computed(() => parseSearchTool(normalized.value.data))
+const view = computed(() => parseViewTool(normalized.value.data))
+const use = computed(() => parseUseTool(normalized.value.data))
 
-const isRunning = computed(() => props.content.trim().length === 0)
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content))
 
 const success = computed(() => {
   if (isSearch.value) return search.value.success

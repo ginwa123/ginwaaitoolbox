@@ -18,19 +18,24 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import ShellTool from '../ShellTool.vue'
 
-const completedEnvelope =
-  `<command>echo hi</command>` +
-  `<stdout>hi</stdout><stderr></stderr>` +
-  `<exit_code>0</exit_code><truncated>false</truncated>` +
-  `<timeout>false</timeout><stdout_lines>1</stdout_lines>` +
-  `<stderr_lines>0</stderr_lines><is_self>false</is_self>`
+const completedEnvelope = {
+  command: 'echo hi',
+  stdout: 'hi',
+  stderr: '',
+  exit_code: 0,
+  truncated: false,
+  timeout: false,
+  stdout_lines: 1,
+  stderr_lines: 0,
+  is_self: false,
+}
 
 const emptyPlaceholder = ''
 
 const paramsFor = (command: string) => JSON.stringify({ command })
 
 const makeWrapper = (props: {
-  content: string
+  content: unknown
   toolName?: string
   parameters?: string
   expanded?: boolean
@@ -93,10 +98,10 @@ describe('ShellTool.vue — in-progress placeholder (TDD: unknown bug)', () => {
     expect(wrapper.html().toLowerCase()).not.toContain('running')
   })
 
-  it('shows command from XML :parameters when :content empty', () => {
+  it('shows command from JSON :parameters when :content empty', () => {
     const wrapper = makeWrapper({
       content: emptyPlaceholder,
-      parameters: '<command>sleep 10</command><mandatory_timeout>30</mandatory_timeout>',
+      parameters: '{"command":"sleep 10","mandatory_timeout":30}',
     })
     const html = wrapper.html()
     expect(html).toContain('sleep 10')
@@ -104,10 +109,10 @@ describe('ShellTool.vue — in-progress placeholder (TDD: unknown bug)', () => {
     expect(html.toLowerCase()).toContain('running')
   })
 
-  it('prefers envelope command over XML parameters', () => {
+  it('prefers envelope command over JSON parameters', () => {
     const wrapper = makeWrapper({
       content: completedEnvelope,
-      parameters: '<command>stale</command>',
+      parameters: '{"command":"stale"}',
     })
     const html = wrapper.html()
     expect(html).toContain('echo hi')

@@ -59,6 +59,7 @@ import ToolParameters from './_shared/ToolParameters.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
 import PreviewContentRenderer from '../preview/PreviewContentRenderer.vue'
 import {
+  normalizeToolContent,
   parsePresentFiles,
   isPreviewableImage,
   basenameOfPath,
@@ -73,7 +74,7 @@ const props = defineProps<{
    * envelope (already unwrapped by the parent's
    * `tryUnwrapToolOutput` pipeline). Always XML — never JSON.
    */
-  content: string
+  content: unknown
   /**
    * The session id — threaded into the download/preview URLs as
    * `?session_id=` so the backend can sandbox paths to the session
@@ -96,7 +97,14 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parsePresentFiles(props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parsePresentFiles(normalized.value.data)
+  if (normalized.value.error) {
+    return { ...p, error: normalized.value.error }
+  }
+  return p
+})
 const fullscreenSrc = ref<string | null>(null)
 
 const files = computed((): ParsedPresentFile[] => parsed.value.files)

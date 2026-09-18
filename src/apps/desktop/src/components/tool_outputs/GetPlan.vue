@@ -95,34 +95,68 @@ const isExpanded = ref(false)
  */
 const envelopeParams = computed(() => tryUnwrapToolOutput(props.message.content)?.parameters ?? '{}')
 
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(v)
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
+}
+
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
 /**
- * Find the inner `<get_plan>...</get_plan>` envelope anywhere inside
- * `message.content`. The dispatcher passes the raw tool message, whose
- * content is the full `<tool>...</tool>` envelope; we strip the wrapper
- * here so the component is self-contained.
- *
- * Regex instead of `tryUnwrapToolOutput` because we want a defensive
- * fallback for legacy callers that may pass just the inner envelope
- * directly (no `<tool>` wrapper).
+ * Unwrap the message content to the inner `data` record. Accepts the full
+ * JSON envelope string (normal wire shape) or a bare data-object JSON
+ * string (defensive fallback for direct callers). Returns null when the
+ * content is not parseable JSON at all.
  */
-function findInnerEnvelope(content: string): string {
-  const match = content.match(/<get_plan>([\s\S]*?)<\/get_plan>/)
-  return match && match[1] ? match[1] : content
+function innerDataOf(content: string): { data: Record<string, unknown>; error: string | null } | null {
+  const unwrapped = tryUnwrapToolOutput(content)
+  if (unwrapped) {
+    if (!unwrapped.success) return { data: {}, error: unwrapped.error ?? 'tool failed' }
+    return { data: asRecord(unwrapped.data), error: null }
+  }
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>
+      const err = strOrNull(record.error)
+      return { data: record, error: err }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 const parsed = computed((): ParsedGetPlan => {
-  const inner = findInnerEnvelope(props.message.content)
-  const errorMatch = inner.match(/<error>([\s\S]*?)<\/error>/)
-  if (errorMatch && errorMatch[1]) {
+  const unwrapped = innerDataOf(props.message.content)
+  const inner = unwrapped?.data ?? {}
+  const error = unwrapped === null ? 'tool failed' : unwrapped.error ?? strOrNull(inner.error)
+  if (error !== null) {
     return {
       success: false,
       isEmpty: false,
       body: null,
-      error: errorMatch[1].trim(),
+      error,
     }
   }
-  // `<empty/>` is the canonical "no plan" signal.
-  if (/<empty\s*\/?>/.test(inner)) {
+  // `{empty:true}` is the canonical "no plan" signal.
+  if (inner.empty === true) {
     return {
       success: true,
       isEmpty: true,
@@ -130,10 +164,9 @@ const parsed = computed((): ParsedGetPlan => {
       error: null,
     }
   }
-  // Present branch: `<plan><![CDATA[...]]></plan>`.
-  const planMatch = inner.match(/<plan>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/plan>/)
-  if (planMatch && planMatch[1] !== undefined) {
-    const body = planMatch[1]
+  // Present branch: `plan` markdown string.
+  const body = strOrNull(inner.plan)
+  if (body !== null) {
     return {
       success: true,
       isEmpty: false,

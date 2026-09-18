@@ -37,9 +37,10 @@
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
 import ToolParameters from './_shared/ToolParameters.vue'
+import { normalizeToolContent } from './_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). Used as a fallback
    *  so a still-running tool (empty content) shows its target id. */
@@ -50,34 +51,53 @@ const isExpanded = ref(props.expanded ?? false)
 
 // ---- Parsers ---------------------------------------------------------------
 
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const p: unknown = JSON.parse(v)
+      return typeof p === 'object' && p !== null && !Array.isArray(p)
+        ? (p as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
+}
+
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+const normalized = computed(() => normalizeToolContent(props.content))
+const dataRecord = computed(() => asRecord(normalized.value.data))
+
+const errorMessage = computed(() => normalized.value.error ?? strOrNull(dataRecord.value.error))
 
 const memoryId = computed(() => {
-  const match = props.content.match(/<id>([\s\S]*?)<\/id>/)
-  if (match?.[1]?.trim()) return match[1].trim()
+  const id = strOrNull(dataRecord.value.id)
+  if (id) return id
   // In-progress fallback: the result envelope is still empty, so show the
   // id the tool was called with (from the `parameters` prop).
   return extractParam(props.parameters, 'id')
 })
 
-// Running: result envelope is still empty (no <error>, no <id>).
-const isRunning = computed(() => props.content.trim() === '')
+// Running: result envelope is still empty (no error, no id).
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content))
 
-const createdAt = computed(() => {
-  const match = props.content.match(/<created_at>([\s\S]*?)<\/created_at>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+const createdAt = computed(() => strOrNull(dataRecord.value.created_at))
 
-const updatedAt = computed(() => {
-  const match = props.content.match(/<updated_at>([\s\S]*?)<\/updated_at>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+const updatedAt = computed(() => strOrNull(dataRecord.value.updated_at))
 
 // ---- Derived display values ------------------------------------------------
 

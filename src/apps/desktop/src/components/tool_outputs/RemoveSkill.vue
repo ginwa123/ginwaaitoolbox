@@ -2,10 +2,10 @@
 import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
-import { parseRemoveSkill } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseRemoveSkill } from './_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). Surfaced via the
    *  shared <ToolParameters> block in the expanded body; empty/'{}'
@@ -14,7 +14,15 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parseRemoveSkill(props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseRemoveSkill(normalized.value.data)
+  if (normalized.value.error) {
+    p.success = false
+    p.error = normalized.value.error
+  }
+  return p
+})
 
 const hasArgs = computed(() => {
   const p = (props.parameters ?? '').trim()

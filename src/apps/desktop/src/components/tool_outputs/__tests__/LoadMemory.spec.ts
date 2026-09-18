@@ -73,52 +73,38 @@ const makeSuccessContent = (
   const total = opts.total_count ?? count
   const entries = opts.entries ?? []
 
-  const entryXml = entries
-    .map((e) => {
-      const id = e.id ?? 'mem_aabbccdd00000000'
-      const tags = e.tags ?? ''
-      const ca = e.created_at ?? '2026-08-06 10:00:00'
-      const ua = e.updated_at ?? '2026-08-06 10:00:00'
-      const snip = e.snippet ?? '...[match]preferred[/match] model...'
-      const parts = [
-        '    <memory>',
-        `      <id>${id}</id>`,
-        tags ? `      <tags>${tags}</tags>` : null,
-        `      <created_at>${ca}</created_at>`,
-        `      <updated_at>${ua}</updated_at>`,
-        `      <snippet>${snip}</snippet>`,
-      ].filter((p): p is string => p !== null)
-      if (e.content !== undefined) {
-        const trunc = e.content_truncated ? '1' : '0'
-        parts.push(`      <content truncated="${trunc}">${e.content}</content>`)
-      }
-      parts.push('    </memory>')
-      return parts.join('\n')
-    })
-    .join('\n')
+  const results = entries.map((e) => ({
+    id: e.id ?? 'mem_aabbccdd00000000',
+    tags: e.tags ?? '',
+    created_at: e.created_at ?? '2026-08-06 10:00:00',
+    updated_at: e.updated_at ?? '2026-08-06 10:00:00',
+    snippet: e.snippet ?? '...[match]preferred[/match] model...',
+    content: e.content ?? null,
+    truncated: e.content !== undefined ? (e.content_truncated ?? false) : null,
+  }))
 
-  return [
-    `<load_memory query="${query}" limit="${limit}" offset="${offset}" with_content="${with_content}">`,
-    `  <count>${count}</count>`,
-    `  <total_count>${total}</total_count>`,
-    `  <results>`,
-    entryXml,
-    `  </results>`,
-    `</load_memory>`,
-  ].join('\n')
+  return {
+    query,
+    limit,
+    offset,
+    with_content: with_content === '1',
+    count,
+    total_count: total,
+    results,
+  }
 }
 
-const makeErrorContent = (msg = 'query must be non-empty') =>
-  `<load_memory><error>${msg}</error></load_memory>`
+const makeErrorContent = (msg = 'query must be non-empty') => ({ error: msg })
 
-const makeEmptyContent = (query = 'no-such-memory') =>
-  [
-    `<load_memory query="${query}" limit="10" offset="0" with_content="0">`,
-    `  <count>0</count>`,
-    `  <total_count>0</total_count>`,
-    `  <results/>`,
-    `</load_memory>`,
-  ].join('\n')
+const makeEmptyContent = (query = 'no-such-memory') => ({
+  query,
+  limit: 10,
+  offset: 0,
+  with_content: false,
+  count: 0,
+  total_count: 0,
+  results: [],
+})
 
 // ────────────────────────────────────────────────────────────────────────
 // Tests

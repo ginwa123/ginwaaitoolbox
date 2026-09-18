@@ -44,6 +44,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
+import { tryUnwrapToolOutput } from '../../helpers/unwrapToolOutput'
 
 // Minimal shape we need from the parent. ChatView.vue defines a
 // LOCAL `Message` interface (different from `api.Message`) so we
@@ -78,36 +79,58 @@ const props = defineProps<{
 
 const isExpanded = ref(false)
 
-/**
- * Find the inner `<update_plan>...</update_plan>` envelope anywhere
- * inside `message.content`. The dispatcher passes the raw tool
- * message, whose content is the full `<tool>...</tool>` envelope; we
- * strip the wrapper here so the component is self-contained.
- *
- * Regex instead of `tryUnwrapToolOutput` because we want a defensive
- * fallback for legacy callers that may pass just the inner envelope
- * directly (no `<tool>` wrapper).
- */
-function findInnerEnvelope(content: string): string {
-  const match = content.match(/<update_plan>([\s\S]*?)<\/update_plan>/)
-  return match && match[1] ? match[1] : content
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(v)
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
 }
 
-function extractTag(content: string, tag: string): string | null {
-  const openSeq = `<${tag}>`
-  const closeSeq = `</${tag}>`
-  const openIdx = content.indexOf(openSeq)
-  if (openIdx === -1) return null
-  const valueStart = openIdx + openSeq.length
-  const closeIdx = content.indexOf(closeSeq, valueStart)
-  if (closeIdx === -1) return null
-  const raw = content.slice(valueStart, closeIdx).trim()
-  return raw.length > 0 ? raw : null
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+/**
+ * Unwrap the message content to the inner `data` record. Accepts the full
+ * JSON envelope string (normal wire shape) or a bare data-object JSON
+ * string (defensive fallback for direct callers). Returns null when the
+ * content is not parseable JSON at all.
+ */
+function innerDataOf(content: string): { data: Record<string, unknown>; error: string | null } | null {
+  const unwrapped = tryUnwrapToolOutput(content)
+  if (unwrapped) {
+    if (!unwrapped.success) return { data: {}, error: unwrapped.error ?? 'tool failed' }
+    return { data: asRecord(unwrapped.data), error: null }
+  }
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>
+      const err = strOrNull(record.error)
+      return { data: record, error: err }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
 const parsed = computed((): ParsedUpdatePlan => {
-  const inner = findInnerEnvelope(props.message.content)
-  const error = extractTag(inner, 'error')
+  const unwrapped = innerDataOf(props.message.content)
+  const inner = unwrapped?.data ?? {}
+  const error = unwrapped === null ? 'tool failed' : unwrapped.error ?? strOrNull(inner.error)
   if (error !== null) {
     return {
       success: false,
@@ -117,17 +140,12 @@ const parsed = computed((): ParsedUpdatePlan => {
       body: null,
     }
   }
-  // Extract the <plan><![CDATA[...]]></plan> body. Mirrors
-  // GetPlan.vue::parsed.body exactly — same regex, same fallback
-  // semantics — so the two components share the wire contract.
-  const planMatch = inner.match(/<plan>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/plan>/)
-  const body = planMatch && planMatch[1] !== undefined ? planMatch[1] : null
   return {
     success: true,
-    sessionId: extractTag(inner, 'session_id'),
-    updatedAt: extractTag(inner, 'updated_at'),
+    sessionId: strOrNull(inner.session_id),
+    updatedAt: strOrNull(inner.updated_at),
     error: null,
-    body,
+    body: strOrNull(inner.plan),
   }
 })
 
@@ -218,7 +236,9 @@ const handleToggle = (next: boolean) => {
           data-testid="update-plan-session-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Session:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ parsed.sessionId }}</span>
+          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
+            parsed.sessionId
+          }}</span>
         </div>
         <div
           v-if="parsed.updatedAt"
@@ -226,18 +246,16 @@ const handleToggle = (next: boolean) => {
           data-testid="update-plan-updated-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Updated:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ parsed.updatedAt }}</span>
+          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
+            parsed.updatedAt
+          }}</span>
         </div>
 
         <!-- Plan body rendered as a checklist. Mirrors GetPlan.vue::template
              so users see what the plan looks like now, without calling
              get_plan separately. The body comes from the <plan><![CDATA[...]]></plan>
              block of the response envelope (NOT from the tool's input args). -->
-        <div
-          v-if="hasChecklist"
-          class="px-3 py-2 space-y-0.5"
-          data-testid="update-plan-checklist"
-        >
+        <div v-if="hasChecklist" class="px-3 py-2 space-y-0.5" data-testid="update-plan-checklist">
           <div
             v-for="(line, idx) in checklistLines"
             :key="idx"
@@ -249,21 +267,22 @@ const handleToggle = (next: boolean) => {
               v-if="line.kind === 'checked'"
               class="shrink-0 text-green-500 w-4 text-center"
               aria-hidden="true"
-            >☑</span>
+              >☑</span
+            >
             <span
               v-else-if="line.kind === 'unchecked'"
               class="shrink-0 text-[var(--semantic-text-muted)] w-4 text-center"
               aria-hidden="true"
-            >☐</span>
-            <span
-              v-else
-              class="shrink-0 w-4"
-              aria-hidden="true"
-            ></span>
+              >☐</span
+            >
+            <span v-else class="shrink-0 w-4" aria-hidden="true"></span>
             <span
               class="whitespace-pre-wrap break-words flex-1 min-w-0"
-              :class="line.kind === 'checked' ? 'line-through text-[var(--semantic-text-muted)]' : ''"
-            >{{ line.text }}</span>
+              :class="
+                line.kind === 'checked' ? 'line-through text-[var(--semantic-text-muted)]' : ''
+              "
+              >{{ line.text }}</span
+            >
           </div>
         </div>
 
