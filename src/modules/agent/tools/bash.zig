@@ -29,9 +29,9 @@ pub fn execute_bash(
     return command.execute_command(allocator, io, input);
 }
 
-/// XML serialiser — re-export from the unified command module under the
+/// JSON serialiser — re-export from the unified command module under the
 /// bash name for ergonomic callers.
-pub const bash_result_to_string = command.command_result_to_string;
+pub const bash_result_to_json = command.command_result_to_json;
 
 pub const bash_tool_system_prompt = command.command_tool_system_prompt;
 

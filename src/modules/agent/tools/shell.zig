@@ -11,7 +11,7 @@
 //   * the self-kill detection (shared between bash + pwsh)
 //   * the URL-encoding step (swaps `"…"` → `'…'` around URLs to keep both
 //     bash and PowerShell from interpreting `?` / `&` as wildcards)
-//   * the XML serialisation of `ShellOutput` to the LLM-facing envelope
+//   * the JSON serialisation of `ShellOutput` to the LLM-facing envelope
 //
 // Shell-SPECIFIC code (executable name, argv-prefix, Windows availability)
 // lives in the per-shell wrappers (bash.zig, pwsh.zig). The two wrappers
@@ -37,7 +37,7 @@ const helpers = @import("helpers");
 const schemas = @import("schemas.zig");
 
 const selfkill = @import("bash_selfkill.zig"); // shared per D5 (bash + pwsh)
-const xmlEscape = helpers.xml_escape;
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Canonical wire schema. Per-shell wrappers (bash.zig, pwsh.zig) re-export
 /// this as `BashInput` / `PwshInput` so the JSON contract is identical.
@@ -794,44 +794,35 @@ fn spawn_background(
     };
 }
 
-/// XML serialiser — same 9-tag envelope as `bash_result_to_string`.
+/// JSON serialiser — same 9-field payload as the old `result_to_xml`
+/// (`command/stdout/stderr/exit_code/truncated/timeout/stdout_lines/
+/// stderr_lines/is_self`), now a JSON object.
 ///
-/// Returned to the LLM as the inner content of the standard `<tool>`
-/// envelope (`wrapToolOutput` wraps it with `<data>` / `<error>` /
-/// `<parameters>` on the agentic-loop side).
-pub fn result_to_xml(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
+/// Returned to the LLM as the inner `data` of the standard JSON envelope
+/// (`wrapToolOutput` embeds it in `"data"` on the agentic-loop side).
+pub fn result_to_json(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
     // Binary stdout (e.g. `head $(which qs)` dumping the ELF header)
-    // embeds NUL + C0 controls + `<>&` that break the XML envelope —
-    // the stored history then ends at `ELF` with no </stdout></data>
-    // </tool>. Escape everything so the envelope always closes.
-    // xmlEscape also replaces illegal XML 1.0 bytes with U+FFFD.
-    const esc_command = try xmlEscape(allocator, result.command);
-    defer allocator.free(esc_command);
-    const esc_stdout = try xmlEscape(allocator, result.stdout);
-    defer allocator.free(esc_stdout);
-    const esc_stderr = try xmlEscape(allocator, result.stderr);
-    defer allocator.free(esc_stderr);
-    return try std.fmt.allocPrint(allocator,
-        \\<command>{s}</command>
-        \\<stdout>{s}</stdout>
-        \\<stderr>{s}</stderr>
-        \\<exit_code>{d}</exit_code>
-        \\<truncated>{}</truncated>
-        \\<timeout>{}</timeout>
-        \\<stdout_lines>{d}</stdout_lines>
-        \\<stderr_lines>{d}</stderr_lines>
-        \\<is_self>{}</is_self>
-    , .{
-        esc_command,
-        esc_stdout,
-        esc_stderr,
-        result.exit_code,
-        result.truncated,
-        result.timeout,
-        result.stdout_lines,
-        result.stderr_lines,
-        result.is_self,
-    });
+    // embeds NUL + C0 controls that truncate SQLite TEXT at the first NUL
+    // and are illegal in JSON strings. Sanitize everything to U+FFFD first;
+    // `std.json` then handles the remaining `<>&"'` natively (no escaping
+    // layer — markup stays raw so the LLM and frontend read it directly).
+    const clean_command = try sanitizeControlChars(allocator, result.command);
+    defer allocator.free(clean_command);
+    const clean_stdout = try sanitizeControlChars(allocator, result.stdout);
+    defer allocator.free(clean_stdout);
+    const clean_stderr = try sanitizeControlChars(allocator, result.stderr);
+    defer allocator.free(clean_stderr);
+    return try std.json.Stringify.valueAlloc(allocator, ShellOutput{
+        .command = clean_command,
+        .stdout = clean_stdout,
+        .stderr = clean_stderr,
+        .exit_code = result.exit_code,
+        .truncated = result.truncated,
+        .timeout = result.timeout,
+        .stdout_lines = result.stdout_lines,
+        .stderr_lines = result.stderr_lines,
+        .is_self = result.is_self,
+    }, .{});
 }
 
 /// Concatenates `argv_prefix` with `[command]` to form the full spawn
@@ -928,10 +919,10 @@ test "shell.ShellInput JSON schema: same field set as BashInput (alias carries t
     try testing.expectEqual(@as(u32, 5), a.value.mandatory_timeout.?);
 }
 
-test "shell.ShellOutput has all 9 fields the bash XML envelope uses" {
-    // The bash_result_to_string envelope has: command, stdout, stderr,
+test "shell.ShellOutput has all 9 fields the bash JSON payload uses" {
+    // The bash_result_to_json payload has: command, stdout, stderr,
     // exit_code, truncated, timeout, stdout_lines, stderr_lines, is_self.
-    // ShellOutput MUST have the same 9 — pwsh_result_to_string reuses it.
+    // ShellOutput MUST have the same 9 — pwsh_result_to_json reuses it.
     // We construct a sample instance so the type inference resolves
     // correctly; @hasField works on the inferred type only.
     const sample = shell.ShellOutput{
@@ -1029,12 +1020,12 @@ test "ShellInput is structurally identical to BashInput AND PwshInput (alias liv
     try testing.expect(b.value.mandatory_timeout.? == c.value.mandatory_timeout.?);
 }
 
-test "result_to_xml escapes binary ELF stdout so envelope always closes" {
+test "result_to_json sanitizes binary ELF stdout into valid JSON" {
     // Regression for user report: `head -n 40 $(which qs)` dumps the
     // ELF header (0x7F 'E' 'L' 'F' 0x02 0x01 ... 0x00 + controls).
-    // Old result_to_xml interpolated raw bytes — NUL truncated SQLite
-    // TEXT and illegal XML 1.0 chars broke parsers, so the stored
-    // history ended at `ELF` with no </stdout></data></tool>.
+    // The old result_to_xml interpolated raw bytes — NUL truncated SQLite
+    // TEXT and illegal chars broke parsers, so the stored history ended
+    // at `ELF`. The JSON writer sanitizes to U+FFFD before serializing.
     const elf_stdout = "\x7FELF\x02\x01\x01\x00\x00\x01\x02<a>&\"'\x0B\x0C\x1F\x7Fend";
     const out = shell.ShellOutput{
         .command = "head -n 40 /usr/bin/quickshell",
@@ -1046,28 +1037,28 @@ test "result_to_xml escapes binary ELF stdout so envelope always closes" {
         .stdout_lines = 1,
         .stderr_lines = 0,
     };
-    const xml = try shell.result_to_xml(testing.allocator, out);
-    defer testing.allocator.free(xml);
+    const payload = try shell.result_to_json(testing.allocator, out);
+    defer testing.allocator.free(payload);
 
-    // Envelope must always close, even with binary input.
-    try testing.expect(std.mem.indexOf(u8, xml, "</stdout>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</is_self>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<exit_code>0</exit_code>") != null);
-    // Markup chars escaped, not raw.
-    try testing.expect(std.mem.indexOf(u8, xml, "&lt;a&gt;") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "&amp;") != null);
-    // No raw NUL / C0 control / DEL may survive (illegal in XML 1.0).
-    // \t \n \r are legal and may appear; everything else below 0x20
-    // plus 0x7F must have been replaced with U+FFFD (bytes EF BF BD).
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x00) == null);
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x01) == null);
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x02) == null);
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x0B) == null);
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x0C) == null);
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x1F) == null);
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0x7F) == null);
+    // Must parse as a JSON object with all 9 fields.
+    var parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(@as(i64, 0), obj.get("exit_code").?.integer);
+    try testing.expectEqual(@as(i64, 1), obj.get("stdout_lines").?.integer);
+    try testing.expect(obj.get("truncated").? == .bool);
+    // Markup chars stay raw in JSON (no entity layer).
+    try testing.expect(std.mem.indexOf(u8, payload, "<a>") != null);
+    // No raw NUL / C0 control / DEL may survive.
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x00) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x01) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x02) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x0B) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x0C) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x1F) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, payload, 0x7F) == null);
     // Replacement char present proves sanitization ran.
-    try testing.expect(std.mem.indexOf(u8, xml, "�") != null);
+    try testing.expect(std.mem.indexOf(u8, payload, "�") != null);
 }
 
 test "xmlEscape replaces NUL and C0 controls with U+FFFD" {

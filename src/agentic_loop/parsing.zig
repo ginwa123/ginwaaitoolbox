@@ -13,12 +13,12 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
 
     // Handle tool result messages (role == "tool")
     // For tool messages, the tools column contains the tool_call_id string directly.
-    // The `response_content` for a tool result is wrapped in a
-    // `<tool><name>...</name><parameters>...</parameters><success>...</success><data>...</data></tool>`
-    // envelope (produced by `tool_registry.wrapToolOutput`).
-    // Strip the envelope and use only the inner payload (success: `<data>`,
-    // failure: `<error>`) so the LLM sees the actual tool output rather than
-    // the envelope metadata.
+    // The `response_content` for a tool result is the JSON envelope
+    // (`{"tool":…,"parameters":…,"success":…,"data":…,"error":…,"v":1}`)
+    // produced by `tool_registry.wrapToolOutput`.
+    // Strip the envelope and use only the inner payload (success: canonical
+    // `"data"` JSON, failure: `"error"` string) so the LLM sees the actual
+    // tool output rather than the envelope metadata.
     if (role == .tool) {
         const agentMessage = agent.AgentMessage{
             .id = try allocator.dupe(u8, message.id),
@@ -161,19 +161,20 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
     return messages.toOwnedSlice(allocator);
 }
 
-/// Strip the `<tool><name>...</name><parameters>...</parameters><success>...</success><data>...</data></tool>`
-/// envelope produced by `tool_registry.wrapToolOutput` and return just the
-/// inner payload.
+/// Strip the JSON tool envelope
+/// (`{"tool":…,"parameters":…,"success":…,"data":…,"error":…,"v":1}`)
+/// produced by `tool_registry.wrapToolOutput` and return just the inner
+/// payload.
 ///
-/// On success envelopes (contain `<success>true</success>`), returns the
-/// contents of `<data>...</data>`. On failure envelopes
-/// (`<success>false</success>`), returns the contents of `<error>...</error>`.
-/// If the envelope is present but contains neither tag, returns an empty
-/// string.
+/// On success envelopes (`"success":true`), returns the canonical JSON of
+/// `"data"`. On failure envelopes (`"success":false`), returns the
+/// `"error"` string. If the envelope parses but carries no payload
+/// (null data / null error), returns an empty string.
 ///
-/// Returns the input UNCHANGED (heap-duplicated) if it doesn't look like a
-/// tool envelope — this keeps backwards compatibility with old
-/// `response_content` rows that pre-date the envelope format.
+/// Returns the input UNCHANGED (heap-duplicated) when it is not a v1 JSON
+/// envelope — this keeps backwards compatibility with old
+/// `response_content` rows that pre-date the envelope format (pre-migration
+/// XML rows degrade to raw text).
 ///
 /// Mirrors `apps/desktop/src/helpers/unwrapToolOutput.ts` (which uses
 /// `tryUnwrapToolOutput` for the same fallback semantics).
@@ -188,11 +189,11 @@ fn stripToolEnvelope(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
         // never crash in that case.
         if (nalarcore.loggermod.getGlobal()) |logger| {
             logger.warnFmt(
-                "[stripToolEnvelope] Agent Nalar System error, the actual error is ->>>> {s} (input_len={d}, starts_with_tool={any})",
+                "[stripToolEnvelope] Agent Nalar System error, the actual error is ->>>> {s} (input_len={d}, looks_like_json={any})",
                 .{
                     @errorName(err),
                     raw.len,
-                    std.mem.startsWith(u8, raw, "<tool>"),
+                    std.mem.startsWith(u8, std.mem.trim(u8, raw, &std.ascii.whitespace), "{"),
                 },
             );
         }
@@ -201,26 +202,28 @@ fn stripToolEnvelope(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
 }
 
 fn stripToolEnvelopeImpl(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    if (!std.mem.startsWith(u8, raw, "<tool>")) return try allocator.dupe(u8, raw);
-    if (!std.mem.endsWith(u8, raw, "</tool>")) return try allocator.dupe(u8, raw);
+    const trimmed = std.mem.trim(u8, raw, &std.ascii.whitespace);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch {
+        // Not JSON — legacy pre-migration row or plain text. Degrade to raw.
+        return try allocator.dupe(u8, raw);
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return try allocator.dupe(u8, raw);
+    const obj = parsed.value.object;
+    const v = obj.get("v") orelse return try allocator.dupe(u8, raw);
+    if (v != .integer or v.integer != 1) return try allocator.dupe(u8, raw);
+    const success_val = obj.get("success") orelse return try allocator.dupe(u8, raw);
+    if (success_val != .bool) return try allocator.dupe(u8, raw);
 
-    if (extractTag(raw, "data")) |inner| return try allocator.dupe(u8, inner);
-    if (extractTag(raw, "error")) |inner| return try allocator.dupe(u8, inner);
-    // Envelope present but no <data> and no <error> — empty payload.
-    return try allocator.dupe(u8, "");
-}
-
-/// Find the first `<tag>...</tag>` block in `haystack` and return the inner
-/// slice (borrowed from `haystack` — caller must copy if needed).
-/// Returns null if the tag is not present.
-fn extractTag(haystack: []const u8, comptime tag: []const u8) ?[]const u8 {
-    const open_seq = "<" ++ tag ++ ">";
-    const close_seq = "</" ++ tag ++ ">";
-    const open_idx = std.mem.indexOf(u8, haystack, open_seq) orelse return null;
-    const value_start = open_idx + open_seq.len;
-    const tail = haystack[value_start..];
-    const close_local = std.mem.indexOf(u8, tail, close_seq) orelse return null;
-    return tail[0..close_local];
+    if (success_val.bool) {
+        const data = obj.get("data") orelse return try allocator.dupe(u8, "");
+        if (data == .null) return try allocator.dupe(u8, "");
+        return try std.json.Stringify.valueAlloc(allocator, data, .{});
+    } else {
+        const err = obj.get("error") orelse return try allocator.dupe(u8, "");
+        if (err != .string) return try allocator.dupe(u8, "");
+        return try allocator.dupe(u8, err.string);
+    }
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -258,14 +261,14 @@ fn freeMessages(allocator: std.mem.Allocator, msgs: []agent.AgentMessage) void {
     allocator.free(msgs);
 }
 
-// ─── Tests: success envelope (<data>) ──────────────────────────────────────
+// ─── Tests: success envelope ("data") ──────────────────────────────────────
 
-test "tool message strips <tool> envelope and returns only <data> value" {
+test "tool message strips JSON envelope and returns canonical data JSON" {
     const allocator = testing.allocator;
     const envelope =
-        "<tool><name>read_file</name><parameters><path>/foo</path></parameters>" ++
-        "<success>true</success>" ++
-        "<data><path>/foo</path><content>hello</content></data></tool>";
+        "{\"tool\":\"read_file\",\"parameters\":{\"path\":\"/foo\"}," ++
+        "\"success\":true," ++
+        "\"data\":{\"path\":\"/foo\",\"content\":\"hello\"},\"error\":null,\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 
@@ -273,7 +276,7 @@ test "tool message strips <tool> envelope and returns only <data> value" {
     defer freeMessages(allocator, result);
 
     try testing.expectEqual(@as(usize, 1), result.len);
-    try testing.expectEqualStrings("<path>/foo</path><content>hello</content>", result[0].content.?);
+    try testing.expectEqualStrings("{\"path\":\"/foo\",\"content\":\"hello\"}", result[0].content.?);
     try testing.expect(result[0].role == .tool);
     try testing.expectEqualStrings("tool_call_abc", result[0].tool_call_id.?);
 }
@@ -281,22 +284,22 @@ test "tool message strips <tool> envelope and returns only <data> value" {
 test "tool message success envelope with simple data value" {
     const allocator = testing.allocator;
     const envelope =
-        "<tool><name>bash</name><parameters><command>echo hi</command></parameters>" ++
-        "<success>true</success><data><stdout>hi</stdout></data></tool>";
+        "{\"tool\":\"bash\",\"parameters\":{\"command\":\"echo hi\"}," ++
+        "\"success\":true,\"data\":{\"stdout\":\"hi\"},\"error\":null,\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 
     const result = try transformLLMHistoryToAgentMessage(allocator, msg);
     defer freeMessages(allocator, result);
 
-    try testing.expectEqualStrings("<stdout>hi</stdout>", result[0].content.?);
+    try testing.expectEqualStrings("{\"stdout\":\"hi\"}", result[0].content.?);
 }
 
-test "tool message success envelope with empty <data> returns empty content" {
+test "tool message success envelope with null data returns empty content" {
     const allocator = testing.allocator;
     const envelope =
-        "<tool><name>foo</name><parameters></parameters>" ++
-        "<success>true</success><data></data></tool>";
+        "{\"tool\":\"foo\",\"parameters\":{}}" ++
+        ",\"success\":true,\"data\":null,\"error\":null,\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 
@@ -306,13 +309,13 @@ test "tool message success envelope with empty <data> returns empty content" {
     try testing.expectEqualStrings("", result[0].content.?);
 }
 
-// ─── Tests: failure envelope (<error>) ─────────────────────────────────────
+// ─── Tests: failure envelope ("error") ─────────────────────────────────────
 
-test "tool message with failure envelope returns <error> value" {
+test "tool message with failure envelope returns error value" {
     const allocator = testing.allocator;
     const envelope =
-        "<tool><name>read_file</name><parameters><path>/missing</path></parameters>" ++
-        "<success>false</success><error>File not found</error></tool>";
+        "{\"tool\":\"read_file\",\"parameters\":{\"path\":\"/missing\"}," ++
+        "\"success\":false,\"data\":null,\"error\":\"File not found\",\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 
@@ -322,24 +325,19 @@ test "tool message with failure envelope returns <error> value" {
     try testing.expectEqualStrings("File not found", result[0].content.?);
 }
 
-test "tool message failure envelope with XML-escaped error keeps entities escaped" {
-    // The wrapToolOutput path XML-escapes the error message (per
-    // tool_registry.zig:1723), so the inner <error>...</error> text
-    // legitimately contains &quot; / &lt; / &gt; entities. We do NOT
-    // unescape — the LLM can read escaped XML fine, and the frontend
-    // has its own unwrap+unescape logic in unwrapToolOutput.ts.
+test "tool message failure envelope with special chars keeps them verbatim" {
+    // JSON carries <>&" natively — no entity layer, nothing to unescape.
     const allocator = testing.allocator;
     const envelope =
-        "<tool><name>read_file</name><parameters></parameters>" ++
-        "<success>false</success>" ++
-        "<error>File &quot;foo&quot; not &lt;found&gt;</error></tool>";
+        "{\"tool\":\"read_file\",\"parameters\":{}," ++
+        "\"success\":false,\"data\":null,\"error\":\"File \\\"foo\\\" not <found>\",\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 
     const result = try transformLLMHistoryToAgentMessage(allocator, msg);
     defer freeMessages(allocator, result);
 
-    try testing.expectEqualStrings("File &quot;foo&quot; not &lt;found&gt;", result[0].content.?);
+    try testing.expectEqualStrings("File \"foo\" not <found>", result[0].content.?);
 }
 
 // ─── Tests: legacy / non-envelope fallback ─────────────────────────────────
@@ -366,59 +364,59 @@ test "tool message with empty string content returns empty content" {
     try testing.expectEqualStrings("", result[0].content.?);
 }
 
-test "tool message with malformed envelope (starts but no </tool>) falls back to full content" {
+test "tool message with truncated JSON falls back to full content" {
     const allocator = testing.allocator;
-    // Starts with <tool> but doesn't end with </tool> — malformed.
-    var msg = try makeToolMessage(allocator, "<tool><name>foo</name>");
+    // Truncated mid-object — not parseable JSON.
+    var msg = try makeToolMessage(allocator, "{\"tool\":\"foo\",\"data\":");
     defer msg.deinit(allocator);
 
     const result = try transformLLMHistoryToAgentMessage(allocator, msg);
     defer freeMessages(allocator, result);
 
-    try testing.expectEqualStrings("<tool><name>foo</name>", result[0].content.?);
+    try testing.expectEqualStrings("{\"tool\":\"foo\",\"data\":", result[0].content.?);
 }
 
-test "tool message with envelope-but-no-data-no-error returns empty content" {
+test "tool message with JSON missing v tag falls back to full content" {
     const allocator = testing.allocator;
-    // Envelope present but only has <name> — no <data> or <error>.
-    var msg = try makeToolMessage(allocator, "<tool><name>foo</name></tool>");
+    // Valid JSON but not a v1 envelope — passed through untouched.
+    var msg = try makeToolMessage(allocator, "{\"tool\":\"foo\"}");
     defer msg.deinit(allocator);
 
     const result = try transformLLMHistoryToAgentMessage(allocator, msg);
     defer freeMessages(allocator, result);
 
-    try testing.expectEqualStrings("", result[0].content.?);
+    try testing.expectEqualStrings("{\"tool\":\"foo\"}", result[0].content.?);
 }
 
-test "tool message with empty <tool></tool> envelope returns empty content" {
+test "tool message with legacy XML envelope degrades to raw text" {
     const allocator = testing.allocator;
-    var msg = try makeToolMessage(allocator, "<tool></tool>");
+    // Pre-migration history row: not JSON, so it passes through unchanged
+    // and renders as raw text downstream. No bulk-rewrite of history.
+    const legacy = "<tool><name>foo</name></tool>";
+    var msg = try makeToolMessage(allocator, legacy);
     defer msg.deinit(allocator);
 
     const result = try transformLLMHistoryToAgentMessage(allocator, msg);
     defer freeMessages(allocator, result);
 
-    try testing.expectEqualStrings("", result[0].content.?);
+    try testing.expectEqualStrings(legacy, result[0].content.?);
 }
 
-// ─── Tests: data payload structure (inner XML preserved) ────────────────────
+// ─── Tests: data payload structure (JSON preserved) ────────────────────
 
-test "tool message data containing nested-looking tags keeps the inner payload intact" {
-    // read_file's data is: <path>...</path><content>...</content>
-    // The parser finds the OUTER <data>...</data>, so the inner XML
-    // tags are preserved verbatim in .content.
+test "tool message data containing markup chars keeps the payload intact" {
+    // read_file's data is a JSON object; <>& inside strings need no
+    // escaping and round-trip verbatim through the envelope.
     const allocator = testing.allocator;
-    const inner = "<path>/home/user/file.txt</path>" ++
-        "<content>line1\nline2\nline3</content>";
     const envelope =
-        "<tool><name>read_file</name><parameters><path>/home/user/file.txt</path></parameters>" ++
-        "<success>true</success><data>" ++ inner ++ "</data></tool>";
+        "{\"tool\":\"read_file\",\"parameters\":{\"path\":\"/home/user/file.txt\"}," ++
+        "\"success\":true,\"data\":{\"path\":\"/home/user/file.txt\"," ++
+        "\"content\":\"<div>a & b</div>\"},\"error\":null,\"v\":1}";
     var msg = try makeToolMessage(allocator, envelope);
     defer msg.deinit(allocator);
 
     const result = try transformLLMHistoryToAgentMessage(allocator, msg);
     defer freeMessages(allocator, result);
 
-    try testing.expectEqualStrings(inner, result[0].content.?);
+    try testing.expectEqualStrings("{\"path\":\"/home/user/file.txt\",\"content\":\"<div>a & b</div>\"}", result[0].content.?);
 }
-

@@ -83,20 +83,25 @@ pub fn readFile(
     };
 }
 
-pub fn toXMLSuccess(allocator: std.mem.Allocator, result: ReadFileResult, path: []const u8) ![]const u8 {
-    return try std.fmt.allocPrint(allocator,
-        \\<path>{s}</path>
-        \\<content>{s}</content>
-        \\<total_lines>{d}</total_lines>
-        \\<start_line>{d}</start_line>
-        \\<end_line>{d}</end_line>
-    , .{
-        path,
-        result.content,
-        result.total_lines,
-        result.start_line,
-        result.end_line,
-    });
+/// JSON payload for a successful read: mirrors the old `<path>` /
+/// `<content>` / `<total_lines>` / `<start_line>` / `<end_line>` tags 1:1.
+/// `content` is raw file text — `<`/`&` need no escaping in JSON.
+pub const ReadFileJSON = struct {
+    path: []const u8,
+    content: []const u8,
+    total_lines: usize,
+    start_line: usize,
+    end_line: usize,
+};
+
+pub fn toJSONSuccess(allocator: std.mem.Allocator, result: ReadFileResult, path: []const u8) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, ReadFileJSON{
+        .path = path,
+        .content = result.content,
+        .total_lines = result.total_lines,
+        .start_line = result.start_line,
+        .end_line = result.end_line,
+    }, .{});
 }
 
 pub const read_file_tool_system_prompt =
@@ -186,16 +191,20 @@ test "read_file paginated slice is raw with correct start/end lines" {
     try std.testing.expectEqual(@as(usize, 2), result.end_line);
 }
 
-test "toXMLSuccess envelope carries raw content and line range" {
+test "toJSONSuccess payload carries raw content and line range" {
     const content = try std.testing.allocator.dupe(u8, "foo\nbar\n");
     const result = ReadFileResult{ .content = content, .total_lines = 2, .start_line = 0, .end_line = 1 };
     defer result.deinit(std.testing.allocator);
 
-    const xml = try toXMLSuccess(std.testing.allocator, result, "/x.txt");
-    defer std.testing.allocator.free(xml);
+    const payload = try toJSONSuccess(std.testing.allocator, result, "/x.txt");
+    defer std.testing.allocator.free(payload);
 
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<content>foo\nbar\n</content>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<total_lines>2</total_lines>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<start_line>0</start_line>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<end_line>1</end_line>") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("/x.txt", obj.get("path").?.string);
+    try std.testing.expectEqualStrings("foo\nbar\n", obj.get("content").?.string);
+    try std.testing.expectEqual(@as(i64, 2), obj.get("total_lines").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), obj.get("start_line").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), obj.get("end_line").?.integer);
 }

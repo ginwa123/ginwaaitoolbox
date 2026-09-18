@@ -1,134 +1,131 @@
-//! Parse the `<tool>...</tool>` envelope produced by
+//! Parse the JSON tool envelope produced by
 //! `src/agentic_loop/tools_wrap_output.zig`.
 //!
 //! Mirrors the Vue frontend's `tryUnwrapToolOutput` helper (used by
 //! the desktop chatview) — extracts the fields the TUI needs to
-//! render a compact card. Pure functions, no allocations on the
-//! parsed-struct path; the slices inside `ToolEnvelope` alias into
-//! `content`.
+//! render a compact card.
+//!
+//! Unlike the old XML reader, the parsed struct OWNS its strings
+//! (JSON field lookup can't alias ranges the way tag slicing did),
+//! so callers must call `deinit` when done.
 
 const std = @import("std");
 const testing = std.testing;
 
-/// Parsed shape of `<tool>...</tool>`. All string slices alias into
-/// the input `content` — they are NOT independently allocated. The
-/// caller must keep `content` alive for the lifetime of the
-/// `ToolEnvelope`.
+/// Parsed shape of the JSON tool envelope. All string slices are OWNED —
+/// call `deinit` to free them. `parameters` holds the canonical JSON of
+/// the parameters object; `data` holds the canonical JSON of the data
+/// object (or `""` when null/absent); `err_msg` is `""` when null/absent.
 pub const ToolEnvelope = struct {
     name: []const u8,
     parameters: []const u8,
     data: []const u8,
     success: bool,
     err_msg: []const u8,
+
+    pub fn deinit(self: ToolEnvelope, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.parameters);
+        allocator.free(self.data);
+        allocator.free(self.err_msg);
+    }
 };
 
-/// Return the inner substring of a top-level tag, found at or after
-/// `start`. Returns `null` when the open tag is not found.
-/// Allocation-free aside from the tiny scratch closures for the
-/// `<tag>` and `</tag>` strings, which use `page_allocator` (one-shot,
-/// no leaks in this short-lived helper).
-fn sliceBetween(content: []const u8, tag: []const u8, start: usize) []const u8 {
-    var buf: [64]u8 = undefined;
-    var open_buf: [64]u8 = undefined;
-    const open = std.fmt.bufPrint(&open_buf, "<{s}>", .{tag}) catch return &[_]u8{};
-    const close = std.fmt.bufPrint(&buf, "</{s}>", .{tag}) catch return &[_]u8{};
-    const open_at = std.mem.indexOfPos(u8, content, start, open) orelse return &[_]u8{};
-    const body_start = open_at + open.len;
-    const close_at = std.mem.indexOfPos(u8, content, body_start, close) orelse content.len;
-    return content[body_start..close_at];
-}
+/// Walk the JSON envelope and return a parsed struct, or `null` when the
+/// input is not a v1 envelope (missing keys, wrong types, unknown `v`).
+/// Legacy pre-migration rows fall through to `null` so the caller renders
+/// them raw — same fallback semantics as the desktop's
+/// `tryUnwrapToolOutput`.
+pub fn tryParseToolEnvelope(allocator: std.mem.Allocator, content: []const u8) ?ToolEnvelope {
+    const trimmed = std.mem.trim(u8, content, &std.ascii.whitespace);
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const obj = parsed.value.object;
 
-/// Walk the wire envelope and return a parsed struct, or `null` when
-/// the input is missing any of `<name>` or `<success>` (the minimum
-/// required shape).
-pub fn tryParseToolEnvelope(content: []const u8) ?ToolEnvelope {
-    // <name>...</name> — required
-    const name_open_at = std.mem.indexOf(u8, content, "<name>") orelse return null;
-    const name = sliceBetween(content, "name", name_open_at);
+    const v = obj.get("v") orelse return null;
+    if (v != .integer or v.integer != 1) return null;
 
-    // <parameters>...</parameters> is optional in v1 (legacy tools
-    // sometimes emit empty). We default to "" when absent.
-    const parameters: []const u8 = if (std.mem.indexOf(u8, content, "<parameters>")) |p|
-        sliceBetween(content, "parameters", p)
-    else
-        "";
+    const tool = obj.get("tool") orelse return null;
+    if (tool != .string) return null;
 
-    // <success>...</success> — required (single tag, no nesting)
-    const success_open_at = std.mem.indexOf(u8, content, "<success>") orelse return null;
-    const success_body = sliceBetween(content, "success", success_open_at);
-    const success = std.mem.eql(u8, std.mem.trim(u8, success_body, &std.ascii.whitespace), "true");
+    const success_val = obj.get("success") orelse return null;
+    if (success_val != .bool) return null;
 
-    // <data> and <error> are mutually exclusive. When success=true the
-    // wire always emits <data>; when success=false always <error>.
-    const data: []const u8 = if (std.mem.indexOf(u8, content, "<data>")) |p|
-        sliceBetween(content, "data", p)
-    else
-        "";
+    const name = allocator.dupe(u8, tool.string) catch return null;
+    errdefer allocator.free(name);
 
-    const err_body: []const u8 = if (std.mem.indexOf(u8, content, "<error>")) |p|
-        sliceBetween(content, "error", p)
-    else
-        "";
+    const parameters = if (obj.get("parameters")) |p| blk: {
+        if (p == .null) break :blk allocator.dupe(u8, "{}") catch return null;
+        break :blk std.json.Stringify.valueAlloc(allocator, p, .{}) catch return null;
+    } else allocator.dupe(u8, "{}") catch return null;
+    errdefer allocator.free(parameters);
+
+    const data = if (obj.get("data")) |d| blk: {
+        if (d == .null) break :blk allocator.dupe(u8, "") catch return null;
+        break :blk std.json.Stringify.valueAlloc(allocator, d, .{}) catch return null;
+    } else allocator.dupe(u8, "") catch return null;
+    errdefer allocator.free(data);
+
+    const err_msg = if (obj.get("error")) |e| blk: {
+        if (e != .string) break :blk allocator.dupe(u8, "") catch return null;
+        break :blk allocator.dupe(u8, e.string) catch return null;
+    } else allocator.dupe(u8, "") catch return null;
 
     return .{
         .name = name,
         .parameters = parameters,
         .data = data,
-        .success = success,
-        .err_msg = err_body,
+        .success = success_val.bool,
+        .err_msg = err_msg,
     };
+}
+
+/// Extract a string field from a canonical-JSON object slice. Returns a
+/// borrowed slice (valid while `json_obj` lives) or `""` when the key is
+/// missing or not a string.
+fn dataField(json_obj: []const u8, allocator: std.mem.Allocator, key: []const u8) []const u8 {
+    if (json_obj.len == 0) return "";
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_obj, .{}) catch return "";
+    defer parsed.deinit();
+    if (parsed.value != .object) return "";
+    const val = parsed.value.object.get(key) orelse return "";
+    if (val != .string) return "";
+    return val.string;
 }
 
 /// Pick the most informative primary field for the header line.
 /// Whitelist mirrors the desktop's ToolCardHeader logic. Unknown
-/// tools fall back to the tool name itself so the header is always
-/// non-empty.
-pub fn toolEnvelopePrimary(env: ToolEnvelope) []const u8 {
-    if (env.name.len == 0) return "unknown";
-
-    // Helper: return the trimmed inner of `<tag>...</tag>` inside
-    // env.data, or "" when missing. Two separate buffers so the
-    // second bufPrint doesn't overwrite the first before we use it.
-    const dataInner = struct {
-        fn call(haystack: []const u8, tag: []const u8) []const u8 {
-            var open_buf: [64]u8 = undefined;
-            var close_buf: [64]u8 = undefined;
-            const open = std.fmt.bufPrint(&open_buf, "<{s}>", .{tag}) catch return &[_]u8{};
-            const close_tag = std.fmt.bufPrint(&close_buf, "</{s}>", .{tag}) catch return &[_]u8{};
-            const open_at = std.mem.indexOf(u8, haystack, open) orelse return &[_]u8{};
-            const body_start = open_at + open.len;
-            const close_at = std.mem.indexOfPos(u8, haystack, body_start, close_tag) orelse return &[_]u8{};
-            return std.mem.trim(u8, haystack[body_start..close_at], &std.ascii.whitespace);
-        }
-    }.call;
+/// tools fall back to the empty string (NOT the tool name — the old
+/// fallback produced `▶ load_memory  load_memory  ✓` duplication).
+/// The returned slice is OWNED; free with `allocator.free`.
+pub fn toolEnvelopePrimary(allocator: std.mem.Allocator, env: ToolEnvelope) ![]u8 {
+    if (env.name.len == 0) return try allocator.dupe(u8, "unknown");
 
     if (std.mem.eql(u8, env.name, "read_file") or
         std.mem.eql(u8, env.name, "write_file") or
         std.mem.eql(u8, env.name, "text_replace"))
     {
-        const path = dataInner(env.data, "path");
-        if (path.len > 0) return path;
+        const path = dataField(env.data, allocator, "path");
+        if (path.len > 0) return try allocator.dupe(u8, path);
     }
 
     if (std.mem.eql(u8, env.name, "search")) {
-        const q = dataInner(env.data, "query");
-        if (q.len > 0) return q;
+        const q = dataField(env.data, allocator, "pattern");
+        if (q.len > 0) return try allocator.dupe(u8, q);
     }
 
     if (std.mem.eql(u8, env.name, "glob")) {
-        const p = dataInner(env.data, "pattern");
-        if (p.len > 0) return p;
+        const p = dataField(env.data, allocator, "pattern");
+        if (p.len > 0) return try allocator.dupe(u8, p);
     }
 
     if (std.mem.eql(u8, env.name, "bash") or std.mem.eql(u8, env.name, "pwsh") or std.mem.eql(u8, env.name, "command")) {
         const limit: usize = 64;
-        if (env.data.len == 0) {
-            // On error path there's no <data>; fall through to tool name.
-        } else if (env.data.len <= limit) {
-            return env.data;
-        } else {
-            return env.data[0..limit];
-        }
+        const stdout = dataField(env.data, allocator, "stdout");
+        if (stdout.len == 0) return try allocator.dupe(u8, "");
+        if (stdout.len <= limit) return try allocator.dupe(u8, stdout);
+        return try allocator.dupe(u8, stdout[0..limit]);
     }
 
     // Fallback — empty string (NOT the tool name). The previous
@@ -138,124 +135,180 @@ pub fn toolEnvelopePrimary(env: ToolEnvelope) []const u8 {
     // joins via tool_call_id to fetch the primary from the
     // assistant row when we want something richer than the tool
     // name itself.
-    return "";
+    return try allocator.dupe(u8, "");
 }
 
 // ----------------------------------------------------------------------------
-// Tests (RED — impl added below after tests fail)
+// Tests
 // ----------------------------------------------------------------------------
 
 test "tryParseToolEnvelope: valid envelope returns parsed struct" {
+    const allocator = testing.allocator;
     const content =
-        \\<tool><name>read_file</name><parameters><path>/foo.txt</path></parameters><success>true</success><data><content>hi</content></data></tool>
-    ;
-    const env = tryParseToolEnvelope(content) orelse return error.UnexpectedNull;
+        "{\"tool\":\"read_file\",\"parameters\":{\"path\":\"/foo.txt\"},\"success\":true,\"data\":{\"content\":\"hi\"},\"error\":null,\"v\":1}";
+    var env = tryParseToolEnvelope(allocator, content) orelse return error.UnexpectedNull;
+    defer env.deinit(allocator);
     try testing.expectEqualStrings("read_file", env.name);
     try testing.expect(env.success);
-    try testing.expectEqualStrings("<content>hi</content>", env.data);
+    try testing.expectEqualStrings("{\"content\":\"hi\"}", env.data);
     try testing.expectEqualStrings("", env.err_msg);
 }
 
-test "tryParseToolEnvelope: success=false with <error>" {
+test "tryParseToolEnvelope: success=false with error" {
+    const allocator = testing.allocator;
     const content =
-        \\<tool><name>bash</name><parameters><command>bad</command></parameters><success>false</success><error>boom</error></tool>
-    ;
-    const env = tryParseToolEnvelope(content) orelse return error.UnexpectedNull;
+        "{\"tool\":\"bash\",\"parameters\":{\"command\":\"bad\"},\"success\":false,\"data\":null,\"error\":\"boom\",\"v\":1}";
+    var env = tryParseToolEnvelope(allocator, content) orelse return error.UnexpectedNull;
+    defer env.deinit(allocator);
     try testing.expect(!env.success);
     try testing.expectEqualStrings("boom", env.err_msg);
 }
 
-test "tryParseToolEnvelope: missing <name> returns null" {
-    try testing.expect(tryParseToolEnvelope("<tool><parameters></parameters><success>true</success><data></data></tool>") == null);
+test "tryParseToolEnvelope: missing tool returns null" {
+    const allocator = testing.allocator;
+    try testing.expect(tryParseToolEnvelope(allocator, "{\"parameters\":{},\"success\":true,\"data\":{},\"error\":null,\"v\":1}") == null);
 }
 
-test "tryParseToolEnvelope: missing <success> returns null" {
-    try testing.expect(tryParseToolEnvelope("<tool><name>x</name><data></data></tool>") == null);
+test "tryParseToolEnvelope: missing success returns null" {
+    const allocator = testing.allocator;
+    try testing.expect(tryParseToolEnvelope(allocator, "{\"tool\":\"x\",\"data\":{}}") == null);
 }
 
 test "tryParseToolEnvelope: plain text returns null" {
-    try testing.expect(tryParseToolEnvelope("some plain legacy output") == null);
+    const allocator = testing.allocator;
+    try testing.expect(tryParseToolEnvelope(allocator, "some plain legacy output") == null);
 }
 
-test "toolEnvelopePrimary: read_file uses <path> from data" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>read_file</name><parameters></parameters><success>true</success><data><path>/foo.txt</path><content>hi</content></data></tool>"
+test "tryParseToolEnvelope: legacy XML returns null" {
+    const allocator = testing.allocator;
+    try testing.expect(tryParseToolEnvelope(allocator, "<tool><name>x</name></tool>") == null);
+}
+
+test "toolEnvelopePrimary: read_file uses path from data" {
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"read_file\",\"parameters\":{},\"success\":true,\"data\":{\"path\":\"/foo.txt\",\"content\":\"hi\"},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("/foo.txt", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("/foo.txt", primary);
 }
 
-test "toolEnvelopePrimary: write_file uses <path> from data" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>write_file</name><parameters></parameters><success>true</success><data><path>/a/b/c.txt</path><diff>x</diff></data></tool>"
+test "toolEnvelopePrimary: write_file uses path from data" {
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"write_file\",\"parameters\":{},\"success\":true,\"data\":{\"path\":\"/a/b/c.txt\"},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("/a/b/c.txt", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("/a/b/c.txt", primary);
 }
 
-test "toolEnvelopePrimary: text_replace uses <path> from data" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>text_replace</name><parameters></parameters><success>true</success><data><path>/foo.txt</path><replaced>3</replaced></data></tool>"
+test "toolEnvelopePrimary: text_replace uses path from data" {
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"text_replace\",\"parameters\":{},\"success\":true,\"data\":{\"path\":\"/foo.txt\",\"replaced\":3},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("/foo.txt", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("/foo.txt", primary);
 }
 
-test "toolEnvelopePrimary: search uses <query> from data" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>search</name><parameters></parameters><success>true</success><data><query>foo bar</query><matches>3</matches></data></tool>"
+test "toolEnvelopePrimary: search uses pattern from data" {
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"search\",\"parameters\":{},\"success\":true,\"data\":{\"pattern\":\"foo bar\",\"returned\":3},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("foo bar", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("foo bar", primary);
 }
 
-test "toolEnvelopePrimary: glob uses <pattern> from data" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>glob</name><parameters></parameters><success>true</success><data><pattern>**/*.zig</pattern></data></tool>"
+test "toolEnvelopePrimary: glob uses pattern from data" {
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"glob\",\"parameters\":{},\"success\":true,\"data\":{\"pattern\":\"**/*.zig\"},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("**/*.zig", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("**/*.zig", primary);
 }
 
-test "toolEnvelopePrimary: bash truncates to 64 chars" {
-    var buf: [512]u8 = undefined;
+test "toolEnvelopePrimary: bash truncates stdout to 64 chars" {
+    const allocator = testing.allocator;
     const long_output = "a" ** 200;
-    const content = std.fmt.bufPrint(&buf, "<tool><name>bash</name><parameters></parameters><success>true</success><data><output>{s}</output></data></tool>", .{long_output}) catch unreachable;
-    const env = tryParseToolEnvelope(content) orelse return error.UnexpectedNull;
-    const primary = toolEnvelopePrimary(env);
+    const content = try std.fmt.allocPrint(allocator, "{{\"tool\":\"bash\",\"parameters\":{{}},\"success\":true,\"data\":{{\"stdout\":\"{s}\"}},\"error\":null,\"v\":1}}", .{long_output});
+    defer allocator.free(content);
+    var env = tryParseToolEnvelope(allocator, content) orelse return error.UnexpectedNull;
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
     try testing.expect(primary.len <= 64);
     try testing.expect(primary.len > 0);
 }
 
-test "toolEnvelopePrimary: command truncates to 64 chars" {
-    var buf: [512]u8 = undefined;
+test "toolEnvelopePrimary: command truncates stdout to 64 chars" {
+    const allocator = testing.allocator;
     const long_output = "a" ** 200;
-    const content = std.fmt.bufPrint(&buf, "<tool><name>command</name><parameters></parameters><success>true</success><data><output>{s}</output></data></tool>", .{long_output}) catch unreachable;
-    const env = tryParseToolEnvelope(content) orelse return error.UnexpectedNull;
-    const primary = toolEnvelopePrimary(env);
+    const content = try std.fmt.allocPrint(allocator, "{{\"tool\":\"command\",\"parameters\":{{}},\"success\":true,\"data\":{{\"stdout\":\"{s}\"}},\"error\":null,\"v\":1}}", .{long_output});
+    defer allocator.free(content);
+    var env = tryParseToolEnvelope(allocator, content) orelse return error.UnexpectedNull;
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
     try testing.expect(primary.len <= 64);
     try testing.expect(primary.len > 0);
 }
 
 test "toolEnvelopePrimary: unknown tool returns empty (no duplicate)" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>weird_thing</name><parameters></parameters><success>true</success><data>x</data></tool>"
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"weird_thing\",\"parameters\":{},\"success\":true,\"data\":{},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
+    defer env.deinit(allocator);
     // Round-2 fix: the fallback used to return env.name, which made
     // tool cards render as `▶ load_memory  load_memory  ✓` (the
     // name appeared twice). Empty keeps the header non-redundant;
     // a future PR joins via tool_call_id to fetch the primary
     // from the assistant row when needed.
-    try testing.expectEqualStrings("", toolEnvelopePrimary(env));
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("", primary);
 }
 
-test "toolEnvelopePrimary: whitelisted tool with no matching inner tag returns empty" {
-    // load_memory data is <results>...</results> — not in our
-    // whitelist. Should NOT fall back to the tool name.
-    const env = tryParseToolEnvelope(
-        "<tool><name>load_memory</name><parameters></parameters><success>true</success><data><results>...</results></data></tool>"
+test "toolEnvelopePrimary: whitelisted tool with no matching field returns empty" {
+    // load_memory data has no whitelisted key — must NOT fall back to
+    // the tool name.
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"load_memory\",\"parameters\":{},\"success\":true,\"data\":{\"results\":[]},\"error\":null,\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("", primary);
 }
 
 test "toolEnvelopePrimary: empty data (error path) returns empty" {
-    const env = tryParseToolEnvelope(
-        "<tool><name>read_file</name><parameters></parameters><success>false</success><error>not found</error></tool>"
+    const allocator = testing.allocator;
+    var env = tryParseToolEnvelope(
+        allocator,
+        "{\"tool\":\"read_file\",\"parameters\":{},\"success\":false,\"data\":null,\"error\":\"not found\",\"v\":1}",
     ) orelse return error.UnexpectedNull;
-    try testing.expectEqualStrings("", toolEnvelopePrimary(env));
+    defer env.deinit(allocator);
+    const primary = try toolEnvelopePrimary(allocator, env);
+    defer allocator.free(primary);
+    try testing.expectEqualStrings("", primary);
 }
