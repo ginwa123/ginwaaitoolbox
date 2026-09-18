@@ -279,7 +279,7 @@ def test_rewritten_row_satisfies_the_frontend_envelope_contract(
     # The parameters block is preserved from the placeholder, not dropped.
     assert "Deploy target" in content, content
     # And the payload the card renders is inside <data>.
-    assert '"data":"status":"answered"' in content, content
+    assert '"data":{"status":"answered"' in content, content
     assert content.rstrip().endswith("}"), content
 
 
