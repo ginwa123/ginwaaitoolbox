@@ -225,7 +225,12 @@ const emit = defineEmits<{
    * chunk's contentShift hits the `spacer-resize-skip` guard — the
    * "gap below the last message grows forever" symptom.
    */
-  scroll: [scrollTop: number, direction: 'up' | 'down', target: HTMLElement, isProgrammatic: boolean]
+  scroll: [
+    scrollTop: number,
+    direction: 'up' | 'down',
+    target: HTMLElement,
+    isProgrammatic: boolean,
+  ]
   /**
    * Fired whenever the scroller's `isScrollable` computed value
    * CHANGES (not on every re-evaluation — only when the boolean
@@ -262,7 +267,7 @@ const emit = defineEmits<{
 // When debugChatId is provided, internal sizer/measure/scrollToBottom
 // decisions are logged via the same scrollLogger infra as ChatView,
 // so a single `grep chat=task_...` shows both sides of the loop.
-const vsLogger = computed(() => props.debugChatId ? createScrollLogger(props.debugChatId) : null)
+const vsLogger = computed(() => (props.debugChatId ? createScrollLogger(props.debugChatId) : null))
 
 const containerRef = ref<HTMLElement | null>(null)
 // The content div needs no template ref: the sizer is a pure function of the
@@ -373,7 +378,8 @@ let maxMeasuredIndex = -1
 // heights (stored above) are always exact and unaffected.
 const ESTIMATE_MIN_PX = 32
 const ESTIMATE_MAX_PX = 1600
-const clampEstimate = (px: number): number => Math.min(ESTIMATE_MAX_PX, Math.max(ESTIMATE_MIN_PX, px))
+const clampEstimate = (px: number): number =>
+  Math.min(ESTIMATE_MAX_PX, Math.max(ESTIMATE_MIN_PX, px))
 const estimateHeight = (index: number): number => {
   const stored = itemHeights.value.get(keyOf(index))
   if (stored !== undefined) return stored
@@ -442,9 +448,13 @@ const effectiveLoadMoreThreshold = computed(() =>
 // we want here.) This is more reliable than letting the parent read
 // the computed through the template ref — see the
 // `scrollabilityChange` emit doc for the reason.
-watch(isScrollable, (scrollable) => {
-  emit('scrollabilityChange', scrollable)
-}, { immediate: true })
+watch(
+  isScrollable,
+  (scrollable) => {
+    emit('scrollabilityChange', scrollable)
+  },
+  { immediate: true },
+)
 
 let _anchorOffsetTopBefore = 0
 let _pendingNewItemsCount = 0
@@ -490,11 +500,15 @@ const sizerHeight = computed(() => {
           clientHeight: containerRef.value?.clientHeight ?? containerHeight.value,
           messages: props.items.length,
           isAtBottom: false,
-          containerInfo: { null: !containerRef.value, offsetHeight: containerRef.value?.offsetHeight ?? 0, offsetParent: null },
+          containerInfo: {
+            null: !containerRef.value,
+            offsetHeight: containerRef.value?.offsetHeight ?? 0,
+            offsetParent: null,
+          },
           reason: 'sizer-recomputed',
           caller: 'VirtualScroller.sizerHeight',
           extra: { modelTotal: total, sizerHeight: total, hysteresis: HYSTERESIS_PX },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
       } catch {}
     }
@@ -708,7 +722,19 @@ const measureItems = () => {
   const pendingWrites: Array<[string, number, number]> = []
   for (let i = 0; i < children.length; i++) {
     const el = children[i] as HTMLElement
-    const realIndex = visibleRange.value.start + i
+    // Read the index stamped by the renderer — the live computed range
+    // can already point at the next window while the DOM still shows
+    // the previous one (render is async). Falling back to start+i here
+    // misattributes a tall measured height to the wrong item, which
+    // corrupts the spacers and shows as a scroll jump on fast flings
+    // through variable-height chat messages.
+    const stamped = el.getAttribute?.('data-vs-index')
+    const parsed =
+      stamped !== null && stamped !== undefined && stamped !== '' ? Number(stamped) : NaN
+    const realIndex =
+      Number.isInteger(parsed) && parsed >= 0 && parsed < props.items.length
+        ? parsed
+        : visibleRange.value.start + i
     const h = el.offsetHeight
     if (h > 0) {
       // P1 perf: quantize to integer px. Fractional offsetHeights under
@@ -786,7 +812,13 @@ const measureItems = () => {
           clientHeight: containerRef.value.clientHeight,
           messages: props.items.length,
           isAtBottom: false,
-          containerInfo: { null: false, offsetHeight: containerRef.value.offsetHeight, offsetParent: containerRef.value.offsetParent ? (containerRef.value.offsetParent as HTMLElement).tagName : null },
+          containerInfo: {
+            null: false,
+            offsetHeight: containerRef.value.offsetHeight,
+            offsetParent: containerRef.value.offsetParent
+              ? (containerRef.value.offsetParent as HTMLElement).tagName
+              : null,
+          },
           reason: 'measure-compensation',
           caller: 'VirtualScroller.measureItems',
           extra: {
@@ -797,7 +829,7 @@ const measureItems = () => {
             pendingMeasurements,
             pendingWritesLen: pendingWrites.length,
           },
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
       } catch {}
     }

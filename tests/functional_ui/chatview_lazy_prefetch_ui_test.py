@@ -191,33 +191,38 @@ _OBSERVE_SCRIPT = r"""
 FLING_STEP_PX = 250
 FLING_MIN_STEPS = 12
 
-#: The fling itself. Steps are sized so several frames land INSIDE the arm
-#: band (a single 40 000 px jump in one frame would step straight over it and
-#: the test would never exercise the prefetch). `targetTop` lets a caller stop
-#: the fling just ABOVE the load-more band — that is how the test observes
-#: "armed but not yet committed".
+#: The fling itself. Steps move up by stepPx per rAF frame from the LIVE
+#: position (not an interpolation from the start): the scroller's anchor
+#: compensation can push scrollTop back down between frames when above-
+#: viewport items measure taller than their estimates, so a fixed-step
+#: interpolation would end early and never reach the band. Iterating until
+#: arrival models a real user, who keeps scrolling until they get to the top.
+#: `targetTop` lets a caller stop the fling just ABOVE the load-more band —
+#: that is how the test observes "armed but not yet committed".
 _FLING_SCRIPT = r"""
 ({ stepPx, targetTop }) => new Promise((resolve) => {
   const el = window.__pickScroller();
   const probe = window.__probe;
   const start = el.scrollTop;
   const target = Math.max(0, targetTop);
-  const travel = Math.max(0, start - target);
-  const steps = Math.max(1, Math.ceil(travel / stepPx));
   const t0 = performance.now();
   probe.tFlingStart = t0;
   probe.samples = [];
-  let i = 0;
+  let frames = 0;
+  // Worst case: ~200 000 px of tall unmeasured history at 250 px/frame
+  // plus compensation pushback between frames. 1500 rAF ≈ 25 s worst
+  // case; the typical fling settles far sooner once items are measured.
+  const maxFrames = 1500;
   const step = () => {
-    i += 1;
-    el.scrollTop = Math.max(target, Math.round(start - travel * (i / steps)));
+    frames += 1;
+    el.scrollTop = Math.max(target, el.scrollTop - stepPx);
     probe.samples.push({ t: performance.now(), scrollTop: el.scrollTop });
-    if (i < steps) {
+    if (el.scrollTop > target && frames < maxFrames) {
       requestAnimationFrame(step);
     } else {
       probe.tArrive = performance.now();
       probe.scrollHeightAtArrive = el.scrollHeight;
-      resolve({ start, arrival: probe.tArrive, steps });
+      resolve({ start, arrival: probe.tArrive, steps: frames });
     }
   };
   requestAnimationFrame(step);
