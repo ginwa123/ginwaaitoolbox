@@ -28,6 +28,7 @@ const http_response = @import("http_response.zig");
 const gserverz = nalarcore.gserverz;
 const ask_user_mod = nalarcore.ask_user;
 const ask_user_pending = nalarcore.ask_user_pending;
+const wrapToolOutput = @import("../agentic_loop/tools_wrap_output.zig").wrapToolOutput;
 
 pub const AnswerError = error{
     MissingSessionId,
@@ -371,7 +372,7 @@ test "ask_user_answer: the resolved envelope satisfies the frontend's contract" 
     });
     defer a.free(inner);
 
-    const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(a, "{\"header\":\"Deploy target\"}", inner);
+    const envelope = try wrapToolOutput(a, ask_user_mod.ASK_USER_TOOL_NAME, "{\"header\":\"Deploy target\"}", true, null, inner);
     defer a.free(envelope);
 
     // Shaped like every other tool result so `unwrapToolOutput` parses it…
@@ -396,7 +397,7 @@ test "ask_user_answer: parameters is mandatory in the envelope" {
     const inner = try ask_user_mod.buildAskUserJson(a, .{ .status = .skipped, .question_id = "q_2" });
     defer a.free(inner);
 
-    const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(a, "{}", inner);
+    const envelope = try wrapToolOutput(a, ask_user_mod.ASK_USER_TOOL_NAME, "{}", true, null, inner);
     defer a.free(envelope);
 
     // The frontend's `unwrapToolOutput` throws unless tool AND parameters AND

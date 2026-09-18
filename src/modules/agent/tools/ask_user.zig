@@ -235,14 +235,6 @@ pub fn buildAskUserJson(allocator: std.mem.Allocator, json: AskUserJson) ![]u8 {
 /// `data_json` is deliberately NOT escaped: it is the tool-specific JSON
 /// body, and escaping it would make the frontend render raw text instead of
 /// a card.
-pub fn buildAskUserToolJsonEnvelope(allocator: std.mem.Allocator, parameters_json: []const u8, data_json: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "<tool><name>" ++ ASK_USER_TOOL_NAME ++ "</name><parameters>{s}</parameters><success>true</success><data>{s}</data></tool>",
-        .{ parameters_json, data_json },
-    );
-}
-
 /// Human-readable reason for each validation failure — this text reaches the
 /// model (inside `<error>`) and is what it must act on to retry correctly.
 pub fn validationErrorMessage(err: anyerror) []const u8 {

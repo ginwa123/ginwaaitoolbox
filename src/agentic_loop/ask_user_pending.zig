@@ -29,6 +29,7 @@ const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const llm_history = nalarcore.llm_history;
 const ask_user_mod = nalarcore.ask_user;
+const wrapToolOutput = @import("tools_wrap_output.zig").wrapToolOutput;
 const on_event_sent = @import("on_event_sent.zig");
 const is_worker_running = @import("is_worker_running.zig");
 const testing = std.testing;
@@ -405,9 +406,9 @@ pub const RewriteToolResultInput = struct {
     session_id: []const u8,
     /// The `llm_history` row to overwrite (the `ask_user` tool result).
     llm_history_id: []const u8,
-    /// The JSON `data` payload for the resolved status. The outer `<tool>`
-    /// wrapper is built here so callers cannot get the envelope shape wrong
-    /// (see `buildAskUserToolJsonEnvelope`).
+    /// The JSON `data` payload for the resolved status. The outer JSON
+    /// envelope is built here via the shared `wrapToolOutput` so callers
+    /// cannot get the envelope shape wrong.
     inner: []const u8,
 };
 
@@ -467,7 +468,7 @@ pub fn rewriteToolResultRow(input: RewriteToolResultInput) !void {
     const params = try extractParametersJson(allocator, previous orelse "");
     defer allocator.free(params);
 
-    const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(allocator, params, input.inner);
+    const envelope = try wrapToolOutput(allocator, ask_user_mod.ASK_USER_TOOL_NAME, params, true, null, input.inner);
     defer allocator.free(envelope);
 
     try llm_history.updateToolResultById(allocator, input.io, input.db, input.llm_history_id, .{
