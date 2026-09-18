@@ -115,7 +115,11 @@ watch(text, (v) => {
   emit('update:modelValue', v)
 })
 
-const counterText = computed<string>(() => props.maxLength != null ? `${text.value.length} / ${props.maxLength}` : `${text.value.length} chars`)
+const counterText = computed<string>(() =>
+  props.maxLength != null
+    ? `${text.value.length} / ${props.maxLength}`
+    : `${text.value.length} chars`,
+)
 
 // ─── @-trigger file picker ──────────────────────────────────────────────
 // Ported 1:1 from FileInput.vue Task 2 (plan:
@@ -362,6 +366,9 @@ const onTextareaInput = (event: Event) => {
 // ─── Image paste (mirrors FileInput.vue strategy 1 + 2) ────────────────
 
 const isImageFile = (file: File): boolean => file.type.startsWith('image/')
+const isVideoFile = (file: File): boolean => file.type.startsWith('video/')
+const isMediaFile = (file: File): boolean => isImageFile(file) || isVideoFile(file)
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024
 
 const fileToDataUrl = (file: File): Promise<string> =>
   new Promise((resolve, reject) => {
@@ -372,6 +379,7 @@ const fileToDataUrl = (file: File): Promise<string> =>
   })
 
 const downscaleIfTooLarge = async (file: File): Promise<File> => {
+  if (file.type.startsWith('video/')) return file
   if (file.size <= MAX_IMAGE_BYTES) return file
   // Downscale via canvas to ~max 1920px wide while keeping aspect ratio.
   const dataUrl = await fileToDataUrl(file)
@@ -400,7 +408,8 @@ const downscaleIfTooLarge = async (file: File): Promise<File> => {
 }
 
 const addImageFile = async (file: File) => {
-  if (!isImageFile(file)) return
+  if (!isMediaFile(file)) return
+  if (isVideoFile(file) && file.size > MAX_VIDEO_BYTES) return
   const downscaled = await downscaleIfTooLarge(file)
 
   // Show a preview slot so the user sees the image they just pasted.
@@ -452,16 +461,14 @@ const handlePaste = async (event: ClipboardEvent) => {
   if (items && items.length > 0) {
     for (const item of items) {
       if (item.kind !== 'file') continue
-      if (!item.type.startsWith('image/')) continue
+      if (!item.type.startsWith('image/') && !item.type.startsWith('video/')) continue
       const file = item.getAsFile()
       if (!file) continue
       const renamed = file.name
         ? file
-        : new File(
-            [file],
-            `pasted-image-${Date.now()}.${item.type.split('/')[1] ?? 'png'}`,
-            { type: item.type },
-          )
+        : new File([file], `pasted-image-${Date.now()}.${item.type.split('/')[1] ?? 'png'}`, {
+            type: item.type,
+          })
       await addImageFile(renamed)
       pastedImageCount++
     }
@@ -472,7 +479,7 @@ const handlePaste = async (event: ClipboardEvent) => {
       const clipboardItems = await navigator.clipboard.read()
       for (const ci of clipboardItems) {
         for (const type of ci.types) {
-          if (!type.startsWith('image/')) continue
+          if (!type.startsWith('image/') && !type.startsWith('video/')) continue
           const blob = await ci.getType(type)
           const file = new File(
             [blob],
@@ -502,7 +509,7 @@ const handleNativeFileSelect = async (event: Event) => {
   if (!files || files.length === 0) return
   for (const file of Array.from(files)) {
     if (!file) continue
-    if (!isImageFile(file)) continue
+    if (!isMediaFile(file)) continue
     await addImageFile(file)
   }
   target.value = ''
@@ -556,10 +563,7 @@ const dataUrlToFile = (dataUrl: string, name: string): File => {
 // Fetch a server-side attachment and convert it to a File for the
 // preview thumbnail. Uses fetch() which jsdom supports (unlike
 // data: URLs).
-const serverUrlToFile = async (
-  url: string,
-  filename: string,
-): Promise<File | null> => {
+const serverUrlToFile = async (url: string, filename: string): Promise<File | null> => {
   try {
     const response = await fetch(url)
     if (!response.ok) return null
@@ -587,7 +591,8 @@ const guessMimeFromFilename = (filename: string): string => {
 const rehydratePreviews = () => {
   // Match both inline data: URLs (legacy / fallback) and server-side
   // attachment URLs.
-  const imageRegex = /!\[([^\]]*)\]\((data:image\/[^)]+|[^)]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp))\)/g
+  const imageRegex =
+    /!\[([^\]]*)\]\((data:image\/[^)]+|[^)]+\.(?:png|jpg|jpeg|gif|webp|svg|bmp))\)/g
   const matches = [...text.value.matchAll(imageRegex)]
   if (matches.length === 0) return
   for (const m of matches) {
@@ -667,14 +672,14 @@ defineExpose({ pendingFiles })
       v-if="showFilePicker && (filteredFiles.length > 0 || isLoadingFiles)"
       ref="filePickerRef"
       class="file-picker-list mb-2 p-2 rounded-lg shadow-lg max-h-72 overflow-y-auto"
-      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       tabindex="0"
     >
       <!-- Loading state (driven by the request lifecycle, not fileList) -->
       <div v-if="isLoadingFiles" class="p-4 text-center">
         <div
           class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
-          style="border-color: var(--color-violet); border-top-color: transparent;"
+          style="border-color: var(--color-violet); border-top-color: transparent"
         />
         <p class="text-sm" style="color: var(--semantic-text-dim)">Searching…</p>
       </div>
@@ -705,8 +710,11 @@ defineExpose({ pendingFiles })
         </button>
       </div>
       <!-- Footer info (render cap vs server total) -->
-      <div v-if="!isLoadingFiles && filteredFiles.length > 0" class="px-3 py-1.5 text-xs rounded mt-1"
-        style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim);">
+      <div
+        v-if="!isLoadingFiles && filteredFiles.length > 0"
+        class="px-3 py-1.5 text-xs rounded mt-1"
+        style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim)"
+      >
         showing {{ visibleFiles.length }} of {{ serverTotal }} files
       </div>
     </div>
@@ -766,7 +774,7 @@ defineExpose({ pendingFiles })
     <input
       ref="nativeFileInput"
       type="file"
-      accept="image/*"
+      accept="image/*,video/*"
       multiple
       class="hidden"
       @change="handleNativeFileSelect"

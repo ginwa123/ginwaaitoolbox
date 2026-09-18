@@ -39,11 +39,12 @@ pub const UnresolvedIntentResult = struct {
     reason: ?[]const u8,
 };
 
-/// Content part types for multimodal messages (text or image_url)
+/// Content part types for multimodal messages (text, image_url, or video_url)
 pub const ContentPart = struct {
     part_type: []const u8,
     text: ?[]const u8 = null,
     image_url: ?ImageUrl = null,
+    video_url: ?VideoUrl = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
@@ -56,6 +57,10 @@ pub const ContentPart = struct {
         if (self.image_url) |img| {
             try stringify.objectField("image_url");
             try img.jsonStringify(stringify);
+        }
+        if (self.video_url) |vid| {
+            try stringify.objectField("video_url");
+            try vid.jsonStringify(stringify);
         }
         try stringify.endObject();
     }
@@ -79,6 +84,49 @@ pub const ImageUrl = struct {
         try stringify.endObject();
     }
 };
+
+/// Video URL content for video understanding.
+/// Wire shape mirrors ImageUrl: `{ "video_url": { "url": "data:video/<mime>;base64,..." } }`
+/// on OpenAI Chat, `{ "type": "input_video", "video_url": "..." }` on Responses,
+/// `{ "type": "video", "source": {...} }` on Anthropic.
+pub const VideoUrl = struct {
+    url: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        if (self.url) |u| {
+            try stringify.objectField("url");
+            try stringify.write(u);
+        }
+        try stringify.endObject();
+    }
+};
+
+/// Allowlisted video MIME suffixes (after `data:video/`).
+/// Locked 2026-09-18: full video/* v1 = mp4, webm, quicktime (mov),
+/// x-msvideo (avi), x-matroska (mkv). Providers document mp4/webm/mov
+/// natively; avi/mkv pass validation and fail at the provider with a
+/// hard error (never silently dropped).
+pub fn isSupportedVideoMime(mime: []const u8) bool {
+    if (std.mem.eql(u8, mime, "video/mp4")) return true;
+    if (std.mem.eql(u8, mime, "video/webm")) return true;
+    if (std.mem.eql(u8, mime, "video/quicktime")) return true;
+    if (std.mem.eql(u8, mime, "video/x-msvideo")) return true;
+    if (std.mem.eql(u8, mime, "video/x-matroska")) return true;
+    return false;
+}
+
+/// Extract the `video/<suffix>` mime from a `data:video/...;base64,...` URL.
+/// Returns null when the URL is not a video data URL.
+pub fn videoMimeFromDataUrl(url: []const u8) ?[]const u8 {
+    const prefix = "data:video/";
+    if (!std.mem.startsWith(u8, url, prefix)) return null;
+    const after = url[prefix.len..];
+    const sep = std.mem.indexOf(u8, after, ";base64,") orelse return null;
+    if (sep == 0) return null;
+    // Slice `video/<suffix>` out of the input (skip the `data:` scheme).
+    return url["data:".len .. prefix.len + sep];
+}
 
 pub const ToolCall = struct {
     id: []const u8,
@@ -312,6 +360,7 @@ const AnthropicContentBlock = struct {
     /// every OpenAI-compatible relay (e.g. api.minimax.io/anthropic);
     /// the explicit base64 split covers the canonical Anthropic API.
     image: ?AnthropicImage = null,
+    video: ?AnthropicVideo = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
         try stringify.beginObject();
@@ -341,6 +390,11 @@ const AnthropicContentBlock = struct {
             try stringify.write("image");
             try stringify.objectField("source");
             try img.jsonStringify(stringify);
+        } else if (self.video) |vid| {
+            try stringify.objectField("type");
+            try stringify.write("video");
+            try stringify.objectField("source");
+            try vid.jsonStringify(stringify);
         }
         try stringify.endObject();
     }
@@ -366,6 +420,30 @@ const AnthropicImage = struct {
         if (std.mem.eql(u8, self.source_type, "base64")) {
             try stringify.objectField("media_type");
             try stringify.write(self.media_type orelse "image/png");
+            try stringify.objectField("data");
+            try stringify.write(self.url_or_data);
+        } else {
+            try stringify.objectField("url");
+            try stringify.write(self.url_or_data);
+        }
+        try stringify.endObject();
+    }
+};
+
+/// Anthropic video source. Same `url` vs `base64` split as AnthropicImage,
+/// but defaults to `video/mp4` and carries video mimes.
+const AnthropicVideo = struct {
+    source_type: []const u8,
+    url_or_data: []const u8,
+    media_type: ?[]const u8 = null,
+
+    pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
+        try stringify.beginObject();
+        try stringify.objectField("type");
+        try stringify.write(self.source_type);
+        if (std.mem.eql(u8, self.source_type, "base64")) {
+            try stringify.objectField("media_type");
+            try stringify.write(self.media_type orelse "video/mp4");
             try stringify.objectField("data");
             try stringify.write(self.url_or_data);
         } else {
@@ -570,10 +648,11 @@ const AnthropicRequest = struct {
 /// max_output_tokens, stream, temperature, reasoning.effort, tools, tool_choice, user.
 
 const ResponsesInputContent = struct {
-    /// "input_text" | "input_image"
+    /// "input_text" | "input_image" | "input_video"
     content_type: []const u8,
     text: ?[]const u8 = null,
     image_url: ?[]const u8 = null,
+    video_url: ?[]const u8 = null,
     detail: ?[]const u8 = null,
 
     pub fn jsonStringify(self: @This(), stringify: *std.json.Stringify) !void {
@@ -593,6 +672,11 @@ const ResponsesInputContent = struct {
             if (self.detail) |d| {
                 try stringify.objectField("detail");
                 try stringify.write(d);
+            }
+        } else if (std.mem.eql(u8, self.content_type, "input_video")) {
+            if (self.video_url) |u| {
+                try stringify.objectField("video_url");
+                try stringify.write(u);
             }
         } else {
             if (self.text) |t| {
@@ -1472,20 +1556,14 @@ pub const Agent = struct {
                         part_count,
                     );
                     for (parts.?, 0..) |part, j| {
-                        // CRITICAL: explicitly set ALL four optional
-                        // fields. In Zig 0.16, `.{ .image = ... }` only
-                        // initializes .image — the other fields stay as
-                        // whatever was in the arena's uninitialized
-                        // memory (0xAA debug poison after iter-1 reuses
-                        // the page). `AnthropicContentBlock.jsonStringify`'s
-                        // `else if (self.image)` branch would then
-                        // misread the poisoned bytes as a slice pointer
-                        // → SEGV in utf8ValidateSlice.
+                        // CRITICAL: explicitly set ALL optional fields (see
+                        // comment above about 0xAA arena poison → SEGV).
                         non_assistant_blocks[j] = .{
                             .text = null,
                             .tool_use = null,
                             .tool_result = null,
                             .image = null,
+                            .video = null,
                         };
                         if (part.image_url) |img| {
                             const url_str = img.url orelse "";
@@ -1494,12 +1572,25 @@ pub const Agent = struct {
                                 .url_or_data = url_str,
                                 .media_type = null,
                             };
+                        } else if (part.video_url) |vid| {
+                            const url_str = vid.url orelse "";
+                            if (url_str.len == 0) return error.UnsupportedVideoModel;
+                            const mime = videoMimeFromDataUrl(url_str);
+                            if (mime) |m| {
+                                if (!isSupportedVideoMime(m)) return error.UnsupportedVideoModel;
+                            }
+                            non_assistant_blocks[j].video = .{
+                                .source_type = "url",
+                                .url_or_data = url_str,
+                                .media_type = null,
+                            };
                         } else if (part.text) |t| {
                             non_assistant_blocks[j].text = t;
                         } else {
-                            // Unknown part shape — emit as empty text
-                            // block so the message still serializes.
-                            non_assistant_blocks[j].text = "";
+                            // Hard error: never silently drop an unknown part
+                            // (locked 2026-09-18). A video part from a future
+                            // mime or a malformed part must surface, not coerce to "".
+                            return error.UnsupportedContentPart;
                         }
                     }
                     json_messages[json_message_count] = .{
@@ -1708,6 +1799,7 @@ pub const Agent = struct {
                         .part_type = part.part_type,
                         .text = part.text,
                         .image_url = part.image_url,
+                        .video_url = part.video_url,
                     };
                 }
                 json_content_parts = parts_copy;
@@ -1836,10 +1928,21 @@ pub const Agent = struct {
                                 .image_url = img.url orelse "",
                                 .detail = img.detail orelse "auto",
                             };
+                        } else if (part.video_url) |vid| {
+                            const url_str = vid.url orelse "";
+                            if (url_str.len == 0) return error.UnsupportedVideoModel;
+                            const mime = videoMimeFromDataUrl(url_str);
+                            if (mime) |m| {
+                                if (!isSupportedVideoMime(m)) return error.UnsupportedVideoModel;
+                            }
+                            contents[j] = .{
+                                .content_type = "input_video",
+                                .video_url = url_str,
+                            };
                         } else if (part.text) |t| {
                             contents[j] = .{ .content_type = "input_text", .text = t };
                         } else {
-                            contents[j] = .{ .content_type = "input_text", .text = "" };
+                            return error.UnsupportedContentPart;
                         }
                     }
                     input_items[input_count] = .{
@@ -3221,3 +3324,48 @@ pub const Agent = struct {
         self.client.deinit();
     }
 };
+
+test "VideoUrl jsonStringify emits video_url url" {
+    const alloc = std.testing.allocator;
+    const part = ContentPart{ .part_type = "video_url", .video_url = .{ .url = "data:video/mp4;base64,AAAA" } };
+    const s = try std.json.Stringify.valueAlloc(alloc, part, .{});
+    defer alloc.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "video_url") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "data:video/mp4;base64,AAAA") != null);
+}
+
+test "isSupportedVideoMime allowlists full video set" {
+    try std.testing.expect(isSupportedVideoMime("video/mp4"));
+    try std.testing.expect(isSupportedVideoMime("video/webm"));
+    try std.testing.expect(isSupportedVideoMime("video/quicktime"));
+    try std.testing.expect(isSupportedVideoMime("video/x-msvideo"));
+    try std.testing.expect(isSupportedVideoMime("video/x-matroska"));
+    try std.testing.expect(!isSupportedVideoMime("video/ogg"));
+    try std.testing.expect(!isSupportedVideoMime("image/png"));
+}
+
+test "videoMimeFromDataUrl extracts mime" {
+    const m = videoMimeFromDataUrl("data:video/mp4;base64,AAAA");
+    try std.testing.expect(m != null);
+    try std.testing.expectEqualStrings("video/mp4", m.?);
+    try std.testing.expect(videoMimeFromDataUrl("data:image/png;base64,AAAA") == null);
+    try std.testing.expect(videoMimeFromDataUrl("data:video/mp4,AAAA") == null);
+}
+
+test "ResponsesInputContent input_video serializes video_url" {
+    const alloc = std.testing.allocator;
+    const c = ResponsesInputContent{ .content_type = "input_video", .video_url = "data:video/webm;base64,GkXf" };
+    const s = try std.json.Stringify.valueAlloc(alloc, c, .{});
+    defer alloc.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "input_video") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "data:video/webm") != null);
+}
+
+test "AnthropicContentBlock video serializes type video" {
+    const alloc = std.testing.allocator;
+    const b = AnthropicContentBlock{ .video = .{ .source_type = "url", .url_or_data = "data:video/mp4;base64,AAAA" } };
+    const s = try std.json.Stringify.valueAlloc(alloc, b, .{});
+    defer alloc.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\"video\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "data:video/mp4") != null);
+}

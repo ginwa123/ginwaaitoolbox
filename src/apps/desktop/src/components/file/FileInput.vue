@@ -51,7 +51,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'submit': [message: string, files?: File[]]
+  submit: [message: string, files?: File[]]
   /**
    * Emitted when the user clicks the Stop button. Parent
    * (ChatView) calls api.stopSession(sessionId) — the API call
@@ -183,13 +183,24 @@ const isImageFile = (file: File): boolean => {
   return file.type.startsWith('image/')
 }
 
+const isVideoFile = (file: File): boolean => {
+  return file.type.startsWith('video/')
+}
+
+const isMediaFile = (file: File): boolean => {
+  return isImageFile(file) || isVideoFile(file)
+}
+
+// 25 MB client cap for video (mirrors MAX_VIDEO_URLS_BYTES server-side).
+const MAX_VIDEO_BYTES = 25 * 1024 * 1024
+
 // Send message with files converted to base64
 const sendMessageWithFiles = async () => {
   if (!inputText.value.trim() && previewFiles.value.length === 0) return
-  
+
   const message = inputText.value
-  const files = previewFiles.value.map(p => p.file)
-  
+  const files = previewFiles.value.map((p) => p.file)
+
   // Clear state before emit so parent can process
   inputText.value = ''
   if (draftTimer) {
@@ -200,15 +211,15 @@ const sendMessageWithFiles = async () => {
   // message must never come back as a draft.
   draftBucket()?.clearDraft(draftKey.value)
   showFilePicker.value = false
-  previewFiles.value.forEach(item => {
+  previewFiles.value.forEach((item) => {
     if (item.previewUrl.startsWith('blob:')) {
       URL.revokeObjectURL(item.previewUrl)
     }
   })
   previewFiles.value = []
-  
+
   emit('submit', message, files)
-  
+
   nextTick(() => {
     const textarea = document.querySelector('.file-input-wrapper textarea') as HTMLTextAreaElement
     if (textarea) textarea.style.height = '48px'
@@ -216,20 +227,24 @@ const sendMessageWithFiles = async () => {
 }
 
 // Watch for changes to initialMessage (e.g., when selecting diff lines)
-watch(() => props.initialMessage, (newVal) => {
-  if (newVal) {
-    inputText.value = newVal
-  }
-})
+watch(
+  () => props.initialMessage,
+  (newVal) => {
+    if (newVal) {
+      inputText.value = newVal
+    }
+  },
+)
 
 // Trigger native file picker
 const triggerFilePicker = () => {
   nativeFileInput.value?.click()
 }
 
-// Add a single image file to the preview list (shared by paperclip + paste flows)
+// Add a single image or video file to the preview list (shared by paperclip + paste flows)
 const addImageFile = (file: File) => {
-  if (!isImageFile(file)) return
+  if (!isMediaFile(file)) return
+  if (isVideoFile(file) && file.size > MAX_VIDEO_BYTES) return
   const previewUrl = URL.createObjectURL(file)
   previewFiles.value.push({ file, previewUrl })
 }
@@ -284,8 +299,8 @@ const handlePaste = async (e: ClipboardEvent) => {
   if (items && items.length > 0) {
     for (const item of items) {
       if (item.kind !== 'file') continue
-      // Only accept images (matches the paperclip flow)
-      if (!item.type.startsWith('image/')) continue
+      // Accept images and video (matches the paperclip flow)
+      if (!item.type.startsWith('image/') && !item.type.startsWith('video/')) continue
       const file = item.getAsFile()
       if (!file) continue
 
@@ -313,14 +328,10 @@ const handlePaste = async (e: ClipboardEvent) => {
       const clipboardItems = await navigator.clipboard.read()
       for (const ci of clipboardItems) {
         for (const type of ci.types) {
-          if (!type.startsWith('image/')) continue
+          if (!type.startsWith('image/') && !type.startsWith('video/')) continue
           const blob = await ci.getType(type)
           const ext = type.split('/')[1] ?? 'png'
-          const file = new File(
-            [blob],
-            `pasted-image-${Date.now()}.${ext}`,
-            { type },
-          )
+          const file = new File([blob], `pasted-image-${Date.now()}.${ext}`, { type })
           addImageFile(file)
           pastedImageCount++
         }
@@ -328,7 +339,7 @@ const handlePaste = async (e: ClipboardEvent) => {
     } catch (err) {
       // Permission denied, clipboard unavailable, or no images present.
       // Silent fall-through — the user can still type and send text.
-       
+
       console.debug(
         '[paste] navigator.clipboard.read() fallback skipped:',
         err instanceof Error ? err.message : err,
@@ -390,8 +401,6 @@ onBeforeUnmount(() => {
   fileSearchAbort?.abort()
 })
 
-
-
 const queuedMessagesList = computed(() => props.queuedMessages ?? [])
 const hasQueuedMessages = computed(() => queuedMessagesList.value.length > 0)
 
@@ -408,8 +417,10 @@ const useQueuedMessage = (msg: QueuedMessage) => {
   showQueuePanel.value = false
 }
 
-const isCompletionMsg = (msg: { message: string }): boolean => parseBackgroundCommandOutput(msg.message) !== null
-const completionPid = (msg: { message: string }): string | null => parseBackgroundCommandOutput(msg.message)?.pid ?? null
+const isCompletionMsg = (msg: { message: string }): boolean =>
+  parseBackgroundCommandOutput(msg.message) !== null
+const completionPid = (msg: { message: string }): string | null =>
+  parseBackgroundCommandOutput(msg.message)?.pid ?? null
 
 // ── @ picker server search (Task 2: plan
 // docs/superpowers/plans/2026-09-08-chatview-search-files-perf.md) ──────
@@ -436,7 +447,10 @@ const setFileSearchCache = (cwd: string, entries: FileEntry[]) => {
   fileSearchCache.set(cwd, entries)
 }
 
-const toRelativeFileEntry = (rootPath: string, entry: { name: string; path: string; is_directory: boolean }): FileEntry => ({
+const toRelativeFileEntry = (
+  rootPath: string,
+  entry: { name: string; path: string; is_directory: boolean },
+): FileEntry => ({
   name: entry.name,
   path: entry.path.startsWith(rootPath) ? entry.path.slice(rootPath.length) : entry.path,
   isDirectory: entry.is_directory,
@@ -528,8 +542,7 @@ const filteredFiles = computed(() => {
   if (!serverFailed.value) return fileList.value
   if (!fileQuery.value) return fileList.value
   const q = fileQuery.value.toLowerCase()
-  return fileList.value
-    .filter(f => matchesOutOfOrder(f.path, q))
+  return fileList.value.filter((f) => matchesOutOfOrder(f.path, q))
 })
 
 // Render cap: at most 50 rows in the DOM (v1 — no virtual list).
@@ -578,8 +591,7 @@ const selectFile = (file: FileEntry) => {
     // the trigger untouched. Then prepend @ + picked path. The query
     // part (atMatch[1]) is dropped because the picker already filtered
     // down to exactly the entry the user picked.
-    inputText.value =
-      textBeforeCursor.slice(0, atMatch.index) + '@' + file.path + textAfterCursor
+    inputText.value = textBeforeCursor.slice(0, atMatch.index) + '@' + file.path + textAfterCursor
   }
   closeFilePicker()
 }
@@ -665,46 +677,70 @@ const sendMessage = () => {
       ref="nativeFileInput"
       type="file"
       class="hidden"
+      accept="image/*,video/*"
       @change="handleNativeFileSelect"
     />
 
     <!-- Review mode header -->
-    <div v-if="reviewMode" class="mb-3 px-4 py-2 rounded-lg flex items-center gap-2"
-      style="background: rgba(135, 169, 135, 0.15); border: 1px solid var(--color-green);">
-      <span style="color: var(--color-green);">💬</span>
-      <span class="text-sm font-medium" style="color: var(--color-green);">Review Mode</span>
-      <span class="text-xs" style="color: var(--semantic-text-dim);">- Submit your code review comment</span>
+    <div
+      v-if="reviewMode"
+      class="mb-3 px-4 py-2 rounded-lg flex items-center gap-2"
+      style="background: rgba(135, 169, 135, 0.15); border: 1px solid var(--color-green)"
+    >
+      <span style="color: var(--color-green)">💬</span>
+      <span class="text-sm font-medium" style="color: var(--color-green)">Review Mode</span>
+      <span class="text-xs" style="color: var(--semantic-text-dim)"
+        >- Submit your code review comment</span
+      >
     </div>
 
     <!-- File picker dropdown -->
-    <div v-if="showFilePicker && (filteredFiles.length > 0 || isLoadingFiles)" ref="filePickerRef"
+    <div
+      v-if="showFilePicker && (filteredFiles.length > 0 || isLoadingFiles)"
+      ref="filePickerRef"
       class="file-picker-list mb-2 p-2 rounded-lg shadow-lg max-h-72 overflow-y-auto"
-      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
-      tabindex="0">
+      style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
+      tabindex="0"
+    >
       <!-- Loading state (driven by the request lifecycle, not fileList) -->
       <div v-if="isLoadingFiles" class="p-4 text-center">
-        <div class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
-          style="border-color: var(--color-violet); border-top-color: transparent;"></div>
-        <p class="text-sm" style="color: var(--semantic-text-dim);">Searching…</p>
+        <div
+          class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
+          style="border-color: var(--color-violet); border-top-color: transparent"
+        ></div>
+        <p class="text-sm" style="color: var(--semantic-text-dim)">Searching…</p>
       </div>
-      <div v-else-if="filteredFiles.length === 0" class="p-2 text-sm" style="color: var(--semantic-text-dim);">
+      <div
+        v-else-if="filteredFiles.length === 0"
+        class="p-2 text-sm"
+        style="color: var(--semantic-text-dim)"
+      >
         No files found
       </div>
       <div v-else>
-        <button v-for="(file, idx) in visibleFiles" :key="file.path" @click="selectFile(file)"
+        <button
+          v-for="(file, idx) in visibleFiles"
+          :key="file.path"
+          @click="selectFile(file)"
           class="w-full text-left px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors"
           :class="idx === selectedFileIndex ? 'file-item-selected' : ''"
-          :style="idx === selectedFileIndex
-            ? 'background-color: var(--color-violet); color: var(--color-bg);'
-            : 'color: var(--semantic-text);'"
-          @mouseenter="selectedFileIndex = idx">
+          :style="
+            idx === selectedFileIndex
+              ? 'background-color: var(--color-violet); color: var(--color-bg);'
+              : 'color: var(--semantic-text);'
+          "
+          @mouseenter="selectedFileIndex = idx"
+        >
           <span>{{ file.isDirectory ? '📁' : '📄' }}</span>
           <span class="truncate font-mono text-xs">{{ file.path }}</span>
         </button>
       </div>
       <!-- Footer info (render cap vs server total) -->
-      <div v-if="!isLoadingFiles && filteredFiles.length > 0" class="px-3 py-1.5 text-xs rounded mt-1"
-        style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim);">
+      <div
+        v-if="!isLoadingFiles && filteredFiles.length > 0"
+        class="px-3 py-1.5 text-xs rounded mt-1"
+        style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim)"
+      >
         showing {{ visibleFiles.length }} of {{ serverTotal }} files
       </div>
     </div>
@@ -716,55 +752,92 @@ const sendMessage = () => {
     <form @submit.prevent="sendMessage" class="flex gap-3 items-end">
       <!-- Queue indicator button -->
       <div v-if="hasQueuedMessages" class="relative">
-        <button type="button" @click="toggleQueuePanel"
+        <button
+          type="button"
+          @click="toggleQueuePanel"
           class="flex items-center gap-2 px-3 py-3 rounded-xl text-sm transition-all duration-200 border"
-          :style="showQueuePanel
-            ? 'background-color: var(--color-blue-1); border-color: var(--color-violet); color: var(--semantic-text);'
-            : 'background-color: var(--semantic-card-bg); border-color: var(--color-border); color: var(--semantic-text);'">
-          <span class="text-xs font-medium px-1.5 py-0.5 rounded"
-            style="background-color: var(--color-violet); color: var(--color-bg);">
+          :style="
+            showQueuePanel
+              ? 'background-color: var(--color-blue-1); border-color: var(--color-violet); color: var(--semantic-text);'
+              : 'background-color: var(--semantic-card-bg); border-color: var(--color-border); color: var(--semantic-text);'
+          "
+        >
+          <span
+            class="text-xs font-medium px-1.5 py-0.5 rounded"
+            style="background-color: var(--color-violet); color: var(--color-bg)"
+          >
             {{ queuedMessagesList.length }}
           </span>
-          <span style="color: var(--semantic-text-dim);">Queued</span>
-          <span class="text-xs" :style="showQueuePanel ? 'color: var(--color-violet);' : 'color: var(--semantic-text-muted);'">
+          <span style="color: var(--semantic-text-dim)">Queued</span>
+          <span
+            class="text-xs"
+            :style="
+              showQueuePanel ? 'color: var(--color-violet);' : 'color: var(--semantic-text-muted);'
+            "
+          >
             {{ showQueuePanel ? '▲' : '▼' }}
           </span>
         </button>
 
         <!-- Queue messages panel -->
-        <div v-if="showQueuePanel"
+        <div
+          v-if="showQueuePanel"
           class="absolute bottom-full left-0 mb-2 w-80 rounded-xl border shadow-lg overflow-hidden"
-          style="background-color: var(--semantic-card-bg); border-color: var(--color-border); max-height: 300px;">
+          style="
+            background-color: var(--semantic-card-bg);
+            border-color: var(--color-border);
+            max-height: 300px;
+          "
+        >
           <!-- Panel header -->
-          <div class="px-4 py-2 border-b flex items-center justify-between"
-            style="border-color: var(--color-border);">
-            <span class="text-sm font-medium" style="color: var(--semantic-text);">Queued Messages</span>
-            <span class="text-xs" style="color: var(--semantic-text-dim);">{{ queuedMessagesList.length }} messages</span>
+          <div
+            class="px-4 py-2 border-b flex items-center justify-between"
+            style="border-color: var(--color-border)"
+          >
+            <span class="text-sm font-medium" style="color: var(--semantic-text)"
+              >Queued Messages</span
+            >
+            <span class="text-xs" style="color: var(--semantic-text-dim)"
+              >{{ queuedMessagesList.length }} messages</span
+            >
           </div>
 
           <!-- Messages list -->
-          <div class="overflow-y-auto" style="max-height: 220px;">
-            <div v-for="msg in queuedMessagesList" :key="msg.id"
+          <div class="overflow-y-auto" style="max-height: 220px">
+            <div
+              v-for="msg in queuedMessagesList"
+              :key="msg.id"
               class="px-4 py-3 border-b cursor-pointer transition-colors"
-              style="border-color: var(--color-border-light);"
-              @mouseenter="(e) => (e.target as HTMLElement).style.backgroundColor = 'var(--hover-bg, #1D1C19)'"
-              @mouseleave="(e) => (e.target as HTMLElement).style.backgroundColor = ''"
-              @click="useQueuedMessage(msg)">
-              <span v-if="isCompletionMsg(msg)" class="text-xs font-medium">Background pid {{ completionPid(msg) }}</span>
-              <p class="text-sm truncate" style="color: var(--semantic-text);">{{ msg.message }}</p>
-              <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">Click to use</p>
+              style="border-color: var(--color-border-light)"
+              @mouseenter="
+                (e) =>
+                  ((e.target as HTMLElement).style.backgroundColor = 'var(--hover-bg, #1D1C19)')
+              "
+              @mouseleave="(e) => ((e.target as HTMLElement).style.backgroundColor = '')"
+              @click="useQueuedMessage(msg)"
+            >
+              <span v-if="isCompletionMsg(msg)" class="text-xs font-medium"
+                >Background pid {{ completionPid(msg) }}</span
+              >
+              <p class="text-sm truncate" style="color: var(--semantic-text)">{{ msg.message }}</p>
+              <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">Click to use</p>
             </div>
           </div>
 
           <!-- Panel footer -->
-          <div class="px-4 py-2 text-xs text-center"
-            style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);">
+          <div
+            class="px-4 py-2 text-xs text-center"
+            style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted)"
+          >
             Click a message to use it
           </div>
         </div>
       </div>
 
-      <textarea ref="chatTextareaRef" v-model="inputText" placeholder="Type a message... (@ to search files)"
+      <textarea
+        ref="chatTextareaRef"
+        v-model="inputText"
+        placeholder="Type a message... (@ to search files)"
         :disabled="isInitializing"
         data-testid="chat-message-textarea"
         class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
@@ -776,14 +849,31 @@ const sendMessage = () => {
           height: 48px;
           max-height: 200px;
           overflow-y: auto;
-        " @keydown="handleKeydown" @input="autoResize" @click="autoResize" @blur="updateCursorPos"></textarea>
+        "
+        @keydown="handleKeydown"
+        @input="autoResize"
+        @click="autoResize"
+        @blur="updateCursorPos"
+      ></textarea>
       <!-- Native file picker button -->
-      <button type="button" @click="triggerFilePicker"
+      <button
+        type="button"
+        @click="triggerFilePicker"
         class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1"
-        style="background-color: var(--semantic-card-bg); border-color: var(--color-border); color: var(--semantic-text);"
-        title="Select a file (docs, images, etc.)">
+        style="
+          background-color: var(--semantic-card-bg);
+          border-color: var(--color-border);
+          color: var(--semantic-text);
+        "
+        title="Select a file (docs, images, etc.)"
+      >
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.586a6 6 0 108.486 8.486L20.5 13"/>
+          <path
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            stroke-width="2"
+            d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.586a6 6 0 108.486 8.486L20.5 13"
+          />
         </svg>
       </button>
       <!--
@@ -821,7 +911,7 @@ const sendMessage = () => {
         <div
           v-if="isStopping"
           class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-bg); border-top-color: transparent;"
+          style="border-color: var(--color-bg); border-top-color: transparent"
         ></div>
         <svg
           v-else
@@ -834,15 +924,26 @@ const sendMessage = () => {
         </svg>
         <span>{{ isStopping ? 'Stopping…' : 'Stop' }}</span>
       </button>
-      <button v-if="!isLLMProcessing" type="submit" :disabled="isLoading || isInitializing"
+      <button
+        v-if="!isLLMProcessing"
+        type="submit"
+        :disabled="isLoading || isInitializing"
         data-testid="send-message-button"
         class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
-        :class="isLoading || isInitializing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'"
-        :style="isLoading
-          ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border);'
-          : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);'">
-        <div v-if="isLoading" class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-bg); border-top-color: transparent;"></div>
+        :class="
+          isLoading || isInitializing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'
+        "
+        :style="
+          isLoading
+            ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border);'
+            : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);'
+        "
+      >
+        <div
+          v-if="isLoading"
+          class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+          style="border-color: var(--color-bg); border-top-color: transparent"
+        ></div>
         <span>{{ isLoading ? 'Queue' : 'Send' }}</span>
       </button>
     </form>

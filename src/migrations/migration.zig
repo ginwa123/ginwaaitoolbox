@@ -1989,6 +1989,9 @@ pub const allMigrations: []const Migration = &.{
     // One row per active cookie (token_hash -> user_id + expiry).
     // Stores only SHA-256(token), never the raw token.
     .{ .version = Migration089AuthSessions.version, .name = Migration089AuthSessions.name, .up = Migration089AuthSessions.up },
+    // Migration 090 — `video_urls` / `video_url` columns for full video
+    // upload to LLM (mirrors Migration 069 image_urls, 25 MB cap).
+    .{ .version = Migration090AddVideoUrls.version, .name = Migration090AddVideoUrls.name, .up = Migration090AddVideoUrls.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4826,6 +4829,42 @@ pub const Migration089AuthSessions = struct {
         try db.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_auth_sessions_expires ON auth_sessions(expires_at)",
             &[_][]const u8{},
+        );
+    }
+};
+
+/// Migration 090 — `workspace_item_tasks.video_urls` + `llm_history.video_url`
+/// + `session_queue_messages.video_url` for full video upload to LLM.
+///
+/// Mirrors Migration 069 (image_urls): `TEXT NOT NULL DEFAULT ''` with ''
+/// as the canonical "no videos" sentinel. Values are `||`-delimited
+/// `data:video/<mime>;base64,...` URLs validated by
+/// `video_urls_validation.zig` (25 MB cap, allowlisted mimes).
+pub const Migration090AddVideoUrls = struct {
+    pub const version: u32 = 90;
+    pub const name = "add_video_urls";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "workspace_item_tasks",
+            "video_urls",
+            "video_urls TEXT NOT NULL DEFAULT ''",
+        );
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "llm_history",
+            "video_url",
+            "video_url TEXT NOT NULL DEFAULT ''",
+        );
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "session_queue_messages",
+            "video_url",
+            "video_url TEXT NOT NULL DEFAULT ''",
         );
     }
 };
