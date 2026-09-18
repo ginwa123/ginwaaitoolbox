@@ -81,7 +81,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 # Reuse the existing harness — battle-tested for boot + teardown.
 from harness import (
@@ -183,6 +183,7 @@ class UIHarness:
         vite_ready_timeout_s: float = VITE_READY_TIMEOUT_S,
         stub_llm_profile: bool = False,
         project_root: Path | None = None,
+        extra_args: Sequence[str] = (),
     ) -> "UIHarness":
         """Boot backend + vite against an isolated tmpdir HOME.
 
@@ -206,6 +207,8 @@ class UIHarness:
             project_root: Path to the frontend source tree (default:
                 walk up from cwd until we find package.json + vite.config.ts).
                 The harness will cwd to this directory when spawning vite.
+            extra_args: Extra backend CLI flags appended after `--port`
+                (e.g. ``("--auth",)``). Defaults to none.
 
         Raises:
             FunctionalHarnessError: If the backend OR vite fails to boot,
@@ -219,6 +222,7 @@ class UIHarness:
             port=port,
             ready_timeout_s=ready_timeout_s,
             stub_llm_profile=stub_llm_profile,
+            extra_args=extra_args,
         )
 
         # 2. Resolve the frontend project root.
