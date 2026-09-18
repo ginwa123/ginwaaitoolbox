@@ -79,15 +79,11 @@ function dialogEl(): HTMLElement | null {
 }
 
 function rows(): HTMLElement[] {
-  return Array.from(
-    document.querySelectorAll<HTMLElement>('[data-testid="bg-process-row"]'),
-  )
+  return Array.from(document.querySelectorAll<HTMLElement>('[data-testid="bg-process-row"]'))
 }
 
 function cleanupDialogDom(): void {
-  document
-    .querySelectorAll('[data-testid="bg-commands-dialog"]')
-    .forEach((el) => el.remove())
+  document.querySelectorAll('[data-testid="bg-commands-dialog"]').forEach((el) => el.remove())
 }
 
 beforeEach(() => {
@@ -146,9 +142,7 @@ describe('dialog rows + status badges', () => {
 
     expect(dialogEl()).not.toBeNull()
     expect(rows()).toHaveLength(2)
-    const badges = Array.from(
-      document.querySelectorAll('[data-testid="bg-status-badge"]'),
-    )
+    const badges = Array.from(document.querySelectorAll('[data-testid="bg-status-badge"]'))
     expect(badges).toHaveLength(2)
     expect(badges[0]?.textContent).toContain('running')
     expect(badges[0]?.getAttribute('data-running')).toBe('true')
@@ -177,9 +171,7 @@ describe('dialog rows + status badges', () => {
     })
     await flushPromises()
     await nextTick()
-    expect(
-      document.querySelector('[data-testid="bg-empty"]'),
-    ).not.toBeNull()
+    expect(document.querySelector('[data-testid="bg-empty"]')).not.toBeNull()
   })
 })
 
@@ -219,9 +211,7 @@ describe('log tail on expand', () => {
     await nextTick()
     expect(logMock).toHaveBeenCalledTimes(1)
 
-    const refreshBtn = document.querySelector<HTMLElement>(
-      '[data-testid="bg-log-refresh"]',
-    )
+    const refreshBtn = document.querySelector<HTMLElement>('[data-testid="bg-log-refresh"]')
     refreshBtn?.click()
     await flushPromises()
     expect(logMock).toHaveBeenCalledTimes(2)
@@ -240,12 +230,10 @@ describe('log tail on expand', () => {
     await flushPromises()
     await nextTick()
 
-    expect(
-      document.querySelector('[data-testid="bg-log-error"]'),
-    ).toBeNull()
-    expect(
-      document.querySelector('[data-testid="bg-log-content"]')?.textContent,
-    ).toBe('(log file not found)')
+    expect(document.querySelector('[data-testid="bg-log-error"]')).toBeNull()
+    expect(document.querySelector('[data-testid="bg-log-content"]')?.textContent).toBe(
+      '(log file not found)',
+    )
   })
 
   it('renders "process not found" on 404 (unknown pid)', async () => {
@@ -255,9 +243,9 @@ describe('log tail on expand', () => {
     await flushPromises()
     await nextTick()
 
-    expect(
-      document.querySelector('[data-testid="bg-log-error"]')?.textContent,
-    ).toContain('process not found')
+    expect(document.querySelector('[data-testid="bg-log-error"]')?.textContent).toContain(
+      'process not found',
+    )
   })
 
   it('collapsing the row stops the 2s log auto-refresh', async () => {
@@ -282,8 +270,8 @@ describe('log tail on expand', () => {
   })
 })
 
-describe('list polling (5s, scoped)', () => {
-  it('re-polls the list every 5s while mounted', async () => {
+describe('list is SSE-push driven (no 5s poll)', () => {
+  it('fetches once on mount and does NOT re-poll on a timer', async () => {
     vi.useFakeTimers()
     try {
       wrapper = mountPopup()
@@ -291,16 +279,16 @@ describe('list polling (5s, scoped)', () => {
       expect(listMock).toHaveBeenCalledTimes(1)
 
       await vi.advanceTimersByTimeAsync(5000)
-      expect(listMock).toHaveBeenCalledTimes(2)
+      expect(listMock).toHaveBeenCalledTimes(1)
 
-      await vi.advanceTimersByTimeAsync(10000)
-      expect(listMock).toHaveBeenCalledTimes(4)
+      await vi.advanceTimersByTimeAsync(15000)
+      expect(listMock).toHaveBeenCalledTimes(1)
     } finally {
       vi.useRealTimers()
     }
   })
 
-  it('clears the interval on unmount (no calls after teardown)', async () => {
+  it('no list calls after unmount', async () => {
     vi.useFakeTimers()
     try {
       wrapper = mountPopup()
@@ -316,11 +304,24 @@ describe('list polling (5s, scoped)', () => {
     }
   })
 
+  it('manual Refresh button re-fetches the list', async () => {
+    listMock.mockResolvedValue({ processes: [RUNNING], count: 1 })
+    wrapper = mountPopup()
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('[data-testid="bg-commands-pill"]').trigger('click')
+    await nextTick()
+    const btn = document.querySelector<HTMLElement>('[data-testid="bg-list-refresh"]')
+    expect(btn).not.toBeNull()
+    btn?.click()
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(2)
+  })
+
   it('session switch refetches for the new session and resets state', async () => {
     listMock.mockImplementation(async (sid: string) =>
-      sid === SID
-        ? { processes: [RUNNING], count: 1 }
-        : { processes: [], count: 0 },
+      sid === SID ? { processes: [RUNNING], count: 1 } : { processes: [], count: 0 },
     )
     wrapper = mountPopup(SID)
     await flushPromises()
@@ -334,8 +335,56 @@ describe('list polling (5s, scoped)', () => {
   })
 })
 
-describe('SSE-triggered refresh (existing queue event, no new event)', () => {
-  it('refreshes the list on queue_queued for this session', async () => {
+describe('SSE-triggered refresh (backgroundProcess primary + queue fallback)', () => {
+  it('refreshes the list on background_process created for this session', async () => {
+    listMock.mockResolvedValue({ processes: [], count: 0 })
+    wrapper = mountPopup()
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(1)
+
+    __dispatchSseBus('backgroundProcess', {
+      action: 'created',
+      session_id: SID,
+      pid: 4242,
+      command: 'sleep 60',
+    })
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('refreshes the list on background_process completed for this session', async () => {
+    listMock.mockResolvedValue({ processes: [], count: 0 })
+    wrapper = mountPopup()
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(1)
+
+    __dispatchSseBus('backgroundProcess', {
+      action: 'completed',
+      session_id: SID,
+      pid: 4242,
+      command: 'sleep 60',
+    })
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores backgroundProcess events for other sessions', async () => {
+    listMock.mockResolvedValue({ processes: [], count: 0 })
+    wrapper = mountPopup()
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(1)
+
+    __dispatchSseBus('backgroundProcess', {
+      action: 'created',
+      session_id: 'sess_other',
+      pid: 9999,
+      command: 'sleep 60',
+    })
+    await flushPromises()
+    expect(listMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('queue fallback still refreshes (completion also queues a message)', async () => {
     listMock.mockResolvedValue({ processes: [], count: 0 })
     wrapper = mountPopup()
     await flushPromises()
@@ -345,21 +394,6 @@ describe('SSE-triggered refresh (existing queue event, no new event)', () => {
       action: 'queued',
       id: 'q-1',
       message: 'hello',
-      session_id: SID,
-    })
-    await flushPromises()
-    expect(listMock).toHaveBeenCalledTimes(2)
-  })
-
-  it('refreshes the list on queue_deleted for this session (completion path)', async () => {
-    listMock.mockResolvedValue({ processes: [], count: 0 })
-    wrapper = mountPopup()
-    await flushPromises()
-    expect(listMock).toHaveBeenCalledTimes(1)
-
-    __dispatchSseBus('queue', {
-      action: 'deleted',
-      id: 'q-1',
       session_id: SID,
     })
     await flushPromises()

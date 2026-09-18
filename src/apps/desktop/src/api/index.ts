@@ -3272,6 +3272,18 @@ export type QueueMessageEvent =
       session_id: string
     }
 
+// Background-process lifecycle SSE event (see
+// src/agentic_loop/background_process_events.zig). Both granular wire
+// names (`background_process_created` / `background_process_completed`)
+// share this payload; the consumer filters by `session_id` and
+// re-fetches the list.
+export interface BackgroundProcessEvent {
+  action: 'created' | 'completed'
+  session_id: string
+  pid: number
+  command: string
+}
+
 // GET queued messages
 export interface QueuedMessage {
   id: string
@@ -3395,6 +3407,15 @@ export interface UnifiedChannels {
   sessions?: (event: SessionEvent) => void
   kanban?: (event: KanbanColumnEvent | KanbanTaskEvent) => void
   /**
+   * Subscribe to background-process lifecycle events. The backend emits
+   * two granular names (`background_process_created` on spawn,
+   * `background_process_completed` on exit) that share the same
+   * `BackgroundProcessEvent` payload. Both route on the central
+   * `background_process` key — the consumer filters by
+   * `event.session_id` JS-side and re-fetches the list.
+   */
+  backgroundProcess?: (event: BackgroundProcessEvent) => void
+  /**
    * Subscribe to design-mode element mutations. The backend emits
    * three granular event names (`design_element_created`,
    * `design_element_updated`, `design_element_deleted`) that share
@@ -3458,6 +3479,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
   if (opts.channels.queue) {
     tokens.push(opts.channels.queue.sessionId ? `queue:${opts.channels.queue.sessionId}` : 'queue')
   }
+  if (opts.channels.backgroundProcess) tokens.push('background_process')
 
   // Empty subscriptions are meaningless; the backend would 400 anyway.
   // Throw early with a developer-friendly message. The console.error
@@ -3547,6 +3569,11 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       // close → ignored).
       'design_page_deleted',
       'close',
+      // Background-process lifecycle (see background_process_events.zig).
+      // Without pre-registration the browser drops the event before
+      // onEvent ever fires — the list would never refresh.
+      'background_process_created',
+      'background_process_completed',
       // Auth rejection (`event: auth_error`, see unified_events_sse.zig
       // `terminateSseStream`). Without pre-registration the browser
       // drops it before onEvent ever fires and the client sits in
@@ -3611,6 +3638,23 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.queue.onEvent(data as QueueMessageEvent)
         } catch (err) {
           console.error('[unifiedSSE] queue event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Background-process lifecycle. Both granular names share the
+      // `BackgroundProcessEvent` payload — the consumer filters by
+      // `session_id` and re-fetches the list.
+      if (
+        eventType === 'background_process_created' ||
+        eventType === 'background_process_completed'
+      ) {
+        if (!opts.channels.backgroundProcess) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.backgroundProcess(data as BackgroundProcessEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] background_process event parse failed:', err, raw)
         }
         return
       }
@@ -5194,8 +5238,10 @@ export async function disableAgentRoutineTool(
 // Log content is the TAIL; a missing log file returns 200 with the
 // `(log file not found)` marker content; unknown (session, pid) is 404.
 //
-// Both fns pass `silent: true` — they back a 5s poll + a 2s log-tail poll,
-// so a toast on every transient 404/5xx would be noise. Callers render
+// Both fns pass `silent: true` — the list is SSE-push driven
+// (`background_process_created/completed`) with manual + resync refetch,
+// and the log tail polls every 2s only while expanded, so a toast on
+// every transient 404/5xx would be noise. Callers render
 // inline state (empty / error / marker) instead.
 
 export interface BackgroundProcess {

@@ -24,6 +24,9 @@
 //!                    filters by `data.workspace_id` JS-side)
 //!   llm            → "llm"          (central key — all sessions' LLM events)
 //!   queue          → "queue"        (central key — all sessions' queue events)
+//!   background_process → "background_process" (central key — all sessions'
+//!                    background-process created/completed events; the
+//!                    frontend filters by `data.session_id` JS-side)
 //!
 //! Plan: docs/superpowers/plans/2026-06-30-unify-sse-endpoints.md
 
@@ -130,6 +133,13 @@ pub fn parseChannels(allocator: std.mem.Allocator, raw: []const u8) ChannelParse
             try routing_keys.append(allocator, try allocator.dupe(u8, "llm"));
         } else if (std.mem.eql(u8, token, "queue")) {
             try routing_keys.append(allocator, try allocator.dupe(u8, "queue"));
+        } else if (std.mem.eql(u8, token, "background_process")) {
+            // Background-process lifecycle (`background_process_created` /
+            // `background_process_completed` on the central
+            // "background_process" key — see background_process_events.zig).
+            // Single key covers both granular event types; the frontend
+            // filters by `data.session_id` JS-side.
+            try routing_keys.append(allocator, try allocator.dupe(u8, "background_process"));
         } else if (std.mem.eql(u8, token, "design_element")) {
             // Design-mode element mutations. The frontend
             // `createUnifiedSseConnection` sends this token; the
@@ -217,6 +227,16 @@ pub const CallbackUnifiedQueueBroadcast = struct {
 pub const CallbackUnifiedDesignElementStream = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
         forwardToClients("design_element", data);
+    }
+};
+
+/// Callback for the central "background_process" routing key. Forwards
+/// to every client registered under "background_process" — the frontend
+/// listener (`BackgroundCommandsPopup.vue`) then filters by
+/// `data.session_id` on the JS side and re-fetches the list.
+pub const CallbackUnifiedBackgroundProcessStream = struct {
+    pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
+        forwardToClients("background_process", data);
     }
 };
 
@@ -343,6 +363,8 @@ pub fn unifiedEventsStreamHandler(
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedQueueBroadcast.callback) catch {};
             } else if (std.mem.eql(u8, rk, "design_element")) {
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedDesignElementStream.callback) catch {};
+            } else if (std.mem.eql(u8, rk, "background_process")) {
+                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedBackgroundProcessStream.callback) catch {};
             }
         }
 

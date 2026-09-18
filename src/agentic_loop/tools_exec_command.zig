@@ -9,6 +9,7 @@ const agent = nalarcore.agent;
 const tool_models = nalarcore.tool_models;
 const command_tool_mod = nalarcore.command_tool;
 const background_process = @import("background_process.zig");
+const background_process_events = @import("background_process_events.zig");
 const background_watcher = @import("background_watcher.zig");
 const wrapToolOutput = tools.wrapToolOutput;
 const bash_args = @import("tools_exec_bash_args.zig");
@@ -92,6 +93,7 @@ pub fn runWithContext(
                         // is covered directly in background_watcher tests).
                         // Dupes into di.allocator (process lifetime) inside.
                         if (nalarcore.getSingleton() catch null) |di| {
+                            background_process_events.emitCreated(allocator, di.event_bus, sess_id, pid, input.command);
                             background_watcher.spawnCompletionWatcher(di, sess_id, pid, input.command, log_path);
                         }
                     }

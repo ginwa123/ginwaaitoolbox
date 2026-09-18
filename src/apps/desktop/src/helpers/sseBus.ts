@@ -13,6 +13,7 @@ import type {
   DesignElementEvent,
   SseEvent,
   QueueMessageEvent,
+  BackgroundProcessEvent,
 } from '../api'
 
 // NOTE: Plan's Chunk 1 spec imports `KanbanEvent` and `LlmChunkEvent`
@@ -35,6 +36,12 @@ type SseEventMap = {
   design: DesignElementEvent
   llm: SseEvent
   queue: QueueMessageEvent
+  // Background-process lifecycle. The backend emits two granular names
+  // (`background_process_created` / `background_process_completed`) that
+  // share the `BackgroundProcessEvent` payload — see
+  // src/agentic_loop/background_process_events.zig. The bus routes both
+  // to this single channel; the consumer filters by `session_id`.
+  backgroundProcess: BackgroundProcessEvent
 }
 
 type Listener<K extends keyof SseEventMap> = (event: SseEventMap[K]) => void
@@ -114,7 +121,13 @@ export interface SseBusInstallOptions {
   /** Test seams for the coordinator's timings/visibility. */
   tabChannelOptions?: Pick<
     TabChannelOptions,
-    'channelName' | 'tabId' | 'isVisible' | 'heartbeatMs' | 'leaderTimeoutMs' | 'electionJitterMs' | 'hiddenTakeoverDelayMs'
+    | 'channelName'
+    | 'tabId'
+    | 'isVisible'
+    | 'heartbeatMs'
+    | 'leaderTimeoutMs'
+    | 'electionJitterMs'
+    | 'hiddenTakeoverDelayMs'
   >
 }
 
@@ -123,7 +136,9 @@ function resolveTabSharing(mode: 'auto' | 'on' | 'off'): boolean {
   if (mode === 'off') return false
   const env = (import.meta as unknown as { env?: { MODE?: string } }).env
   if (env?.MODE === 'test') return false
-  return typeof (globalThis as unknown as { BroadcastChannel?: unknown }).BroadcastChannel === 'function'
+  return (
+    typeof (globalThis as unknown as { BroadcastChannel?: unknown }).BroadcastChannel === 'function'
+  )
 }
 
 let _instance: SseBus | null = null
@@ -169,6 +184,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
     design: new Set<Listener<'design'>>(),
     llm: new Set<Listener<'llm'>>(),
     queue: new Set<Listener<'queue'>>(),
+    backgroundProcess: new Set<Listener<'backgroundProcess'>>(),
   }
 
   const state = shallowRef<SseState>('closed')
@@ -198,12 +214,13 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
     state.value = 'connecting'
   }
 
-  // Build the single global EventSource carrying ALL 6 channels. The bus does
+  // Build the single global EventSource carrying ALL channels. The bus does
   // NOT open a second EventSource per chat (the v1 refcount design was
   // reverted; see docs/plans/2026-06-30-single-sse-all-sessions-design.md).
-  // Listeners for 'llm' and 'queue' filter by event.session_id on the JS side —
-  // defense-in-depth against any backend routing regression. Design listeners
-  // filter by `event.workspace_id` in the `designSse.ts` store.
+  // Listeners for 'llm', 'queue', and 'backgroundProcess' filter by
+  // event.session_id on the JS side — defense-in-depth against any backend
+  // routing regression. Design listeners filter by `event.workspace_id`
+  // in the `designSse.ts` store.
   //
   // With tab sharing on (see `sseTabChannel.ts`) this runs ONLY in the leader
   // tab; followers get the same events forwarded over the BroadcastChannel.
@@ -224,6 +241,10 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
         // mySessionId.value` inside each listener.
         llm: { onEvent: (e) => forward('llm', e) },
         queue: { onEvent: (e) => forward('queue', e) },
+        // Background-process lifecycle — same central-broadcast pattern:
+        // backend emits on "background_process", frontend filters by
+        // `event.session_id` in BackgroundCommandsPopup.vue.
+        backgroundProcess: (e) => forward('backgroundProcess', e),
       },
       onError: (err) => {
         console.error('[sseBus] global SSE failed permanently:', err)
@@ -282,10 +303,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
     _tabChannel?.broadcastEvent(type, event)
   }
 
-  function dispatch<K extends keyof SseEventMap>(
-    type: K,
-    event: SseEventMap[K],
-  ): void {
+  function dispatch<K extends keyof SseEventMap>(type: K, event: SseEventMap[K]): void {
     const set = listeners[type] as Set<Listener<K>>
     for (const cb of set) {
       try {
@@ -311,7 +329,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
   // how many tabs are open.
   if (sharing) {
     _tabChannel = createTabChannel({
-      ...(options?.tabChannelOptions),
+      ...options?.tabChannelOptions,
       channelFactory: options?.channelFactory,
       onBecomeLeader: () => openClient(),
       onLoseLeadership: () => closeClient('lost cross-tab leadership'),
