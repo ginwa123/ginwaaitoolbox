@@ -3,7 +3,7 @@
 //! ## Why this module exists
 //!
 //! The `ask_user` tool does NOT block the agentic loop. It writes one row
-//! here and returns a `<status>pending</status>` envelope immediately; the
+//! here and returns a `"status":"pending"` payload immediately; the
 //! workflow then BREAKS the turn (see the `.tool_calls` arm in
 //! `workflow.zig`). The human answers later, on their own schedule, and
 //! `POST /api/llm/session/:id/answer` (see `http_handlers/ask_user_answer.zig`)
@@ -16,7 +16,7 @@
 //!
 //! Step 2 MUST precede step 3. `handle_tool`'s Phase-1 rows are written with
 //! `is_feed_to_llm = 1`, so a run that starts first would hand the model
-//! `<status>pending</status>` and it might guess. If step 2 fails the caller
+//! `"status":"pending"` and it might guess. If step 2 fails the caller
 //! must leave the row `pending` and return an error, so a Retry is safe —
 //! never emit the run anyway.
 //!
@@ -342,7 +342,7 @@ pub fn abandonPendingQuestions(
 
         try markQuestionStatus(allocator, io, db, q.id, .abandoned, null);
 
-        const inner = try ask_user_mod.buildAskUserXml(allocator, .{
+        const inner = try ask_user_mod.buildAskUserJson(allocator, .{
             .status = .abandoned,
             .question_id = q.id,
             .question = q.question,
@@ -405,9 +405,9 @@ pub const RewriteToolResultInput = struct {
     session_id: []const u8,
     /// The `llm_history` row to overwrite (the `ask_user` tool result).
     llm_history_id: []const u8,
-    /// The inner `<ask_user>…</ask_user>` envelope for the resolved status.
-    /// The outer `<tool>` wrapper is built here so callers cannot get the
-    /// envelope shape wrong (see `buildAskUserToolEnvelope`).
+    /// The JSON `data` payload for the resolved status. The outer `<tool>`
+    /// wrapper is built here so callers cannot get the envelope shape wrong
+    /// (see `buildAskUserToolJsonEnvelope`).
     inner: []const u8,
 };
 
@@ -430,25 +430,34 @@ fn readRowContent(
     return null;
 }
 
-/// Lift the `<parameters>` BODY out of an existing `<tool>` envelope so a
-/// rewrite can re-emit it. Returns "" when the block is absent (a legacy row),
-/// which still produces a valid — if argument-less — envelope.
-fn extractParametersBody(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
+/// Lift the `<parameters>` BODY out of an existing `<tool>` envelope and
+/// return it as a JSON string so a rewrite can re-emit it. A body that is
+/// already a JSON object passes through verbatim; a legacy XML blob is
+/// stashed under `_raw` so the parameters stay a parseable object; an absent,
+/// unterminated or empty block means empty args (`{}`).
+fn extractParametersJson(allocator: std.mem.Allocator, content: []const u8) ![]u8 {
     const open = "<parameters>";
     const close = "</parameters>";
-    const start = std.mem.indexOf(u8, content, open) orelse return allocator.dupe(u8, "");
+    const start = std.mem.indexOf(u8, content, open) orelse return allocator.dupe(u8, "{}");
     const body_start = start + open.len;
-    const end = std.mem.indexOf(u8, content[body_start..], close) orelse return allocator.dupe(u8, "");
-    return allocator.dupe(u8, content[body_start .. body_start + end]);
+    const end = std.mem.indexOf(u8, content[body_start..], close) orelse return allocator.dupe(u8, "{}");
+    const body = std.mem.trim(u8, content[body_start .. body_start + end], " \t\r\n");
+    if (body.len == 0) return allocator.dupe(u8, "{}");
+    if (std.json.parseFromSlice(std.json.Value, allocator, body, .{})) |parsed| {
+        parsed.deinit();
+        return allocator.dupe(u8, body);
+    } else |_| {}
+    return std.json.Stringify.valueAlloc(allocator, .{ ._raw = body }, .{});
 }
 
 /// Step 2 of the answer round-trip: overwrite the tool-result row in place
 /// with the resolved envelope and push the row's SSE update so an open
 /// `ChatView` flips the card without a reload.
 ///
-/// The `<parameters>` block of the row being replaced is preserved: the
-/// arguments of a tool call never change, and the frontend's envelope parser
-/// REQUIRES the tag (a rewrite without it renders no card state at all).
+/// The `parameters` of the row being replaced are preserved as a JSON
+/// string: the arguments of a tool call never change, and the frontend's
+/// envelope parser REQUIRES the tag (a rewrite without it renders no card
+/// state at all).
 ///
 /// The SSE emit is best-effort (logged, never propagated): a failed card
 /// refresh must not roll back a valid answer or block the resume. The
@@ -460,10 +469,10 @@ pub fn rewriteToolResultRow(input: RewriteToolResultInput) !void {
     const previous = try readRowContent(allocator, input.db, input.llm_history_id);
     defer if (previous) |p| allocator.free(p);
 
-    const params = try extractParametersBody(allocator, previous orelse "");
+    const params = try extractParametersJson(allocator, previous orelse "");
     defer allocator.free(params);
 
-    const envelope = try ask_user_mod.buildAskUserToolEnvelope(allocator, params, input.inner);
+    const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(allocator, params, input.inner);
     defer allocator.free(envelope);
 
     try llm_history.updateToolResultById(allocator, input.io, input.db, input.llm_history_id, .{
@@ -651,11 +660,13 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    resolved_at INTEGER
         \\)
     , &.{});
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "CREATE UNIQUE INDEX idx_spq_tool_call ON session_pending_question(tool_call_id)",
         &.{},
     );
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "CREATE INDEX idx_spq_session_status ON session_pending_question(session_id, status)",
         &.{},
     );
@@ -842,9 +853,7 @@ test "ask_user_pending: listRecentQuestions returns pending + just-resolved rows
     try markQuestionStatus(a, io, &s.db, "q_2", .answered, "staging");
 
     // A row resolved long ago (outside the 60s window) must not come back.
-    try s.db.exec(a,
-        "INSERT INTO session_pending_question (id, session_id, tool_call_id, llm_history_id, question, multi_select, status, answer, created_at, resolved_at) VALUES ('q_old','s1','call_old','row_1','old',0,'answered','x',1,1)",
-        &.{});
+    try s.db.exec(a, "INSERT INTO session_pending_question (id, session_id, tool_call_id, llm_history_id, question, multi_select, status, answer, created_at, resolved_at) VALUES ('q_old','s1','call_old','row_1','old',0,'answered','x',1,1)", &.{});
 
     const list = try listRecentQuestions(a, io, &s.db, "s1");
     defer {
@@ -866,38 +875,58 @@ test "ask_user_pending: newQuestionId is prefixed and unique" {
     try testing.expect(id.len > 3);
 }
 
-test "ask_user_pending: extractParametersBody lifts the block, or returns empty" {
+test "ask_user_pending: extractParametersJson returns a JSON string" {
     const a = testing.allocator;
 
-    // The normal case: handle_tool's Phase-1 placeholder carries the args.
+    // A newer row already carries a JSON object: pass through verbatim.
     {
-        const body = try extractParametersBody(
+        const body = try extractParametersJson(
             a,
-            "<tool><name>ask_user</name><parameters><question>Q?</question></parameters>" ++
-                "<success>true</success><data><ask_user>…</ask_user></data></tool>",
+            "<tool><name>ask_user</name><parameters>{\"question\":\"Q?\"}</parameters>" ++
+                "<success>true</success><data>{}</data></tool>",
         );
         defer a.free(body);
-        try testing.expectEqualStrings("<question>Q?</question>", body);
+        try testing.expectEqualStrings("{\"question\":\"Q?\"}", body);
     }
 
-    // A rewrite whose row has no <parameters> (legacy) must still work — the
-    // envelope just carries an empty block.
+    // A legacy row carries the XML-converted arguments: stash under `_raw`
+    // so the envelope keeps a parseable parameters object.
     {
-        const body = try extractParametersBody(a, "<tool><name>x</name><data>y</data></tool>");
+        const body = try extractParametersJson(
+            a,
+            "<tool><name>ask_user</name><parameters><question>Q?</question></parameters>" ++
+                "<success>true</success><data>…</data></tool>",
+        );
         defer a.free(body);
-        try testing.expectEqualStrings("", body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, a, body, .{});
+        defer parsed.deinit();
+        try testing.expectEqualStrings("<question>Q?</question>", parsed.value.object.get("_raw").?.string);
+    }
+
+    // A rewrite whose row has no `<parameters>` (legacy) must still work.
+    {
+        const body = try extractParametersJson(a, "<tool><name>x</name><data>y</data></tool>");
+        defer a.free(body);
+        try testing.expectEqualStrings("{}", body);
     }
 
     // An unterminated block is treated as absent rather than swallowing the
     // rest of the row.
     {
-        const body = try extractParametersBody(a, "<tool><parameters>unterminated");
+        const body = try extractParametersJson(a, "<tool><parameters>unterminated");
         defer a.free(body);
-        try testing.expectEqualStrings("", body);
+        try testing.expectEqualStrings("{}", body);
+    }
+
+    // An empty block means empty args.
+    {
+        const body = try extractParametersJson(a, "<tool><parameters>   </parameters></tool>");
+        defer a.free(body);
+        try testing.expectEqualStrings("{}", body);
     }
 }
 
-test "ask_user_pending: a rewrite preserves <parameters> so the card can parse it" {
+test "ask_user_pending: a rewrite preserves parameters so the card can parse it" {
     const a = testing.allocator;
     var s = try setupDb();
     defer s.db.deinit();
@@ -924,13 +953,13 @@ test "ask_user_pending: a rewrite preserves <parameters> so the card can parse i
     // endpoint performs.
     const placeholder =
         "<tool><name>ask_user</name><parameters><header>Deploy target</header></parameters>" ++
-        "<success>true</success><data><ask_user><status>pending</status></ask_user></data></tool>";
+        "<success>true</success><data>{\"status\":\"pending\"}</data></tool>";
     try s.db.exec(a,
         \\INSERT INTO llm_history (id, session_id, model, response_content, role, tool_name)
         \\VALUES ('row_1', 'sess_1', 'm', ?, 'tool', 'ask_user')
     , &.{placeholder});
 
-    const inner = try ask_user_mod.buildAskUserXml(a, .{
+    const inner = try ask_user_mod.buildAskUserJson(a, .{
         .status = .skipped,
         .question_id = "q_1",
         .question = "Which environment?",
@@ -948,10 +977,12 @@ test "ask_user_pending: a rewrite preserves <parameters> so the card can parse i
 
     const after = (try readRowContent(a, &s.db, "row_1")).?;
     defer a.free(after);
-    try testing.expect(std.mem.indexOf(u8, after, "<status>skipped</status>") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "\"status\":\"skipped\"") != null);
+    try testing.expect(std.mem.indexOf(u8, after, "\"question\":\"Which environment?\"") != null);
     // The contract the frontend's unwrapToolOutput enforces. Without this the
     // card falls back to an empty pending render and never shows the outcome.
-    try testing.expect(std.mem.indexOf(u8, after, "<parameters><header>Deploy target</header></parameters>") != null);
+    // Legacy XML arguments survive under `_raw` as a JSON object.
+    try testing.expect(std.mem.indexOf(u8, after, "<parameters>{\"_raw\":\"<header>Deploy target</header>\"}</parameters>") != null);
     try testing.expect(std.mem.indexOf(u8, after, "<name>ask_user</name>") != null);
     try testing.expect(std.mem.indexOf(u8, after, "<success>true</success>") != null);
 }
