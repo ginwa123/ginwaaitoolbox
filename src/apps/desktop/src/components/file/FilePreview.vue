@@ -13,7 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [files: PreviewFile[]]
-  'remove': [index: number]
+  remove: [index: number]
 }>()
 
 const hoveredIndex = ref<number | null>(null)
@@ -24,6 +24,8 @@ const popupItem = computed(() => {
   if (popupIndex.value === null) return null
   return props.modelValue[popupIndex.value] ?? null
 })
+
+const isVideoFile = (file: File): boolean => file.type.startsWith('video/')
 
 const removeFile = (index: number) => {
   const newFiles = [...props.modelValue]
@@ -50,17 +52,46 @@ const closePopup = () => {
 <template>
   <div v-if="modelValue.length > 0" class="file-preview-container">
     <div class="file-preview-list" :style="maxHeight ? `max-height: ${maxHeight}` : ''">
-      <div v-for="(item, index) in modelValue" :key="index" class="preview-item"
+      <div
+        v-for="(item, index) in modelValue"
+        :key="index"
+        class="preview-item"
         @mouseenter="hoveredIndex = index"
-        @mouseleave="hoveredIndex = null">
-        <img :src="item.previewUrl" :alt="item.file.name" class="preview-image" @click="openPopup(index)" />
-        <button type="button" class="remove-btn" :class="{ visible: hoveredIndex === index }"
-          @click.stop="removeFile(index)" title="Remove image">
+        @mouseleave="hoveredIndex = null"
+      >
+        <video
+          v-if="isVideoFile(item.file)"
+          :src="item.previewUrl"
+          class="preview-image"
+          controls
+          preload="metadata"
+        />
+        <img
+          v-else
+          :src="item.previewUrl"
+          :alt="item.file.name"
+          class="preview-image"
+          @click="openPopup(index)"
+        />
+        <button
+          type="button"
+          class="remove-btn"
+          :class="{ visible: hoveredIndex === index }"
+          @click.stop="removeFile(index)"
+          title="Remove image"
+        >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M6 18L18 6M6 6l12 12"
+            />
           </svg>
         </button>
-        <span class="file-name" :class="{ visible: hoveredIndex === index }">{{ item.file.name }}</span>
+        <span class="file-name" :class="{ visible: hoveredIndex === index }">{{
+          item.file.name
+        }}</span>
       </div>
     </div>
 
@@ -70,10 +101,22 @@ const closePopup = () => {
         <div class="popup-content" @click.stop>
           <button type="button" class="popup-close" @click="closePopup">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M6 18L18 6M6 6l12 12"
+              />
             </svg>
           </button>
-          <img :src="popupItem.previewUrl" :alt="popupItem.file.name" class="popup-image" />
+          <video
+            v-if="isVideoFile(popupItem.file)"
+            :src="popupItem.previewUrl"
+            class="popup-image"
+            controls
+            preload="metadata"
+          />
+          <img v-else :src="popupItem.previewUrl" :alt="popupItem.file.name" class="popup-image" />
           <div class="popup-footer">
             <span class="popup-filename">{{ popupItem.file.name }}</span>
             <span class="popup-size">{{ (popupItem.file.size / 1024).toFixed(1) }} KB</span>
