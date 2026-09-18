@@ -637,6 +637,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     const copy_inherited_context = try parent_allocator.dupe(u8, params.inherited_context);
     var is_have_queue_message = false;
 
+    // Persist the selected profile on the session row so subagent
+    // children (whose rows are lazily created by updateWorker with
+    // NULL profile) carry the parent's profile. Only writes when
+    // params has a non-empty value so we never bind "" (which the
+    // SqliteBackend coerces to NULL) and never clobber an existing
+    // row with empty. The per-iteration re-read then resolves the
+    // correct model for every LLM call.
+    if (params.selected_profile_model.len > 0) {
+        _ = llm_history.ensureSessionExists(parent_allocator, db, copy_session_id) catch |err| {
+            logger.errFmt("[CHECKPOINT] ensure session failed session_id={s}: {s}", .{ copy_session_id, @errorName(err) });
+        };
+        llm_history.updateSessionSelectedProfileModel(parent_allocator, db, copy_session_id, params.selected_profile_model) catch |err| {
+            logger.errFmt("[CHECKPOINT] persist profile failed session_id={s}: {s}", .{ copy_session_id, @errorName(err) });
+        };
+    }
+
     const initial_agent_state = try llm_history.get_current_agent_by_session_id(
         parent_allocator,
         db,

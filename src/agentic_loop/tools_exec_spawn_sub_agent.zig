@@ -36,6 +36,11 @@ const SubAgentThreadArgs = struct {
     active_loops: *models.ActiveLoops,
     inherited_context: []const u8 = "", // NEW: mode string for parent history inheritance
     sub_agent_overrides: ?ai_workflow.SubAgentOverrides = null,
+    // Parent's selected profile name (e.g. "union alpha"). Forwarded to
+    // the child RunParamsNew so the subagent session persists it and
+    // the LLM call resolves the correct model instead of top-level
+    // defaults. Empty means "no selection" (same as RunParamsNew default).
+    selected_profile_model: []const u8 = "",
     // 2026-08-23 spawn-subagent-live-progress: the parent's
     // tool_call.id (from the LLM's tool_calls[i].id). Frontend
     // ChatView.vue routes role="subagent_progress" SSE events into
@@ -289,6 +294,7 @@ fn runSubAgent(args_ptr: *SubAgentThreadArgs) void {
         .is_sub_agent = is_sub_agent,
         .inherited_context = args_ptr.inherited_context,
         .sub_agent_overrides = args_ptr.sub_agent_overrides,
+        .selected_profile_model = args_ptr.selected_profile_model,
     }) catch |err| {
         // Mirror the diagnostic pattern used by workflow.zig's outer
         // catch (workflow.zig:68) and its TooManyRetries bail
@@ -549,6 +555,10 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
             .active_loops = ctx.active_loops,
             .inherited_context = sub_agent.inherited_context orelse "",
             .sub_agent_overrides = overrides,
+            // Forward the parent's profile so the child session row
+            // carries it (DB not NULL) and its LLM calls resolve the
+            // same profile instead of falling back to top-level.
+            .selected_profile_model = ctx.selected_profile_model,
             // 2026-08-23 spawn-subagent-live-progress: propagate
             // the parent's tool_call id + the total batch size so
             // the per-thread progress events are correctly keyed.
@@ -767,4 +777,18 @@ test "execSpawnSubAgent envelope escapes XML" {
     try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, result.session_id)") != null);
     try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, resp)") != null);
     try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, err)") != null);
+}
+
+test "spawn forwards selected_profile_model to subagent child" {
+    // Subagent rows used to persist NULL profile because runSubAgent
+    // never forwarded the parent's selection to RunParamsNew. The
+    // child then resolved top-level defaults instead of the parent
+    // profile (e.g. union alpha) on every LLM call.
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "selected_profile_model: []const u8") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".selected_profile_model = ctx.selected_profile_model") != null);
+    try testing.expect(std.mem.indexOf(u8, source, ".selected_profile_model = args_ptr.selected_profile_model") != null);
 }
