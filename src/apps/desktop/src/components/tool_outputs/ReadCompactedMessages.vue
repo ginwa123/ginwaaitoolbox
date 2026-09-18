@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
 import ToolParameters from './_shared/ToolParameters.vue'
+import { normalizeToolContent } from './_shared/toolOutputParser'
 
 /**
  * ReadCompactedMessages — renders the rich `<read_compacted_messages>`
@@ -50,7 +51,7 @@ interface MessageEntry {
 }
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   parameters?: string
 }>()
@@ -59,13 +60,46 @@ const isExpanded = ref(props.expanded ?? false)
 
 // ── Parse the outer envelope ────────────────────────────────────────────────
 
-const mode = computed((): 'index' | 'full' | 'unknown' => {
-  const match = props.content.match(/<read_compacted_messages\s+mode="([^"]+)"/)
-  if (!match || !match[1]) {
-    // No mode attribute — could be error envelope (root has no attributes).
-    return 'unknown'
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(v)
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
   }
-  return match[1] === 'full' ? 'full' : 'index'
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
+}
+
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v.trim())
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+const normalized = computed(() => normalizeToolContent(props.content))
+const dataRecord = computed(() => asRecord(normalized.value.data))
+
+const mode = computed((): 'index' | 'full' | 'unknown' => {
+  const m = strOrNull(dataRecord.value.mode)
+  if (!m) return 'unknown'
+  return m === 'full' ? 'full' : 'index'
 })
 
 // In-progress fallback: prefer envelope, fall back to tool-call parameters
@@ -73,56 +107,35 @@ const displayMode = computed((): string | null => {
   if (mode.value !== 'unknown') return mode.value
   return extractParam(props.parameters, 'mode')
 })
-const isRunning = computed(() => props.content.trim() === '' && displayMode.value !== null)
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content) && displayMode.value !== null)
 
-const sessionId = computed((): string | null => {
-  const match = props.content.match(/<session_id>([\s\S]*?)<\/session_id>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+const sessionId = computed((): string | null => strOrNull(dataRecord.value.session_id))
 
-const count = computed((): number | null => {
-  const match = props.content.match(/<count>(\d+)<\/count>/)
-  if (!match || !match[1]) return null
-  return parseInt(match[1], 10)
-})
+const count = computed((): number | null => numOrNull(dataRecord.value.count))
 
-const errorMessage = computed((): string | null => {
-  const match = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+const errorMessage = computed((): string | null => normalized.value.error ?? strOrNull(dataRecord.value.error))
 
-// ── Parse the <message_index><entry> rows ───────────────────────────────────
+// ── Parse the message index rows ───────────────────────────────────
 
 const entries = computed((): MessageEntry[] => {
   const results: MessageEntry[] = []
-  // `<entry>...</entry>` blocks are direct children of `<message_index>`.
-  // Using `[\s\S]*?` (lazy) so we match each entry separately rather than
-  // greedily absorbing everything between the first <entry> and the last
-  // </entry>.
-  const entryRegex = /<entry>([\s\S]*?)<\/entry>/g
-  let m
-  while ((m = entryRegex.exec(props.content)) !== null) {
-    const body = m[1]
-    if (body === undefined) continue
-
-    const idMatch = body.match(/<id>([\s\S]*?)<\/id>/)
-    const roleMatch = body.match(/<role>([\s\S]*?)<\/role>/)
-    const createdAtMatch = body.match(/<created_at>([\s\S]*?)<\/created_at>/)
-    const previewMatch = body.match(/<preview>([\s\S]*?)<\/preview>/)
-    const toolCallIdMatch = body.match(/<tool_call_id>([\s\S]*?)<\/tool_call_id>/)
-    const toolNameMatch = body.match(/<tool_name>([\s\S]*?)<\/tool_name>/)
-    const contentMatch = body.match(/<content>([\s\S]*?)<\/content>/)
-
+  const raw = dataRecord.value.message_index ?? dataRecord.value.entries
+  if (!Array.isArray(raw)) return results
+  for (const item of raw) {
+    const r = asRecord(item)
     results.push({
-      id: (idMatch?.[1] ?? '').trim(),
-      role: (roleMatch?.[1] ?? 'unknown').trim(),
-      created_at: createdAtMatch?.[1]?.trim() || undefined,
-      preview: (previewMatch?.[1] ?? '').trim(),
-      tool_call_id: toolCallIdMatch?.[1]?.trim() || undefined,
-      tool_name: toolNameMatch?.[1]?.trim() || undefined,
-      content: contentMatch?.[1]?.trim() || undefined,
+      id: typeof r.id === 'string' ? r.id : '',
+      role: typeof r.role === 'string' ? r.role : 'unknown',
+      created_at: strOrNull(r.created_at) ?? undefined,
+      preview: typeof r.preview === 'string' ? r.preview : '',
+      tool_call_id: strOrNull(r.tool_call_id) ?? undefined,
+      tool_name: strOrNull(r.tool_name) ?? undefined,
+      content: strOrNull(r.content) ?? undefined,
     })
   }
   return results

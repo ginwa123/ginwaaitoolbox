@@ -7,7 +7,7 @@ describe('ReadWorkspaceSession.vue — in-progress', () => {
     const wrapper = mount(ReadWorkspaceSession, {
       props: {
         content: '',
-        parameters: '<query>login bug</query>',
+        parameters: '{"query":"login bug"}',
       } as never,
     })
     const html = wrapper.html()
@@ -20,7 +20,7 @@ describe('ReadWorkspaceSession.vue — in-progress', () => {
     const wrapper = mount(ReadWorkspaceSession, {
       props: {
         content: '',
-        parameters: '<session_id>s_42</session_id>',
+        parameters: '{"session_id":"s_42"}',
       } as never,
     })
     expect(wrapper.html()).toContain('s_42')
@@ -30,15 +30,14 @@ describe('ReadWorkspaceSession.vue — in-progress', () => {
     const running = mount(ReadWorkspaceSession, {
       props: {
         content: '',
-        parameters: '<query>login bug</query>',
+        parameters: '{"query":"login bug"}',
       } as never,
     })
     expect(running.find('[data-testid="read-workspace-session-running"]').exists()).toBe(true)
     const done = mount(ReadWorkspaceSession, {
       props: {
-        content:
-          '<read_workspace_session behavior="search"><query>login bug</query><count>0</count></read_workspace_session>',
-        parameters: '<query>login bug</query>',
+        content: { behavior: 'search', query: 'login bug', count: 0, total_count: 0, results: [] },
+        parameters: '{"query":"login bug"}',
       } as never,
     })
     expect(done.find('[data-testid="read-workspace-session-running"]').exists()).toBe(false)

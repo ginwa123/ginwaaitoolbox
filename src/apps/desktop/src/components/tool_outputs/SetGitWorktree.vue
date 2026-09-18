@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
-import { parseSetGitWorktree } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseSetGitWorktree } from './_shared/toolOutputParser'
 import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). Accepted so the
    *  dispatcher can thread call args uniformly; the worktree result
@@ -14,11 +14,25 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parseSetGitWorktree(props.content))
+
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseSetGitWorktree(normalized.value.data)
+  if (normalized.value.error) {
+    p.success = false
+    p.error = normalized.value.error
+  }
+  return p
+})
 
 // Running: result envelope is still empty (neither created nor cleared,
 // no error yet).
-const isRunning = computed(() => props.content.trim() === '')
+const isRunning = computed(() => isEmptyContent(props.content))
 
 const pathBasename = (p: string): string => {
   const parts = p.split('/').filter(Boolean)

@@ -30,7 +30,7 @@ import type { SubAgentProgress } from '../../../helpers/subagentProgress'
 // independently type-checks the production component against its
 // real prop definitions; this cast only relaxes the test fixture.
 type TestProps = {
-  content?: string
+  content?: unknown
   expanded?: boolean
   subAgentArgs?: unknown
   progress?: unknown
@@ -206,13 +206,19 @@ describe('SpawnSubAgent.vue — live progress', () => {
 // ────────────────────────────────────────────────────────────────────────
 
 describe('SpawnSubAgent.vue — envelope precedence', () => {
-  const envelope = `<results>
-  <agent name="alpha" success="true" random_fallback="false">
-    <session_id>subagent_1_alpha</session_id>
-    <response>done</response>
-  </agent>
-  <summary succeeded="1" failed="0" />
-</results>`
+  const envelope = {
+    results: [
+      {
+        name: 'alpha',
+        success: true,
+        random_fallback: false,
+        session_id: 'subagent_1_alpha',
+        response: 'done',
+        error: null,
+      },
+    ],
+    summary: { succeeded: 1, failed: 0 },
+  }
 
   it('renders the parsed <results> envelope even if progress prop is also passed', async () => {
     // Once the tool result lands, the envelope wins — progress prop is
@@ -244,7 +250,14 @@ describe('SpawnSubAgent.vue — pre-thread failure envelope', () => {
   // What the card receives when exec fails before any thread emits:
   // innerToolData falls back to the FULL envelope (data is null), which
   // carries <success>false</success> + <error> but no <agent>/<summary>.
-  const failedEnvelope = `<tool><name>spawn_sub_agent</name><parameters>{}</parameters><success>false</success><error>spawn_sub_agent failed: AllToolsNotAllowed</error></tool>`
+  const failedEnvelope = JSON.stringify({
+    tool: 'spawn_sub_agent',
+    parameters: {},
+    success: false,
+    data: null,
+    error: 'spawn_sub_agent failed: AllToolsNotAllowed',
+    v: 1,
+  })
 
   it('renders the error message instead of the starting placeholder', () => {
     const wrapper = mountAt({ content: failedEnvelope, progress: [] })

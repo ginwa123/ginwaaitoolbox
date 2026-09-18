@@ -13,22 +13,40 @@ import { describe, expect, it } from 'vitest'
 
 import ProgressiveTool from '../ProgressiveTool.vue'
 
-const SEARCH_CONTENT =
-  '<search_tool><query>kanban_list</query><count>3</count><total>3</total><tools>' +
-  '<tool><name>kanban_list</name><kind>builtin</kind><server></server>' +
-  '<equipped>no</equipped><summary>List a kanban board.</summary></tool>' +
-  '</tools><hint>Call view_tool for the full parameter schema.</hint></search_tool>'
+const SEARCH_CONTENT = {
+  query: 'kanban_list',
+  count: 1,
+  total: 3,
+  tools: [
+    {
+      name: 'kanban_list',
+      kind: 'builtin',
+      server: '',
+      equipped: 'no',
+      summary: 'List a kanban board.',
+    },
+  ],
+  hint: 'Call view_tool for the full parameter schema.',
+}
 
-const VIEW_CONTENT =
-  '<view_tool><name>kanban_list</name><kind>builtin</kind><server></server>' +
-  '<equipped>no</equipped><description>List a kanban board.</description>' +
-  '<parameters><![CDATA[{"type":"object","properties":{},"required":[]}]]></parameters>' +
-  '<hint>Call use_tool with this name to enable it.</hint></view_tool>'
+const VIEW_CONTENT = {
+  name: 'kanban_list',
+  kind: 'builtin',
+  server: '',
+  equipped: 'no',
+  description: 'List a kanban board.',
+  parameters: { type: 'object', properties: {}, required: [] },
+  hint: 'Call use_tool with this name to enable it.',
+}
 
-const USE_CONTENT =
-  '<use_tool><name>kanban_list</name><kind>builtin</kind>' +
-  '<equipped>true</equipped><inserted>true</inserted><wait_next_turn>true</wait_next_turn>' +
-  '<note>Enabled for this session.</note></use_tool>'
+const USE_CONTENT = {
+  name: 'kanban_list',
+  kind: 'builtin',
+  equipped: true,
+  inserted: true,
+  wait_next_turn: true,
+  note: 'Enabled for this session.',
+}
 
 describe('ProgressiveTool', () => {
   it('renders search_tool rows on expand (same card pattern as other tools)', () => {
@@ -81,10 +99,12 @@ describe('ProgressiveTool', () => {
   it('renders the error envelope', () => {
     const wrapper = mount(ProgressiveTool, {
       props: {
-        content:
-          '<view_tool><name>nope</name><found>false</found>' +
-          '<error>unknown tool \'nope\' — not in this session\'s tool catalog</error>' +
-          '<hint>Call search_tool to list candidates.</hint></view_tool>',
+        content: {
+          name: 'nope',
+          found: false,
+          error: "unknown tool 'nope' — not in this session's tool catalog",
+          hint: 'Call search_tool to list candidates.',
+        },
         toolName: 'view_tool',
         parameters: '{"name":"nope"}',
         expanded: true,

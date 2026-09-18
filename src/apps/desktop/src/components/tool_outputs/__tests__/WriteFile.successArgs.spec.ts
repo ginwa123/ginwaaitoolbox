@@ -7,7 +7,7 @@ describe('WriteFile.vue — success with args is expandable', () => {
   it('header is expandable and expanded body shows Arguments', () => {
     const wrapper = mount(WriteFile, {
       props: {
-        content: '<success>true</success><file_write>/proj/out.txt</file_write>',
+        content: { file_write: '/proj/out.txt', error: null },
         parameters: '{"path":"/proj/out.txt"}',
         expanded: true,
       } as never,

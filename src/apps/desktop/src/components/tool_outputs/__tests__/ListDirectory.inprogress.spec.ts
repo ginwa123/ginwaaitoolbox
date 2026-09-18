@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import ListDirectory from '../ListDirectory.vue'
 
-const makeWrapper = (props: { content: string; parameters?: string }) =>
+const makeWrapper = (props: { content: unknown; parameters?: string }) =>
   mount(ListDirectory, { props: props as never })
 
 describe('ListDirectory.vue — in-progress placeholder', () => {
@@ -20,7 +20,11 @@ describe('ListDirectory.vue — in-progress placeholder', () => {
 
   it('prefers content when completed', () => {
     const wrapper = makeWrapper({
-      content: '<directory_listing path="/from/content" count="1"><file name="a.txt" path="/from/content/a.txt" is_symlink="false"/></directory_listing>',
+      content: {
+        path: '/from/content',
+        count: 1,
+        entries: [{ name: 'a.txt', path: '/from/content/a.txt', is_directory: false, is_symlink: false }],
+      },
       parameters: '<path>/from/params</path>',
     })
     const html = wrapper.html()

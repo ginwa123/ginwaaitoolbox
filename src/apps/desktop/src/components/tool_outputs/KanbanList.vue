@@ -52,6 +52,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
+import { normalizeToolContent, parseKanbanList } from './_shared/toolOutputParser'
 
 interface ColumnSummary {
   id: string
@@ -69,7 +70,7 @@ interface TaskSummary {
 }
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). Accepted so the
    *  dispatcher can thread call args uniformly; the list result carries
@@ -79,90 +80,60 @@ const props = defineProps<{
 
 const isExpanded = ref(props.expanded ?? false)
 
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseKanbanList(normalized.value.data)
+  if (normalized.value.error) {
+    return { ...p, success: false, error: normalized.value.error }
+  }
+  return p
+})
+
 // Running: result envelope is still empty (no columns/tasks/error yet).
-const isRunning = computed(() => props.content.trim() === '')
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content))
 
 // ---- Error / hint detection ------------------------------------------------
 
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  return match?.[1]?.trim() ?? null
-})
+const errorMessage = computed(() => parsed.value.error)
 
-const hintMessage = computed(() => {
-  const match = props.content.match(/<hint>([\s\S]*?)<\/hint>/)
-  return match?.[1]?.trim() ?? null
-})
+const hintMessage = computed(() => parsed.value.hint)
 
 const pagination = computed(() => {
-  const total = props.content.match(/<total_count>(\d+)<\/total_count>/)?.[1]
-  const hasMore = props.content.match(/<has_more>(true|false)<\/has_more>/)?.[1]
+  const total = parsed.value.totalCount
   if (total == null) return null
-  return { total: parseInt(total), hasMore: hasMore === 'true' }
+  return { total, hasMore: parsed.value.hasMore }
 })
 
-const isSuccess = computed(() => errorMessage.value === null)
-
-// ---- Block extractors ------------------------------------------------------
-
-function extractBlock(haystack: string, tag: string): string | null {
-  const openSeq = `<${tag}>`
-  const closeSeq = `</${tag}>`
-  const openIdx = haystack.indexOf(openSeq)
-  if (openIdx === -1) return null
-  const valueStart = openIdx + openSeq.length
-  const closeIdx = haystack.indexOf(closeSeq, valueStart)
-  if (closeIdx === -1) return null
-  return haystack.slice(valueStart, closeIdx)
-}
-
-function extractItemBlocks(block: string | null, itemTag: string): string[] {
-  if (!block) return []
-  const results: string[] = []
-  const itemRegex = new RegExp(`<${itemTag}>([\\s\\S]*?)</${itemTag}>`, 'g')
-  let m: RegExpExecArray | null
-  while ((m = itemRegex.exec(block)) !== null) {
-    if (m[1] !== undefined) results.push(m[1])
-  }
-  return results
-}
-
-function parseField(block: string, tag: string): string {
-  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`))
-  return match?.[1]?.trim() ?? ''
-}
+const isSuccess = computed(() => parsed.value.success)
 
 // ---- Parsed columns + tasks ------------------------------------------------
 
-const columns = computed((): ColumnSummary[] => {
-  const columnBlock = extractBlock(props.content, 'columns')
-  const items = extractItemBlocks(columnBlock, 'column')
-  return items.map((c) => ({
-    id: parseField(c, 'id'),
-    name: parseField(c, 'name'),
-    position: parseField(c, 'position'),
-    task_count: Number.parseInt(parseField(c, 'task_count'), 10) || 0,
-  }))
-})
-
-const tasks = computed((): TaskSummary[] => {
-  const taskBlock = extractBlock(props.content, 'tasks')
-  const items = extractItemBlocks(taskBlock, 'task')
-  return items.map((t) => ({
-    id: parseField(t, 'id'),
-    name: parseField(t, 'name'),
-    column_id: parseField(t, 'column_id'),
-    column_name: parseField(t, 'column_name'),
-    position: parseField(t, 'position'),
-  }))
-})
-
-const assignedTasks = computed(() =>
-  tasks.value.filter((t) => t.column_id.length > 0)
+const columns = computed((): ColumnSummary[] =>
+  parsed.value.columns.map((c) => ({
+    id: c.id,
+    name: c.name,
+    position: String(c.position),
+    task_count: c.taskCount,
+  })),
 )
-const unassignedTasks = computed(() =>
-  tasks.value.filter((t) => t.column_id.length === 0)
+
+const tasks = computed((): TaskSummary[] =>
+  parsed.value.tasks.map((t) => ({
+    id: t.id,
+    name: t.name,
+    column_id: t.columnId ?? '',
+    column_name: t.columnName ?? '',
+    position: String(t.position),
+  })),
 )
+
+const assignedTasks = computed(() => tasks.value.filter((t) => t.column_id.length > 0))
+const unassignedTasks = computed(() => tasks.value.filter((t) => t.column_id.length === 0))
 
 // ---- Derived display values ------------------------------------------------
 
@@ -174,15 +145,16 @@ const headerLabel = computed(() => {
   const t = tasks.value.length
   const cols = `${c} column${c !== 1 ? 's' : ''}`
   const pg = pagination.value
-  const tk = pg && pg.total !== t ? `${t}/${pg.total} task${pg.total !== 1 ? 's' : ''}` : `${t} task${t !== 1 ? 's' : ''}`
+  const tk =
+    pg && pg.total !== t
+      ? `${t}/${pg.total} task${pg.total !== 1 ? 's' : ''}`
+      : `${t} task${t !== 1 ? 's' : ''}`
   return `${cols} · ${tk}`
 })
 
 const headerTitle = computed(() => {
-  const wsMatch = props.content.match(/<workspace_id>([\s\S]*?)<\/workspace_id>/)
-  const itemMatch = props.content.match(/<item_id>([\s\S]*?)<\/item_id>/)
-  const ws = wsMatch?.[1]?.trim() ?? ''
-  const item = itemMatch?.[1]?.trim() ?? ''
+  const ws = parsed.value.workspaceId ?? ''
+  const item = parsed.value.itemId ?? ''
   return `workspace: ${ws} · item: ${item}`
 })
 
@@ -242,10 +214,7 @@ const copyId = async (e: Event, id: string) => {
     <!-- Expanded content -->
     <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <!-- Error message -->
-      <div
-        v-if="errorMessage"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
-      >
+      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
@@ -262,11 +231,16 @@ const copyId = async (e: Event, id: string) => {
       <!-- Success path: columns table + tasks table -->
       <template v-if="isSuccess">
         <!-- Columns section -->
-        <div class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]">
+        <div
+          class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]"
+        >
           Columns ({{ columns.length }})
         </div>
 
-        <div v-if="columns.length === 0" class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic">
+        <div
+          v-if="columns.length === 0"
+          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+        >
           No columns on this board.
         </div>
 
@@ -290,9 +264,11 @@ const copyId = async (e: Event, id: string) => {
             </span>
             <span
               class="shrink-0 px-1.5 py-0.5 rounded text-[0.65rem] font-semibold"
-              :class="col.task_count > 0
-                ? 'bg-violet-500/15 text-[var(--color-violet)]'
-                : 'bg-black/[0.05] text-[var(--semantic-text-muted)]'"
+              :class="
+                col.task_count > 0
+                  ? 'bg-violet-500/15 text-[var(--color-violet)]'
+                  : 'bg-black/[0.05] text-[var(--semantic-text-muted)]'
+              "
               :title="col.task_count + ' task' + (col.task_count !== 1 ? 's' : '')"
             >
               {{ col.task_count }}
@@ -310,7 +286,9 @@ const copyId = async (e: Event, id: string) => {
 
         <!-- Tasks section (only when there are tasks) -->
         <template v-if="tasks.length > 0">
-          <div class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-y border-dashed border-[var(--color-border)]">
+          <div
+            class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-y border-dashed border-[var(--color-border)]"
+          >
             Tasks ({{ tasks.length }})
           </div>
 
@@ -320,17 +298,24 @@ const copyId = async (e: Event, id: string) => {
               :key="task.id"
               class="group/row flex items-center gap-2 px-2 py-1 hover:bg-violet-500/5"
             >
-              <span class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-[0.65rem]">
+              <span
+                class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-[0.65rem]"
+              >
                 #{{ task.position }}
               </span>
-              <span class="flex-1 truncate text-[var(--semantic-text)] font-medium" :title="task.name">
+              <span
+                class="flex-1 truncate text-[var(--semantic-text)] font-medium"
+                :title="task.name"
+              >
                 {{ task.name }}
               </span>
               <span
                 class="px-1.5 py-0.5 rounded text-[0.65rem] font-medium truncate max-w-[8rem] shrink-0"
-                :class="task.column_name
-                  ? 'bg-violet-500/15 text-[var(--color-violet)]'
-                  : 'bg-black/[0.05] text-[var(--semantic-text-muted)]'"
+                :class="
+                  task.column_name
+                    ? 'bg-violet-500/15 text-[var(--color-violet)]'
+                    : 'bg-black/[0.05] text-[var(--semantic-text-muted)]'
+                "
                 :title="task.column_name || 'Unassigned'"
               >
                 {{ task.column_name || 'unassigned' }}
@@ -346,7 +331,9 @@ const copyId = async (e: Event, id: string) => {
 
             <!-- Unassigned tasks get their own subsection -->
             <template v-if="unassignedTasks.length > 0">
-              <div class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-t border-dashed border-[var(--color-border)]">
+              <div
+                class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-t border-dashed border-[var(--color-border)]"
+              >
                 Unassigned ({{ unassignedTasks.length }})
               </div>
               <div
@@ -354,10 +341,15 @@ const copyId = async (e: Event, id: string) => {
                 :key="task.id"
                 class="group/row flex items-center gap-2 px-2 py-1 hover:bg-violet-500/5"
               >
-                <span class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-[0.65rem]">
+                <span
+                  class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-[0.65rem]"
+                >
                   #{{ task.position }}
                 </span>
-                <span class="flex-1 truncate text-[var(--semantic-text)] font-medium" :title="task.name">
+                <span
+                  class="flex-1 truncate text-[var(--semantic-text)] font-medium"
+                  :title="task.name"
+                >
                   {{ task.name }}
                 </span>
                 <span

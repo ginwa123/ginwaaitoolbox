@@ -7,7 +7,7 @@ describe('ReadCompactedMessages.vue — in-progress', () => {
     const wrapper = mount(ReadCompactedMessages, {
       props: {
         content: '',
-        parameters: '<mode>index</mode>',
+        parameters: '{"mode":"index"}',
       } as never,
     })
     const html = wrapper.html()
@@ -19,14 +19,14 @@ describe('ReadCompactedMessages.vue — in-progress', () => {
     const running = mount(ReadCompactedMessages, {
       props: {
         content: '',
-        parameters: '<mode>full</mode>',
+        parameters: '{"mode":"full"}',
       } as never,
     })
     expect(running.find('[data-testid="read-compacted-messages-running"]').exists()).toBe(true)
     const done = mount(ReadCompactedMessages, {
       props: {
-        content: '<read_compacted_messages mode="index"><count>0</count></read_compacted_messages>',
-        parameters: '<mode>index</mode>',
+        content: { mode: 'index', count: 0, message_index: [] },
+        parameters: '{"mode":"index"}',
       } as never,
     })
     expect(done.find('[data-testid="read-compacted-messages-running"]').exists()).toBe(false)

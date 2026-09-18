@@ -1,9 +1,10 @@
 /**
- * Tests for toolOutputParser.ts — typed XML parsers used by tool-output components.
+ * Tests for toolOutputParser.ts — typed JSON parsers used by tool-output components.
  *
- * Each parser handles missing tags gracefully. These tests verify the type
- * contracts and edge cases (empty content, missing required fields, multiline
- * values, special chars, both success/error branches).
+ * Each parser takes the envelope `data` payload as an object and handles
+ * missing fields gracefully. These tests verify the type contracts and edge
+ * cases (empty content, missing required fields, multiline values, special
+ * chars, both success/error branches).
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -115,9 +116,13 @@ describe('extractInt', () => {
 
 describe('parseTextReplace', () => {
   it('parses a successful response with diff data', () => {
-    const r = parseTextReplace(
-      '<success>true</success><path>/foo</path><before>old</before><after>new</after><lines_changed>3</lines_changed>',
-    )
+    const r = parseTextReplace({
+      path: '/foo',
+      before: 'old',
+      after: 'new',
+      lines_changed: 3,
+      error: null,
+    })
     expect(r.path).toBe('/foo')
     expect(r.before).toBe('old')
     expect(r.after).toBe('new')
@@ -126,23 +131,26 @@ describe('parseTextReplace', () => {
     expect(r.error).toBeNull()
   })
   it('handles error response with null success', () => {
-    const r = parseTextReplace('<success>false</success><error>not found</error>')
+    const r = parseTextReplace({ path: '', error: 'not found' })
     expect(r.success).toBe(false)
     expect(r.error).toBe('not found')
     expect(r.path).toBe('')
     expect(r.linesChanged).toBe(0)
   })
-  it('handles missing success tag (defaults to true)', () => {
-    const r = parseTextReplace('<path>/foo</path>')
+  it('handles missing error field (defaults to success)', () => {
+    const r = parseTextReplace({ path: '/foo' })
     expect(r.success).toBe(true)
     expect(r.error).toBeNull()
   })
   it('extracts the unified diff when present', () => {
     const unified = '--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\n+new'
-    const r = parseTextReplace(
-      `<success>true</success><path>/x</path><unified>${unified}</unified>`,
-    )
+    const r = parseTextReplace({ path: '/x', unified })
     expect(r.unified).toBe(unified)
+  })
+  it('accepts the payload as a JSON string', () => {
+    const r = parseTextReplace(JSON.stringify({ path: '/x', before: 'a', after: 'b' }))
+    expect(r.path).toBe('/x')
+    expect(r.before).toBe('a')
   })
 })
 
@@ -179,13 +187,13 @@ describe('parseReadFile', () => {
 })
 
 describe('parseWriteFile', () => {
-  it('parses <file_write>', () => {
-    const r = parseWriteFile('<success>true</success><file_write>/x/y</file_write>')
+  it('parses file_write', () => {
+    const r = parseWriteFile({ file_write: '/x/y', error: null })
     expect(r.path).toBe('/x/y')
     expect(r.success).toBe(true)
   })
   it('parses error', () => {
-    const r = parseWriteFile('<success>false</success><error>disk full</error>')
+    const r = parseWriteFile({ file_write: '', error: 'disk full' })
     expect(r.path).toBe('')
     expect(r.error).toBe('disk full')
   })
@@ -193,16 +201,16 @@ describe('parseWriteFile', () => {
 
 describe('parseRemoveFile', () => {
   it('parses deleted=true', () => {
-    const r = parseRemoveFile('<path>/x</path><deleted>true</deleted>')
+    const r = parseRemoveFile({ path: '/x', deleted: true, error: null })
     expect(r.deleted).toBe(true)
     expect(r.success).toBe(true)
   })
   it('parses recursive flag', () => {
-    const r = parseRemoveFile('<path>/x</path><deleted>true</deleted><recursive>true</recursive>')
+    const r = parseRemoveFile({ path: '/x', deleted: true, recursive: true })
     expect(r.recursive).toBe(true)
   })
   it('handles failure', () => {
-    const r = parseRemoveFile('<error>not found</error>')
+    const r = parseRemoveFile({ path: '', error: 'not found' })
     expect(r.deleted).toBe(false)
     expect(r.error).toBe('not found')
   })
@@ -210,28 +218,28 @@ describe('parseRemoveFile', () => {
 
 describe('parseEditSkill', () => {
   it('parses edited=true', () => {
-    const r = parseEditSkill('<name>auth</name><edited>true</edited><path>/skills/auth.md</path>')
+    const r = parseEditSkill({ name: 'auth', edited: true, path: '/skills/auth.md' })
     expect(r.skillName).toBe('auth')
     expect(r.edited).toBe(true)
     expect(r.path).toBe('/skills/auth.md')
   })
   it('returns path: null when missing', () => {
-    const r = parseEditSkill('<name>x</name><edited>true</edited>')
+    const r = parseEditSkill({ name: 'x', edited: true })
     expect(r.path).toBeNull()
   })
 })
 
 describe('parseAddSkill', () => {
   it('parses created=true', () => {
-    const r = parseAddSkill('<name>foo</name><created>true</created><path>/x</path>')
+    const r = parseAddSkill({ name: 'foo', created: true, path: '/x' })
     expect(r.created).toBe(true)
     expect(r.skillName).toBe('foo')
   })
 })
 
 describe('parseRemoveSkill', () => {
-  it('parses <skill_name> and removed', () => {
-    const r = parseRemoveSkill('<skill_name>foo</skill_name><removed>true</removed><path>/x</path>')
+  it('parses skill_name and removed', () => {
+    const r = parseRemoveSkill({ skill_name: 'foo', removed: true, path: '/x' })
     expect(r.skillName).toBe('foo')
     expect(r.removed).toBe(true)
   })
@@ -239,20 +247,22 @@ describe('parseRemoveSkill', () => {
 
 describe('parseSetGitWorktree', () => {
   it('parses created=true with path and branch', () => {
-    const r = parseSetGitWorktree(
-      '<created>true</created><path>/.worktrees/auth</path><branch>worktree/auth</branch>',
-    )
+    const r = parseSetGitWorktree({
+      created: true,
+      path: '/.worktrees/auth',
+      branch: 'worktree/auth',
+    })
     expect(r.created).toBe(true)
     expect(r.path).toBe('/.worktrees/auth')
     expect(r.branch).toBe('worktree/auth')
   })
   it('parses cleared=true', () => {
-    const r = parseSetGitWorktree('<cleared>true</cleared>')
+    const r = parseSetGitWorktree({ cleared: true })
     expect(r.cleared).toBe(true)
     expect(r.success).toBe(true)
   })
-  it('returns success=false when neither created nor cleared', () => {
-    const r = parseSetGitWorktree('<error>missing path</error>')
+  it('returns success=false on error', () => {
+    const r = parseSetGitWorktree({ error: 'missing path' })
     expect(r.success).toBe(false)
   })
 })
@@ -331,9 +341,10 @@ describe('parseSearch', () => {
 
 describe('parseListSkills', () => {
   it('parses global + local skill blocks', () => {
-    const r = parseListSkills(
-      '<global_skills><skill><name>auth</name><description>handles auth</description><path>/g.md</path></skill></global_skills><local_skills><skill><name>x</name></skill></local_skills>',
-    )
+    const r = parseListSkills({
+      global_skills: [{ name: 'auth', description: 'handles auth', path: '/g.md' }],
+      local_skills: [{ name: 'x', description: '', path: '' }],
+    })
     expect(r.totalCount).toBe(2)
     expect(r.globalSkills).toHaveLength(1)
     expect(r.globalSkills[0]).toMatchObject({
@@ -344,21 +355,36 @@ describe('parseListSkills', () => {
     expect(r.localSkills).toHaveLength(1)
   })
   it('returns totalCount=0 for empty content', () => {
-    expect(parseListSkills('').totalCount).toBe(0)
+    expect(parseListSkills({}).totalCount).toBe(0)
   })
 })
 
 describe('parseKanbanList', () => {
-  it('parses board label and column array', () => {
-    const r = parseKanbanList(
-      '<board>Sprint Board</board><column id="c1" name="Todo" task_count="5" /><column id="c2" name="Done" task_count="3" />',
-    )
-    expect(r.boardLabel).toBe('Sprint Board')
+  it('parses workspace/item, columns and tasks', () => {
+    const r = parseKanbanList({
+      workspace_id: 'ws1',
+      item_id: 'item1',
+      columns: [
+        { id: 'c1', name: 'Todo', position: 0, task_count: 5 },
+        { id: 'c2', name: 'Done', position: 1, task_count: 3 },
+      ],
+      tasks: [{ id: 't1', name: 'Fix it', column_id: 'c1', column_name: 'Todo', position: 0 }],
+      total_count: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      hint: null,
+    })
+    expect(r.workspaceId).toBe('ws1')
+    expect(r.itemId).toBe('item1')
     expect(r.columns).toHaveLength(2)
     expect(r.columns[0]).toMatchObject({ id: 'c1', name: 'Todo', taskCount: 5 })
+    expect(r.tasks).toHaveLength(1)
+    expect(r.tasks[0]).toMatchObject({ id: 't1', columnId: 'c1' })
+    expect(r.totalCount).toBe(1)
   })
   it('returns success=false on error', () => {
-    const r = parseKanbanList('<error>not found</error>')
+    const r = parseKanbanList({ error: 'not found' })
     expect(r.success).toBe(false)
     expect(r.columns).toEqual([])
   })
@@ -366,29 +392,37 @@ describe('parseKanbanList', () => {
 
 describe('parseKanbanMove', () => {
   it('parses move details', () => {
-    const r = parseKanbanMove(
-      '<board_id>b1</board_id><task_id>t1</task_id><from_column_id>c1</from_column_id><to_column_id>c2</to_column_id>',
-    )
+    const r = parseKanbanMove({
+      success: true,
+      task_id: 't1',
+      task_name: 'Fix it',
+      column_id: 'c2',
+      column_name: 'Done',
+      position: 0,
+    })
     expect(r.success).toBe(true)
-    expect(r.fromColumnId).toBe('c1')
-    expect(r.toColumnId).toBe('c2')
+    expect(r.taskId).toBe('t1')
+    expect(r.taskName).toBe('Fix it')
+    expect(r.columnId).toBe('c2')
+    expect(r.columnName).toBe('Done')
+  })
+  it('returns success=false on error', () => {
+    const r = parseKanbanMove({ success: false, error: 'TaskNotFound' })
+    expect(r.success).toBe(false)
+    expect(r.error).toBe('TaskNotFound')
   })
 })
 
 describe('parseGenerateImage', () => {
   it('parses a single-image success envelope', () => {
-    const r = parseGenerateImage(
-      '<generate_image>' +
-        '<status>generated</status>' +
-        '<count>1</count>' +
-        '<model>dall-e-3</model>' +
-        '<size>1024x1024</size>' +
-        '<images>' +
-        '<image index="0" path="/cwd/img_123.png" bytes="12345" mime="image/png" />' +
-        '</images>' +
-        '<revised_prompt>A vibrant watercolor of a cat</revised_prompt>' +
-        '</generate_image>',
-    )
+    const r = parseGenerateImage({
+      status: 'generated',
+      count: 1,
+      model: 'dall-e-3',
+      size: '1024x1024',
+      images: [{ index: 0, path: '/cwd/img_123.png', bytes: 12345, mime: 'image/png' }],
+      revised_prompt: 'A vibrant watercolor of a cat',
+    })
     expect(r.error).toBeNull()
     expect(r.status).toBe('generated')
     expect(r.count).toBe(1)
@@ -404,18 +438,16 @@ describe('parseGenerateImage', () => {
     expect(r.revisedPrompt).toBe('A vibrant watercolor of a cat')
   })
   it('parses a multi-image (n>1, DALL-E 2) success envelope', () => {
-    const r = parseGenerateImage(
-      '<generate_image>' +
-        '<status>generated</status>' +
-        '<count>2</count>' +
-        '<model>dall-e-2</model>' +
-        '<size>512x512</size>' +
-        '<images>' +
-        '<image index="0" path="/cwd/img_a.png" bytes="100" mime="image/png" />' +
-        '<image index="1" path="/cwd/img_b.png" bytes="200" mime="image/png" />' +
-        '</images>' +
-        '</generate_image>',
-    )
+    const r = parseGenerateImage({
+      status: 'generated',
+      count: 2,
+      model: 'dall-e-2',
+      size: '512x512',
+      images: [
+        { index: 0, path: '/cwd/img_a.png', bytes: 100, mime: 'image/png' },
+        { index: 1, path: '/cwd/img_b.png', bytes: 200, mime: 'image/png' },
+      ],
+    })
     expect(r.error).toBeNull()
     expect(r.count).toBe(2)
     expect(r.images).toHaveLength(2)
@@ -424,16 +456,16 @@ describe('parseGenerateImage', () => {
     expect(r.revisedPrompt).toBeNull()
   })
   it('returns the error message and null fields on error', () => {
-    const r = parseGenerateImage(
-      "<generate_image><error>HTTP 400: size '512x512' is not valid for model 'dall-e-3'.</error></generate_image>",
-    )
+    const r = parseGenerateImage({
+      error: "HTTP 400: size '512x512' is not valid for model 'dall-e-3'.",
+    })
     expect(r.error).toBe("HTTP 400: size '512x512' is not valid for model 'dall-e-3'.")
     expect(r.status).toBeNull()
     expect(r.images).toEqual([])
     expect(r.count).toBeNull()
   })
   it('handles empty content gracefully', () => {
-    const r = parseGenerateImage('')
+    const r = parseGenerateImage({})
     expect(r.error).toBeNull()
     expect(r.status).toBeNull()
     expect(r.images).toEqual([])
@@ -441,42 +473,35 @@ describe('parseGenerateImage', () => {
 })
 
 describe('parseMetadata', () => {
-  it('flattens a <metadata> block into key/value pairs', () => {
-    const r = parseMetadata(
-      '<metadata><session_id>s1</session_id><model>m1</model><count>3</count></metadata>',
-    )
+  it('flattens a metadata object into key/value pairs', () => {
+    const r = parseMetadata({ metadata: { session_id: 's1', model: 'm1', count: 3 } })
     expect(r.session_id).toBe('s1')
     expect(r.model).toBe('m1')
     expect(r.count).toBe('3')
   })
-  it('returns empty object when no metadata block', () => {
-    expect(parseMetadata('<other>foo</other>')).toEqual({})
+  it('returns empty object when no metadata', () => {
+    expect(parseMetadata({})).toEqual({})
   })
 })
 
 // 2026-08-14 — list_directory tool output (companion to ReadFile/Search/Glob).
 // Wire shape (from src/modules/agent/tools/list_directory.zig):
 //
-//   <directory_listing path="/foo/bar" count="3">
-//     <directory name="src" path="/foo/bar/src" is_symlink="false"/>
-//     <file name="main.zig" path="/foo/bar/main.zig" is_symlink="false"/>
-//   </directory_listing>
-//
-// On error (innerToolData falls back to the full <tool> envelope, so the
-// parser must tolerate the outer wrapper too):
-//
-//   <tool><name>list_directory</name><parameters>...</parameters>
-//   <success>false</success><error>list_directory failed: PathNotFound</error>
-//   </tool>
+//   {"path":"/foo/bar","count":3,"entries":[
+//     {"name":"src","path":"/foo/bar/src","is_directory":true,"is_symlink":false},
+//     {"name":"main.zig","path":"/foo/bar/main.zig","is_directory":false,"is_symlink":false}
+//   ]}
 describe('parseListDirectory', () => {
   it('parses a success envelope with directories + files', () => {
-    const r = parseListDirectory(
-      '<directory_listing path="/proj" count="3">' +
-        '<directory name="src" path="/proj/src" is_symlink="false"/>' +
-        '<file name="README.md" path="/proj/README.md" is_symlink="false"/>' +
-        '<file name="main.zig" path="/proj/main.zig" is_symlink="false"/>' +
-        '</directory_listing>',
-    )
+    const r = parseListDirectory({
+      path: '/proj',
+      count: 3,
+      entries: [
+        { name: 'src', path: '/proj/src', is_directory: true, is_symlink: false },
+        { name: 'README.md', path: '/proj/README.md', is_directory: false, is_symlink: false },
+        { name: 'main.zig', path: '/proj/main.zig', is_directory: false, is_symlink: false },
+      ],
+    })
     expect(r.path).toBe('/proj')
     expect(r.count).toBe(3)
     expect(r.entries).toHaveLength(3)
@@ -498,7 +523,7 @@ describe('parseListDirectory', () => {
   })
 
   it('parses an empty directory listing (count=0)', () => {
-    const r = parseListDirectory('<directory_listing path="/empty" count="0"></directory_listing>')
+    const r = parseListDirectory({ path: '/empty', count: 0, entries: [] })
     expect(r.path).toBe('/empty')
     expect(r.count).toBe(0)
     expect(r.entries).toEqual([])
@@ -507,43 +532,39 @@ describe('parseListDirectory', () => {
   })
 
   it('parses a directory-only listing', () => {
-    const r = parseListDirectory(
-      '<directory_listing path="/only-dirs" count="2">' +
-        '<directory name="a" path="/only-dirs/a" is_symlink="false"/>' +
-        '<directory name="b" path="/only-dirs/b" is_symlink="false"/>' +
-        '</directory_listing>',
-    )
+    const r = parseListDirectory({
+      path: '/only-dirs',
+      count: 2,
+      entries: [
+        { name: 'a', path: '/only-dirs/a', is_directory: true, is_symlink: false },
+        { name: 'b', path: '/only-dirs/b', is_directory: true, is_symlink: false },
+      ],
+    })
     expect(r.count).toBe(2)
     expect(r.entries.every((e) => e.isDirectory)).toBe(true)
   })
 
-  it('flags symlinks via is_symlink="true"', () => {
-    const r = parseListDirectory(
-      '<directory_listing path="/proj" count="1">' +
-        '<file name="link.txt" path="/proj/link.txt" is_symlink="true"/>' +
-        '</directory_listing>',
-    )
+  it('flags symlinks via is_symlink=true', () => {
+    const r = parseListDirectory({
+      path: '/proj',
+      count: 1,
+      entries: [{ name: 'link.txt', path: '/proj/link.txt', is_directory: false, is_symlink: true }],
+    })
     expect(r.entries[0]?.isSymlink).toBe(true)
     expect(r.entries[0]?.isDirectory).toBe(false)
   })
 
   it('returns success=false + error message on error envelope', () => {
-    // innerToolData falls back to m.content (the full <tool> envelope)
-    // when the backend errored out. The parser must still find the
-    // <error> tag in the outer envelope.
-    const r = parseListDirectory(
-      '<tool><name>list_directory</name><parameters>{"path":"/missing"}</parameters>' +
-        '<success>false</success>' +
-        '<error>list_directory failed: PathNotFound</error>' +
-        '</tool>',
-    )
+    // normalizeToolContent unwraps the full envelope; the parser sees the
+    // inner data object carrying the error.
+    const r = parseListDirectory({ error: 'list_directory failed: PathNotFound' })
     expect(r.success).toBe(false)
     expect(r.error).toBe('list_directory failed: PathNotFound')
     expect(r.entries).toEqual([])
   })
 
   it('handles empty content gracefully (no envelope at all)', () => {
-    const r = parseListDirectory('')
+    const r = parseListDirectory({})
     expect(r.path).toBe('')
     expect(r.count).toBe(0)
     expect(r.entries).toEqual([])
@@ -648,21 +669,27 @@ describe('parseMcp', () => {
   })
 
   it('unwraps the error envelope (backend failure path)', () => {
-    const envelope =
-      '<tool><name>mcp_graphify_graph_stats</name>' +
-      '<parameters>{}</parameters><success>false</success>' +
-      '<error>connection refused</error><data></data></tool>'
+    const envelope = {
+      tool: 'mcp_graphify_graph_stats',
+      parameters: {},
+      success: false,
+      error: 'connection refused',
+      data: null,
+    }
     const r = parseMcp('mcp_graphify_graph_stats', envelope)
     expect(r.success).toBe(false)
     expect(r.error).toBe('connection refused')
     expect(r.output).toBe('')
   })
 
-  it('unwraps the success <data> envelope (placeholder shape)', () => {
-    const envelope =
-      '<tool><name>mcp_db_query</name>' +
-      '<parameters>{"q":"1"}</parameters><success>true</success>' +
-      '<data>row1</data></tool>'
+  it('unwraps the success data envelope (placeholder shape)', () => {
+    const envelope = {
+      tool: 'mcp_db_query',
+      parameters: { q: '1' },
+      success: true,
+      error: null,
+      data: 'row1',
+    }
     const r = parseMcp('mcp_db_query', envelope)
     expect(r.success).toBe(true)
     expect(r.output).toBe('row1')
@@ -670,16 +697,14 @@ describe('parseMcp', () => {
 })
 describe('parsePresentFiles', () => {
   it('parses a txt + jpg success envelope', () => {
-    const r = parsePresentFiles(
-      '<present_files>' +
-        '<status>presented</status>' +
-        '<count>2</count>' +
-        '<files>' +
-        '<file path="/tmp/notes.txt" bytes="11" mime="text/plain; charset=utf-8" label="notes"/>' +
-        '<file path="/tmp/photo.jpg" bytes="48211" mime="image/jpeg" label="photo.jpg"/>' +
-        '</files>' +
-        '</present_files>',
-    )
+    const r = parsePresentFiles({
+      status: 'presented',
+      count: 2,
+      files: [
+        { path: '/tmp/notes.txt', bytes: 11, mime: 'text/plain; charset=utf-8', label: 'notes' },
+        { path: '/tmp/photo.jpg', bytes: 48211, mime: 'image/jpeg', label: 'photo.jpg' },
+      ],
+    })
     expect(r.error).toBeNull()
     expect(r.status).toBe('presented')
     expect(r.count).toBe(2)
@@ -698,26 +723,29 @@ describe('parsePresentFiles', () => {
     })
   })
   it('returns the error message and empty files on error', () => {
-    const r = parsePresentFiles(
-      '<present_files><error>present_files: file not found (or is a directory): "/tmp/nope.txt".</error></present_files>',
-    )
+    const r = parsePresentFiles({
+      status: null,
+      count: 0,
+      files: [],
+      error: 'present_files: file not found (or is a directory): "/tmp/nope.txt".',
+    })
     expect(r.error).toContain('file not found')
     expect(r.status).toBeNull()
     expect(r.files).toEqual([])
     expect(r.count).toBeNull()
   })
   it('handles empty content gracefully', () => {
-    const r = parsePresentFiles('')
+    const r = parsePresentFiles({})
     expect(r.error).toBeNull()
     expect(r.status).toBeNull()
     expect(r.files).toEqual([])
   })
-  it('unescapes XML entities in attribute values', () => {
-    const r = parsePresentFiles(
-      '<present_files><status>presented</status><count>1</count><files>' +
-        '<file path="/tmp/a&amp;b.txt" bytes="3" mime="text/plain; charset=utf-8" label="a&amp;b"/>' +
-        '</files></present_files>',
-    )
+  it('keeps special characters raw (JSON needs no escaping)', () => {
+    const r = parsePresentFiles({
+      status: 'presented',
+      count: 1,
+      files: [{ path: '/tmp/a&b.txt', bytes: 3, mime: 'text/plain; charset=utf-8', label: 'a&b' }],
+    })
     expect(r.files[0]?.path).toBe('/tmp/a&b.txt')
     expect(r.files[0]?.label).toBe('a&b')
   })

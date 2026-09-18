@@ -2,14 +2,14 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import TextReplace from '../TextReplace.vue'
 
-const makeWrapper = (props: { content: string; parameters?: string }) =>
+const makeWrapper = (props: { content: unknown; parameters?: string }) =>
   mount(TextReplace, { props: props as never })
 
 describe('TextReplace.vue — in-progress placeholder', () => {
   it('shows path from XML parameters when content empty (not unknown + running)', () => {
     const wrapper = makeWrapper({
       content: '',
-      parameters: '<path>/proj/a.txt</path>',
+      parameters: '{"path":"/proj/a.txt"}',
     })
     const html = wrapper.html()
     expect(html).toContain('/proj/a.txt')
@@ -19,8 +19,8 @@ describe('TextReplace.vue — in-progress placeholder', () => {
 
   it('prefers content when completed', () => {
     const wrapper = makeWrapper({
-      content: '<text_replace><success>true</success><path>/from/content.txt</path><before>x</before><after>y</after></text_replace>',
-      parameters: '<path>/from/params.txt</path>',
+      content: { path: '/from/content.txt', before: 'x', after: 'y', error: null },
+      parameters: '{"path":"/from/params.txt"}',
     })
     const html = wrapper.html()
     expect(html).toContain('/from/content.txt')

@@ -36,37 +36,30 @@ const makeSuccessContent = (opts: {
   const model = opts.model ?? 'dall-e-3'
   const size = opts.size ?? '1024x1024'
   const count = opts.count ?? 1
-  const images = opts.images ?? [
+  const images = (opts.images ?? [
     { index: 0, path: '/cwd/generated_images/img_123.png', bytes: 12345, mime: 'image/png' },
-  ]
-  const imgTags = images
-    .map(
-      (img) =>
-        `<image index="${img.index}" path="${img.path}" bytes="${img.bytes}" mime="${img.mime ?? 'image/png'}" />`,
-    )
-    .join('')
-  const revisedPromptTag =
-    opts.revisedPrompt === undefined
-      ? '<revised_prompt>A vibrant watercolor of a cat</revised_prompt>'
-      : opts.revisedPrompt === null
-        ? ''
-        : `<revised_prompt>${opts.revisedPrompt}</revised_prompt>`
-  return [
-    '<generate_image>',
-    '<status>generated</status>',
-    `<count>${count}</count>`,
-    `<model>${model}</model>`,
-    `<size>${size}</size>`,
-    '<images>',
-    imgTags,
-    '</images>',
-    revisedPromptTag,
-    '</generate_image>',
-  ].join('')
+  ]).map((img) => ({ ...img, mime: img.mime ?? 'image/png' }))
+  return {
+    status: 'generated',
+    count,
+    model,
+    size,
+    images,
+    revised_prompt:
+      opts.revisedPrompt === undefined ? 'A vibrant watercolor of a cat' : opts.revisedPrompt,
+    error: null,
+  }
 }
 
-const makeErrorContent = (msg = 'HTTP 400: size "512x512" is not valid for model "dall-e-3"') =>
-  `<generate_image><error>${msg}</error></generate_image>`
+const makeErrorContent = (msg = 'HTTP 400: size "512x512" is not valid for model "dall-e-3"') => ({
+  status: null,
+  count: null,
+  model: null,
+  size: null,
+  images: [],
+  revised_prompt: null,
+  error: msg,
+})
 
 const makeParameters = (prompt: string) =>
   JSON.stringify({ prompt, model: 'dall-e-3', size: '1024x1024', n: 1 })

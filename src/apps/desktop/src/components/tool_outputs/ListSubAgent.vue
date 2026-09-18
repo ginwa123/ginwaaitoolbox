@@ -95,45 +95,86 @@ const isExpanded = ref(false)
  * Derived here — NOT threaded as a prop — because this component takes
  * `:message` (whole role=tool message), never `:content`/`:parameters`.
  */
-const envelopeParams = computed(() => tryUnwrapToolOutput(props.message.content)?.parameters ?? '{}')
+const envelopeParams = computed(
+  () => tryUnwrapToolOutput(props.message.content)?.parameters ?? '{}',
+)
 
 /**
- * Find the inner `<list_sub_agent>...</list_sub_agent>` envelope anywhere
- * inside `message.content`. The dispatcher passes the raw tool message,
- * whose content is the full `<tool>...</tool>` envelope; we strip the
- * wrapper here so the component is self-contained. Falls back to the raw
- * content for legacy callers that pass just the inner envelope directly.
+ * Inner `data` payload for this tool message. The dispatcher passes the
+ * raw tool message, whose content is the full JSON envelope; we unwrap
+ * one level here so the component is self-contained.
  */
-function findInnerEnvelope(content: string): string {
-  const match = content.match(/<list_sub_agent>([\s\S]*?)<\/list_sub_agent>/)
-  return match && match[1] !== undefined ? match[1] : content
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const p: unknown = JSON.parse(v)
+      return typeof p === 'object' && p !== null && !Array.isArray(p)
+        ? (p as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
 }
 
-/** Plain-text inner tag (no CDATA expected). Null when ABSENT. */
-function tagText(block: string, tag: string): string | null {
-  const match = block.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`))
-  return match && match[1] !== undefined ? match[1].trim() : null
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
 }
 
-/** system_prompt body: CDATA-wrapped full text, with a plain-text fallback. */
-function promptText(block: string): string {
-  const cdata = block.match(/<system_prompt>[\s\S]*?<!\[CDATA\[([\s\S]*?)\]\]>[\s\S]*?<\/system_prompt>/)
-  if (cdata && cdata[1] !== undefined) return cdata[1]
-  const plain = tagText(block, 'system_prompt')
-  return plain ?? ''
+/**
+ * Unwrap the message content to the inner `data` record. Accepts the full
+ * JSON envelope string (normal wire shape) or a bare data-object JSON
+ * string (defensive fallback for direct callers). Returns null when the
+ * content is not parseable JSON at all.
+ */
+function innerDataOf(
+  content: string,
+): { data: Record<string, unknown>; error: string | null } | null {
+  const unwrapped = tryUnwrapToolOutput(content)
+  if (unwrapped) {
+    if (!unwrapped.success) return { data: {}, error: unwrapped.error ?? 'tool failed' }
+    return { data: asRecord(unwrapped.data), error: null }
+  }
+  try {
+    const parsed: unknown = JSON.parse(content)
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      const record = parsed as Record<string, unknown>
+      const err = strOrNull(record.error)
+      return { data: record, error: err }
+    }
+    return null
+  } catch {
+    return null
+  }
 }
 
-function parseRow(block: string): SubAgentRow {
-  const maxCap = tagText(block, 'max_capacity_tokens')
-  const compactPct = tagText(block, 'compaction_threshold_percent')
-  const budget = tagText(block, 'thinking_budget_tokens')
-  const effort = tagText(block, 'reasoning_effort')
-  const thinking = tagText(block, 'thinking')
-  const temperature = tagText(block, 'temperature')
+const innerData = computed(
+  (): Record<string, unknown> => innerDataOf(props.message.content)?.data ?? {},
+)
+const innerError = computed((): string | null => {
+  const u = innerDataOf(props.message.content)
+  if (u === null) return 'tool failed'
+  return u.error
+})
+
+function parseRow(item: unknown): SubAgentRow {
+  const r = asRecord(item)
+  const maxCap = strOrNull(r.max_capacity_tokens)
+  const compactPct = strOrNull(r.compaction_threshold_percent)
+  const budget = strOrNull(r.thinking_budget_tokens)
+  const effort = strOrNull(r.reasoning_effort)
+  const thinking = strOrNull(r.thinking)
+  const temperature = strOrNull(r.temperature)
   return {
-    name: tagText(block, 'name') ?? '',
-    model: tagText(block, 'model') ?? '',
-    urlStyle: tagText(block, 'url_style') ?? '',
+    name: typeof r.name === 'string' ? r.name : '',
+    model: typeof r.model === 'string' ? r.model : '',
+    urlStyle: typeof r.url_style === 'string' ? r.url_style : '',
     thinking: thinking ?? '',
     hasThinking: thinking !== null,
     temperature: temperature ?? '',
@@ -142,31 +183,30 @@ function parseRow(block: string): SubAgentRow {
     compactionThresholdPercent: compactPct,
     thinkingBudgetTokens: budget,
     reasoningEffort: effort,
-    systemPrompt: promptText(block),
+    systemPrompt: typeof r.system_prompt === 'string' ? r.system_prompt : '',
   }
 }
 
 const parsed = computed((): ParsedListSubAgent => {
-  const inner = findInnerEnvelope(props.message.content)
-  const errorMatch = inner.match(/<error>([\s\S]*?)<\/error>/)
-  if (errorMatch && errorMatch[1]) {
+  const inner = innerData.value
+  const error = innerError.value ?? strOrNull(inner.error)
+  if (error !== null) {
     return {
       success: false,
       isEmpty: false,
-      profile: tagText(inner, 'profile') ?? 'unknown',
+      profile: strOrNull(inner.profile) ?? 'unknown',
       rows: [],
-      error: errorMatch[1].trim(),
+      error,
     }
   }
-  const profile = tagText(inner, 'profile') ?? 'unknown'
-  if (/<empty\s*\/?>/.test(inner)) {
-    return { success: true, isEmpty: true, profile, rows: [], error: null }
-  }
+  const profile = strOrNull(inner.profile) ?? 'unknown'
   const rows: SubAgentRow[] = []
-  const rowRe = /<sub_agent>([\s\S]*?)<\/sub_agent>/g
-  let m: RegExpExecArray | null
-  while ((m = rowRe.exec(inner)) !== null) {
-    if (m[1] !== undefined) rows.push(parseRow(m[1]))
+  const raw = inner.sub_agents
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const row = parseRow(item)
+      if (row.name) rows.push(row)
+    }
   }
   if (rows.length === 0) {
     return { success: true, isEmpty: true, profile, rows: [], error: null }
@@ -237,10 +277,7 @@ const handleToggle = (next: boolean) => {
       </div>
 
       <!-- Populated rows. -->
-      <div
-        v-else
-        class="px-3 py-2 space-y-2"
-      >
+      <div v-else class="px-3 py-2 space-y-2">
         <div
           v-for="(row, idx) in parsed.rows"
           :key="idx"
@@ -250,27 +287,36 @@ const handleToggle = (next: boolean) => {
           <!-- Name (bold) + model/url_style muted meta. -->
           <div class="flex items-baseline gap-2 min-w-0">
             <span class="font-semibold text-[var(--semantic-text)] truncate">{{ row.name }}</span>
-            <span class="text-[var(--semantic-text-muted)] truncate">{{ row.model }} · {{ row.urlStyle }}</span>
+            <span class="text-[var(--semantic-text-muted)] truncate"
+              >{{ row.model }} · {{ row.urlStyle }}</span
+            >
           </div>
           <!-- Tuning grid — ONLY tags present in the envelope. -->
           <div class="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[var(--semantic-text-muted)]">
             <span v-if="row.hasThinking">thinking: {{ row.thinking }}</span>
             <span v-if="row.hasTemperature">temperature: {{ row.temperature }}</span>
-            <span v-if="row.maxCapacityTokens !== null" data-tuning="max_capacity_tokens">max_capacity_tokens: {{ row.maxCapacityTokens }}</span>
-            <span v-if="row.compactionThresholdPercent !== null" data-tuning="compaction_threshold_percent">compaction_threshold_percent: {{ row.compactionThresholdPercent }}</span>
-            <span v-if="row.thinkingBudgetTokens !== null" data-tuning="thinking_budget_tokens">thinking_budget_tokens: {{ row.thinkingBudgetTokens }}</span>
-            <span v-if="row.reasoningEffort !== null" data-tuning="reasoning_effort">reasoning_effort: {{ row.reasoningEffort }}</span>
+            <span v-if="row.maxCapacityTokens !== null" data-tuning="max_capacity_tokens"
+              >max_capacity_tokens: {{ row.maxCapacityTokens }}</span
+            >
+            <span
+              v-if="row.compactionThresholdPercent !== null"
+              data-tuning="compaction_threshold_percent"
+              >compaction_threshold_percent: {{ row.compactionThresholdPercent }}</span
+            >
+            <span v-if="row.thinkingBudgetTokens !== null" data-tuning="thinking_budget_tokens"
+              >thinking_budget_tokens: {{ row.thinkingBudgetTokens }}</span
+            >
+            <span v-if="row.reasoningEffort !== null" data-tuning="reasoning_effort"
+              >reasoning_effort: {{ row.reasoningEffort }}</span
+            >
           </div>
           <!-- FULL system_prompt in an expandable collapsible block. -->
-          <details
-            class="mt-1"
-            :data-testid="`list-sub-agent-prompt-${idx}`"
-          >
+          <details class="mt-1" :data-testid="`list-sub-agent-prompt-${idx}`">
             <summary class="cursor-pointer text-[var(--color-violet)]">system_prompt</summary>
             <pre
               class="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words text-[var(--semantic-text)]"
               :data-testid="`list-sub-agent-prompt-body-${idx}`"
-            >{{ row.systemPrompt }}</pre>
+              >{{ row.systemPrompt }}</pre>
           </details>
         </div>
       </div>

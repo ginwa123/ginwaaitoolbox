@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { normalizeToolContent } from './_shared/toolOutputParser'
 import type { SubAgentArgs } from '../../helpers/parseSpawnSubAgentArgs'
 import type { SubAgentProgress } from '../../helpers/subagentProgress'
 import ToolParameters from './_shared/ToolParameters.vue'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   subAgentArgs?: SubAgentArgs[] | null
   /**
@@ -47,46 +48,71 @@ interface AgentResult {
   randomFallback: boolean
 }
 
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const p: unknown = JSON.parse(v)
+      return typeof p === 'object' && p !== null && !Array.isArray(p)
+        ? (p as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
+}
+
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+function boolOf(v: unknown, dflt = false): boolean {
+  if (v === null || v === undefined) return dflt
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'string') {
+    const t = v.trim()
+    if (t === '') return dflt
+    return t === 'true' || t === '1'
+  }
+  if (typeof v === 'number') return v !== 0
+  return dflt
+}
+
+const normalized = computed(() => normalizeToolContent(props.content))
+const dataRecord = computed(() => asRecord(normalized.value.data))
+
 const agents = computed((): AgentResult[] => {
   const results: AgentResult[] = []
-  // Note: capture group 4 = `random_fallback="..."` attribute. Default
-  // to "false" when absent so legacy results (pre-feature) parse
-  // cleanly.
-  const agentRegex = /<agent name="([^"]*)" success="([^"]*)"(?: random_fallback="([^"]*)")?>([\s\S]*?)<\/agent>/g
-  let match
-
-  while ((match = agentRegex.exec(props.content)) !== null) {
-    const name = match[1] ?? ''
-    const success = match[2] === 'true'
-    const randomFallback = match[3] === 'true'
-    const agentContent = match[4] ?? ''
-
-    // Extract session_id, response or error
-    const sessionIdMatch = agentContent.match(/<session_id>([\s\S]*?)<\/session_id>/)
-    const responseMatch = agentContent.match(/<response>([\s\S]*?)<\/response>/)
-    const errorMatch = agentContent.match(/<error>([\s\S]*?)<\/error>/)
-
+  const raw = dataRecord.value.results
+  if (!Array.isArray(raw)) return results
+  for (const item of raw) {
+    const r = asRecord(item)
+    const name = typeof r.name === 'string' ? r.name : ''
+    if (!name) continue
     results.push({
       name,
-      success,
-      sessionId: sessionIdMatch?.[1]?.trim() ?? null,
-      response: responseMatch?.[1]?.trim() ?? null,
-      error: errorMatch?.[1]?.trim() ?? null,
-      randomFallback,
+      success: boolOf(r.success, false),
+      sessionId: strOrNull(r.session_id),
+      response: strOrNull(r.response),
+      error: strOrNull(r.error),
+      randomFallback: boolOf(r.random_fallback, false),
     })
   }
-
   return results
 })
 
 // Parse summary
 const summary = computed(() => {
-  const match = props.content.match(/<summary succeeded="(\d+)" failed="(\d+)" \/>/)
-  if (match?.[1] && match?.[2]) {
-    return {
-      succeeded: parseInt(match[1], 10),
-      failed: parseInt(match[2], 10),
-    }
+  const s = asRecord(dataRecord.value.summary)
+  const succeeded = s.succeeded
+  const failed = s.failed
+  if (typeof succeeded === 'number' && typeof failed === 'number') {
+    return { succeeded, failed }
   }
   return null
 })
@@ -182,11 +208,11 @@ const liveSummary = computed(() => {
 // <success>false</success> + <error>. Without this branch the card
 // renders the "starting…" placeholder forever and the error is
 // invisible.
-const hasFailed = computed(() => props.content.includes('<success>false</success>'))
+const hasFailed = computed(() => normalized.value.success === false || normalized.value.error !== null)
 
 const startError = computed(() => {
-  const m = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  return m?.[1]?.trim() || null
+  const e = normalized.value.error ?? strOrNull(dataRecord.value.error)
+  return e?.trim() || null
 })
 
 const isStarting = computed(

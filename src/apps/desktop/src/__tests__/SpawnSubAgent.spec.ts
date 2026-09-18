@@ -7,14 +7,19 @@ import { mount } from '@vue/test-utils'
 import SpawnSubAgent from '../components/tool_outputs/SpawnSubAgent.vue'
 
 describe('SpawnSubAgent peek button', () => {
-  const sampleResult =
-    '<results>\n' +
-    '<agent name="backend-dev" success="true" random_fallback="false">\n' +
-    '<session_id>subagent_1_backend-dev</session_id>\n' +
-    '<response>Did the task</response>\n' +
-    '</agent>\n' +
-    '<summary succeeded="1" failed="0" />\n' +
-    '</results>'
+  const sampleResult = {
+    results: [
+      {
+        name: 'backend-dev',
+        success: true,
+        random_fallback: false,
+        session_id: 'subagent_1_backend-dev',
+        response: 'Did the task',
+        error: null,
+      },
+    ],
+    summary: { succeeded: 1, failed: 0 },
+  }
 
   it('emits peek with sessionId + agentName + instruction when peek button is clicked', async () => {
     const wrapper = mount(SpawnSubAgent, {
@@ -43,14 +48,13 @@ describe('SpawnSubAgent peek button', () => {
   })
 
   it('renders one peek button per agent row (one per sub-agent)', () => {
-    const twoAgentResult =
-      '<results>\n' +
-      '<agent name="a" success="true" random_fallback="false">' +
-      '<session_id>subagent_1_a</session_id><response>ok</response></agent>\n' +
-      '<agent name="b" success="true" random_fallback="false">' +
-      '<session_id>subagent_1_b</session_id><response>ok</response></agent>\n' +
-      '<summary succeeded="2" failed="0" />\n' +
-      '</results>'
+    const twoAgentResult = {
+      results: [
+        { name: 'a', success: true, random_fallback: false, session_id: 'subagent_1_a', response: 'ok', error: null },
+        { name: 'b', success: true, random_fallback: false, session_id: 'subagent_1_b', response: 'ok', error: null },
+      ],
+      summary: { succeeded: 2, failed: 0 },
+    }
     const wrapper = mount(SpawnSubAgent, {
       props: {
         content: twoAgentResult,
@@ -65,12 +69,12 @@ describe('SpawnSubAgent peek button', () => {
   })
 
   it('does NOT render a peek button for agents without a session_id', () => {
-    const noSessionResult =
-      '<results>\n' +
-      '<agent name="a" success="false" random_fallback="false">' +
-      '<error>Workflow error: X</error></agent>\n' +
-      '<summary succeeded="0" failed="1" />\n' +
-      '</results>'
+    const noSessionResult = {
+      results: [
+        { name: 'a', success: false, random_fallback: false, session_id: null, response: null, error: 'Workflow error: X' },
+      ],
+      summary: { succeeded: 0, failed: 1 },
+    }
     const wrapper = mount(SpawnSubAgent, {
       props: {
         content: noSessionResult,

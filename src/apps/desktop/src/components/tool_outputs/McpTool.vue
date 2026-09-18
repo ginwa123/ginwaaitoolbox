@@ -27,17 +27,43 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
-import { parseMcp } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseMcp } from './_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   toolName: string
   parameters?: string
   expanded?: boolean
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parseMcp(props.toolName, props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  // MCP results are raw server text on success (not a JSON envelope), so
+  // strings pass through verbatim — only JSON-envelope strings/objects
+  // go through the normalizer. `parseMcp` handles raw text, bare data
+  // objects, and full envelope objects.
+  const c = props.content
+  let input: unknown = c
+  if (typeof c === 'string') {
+    const t = c.trim()
+    if (t.startsWith('{')) {
+      try {
+        const p: unknown = JSON.parse(t)
+        if (typeof p === 'object' && p !== null) input = p
+      } catch {
+        input = c
+      }
+    }
+  } else {
+    input = normalized.value.data
+  }
+  const p = parseMcp(props.toolName, input)
+  if (typeof input === 'object' && input !== null && normalized.value.error) {
+    return { ...p, success: false, error: normalized.value.error }
+  }
+  return p
+})
 
 const primary = computed(() => {
   const { server, subTool } = parsed.value
@@ -84,7 +110,7 @@ const handleToggle = (next: boolean) => {
         v-else
         class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
         data-testid="mcp-tool-output"
-      >{{ parsed.prettyOutput || '(empty)' }}</pre>
+        >{{ parsed.prettyOutput || '(empty)' }}</pre>
       <ToolParameters :parameters="props.parameters" />
     </div>
   </div>

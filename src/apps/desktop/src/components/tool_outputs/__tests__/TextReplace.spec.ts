@@ -27,28 +27,23 @@ const makeContent = (opts: { path?: string; success?: boolean; error?: string } 
   const path = opts.path ?? '/repo/src/foo.ts'
   const success = opts.success ?? true
   if (!success) {
-    return [
-      '<text_replace>',
-      `<success>false</success>`,
-      `<path>${path}</path>`,
-      `<error>${opts.error ?? 'string not found'}</error>`,
-      '</text_replace>',
-    ].join('\n')
+    return {
+      path,
+      error: opts.error ?? 'string not found',
+    }
   }
-  return [
-    '<text_replace>',
-    `<success>true</success>`,
-    `<path>${path}</path>`,
-    '<before>line1\nline2</before>',
-    '<after>line1\nLINE2-EDITED</after>',
-    '<unified>@@ -2 +2 @@\n-line2\n+LINE2-EDITED</unified>',
-    '<lines_changed>1</lines_changed>',
-    '</text_replace>',
-  ].join('\n')
+  return {
+    path,
+    before: 'line1\nline2',
+    after: 'line1\nLINE2-EDITED',
+    unified: '@@ -2 +2 @@\n-line2\n+LINE2-EDITED',
+    lines_changed: 1,
+    error: null,
+  }
 }
 
 const makeWrapper = (
-  props: { content: string; cwd?: string; expanded?: boolean },
+  props: { content: unknown; cwd?: string; expanded?: boolean },
   provideOpenInEditor?: OpenInCodeEditorFn,
 ) => {
   if (provideOpenInEditor) {
