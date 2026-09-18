@@ -21,7 +21,7 @@ pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     };
     defer parsed.deinit();
 
-    const inner = kanban_move_task_mod.executeKanbanMoveTaskToString(
+    const inner = kanban_move_task_mod.executeKanbanMoveTaskToJSON(
         ctx.allocator,
         ctx.db,
         parsed.value,
@@ -32,16 +32,15 @@ pub fn execKanbanMoveTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     };
     defer ctx.allocator.free(inner);
 
-    // Detect <kanban_move><success>false</success><error>...</error>...
-    // We can either parse the success flag or look for <error>.
-    // Detecting <error> is the same pattern set_git_worktree uses
-    // for its own <worktree><error>...</error></worktree> shape.
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // Detect {"success":false,"error":...} via the top-level "error" key
+    // (parsed, not substring-matched, so task/column names containing
+    // the word "error" can't false-positive).
+    if (std.json.parseFromSlice(struct { @"error": ?[]const u8 = null }, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch null) |probe| {
+        defer probe.deinit();
+        if (probe.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, false, err_msg, inner);
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
     }
 
     const output = try wrapToolOutput(ctx.allocator, "kanban_move_task", tc.function.arguments, true, null, inner);

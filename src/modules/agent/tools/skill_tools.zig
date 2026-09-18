@@ -5,7 +5,7 @@
 //! skills-merge refactor) — one file, five tools. The public surface is
 //! unchanged: every `*Input` struct, `*_tool` definition,
 //! `execute_*` entry point, and the `listAllSkills` / `freeSkillsListData`
-//! / `toJson` / `toXml` helpers shared with the HTTP layer keep their
+//! / `toJson` helper shared with the HTTP layer keeps its
 //! names. Only colliding private helpers gained per-tool prefixes
 //! (`addSkill*` / `editSkill*` / `removeSkill*`); the three identical
 //! `appendXmlContent` copies and the two identical `contains` test
@@ -118,94 +118,7 @@ pub fn toJson(allocator: std.mem.Allocator, data: SkillsListData) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, data, .{});
 }
 
-/// Escape XML special characters for safe output
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
-}
-
-/// Serialize SkillsListData to XML string for AI agent tool output
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn toXml(allocator: std.mem.Allocator, data: SkillsListData) ![]u8 {
-    var xml = std.ArrayList(u8).empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<skills>");
-
-    // Global skills section
-    try xml.appendSlice(allocator, "<global_skills>");
-    for (data.global_skills) |skill| {
-        try xml.appendSlice(allocator, "<skill>");
-        const escaped_name = try xmlEscape(allocator, skill.name);
-        defer allocator.free(escaped_name);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, escaped_name);
-        try xml.appendSlice(allocator, "</name>");
-        const escaped_desc = try xmlEscape(allocator, skill.description);
-        defer allocator.free(escaped_desc);
-        try xml.appendSlice(allocator, "<description>");
-        try xml.appendSlice(allocator, escaped_desc);
-        try xml.appendSlice(allocator, "</description>");
-        const escaped_path = try xmlEscape(allocator, skill.path);
-        defer allocator.free(escaped_path);
-        try xml.appendSlice(allocator, "<path>");
-        try xml.appendSlice(allocator, escaped_path);
-        try xml.appendSlice(allocator, "</path>");
-        try xml.appendSlice(allocator, "</skill>");
-    }
-    try xml.appendSlice(allocator, "</global_skills>");
-
-    // Local skills section
-    try xml.appendSlice(allocator, "<local_skills>");
-    for (data.local_skills) |skill| {
-        try xml.appendSlice(allocator, "<skill>");
-        const escaped_name = try xmlEscape(allocator, skill.name);
-        defer allocator.free(escaped_name);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, escaped_name);
-        try xml.appendSlice(allocator, "</name>");
-        const escaped_desc = try xmlEscape(allocator, skill.description);
-        defer allocator.free(escaped_desc);
-        try xml.appendSlice(allocator, "<description>");
-        try xml.appendSlice(allocator, escaped_desc);
-        try xml.appendSlice(allocator, "</description>");
-        const escaped_path = try xmlEscape(allocator, skill.path);
-        defer allocator.free(escaped_path);
-        try xml.appendSlice(allocator, "<path>");
-        try xml.appendSlice(allocator, escaped_path);
-        try xml.appendSlice(allocator, "</path>");
-        try xml.appendSlice(allocator, "</skill>");
-    }
-    try xml.appendSlice(allocator, "</local_skills>");
-
-    // CWD if present
-    if (data.cwd) |cwd| {
-        const escaped_cwd = try xmlEscape(allocator, cwd);
-        defer allocator.free(escaped_cwd);
-        try xml.appendSlice(allocator, "<cwd>");
-        try xml.appendSlice(allocator, escaped_cwd);
-        try xml.appendSlice(allocator, "</cwd>");
-    }
-
-    try xml.appendSlice(allocator, "</skills>");
-
-    return xml.toOwnedSlice(allocator);
-}
-
-/// Execute the list_skills tool - returns XML string for AI agent
+/// Execute the list_skills tool - returns a JSON string for AI agent
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn execute_list_skills(
     allocator: std.mem.Allocator,
@@ -215,8 +128,15 @@ pub fn execute_list_skills(
 ) ![]const u8 {
     const data = try listAllSkills(allocator, io, cwd_param, environment);
     defer freeSkillsListData(allocator, data);
-    return toXml(allocator, data);
+    return toJson(allocator, data);
 }
+
+/// Parsed shape of `execute_list_skills` output, for tests.
+pub const ListSkillsOutput = struct {
+    global_skills: []skills.SkillInfo,
+    local_skills: []skills.SkillInfo,
+    cwd: ?[]const u8 = null,
+};
 
 // ─── use_skill ───
 
@@ -1145,7 +1065,7 @@ pub fn editSkillXmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u
 
 // ─── tests: list_skills ───
 
-test "toXml generates valid XML structure" {
+test "toJson on empty lists parses to empty arrays and null cwd" {
     const alloc = std.testing.allocator;
 
     const data = SkillsListData{
@@ -1154,16 +1074,17 @@ test "toXml generates valid XML structure" {
         .cwd = null,
     };
 
-    const xml = try toXml(alloc, data);
-    defer alloc.free(xml);
+    const json = try toJson(alloc, data);
+    defer alloc.free(json);
 
-    try std.testing.expect(std.mem.startsWith(u8, xml, "<skills>"));
-    try std.testing.expect(std.mem.endsWith(u8, xml, "</skills>"));
-    try std.testing.expect(contains(xml, "<global_skills>"));
-    try std.testing.expect(contains(xml, "<local_skills>"));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.global_skills.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
+    try std.testing.expect(parsed.value.cwd == null);
 }
 
-test "toXml escapes special characters in skill data" {
+test "toJson carries raw skill fields, parsed" {
     const alloc = std.testing.allocator;
 
     const data = SkillsListData{
@@ -1178,18 +1099,19 @@ test "toXml escapes special characters in skill data" {
         .cwd = null,
     };
 
-    const xml = try toXml(alloc, data);
-    defer alloc.free(xml);
+    const json = try toJson(alloc, data);
+    defer alloc.free(json);
 
-    // Should contain escaped versions
-    try std.testing.expect(contains(xml, "&lt;skill&gt;"));
-    try std.testing.expect(contains(xml, "&amp;"));
-    try std.testing.expect(contains(xml, "&quot;"));
-    // Should NOT contain unescaped < or > outside of XML tags
-    // (we allow <global_skills>, <local_skills>, <skill>, etc. which are valid XML tags)
+    // Raw text needs no escaping in JSON — parse and compare verbatim.
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.global_skills.len);
+    try std.testing.expectEqualStrings("test <skill>", parsed.value.global_skills[0].name);
+    try std.testing.expectEqualStrings("desc & more", parsed.value.global_skills[0].description);
+    try std.testing.expectEqualStrings("/path/with \"quotes\"", parsed.value.global_skills[0].path);
 }
 
-test "toXml includes cwd when present" {
+test "toJson includes cwd when present, parsed" {
     const alloc = std.testing.allocator;
 
     const data = SkillsListData{
@@ -1198,11 +1120,12 @@ test "toXml includes cwd when present" {
         .cwd = "/test/cwd",
     };
 
-    const xml = try toXml(alloc, data);
-    defer alloc.free(xml);
+    const json = try toJson(alloc, data);
+    defer alloc.free(json);
 
-    try std.testing.expect(contains(xml, "<cwd>"));
-    try std.testing.expect(contains(xml, "/test/cwd"));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("/test/cwd", parsed.value.cwd orelse "");
 }
 
 test "toJson generates valid JSON" {
@@ -1220,8 +1143,10 @@ test "toJson generates valid JSON" {
     // Should be valid JSON structure
     try std.testing.expect(std.mem.startsWith(u8, json, "{"));
     try std.testing.expect(std.mem.endsWith(u8, json, "}"));
-    try std.testing.expect(contains(json, "global_skills"));
-    try std.testing.expect(contains(json, "local_skills"));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.global_skills.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
 }
 
 test "freeSkillsListData handles empty arrays" {
@@ -1285,12 +1210,13 @@ test "execute_list_skills - finds local skill in cwd workspace" {
     const output = try execute_list_skills(alloc, io, tmp_path, &env);
     defer alloc.free(output);
 
-    // The local skill should appear in the local_skills block
-    try std.testing.expect(contains(output, "<local_skills>"));
-    try std.testing.expect(contains(output, skill_name));
-    try std.testing.expect(contains(output, "Test description for list regression"));
-    try std.testing.expect(contains(output, "<cwd>"));
-    try std.testing.expect(contains(output, tmp_path));
+    // The local skill should appear in the local_skills array
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.local_skills.len);
+    try std.testing.expectEqualStrings(skill_name, parsed.value.local_skills[0].name);
+    try std.testing.expectEqualStrings("Test description for list regression", parsed.value.local_skills[0].description);
+    try std.testing.expectEqualStrings(tmp_path, parsed.value.cwd orelse "");
 }
 
 test "execute_list_skills - does not show local skill from a different cwd" {
@@ -1345,7 +1271,9 @@ test "execute_list_skills - does not show local skill from a different cwd" {
     defer alloc.free(output);
 
     // The local skill should NOT appear (because it's in skill_cwd, not query_cwd)
-    try std.testing.expect(!contains(output, skill_name));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
 }
 // ─── tests: use_skill ───
 

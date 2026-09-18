@@ -3,6 +3,8 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// One column summary row in the kanban tool output. Mirrors
 /// `kanban_model.KanbanColumn` field-for-field so the LLM sees the
@@ -91,12 +93,12 @@ pub const kanban_list_tool = AgentTool{
     .function = .{
         .name = "kanban_list",
         .description =
-            \\List the structure of a kanban board: all columns (with their task counts) and all tasks (with their column assignment + position). Use this tool when the user asks about the state of a kanban board, asks "what's in the done column?", or wants to discover a task's id before calling kanban_move_task.
-            \\
-            \\The workspace_id and item_id parameters must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "kanban feature"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item the user is currently viewing is the one marked with `*(this task)*` (it is the parent of the active chat's task).
-            \\
-            \\If the system prompt does not include a "## Workspace Context" section, ask the user for the kanban's id (the one they want to list). The optional `column_id` parameter narrows the task list to one column (use kanban_list first to discover column ids, or call without it to get all tasks). Pagination: `limit` (default 20, max 100) and `offset` (default 0) control how many tasks are returned. Large boards are truncated — check `total_count` and `has_more` in the response to paginate.
-            ,
+        \\List the structure of a kanban board: all columns (with their task counts) and all tasks (with their column assignment + position). Use this tool when the user asks about the state of a kanban board, asks "what's in the done column?", or wants to discover a task's id before calling kanban_move_task.
+        \\
+        \\The workspace_id and item_id parameters must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "kanban feature"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item the user is currently viewing is the one marked with `*(this task)*` (it is the parent of the active chat's task).
+        \\
+        \\If the system prompt does not include a "## Workspace Context" section, ask the user for the kanban's id (the one they want to list). The optional `column_id` parameter narrows the task list to one column (use kanban_list first to discover column ids, or call without it to get all tasks). Pagination: `limit` (default 20, max 100) and `offset` (default 0) control how many tasks are returned. Large boards are truncated — check `total_count` and `has_more` in the response to paginate.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -131,27 +133,6 @@ pub const kanban_list_tool = AgentTool{
         .system_prompt = kanban_list_tool_system_prompt,
     },
 };
-
-/// Escape XML special characters. Mirrors the helper in
-/// list_memory.zig / list_skills.zig (duplicated locally to keep the
-/// tool file self-contained).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
-}
 
 /// Read all tasks for a kanban item from the DB. Includes
 /// `kanban_column_id` + `kanban_position` (the HTTP endpoint
@@ -281,7 +262,7 @@ pub fn listKanbanTasks(
 
 /// Resolve a column name to its id via a case-insensitive trimmed
 /// match. Returns the first match or null. Used by
-/// `execute_kanban_list_to_string` to populate `column_name` in the
+/// `executeKanbanListToJSON` to populate `column_name` in the
 /// task summary output.
 fn resolveColumnIdToName(
     allocator: std.mem.Allocator,
@@ -289,7 +270,8 @@ fn resolveColumnIdToName(
     workspace_item_id: []const u8,
     column_id: []const u8,
 ) !?[]u8 {
-    var q = try db.query(allocator,
+    var q = try db.query(
+        allocator,
         "SELECT kc.name FROM kanban_columns kc WHERE kc.workspace_item_id = ? AND kc.id = ?",
         &.{ workspace_item_id, column_id },
     );
@@ -301,50 +283,35 @@ fn resolveColumnIdToName(
     return null;
 }
 
-/// Execute the kanban_list tool. Returns an XML string for the LLM.
+/// Execute the kanban_list tool. Returns a JSON string for the LLM.
 ///
 /// Response shape (the `data` field that `wrapToolOutput` puts inside
 /// `<tool>...<data>...</data></tool>`):
-///   <kanban>
-///     <workspace_id>...</workspace_id>
-///     <item_id>...</item_id>
-///     <columns>
-///       <column>
-///         <id>...</id>
-///         <name>...</name>
-///         <position>...</position>
-///         <task_count>...</task_count>
-///       </column>
-///       ...
-///     </columns>
-///     <tasks>
-///       <task>
-///         <id>...</id>
-///         <name>...</name>
-///         <column_id>...</column_id>     (or empty when unassigned)
-///         <column_name>...</column_name> (or empty when unassigned)
-///         <position>...</position>
-///       </task>
-///       ...
-///     </tasks>
-///   </kanban>
+///   {"workspace_id":...,"item_id":...,
+///    "columns":[{"id":...,"name":...,"position":...,"task_count":...}, ...],
+///    "tasks":[{"id":...,"name":...,
+///               "column_id":... (or null when unassigned),
+///               "column_name":... (or null when unassigned),
+///               "position":...}, ...],
+///    "total_count":...,"limit":...,"offset":...,"has_more":...,
+///    "hint":... (or null)}
 ///
-/// Error cases (encoded as XML so the LLM sees a structured failure):
-///   - workspace_id or item_id is empty: <kanban><error>...</error></kanban>
-///   - item_id has a known-wrong prefix (task_/col_/ws_): <kanban><error>...</error></kanban>
-///     with a self-correcting hint pointing at the Workspace Context listing
+/// Error cases (encoded as {"error":...} so the LLM sees a structured failure):
+///   - workspace_id or item_id is empty
+///   - item_id has a known-wrong prefix (task_/col_/ws_), with a
+///     self-correcting hint pointing at the Workspace Context listing
 ///   - item_id is well-formed (starts with "item_") but no matching
-///     workspace_item of type 'kanban' exists: <kanban><error>...</error></kanban>
+///     workspace_item of type 'kanban' exists
 ///   - The kanban exists but has 0 columns: a friendly hint (NOT an error)
 ///     so the LLM can distinguish "wrong item_id" from "empty board"
-///   - DB read failure: <kanban><error>DB: ...</error></kanban>
-pub fn executeKanbanListToString(
+///   - DB read failure: {"error":"DB: ..."}
+pub fn executeKanbanListToJSON(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: KanbanListInput,
 ) ![]u8 {
     // 1. Validate shape (catches task_id/col_id/ws_id passed as item_id).
-    //    Returns either null (shape OK) or an owned error XML slice.
+    //    Returns either null (shape OK) or an owned error JSON slice.
     if (try validateItemIdShape(allocator, input.item_id, input.workspace_id)) |err_xml| {
         return err_xml;
     }
@@ -355,17 +322,17 @@ pub fn executeKanbanListToString(
     //    to kanban_list). When the item doesn't exist, return a clear
     //    error so the LLM can re-fetch the workspace context.
     const exists = itemExists(allocator, db, input.item_id) catch |err| {
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: itemExists failed: {s}", .{@errorName(err)}));
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: itemExists failed: {s}", .{@errorName(err)}));
     };
     if (!exists) {
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' matches no workspace_item (or the item isn't a kanban). Verify the id from the Workspace Context listing — the active kanban (if any) is the one marked `*(this task)*`.
         , .{input.item_id}));
     }
 
     // 3. Read columns (sorted by position).
     const cols = nalarcore.ai_mod.kanban_model.listColumns(allocator, db, input.item_id) catch |err| {
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listColumns failed: {s}", .{@errorName(err)}));
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listColumns failed: {s}", .{@errorName(err)}));
     };
     defer nalarcore.ai_mod.kanban_model.freeColumns(allocator, cols);
 
@@ -395,7 +362,7 @@ pub fn executeKanbanListToString(
 
     // 6. Read tasks (paginated, optionally filtered by column_id)
     const task_rows = listKanbanTasks(allocator, db, input.item_id, input.column_id, effective_limit, effective_offset) catch |err| {
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listTasks failed: {s}", .{@errorName(err)}));
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: listTasks failed: {s}", .{@errorName(err)}));
     };
     defer freeKanbanTaskRows(allocator, task_rows);
 
@@ -418,10 +385,10 @@ pub fn executeKanbanListToString(
     var task_summaries = std.ArrayList(TaskSummary).empty;
     defer task_summaries.deinit(allocator);
     // Track every allocated col_name so we can free them all AFTER
-    // toXml() reads the task_summaries. The earlier version of this
+    // toJSON() reads the task_summaries. The earlier version of this
     // code used `defer if (col_name) |n| allocator.free(n);` INSIDE
     // the for-loop, but Zig's `defer` fires at the end of the
-    // iteration block — so the slice was freed BEFORE toXml was
+    // iteration block — so the slice was freed BEFORE toJSON was
     // called, leaving `task_summaries` with dangling pointers. The
     // AI then read freed memory (Zig debug allocator's 0xAA free-fill
     // pattern shows up in the column_name) and interpreted the
@@ -453,32 +420,46 @@ pub fn executeKanbanListToString(
         });
     }
 
-    // 9. Render the XML with pagination metadata
+    // 9. Render the JSON payload with pagination metadata. The
+    // empty-board hint rides along as the "hint" key (null otherwise).
     const has_more = (effective_offset + @as(u32, @intCast(task_summaries.items.len)) < total_count);
-    const xml = try toXml(allocator, input.workspace_id, input.item_id, column_summaries.items, task_summaries.items, total_count, effective_limit, effective_offset, has_more);
-    if (empty_board_hint) |h| {
-        // Splice the hint into the closing </kanban>: insert before
-        // the final tag so it lives alongside <columns> and <tasks>.
-        const close_tag = "</kanban>";
-        const idx = std.mem.indexOf(u8, xml, close_tag) orelse xml.len;
-        var out: std.ArrayList(u8) = .empty;
-        defer out.deinit(allocator);
-        try out.appendSlice(allocator, xml[0..idx]);
-        try out.appendSlice(allocator, "<hint>");
-        const escaped_hint = try xmlEscape(allocator, h);
-        defer allocator.free(escaped_hint);
-        try out.appendSlice(allocator, escaped_hint);
-        try out.appendSlice(allocator, "</hint>");
-        try out.appendSlice(allocator, xml[idx..]);
-        allocator.free(xml);
-        return try out.toOwnedSlice(allocator);
-    }
-    return xml;
+    return toJSON(allocator, input.workspace_id, input.item_id, column_summaries.items, task_summaries.items, total_count, effective_limit, effective_offset, has_more, empty_board_hint);
 }
 
-/// Serialize the kanban structure to an XML string for the LLM.
+/// One task in the kanban tool output. Keys mirror the old `<task>`
+/// child tags 1:1; `column_id`/`column_name` are explicit nulls when the
+/// task is unassigned (instead of empty tags).
+pub const TaskJSON = struct {
+    id: []const u8,
+    name: []const u8,
+    column_id: ?[]const u8,
+    column_name: ?[]const u8,
+    position: i64,
+};
+
+/// Success payload for `kanban_list`. Tag names from the old `<kanban>`
+/// envelope become keys 1:1; repeated elements are arrays; the
+/// empty-board hint is an explicit null when absent.
+pub const KanbanListJSON = struct {
+    workspace_id: []const u8,
+    item_id: []const u8,
+    columns: []const ColumnSummary,
+    tasks: []const TaskJSON,
+    total_count: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
+    hint: ?[]const u8,
+};
+
+/// Error payload for `kanban_list`.
+pub const KanbanListError = struct {
+    @"error": []const u8,
+};
+
+/// Serialize the kanban structure to a JSON string for the LLM.
 /// Caller owns the returned slice.
-pub fn toXml(
+pub fn toJSON(
     allocator: std.mem.Allocator,
     workspace_id: []const u8,
     item_id: []const u8,
@@ -488,171 +469,99 @@ pub fn toXml(
     limit: u32,
     offset: u32,
     has_more: bool,
+    hint: ?[]const u8,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban>");
-
-    const escaped_workspace_id = try xmlEscape(allocator, workspace_id);
-    defer allocator.free(escaped_workspace_id);
-    try xml.appendSlice(allocator, "<workspace_id>");
-    try xml.appendSlice(allocator, escaped_workspace_id);
-    try xml.appendSlice(allocator, "</workspace_id>");
-
-    const escaped_item_id = try xmlEscape(allocator, item_id);
-    defer allocator.free(escaped_item_id);
-    try xml.appendSlice(allocator, "<item_id>");
-    try xml.appendSlice(allocator, escaped_item_id);
-    try xml.appendSlice(allocator, "</item_id>");
-
-    // Columns block
-    try xml.appendSlice(allocator, "<columns>");
-    for (columns) |c| {
-        try xml.appendSlice(allocator, "<column>");
-
-        const eid = try xmlEscape(allocator, c.id);
-        defer allocator.free(eid);
-        try xml.appendSlice(allocator, "<id>");
-        try xml.appendSlice(allocator, eid);
-        try xml.appendSlice(allocator, "</id>");
-
-        const ename = try xmlEscape(allocator, c.name);
-        defer allocator.free(ename);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, ename);
-        try xml.appendSlice(allocator, "</name>");
-
-        var pos_buf: [32]u8 = undefined;
-        const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{c.position}) catch "0";
-        try xml.appendSlice(allocator, "<position>");
-        try xml.appendSlice(allocator, pos_str);
-        try xml.appendSlice(allocator, "</position>");
-
-        var count_buf: [32]u8 = undefined;
-        const count_str = std.fmt.bufPrint(&count_buf, "{d}", .{c.task_count}) catch "0";
-        try xml.appendSlice(allocator, "<task_count>");
-        try xml.appendSlice(allocator, count_str);
-        try xml.appendSlice(allocator, "</task_count>");
-
-        try xml.appendSlice(allocator, "</column>");
+    var owned = std.ArrayList([]u8).empty;
+    defer {
+        for (owned.items) |b| allocator.free(b);
+        owned.deinit(allocator);
     }
-    try xml.appendSlice(allocator, "</columns>");
 
-    // Tasks block
-    try xml.appendSlice(allocator, "<tasks>");
-    for (tasks) |t| {
-        try xml.appendSlice(allocator, "<task>");
+    var clean_columns = try allocator.alloc(ColumnSummary, columns.len);
+    defer allocator.free(clean_columns);
+    for (columns, 0..) |c, i| {
+        const name = try sanitizeControlChars(allocator, c.name);
+        try owned.append(allocator, name);
+        clean_columns[i] = .{
+            .id = c.id,
+            .name = name,
+            .position = c.position,
+            .task_count = c.task_count,
+        };
+    }
 
-        const eid = try xmlEscape(allocator, t.id);
-        defer allocator.free(eid);
-        try xml.appendSlice(allocator, "<id>");
-        try xml.appendSlice(allocator, eid);
-        try xml.appendSlice(allocator, "</id>");
-
-        const ename = try xmlEscape(allocator, t.name);
-        defer allocator.free(ename);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, ename);
-        try xml.appendSlice(allocator, "</name>");
-
-        try xml.appendSlice(allocator, "<column_id>");
-        if (t.column_id) |cid| {
-            const e = try xmlEscape(allocator, cid);
-            defer allocator.free(e);
-            try xml.appendSlice(allocator, e);
-        }
-        try xml.appendSlice(allocator, "</column_id>");
-
-        try xml.appendSlice(allocator, "<column_name>");
+    var clean_tasks = try allocator.alloc(TaskJSON, tasks.len);
+    defer allocator.free(clean_tasks);
+    for (tasks, 0..) |t, i| {
+        const name = try sanitizeControlChars(allocator, t.name);
+        try owned.append(allocator, name);
+        var clean_col_name: ?[]const u8 = null;
         if (t.column_name) |cn| {
-            const e = try xmlEscape(allocator, cn);
-            defer allocator.free(e);
-            try xml.appendSlice(allocator, e);
+            const clean = try sanitizeControlChars(allocator, cn);
+            try owned.append(allocator, clean);
+            clean_col_name = clean;
         }
-        try xml.appendSlice(allocator, "</column_name>");
-
-        var pos_buf: [32]u8 = undefined;
-        const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{t.position}) catch "-1";
-        try xml.appendSlice(allocator, "<position>");
-        try xml.appendSlice(allocator, pos_str);
-        try xml.appendSlice(allocator, "</position>");
-
-        try xml.appendSlice(allocator, "</task>");
-    }
-    try xml.appendSlice(allocator, "</tasks>");
-
-    // Pagination block
-    try xml.appendSlice(allocator, "<pagination>");
-    var total_buf: [32]u8 = undefined;
-    const total_str = std.fmt.bufPrint(&total_buf, "{d}", .{total_count}) catch "0";
-    try xml.appendSlice(allocator, "<total_count>");
-    try xml.appendSlice(allocator, total_str);
-    try xml.appendSlice(allocator, "</total_count>");
-    var limit_buf: [32]u8 = undefined;
-    const limit_str = std.fmt.bufPrint(&limit_buf, "{d}", .{limit}) catch "0";
-    try xml.appendSlice(allocator, "<limit>");
-    try xml.appendSlice(allocator, limit_str);
-    try xml.appendSlice(allocator, "</limit>");
-    var offset_buf: [32]u8 = undefined;
-    const offset_str = std.fmt.bufPrint(&offset_buf, "{d}", .{offset}) catch "0";
-    try xml.appendSlice(allocator, "<offset>");
-    try xml.appendSlice(allocator, offset_str);
-    try xml.appendSlice(allocator, "</offset>");
-    try xml.appendSlice(allocator, "<has_more>");
-    try xml.appendSlice(allocator, if (has_more) "true" else "false");
-    try xml.appendSlice(allocator, "</has_more>");
-    try xml.appendSlice(allocator, "</pagination>");
-    if (has_more) {
-        try xml.appendSlice(allocator, "<hint>Showing ");
-        var shown_buf: [32]u8 = undefined;
-        const shown_str = std.fmt.bufPrint(&shown_buf, "{d}", .{tasks.len}) catch "0";
-        try xml.appendSlice(allocator, shown_str);
-        try xml.appendSlice(allocator, " of ");
-        try xml.appendSlice(allocator, total_str);
-        try xml.appendSlice(allocator, " tasks. Call kanban_list with offset=");
-        var next_buf: [32]u8 = undefined;
-        const next_off = offset + limit;
-        const next_str = std.fmt.bufPrint(&next_buf, "{d}", .{next_off}) catch "0";
-        try xml.appendSlice(allocator, next_str);
-        try xml.appendSlice(allocator, " to see more, or filter by column_id.</hint>");
+        clean_tasks[i] = .{
+            .id = t.id,
+            .name = name,
+            .column_id = t.column_id,
+            .column_name = clean_col_name,
+            .position = t.position,
+        };
     }
 
-    try xml.appendSlice(allocator, "</kanban>");
-    return try xml.toOwnedSlice(allocator);
+    var clean_hint: ?[]const u8 = null;
+    if (hint) |h| {
+        const clean = try sanitizeControlChars(allocator, h);
+        try owned.append(allocator, clean);
+        clean_hint = clean;
+    }
+
+    return std.json.Stringify.valueAlloc(allocator, KanbanListJSON{
+        .workspace_id = workspace_id,
+        .item_id = item_id,
+        .columns = clean_columns,
+        .tasks = clean_tasks,
+        .total_count = total_count,
+        .limit = limit,
+        .offset = offset,
+        .has_more = has_more,
+        .hint = clean_hint,
+    }, .{});
 }
 
-/// Generate an error XML response. Used when input validation or
+/// Generate an error JSON payload. Used when input validation or
 /// the DB read fails. Mirrors the `xmlError` pattern in
 /// `set_git_worktree.zig` / `add_skill.zig`.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></kanban>");
-    return try xml.toOwnedSlice(allocator);
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, KanbanListError{
+        .@"error" = clean,
+    }, .{});
 }
 
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees
 /// it on any path. Used to avoid leaks when the caller's message
 /// is an `allocPrint` result (can't `defer` across a `return`).
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></kanban>");
-    return try xml.toOwnedSlice(allocator);
+    return errorJSON(allocator, error_msg);
 }
+
+/// Parsed shape of `executeKanbanListToJSON` output, for tests.
+pub const KanbanListOutput = struct {
+    workspace_id: []const u8,
+    item_id: []const u8,
+    columns: []ColumnSummary,
+    tasks: []TaskJSON,
+    total_count: u32,
+    limit: u32,
+    offset: u32,
+    has_more: bool,
+    hint: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
 
 /// Detect the three known LLM id-confusion mistakes (task_id,
 /// column_id, workspace_id passed where item_id was expected). Returns
@@ -673,28 +582,28 @@ pub fn validateItemIdShape(
     workspace_id: []const u8,
 ) !?[]u8 {
     if (item_id.len == 0 or workspace_id.len == 0) {
-        return try errorXml(allocator, "workspace_id and item_id are required");
+        return try errorJSON(allocator, "workspace_id and item_id are required");
     }
     // The DB-generated ids use these prefixes (see workspace_items_create.zig's
     // generateItemId, workspace_item_tasks_create.zig, kanban_model.generateColumnId,
     // workspaces_create.zig). Anything with the wrong prefix is a shape mistake.
     if (std.mem.startsWith(u8, item_id, "task_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like a TASK id (starts with 'task_'). Pass the KANBAN's item_id instead — find it next to the literal text `item_id: ` (note: NOT `id:`) in the Workspace Context listing. The item_id always starts with 'item_'.
         , .{item_id}));
     }
     if (std.mem.startsWith(u8, item_id, "col_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like a COLUMN id (starts with 'col_'). Pass the KANBAN's item_id instead — find it next to the literal text `item_id: ` (note: NOT `id:`) in the Workspace Context listing. The item_id always starts with 'item_'.
         , .{item_id}));
     }
     if (std.mem.startsWith(u8, item_id, "ws_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' looks like a WORKSPACE id (starts with 'ws_'). You probably swapped workspace_id and item_id. The KANBAN's item_id starts with 'item_' — find it next to the literal text `item_id: ` in the Workspace Context listing.
         , .{item_id}));
     }
     if (!std.mem.startsWith(u8, item_id, "item_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\item_id '{s}' has an unrecognized prefix (expected 'item_'). Workspace-scoped tools expect a kanban item_id from the Workspace Context listing, not a free-form string.
         , .{item_id}));
     }
@@ -717,9 +626,7 @@ fn itemExists(
     db: *sqlite.SqliteBackend,
     item_id: []const u8,
 ) !bool {
-    var q = try db.query(allocator,
-        "SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban' LIMIT 1",
-        &.{item_id});
+    var q = try db.query(allocator, "SELECT 1 FROM workspace_items WHERE id = ? AND item_type = 'kanban' LIMIT 1", &.{item_id});
     defer q.deinit();
     const row = try q.next();
     if (row) |r| {
@@ -918,78 +825,88 @@ test "nalarcore root.zig exposes kanban_list module" {
     }
 }
 
-// ─── XML serialization behavioral tests (no DB required) ───────────────
+// ─── JSON serialization behavioral tests (no DB required) ───────────────
 
-test "toXml on empty lists produces <kanban>...</kanban>" {
+test "toJSON on empty lists produces empty arrays and null hint" {
     const alloc = testing.allocator;
     const cols = &[_]kanban_list.ColumnSummary{};
     const tasks = &[_]kanban_list.TaskSummary{};
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", cols, tasks, 0, 20, 0, false);
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<kanban>"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</kanban>"));
-    // No <column> or <task> blocks for empty lists
-    try testing.expect(!contains(xml, "<column>"));
-    try testing.expect(!contains(xml, "<task>"));
+    const json = try kanban_list.toJSON(alloc, "ws_1", "item_1", cols, tasks, 0, 20, 0, false, null);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("ws_1", parsed.value.workspace_id);
+    try std.testing.expectEqualStrings("item_1", parsed.value.item_id);
+    // No columns or tasks for empty lists
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.columns.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.tasks.len);
+    try std.testing.expect(parsed.value.hint == null);
+    try std.testing.expect(parsed.value.@"error" == null);
 }
 
-test "toXml renders column summaries with id/name/position/task_count" {
+test "toJSON renders column summaries with id/name/position/task_count" {
     const alloc = testing.allocator;
     const cols = [_]kanban_list.ColumnSummary{
         .{ .id = "col_todo", .name = "todo", .position = 0, .task_count = 2 },
         .{ .id = "col_done", .name = "done", .position = 1, .task_count = 1 },
     };
     const tasks = &[_]kanban_list.TaskSummary{};
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", &cols, tasks, 0, 20, 0, false);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<column>"));
-    try testing.expect(contains(xml, "<id>col_todo</id>"));
-    try testing.expect(contains(xml, "<name>todo</name>"));
-    try testing.expect(contains(xml, "<task_count>2</task_count>"));
-    try testing.expect(contains(xml, "<name>done</name>"));
-    try testing.expect(contains(xml, "<task_count>1</task_count>"));
+    const json = try kanban_list.toJSON(alloc, "ws_1", "item_1", &cols, tasks, 0, 20, 0, false, null);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.columns.len);
+    try std.testing.expectEqualStrings("col_todo", parsed.value.columns[0].id);
+    try std.testing.expectEqualStrings("todo", parsed.value.columns[0].name);
+    try std.testing.expectEqual(@as(i64, 0), parsed.value.columns[0].position);
+    try std.testing.expectEqual(@as(u32, 2), parsed.value.columns[0].task_count);
+    try std.testing.expectEqualStrings("done", parsed.value.columns[1].name);
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.columns[1].task_count);
 }
 
-test "toXml renders task summaries with optional column_id/column_name" {
+test "toJSON renders task summaries with explicit-null column_id/column_name" {
     const alloc = testing.allocator;
     const cols = &[_]kanban_list.ColumnSummary{};
     const tasks = [_]kanban_list.TaskSummary{
         .{ .id = "t_a", .name = "Task A", .column_id = "col_todo", .column_name = "todo", .position = 0 },
         .{ .id = "t_b", .name = "Task B", .column_id = null, .column_name = null, .position = -1 },
     };
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", cols, &tasks, 2, 20, 0, false);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<task>"));
-    try testing.expect(contains(xml, "<id>t_a</id>"));
-    try testing.expect(contains(xml, "<name>Task A</name>"));
-    try testing.expect(contains(xml, "<column_id>col_todo</column_id>"));
-    try testing.expect(contains(xml, "<column_name>todo</column_name>"));
-    // Unassigned task has empty <column_id>...</column_id> and
-    // <column_name>...</column_name> blocks (NOT absent).
-    try testing.expect(contains(xml, "<column_id></column_id>"));
-    try testing.expect(contains(xml, "<column_name></column_name>"));
+    const json = try kanban_list.toJSON(alloc, "ws_1", "item_1", cols, &tasks, 2, 20, 0, false, null);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.tasks.len);
+    try std.testing.expectEqualStrings("t_a", parsed.value.tasks[0].id);
+    try std.testing.expectEqualStrings("Task A", parsed.value.tasks[0].name);
+    try std.testing.expectEqualStrings("col_todo", parsed.value.tasks[0].column_id orelse "");
+    try std.testing.expectEqualStrings("todo", parsed.value.tasks[0].column_name orelse "");
+    // Unassigned task has explicit null column_id/column_name (NOT absent).
+    try std.testing.expect(parsed.value.tasks[1].column_id == null);
+    try std.testing.expect(parsed.value.tasks[1].column_name == null);
+    try std.testing.expectEqual(@as(u32, 2), parsed.value.total_count);
 }
 
-test "toXml escapes special characters in column + task names" {
+test "toJSON keeps raw characters in column + task names" {
     const alloc = testing.allocator;
     const cols = [_]kanban_list.ColumnSummary{
         .{ .id = "col_x", .name = "in <review>", .position = 0, .task_count = 0 },
     };
     const tasks = &[_]kanban_list.TaskSummary{};
-    const xml = try kanban_list.toXml(alloc, "ws_1", "item_1", &cols, tasks, 0, 20, 0, false);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "&lt;review&gt;"));
-    try testing.expect(!contains(xml, "<review>")); // ensure raw is escaped
+    const json = try kanban_list.toJSON(alloc, "ws_1", "item_1", &cols, tasks, 0, 20, 0, false, null);
+    defer alloc.free(json);
+    // Raw text needs no escaping in JSON — parse and compare verbatim.
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("in <review>", parsed.value.columns[0].name);
 }
 
-test "errorXml on missing field returns <kanban><error>...</error></kanban>" {
+test "errorJSON on missing field returns parsed error payload" {
     const alloc = testing.allocator;
-    const xml = try kanban_list.errorXml(alloc, "workspace_id and item_id are required");
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<kanban>"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</kanban>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "workspace_id and item_id are required"));
+    const json = try kanban_list.errorJSON(alloc, "workspace_id and item_id are required");
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListError, alloc, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("workspace_id and item_id are required", parsed.value.@"error");
 }
 
 // ─── DB integration behavioral tests (in-memory SQLite) ────────────────
@@ -1107,7 +1024,7 @@ test "listKanbanTasks returns all tasks with column + position" {
     try testing.expect(unassigned_found);
 }
 
-test "executeKanbanListToString returns columns with task_count" {
+test "executeKanbanListToJSON returns columns with task_count" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1125,22 +1042,24 @@ test "executeKanbanListToString returns columns with task_count" {
         .workspace_id = "ws_1",
         .item_id = "item_1",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
 
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.columns.len);
     // todo has 2 tasks
-    try testing.expect(contains(xml, "<id>col_todo</id>"));
-    try testing.expect(contains(xml, "<name>todo</name>"));
-    try testing.expect(contains(xml, "<task_count>2</task_count>"));
-    // done has 1 task
-    try testing.expect(contains(xml, "<id>col_done</id>"));
-    try testing.expect(contains(xml, "<task_count>1</task_count>"));
+    try std.testing.expectEqualStrings("col_todo", parsed.value.columns[0].id);
+    try std.testing.expectEqual(@as(u32, 2), parsed.value.columns[0].task_count);
     // in progress has 0 tasks
-    try testing.expect(contains(xml, "<id>col_ip</id>"));
-    try testing.expect(contains(xml, "<task_count>0</task_count>"));
+    try std.testing.expectEqualStrings("col_ip", parsed.value.columns[1].id);
+    try std.testing.expectEqual(@as(u32, 0), parsed.value.columns[1].task_count);
+    // done has 1 task
+    try std.testing.expectEqualStrings("col_done", parsed.value.columns[2].id);
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.columns[2].task_count);
 }
 
-test "executeKanbanListToString with column_id filter returns only that column's tasks" {
+test "executeKanbanListToJSON with column_id filter returns only that column's tasks" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1158,17 +1077,17 @@ test "executeKanbanListToString with column_id filter returns only that column's
         .item_id = "item_1",
         .column_id = "col_todo",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
 
     // Both todo tasks should appear
-    try testing.expect(contains(xml, "<name>Task 1</name>"));
-    try testing.expect(contains(xml, "<name>Task 2</name>"));
+    try testing.expect(contains(json, "\"name\":\"Task 1\""));
+    try testing.expect(contains(json, "\"name\":\"Task 2\""));
     // Done task should NOT appear
-    try testing.expect(!contains(xml, "<name>Task 3</name>"));
+    try testing.expect(!contains(json, "\"name\":\"Task 3\""));
 }
 
-test "executeKanbanListToString returns error XML when item_id is empty" {
+test "executeKanbanListToJSON returns error JSON when item_id is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1178,23 +1097,23 @@ test "executeKanbanListToString returns error XML when item_id is empty" {
         .workspace_id = "ws_1",
         .item_id = "",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "workspace_id and item_id are required"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "workspace_id and item_id are required"));
 }
 
 // Regression test for the use-after-free bug fixed in this branch.
 // Before the fix, `defer if (col_name) |n| allocator.free(n);` inside
 // the for-loop fired at the end of EACH iteration — so the col_name
-// slice was freed BEFORE toXml() was called, leaving task_summaries
+// slice was freed BEFORE toJSON() was called, leaving task_summaries
 // with dangling pointers. The AI then read the freed memory (Zig's
 // 0xAA debug-allocator free-fill pattern) and interpreted the garbled
 // output as "empty board".
 //
 // This test inserts a task assigned to a column and asserts the
-// rendered XML contains the real column_name, not 0xAA bytes.
-test "executeKanbanListToString column_name is real bytes (use-after-free regression)" {
+// rendered JSON contains the real column_name, not 0xAA bytes.
+test "executeKanbanListToJSON column_name is real bytes (use-after-free regression)" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1215,24 +1134,27 @@ test "executeKanbanListToString column_name is real bytes (use-after-free regres
         .workspace_id = "ws_1",
         .item_id = "item_1",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
 
     // The task's column_name must be the literal string "in progress",
     // not freed/garbled memory. If the use-after-free bug recurs, the
     // slice would point at Zig's 0xAA free-fill pattern.
-    try testing.expect(contains(xml, "<column_name>in progress</column_name>"));
-    try testing.expect(contains(xml, "<id>col_ip</id>"));
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.tasks.len);
+    try std.testing.expectEqualStrings("in progress", parsed.value.tasks[0].column_name orelse "");
+    try std.testing.expectEqualStrings("col_ip", parsed.value.tasks[0].column_id orelse "");
 
-    // Defensive: assert the rendered XML does NOT contain the 0xAA
+    // Defensive: assert the rendered JSON does NOT contain the 0xAA
     // free-fill byte (octal 252 = 0xAA). If it does, the slice
     // header is pointing at freed memory.
-    try testing.expect(std.mem.indexOfScalar(u8, xml, 0xAA) == null);
+    try testing.expect(std.mem.indexOfScalar(u8, json, 0xAA) == null);
 }
 
 // ─── Input validation tests (4 mistake shapes + empty-board hint) ──────
 
-test "executeKanbanListToString returns error XML when item_id looks like a task_id" {
+test "executeKanbanListToJSON returns error JSON when item_id looks like a task_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1245,16 +1167,16 @@ test "executeKanbanListToString returns error XML when item_id looks like a task
         .workspace_id = "ws_1",
         .item_id = "task_1782442569739",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "item_id"));
-    try testing.expect(contains(xml, "task_"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "item_id"));
+    try testing.expect(contains(json, "task_"));
     // Should mention the correct id source so the LLM self-corrects.
-    try testing.expect(contains(xml, "item_"));
+    try testing.expect(contains(json, "item_"));
 }
 
-test "executeKanbanListToString returns error XML when item_id looks like a column_id" {
+test "executeKanbanListToJSON returns error JSON when item_id looks like a column_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1264,13 +1186,13 @@ test "executeKanbanListToString returns error XML when item_id looks like a colu
         .workspace_id = "ws_1",
         .item_id = "col_1782442554112968570",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "col_"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "col_"));
 }
 
-test "executeKanbanListToString returns error XML when item_id looks like a workspace_id" {
+test "executeKanbanListToJSON returns error JSON when item_id looks like a workspace_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1280,12 +1202,12 @@ test "executeKanbanListToString returns error XML when item_id looks like a work
         .workspace_id = "ws_1",
         .item_id = "ws_1",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"error\":"));
 }
 
-test "executeKanbanListToString returns error XML when item_id matches no workspace_item" {
+test "executeKanbanListToJSON returns error JSON when item_id matches no workspace_item" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1296,13 +1218,13 @@ test "executeKanbanListToString returns error XML when item_id matches no worksp
         .workspace_id = "ws_1",
         .item_id = "item_does_not_exist",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "no workspace_item"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "no workspace_item"));
 }
 
-test "executeKanbanListToString returns empty-board hint (not error) when item_id is valid but has no columns" {
+test "executeKanbanListToJSON returns empty-board hint (not error) when item_id is valid but has no columns" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1310,25 +1232,25 @@ test "executeKanbanListToString returns empty-board hint (not error) when item_i
 
     // Insert a kanban item with NO columns (degenerate case — user
     // deleted all of them).
-    try s.db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('item_empty', 'ws_1', 'kanban', 'Empty board')",
-        &.{});
+    try s.db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, name) VALUES ('item_empty', 'ws_1', 'kanban', 'Empty board')", &.{});
 
     const input = kanban_list.KanbanListInput{
         .workspace_id = "ws_1",
         .item_id = "item_empty",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
     // NOT an error — the kanban genuinely has no columns. Just an
-    // empty <columns> block + a friendly hint.
-    try testing.expect(!contains(xml, "<error>"));
-    try testing.expect(contains(xml, "<columns></columns>"));
+    // empty "columns" array + a friendly hint.
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.@"error" == null);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.columns.len);
     // Hint: "no columns" so the LLM can distinguish from a wrong-id case.
-    try testing.expect(contains(xml, "no columns"));
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.hint orelse "", "no columns") != null);
 }
 
-test "executeKanbanListToString default limit caps at 20" {
+test "executeKanbanListToJSON default limit caps at 20" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1350,23 +1272,18 @@ test "executeKanbanListToString default limit caps at 20" {
         .workspace_id = "ws_1",
         .item_id = "item_1",
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    // Default limit 20 => only 20 tasks in XML, but total_count 30
-    try testing.expect(contains(xml, "<total_count>30</total_count>"));
-    try testing.expect(contains(xml, "<limit>20</limit>"));
-    try testing.expect(contains(xml, "<has_more>true</has_more>"));
-    // Count <task> blocks
-    var count: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOf(u8, xml[idx..], "<task>")) |pos| {
-        count += 1;
-        idx += pos + 6;
-    }
-    try testing.expectEqual(@as(usize, 20), count);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    // Default limit 20 => only 20 tasks in JSON, but total_count 30
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u32, 30), parsed.value.total_count);
+    try std.testing.expectEqual(@as(u32, 20), parsed.value.limit);
+    try std.testing.expect(parsed.value.has_more);
+    try std.testing.expectEqual(@as(usize, 20), parsed.value.tasks.len);
 }
 
-test "executeKanbanListToString limit=5 returns 5 tasks" {
+test "executeKanbanListToJSON limit=5 returns 5 tasks" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1388,20 +1305,16 @@ test "executeKanbanListToString limit=5 returns 5 tasks" {
         .item_id = "item_1",
         .limit = 5,
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<total_count>10</total_count>"));
-    try testing.expect(contains(xml, "<limit>5</limit>"));
-    var count: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOf(u8, xml[idx..], "<task>")) |pos| {
-        count += 1;
-        idx += pos + 6;
-    }
-    try testing.expectEqual(@as(usize, 5), count);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u32, 10), parsed.value.total_count);
+    try std.testing.expectEqual(@as(u32, 5), parsed.value.limit);
+    try std.testing.expectEqual(@as(usize, 5), parsed.value.tasks.len);
 }
 
-test "executeKanbanListToString offset paginates" {
+test "executeKanbanListToJSON offset paginates" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1424,20 +1337,16 @@ test "executeKanbanListToString offset paginates" {
         .limit = 5,
         .offset = 5,
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<offset>5</offset>"));
-    try testing.expect(contains(xml, "<has_more>false</has_more>"));
-    var count: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOf(u8, xml[idx..], "<task>")) |pos| {
-        count += 1;
-        idx += pos + 6;
-    }
-    try testing.expectEqual(@as(usize, 5), count);
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u32, 5), parsed.value.offset);
+    try std.testing.expect(!parsed.value.has_more);
+    try std.testing.expectEqual(@as(usize, 5), parsed.value.tasks.len);
 }
 
-test "executeKanbanListToString limit >100 clamped to 100" {
+test "executeKanbanListToJSON limit >100 clamped to 100" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1459,12 +1368,12 @@ test "executeKanbanListToString limit >100 clamped to 100" {
         .item_id = "item_1",
         .limit = 200,
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<limit>100</limit>"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"limit\":100"));
 }
 
-test "executeKanbanListToString offset beyond total returns empty tasks" {
+test "executeKanbanListToJSON offset beyond total returns empty tasks" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1479,10 +1388,11 @@ test "executeKanbanListToString offset beyond total returns empty tasks" {
         .limit = 10,
         .offset = 100,
     };
-    const xml = try kanban_list.executeKanbanListToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<total_count>1</total_count>"));
-    try testing.expect(!contains(xml, "<task>"));
-    try testing.expect(contains(xml, "<has_more>false</has_more>"));
+    const json = try kanban_list.executeKanbanListToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_list.KanbanListOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.total_count);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.tasks.len);
+    try std.testing.expect(!parsed.value.has_more);
 }
-
