@@ -74,21 +74,34 @@ fn buildCatalog(ctx: ToolExecContext, inputs: Inputs) ![]progressive_catalog.Ent
     );
 }
 
-/// Mirror `add_mcp_server`'s envelope semantics: an inner `<error>` makes the
-/// wrapper report success=false and surfaces the message as the error, with
-/// the full inner XML still available in `<data>`.
+/// Mirror `add_mcp_server`'s envelope semantics: an inner `"error"` key makes
+/// the wrapper report success=false and surfaces the message as the error,
+/// with the full inner JSON still available in `data`.
 fn wrapMaybeError(
     ctx: ToolExecContext,
     tool_name: []const u8,
     args_json: []const u8,
     inner: []const u8,
 ) ![]const u8 {
-    if (std.mem.indexOf(u8, inner, "<error>")) |err_start_raw| {
-        const err_start = err_start_raw + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        return wrapToolOutput(ctx.allocator, tool_name, args_json, false, inner[err_start .. err_start + err_end], inner);
+    if (innerErrorOf(ctx.allocator, inner)) |msg| {
+        return wrapToolOutput(ctx.allocator, tool_name, args_json, false, msg, inner);
     }
     return wrapToolOutput(ctx.allocator, tool_name, args_json, true, null, inner);
+}
+
+/// The `"error"` string of an inner JSON result, or null when the result
+/// carries no error key. Never fails: unparseable output is not an error.
+fn innerErrorOf(allocator: std.mem.Allocator, inner: []const u8) ?[]const u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, inner, .{}) catch return null;
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return null,
+    };
+    const err = obj.get("error") orelse return null;
+    return switch (err) {
+        .string => |s| s,
+        else => return null,
+    };
 }
 
 fn result(ctx: ToolExecContext, output: []const u8) ToolExecResult {
@@ -317,35 +330,35 @@ pub fn execUseTool(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 const test_sqlite = nalarcore.sqlite;
 const Migration085 = @import("../migrations/migration.zig").Migration085AddSessionProgressiveTool;
 
-/// The `<tools>…</tools>` block of a rendered result — the rows only, NOT the
-/// `<tool><name>search_tool</name>` in the `wrapToolOutput` envelope around it.
-fn catalogBody(out: []const u8) []const u8 {
-    const open = std.mem.indexOf(u8, out, "<tools>") orelse return "";
-    const start = open + "<tools>".len;
-    const close = std.mem.indexOfPos(u8, out, start, "</tools>") orelse out.len;
-    return out[start..close];
+/// The `data.tools` rows of a rendered envelope result — the catalog rows
+/// only, NOT the `"tool":"search_tool"` name in the `wrapToolOutput` envelope
+/// around them.
+fn catalogData(allocator: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    errdefer parsed.deinit();
+    const data = parsed.value.object.get("data") orelse return error.NoData;
+    if (data != .object) return error.NoData;
+    return parsed;
 }
 
-/// Pull every `<tool><name>X</name>` row out of a rendered result, joined by ','.
+/// Pull every tool row name out of a rendered envelope result, joined by ','.
 fn namesJoined(allocator: std.mem.Allocator, out: []const u8) ![]const u8 {
-    const body = catalogBody(out);
+    const parsed = try catalogData(allocator, out);
+    defer parsed.deinit();
+    const rows = parsed.value.object.get("data").?.object.get("tools").?.array.items;
     var list: std.ArrayList(u8) = .empty;
-    var cursor: usize = 0;
-    while (std.mem.indexOfPos(u8, body, cursor, "<tool><name>")) |start_raw| {
-        const start = start_raw + "<tool><name>".len;
-        const end = std.mem.indexOfPos(u8, body, start, "</name>") orelse break;
+    for (rows) |t| {
         if (list.items.len > 0) try list.append(allocator, ',');
-        try list.appendSlice(allocator, body[start..end]);
-        cursor = end;
+        try list.appendSlice(allocator, t.object.get("name").?.string);
     }
     return try list.toOwnedSlice(allocator);
 }
 
-fn totalOf(out: []const u8) !usize {
-    const key = "<total>";
-    const start = (std.mem.indexOf(u8, out, key) orelse return error.NoTotal) + key.len;
-    const end = std.mem.indexOfScalarPos(u8, out, start, '<') orelse return error.NoTotal;
-    return std.fmt.parseInt(usize, out[start..end], 10);
+fn totalOf(allocator: std.mem.Allocator, out: []const u8) !usize {
+    const parsed = try catalogData(allocator, out);
+    defer parsed.deinit();
+    const total = parsed.value.object.get("data").?.object.get("total").?.integer;
+    return std.math.cast(usize, total) orelse return error.BadTotal;
 }
 
 fn searchCall(args_json: []const u8) agent.ToolCall {
@@ -402,16 +415,16 @@ test "execSearchTool: a regex finds tools a literal substring could not, end to 
     const args = "{\"query\":\"^(list|load|save)_\"}";
     const out = try searchToolOutput(a, &db, threaded.io(), args);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<pattern_mode>regex</pattern_mode>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<pattern_warning>") == null);
-    const total = try totalOf(out);
+    try testing.expect(std.mem.indexOf(u8, out, "\"pattern_mode\":\"regex\"") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"pattern_warning\":null") != null);
+    const total = try totalOf(a, out);
     try testing.expect(total >= 5); // list_directory/list_skills/list_sub_agent + load_/save_memory at least
-    try testing.expect(std.mem.indexOf(u8, catalogBody(out), "<name>save_memory</name>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"name\":\"save_memory\"") != null);
 
     // Enabled tools are NOT discoverable (they are already in the tool list).
-    try testing.expect(std.mem.indexOf(u8, catalogBody(out), "<name>read_file</name>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"name\":\"read_file\"") == null);
     // …nor are the browsing meta-tools themselves.
-    try testing.expect(std.mem.indexOf(u8, catalogBody(out), "<name>view_tool</name>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"name\":\"view_tool\"") == null);
 
     // `literal: true` over the same text finds nothing — the flag is honoured
     // through the adapter, not just in the pure matcher.
@@ -421,14 +434,14 @@ test "execSearchTool: a regex finds tools a literal substring could not, end to 
         threaded.io(),
         "{\"query\":\"^(list|load|save)_\",\"literal\":true}",
     );
-    try testing.expect(std.mem.indexOf(u8, literal_out, "<pattern_mode>literal</pattern_mode>") != null);
-    try testing.expect(std.mem.indexOf(u8, literal_out, "<count>0</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, literal_out, "\"pattern_mode\":\"literal\"") != null);
+    try testing.expect(std.mem.indexOf(u8, literal_out, "\"count\":0") != null);
 
     // A pattern the engine rejects degrades to a literal substring search and
     // says so — never a hard failure.
     const bad_out = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"^(list\"}");
-    try testing.expect(std.mem.indexOf(u8, bad_out, "<pattern_mode>literal_fallback</pattern_mode>") != null);
-    try testing.expect(std.mem.indexOf(u8, bad_out, "<pattern_warning>") != null);
+    try testing.expect(std.mem.indexOf(u8, bad_out, "\"pattern_mode\":\"literal_fallback\"") != null);
+    try testing.expect(std.mem.indexOf(u8, bad_out, "\"pattern_warning\":\"") != null);
     try testing.expect(std.mem.indexOf(u8, bad_out, "not a valid regex") != null);
 }
 
@@ -450,12 +463,12 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         threaded.io(),
         "{\"query\":\"^(list|load|save)_\",\"limit\":3,\"offset\":0}",
     );
-    const total = try totalOf(page1);
+    const total = try totalOf(a, page1);
     try testing.expect(total >= 5); // list_directory/list_skills/list_sub_agent + load_/save_memory
     try testing.expect(total > 3); // otherwise "page 2" would be empty
-    try testing.expect(std.mem.indexOf(u8, page1, "<count>3</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, page1, "<offset>0</offset><limit>3</limit>") != null);
-    try testing.expect(std.mem.indexOf(u8, page1, "<truncated/>") != null);
+    try testing.expect(std.mem.indexOf(u8, page1, "\"count\":3") != null);
+    try testing.expect(std.mem.indexOf(u8, page1, "\"offset\":0,\"limit\":3") != null);
+    try testing.expect(std.mem.indexOf(u8, page1, "\"truncated\":true") != null);
     try testing.expect(std.mem.indexOf(u8, page1, "offset=3") != null);
 
     const page2 = try searchToolOutput(
@@ -464,10 +477,10 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         threaded.io(),
         "{\"query\":\"^(list|load|save)_\",\"limit\":3,\"offset\":3}",
     );
-    const expect_page2_count = try std.fmt.allocPrint(a, "<count>{d}</count>", .{total - 3});
+    const expect_page2_count = try std.fmt.allocPrint(a, "\"count\":{d}", .{total - 3});
     try testing.expect(std.mem.indexOf(u8, page2, expect_page2_count) != null);
-    try testing.expect(std.mem.indexOf(u8, page2, "<offset>3</offset><limit>3</limit>") != null);
-    try testing.expectEqual(total, try totalOf(page2));
+    try testing.expect(std.mem.indexOf(u8, page2, "\"offset\":3,\"limit\":3") != null);
+    try testing.expectEqual(total, try totalOf(a, page2));
 
     // The two pages are disjoint windows — not the same rows twice.
     const first = try namesJoined(a, page1);
@@ -478,14 +491,13 @@ test "execSearchTool: limit/offset page the matches and report the true total" {
         try testing.expect(std.mem.indexOf(u8, first, name) == null);
     }
     // Sanity: the extractor is reading the row block, not the envelope name
-    // (`<tool><name>search_tool</name>` wraps every result).
+    // (`"tool":"search_tool"` wraps every result).
     try testing.expect(std.mem.indexOf(u8, first, "search_tool") == null);
 
     // Out-of-range input is rejected with the accepted range, never clamped
-    // (a clamp would desync the model's offset arithmetic). The message avoids
-    // `<`/`>`, which `wrapToolOutput` XML-escapes in `<error>`.
+    // (a clamp would desync the model's offset arithmetic).
     const too_big = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"a\",\"limit\":5000}");
-    try testing.expect(std.mem.indexOf(u8, too_big, "<success>false</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, too_big, "\"success\":false") != null);
     try testing.expect(std.mem.indexOf(u8, too_big, "limit must be at most 200") != null);
     const zero = try searchToolOutput(a, &db, threaded.io(), "{\"query\":\"a\",\"limit\":0}");
     try testing.expect(std.mem.indexOf(u8, zero, "limit must be at least 1") != null);
