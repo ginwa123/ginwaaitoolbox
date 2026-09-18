@@ -55,11 +55,11 @@ from ui_harness import UIHarness
 
 # ─── Constants ──────────────────────────────────────────────────────────────
 
-#: Seed sizes. newer=100 fills exactly one PAGE_SIZE (ChatView.PAGE_SIZE), so
-#: the initial page reports has_more=true whenever `older` > 0.
-NEWER_COUNT = 100
-OLDER_SINGLE_PAGE = 60  # < PAGE_SIZE → that page is the LAST page (has_more=false)
-OLDER_MULTI_PAGE = 220  # ≥ 2 more pages → pagination must continue
+#: Seed sizes. newer=1000 fills exactly one PAGE_SIZE (ChatView.PAGE_SIZE=1000
+#: since #549), so the initial page reports has_more=true whenever `older` > 0.
+NEWER_COUNT = 1000
+OLDER_SINGLE_PAGE = 600  # < PAGE_SIZE → that page is the LAST page (has_more=false)
+OLDER_MULTI_PAGE = 2200  # ≥ 2 more pages → pagination must continue
 
 #: Paragraph body shared by every seeded message. Deliberately tall (~400-600px
 #: rendered) so 100 messages far exceed the ~900px viewport and the fling has
@@ -324,6 +324,7 @@ def test_prefetch_request_is_issued_before_the_scroll_reaches_the_top(ui_harness
 
     band = _commit_band_px(_client_height(page))
     height_before = float(page.evaluate("() => window.__pickScroller().scrollHeight"))
+    preserve_before = sum(1 for l in console_lines if "load-more-preserve-end" in l)
 
     # ── PHASE A — travel down to just ABOVE the band ────────────────────────
     _fling_to(page, target_top=int(band) + FLING_STEP_PX)
@@ -346,9 +347,13 @@ def test_prefetch_request_is_issued_before_the_scroll_reaches_the_top(ui_harness
         f"band: scrollTop={armed[0]['scrollTop']} at request time, band={band:.0f}px. "
         f"requests={probe_a['requests']}"
     )
-    # ARM must be invisible: no prepend yet.
-    assert float(page.evaluate("() => window.__pickScroller().scrollHeight")) <= height_before + 100, (
-        "the armed page was rendered before the user crossed the band — ARM must "
+    # ARM must be invisible: no prepend yet. Assert via the commit log rather
+    # than scrollHeight: with PAGE_SIZE=1000 of tall messages the height model
+    # is still settling during the fling (estimate→measure drift), so a raw
+    # scrollHeight comparison is flaky. A premature commit would log
+    # load-more-preserve-end — ARM alone never does.
+    assert sum(1 for l in console_lines if "load-more-preserve-end" in l) == preserve_before, (
+        "the armed page was committed before the user crossed the band — ARM must "
         "only buffer, never mutate the list"
     )
 
