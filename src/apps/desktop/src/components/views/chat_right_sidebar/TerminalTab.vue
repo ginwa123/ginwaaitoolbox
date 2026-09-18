@@ -21,6 +21,7 @@ const props = defineProps<{
 }>()
 
 const POLL_MS = 300
+const MAX_TERMINALS = 20
 
 interface TermSession {
   id: string
@@ -270,8 +271,9 @@ const pollOnce = async () => {
     if (out.exited) markExited(id, out.exit_code)
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
-      // Session vanished server-side (restart / LRU eviction): drop it
-      // and start fresh instead of retrying a dead id forever.
+      // Session vanished server-side (restart / idle reclaim after
+      // 30min untouched): drop it and start fresh instead of retrying
+      // a dead id forever.
       const goneId = activeId.value
       if (goneId && !disposed) {
         stopPoll()
@@ -279,6 +281,7 @@ const pollOnce = async () => {
         sessions.value = sessions.value.filter((s) => s.id !== goneId)
         exitedIds.value.delete(goneId)
         saveStored()
+        status.value = 'Terminal was reclaimed (idle) — starting a new one…'
         if (sessions.value.length === 0) {
           void newSession()
           return
@@ -345,6 +348,10 @@ const awaitCwd = async (): Promise<string> => {
 
 const newSession = async () => {
   if (disposed) return
+  if (sessions.value.length >= MAX_TERMINALS) {
+    status.value = `Max ${MAX_TERMINALS} terminals — close one to open a new shell`
+    return
+  }
   status.value = 'connecting…'
   try {
     fit?.fit()
@@ -370,6 +377,10 @@ const newSession = async () => {
     saveStored()
     switchSession(session.id)
   } catch (err) {
+    if (err instanceof ApiError && err.status === 429) {
+      status.value = `Max ${MAX_TERMINALS} terminals — close one to open a new shell`
+      return
+    }
     status.value =
       err instanceof Error ? `failed to start: ${err.message}` : 'failed to start shell'
   }
@@ -586,14 +597,27 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
-        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70 whitespace-nowrap"
+        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
         style="color: var(--semantic-text-dim)"
-        title="New terminal session"
+        :title="
+          sessions.length >= MAX_TERMINALS
+            ? `Max ${MAX_TERMINALS} terminals`
+            : 'New terminal session'
+        "
         data-testid="terminal-new"
+        :disabled="sessions.length >= MAX_TERMINALS"
         @click="newSession"
       >
         +
       </button>
+      <span
+        class="text-[11px] whitespace-nowrap"
+        style="color: var(--semantic-text-dim)"
+        data-testid="terminal-count"
+        :title="`${sessions.length} of ${MAX_TERMINALS} terminals`"
+      >
+        {{ sessions.length }}/{{ MAX_TERMINALS }}
+      </span>
       <span
         class="text-[11px] truncate flex-1 text-right"
         style="color: var(--semantic-text-dim)"

@@ -9,8 +9,9 @@
 //!
 //! Success: 201 `{ id, pid }`. `id` is the opaque session handle for
 //! every other terminal endpoint. Errors: 400 (bad cwd/shell/size),
-//! 404 (cwd not a directory), 501 (non-PTY OS). No session cap:
-//! sessions are unlimited and idle ones (>24h untouched) are reaped.
+//! 404 (cwd not a directory), 429 (max 20 sessions live), 501
+//! (non-PTY OS). Idle sessions (>30min untouched, not busy) are
+//! reaped on the next create/read.
 
 const std = @import("std");
 const http_response = @import("http_response.zig");
@@ -25,6 +26,7 @@ pub const TerminalCreateError = error{
     InvalidShell,
     InvalidSize,
     SpawnFailed,
+    TooManySessions,
     OutOfMemory,
 };
 
@@ -68,6 +70,7 @@ pub fn terminalCreateHandler(
         const status: u16 = switch (err) {
             error.InvalidCwd, error.InvalidShell, error.InvalidSize => 400,
             error.CwdNotDir => 404,
+            error.TooManySessions => 429,
             error.UnsupportedPlatform => 501,
             error.SpawnFailed, error.OutOfMemory => 500,
             // Unreachable on create (no session id involved yet) but
@@ -79,6 +82,7 @@ pub fn terminalCreateHandler(
             error.InvalidShell => "shell must be an absolute path",
             error.InvalidSize => "cols/rows must be in [2, 1000]",
             error.CwdNotDir => "cwd is not an existing directory",
+            error.TooManySessions => "max 20 terminal sessions — close one to open a new shell",
             error.UnsupportedPlatform => "terminal sessions require Linux or macOS",
             error.SpawnFailed => "failed to spawn shell",
             error.OutOfMemory => "Out of memory",
