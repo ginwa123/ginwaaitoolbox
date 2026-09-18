@@ -6,7 +6,7 @@ const sqlite = nalarcore.sqlite;
 const llm_history = nalarcore.llm_history;
 const workspace_scope = nalarcore.workspace_scope;
 const helpers = @import("helpers");
-const xmlEscape = helpers.xml_escape;
+const sanitize = helpers.sanitize_control_chars;
 
 /// Input for read_workspace_session.
 ///
@@ -24,7 +24,7 @@ pub const ReadWorkspaceSessionInput = struct {
     session_id: []const u8 = "",
     /// FTS5 query for SEARCH / SEARCH-WITHIN (auto-sanitized, OR recall).
     query: []const u8 = "",
-    /// Comma-separated message ids. Returns full <content> for these ids
+    /// Comma-separated message ids. Returns full `content` for these ids
     /// (capped at `MAX_MESSAGE_IDS`). In SEARCH the lookup is restricted
     /// to workspace sessions — ids from other workspaces are skipped.
     message_ids: []const u8 = "",
@@ -64,15 +64,15 @@ pub const ReadWorkspaceSessionInput = struct {
 };
 
 /// Hard cap on how many `message_ids` the LLM can request at once.
-/// Prevents a single call from dumping megabytes of full <content>
+/// Prevents a single call from dumping megabytes of full `content`
 /// into the context. If the LLM needs more, it should split into
-/// batches — the response includes `<count>` + `<total_count>` so it
+/// batches — the response includes `count` + `total_count` so it
 /// can paginate by hand.
 pub const MAX_MESSAGE_IDS: u32 = 50;
 
-/// Hard cap on bytes of full <content> per individual message. When a
+/// Hard cap on bytes of full `content` per individual message. When a
 /// requested message_id's content exceeds this, the response includes
-/// the first `MAX_FULL_CONTENT_BYTES` bytes plus a `truncated="1"` flag
+/// the first `MAX_FULL_CONTENT_BYTES` bytes plus `content_truncated=true`
 /// so the LLM knows there's more. Default: 16 KB.
 pub const MAX_FULL_CONTENT_BYTES: u32 = 16 * 1024;
 
@@ -95,40 +95,40 @@ pub const read_workspace_session_tool = AgentTool{
     .function = .{
         .name = "read_workspace_session",
         .description =
-            \\Discover, search, and read other chat sessions in YOUR workspace — including messages compacted out of the live context. Scope is derived server-side from your session: you can only ever see sessions in your own workspace. Reads of other workspaces' sessions are denied.
-            \\
-            \\FOUR BEHAVIORS (pick by params):
-            \\- LIST (neither `query` nor `session_id`): sessions in your workspace with name, status, message count, last activity, and a preview of the latest human message. Your own session is excluded. Use this when you need to find "the conversation about X" but don't know its session id.
-            \\- SEARCH (`query` only): full-text search over message content across your workspace using SQLite FTS5. Filter by `role`/`tool_name`/`parent_session_id`/`agent`, time-bound via `since`/`until`, restrict to live or compacted rows via `live_only`/`compacted_only`, paginate with `offset` + `limit`. Returns ranked matches with a preview snippet + owning session id/name. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
-            \\- READ (`session_id` only): messages of one session in your workspace (live + compacted). Returns an index (id, role, created_at, preview); pass `message_ids` (up to 50) for full <content> bodies. Use `order="desc"` for most-recent-first, `since`/`until` to paginate forward.
-            \\- SEARCH-WITHIN (both `query` and `session_id`): FTS restricted to that one session (which must be in your workspace).
-            \\
-            \\FTS QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — you can write `handle_tool.zig` or `AGENTS.md` without pre-escaping. Multi-word queries are joined with FTS5 OR (`a b` matches rows containing `a` OR `b`) for natural recall.
-            \\
-            \\Response shape:
-            \\- <count>: number of entries in THIS response (page size).
-            \\- <total_count>: total matching entries before pagination. Use to know whether more pages exist.
-            \\- per-message <content> is truncated to 16 KB; a `truncated="1"` attribute on <content> indicates there's more. Call again with a narrower message_ids list to fetch the rest.
-            \\- cross-workspace targets return <denied>, not content. Sessions outside your workspace are never listed, never searched, never read.
-            \\
-            \\Filters (optional, apply to SEARCH/READ/SEARCH-WITHIN unless noted):
-            \\- role: "user", "assistant", or "tool" — exact match.
-            \\- tool_name: exact-match filter on the tool that produced the row. Useful for "find every bash invocation that ran `cargo test`".
-            \\- parent_session_id: exact-match filter on sub-agent sessions. Useful for tracing a sub-agent's full session.
-            \\- agent: exact-match filter on the agent name (e.g. "main", "planning", "compaction").
-            \\- live_only / compacted_only (mutually exclusive): restrict to messages still in your live context (is_feed_to_llm=1) vs. dropped by compaction (is_feed_to_llm=0). Default returns both.
-            \\- since / until: YYYY-MM-DD HH:MM:SS inclusive bounds on created_at.
-            \\- limit: max rows to return (default 20, max 200; LIST max 50).
-            \\- offset: SEARCH only — skip first N matches for pagination.
-            \\- order: READ only — "asc" (chronological forward, default) or "desc" (most-recent-first).
-            \\
-            \\Example (list): {}
-            \\Example (search): {"query": "login bug fix"}
-            \\Example (search page 2): {"query": "login bug", "offset": 20}
-            \\Example (read): {"session_id": "s_42"}
-            \\Example (read recent first): {"session_id": "s_42", "order": "desc"}
-            \\Example (read full bodies): {"session_id": "s_42", "message_ids": "h_1781,h_1782"}
-            \\Example (search within): {"session_id": "s_42", "query": "migration"}
+        \\Discover, search, and read other chat sessions in YOUR workspace — including messages compacted out of the live context. Scope is derived server-side from your session: you can only ever see sessions in your own workspace. Reads of other workspaces' sessions are denied.
+        \\
+        \\FOUR BEHAVIORS (pick by params):
+        \\- LIST (neither `query` nor `session_id`): sessions in your workspace with name, status, message count, last activity, and a preview of the latest human message. Your own session is excluded. Use this when you need to find "the conversation about X" but don't know its session id.
+        \\- SEARCH (`query` only): full-text search over message content across your workspace using SQLite FTS5. Filter by `role`/`tool_name`/`parent_session_id`/`agent`, time-bound via `since`/`until`, restrict to live or compacted rows via `live_only`/`compacted_only`, paginate with `offset` + `limit`. Returns ranked matches with a preview snippet + owning session id/name. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
+        \\- READ (`session_id` only): messages of one session in your workspace (live + compacted). Returns an index (id, role, created_at, preview); pass `message_ids` (up to 50) for full <content> bodies. Use `order="desc"` for most-recent-first, `since`/`until` to paginate forward.
+        \\- SEARCH-WITHIN (both `query` and `session_id`): FTS restricted to that one session (which must be in your workspace).
+        \\
+        \\FTS QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — you can write `handle_tool.zig` or `AGENTS.md` without pre-escaping. Multi-word queries are joined with FTS5 OR (`a b` matches rows containing `a` OR `b`) for natural recall.
+        \\
+        \\Response shape (JSON fields):
+        \\- `count`: number of entries in THIS response (page size).
+        \\- `total_count`: total matching entries before pagination. Use to know whether more pages exist.
+        \\- per-message `content` is truncated to 16 KB; `content_truncated=true` indicates there's more. Call again with a narrower message_ids list to fetch the rest.
+        \\- cross-workspace targets return `denied:true`, not content. Sessions outside your workspace are never listed, never searched, never read.
+        \\
+        \\Filters (optional, apply to SEARCH/READ/SEARCH-WITHIN unless noted):
+        \\- role: "user", "assistant", or "tool" — exact match.
+        \\- tool_name: exact-match filter on the tool that produced the row. Useful for "find every bash invocation that ran `cargo test`".
+        \\- parent_session_id: exact-match filter on sub-agent sessions. Useful for tracing a sub-agent's full session.
+        \\- agent: exact-match filter on the agent name (e.g. "main", "planning", "compaction").
+        \\- live_only / compacted_only (mutually exclusive): restrict to messages still in your live context (is_feed_to_llm=1) vs. dropped by compaction (is_feed_to_llm=0). Default returns both.
+        \\- since / until: YYYY-MM-DD HH:MM:SS inclusive bounds on created_at.
+        \\- limit: max rows to return (default 20, max 200; LIST max 50).
+        \\- offset: SEARCH only — skip first N matches for pagination.
+        \\- order: READ only — "asc" (chronological forward, default) or "desc" (most-recent-first).
+        \\
+        \\Example (list): {}
+        \\Example (search): {"query": "login bug fix"}
+        \\Example (search page 2): {"query": "login bug", "offset": 20}
+        \\Example (read): {"session_id": "s_42"}
+        \\Example (read recent first): {"session_id": "s_42", "order": "desc"}
+        \\Example (read full bodies): {"session_id": "s_42", "message_ids": "h_1781,h_1782"}
+        \\Example (search within): {"session_id": "s_42", "query": "migration"}
         ,
         .parameters = .{
             .type = "object",
@@ -172,20 +172,20 @@ fn parseMessageIds(allocator: std.mem.Allocator, csv: []const u8) ![]const []con
     return try ids.toOwnedSlice(allocator);
 }
 
-fn errorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        "<read_workspace_session><error>{s}</error></read_workspace_session>",
-        .{escaped});
+fn jsonError(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitize(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
-fn deniedXml(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, session_id);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        "<read_workspace_session><denied session_id=\"{s}\">Session is not in your workspace.</denied></read_workspace_session>",
-        .{escaped});
+fn deniedJSON(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
+    const clean = try sanitize(allocator, session_id);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .denied = true,
+        .session_id = clean,
+        .message = "Session is not in your workspace.",
+    }, .{});
 }
 
 /// Execute read_workspace_session. Returns an XML string for the LLM.
@@ -201,8 +201,7 @@ pub fn execute_read_workspace_session(
     _ = io; // Reserved for future streaming; not used in v1.
 
     if (input.live_only and input.compacted_only) {
-        return errorXml(allocator,
-            "live_only and compacted_only are mutually exclusive — pick one or neither.");
+        return jsonError(allocator, "live_only and compacted_only are mutually exclusive — pick one or neither.");
     }
 
     const feed_filter: llm_history.FeedFilter = if (input.live_only)
@@ -213,7 +212,7 @@ pub fn execute_read_workspace_session(
         .all;
 
     if (caller_session_id.len == 0) {
-        return errorXml(allocator, "Missing caller session — cannot resolve workspace scope.");
+        return jsonError(allocator, "Missing caller session — cannot resolve workspace scope.");
     }
 
     const want_search = input.query.len > 0;
@@ -227,8 +226,7 @@ pub fn execute_read_workspace_session(
     const ws = try workspace_scope.resolveWorkspaceId(allocator, db, caller_session_id);
     defer if (ws) |w| allocator.free(w);
     if (ws == null) {
-        return errorXml(allocator,
-            "Current session is not linked to any workspace — cross-session history is unavailable.");
+        return jsonError(allocator, "Current session is not linked to any workspace — cross-session history is unavailable.");
     }
 
     if (want_search and !want_read) {
@@ -240,7 +238,7 @@ pub fn execute_read_workspace_session(
     // READ or SEARCH-WITHIN: gate the target session first.
     const allowed = try workspace_scope.isSameWorkspace(allocator, db, caller_session_id, input.session_id);
     if (!allowed) {
-        return deniedXml(allocator, input.session_id);
+        return deniedJSON(allocator, input.session_id);
     }
     if (want_search) {
         return executeSearch(allocator, db, null, input.session_id, feed_filter, input);
@@ -274,8 +272,7 @@ fn executeList(
     const ws = try workspace_scope.resolveWorkspaceId(allocator, db, caller_session_id);
     defer if (ws) |w| allocator.free(w);
     if (ws == null) {
-        return errorXml(allocator,
-            "Current session is not linked to any workspace — cross-session history is unavailable.");
+        return jsonError(allocator, "Current session is not linked to any workspace — cross-session history is unavailable.");
     }
 
     const ws_ids = try workspace_scope.workspaceSessionIds(allocator, db, ws.?);
@@ -332,39 +329,53 @@ fn executeList(
         }
     }
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-    try xml.print(allocator,
-        "<read_workspace_session behavior=\"list\" limit=\"{d}\">\n" ++
-        "  <count>{d}</count>\n" ++
-        "  <total_count>{d}</total_count>\n" ++
-        "  <sessions>\n",
-        .{ list_limit, metas.items.len, metas.items.len });
-    for (metas.items) |m| {
-        const id_e = try xmlEscape(allocator, m.id);
-        defer allocator.free(id_e);
-        const name_e = try xmlEscape(allocator, m.name);
-        defer allocator.free(name_e);
-        const status_e = try xmlEscape(allocator, m.status);
-        defer allocator.free(status_e);
-        const la_e = try xmlEscape(allocator, m.last_activity);
-        defer allocator.free(la_e);
-        const preview_e = try xmlEscape(allocator, m.preview);
-        defer allocator.free(preview_e);
-        try xml.appendSlice(allocator, "    <session>\n");
-        try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
-        try xml.print(allocator, "      <name>{s}</name>\n", .{name_e});
-        try xml.print(allocator, "      <status>{s}</status>\n", .{status_e});
-        try xml.print(allocator, "      <message_count>{d}</message_count>\n", .{m.message_count});
-        try xml.print(allocator, "      <last_activity>{s}</last_activity>\n", .{la_e});
-        try xml.print(allocator, "      <preview>{s}</preview>\n", .{preview_e});
-        try xml.appendSlice(allocator, "    </session>\n");
+    const JsonSession = struct {
+        id: []const u8,
+        name: []const u8,
+        status: []const u8,
+        message_count: u32,
+        last_activity: []const u8,
+        preview: []const u8,
+    };
+    var clean = try allocator.alloc(JsonSession, metas.items.len);
+    defer allocator.free(clean);
+    var owned: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
     }
-    try xml.appendSlice(allocator, "  </sessions>\n</read_workspace_session>\n");
+    for (metas.items, 0..) |m, i| {
+        const id = try sanitize(allocator, m.id);
+        try owned.append(allocator, id);
+        const name = try sanitize(allocator, m.name);
+        try owned.append(allocator, name);
+        const status = try sanitize(allocator, m.status);
+        try owned.append(allocator, status);
+        const la = try sanitize(allocator, m.last_activity);
+        try owned.append(allocator, la);
+        const preview = try sanitize(allocator, m.preview);
+        try owned.append(allocator, preview);
+        clean[i] = .{
+            .id = id,
+            .name = name,
+            .status = status,
+            .message_count = m.message_count,
+            .last_activity = la,
+            .preview = preview,
+        };
+    }
+    const out = try std.json.Stringify.valueAlloc(allocator, .{
+        .behavior = "list",
+        .limit = list_limit,
+        .count = clean.len,
+        .total_count = clean.len,
+        .sessions = clean,
+    }, .{});
+    errdefer allocator.free(out);
 
     for (metas.items) |m| m.deinit(allocator);
     metas.deinit(allocator);
-    return try xml.toOwnedSlice(allocator);
+    return out;
 }
 
 /// First 100 chars of the latest user message in a session ("" when none).
@@ -413,7 +424,7 @@ fn executeSearch(
     const hits = llm_history.searchMessagesFts(allocator, db, input.query, opts) catch |err| {
         const msg = try std.fmt.allocPrint(allocator, "FTS search failed: {s}", .{@errorName(err)});
         defer allocator.free(msg);
-        return errorXml(allocator, msg);
+        return jsonError(allocator, msg);
     };
     defer {
         for (hits) |h| {
@@ -429,11 +440,9 @@ fn executeSearch(
         allocator.free(parsed_ids);
     }
     if (parsed_ids.len > MAX_MESSAGE_IDS) {
-        const msg = try std.fmt.allocPrint(allocator,
-            "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.",
-            .{ parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
+        const msg = try std.fmt.allocPrint(allocator, "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.", .{ parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
         defer allocator.free(msg);
-        return errorXml(allocator, msg);
+        return jsonError(allocator, msg);
     }
 
     // Session names for the hits (readability — the LLM picks sessions by name).
@@ -450,59 +459,65 @@ fn executeSearch(
     const total_count: u32 = if (hits.len > 0) hits[0].total_count else 0;
     const behavior: []const u8 = if (within_session_id != null) "search-within" else "search";
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    const escaped_query = try xmlEscape(allocator, input.query);
-    defer allocator.free(escaped_query);
-    try xml.print(allocator,
-        "<read_workspace_session behavior=\"{s}\" offset=\"{d}\" limit=\"{d}\">\n" ++
-        "  <query>{s}</query>\n",
-        .{ behavior, input.offset, effective_limit, escaped_query });
-    if (within_session_id) |sid| {
-        const sid_e = try xmlEscape(allocator, sid);
-        defer allocator.free(sid_e);
-        try xml.print(allocator, "  <session_id>{s}</session_id>\n", .{sid_e});
+    const JsonHit = struct {
+        id: []const u8,
+        session_id: []const u8,
+        session_name: ?[]const u8,
+        role: []const u8,
+        created_at: ?[]const u8,
+        snippet: []const u8,
+    };
+    const JsonFull = struct {
+        id: []const u8,
+        session_id: []const u8,
+        role: []const u8,
+        content: []const u8,
+        content_truncated: bool,
+    };
+    var owned: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
     }
-    try xml.print(allocator,
-        "  <count>{d}</count>\n" ++
-        "  <total_count>{d}</total_count>\n" ++
-        "  <results>\n",
-        .{ hits.len, total_count });
-    for (hits) |h| {
-        const id_e = try xmlEscape(allocator, h.id);
-        defer allocator.free(id_e);
-        const sid_e = try xmlEscape(allocator, h.session_id);
-        defer allocator.free(sid_e);
-        const role_e = try xmlEscape(allocator, h.role);
-        defer allocator.free(role_e);
-        const snip_e = try xmlEscape(allocator, h.snippet);
-        defer allocator.free(snip_e);
-        const sname_e = if (names.get(h.session_id)) |n| try xmlEscape(allocator, n) else try allocator.dupe(u8, "");
-        defer allocator.free(sname_e);
+    const clean_query = try sanitize(allocator, input.query);
+    try owned.append(allocator, clean_query);
+    const clean_within: ?[]u8 = if (within_session_id) |sid| try sanitize(allocator, sid) else null;
+    if (clean_within) |s| try owned.append(allocator, s);
 
-        try xml.appendSlice(allocator, "    <entry>\n");
-        try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
-        try xml.print(allocator, "      <session_id>{s}</session_id>\n", .{sid_e});
-        try xml.print(allocator, "      <session_name>{s}</session_name>\n", .{sname_e});
-        try xml.print(allocator, "      <role>{s}</role>\n", .{role_e});
-        if (h.created_at.len > 0) {
-            const ca_e = try xmlEscape(allocator, h.created_at);
-            defer allocator.free(ca_e);
-            try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{ca_e});
-        }
-        try xml.print(allocator, "      <snippet>{s}</snippet>\n", .{snip_e});
-        try xml.appendSlice(allocator, "    </entry>\n");
+    var clean_hits = try allocator.alloc(JsonHit, hits.len);
+    defer allocator.free(clean_hits);
+    for (hits, 0..) |h, i| {
+        const id = try sanitize(allocator, h.id);
+        try owned.append(allocator, id);
+        const sid = try sanitize(allocator, h.session_id);
+        try owned.append(allocator, sid);
+        const role = try sanitize(allocator, h.role);
+        try owned.append(allocator, role);
+        const snip = try sanitize(allocator, h.snippet);
+        try owned.append(allocator, snip);
+        const sname: ?[]u8 = if (names.get(h.session_id)) |n| try sanitize(allocator, n) else null;
+        if (sname) |s| try owned.append(allocator, s);
+        const ca: ?[]u8 = if (h.created_at.len > 0) try sanitize(allocator, h.created_at) else null;
+        if (ca) |c| try owned.append(allocator, c);
+        clean_hits[i] = .{
+            .id = id,
+            .session_id = sid,
+            .session_name = sname,
+            .role = role,
+            .created_at = ca,
+            .snippet = snip,
+        };
     }
-    try xml.appendSlice(allocator, "  </results>\n");
 
     // Full content block — workspace-scoped: ids resolving outside the
-    // workspace are skipped, never leaked.
+    // workspace are skipped, never leaked. Null when no message_ids
+    // were requested.
+    var clean_full: ?[]JsonFull = null;
     if (parsed_ids.len > 0) {
         const full_messages = llm_history.getMessagesByIds(allocator, db, parsed_ids) catch |err| {
             const msg = try std.fmt.allocPrint(allocator, "Database query failed: {s}", .{@errorName(err)});
             defer allocator.free(msg);
-            return errorXml(allocator, msg);
+            return jsonError(allocator, msg);
         };
         defer {
             for (full_messages) |m| {
@@ -516,38 +531,48 @@ fn executeSearch(
         defer wanted.deinit(allocator);
         for (parsed_ids) |id| try wanted.put(allocator, id, {});
 
-        try xml.appendSlice(allocator, "  <full_contents>\n");
+        var full_list: std.ArrayList(JsonFull) = .empty;
+        defer full_list.deinit(allocator);
         for (full_messages) |m| {
             if (!wanted.contains(m.id)) continue;
             if (!isIdInWorkspace(ws_ids, within_session_id, m.session_id)) continue;
-            const id_e = try xmlEscape(allocator, m.id);
-            defer allocator.free(id_e);
-            const sid_e = try xmlEscape(allocator, m.session_id);
-            defer allocator.free(sid_e);
-            const role_e = try xmlEscape(allocator, m.role);
-            defer allocator.free(role_e);
+            const id = try sanitize(allocator, m.id);
+            try owned.append(allocator, id);
+            const sid = try sanitize(allocator, m.session_id);
+            try owned.append(allocator, sid);
+            const role = try sanitize(allocator, m.role);
+            try owned.append(allocator, role);
 
-            try xml.appendSlice(allocator, "    <entry>\n");
-            try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
-            try xml.print(allocator, "      <session_id>{s}</session_id>\n", .{sid_e});
-            try xml.print(allocator, "      <role>{s}</role>\n", .{role_e});
             const was_truncated = m.content.len > MAX_FULL_CONTENT_BYTES;
             const content_src: []const u8 = if (was_truncated)
                 m.content[0..MAX_FULL_CONTENT_BYTES]
             else
                 m.content;
-            const content_e = try xmlEscape(allocator, content_src);
-            defer allocator.free(content_e);
-            try xml.print(allocator,
-                "      <content truncated=\"{c}\">{s}</content>\n",
-                .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
-            try xml.appendSlice(allocator, "    </entry>\n");
+            const content = try sanitize(allocator, content_src);
+            try owned.append(allocator, content);
+            try full_list.append(allocator, .{
+                .id = id,
+                .session_id = sid,
+                .role = role,
+                .content = content,
+                .content_truncated = was_truncated,
+            });
         }
-        try xml.appendSlice(allocator, "  </full_contents>\n");
+        clean_full = try full_list.toOwnedSlice(allocator);
     }
+    defer if (clean_full) |s| allocator.free(s);
 
-    try xml.appendSlice(allocator, "</read_workspace_session>\n");
-    return try xml.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .behavior = behavior,
+        .query = clean_query,
+        .session_id = clean_within,
+        .offset = input.offset,
+        .limit = effective_limit,
+        .count = clean_hits.len,
+        .total_count = total_count,
+        .results = clean_hits,
+        .full_contents = clean_full,
+    }, .{});
 }
 
 /// True when `session_id` belongs to the search scope: the workspace id
@@ -632,11 +657,9 @@ fn executeRead(
         allocator.free(parsed_ids);
     }
     if (parsed_ids.len > MAX_MESSAGE_IDS) {
-        const msg = try std.fmt.allocPrint(allocator,
-            "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.",
-            .{ parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
+        const msg = try std.fmt.allocPrint(allocator, "Too many message_ids ({d} > max {d}). Split into batches of {d} or fewer.", .{ parsed_ids.len, MAX_MESSAGE_IDS, MAX_MESSAGE_IDS });
         defer allocator.free(msg);
-        return errorXml(allocator, msg);
+        return jsonError(allocator, msg);
     }
     const want_full = parsed_ids.len > 0;
 
@@ -663,7 +686,7 @@ fn executeRead(
     const messages = llm_history.getCompactedMessages(allocator, db, session_id, opts) catch |err| {
         const msg = try std.fmt.allocPrint(allocator, "Database query failed: {s}", .{@errorName(err)});
         defer allocator.free(msg);
-        return errorXml(allocator, msg);
+        return jsonError(allocator, msg);
     };
     defer {
         for (messages) |m| {
@@ -679,82 +702,109 @@ fn executeRead(
     defer full_ids_set.deinit(allocator);
     if (want_full) for (parsed_ids) |id| try full_ids_set.put(allocator, id, {});
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
+    const JsonEntry = struct {
+        id: []const u8,
+        role: []const u8,
+        created_at: ?[]const u8,
+        preview: []const u8,
+        tool_call_id: ?[]const u8,
+        tool_name: ?[]const u8,
+        content: ?[]const u8,
+        content_truncated: ?bool,
+    };
+    var owned: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned.items) |s| allocator.free(s);
+        owned.deinit(allocator);
+    }
+    const clean_sid = try sanitize(allocator, session_id);
+    try owned.append(allocator, clean_sid);
 
-    const escaped_session_id = try xmlEscape(allocator, session_id);
-    defer allocator.free(escaped_session_id);
-    try xml.print(allocator,
-        "<read_workspace_session behavior=\"read\" order=\"{s}\">\n" ++
-        "  <session_id>{s}</session_id>\n" ++
-        "  <count>{d}</count>\n" ++
-        "  <total_count>{d}</total_count>\n" ++
-        "  <message_index>\n",
-        .{ @tagName(order_enum), escaped_session_id, messages.len, total_count });
-
-    for (messages) |m| {
-        const id_e = try xmlEscape(allocator, m.id);
-        defer allocator.free(id_e);
-        const role_e = try xmlEscape(allocator, m.role);
-        defer allocator.free(role_e);
+    var clean_entries = try allocator.alloc(JsonEntry, messages.len);
+    defer allocator.free(clean_entries);
+    for (messages, 0..) |m, i| {
+        const id = try sanitize(allocator, m.id);
+        try owned.append(allocator, id);
+        const role = try sanitize(allocator, m.role);
+        try owned.append(allocator, role);
         const preview_src: []const u8 = if (m.content.len > 100) m.content[0..100] else m.content;
-        const preview_e = try xmlEscape(allocator, preview_src);
-        defer allocator.free(preview_e);
+        const preview = try sanitize(allocator, preview_src);
+        try owned.append(allocator, preview);
+        const ca: ?[]u8 = if (m.created_at.len > 0) try sanitize(allocator, m.created_at) else null;
+        if (ca) |c| try owned.append(allocator, c);
 
-        try xml.appendSlice(allocator, "    <entry>\n");
-        try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
-        try xml.print(allocator, "      <role>{s}</role>\n", .{role_e});
-        if (m.created_at.len > 0) {
-            const ca_e = try xmlEscape(allocator, m.created_at);
-            defer allocator.free(ca_e);
-            try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{ca_e});
-        }
-        try xml.print(allocator, "      <preview>{s}</preview>\n", .{preview_e});
-        if (std.mem.eql(u8, m.role, "tool")) {
-            if (m.tool_call_id) |tcid| {
-                const tcid_e = try xmlEscape(allocator, tcid);
-                defer allocator.free(tcid_e);
-                try xml.print(allocator, "      <tool_call_id>{s}</tool_call_id>\n", .{tcid_e});
+        const is_tool = std.mem.eql(u8, m.role, "tool");
+        var tcid: ?[]u8 = null;
+        var tn: ?[]u8 = null;
+        if (is_tool) {
+            if (m.tool_call_id) |t| {
+                tcid = try sanitize(allocator, t);
+                try owned.append(allocator, tcid.?);
             }
-            if (m.tool_name) |tn| {
-                const tn_e = try xmlEscape(allocator, tn);
-                defer allocator.free(tn_e);
-                try xml.print(allocator, "      <tool_name>{s}</tool_name>\n", .{tn_e});
+            if (m.tool_name) |t| {
+                tn = try sanitize(allocator, t);
+                try owned.append(allocator, tn.?);
             }
         }
-        if (want_full and full_ids_set.contains(m.id)) {
-            const was_truncated = m.content.len > MAX_FULL_CONTENT_BYTES;
+
+        const want_content = want_full and full_ids_set.contains(m.id);
+        var content: ?[]u8 = null;
+        var was_truncated = false;
+        if (want_content) {
+            was_truncated = m.content.len > MAX_FULL_CONTENT_BYTES;
             const content_src: []const u8 = if (was_truncated)
                 m.content[0..MAX_FULL_CONTENT_BYTES]
             else
                 m.content;
-            const content_e = try xmlEscape(allocator, content_src);
-            defer allocator.free(content_e);
-            try xml.print(allocator,
-                "      <content truncated=\"{c}\">{s}</content>\n",
-                .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
+            content = try sanitize(allocator, content_src);
+            try owned.append(allocator, content.?);
         }
-        try xml.appendSlice(allocator, "    </entry>\n");
+        clean_entries[i] = .{
+            .id = id,
+            .role = role,
+            .created_at = ca,
+            .preview = preview,
+            .tool_call_id = tcid,
+            .tool_name = tn,
+            .content = content,
+            .content_truncated = if (want_content) was_truncated else null,
+        };
     }
 
-    try xml.appendSlice(allocator, "  </message_index>\n</read_workspace_session>\n");
-    return try xml.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .behavior = "read",
+        .order = @tagName(order_enum),
+        .session_id = clean_sid,
+        .count = clean_entries.len,
+        .total_count = total_count,
+        .message_index = clean_entries,
+    }, .{});
 }
 
-pub fn toXmlSuccess(allocator: std.mem.Allocator, inner: []const u8) ![]u8 {
-    return allocator.dupe(u8, inner);
-}
-
-pub fn toXmlError(allocator: std.mem.Allocator, err_msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, err_msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator,
-        "<read_workspace_session><error>{s}</error></read_workspace_session>",
-        .{escaped});
+pub fn toJSONError(allocator: std.mem.Allocator, err_msg: []const u8) ![]u8 {
+    return jsonError(allocator, err_msg);
 }
 
 const testing = std.testing;
 const rws = @import("read_workspace_session.zig");
+
+fn parseTestJson(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+}
+
+fn hasSessionId(sessions: std.json.Array, id: []const u8) bool {
+    for (sessions.items) |s| {
+        if (std.mem.eql(u8, s.object.get("id").?.string, id)) return true;
+    }
+    return false;
+}
+
+fn hasResultId(results: std.json.Array, id: []const u8) bool {
+    for (results.items) |r| {
+        if (std.mem.eql(u8, r.object.get("id").?.string, id)) return true;
+    }
+    return false;
+}
 
 const TestCtx = struct {
     db: sqlite.SqliteBackend,
@@ -855,18 +905,30 @@ test "read_workspace_session: LIST shows workspace peers, excludes self and othe
     }
     const alloc = testing.allocator;
 
-    const xml = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{});
-    defer alloc.free(xml);
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{});
+    defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<read_workspace_session behavior=\"list\"") != null);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("list", obj.get("behavior").?.string);
+    const sessions = obj.get("sessions").?.array;
     // s3 (same workspace) listed with metadata.
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>s3</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<name>Plain chat</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "login page redesign notes") != null);
+    try testing.expect(hasSessionId(sessions, "s3"));
+    var found_preview = false;
+    for (sessions.items) |sess| {
+        if (std.mem.eql(u8, sess.object.get("id").?.string, "s3")) {
+            try testing.expectEqualStrings("Plain chat", sess.object.get("name").?.string);
+            if (std.mem.indexOf(u8, sess.object.get("preview").?.string, "login page redesign notes") != null) {
+                found_preview = true;
+            }
+        }
+    }
+    try testing.expect(found_preview);
     // Own session excluded, other workspace excluded.
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>s1</id>") == null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>s2</id>") == null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<count>1</count>") != null);
+    try testing.expect(!hasSessionId(sessions, "s1"));
+    try testing.expect(!hasSessionId(sessions, "s2"));
+    try testing.expectEqual(@as(i64, 1), obj.get("count").?.integer);
 }
 
 test "read_workspace_session: SEARCH is workspace-scoped" {
@@ -877,23 +939,29 @@ test "read_workspace_session: SEARCH is workspace-scoped" {
     }
     const alloc = testing.allocator;
 
-    const xml = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .query = "login",
     });
-    defer alloc.free(xml);
+    defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "behavior=\"search\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>h1</id>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>h2</id>") != null);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("search", obj.get("behavior").?.string);
+    const results = obj.get("results").?.array;
+    try testing.expect(hasResultId(results, "h1"));
+    try testing.expect(hasResultId(results, "h2"));
     // h3 lives in w2 — never surfaced.
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>h3</id>") == null);
+    try testing.expect(!hasResultId(results, "h3"));
 
     // A term that exists ONLY in the other workspace returns zero hits.
-    const xml2 = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+    const out2 = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .query = "deployment",
     });
-    defer alloc.free(xml2);
-    try testing.expect(std.mem.indexOf(u8, xml2, "<count>0</count>") != null);
+    defer alloc.free(out2);
+    const parsed2 = try parseTestJson(alloc, out2);
+    defer parsed2.deinit();
+    try testing.expectEqual(@as(i64, 0), parsed2.value.object.get("count").?.integer);
 }
 
 test "read_workspace_session: READ same-workspace works, cross-workspace denied" {
@@ -904,18 +972,22 @@ test "read_workspace_session: READ same-workspace works, cross-workspace denied"
     }
     const alloc = testing.allocator;
 
-    const xml = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .session_id = "s3",
     });
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "behavior=\"read\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>h2</id>") != null);
+    defer alloc.free(out);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("read", parsed.value.object.get("behavior").?.string);
+    try testing.expect(hasResultId(parsed.value.object.get("message_index").?.array, "h2"));
 
     const denied = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .session_id = "s2",
     });
     defer alloc.free(denied);
-    try testing.expect(std.mem.indexOf(u8, denied, "<denied") != null);
+    const denied_parsed = try parseTestJson(alloc, denied);
+    defer denied_parsed.deinit();
+    try testing.expect(denied_parsed.value.object.get("denied").?.bool);
     // No content leaks through the denial.
     try testing.expect(std.mem.indexOf(u8, denied, "deployment") == null);
 }
@@ -928,20 +1000,24 @@ test "read_workspace_session: SEARCH-WITHIN gates the session first" {
     }
     const alloc = testing.allocator;
 
-    const xml = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .session_id = "s3",
         .query = "redesign",
     });
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "behavior=\"search-within\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<id>h2</id>") != null);
+    defer alloc.free(out);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("search-within", parsed.value.object.get("behavior").?.string);
+    try testing.expect(hasResultId(parsed.value.object.get("results").?.array, "h2"));
 
     const denied = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .session_id = "s2",
         .query = "deployment",
     });
     defer alloc.free(denied);
-    try testing.expect(std.mem.indexOf(u8, denied, "<denied") != null);
+    const denied_parsed = try parseTestJson(alloc, denied);
+    defer denied_parsed.deinit();
+    try testing.expect(denied_parsed.value.object.get("denied").?.bool);
 }
 
 test "read_workspace_session: caller without workspace gets a clean error" {
@@ -952,13 +1028,12 @@ test "read_workspace_session: caller without workspace gets a clean error" {
     }
     const alloc = testing.allocator;
 
-    try s.db.exec(alloc,
-        "INSERT INTO sessions (id, name, status, cwd) VALUES ('sx', 'Lost', 'active', '/nowhere')",
-        &.{});
-    const xml = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "sx", .{});
-    defer alloc.free(xml);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "not linked to any workspace") != null);
+    try s.db.exec(alloc, "INSERT INTO sessions (id, name, status, cwd) VALUES ('sx', 'Lost', 'active', '/nowhere')", &.{});
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "sx", .{});
+    defer alloc.free(out);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    try testing.expect(std.mem.indexOf(u8, parsed.value.object.get("error").?.string, "not linked to any workspace") != null);
 }
 
 test "read_workspace_session: self-read allowed, guards enforced" {
@@ -974,7 +1049,9 @@ test "read_workspace_session: self-read allowed, guards enforced" {
         .session_id = "s1",
     });
     defer alloc.free(self);
-    try testing.expect(std.mem.indexOf(u8, self, "<id>h1</id>") != null);
+    const self_parsed = try parseTestJson(alloc, self);
+    defer self_parsed.deinit();
+    try testing.expect(hasResultId(self_parsed.value.object.get("message_index").?.array, "h1"));
 
     // live_only + compacted_only rejected.
     const both = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{

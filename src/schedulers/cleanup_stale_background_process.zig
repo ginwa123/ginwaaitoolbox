@@ -889,10 +889,13 @@ test "cleanupStaleBackgroundProcesses notifies with log content then deletes the
 
     const msg = try queueMessageForSession(&ctx.db, testing.allocator, "s_done");
     defer testing.allocator.free(msg);
-    try testing.expect(std.mem.indexOf(u8, msg, "<background_command>") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "<pid>999999999</pid>") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "<command>make all</command>") != null);
-    try testing.expect(std.mem.indexOf(u8, msg, "build finished ok") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, msg, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(@as(i64, 999999999), obj.get("pid").?.integer);
+    try testing.expectEqualStrings("make all", obj.get("command").?.string);
+    try testing.expectEqualStrings("build finished ok", obj.get("stdout").?.string);
+    try testing.expect(!obj.get("truncated").?.bool);
     try testing.expect(std.mem.indexOf(u8, msg, "\"\"\"\"\"") == null);
 }
 
@@ -1145,9 +1148,7 @@ test "cleanupStaleBackgroundProcesses batch-chunks deletes when more than max_pa
     try testing.expectEqual(@as(usize, 600), result.deleted_count);
 
     // All 600 dead rows gone
-    var q = try ctx.db.query(testing.allocator,
-        "SELECT COUNT(*) FROM session_background_process WHERE session_id = 's_dead'",
-        &.{});
+    var q = try ctx.db.query(testing.allocator, "SELECT COUNT(*) FROM session_background_process WHERE session_id = 's_dead'", &.{});
     defer q.deinit();
     if (try q.next()) |row| {
         defer row.deinit(testing.allocator);

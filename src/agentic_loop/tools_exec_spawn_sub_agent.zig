@@ -10,7 +10,7 @@ const models = @import("models.zig");
 const ai_workflow = @import("workflow.zig");
 const spawn_sub_agent_tool = nalarcore.spawn_sub_agent;
 const subagent_progress = @import("subagent_progress.zig");
-const xml_escape = @import("helpers").xml_escape;
+const sanitize = @import("helpers").sanitize_control_chars;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 const agent = nalarcore.agent;
@@ -431,32 +431,9 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit(ctx.allocator);
 
-    // Build the result XML using `std.Io.Writer.Allocating`.
-    //
-    // IMPORTANT (learned the hard way on 2026-06-15): in this Zig
-    // 0.16 build, `Writer.Allocating.fromArrayList` EMPTIES the
-    // passed ArrayList (`defer array_list.* = .empty;` inside
-    // `fromArrayListAligned`, see std/Io/Writer.zig line 2567) and
-    // takes ownership of its allocated memory as the writer's
-    // internal buffer. Calling `toOwnedSlice` on the ORIGINAL
-    // ArrayList therefore returns "" — the data is in the writer.
-    // And `Writer.Allocating.flush` is a no-op (see std/Io/Writer.zig
-    // line 2582: `.flush = noopFlush`), so calling `flush` does
-    // nothing useful.
-    //
-    // The right pattern is:
-    //   1. `Allocating.init(allocator)` — get a writer with its own buffer
-    //   2. write into it via `&aw.writer`
-    //   3. `aw.toArrayList()` — MOVE the buffer out as a fresh ArrayList
-    //   4. `final_list.toOwnedSlice(allocator)` — extract the data
-    //   5. `defer aw.deinit()` — cleanup the writer
-    //
-    // (The previous fix that called `try aw.flush();` was a no-op
-    // for the same reason and didn't actually fix the empty-data
-    // bug. This is the real fix.)
-    var aw = std.Io.Writer.Allocating.init(ctx.allocator);
-    defer aw.deinit();
-    const w = &aw.writer;
+    // The per-agent results below are serialized with
+    // `std.json.Stringify.valueAlloc` (never string-concat) — no
+    // intermediate writer buffer needed.
 
     const sub_agent_count = parsed.sub_agents.len;
     ctx.logger.debugFmt("Parsed {} sub-agents", .{sub_agent_count});
@@ -587,52 +564,71 @@ pub fn execSpawnSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
         if (result.success) success_count += 1;
     }
 
-    try w.print("<results>\n", .{});
-    for (shared_results.results) |result| {
-        const success = if (result.success) "true" else "false";
-        const random_fallback = if (result.is_random_fallback) "true" else "false";
-        // 2026-09-04 subagent-peek P3: escape XML so names with <>&"
-        // don't corrupt SpawnSubAgent.vue's <session_id> regex extraction.
-        const name_esc = try xml_escape(ctx.allocator, result.name);
-        try w.print("<agent name=\"{s}\" success=\"{s}\" random_fallback=\"{s}\">\n", .{ name_esc, success, random_fallback });
-        if (result.session_id.len > 0) {
-            const sid_esc = try xml_escape(ctx.allocator, result.session_id);
-            try w.print("<session_id>{s}</session_id>\n", .{sid_esc});
-        }
-        if (result.success) {
-            if (result.response) |resp| {
-                const resp_esc = try xml_escape(ctx.allocator, resp);
-                try w.print("<response>{s}</response>\n", .{resp_esc});
-            } else {
-                try w.print("<response></response>\n", .{});
-            }
-        } else if (result.error_message) |err| {
-            const err_esc = try xml_escape(ctx.allocator, err);
-            try w.print("<error>{s}</error>\n", .{err_esc});
-        } else {
-            try w.print("<error>unknown error</error>\n", .{});
-        }
-        try w.print("</agent>\n", .{});
+    // Build the result JSON object via `std.json.Stringify.valueAlloc`
+    // (never string-concat). Former tag names become keys 1:1; the
+    // optional session/response/error slots are explicit nulls when
+    // absent and per-agent entries form the `results` array.
+    const JsonAgent = struct {
+        name: []const u8,
+        success: bool,
+        random_fallback: bool,
+        session_id: ?[]const u8,
+        response: ?[]const u8,
+        @"error": ?[]const u8,
+    };
+    var owned: std.ArrayList([]u8) = .empty;
+    defer {
+        for (owned.items) |s| ctx.allocator.free(s);
+        owned.deinit(ctx.allocator);
     }
-    try w.print("<summary succeeded=\"{}\" failed=\"{}\" />\n", .{ success_count, sub_agent_count - success_count });
-    try w.print("</results>\n", .{});
-
-    // Move the writer's internal buffer out as an ArrayList (this
-    // resets the writer to an empty state — `defer aw.deinit()`
-    // at the top of the function will free the now-empty writer
-    // bookkeeping). See the long comment on the `var aw` line
-    // for the full rationale (the `results` ArrayList was
-    // emptied by `fromArrayList`; we don't use that pattern
-    // anymore; the data lives in the writer's internal buffer).
-    var final_list = aw.toArrayList();
-    defer final_list.deinit(ctx.allocator);
-    const inner_owned = try final_list.toOwnedSlice(ctx.allocator);
+    var agents = try ctx.allocator.alloc(JsonAgent, shared_results.results.len);
+    defer ctx.allocator.free(agents);
+    for (shared_results.results, 0..) |result, i| {
+        // Sanitize free text so names/responses carrying control bytes
+        // can't break the JSON payload (Stringify handles the rest).
+        const name = try sanitize(ctx.allocator, result.name);
+        try owned.append(ctx.allocator, name);
+        const sid: ?[]u8 = if (result.session_id.len > 0)
+            try sanitize(ctx.allocator, result.session_id)
+        else
+            null;
+        if (sid) |s| try owned.append(ctx.allocator, s);
+        var resp: ?[]u8 = null;
+        var errmsg: ?[]u8 = null;
+        if (result.success) {
+            if (result.response) |r| {
+                resp = try sanitize(ctx.allocator, r);
+                try owned.append(ctx.allocator, resp.?);
+            }
+        } else if (result.error_message) |e| {
+            errmsg = try sanitize(ctx.allocator, e);
+            try owned.append(ctx.allocator, errmsg.?);
+        } else {
+            errmsg = try sanitize(ctx.allocator, "unknown error");
+            try owned.append(ctx.allocator, errmsg.?);
+        }
+        agents[i] = .{
+            .name = name,
+            .success = result.success,
+            .random_fallback = result.is_random_fallback,
+            .session_id = sid,
+            .response = resp,
+            .@"error" = errmsg,
+        };
+    }
+    const inner_owned = try std.json.Stringify.valueAlloc(ctx.allocator, .{
+        .results = agents,
+        .summary = .{
+            .succeeded = success_count,
+            .failed = sub_agent_count - success_count,
+        },
+    }, .{});
     const output = try wrapToolOutput(ctx.allocator, "spawn_sub_agent", tc.function.arguments, true, null, inner_owned);
-    // 2026-09-04 refresh fix: the final `<results>` envelope is built —
+    // 2026-09-04 refresh fix: the final results payload is built —
     // the DB row (written by handle_tool's updateAndSendToolResult right
     // after we return) takes over as the source of truth, so the
     // snapshot has served its purpose. Drop it; a post-completion
-    // refresh renders the envelope, never the snapshot. (The errdefer
+    // refresh renders the payload, never the snapshot. (The errdefer
     // above covers the failure paths.)
     subagent_progress.clearSnapshot(ctx.tool_call_id);
     return ToolExecResult{ .output = output, .output_allocated = true };
@@ -766,17 +762,20 @@ test "slugifySubAgentName keeps URL-safe chars, space->underscore" {
     try testing.expectEqualStrings("agent", s5);
 }
 
-test "execSpawnSubAgent envelope escapes XML" {
+test "execSpawnSubAgent payload sanitizes free text and serializes via Stringify" {
     // 2026-09-04 subagent-peek P3: raw <session_id>/<response> broke
-    // SpawnSubAgent.vue's regex extraction for names with <>&.
+    // SpawnSubAgent.vue's regex extraction for names with <>&. The JSON
+    // payload sanitizes control bytes and lets Stringify escape the rest.
     const max_bytes: usize = 1 * 1024 * 1024;
     const source = try std.Io.Dir.cwd().readFileAlloc(testing.io, impl_path, testing.allocator, .limited(max_bytes));
     defer testing.allocator.free(source);
 
-    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, result.name)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, result.session_id)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, resp)") != null);
-    try testing.expect(std.mem.indexOf(u8, source, "xml_escape(ctx.allocator, err)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sanitize(ctx.allocator, result.name)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sanitize(ctx.allocator, result.session_id)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") != null);
+    // Probe is concatenated so this assertion's own source text can't self-match.
+    const probe = "xml_escape(ctx.alloc" ++ "ator";
+    try testing.expect(std.mem.indexOf(u8, source, probe) == null);
 }
 
 test "spawn forwards selected_profile_model to subagent child" {

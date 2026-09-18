@@ -6,8 +6,8 @@
 // the result in the standard `<tool>...</tool>` envelope via
 // `wrapToolOutput`.
 //
-// The inner success XML (in `<data>`) carries the just-written plan
-// body as `<plan><![CDATA[...]]></plan>` so the LLM AND the frontend
+// The inner success JSON (in `data`) carries the just-written plan
+// body as the `plan` field so the LLM AND the frontend
 // UI see the canonical plan back without depending on `parameters`
 // (the agent's input args). Mirrors `executeGetPlan`'s shape.
 //
@@ -55,25 +55,27 @@ pub fn execUpdatePlan(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer ctx.allocator.free(inner);
 
-    // Detect the <update_plan><error>...</error></update_plan> shape and
-    // surface it as a tool failure (so the LLM sees success=false rather
-    // than a successful wrapper around an error body). The inner XML
-    // is still surfaced in <data> so the LLM can see the per-tool
-    // detail (e.g. "content must be non-empty (1 byte minimum)").
+    // Detect the `{"error":...}` shape and surface it as a tool failure
+    // (so the LLM sees success=false rather than a successful wrapper
+    // around an error body). The inner JSON is still surfaced in `data`
+    // so the LLM can see the per-tool detail (e.g. "content must be
+    // non-empty (1 byte minimum)").
     //
-    // NOTE: match the full "<update_plan><error>" envelope marker, NOT bare
-    // "<error>" — the success shape echoes user plan markdown inside
-    // <plan><![CDATA[...]]></plan>, so a plan containing the literal text
-    // "<error>" (e.g. "handle <error> case") must NOT false-trigger the
-    // error branch. The old bare search + `orelse inner.len` fallback OOB'd
-    // at inner[err_start..err_start+inner.len] (SIGABRT in sub-agent thread)
-    // whenever the plan mentioned <error> without a closing </error>.
-    if (std.mem.indexOf(u8, inner, "<update_plan><error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end_rel = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end_rel];
-        const output = try wrapToolOutput(ctx.allocator, "update_plan", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // NOTE: parsed-field match, NOT a substring search — the success shape
+    // echoes user plan markdown in the `plan` field, so a plan containing
+    // the literal text "error" (e.g. "handle <error> case") must NOT
+    // false-trigger the error branch.
+    var inner_parsed: ?std.json.Parsed(std.json.Value) = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch null;
+    defer if (inner_parsed) |*par| par.deinit();
+    if (inner_parsed) |par| {
+        if (par.value == .object) {
+            if (par.value.object.get("error")) |e| {
+                if (e == .string and e.string.len > 0) {
+                    const output = try wrapToolOutput(ctx.allocator, "update_plan", tc.function.arguments, false, e.string, inner);
+                    return ToolExecResult{ .output = output, .output_allocated = true };
+                }
+            }
+        }
     }
 
     const output = try wrapToolOutput(ctx.allocator, "update_plan", tc.function.arguments, true, null, inner);
@@ -148,27 +150,23 @@ test "execUpdatePlan: writes to session_plan and returns wrapped success" {
     const result = try execUpdatePlan(tcx, tc);
     defer if (result.output_allocated) alloc.free(result.output);
 
-    // The wrapped envelope contains a <success>true</success> tag and
-    // an inner <update_plan>...</update_plan> body in <data>.
+    // The wrapped envelope carries success=true with the inner payload
+    // in `data`.
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>update_plan</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<data>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<session_id>sess_exec</session_id>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<updated_at>") != null);
+    const env_parsed = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env_parsed.deinit();
+    const env = env_parsed.value.object;
+    try testing.expectEqualStrings("update_plan", env.get("tool").?.string);
+    try testing.expect(env.get("success").?.bool);
+    try testing.expect(env.get("error").? == .null);
+    const data = env.get("data").?.object;
+    try testing.expectEqualStrings("sess_exec", data.get("session_id").?.string);
+    try testing.expect(data.get("updated_at").?.string.len > 0);
 
-    // The inner envelope MUST echo the just-written plan body via
-    // <plan><![CDATA[...]]></plan> — the frontend renders the
-    // checklist from this CDATA block, NOT from the tool's input
-    // arguments.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<![CDATA[") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "]]></plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "# Plan\n- [ ] step") != null);
-
-    // The inner envelope's success path must NOT carry an <error> tag.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    // The inner payload MUST echo the just-written plan body via the
+    // `plan` field — the frontend renders the checklist from this
+    // field, NOT from the tool's input arguments.
+    try testing.expectEqualStrings("# Plan\n- [ ] step", data.get("plan").?.string);
 
     // Verify the row landed in session_plan.
     const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
@@ -191,14 +189,15 @@ test "execUpdatePlan: empty content returns wrapped error envelope" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    // Error path: <success>false</success>, <error>...</error>, no <data> block.
-    // (wrapToolOutput deliberately drops <data> on the error branch —
-    // the inner pure-fn XML is intentionally not surfaced. The LLM only
+    // Error path: success=false, `error` message, `data` null.
+    // (wrapToolOutput deliberately nulls `data` on the error branch —
+    // the inner pure-fn JSON is intentionally not surfaced. The LLM only
     // sees the human-readable error message.)
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "non-empty") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<data>") == null);
+    const env2 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env2.deinit();
+    try testing.expect(!env2.value.object.get("success").?.bool);
+    try testing.expect(std.mem.indexOf(u8, env2.value.object.get("error").?.string, "non-empty") != null);
+    try testing.expect(env2.value.object.get("data").? == .null);
 
     // DB has no row for "sess_exec" — empty content is rejected.
     const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
@@ -222,9 +221,10 @@ test "execUpdatePlan: malformed JSON returns wrapped parse error" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "failed to parse input") != null);
+    const env3 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env3.deinit();
+    try testing.expect(!env3.value.object.get("success").?.bool);
+    try testing.expect(std.mem.indexOf(u8, env3.value.object.get("error").?.string, "failed to parse input") != null);
 
     // No DB write happened.
     const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
@@ -232,13 +232,11 @@ test "execUpdatePlan: malformed JSON returns wrapped parse error" {
     try testing.expectEqualStrings("", stored);
 }
 
-// ─── Test 4 (regression): plan mentioning <error> without </error> ─────────
-// Crash repro: success XML echoes plan markdown inside <plan><![CDATA[..]]></plan>.
-// Old code searched bare "<error>" -> false-positive on plan text like
-// "handle <error> case", then `orelse inner.len` OOB'd at
-// inner[err_start..err_start+inner.len] (SIGABRT, tools_exec_update_plan.zig:66).
-// Must return success=true, not crash.
-test "execUpdatePlan: plan containing <error> without closing tag does not crash" {
+// ─── Test 4 (regression): plan mentioning "error" text still succeeds ─────
+// The success payload echoes plan markdown in the `plan` field. Error
+// detection is a parsed-field match on `{"error":...}`, so plan text like
+// "handle <error> case" must NOT false-trigger the error branch.
+test "execUpdatePlan: plan containing error-like text does not misfire" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -251,19 +249,21 @@ test "execUpdatePlan: plan containing <error> without closing tag does not crash
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "Handle <error> case") != null);
+    const env4 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env4.deinit();
+    try testing.expect(env4.value.object.get("success").?.bool);
+    try testing.expectEqualStrings("# Plan\nHandle <error> case\n- [ ] step", env4.value.object.get("data").?.object.get("plan").?.string);
 
     const stored = try session_plan.getPlan(alloc, &ctx.db, "sess_exec");
     defer alloc.free(stored);
     try testing.expectEqualStrings("# Plan\nHandle <error> case\n- [ ] step", stored);
 }
 
-// ─── Test 5 (regression): plan with both <error> and </error> still success ─
-// Even when the plan text contains a balanced pair, the envelope marker is
-// "<update_plan><error>" (no such prefix in success XML), so this must NOT
-// be misclassified as a tool failure.
-test "execUpdatePlan: plan containing balanced error tags still succeeds" {
+// ─── Test 5 (regression): plan with error-like JSON text still succeeds ───
+// Even when the plan text contains an `"error":...`-looking fragment, the
+// payload is a success object without a top-level `error` string field,
+// so this must NOT be misclassified as a tool failure.
+test "execUpdatePlan: plan containing error-like JSON text still succeeds" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -276,5 +276,7 @@ test "execUpdatePlan: plan containing balanced error tags still succeeds" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+    const env5 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env5.deinit();
+    try testing.expect(env5.value.object.get("success").?.bool);
 }
