@@ -375,9 +375,11 @@ test "ask_user_answer: the resolved envelope satisfies the frontend's contract" 
     defer a.free(envelope);
 
     // Shaped like every other tool result so `unwrapToolOutput` parses it…
-    try testing.expect(std.mem.startsWith(u8, envelope, "<tool><name>ask_user</name>"));
-    try testing.expect(std.mem.indexOf(u8, envelope, "<success>true</success>") != null);
-    try testing.expect(std.mem.endsWith(u8, envelope, "</tool>"));
+    try testing.expect(std.mem.indexOf(u8, envelope, "\"tool\":\"ask_user\"") != null);
+    try testing.expect(std.mem.indexOf(u8, envelope, "\"success\":true") != null);
+    var env_parsed = try std.json.parseFromSlice(std.json.Value, a, envelope, .{});
+    defer env_parsed.deinit();
+    try testing.expect(env_parsed.value == .object);
     // …and the model reads the answer out of the JSON data payload.
     const parsed = try std.json.parseFromSlice(std.json.Value, a, inner, .{});
     defer parsed.deinit();
@@ -389,7 +391,7 @@ test "ask_user_answer: the resolved envelope satisfies the frontend's contract" 
     try testing.expect(std.mem.indexOf(u8, inner, "<status>") == null);
 }
 
-test "ask_user_answer: <parameters> is mandatory in the envelope" {
+test "ask_user_answer: parameters is mandatory in the envelope" {
     const a = testing.allocator;
     const inner = try ask_user_mod.buildAskUserJson(a, .{ .status = .skipped, .question_id = "q_2" });
     defer a.free(inner);
@@ -397,9 +399,9 @@ test "ask_user_answer: <parameters> is mandatory in the envelope" {
     const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(a, "{}", inner);
     defer a.free(envelope);
 
-    // The frontend's `unwrapToolOutput` throws unless name AND parameters AND
-    // success are all present — a rewrite without <parameters> made the card
+    // The frontend's `unwrapToolOutput` throws unless tool AND parameters AND
+    // success are all present — a rewrite without parameters made the card
     // fall back to an empty pending render, so every resolved question looked
     // unanswered. An empty object still satisfies the parser.
-    try testing.expect(std.mem.indexOf(u8, envelope, "<parameters>{}</parameters>") != null);
+    try testing.expect(std.mem.indexOf(u8, envelope, "\"parameters\":{}") != null);
 }
