@@ -194,9 +194,14 @@ fn pumpPosix(
     id: []const u8,
     session: *terminal_session.Session,
 ) !void {
+    _ = session;
     // Attach flush: everything currently buffered, then stream.
+    // Owned copy under the session lock — no borrow survives the
+    // unlock, so a concurrent drain realloc can't free what we send.
     {
-        const out = terminal_session.readOutput(session, 0);
+        const attached = terminal_session.getSession(id) orelse return;
+        const out = terminal_session.readOutputAlloc(allocator, attached, 0) catch return;
+        defer allocator.free(out.data);
         if (out.data.len > 0) {
             // Cap the attach burst (long-lived sessions may hold 256 KiB).
             const burst = out.data[0..@min(out.data.len, max_forward_per_tick)];
@@ -207,23 +212,29 @@ fn pumpPosix(
             return;
         }
     }
-    var cursor = terminal_session.getSession(id).?.totalCursor();
+    var cursor: u64 = if (terminal_session.getSession(id)) |s| s.totalCursor() else return;
 
     var net_buf: [8192]u8 = undefined;
     var pending = std.ArrayList(u8).empty;
     defer pending.deinit(allocator);
 
     while (true) {
+        // Re-resolve the session every tick: DELETE or the idle sweep
+        // may have freed it while we held no lock. A null lookup ends
+        // the socket; the session is gone so there is nothing to pump.
+        const live = terminal_session.getSession(id) orelse return;
         // Multiplex PTY + socket (100ms tick — no threads).
         var pfds = [_]PollFd{
-            .{ .fd = session.masterFd(), .events = POLLIN, .revents = 0 },
+            .{ .fd = live.masterFd(), .events = POLLIN, .revents = 0 },
             .{ .fd = client_fd, .events = POLLIN, .revents = 0 },
         };
         if (poll(&pfds, 2, 100) < 0) return;
 
         // PTY → socket.
         if (pfds[0].revents & POLLIN != 0) {
-            const out = terminal_session.readOutput(session, cursor);
+            const cur = terminal_session.getSession(id) orelse return;
+            const out = terminal_session.readOutputAlloc(allocator, cur, cursor) catch return;
+            defer allocator.free(out.data);
             cursor = out.cursor;
             if (out.data.len > 0) {
                 const burst = out.data[0..@min(out.data.len, max_forward_per_tick)];
@@ -235,7 +246,9 @@ fn pumpPosix(
             }
         } else {
             // No PTY bytes, but the child may have exited silently.
-            const out = terminal_session.readOutput(session, cursor);
+            const cur = terminal_session.getSession(id) orelse return;
+            const out = terminal_session.readOutputAlloc(allocator, cur, cursor) catch return;
+            defer allocator.free(out.data);
             cursor = out.cursor;
             if (out.exited) {
                 sendExit(server, allocator, client_fd, out.exit_code) catch {};
@@ -261,7 +274,8 @@ fn pumpPosix(
 
             switch (frame.opcode) {
                 .text => {
-                    const keep = handleControl(server, allocator, client_fd, session, frame.payload) catch return;
+                    const cur = terminal_session.getSession(id) orelse return;
+                    const keep = handleControl(server, allocator, client_fd, cur, frame.payload) catch return;
                     if (!keep) return;
                 },
                 .binary => {}, // binary C→S is ignored (input goes via JSON).

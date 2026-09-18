@@ -51,11 +51,19 @@ pub fn terminalOutputHandler(
     };
 
     const cursor = terminal_session.parseCursor(req.query.get("cursor"));
-    const slice = terminal_session.readOutput(session, cursor);
+    // Owned copy under the session lock: no borrow into the live ring
+    // buffer survives the unlock, so a concurrent drain realloc can
+    // never free memory we still read (heap UAF -> remap abort).
+    const owned = terminal_session.readOutputAlloc(allocator, session, cursor) catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
+        });
+    };
+    defer allocator.free(owned.data);
 
-    // Copy out under the session lock (slice borrows the buffer) and
-    // strip NUL bytes for JSON safety.
-    const clean = stripNul(allocator, slice.data) catch {
+    // Strip NUL bytes for JSON safety.
+    const clean = stripNul(allocator, owned.data) catch {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
@@ -64,9 +72,9 @@ pub fn terminalOutputHandler(
 
     const json_str = try std.json.Stringify.valueAlloc(allocator, TerminalOutputResponse{
         .data = clean,
-        .cursor = slice.cursor,
-        .exited = slice.exited,
-        .exit_code = slice.exit_code,
+        .cursor = owned.cursor,
+        .exited = owned.exited,
+        .exit_code = owned.exit_code,
     }, .{});
     return res.jsonResponse(.{ .status_code = 200, .data = json_str });
 }
