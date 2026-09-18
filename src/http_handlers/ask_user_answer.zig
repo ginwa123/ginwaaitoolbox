@@ -6,13 +6,13 @@
 //! 1. validate the request (see `AnswerError` for the status mapping);
 //! 2. mark the `session_pending_question` row resolved;
 //! 3. **rewrite the tool-result `llm_history` row in place** with the
-//!    resolved `<ask_user>` envelope, and push its `llm_full` frame so an
+//!    resolved JSON payload, and push its `llm_full` frame so an
 //!    open `ChatView` flips the card without a reload;
 //! 4. start a new run so the model continues with the answer in context.
 //!
 //! Steps 3 and 4 must not swap. Tool-result rows are written with
 //! `is_feed_to_llm = 1`, so a run started first would hand the model
-//! `<status>pending</status>` — and it might guess. If step 3 fails we return
+//! `"status":"pending"` — and it might guess. If step 3 fails we return
 //! an error and leave the row `pending`, which keeps a Retry safe; the
 //! reverse order would fail *silently* into a wrong answer.
 //!
@@ -82,8 +82,8 @@ pub const AnswerOutcome = struct {
 ///
 /// The option-membership rule (`allow_free_text = false` ⇒ the answer must be
 /// one of `options`) is deliberately NOT enforced here: the options live in
-/// the tool-call arguments, and recovering them would mean reverse-parsing
-/// the `<parameters>` XML blob — fragile machinery guarding a path the UI
+/// the tool-call arguments, and recovering them would mean re-reading the
+/// tool-call arguments — fragile machinery guarding a path the UI
 /// cannot produce (radios and checkboxes can only emit valid values). What IS
 /// enforced is the integrity-critical part: a non-empty value, and an array
 /// for a multi-select question, because a scalar there would reach the model
@@ -115,8 +115,8 @@ pub const ResolveInput = struct {
     question_id: []const u8,
     answer: []const u8,
     skip: bool,
-    /// How many values the answer carries (for the envelope's
-    /// `<answers_count>`). 1 unless the caller parsed a multi-select array.
+    /// How many values the answer carries (for the payload's
+    /// `"answers_count"`). 1 unless the caller parsed a multi-select array.
     answers_count: usize = 1,
 };
 
@@ -155,7 +155,7 @@ pub fn resolveQuestion(input: ResolveInput) AnswerError!AnswerOutcome {
 
     // Rebuild the tool result the model will read on resume. The question
     // text travels with it so the transcript stays self-describing.
-    const inner = ask_user_mod.buildAskUserXml(allocator, .{
+    const inner = ask_user_mod.buildAskUserJson(allocator, .{
         .status = target,
         .question_id = question.id,
         .question = question.question,
@@ -314,7 +314,7 @@ pub fn askUserAnswerHandler(
     });
 }
 
-/// How many values the answer holds, for the envelope's `<answers_count>`.
+/// How many values the answer holds, for the payload's `"answers_count"`.
 /// A JSON array → its length; anything else → 1.
 fn countAnswers(allocator: std.mem.Allocator, answer: []const u8) usize {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, answer, .{}) catch return 1;
@@ -362,7 +362,7 @@ test "countAnswers: array length vs single value" {
 
 test "ask_user_answer: the resolved envelope satisfies the frontend's contract" {
     const a = testing.allocator;
-    const inner = try ask_user_mod.buildAskUserXml(a, .{
+    const inner = try ask_user_mod.buildAskUserJson(a, .{
         .status = .answered,
         .question_id = "q_1",
         .question = "Which environment?",
@@ -371,31 +371,35 @@ test "ask_user_answer: the resolved envelope satisfies the frontend's contract" 
     });
     defer a.free(inner);
 
-    const envelope = try ask_user_mod.buildAskUserToolEnvelope(a, "<header>Deploy target</header>", inner);
+    const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(a, "{\"header\":\"Deploy target\"}", inner);
     defer a.free(envelope);
 
     // Shaped like every other tool result so `unwrapToolOutput` parses it…
     try testing.expect(std.mem.startsWith(u8, envelope, "<tool><name>ask_user</name>"));
     try testing.expect(std.mem.indexOf(u8, envelope, "<success>true</success>") != null);
     try testing.expect(std.mem.endsWith(u8, envelope, "</tool>"));
-    // …and the model reads the answer out of it.
-    try testing.expect(std.mem.indexOf(u8, envelope, "<status>answered</status>") != null);
-    try testing.expect(std.mem.indexOf(u8, envelope, "<answer>staging</answer>") != null);
-    // The inner envelope is NOT double-escaped (the wrapper passes data through).
-    try testing.expect(std.mem.indexOf(u8, envelope, "&lt;ask_user&gt;") == null);
+    // …and the model reads the answer out of the JSON data payload.
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, inner, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("answered", obj.get("status").?.string);
+    try testing.expectEqualStrings("staging", obj.get("answer").?.string);
+    try testing.expectEqual(@as(i64, 1), obj.get("answers_count").?.integer);
+    // The data payload is JSON, not XML tags.
+    try testing.expect(std.mem.indexOf(u8, inner, "<status>") == null);
 }
 
 test "ask_user_answer: <parameters> is mandatory in the envelope" {
     const a = testing.allocator;
-    const inner = try ask_user_mod.buildAskUserXml(a, .{ .status = .skipped, .question_id = "q_2" });
+    const inner = try ask_user_mod.buildAskUserJson(a, .{ .status = .skipped, .question_id = "q_2" });
     defer a.free(inner);
 
-    const envelope = try ask_user_mod.buildAskUserToolEnvelope(a, "", inner);
+    const envelope = try ask_user_mod.buildAskUserToolJsonEnvelope(a, "{}", inner);
     defer a.free(envelope);
 
     // The frontend's `unwrapToolOutput` throws unless name AND parameters AND
     // success are all present — a rewrite without <parameters> made the card
     // fall back to an empty pending render, so every resolved question looked
-    // unanswered. An empty block still satisfies the parser.
-    try testing.expect(std.mem.indexOf(u8, envelope, "<parameters></parameters>") != null);
+    // unanswered. An empty object still satisfies the parser.
+    try testing.expect(std.mem.indexOf(u8, envelope, "<parameters>{}</parameters>") != null);
 }

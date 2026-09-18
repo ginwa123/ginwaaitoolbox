@@ -1,7 +1,7 @@
 //! `ask_user` exec adapter.
 //!
 //! Parses the arguments, applies the no-human gate, writes the pending row
-//! and returns the `<status>pending</status>` envelope **immediately**. It
+//! and returns the `"status":"pending"` payload **immediately**. It
 //! never blocks, never sleeps, and never touches `llm_history` — Phase 3 of
 //! `handle_tool` writes this result into the tool row, and the workflow then
 //! breaks the turn (see `workflow.zig`).
@@ -66,10 +66,10 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
             "[ASK_USER] sub-agent session {s} called ask_user — returning unavailable (should have been stripped)",
             .{ctx.session_id},
         );
-        return unavailableResult(ctx, tc, "no_human", "a sub-agent has no way to reach the human");
+        return unavailableResult(ctx, tc);
     }
     if (pending.isUnattended(ctx.allocator, ctx.db, ctx.session_id)) {
-        return unavailableResult(ctx, tc, "no_human", "the session is in unattended mode");
+        return unavailableResult(ctx, tc);
     }
 
     // ─── Record the question ─────────────────────────────────────────────
@@ -93,10 +93,10 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer ctx.allocator.free(question_id);
 
-    // The envelope carries the whole question, not just the id: the card
-    // renders from it (live AND after a reload), because the tool row's
-    // <parameters> blob is XML-converted arguments, not parseable JSON.
-    const inner = try ask_user_mod.buildAskUserXml(ctx.allocator, .{
+    // The payload carries the whole question, not just the id: the card
+    // renders from it (live AND after a reload), because the tool row
+    // carries only the arguments, not the resolved status.
+    const inner = try ask_user_mod.buildAskUserJson(ctx.allocator, .{
         .status = .pending,
         .question_id = question_id,
         .question = input.question,
@@ -113,18 +113,14 @@ pub fn execAskUser(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 }
 
 /// The `success=false` envelope. `wrapToolOutput` already emits the canonical
-/// `<error>` element, so there is no separate inner error envelope to build.
+/// error element, so there is no separate inner error envelope to build.
 fn errorResult(ctx: ToolExecContext, tc: agent.ToolCall, message: []const u8) !ToolExecResult {
     const output = try wrapToolOutput(ctx.allocator, TOOL_NAME, tc.function.arguments, false, message, "");
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-fn unavailableResult(ctx: ToolExecContext, tc: agent.ToolCall, reason: []const u8, why: []const u8) !ToolExecResult {
-    const inner = try std.fmt.allocPrint(
-        ctx.allocator,
-        "<ask_user><status>unavailable</status><reason>{s}</reason><detail>{s}</detail><instruction>{s}</instruction></ask_user>",
-        .{ reason, why, ask_user_mod.instructionFor(.unavailable) },
-    );
+fn unavailableResult(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
+    const inner = try ask_user_mod.buildAskUserJson(ctx.allocator, .{ .status = .unavailable });
     defer ctx.allocator.free(inner);
 
     // success=true: this is a successful call with a degraded outcome, not a
@@ -163,9 +159,7 @@ fn setupDb() !struct { db: nalarcore.sqlite.SqliteBackend, threaded: std.Io.Thre
         \\)
     , &.{});
     try db.exec(alloc, "CREATE UNIQUE INDEX idx_spq_tool_call ON session_pending_question(tool_call_id)", &.{});
-    try db.exec(alloc,
-        "CREATE TABLE sessions (id TEXT PRIMARY KEY, is_auto_retry_until_stop TEXT)",
-        &.{});
+    try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, is_auto_retry_until_stop TEXT)", &.{});
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -243,8 +237,8 @@ test "execAskUser: valid input writes a pending row and returns the pending enve
     try testing.expect(res.output_allocated);
     // Wrapped success=true with the pending inner envelope.
     try testing.expect(std.mem.indexOf(u8, res.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, res.output, "<status>pending</status>") != null);
-    try testing.expect(std.mem.indexOf(u8, res.output, "<question_id>q_") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"pending\"") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"question_id\":\"q_") != null);
 
     // The row exists and is pending.
     try testing.expect(pending.hasPendingQuestion(a, &s.db, "sess_1"));
@@ -299,10 +293,10 @@ test "execAskUser: unattended session returns unavailable and writes NO row" {
     const res = try execAskUser(c, tc);
     defer res.deinit(a);
 
-    try testing.expect(std.mem.indexOf(u8, res.output, "<status>unavailable</status>") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"unavailable\"") != null);
     // Successful call, degraded outcome — never `<error>`.
     try testing.expect(std.mem.indexOf(u8, res.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, res.output, "unattended mode") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "No human is available") != null);
     // The crucial part: a scheduled run leaves nothing dangling.
     try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));
 }
@@ -319,8 +313,8 @@ test "execAskUser: sub-agent returns unavailable and writes NO row" {
     const res = try execAskUser(c, tc);
     defer res.deinit(a);
 
-    try testing.expect(std.mem.indexOf(u8, res.output, "<status>unavailable</status>") != null);
-    try testing.expect(std.mem.indexOf(u8, res.output, "sub-agent has no way to reach the human") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "\"status\":\"unavailable\"") != null);
+    try testing.expect(std.mem.indexOf(u8, res.output, "No human is available") != null);
     try testing.expect(!pending.hasPendingQuestion(a, &s.db, "sess_1"));
 }
 
