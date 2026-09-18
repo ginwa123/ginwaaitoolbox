@@ -52,6 +52,7 @@ pub fn getLLMHistories(
         \\    COALESCE(h.diffview_before, ''),
         \\    COALESCE(h.diffview_after, ''),
         \\    COALESCE(h.image_url, ''),
+        \\    COALESCE(h.video_url, ''),
         \\    COALESCE(h.tool_call_id, '')
         \\FROM llm_history h
         \\LEFT JOIN sessions s ON h.session_id = s.id
@@ -68,6 +69,7 @@ pub fn getLLMHistories(
         const diffview_before_str = row.values[23];
         const diffview_after_str = row.values[24];
         const image_url_str = row.values[25];
+        const video_url_str = row.values[26];
         const history = LLMHistory{
             .id = try allocator.dupe(u8, row.values[0]),
             .session_id = try allocator.dupe(u8, row.values[1]),
@@ -114,7 +116,21 @@ pub fn getLLMHistories(
                 // size and trip the debug allocator's canary check.
                 break :blk if (urls.items.len > 0) try urls.toOwnedSlice(allocator) else null;
             } else null,
-            .tool_call_id = if (row.values[26].len > 0) try allocator.dupe(u8, row.values[26]) else null,
+            .video_urls = if (video_url_str.len > 0) blk: {
+                var urls = std.ArrayList([]const u8).empty;
+                errdefer {
+                    for (urls.items) |u| allocator.free(u);
+                    urls.deinit(allocator);
+                }
+                var iter = std.mem.splitScalar(u8, video_url_str, '|');
+                while (iter.next()) |url| {
+                    if (url.len > 0) {
+                        try urls.append(allocator, try allocator.dupe(u8, url));
+                    }
+                }
+                break :blk if (urls.items.len > 0) try urls.toOwnedSlice(allocator) else null;
+            } else null,
+            .tool_call_id = if (row.values[27].len > 0) try allocator.dupe(u8, row.values[27]) else null,
         };
         try results.append(allocator, history);
         row.deinit(allocator);
@@ -188,7 +204,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    is_output INTEGER DEFAULT 0,
         \\    diffview_before TEXT,
         \\    diffview_after TEXT,
-        \\    image_url TEXT
+        \\    image_url TEXT,
+        \\    video_url TEXT
         \\)
     , &.{});
     try db.exec(alloc,

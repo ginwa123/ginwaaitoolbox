@@ -429,6 +429,10 @@ export interface Task {
   // joins back with `||` before sending. Plan:
   // docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md.
   imageUrls?: string[]
+  // NEW (kanban video urls, Migration 090). Array of base64 data
+  // URLs (`data:video/<mime>;base64,<payload>`). Empty array = no
+  // videos. Same `||`-delimited wire convention as imageUrls.
+  videoUrls?: string[]
   // NEW (Migration 070 — kanban-cwd-session-optional plan).
   // Per-task cwd override (absolute path on disk, or '' for
   // cwd-less). Optional so legacy task literals in tests keep
@@ -454,6 +458,30 @@ export interface Task {
   // etc.) — the `api.getTasks` mapper returns `data.tasks` raw, so
   // the wire name IS the TS name. No normalization needed.
   git_branch?: string | null
+}
+
+/**
+ * Split a mixed array of base64 data URLs into images vs videos
+ * (Migration 090). Callers pass through whatever FileInput /
+ * KanbanDescriptionEditor staged; `data:video/...` entries ride
+ * `video_urls`, everything else rides `image_urls`. Explicit
+ * `videoUrls` args are merged in (deduped by the backend's
+ * empty-segment-tolerant split).
+ */
+export function splitMediaUrls(
+  urls?: string[],
+  extraVideos?: string[],
+): {
+  images: string[]
+  videos: string[]
+} {
+  const images: string[] = []
+  const videos: string[] = [...(extraVideos ?? [])]
+  for (const u of urls ?? []) {
+    if (u.startsWith('data:video/')) videos.push(u)
+    else images.push(u)
+  }
+  return { images, videos }
 }
 
 // Health check
@@ -787,7 +815,12 @@ export async function createTask(
     // each segment's `data:image/...;base64,...` prefix + the
     // total 10 MB byte cap. Plan: docs/superpowers/plans/
     // 2026-08-06-kanban-image-urls-column.md.
+    // NOTE (Migration 090): may also carry `data:video/...` URLs —
+    // splitMediaUrls routes those to `video_urls` at send time.
     imageUrls?: string[]
+    // NEW (Migration 090 — kanban video urls column). Array of
+    // base64 data URLs (`data:video/<mime>;base64,<payload>`).
+    videoUrls?: string[]
     // NEW (Migration 070 — kanban-cwd-session-optional plan).
     // Per-task cwd override. Absolute path on disk or '' for
     // cwd-less. When undefined, the backend stores NULL (cwd-less
@@ -827,8 +860,11 @@ export async function createTask(
   // string (matching `llm_history.image_url`). The backend's
   // image_urls_validation.validateImageUrls validates each segment's
   // data URL prefix + the total 10 MB byte cap.
-  if (params.imageUrls && params.imageUrls.length > 0) {
-    body.image_urls = params.imageUrls.join('||')
+  // Migration 090 — split data:video/... out to video_urls.
+  {
+    const { images, videos } = splitMediaUrls(params.imageUrls, params.videoUrls)
+    if (images.length > 0) body.image_urls = images.join('||')
+    if (videos.length > 0) body.video_urls = videos.join('||')
   }
   // Migration 070 — per-task cwd override. Forward verbatim
   // (the backend's `validated_cwd` block validates it — absolute
@@ -868,6 +904,7 @@ export interface KanbanCreateTaskPayload {
   description?: string
   tags?: string[]
   imageUrls?: string[]
+  videoUrls?: string[]
   // Migration 070 — per-task cwd override. Absolute path on disk or '' for cwd-less.
   cwd?: string
   // Migration 063 — only meaningful for create_and_run; for plain create,
@@ -883,6 +920,7 @@ export interface KanbanCreateAndRunPayload {
   queue_message: string
   tags?: string[]
   imageUrls?: string[]
+  videoUrls?: string[]
   cwd?: string
   isAutoRetryUntilStop?: string
   /** Backend persists onto the sessions row. Empty/undefined = backend default. */
@@ -904,6 +942,7 @@ export interface KanbanCreateSessionOnlyPayload {
   description?: string
   tags?: string[]
   imageUrls?: string[]
+  videoUrls?: string[]
   /** Migration 070 — per-task cwd override. */
   cwd?: string
   /** Migration 063 — persists on the sessions row. */
@@ -936,8 +975,10 @@ export async function createKanbanTask(
   if (payload.tags && payload.tags.length > 0) {
     body.tags = JSON.stringify(payload.tags)
   }
-  if (payload.imageUrls && payload.imageUrls.length > 0) {
-    body.image_urls = payload.imageUrls.join('||')
+  {
+    const { images, videos } = splitMediaUrls(payload.imageUrls, payload.videoUrls)
+    if (images.length > 0) body.image_urls = images.join('||')
+    if (videos.length > 0) body.video_urls = videos.join('||')
   }
   if (payload.cwd !== undefined) {
     body.cwd = payload.cwd
@@ -1004,6 +1045,8 @@ export async function updateTaskSimple(
     // images. Plan: docs/superpowers/plans/2026-08-06-kanban-image-
     // urls-column.md.
     imageUrls?: string[]
+    // NEW (kanban video urls, Migration 090): same contract as imageUrls.
+    videoUrls?: string[]
     // NEW (Migration 070 — kanban-cwd-session-optional plan).
     // Per-task cwd override. Semantics:
     //   - undefined: leave unchanged (no-op).
@@ -1024,8 +1067,10 @@ export async function updateTaskSimple(
   // Migration 069 — image_urls. `||`-join the array for the wire
   // (matching `llm_history.image_url`). Empty array → empty string
   // → SQL '' literal → DB clears the column.
-  if (data.imageUrls !== undefined) {
-    body.image_urls = data.imageUrls.join('||')
+  if (data.imageUrls !== undefined || data.videoUrls !== undefined) {
+    const { images, videos } = splitMediaUrls(data.imageUrls, data.videoUrls)
+    body.image_urls = images.join('||')
+    body.video_urls = videos.join('||')
   }
   return await apiFetch<{ success: boolean }>(`/workspaces/tasks/${taskId}`, {
     method: 'PUT',
@@ -1391,9 +1436,13 @@ export async function sendChatMessage(
   imageUrls?: string[],
   selectedProfile?: string,
   isAutoRetryUntilStop?: string,
+  videoUrls?: string[],
 ): Promise<{ status: string }> {
-  // Join image URLs with pipe separator (same format as other parts of the system)
-  const imageUrlsStr = imageUrls?.join('|') || ''
+  // Migration 090 — split data:video/... out to video_urls so a pasted
+  // clip never hits the image-only validator (400).
+  const { images, videos } = splitMediaUrls(imageUrls, videoUrls)
+  const imageUrlsStr = images.join('|') || ''
+  const videoUrlsStr = videos.join('|') || ''
 
   try {
     // silent: true — ChatView already surfaces these failures inline
@@ -1407,6 +1456,7 @@ export async function sendChatMessage(
         allowed_tools: DEFAULT_CHAT_TOOLS,
         cwd_session: cwdSession,
         image_urls: imageUrlsStr,
+        video_urls: videoUrlsStr,
         selected_profile_model: selectedProfile || '',
         // Migration 063 — pass through to POST /api/session. Empty
         // / undefined => the backend's default ("0" = off).

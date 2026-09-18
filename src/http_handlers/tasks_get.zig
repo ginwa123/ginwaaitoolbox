@@ -90,6 +90,7 @@ fn useCase(
         .needs_human_review = task.needs_human_review,
         .tags = task.tags,
         .image_urls = task.image_urls,
+        .video_urls = task.video_urls,
         .git_branch = git_branch,
     };
 

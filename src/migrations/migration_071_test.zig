@@ -249,6 +249,7 @@ test "createWorkspaceItemTask: cwd = '/home/me/proj-A' round-trips verbatim" {
         null, // tags
         null, // image_urls
         "/home/me/proj-A", // cwd (Migration 071 10th arg)
+        null, // video_urls (Migration 090)
     );
     defer task.deinit(alloc);
 
@@ -286,6 +287,7 @@ test "createWorkspaceItemTask: cwd = '' stores '' (SQL '' literal, NOT NULL DEFA
         null,
         null,
         "", // cwd
+        null, // video_urls (Migration 090)
     );
     defer task.deinit(alloc);
 
@@ -321,6 +323,7 @@ test "createWorkspaceItemTask: cwd = null omits column (DEFAULT '' applies)" {
         null,
         null,
         null, // cwd — omitted, DEFAULT '' fills in
+        null, // video_urls (Migration 090)
     );
     defer task.deinit(alloc);
 

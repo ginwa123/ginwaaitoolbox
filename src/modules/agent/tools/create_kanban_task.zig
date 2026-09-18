@@ -610,6 +610,9 @@ pub fn executeCreateKanbanTaskToString(
         // Migration 070 — per-task cwd override. Borrowed from the
         // validated block above; empty string stays empty.
         validated_cwd,
+        // Migration 090 — video_urls. Tool input is image-only;
+        // null omits the column (DEFAULT '' applies).
+        null,
     ) catch {
         // NOTE: do NOT `defer allocator.free(msg)` here — `errorXmlOwned`
         // takes ownership of `msg` and frees it on success. The previous

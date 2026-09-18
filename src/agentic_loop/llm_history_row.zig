@@ -37,6 +37,7 @@ pub const LLMHistory = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
+    video_urls: ?[][]const u8 = null,
     tool_call_id: ?[]const u8 = null,
     tool_calls_json: []const u8,
     is_feed_to_llm: bool = true,
@@ -62,6 +63,10 @@ pub const LLMHistory = struct {
         if (self.image_urls) |iums| {
             for (iums) |img| allocator.free(img);
             allocator.free(iums);
+        }
+        if (self.video_urls) |vums| {
+            for (vums) |vid| allocator.free(vid);
+            allocator.free(vums);
         }
         if (self.tool_call_id) |tci| allocator.free(tci);
         if (self.parent_id) |pi| allocator.free(pi);

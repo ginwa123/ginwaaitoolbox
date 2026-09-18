@@ -79,7 +79,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    id TEXT PRIMARY KEY,
         \\    session_id TEXT NOT NULL,
         \\    message TEXT NOT NULL,
-        \\    image_url TEXT
+        \\    image_url TEXT,
+        \\    video_url TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded };

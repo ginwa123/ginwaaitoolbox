@@ -8,6 +8,7 @@ pub const QueuedMessage = struct {
     id: []const u8,
     message: []const u8,
     image_url: []const u8,
+    video_url: []const u8 = "",
 };
 
 pub const GetQueueMessageInput = struct {
@@ -29,7 +30,8 @@ pub fn getQueueMessages(
         \\SELECT
         \\    id,
         \\    message,
-        \\    image_url
+        \\    image_url,
+        \\    COALESCE(video_url, '')
         \\FROM session_queue_messages
         \\WHERE session_id = ?
         \\ORDER BY created_at ASC;
@@ -43,6 +45,7 @@ pub fn getQueueMessages(
             allocator.free(msg.id);
             allocator.free(msg.message);
             allocator.free(msg.image_url);
+            allocator.free(msg.video_url);
         }
         messages.deinit(allocator);
     }
@@ -52,7 +55,8 @@ pub fn getQueueMessages(
         const id = try allocator.dupe(u8, row.values[0]);
         const msg = try allocator.dupe(u8, row.values[1]);
         const image_url = try allocator.dupe(u8, row.values[2]);
-        try messages.append(allocator, .{ .id = id, .message = msg, .image_url = image_url });
+        const video_url = try allocator.dupe(u8, row.values[3]);
+        try messages.append(allocator, .{ .id = id, .message = msg, .image_url = image_url, .video_url = video_url });
     }
 
     if (messages.items.len == 0) {
@@ -81,6 +85,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    session_id TEXT NOT NULL,
         \\    message TEXT NOT NULL,
         \\    image_url TEXT,
+        \\    video_url TEXT,
         \\    created_at TEXT DEFAULT (datetime('now'))
         \\)
     , &.{});
@@ -131,6 +136,7 @@ test "getQueueMessages returns a single message with both fields populated" {
             testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
+            testing.allocator.free(m.video_url);
         }
         msgs.deinit(testing.allocator);
     }
@@ -154,6 +160,7 @@ test "getQueueMessages returns multiple messages in created_at ASC order" {
             testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
+            testing.allocator.free(m.video_url);
         }
         msgs.deinit(testing.allocator);
     }
@@ -180,6 +187,7 @@ test "getQueueMessages returns heap-owned slices that survive after the Rows cur
             testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
+            testing.allocator.free(m.video_url);
         }
         msgs.deinit(testing.allocator);
     }
@@ -202,6 +210,7 @@ test "getQueueMessages handles empty image_url column" {
             testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
+            testing.allocator.free(m.video_url);
         }
         msgs.deinit(testing.allocator);
     }
@@ -222,6 +231,7 @@ test "getQueueMessages filters by session_id (does not leak rows across sessions
             testing.allocator.free(m.id);
             testing.allocator.free(m.message);
             testing.allocator.free(m.image_url);
+            testing.allocator.free(m.video_url);
         }
         msgs.deinit(testing.allocator);
     }

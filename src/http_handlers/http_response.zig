@@ -106,6 +106,8 @@ pub const TaskCreateResponse = struct {
     /// '' = no images.
     /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
     image_urls: []const u8 = "",
+    /// `||`-delimited base64 data URLs (Migration 090). '' = no videos.
+    video_urls: []const u8 = "",
 };
 
 // Request types
@@ -161,6 +163,11 @@ pub const TaskCreateRequest = struct {
     /// docs/superpowers/plans/2026-08-06-kanban-image-urls-
     /// column.md.
     image_urls: ?[]const u8 = null,
+    /// `||`-delimited base64 data URLs (Migration 090 — kanban
+    /// video urls column). Null/undefined means "no videos
+    /// supplied". Validated via video_urls_validation.zig
+    /// (data:video/... prefix + allowlist + 25 MB cap).
+    video_urls: ?[]const u8 = null,
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Null/undefined = no cwd
     /// supplied (column omitted from INSERT, DEFAULT '' applies,
@@ -206,6 +213,13 @@ pub const TaskUpdateRequest = struct {
     ///     via image_urls_validation.zig — data URL prefix + 10 MB cap).
     /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
     image_urls: ?[]const u8 = null,
+    /// `||`-delimited base64 data URLs (Migration 090 — kanban
+    /// video urls column). Semantics mirror image_urls:
+    ///   - null/undefined  → don't change existing videos (no-op).
+    ///   - `""` (empty string) → clear all videos (sets `video_urls = ''`).
+    ///   - `'data:video/mp4;base64,...||...'` → replace (validated
+    ///     via video_urls_validation.zig — prefix + 25 MB cap).
+    video_urls: ?[]const u8 = null,
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Semantics:
     ///   - null/undefined  → don't change existing cwd (no-op).
@@ -251,6 +265,7 @@ pub const SessionMessage = struct {
     diffview_before: []const u8 = "",
     diffview_after: []const u8 = "",
     image_url: []const u8 = "",
+    video_url: []const u8 = "",
     tool_call_id: []const u8 = "",
     tool_calls_json: []const u8 = "",
 };
@@ -541,6 +556,11 @@ pub const WorkspaceItemTaskResponse = struct {
     /// Plan:
     /// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
     image_urls: []const u8 = "",
+
+    /// `||`-delimited base64 data URLs (Migration 090 — kanban
+    /// video urls column). Empty string is the canonical "no
+    /// videos" sentinel. Mirrors `WorkspaceItemTaskInfo.video_urls`.
+    video_urls: []const u8 = "",
 
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Empty string is the canonical

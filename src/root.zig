@@ -62,6 +62,7 @@ pub const EmitRunAgentInput = struct {
     body_message: []const u8,
     allowed_tools: []const u8,
     image_urls: []const u8,
+    video_urls: []const u8 = "",
     selected_profile_model: []const u8,
     is_auto_retry_until_stop: []const u8,
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). When
@@ -161,6 +162,8 @@ pub const ContextIPCTui = struct {
         errdefer self.allocator.free(owned_allowed_tools);
         const owned_image_urls = try self.allocator.dupe(u8, obj.image_urls);
         errdefer self.allocator.free(owned_image_urls);
+        const owned_video_urls = try self.allocator.dupe(u8, obj.video_urls);
+        errdefer self.allocator.free(owned_video_urls);
         const owned_selected_profile_model = try self.allocator.dupe(u8, obj.selected_profile_model);
         errdefer self.allocator.free(owned_selected_profile_model);
         const owned_is_auto_retry_until_stop = try self.allocator.dupe(u8, obj.is_auto_retry_until_stop);
@@ -202,6 +205,7 @@ pub const ContextIPCTui = struct {
                     bmsg: []const u8,
                     atools: []const u8,
                     iurls: []const u8,
+                    vurls: []const u8,
                     spm: []const u8,
                     iaur: []const u8,
                     siqm: bool,
@@ -212,6 +216,7 @@ pub const ContextIPCTui = struct {
                     // Free them all on the way out, in reverse order.
                     defer di_inner.allocator.free(iaur);
                     defer di_inner.allocator.free(spm);
+                    defer di_inner.allocator.free(vurls);
                     defer di_inner.allocator.free(iurls);
                     defer di_inner.allocator.free(atools);
                     defer di_inner.allocator.free(bmsg);
@@ -230,6 +235,7 @@ pub const ContextIPCTui = struct {
                         .body_message = bmsg,
                         .allowed_tools = atools,
                         .image_urls = iurls,
+                        .video_urls = vurls,
                         .selected_profile_model = spm,
                         .is_auto_retry_until_stop = iaur,
                     }) catch unreachable;
@@ -243,6 +249,7 @@ pub const ContextIPCTui = struct {
                         .allowed_tools = atools,
                         .is_sub_agent = false,
                         .image_urls = iurls,
+                        .video_urls = vurls,
                         .selected_profile_model = spm,
                         .is_auto_retry_until_stop = iaur,
                         // NEW (plan: 2026-08-18-kanban-task-detail-start-agent)
@@ -250,7 +257,7 @@ pub const ContextIPCTui = struct {
                     });
                 }
             }.run,
-            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message },
+            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_video_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message },
         );
     }
 

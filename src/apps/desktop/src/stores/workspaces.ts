@@ -34,11 +34,11 @@ export interface WorkspaceItem {
   // AND undefined AND "" the same way via `v-if="!item.path"`.
   path?: string | null
   lastAccessed?: Date
-  entries?: FolderEntry[]  // Nested folder contents
-  isLoaded?: boolean       // Whether contents have been fetched
-  isLoading?: boolean      // Loading state
-  expanded?: boolean       // Whether nested contents are expanded
-  tasks?: Task[]           // Tasks within this project
+  entries?: FolderEntry[] // Nested folder contents
+  isLoaded?: boolean // Whether contents have been fetched
+  isLoading?: boolean // Loading state
+  expanded?: boolean // Whether nested contents are expanded
+  tasks?: Task[] // Tasks within this project
   // Per-column pagination state (kanban-per-column-pagination plan,
   // 2026-08-06). Replaces the board-wide `hasMoreTasks` /
   // `tasksNextCursor` / `isLoadingMoreTasks` triple. Each column
@@ -182,6 +182,9 @@ export interface Task {
   // the store splits on `|` and filters empty segments at every
   // fetch site (folded into `normalizeTaskTags`).
   imageUrls?: string[]
+  // NEW (Migration 090 — kanban video urls column). Same contract
+  // as imageUrls, normalized by normalizeTaskVideoUrlsInPlace.
+  videoUrls?: string[]
   // NEW (Migration 070 — kanban-cwd-session-optional plan).
   // Per-task cwd override. Absolute path on disk or '' for
   // cwd-less. Optional for backwards compat with legacy task
@@ -234,6 +237,7 @@ function normalizeTaskTags(task: Task): Task {
     // (the fields are independent — a task can have tags but no
     // images or vice versa).
     normalizeTaskImageUrlsInPlace(task)
+    normalizeTaskVideoUrlsInPlace(task)
     normalizeTaskDatesInPlace(task)
     return task
   }
@@ -253,6 +257,7 @@ function normalizeTaskTags(task: Task): Task {
     task.tags = []
   }
   normalizeTaskImageUrlsInPlace(task)
+  normalizeTaskVideoUrlsInPlace(task)
   normalizeTaskDatesInPlace(task)
   return task
 }
@@ -278,8 +283,7 @@ function parseBackendDatetime(value: unknown): Date | undefined {
   // string has no timezone marker — the backend stores UTC strings
   // without an explicit zone.
   const isoish = value.includes('T') ? value : value.replace(' ', 'T')
-  const hasZone =
-    isoish.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(isoish)
+  const hasZone = isoish.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(isoish)
   const d = new Date(hasZone ? isoish : isoish + 'Z')
   return Number.isNaN(d.getTime()) ? undefined : d
 }
@@ -354,6 +358,29 @@ function normalizeTaskImageUrlsInPlace(task: Task): void {
   }
 }
 
+// Decode the `||`-delimited `video_urls` wire string into a `string[]`
+// (Migration 090 — kanban video urls column). Same wire→camel bridge
+// + splitter contract as normalizeTaskImageUrlsInPlace above.
+function normalizeTaskVideoUrlsInPlace(task: Task): void {
+  if (task.videoUrls === undefined) {
+    const wire = task as unknown as Record<string, unknown>
+    const wireVal = wire['video_urls']
+    if (wireVal === undefined) return
+    task.videoUrls = wireVal as string[]
+  }
+  if (Array.isArray(task.videoUrls)) return
+  if (typeof task.videoUrls === 'string') {
+    const joined = task.videoUrls as string
+    if (joined === '') {
+      task.videoUrls = []
+    } else {
+      task.videoUrls = joined.split('|').filter((s) => s.length > 0)
+    }
+  } else {
+    task.videoUrls = []
+  }
+}
+
 // Decode the `||`-delimited `image_urls` wire string into a `string[]`
 // (Migration 069 — kanban image urls column). Applied at every
 // `api.getTasks` fetch site (folded into normalizeTaskTags below)
@@ -388,10 +415,7 @@ export const RECENT_MUTATION_TTL_MS = 1500
 
 const recentLocalMutations = new Map<string, number>()
 
-export function registerRecentLocalMutations(
-  ids: string[],
-  expiryMs: number,
-): void {
+export function registerRecentLocalMutations(ids: string[], expiryMs: number): void {
   const now = Date.now()
   // Lazy GC: drop expired entries on every register call to keep
   // the Map small. O(N) per PATCH is acceptable for v1 (worst case
@@ -583,10 +607,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // tuples) mirror the activeSearchQueries pattern and let
   // loadMoreTasks/kanbanSse read each piece independently. Plain
   // Map (not reactive ref) — same reason as activeSearchQueries.
-  const activeSortBy: Map<
-    string,
-    'created_at' | 'updated_at' | 'name'
-  > = new Map()
+  const activeSortBy: Map<string, 'created_at' | 'updated_at' | 'name'> = new Map()
   const activeSortDirection: Map<string, 'asc' | 'desc'> = new Map()
 
   // System folder info from API
@@ -656,12 +677,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   // Save expanded workspace item IDs to localStorage (for nested folder expansion)
   function saveExpandedItems(expandedIds: Set<string>) {
-    localStorage.setItem(STORAGE_KEY_WORKSPACE_ITEM_EXPANDED, JSON.stringify(Array.from(expandedIds)))
+    localStorage.setItem(
+      STORAGE_KEY_WORKSPACE_ITEM_EXPANDED,
+      JSON.stringify(Array.from(expandedIds)),
+    )
   }
 
   // Save expanded workspace item IDs for tasks list to localStorage
   function saveExpandedItemIds(expandedIds: Record<string, boolean>) {
-    localStorage.setItem(STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED, JSON.stringify(Object.keys(expandedIds)))
+    localStorage.setItem(
+      STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED,
+      JSON.stringify(Object.keys(expandedIds)),
+    )
   }
 
   // Initialize store by loading data from API
@@ -809,9 +836,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
                 // Promise.all's `.map((item) => ({...item, ...}))`
                 // produces the workspace tree.
                 const { columns } = await api.listKanbanColumns(ws.id, item.id)
-                item.kanban_columns = [...columns].sort(
-                  (a, b) => a.position - b.position,
-                )
+                item.kanban_columns = [...columns].sort((a, b) => a.position - b.position)
                 // Step 2: fire per-column task fetches with DEFAULT
                 // sort (page 1). Same inline reason as Step 1 —
                 // fetchKanTasks uses findItem too. The onMount path
@@ -822,17 +847,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
                 // <100ms after mount, before the user can perceive it).
                 await Promise.all(
                   item.kanban_columns.map(async (col) => {
-                    const { tasks, has_more, next_cursor } =
-                      await api.getTasks(
-                        ws.id,
-                        item.id,
-                        10, // limit
-                        undefined, // cursor — page 1
-                        undefined, // sortBy — default sort
-                        undefined, // direction — default sort
-                        col.id, // column_id — per-column filter
-                        undefined, // q — no search
-                      )
+                    const { tasks, has_more, next_cursor } = await api.getTasks(
+                      ws.id,
+                      item.id,
+                      10, // limit
+                      undefined, // cursor — page 1
+                      undefined, // sortBy — default sort
+                      undefined, // direction — default sort
+                      col.id, // column_id — per-column filter
+                      undefined, // q — no search
+                    )
                     const normalized = (tasks ?? []).map(normalizeTaskTags)
                     // Merge into the in-flight item — drop any prior
                     // tasks for THIS column (idempotent refresh), then
@@ -842,10 +866,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
                     )
                     item.tasks = [...otherTasks, ...normalized]
                     // Initialise pagination entry for the column.
-                    item.columnPagination ??= {} as Record<
-                      string,
-                      ColumnPaginationState
-                    >
+                    item.columnPagination ??= {} as Record<string, ColumnPaginationState>
                     item.columnPagination[col.id] = {
                       cursor: next_cursor,
                       hasMore: has_more,
@@ -874,9 +895,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               //     KanbanView onMount will eventually replace this).
               //     Falling back to tasksByItem would clobber test
               //     fixtures that bypass the API.
-              tasks: item.item_type === 'kanban'
-                ? (item.tasks ?? [])
-                : (tasksByItem.get(item.id) ?? []),
+              tasks:
+                item.item_type === 'kanban' ? (item.tasks ?? []) : (tasksByItem.get(item.id) ?? []),
               // Per-column pagination state — empty for non-kanban /
               // non-pre-fetched items; PRESERVE the kanban-prefetch
               // entries for kanban items so the onMount
@@ -887,11 +907,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               // `item.columnPagination`, this branch passes it through.
               // For all other items (and for kanban items that had no
               // pre-fetch), the empty record is the original behaviour.
-              columnPagination: (item.item_type === 'kanban'
-                && item.columnPagination
-                && Object.keys(item.columnPagination).length > 0)
-                ? item.columnPagination
-                : ({} as Record<string, ColumnPaginationState>),
+              columnPagination:
+                item.item_type === 'kanban' &&
+                item.columnPagination &&
+                Object.keys(item.columnPagination).length > 0
+                  ? item.columnPagination
+                  : ({} as Record<string, ColumnPaginationState>),
             })),
           }
         }),
@@ -919,7 +940,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Get active workspace (parent)
   const activeWorkspace = computed(() => {
     return workspaces.value.find((ws) =>
-      ws.items.some((item) => item.id === activeWorkspaceItemId.value)
+      ws.items.some((item) => item.id === activeWorkspaceItemId.value),
     )
   })
 
@@ -928,7 +949,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (!activeTaskId.value || !activeWorkspaceItemId.value) return null
 
     const workspace = workspaces.value.find((ws) =>
-      ws.items.some((item) => item.id === activeWorkspaceItemId.value)
+      ws.items.some((item) => item.id === activeWorkspaceItemId.value),
     )
     if (!workspace) return null
 
@@ -1047,7 +1068,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   // Toggle expanded state for workspace item (show/hide tasks list)
   function toggleExpandedItem(itemId: string) {
-    console.log('[toggleExpandedItem] Before:', JSON.stringify(expandedItemIds.value), 'itemId:', itemId)
+    console.log(
+      '[toggleExpandedItem] Before:',
+      JSON.stringify(expandedItemIds.value),
+      'itemId:',
+      itemId,
+    )
     if (expandedItemIds.value[itemId]) {
       delete expandedItemIds.value[itemId]
     } else {
@@ -1084,7 +1110,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  async function addWorkspaceItem(workspaceId: string, name: string, path: string, itemType: string = 'folder'): Promise<string | undefined> {
+  async function addWorkspaceItem(
+    workspaceId: string,
+    name: string,
+    path: string,
+    itemType: string = 'folder',
+  ): Promise<string | undefined> {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return undefined
 
@@ -1477,10 +1508,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // lazy load. The seeded 3 default columns (todo / in progress /
   // done) live in the DB; without this call, the kanban board
   // renders empty after every page reload.
-  async function fetchKanbanColumns(
-    workspaceId: string,
-    itemId: string,
-  ): Promise<void> {
+  async function fetchKanbanColumns(workspaceId: string, itemId: string): Promise<void> {
     const item = findItem(workspaceId, itemId)
     if (!item) return
     try {
@@ -1488,9 +1516,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Sort defensively (the backend already orders by position, but
       // a stale local snapshot from before a backend reorder would
       // otherwise keep the old ordering).
-      item.kanban_columns = [...columns].sort(
-        (a, b) => a.position - b.position,
-      )
+      item.kanban_columns = [...columns].sort((a, b) => a.position - b.position)
     } catch (err) {
       console.error('[workspacesStore.fetchKanbanColumns] API call failed:', err)
       // Leave whatever columns we have (or undefined) so the UI can
@@ -1619,7 +1645,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-    // Fire `fetchKanbanTasks` for every column of a kanban item.
+  // Fire `fetchKanbanTasks` for every column of a kanban item.
   // Per-column pagination (Option B, 2026-08-06 amendment): every
   // task fetch must carry a `column_id`, including the initial page-1
   // fetch. This helper iterates `item.kanban_columns` and fires one
@@ -1730,9 +1756,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // `item.kanban_columns[i] = result` bug, which corrupted the
     // single-column slot with the `{columns, count}` envelope and
     // made every UI field on the saved column read as undefined.
-    item.kanban_columns = [...result.columns].sort(
-      (a, b) => a.position - b.position,
-    )
+    item.kanban_columns = [...result.columns].sort((a, b) => a.position - b.position)
   }
 
   // Copy the column spec from `sourceItemId` to `targetItemId`.
@@ -1753,9 +1777,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const result = await api.copyKanbanSpec(workspaceId, targetItemId, sourceItemId, mode)
     const item = findItem(workspaceId, targetItemId)
     if (!item) return
-    item.kanban_columns = [...result.columns].sort(
-      (a, b) => a.position - b.position,
-    )
+    item.kanban_columns = [...result.columns].sort((a, b) => a.position - b.position)
   }
 
   // Reorder a kanban column via drag-and-drop. The DnD handler in
@@ -1964,7 +1986,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           itemId,
           pageId,
           mirrorCount: elements.length,
-          extra: { note: 'item.design_elements was undefined — assigned the full array (the OLD bug pattern)' },
+          extra: {
+            note: 'item.design_elements was undefined — assigned the full array (the OLD bug pattern)',
+          },
         })
         return
       }
@@ -1979,7 +2003,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         extra: { preExistingCount: item.design_elements.length },
       })
       // Build a Map<id, incomingElement> for O(1) lookup.
-      const incomingById = new Map<string, typeof elements[number]>()
+      const incomingById = new Map<string, (typeof elements)[number]>()
       for (const el of elements) incomingById.set(el.id, el)
       // Walk the local array. For each existing row:
       //   - if its id is in the incoming set, replace in place
@@ -2052,13 +2076,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     elementId: string,
     patch: Partial<DesignElement>,
   ): Promise<DesignElement> {
-    const updated = await updateDesignElementApi(
-      workspaceId,
-      itemId,
-      pageId,
-      elementId,
-      patch,
-    )
+    const updated = await updateDesignElementApi(workspaceId, itemId, pageId, elementId, patch)
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
       const idx = item.design_elements.findIndex((e) => e.id === elementId)
@@ -2080,13 +2098,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     elementId: string,
     html: string,
   ): Promise<DesignElement> {
-    const updated = await updateDesignElementHtmlApi(
-      workspaceId,
-      itemId,
-      pageId,
-      elementId,
-      html,
-    )
+    const updated = await updateDesignElementHtmlApi(workspaceId, itemId, pageId, elementId, html)
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
       const idx = item.design_elements.findIndex((e) => e.id === elementId)
@@ -2185,14 +2197,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       pageId,
       extra: { elementId },
     })
-    const result = await translateDesignElementApi(
-      workspaceId,
-      itemId,
-      pageId,
-      elementId,
-      dx,
-      dy,
-    )
+    const result = await translateDesignElementApi(workspaceId, itemId, pageId, elementId, dx, dy)
     // Build a Map<id, index> for O(1) lookup; cascade can return
     // 10+ elements (group + children + grandchildren).
     const item = findItem(workspaceId, itemId)
@@ -2254,13 +2259,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       pageId,
       extra: { elementId },
     })
-    const result = await resizeDesignElementApi(
-      workspaceId,
-      itemId,
-      pageId,
-      elementId,
-      geometry,
-    )
+    const result = await resizeDesignElementApi(workspaceId, itemId, pageId, elementId, geometry)
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
       const idx = item.design_elements.findIndex((e) => e.id === elementId)
@@ -2296,12 +2295,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     updates: GeometryBatchUpdate[],
   ): Promise<DesignElement[]> {
     if (updates.length === 0) return []
-    const result = await updateDesignElementsGeometryBatchApi(
-      workspaceId,
-      itemId,
-      pageId,
-      updates,
-    )
+    const result = await updateDesignElementsGeometryBatchApi(workspaceId, itemId, pageId, updates)
     // Mirror every updated row into the local design_elements array
     // in input order (preserves the array's existing order).
     const item = findItem(workspaceId, itemId)
@@ -2507,9 +2501,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     await deleteDesignElementApi(workspaceId, itemId, pageId, elementId)
     const item = findItem(workspaceId, itemId)
     if (item?.design_elements) {
-      item.design_elements = item.design_elements.filter(
-        (e) => e.id !== elementId,
-      )
+      item.design_elements = item.design_elements.filter((e) => e.id !== elementId)
     }
   }
 
@@ -2677,10 +2669,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // them in `designPagesByItemId`. Concurrent calls for the same
   // item share the same in-flight promise (no double-fetch on
   // sidebar-expand + DesignView-mount race).
-  async function fetchDesignPages(
-    workspaceId: string,
-    itemId: string,
-  ): Promise<DesignPage[]> {
+  async function fetchDesignPages(workspaceId: string, itemId: string): Promise<DesignPage[]> {
     const inFlight = designPagesInFlight.get(itemId)
     if (inFlight) return await inFlight
     const p = (async (): Promise<DesignPage[]> => {
@@ -2882,6 +2871,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // skip; the host (KanbanView) wires this from the conversion
       // loop over pendingFiles.
       imageUrls?: string[]
+      videoUrls?: string[]
     },
   ): Promise<{ status: string } | undefined> {
     try {
@@ -2892,6 +2882,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         params.imageUrls, // was: undefined (bug — see plan)
         params.selectedProfile ?? '', // CHANGED — was ''
         params.isAutoRetryUntilStop ?? '', // forwards '1' when toggle ON, else ''
+        params.videoUrls, // Migration 090 — clips ride video_urls
       )
     } catch (err) {
       console.error('Failed to run agent on new task:', err)
@@ -2933,6 +2924,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       queue_message?: string
       tags?: string[]
       imageUrls?: string[]
+      videoUrls?: string[]
       cwd?: string
       isAutoRetryUntilStop?: string
       selected_profile_model?: string
@@ -2950,6 +2942,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             queue_message: params.queue_message ?? '',
             tags: params.tags,
             imageUrls: params.imageUrls,
+            videoUrls: params.videoUrls,
             cwd: params.cwd,
             isAutoRetryUntilStop: params.isAutoRetryUntilStop,
             selected_profile_model: params.selected_profile_model,
@@ -2961,6 +2954,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               description: params.description,
               tags: params.tags,
               imageUrls: params.imageUrls,
+              videoUrls: params.videoUrls,
               cwd: params.cwd,
               isAutoRetryUntilStop: params.isAutoRetryUntilStop,
               // Persists on the new sessions row (see Task 2's
@@ -2973,6 +2967,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               description: params.description,
               tags: params.tags,
               imageUrls: params.imageUrls,
+              videoUrls: params.videoUrls,
               cwd: params.cwd,
               isAutoRetryUntilStop: params.isAutoRetryUntilStop,
             }
@@ -3131,11 +3126,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
    * Unpinned tasks are not affected (they keep their
    * position in the unpinned region below).
    */
-  async function reorderPinnedTasks(
-    workspaceId: string,
-    itemId: string,
-    orderedIds: string[],
-  ) {
+  async function reorderPinnedTasks(workspaceId: string, itemId: string, orderedIds: string[]) {
     const workspace = workspaces.value.find((w) => w.id === workspaceId)
     if (!workspace) return
     const item = workspace.items.find((i) => i.id === itemId)
@@ -3177,10 +3168,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     try {
       await api.reorderPinnedTasks(workspaceId, itemId, orderedIds)
     } catch (err) {
-      console.error(
-        '[workspacesStore.reorderPinnedTasks] API call failed, rolling back:',
-        err,
-      )
+      console.error('[workspacesStore.reorderPinnedTasks] API call failed, rolling back:', err)
       item.tasks = previousOrder
     }
   }
@@ -3254,11 +3242,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   //     against double-click on the manual button)
   //   - the cursor is null (defensive — should never happen with
   //     hasMore=true, but treat as a no-op just in case)
-  async function loadMoreTasksForColumn(
-    workspaceId: string,
-    itemId: string,
-    columnId: string,
-  ) {
+  async function loadMoreTasksForColumn(workspaceId: string, itemId: string, columnId: string) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return
     const item = workspace.items.find((i) => i.id === itemId)
@@ -3318,10 +3302,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       colState.cursor = next_cursor
       colState.hasMore = has_more
     } catch (err) {
-      console.error(
-        `Failed to load more tasks for item ${itemId} column ${columnId}:`,
-        err,
-      )
+      console.error(`Failed to load more tasks for item ${itemId} column ${columnId}:`, err)
       // Leave hasMore/cursor as-is so the user can retry by
       // clicking the button again. Do not surface a toast — keep the
       // failure mode quiet (same pattern as addTask's catch block).
@@ -3367,7 +3348,6 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     activeTaskId.value = taskId
     if (taskId) {
-
       // Find parent workspace and item, then expand workspace
       for (const workspace of workspaces.value) {
         for (const item of workspace.items) {
@@ -3396,14 +3376,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             // on the already-active card), the second call short-
             // circuits here because activeTaskId is already the
             // target value.
-            void api.markTaskHumanTouched(workspace.id, item.id, taskId).catch(
-              (err: unknown) => {
-                console.warn(
-                  '[workspacesStore.setActiveTask] markTaskHumanTouched failed (non-fatal):',
-                  err,
-                )
-              },
-            )
+            void api.markTaskHumanTouched(workspace.id, item.id, taskId).catch((err: unknown) => {
+              console.warn(
+                '[workspacesStore.setActiveTask] markTaskHumanTouched failed (non-fatal):',
+                err,
+              )
+            })
             return
           }
         }
@@ -3475,12 +3453,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // (AppLayout.vue:652) binds `:chat-name="activeTask.name"` and
   // updates automatically, but other views (e.g. the chat-list
   // header) read `activeChatName` and would otherwise show stale.
-  async function renameTask(
-    workspaceId: string,
-    itemId: string,
-    taskId: string,
-    newName: string,
-  ) {
+  async function renameTask(workspaceId: string, itemId: string, taskId: string, newName: string) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
     if (!workspace) return
     const item = workspace.items.find((i) => i.id === itemId)
@@ -3540,6 +3513,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-
       // column.md.
       imageUrls?: string[]
+      // NEW (Migration 090 — kanban video urls column). Same
+      // contract as imageUrls.
+      videoUrls?: string[]
     },
   ) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -3557,6 +3533,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       description?: string
       tags?: string[]
       imageUrls?: string[]
+      videoUrls?: string[]
     } = {}
     if (fields.name !== undefined) {
       const trimmed = fields.name.trim()
@@ -3579,6 +3556,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (fields.imageUrls !== undefined) {
       patch.imageUrls = fields.imageUrls
     }
+    // Migration 090 — kanban video urls. Same contract as imageUrls.
+    if (fields.videoUrls !== undefined) {
+      patch.videoUrls = fields.videoUrls
+    }
     if (Object.keys(patch).length === 0) return
 
     // Optimistic update — capture previous values for rollback.
@@ -3586,10 +3567,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const previousDescription = task.description
     const previousTags = task.tags
     const previousImageUrls = task.imageUrls
+    const previousVideoUrls = task.videoUrls
     if (patch.name !== undefined) task.name = patch.name
     if (patch.description !== undefined) task.description = patch.description
     if (patch.tags !== undefined) task.tags = patch.tags
     if (patch.imageUrls !== undefined) task.imageUrls = patch.imageUrls
+    if (patch.videoUrls !== undefined) task.videoUrls = patch.videoUrls
 
     // Keep the chat-view / chat-list header in sync if this is the
     // active task and a name change is part of the patch.
@@ -3607,6 +3590,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       task.description = previousDescription
       task.tags = previousTags
       task.imageUrls = previousImageUrls
+      task.videoUrls = previousVideoUrls
       if (wasActive) {
         useNavigationStore().setActiveChatName(previousName)
       }
@@ -3638,11 +3622,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // error on every dialog open). A 404 (getTask → null) is also a
   // no-op: the cached copy stays until the delete-event SSE removes
   // it.
-  async function refreshTask(
-    workspaceId: string,
-    itemId: string,
-    taskId: string,
-  ): Promise<void> {
+  async function refreshTask(workspaceId: string, itemId: string, taskId: string): Promise<void> {
     try {
       const fetched = await api.getTask(workspaceId, itemId, taskId)
       if (!fetched) return
@@ -3786,9 +3766,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   async function reorderWorkspaceItems(workspaceId: string, orderedIds: string[]) {
     const workspace = workspaces.value.find((w) => w.id === workspaceId)
     if (!workspace) {
-      console.error(
-        `[workspacesStore.reorderWorkspaceItems] workspace ${workspaceId} not found`,
-      )
+      console.error(`[workspacesStore.reorderWorkspaceItems] workspace ${workspaceId} not found`)
       return
     }
     const current = workspace.items
@@ -3835,10 +3813,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     try {
       await api.reorderWorkspaceItems(workspaceId, orderedIds)
     } catch (err) {
-      console.error(
-        '[workspacesStore.reorderWorkspaceItems] API call failed, rolling back:',
-        err,
-      )
+      console.error('[workspacesStore.reorderWorkspaceItems] API call failed, rolling back:', err)
       workspace.items = previousOrder
     }
   }
@@ -3970,7 +3945,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   async function initializeFromSystemFolder() {
     // First, load workspaces from API
     await init()
-    
+
     // Also fetch system folder info for navigation
     await fetchSystemFolder()
 

@@ -35,6 +35,7 @@ pub const TUIHistory = struct {
     diffview_before: ?[]const u8 = null,
     diffview_after: ?[]const u8 = null,
     image_urls: ?[][]const u8 = null,
+    video_urls: ?[][]const u8 = null,
     tool_call_id: ?[]const u8 = null,
 
     pub fn deinit(self: *TUIHistory, allocator: std.mem.Allocator) void {
@@ -58,6 +59,10 @@ pub const TUIHistory = struct {
         if (self.image_urls) |iums| {
             for (iums) |img| allocator.free(img);
             allocator.free(iums);
+        }
+        if (self.video_urls) |vums| {
+            for (vums) |vid| allocator.free(vid);
+            allocator.free(vums);
         }
         if (self.tool_call_id) |tci| allocator.free(tci);
     }

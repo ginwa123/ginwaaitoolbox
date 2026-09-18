@@ -250,6 +250,8 @@ test "createWorkspaceItemTask: description = null succeeds and stores ''" {
         // sentinel). migration_062_test predates Migration 070 and
         // exercises the description path only; cwd is fully covered in
         // migration_071_test.zig.
+        null,
+        // video_urls (Migration 090) — null. Covered in video_urls_validation tests.
         null);
     defer task.deinit(alloc);
 
@@ -279,6 +281,8 @@ test "createWorkspaceItemTask: description = '' (empty string) succeeds and stor
         // sentinel). See migration_069_test for full-coverage tests.
         null,
         // cwd (Migration 070) — null. See comment above.
+        null,
+        // video_urls (Migration 090) — null. See comment above.
         null);
     defer task.deinit(alloc);
 
@@ -303,6 +307,8 @@ test "createWorkspaceItemTask: description = 'hello world' succeeds and stores t
         // sentinel). See migration_069_test for full-coverage tests.
         null,
         // cwd (Migration 070) — null. See comment above.
+        null,
+        // video_urls (Migration 090) — null. See comment above.
         null);
     defer task.deinit(alloc);
 

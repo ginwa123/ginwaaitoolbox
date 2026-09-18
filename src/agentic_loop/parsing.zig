@@ -90,12 +90,16 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
         const reasoning_id: ?[]const u8 = if (message.reasoning_id) |rid| try allocator.dupe(u8, rid) else null;
         const reasoning_encrypted_content: ?[]const u8 = if (message.reasoning_encrypted_content) |rec| try allocator.dupe(u8, rec) else null;
 
-        // Handle vision support: if image_urls is set, create content_parts with text and images
+        // Handle vision + video support: if image_urls/video_urls are set,
+        // create content_parts with text, images, and videos.
         var content_parts: ?[]agent.ContentPart = null;
-        if (message.image_urls != null and message.image_urls.?.len > 0) {
-            const image_count = message.image_urls.?.len;
+        const has_images = message.image_urls != null and message.image_urls.?.len > 0;
+        const has_videos = message.video_urls != null and message.video_urls.?.len > 0;
+        if (has_images or has_videos) {
+            const image_count = if (message.image_urls) |iums| iums.len else 0;
+            const video_count = if (message.video_urls) |vums| vums.len else 0;
             const has_text = content.len > 0;
-            const total_parts = if (has_text) image_count + 1 else image_count;
+            const total_parts = image_count + video_count + (if (has_text) @as(usize, 1) else 0);
             var parts = try allocator.alloc(agent.ContentPart, total_parts);
             var part_idx: usize = 0;
             // Text part (first) if there's text content
@@ -104,20 +108,39 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
                     .part_type = "text",
                     .text = content,
                     .image_url = null,
+                    .video_url = null,
                 };
                 part_idx += 1;
             }
             // Image URL parts
-            for (message.image_urls.?) |image_url| {
-                parts[part_idx] = .{
-                    .part_type = "image_url",
-                    .text = null,
-                    .image_url = .{
-                        .url = try allocator.dupe(u8, image_url),
-                        .detail = null,
-                    },
-                };
-                part_idx += 1;
+            if (message.image_urls) |iums| {
+                for (iums) |image_url| {
+                    parts[part_idx] = .{
+                        .part_type = "image_url",
+                        .text = null,
+                        .image_url = .{
+                            .url = try allocator.dupe(u8, image_url),
+                            .detail = null,
+                        },
+                        .video_url = null,
+                    };
+                    part_idx += 1;
+                }
+            }
+            // Video URL parts (hard error downstream on unsupported model —
+            // never silently dropped)
+            if (message.video_urls) |vums| {
+                for (vums) |video_url| {
+                    parts[part_idx] = .{
+                        .part_type = "video_url",
+                        .text = null,
+                        .image_url = null,
+                        .video_url = .{
+                            .url = try allocator.dupe(u8, video_url),
+                        },
+                    };
+                    part_idx += 1;
+                }
             }
             content_parts = parts;
         } else {}

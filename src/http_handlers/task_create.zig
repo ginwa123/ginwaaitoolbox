@@ -44,6 +44,7 @@ const ai_mod = nalarcore.ai_mod;
 const memories_mod = nalarcore.memories;
 const tags_validation = @import("tags_validation.zig");
 const image_urls_validation = @import("image_urls_validation.zig");
+const video_urls_validation = @import("video_urls_validation.zig");
 
 /// Process-local monotonic counter for task_id generation. The ts-
 /// only generator (`task_<unix_ms>`) collided when 2+ tasks were
@@ -93,6 +94,10 @@ pub const TaskCreateError = error{
     // check (InvalidImageUrls → 400). See image_urls_validation.zig.
     InvalidImageUrls,
     ImageUrlsTooLarge,
+    // 400 / 413 — kanban video_urls validation (Migration 090).
+    // Same contract as image_urls with a 25 MB cap.
+    InvalidVideoUrls,
+    VideoUrlsTooLarge,
     // 400 — per-task cwd validation (Migration 070). Either:
     //   - the path exceeds 4 KiB (CwdTooLong → 400)
     //   - the path is not absolute (CwdNotAbsolute → 400)
@@ -163,6 +168,9 @@ pub const StandardResult = struct {
     /// canonical "no images" sentinel.
     /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
     image_urls: []const u8 = "",
+    /// `||`-delimited base64 data URLs (Migration 090). Borrowed
+    /// from the per-request arena (validated above).
+    video_urls: []const u8 = "",
 };
 
 // Typed response structs. Serialized via std.json.Stringify.valueAlloc
@@ -216,6 +224,9 @@ const StandardResponse = struct {
     /// optimistic task object carries the images immediately.
     /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
     image_urls: []const u8 = "",
+    /// `||`-delimited base64 data URLs (Migration 090). Empty string
+    /// means the task has no videos. Echoed from what was just INSERTed.
+    video_urls: []const u8 = "",
     created_at: ?[]const u8 = null,
     updated_at: ?[]const u8 = null,
 };
@@ -359,6 +370,16 @@ fn createStandardTask(
         error.InvalidImageUrl => error.InvalidImageUrls,
     };
 
+    // Validate the video_urls payload (Migration 090). Same shape as
+    // image_urls: already-joined `||`-delimited string, validated
+    // prefix + allowlist + 25 MB cap.
+    const validated_video_urls = video_urls_validation.validateVideoUrls(
+        input.body.video_urls orelse "",
+    ) catch |err| return switch (err) {
+        error.VideoUrlsTooLarge => error.VideoUrlsTooLarge,
+        error.InvalidVideoUrl => error.InvalidVideoUrls,
+    };
+
     // Validate the per-task cwd payload (Migration 070). The wire
     // format is an absolute path string from the FilePickerDialog
     // (or empty / null for cwd-less). Validation is intentionally
@@ -408,6 +429,8 @@ fn createStandardTask(
         // fallback chain in session_create.zig::useCase. Plan:
         // docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
         validated_cwd,
+        // Migration 090 — video_urls (trailing param). Same contract.
+        validated_video_urls,
     ) catch return error.StandardTaskCreateFailed;
 
     // Chunk 5 of kanban-task-notification-icon: creating a card is
@@ -580,6 +603,8 @@ fn createStandardTask(
         // response echoes it back (optimistic gallery).
         // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
         .image_urls = validated_image_urls,
+        // Migration 090 — kanban video urls. Same echo contract.
+        .video_urls = validated_video_urls,
     };
 }
 
@@ -664,6 +689,8 @@ pub fn tasksCreateHandler(
             error.InvalidTags => 400,
             error.InvalidImageUrls => 400,
             error.ImageUrlsTooLarge => 413,
+            error.InvalidVideoUrls => 400,
+            error.VideoUrlsTooLarge => 413,
             error.CwdTooLong,
             error.CwdNotAbsolute,
             error.CwdContainsControlChar => 400,
@@ -683,6 +710,8 @@ pub fn tasksCreateHandler(
             error.InvalidTags => "tags must be non-empty, ≤50 chars, and contain only letters, digits, hyphens, and underscores",
             error.InvalidImageUrls => "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs",
             error.ImageUrlsTooLarge => "image_urls payload too large (max 10 MB)",
+            error.InvalidVideoUrls => "video_urls must be `||`-delimited data:video/<mime>;base64,... URLs",
+            error.VideoUrlsTooLarge => "video payload too large (max 25 MB)",
             error.CwdTooLong => "cwd path too long (max 4 KiB)",
             error.CwdNotAbsolute => "cwd must be an absolute path",
             error.CwdContainsControlChar => "cwd contains a control character",
@@ -753,6 +782,8 @@ pub fn tasksCreateHandler(
                     // valueAlloc copies it into the response JSON).
                     // Echoed so the optimistic task carries images.
                     .image_urls = r.image_urls,
+                    // Migration 090 — kanban video urls. Same echo.
+                    .video_urls = r.video_urls,
                 },
                 .{},
             ),

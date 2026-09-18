@@ -112,6 +112,17 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
             }
             image_url_str = try combined.toOwnedSlice(allocator);
         }
+        // Join multiple video URLs into a pipe-separated string
+        var video_url_str: []u8 = &[_]u8{};
+        if (msg.video_urls) |urls| {
+            var combined = std.ArrayList(u8).empty;
+            errdefer combined.deinit(allocator);
+            for (urls, 0..) |url, i| {
+                if (i > 0) try combined.append(allocator, '|');
+                try combined.appendSlice(allocator, url);
+            }
+            video_url_str = try combined.toOwnedSlice(allocator);
+        }
 
         messages[idx] = http_response.SessionMessage{
             .id = msg.id,
@@ -127,6 +138,7 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
             .diffview_before = msg.diffview_before orelse "",
             .diffview_after = msg.diffview_after orelse "",
             .image_url = image_url_str,
+            .video_url = video_url_str,
             .tool_call_id = msg.tool_call_id orelse "",
             .tool_calls_json = msg.tool_calls_json orelse "",
         };
@@ -228,6 +240,7 @@ fn setupDb() !TestCtx {
         \\    diffview_before TEXT,
         \\    diffview_after TEXT,
         \\    image_url TEXT,
+        \\    video_url TEXT,
         \\    tool_call_id TEXT,
         \\    tool_calls_json TEXT
         \\)
@@ -499,6 +512,7 @@ test "getSessionMessagesSorted: SessionMessagesResponse wire shape includes sele
             .diffview_before = msg.diffview_before orelse "",
             .diffview_after = msg.diffview_after orelse "",
             .image_url = image_url_str,
+            .video_url = "",
             .tool_call_id = msg.tool_call_id orelse "",
             .tool_calls_json = msg.tool_calls_json orelse "",
         };
