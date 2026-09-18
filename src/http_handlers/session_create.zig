@@ -91,7 +91,12 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         const prefix = if (prefix_len > 0) req.body[0..prefix_len] else "";
         // Use {s} for the prefix slice; escape control chars by printing length + prefix
         std.debug.print("DEBUG_HANDLER: req.body.len={}, body_start_200={s}\n", .{ req.body.len, prefix });
-        if (req.body.len > 1024 * 1024) {
+        // 35 MB: fits the 25 MB video cap (base64 inflates ~33% →
+        // ~33.3 MB wire) plus JSON envelope overhead. Videos larger
+        // than 25 MB raw are rejected downstream by
+        // video_urls_validation with a specific 413 message — this
+        // gate is only a DoS backstop, not the user-facing limit.
+        if (req.body.len > 35 * 1024 * 1024) {
             std.log.warn("session_create: body too large ({} bytes), rejecting", .{req.body.len});
             return res.jsonResponse(.{
                 .status_code = 413,
