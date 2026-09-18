@@ -516,13 +516,13 @@ fn expandBraces(pattern: []const u8, allocator: std.mem.Allocator) ![]const []co
                 depth -= 1;
                 if (depth == 0) {
                     const prefix = if (start > 0) pattern[0..start] else "";
-                    const suffix = if (i + 1 < pattern.len) pattern[i + 1..] else "";
+                    const suffix = if (i + 1 < pattern.len) pattern[i + 1 ..] else "";
                     const inner = pattern[start + 1 .. i];
 
                     // Check for negation pattern {![pattern]}
                     if (inner.len > 1 and inner[0] == '!') {
                         const negated_content = inner[1..];
-var results: std.ArrayListUnmanaged([]const u8) = .empty;
+                        var results: std.ArrayListUnmanaged([]const u8) = .empty;
                         errdefer results.deinit(allocator);
 
                         // Return the negated pattern marker
@@ -534,9 +534,9 @@ var results: std.ArrayListUnmanaged([]const u8) = .empty;
                     // Check for numeric range {1..5}
                     if (std.mem.indexOf(u8, inner, "..")) |idx| {
                         const before = inner[0..idx];
-                        const after = inner[idx + 2..];
+                        const after = inner[idx + 2 ..];
                         if (isNumeric(before) and isNumeric(after)) {
-var results: std.ArrayListUnmanaged([]const u8) = .empty;
+                            var results: std.ArrayListUnmanaged([]const u8) = .empty;
                             errdefer results.deinit(allocator);
 
                             const start_num = std.fmt.parseInt(i64, before, 10) catch 0;
@@ -655,7 +655,8 @@ pub const GitignoreContext = struct {
             // Check basename and full path
             const basename = std.fs.path.basename(rel_path);
             if (gitignoreGlobMatch(entry.pattern, basename, false) or
-                gitignoreGlobMatch(entry.pattern, rel_path, false)) {
+                gitignoreGlobMatch(entry.pattern, rel_path, false))
+            {
                 return !entry.negated;
             }
         }
@@ -830,15 +831,13 @@ fn walkDir(
 
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, inner_pattern) catch break;
-                                walkDir(allocator, io, full_path, new_patterns.items,
-                                    opts, results, depth + 1, gitignore_ctx);
+                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1, gitignore_ctx);
                                 new_patterns.deinit(allocator);
                             } else {
                                 // Non-recursive suffix — recurse with it.
                                 var new_patterns: std.ArrayListUnmanaged([]const u8) = .empty;
                                 new_patterns.append(allocator, remaining_pattern) catch break;
-                                walkDir(allocator, io, full_path, new_patterns.items,
-                                    opts, results, depth + 1, gitignore_ctx);
+                                walkDir(allocator, io, full_path, new_patterns.items, opts, results, depth + 1, gitignore_ctx);
                                 new_patterns.deinit(allocator);
                             }
                         } else {
@@ -846,8 +845,7 @@ fn walkDir(
                             // this directory itself matches; recurse to
                             // check children.
                             if (pat[pat_idx + slash_idx - 1] != '*') {
-                                walkDir(allocator, io, full_path, patterns,
-                                    opts, results, depth + 1, gitignore_ctx);
+                                walkDir(allocator, io, full_path, patterns, opts, results, depth + 1, gitignore_ctx);
                             }
                         }
                         consumed = true;
@@ -876,8 +874,7 @@ fn walkDir(
             // prefix-stripped pattern; the fallback recurses with the
             // patterns that the prefix-aware did NOT consume.
             if (unconsumed.items.len > 0) {
-                walkDir(allocator, io, full_path, unconsumed.items,
-                    opts, results, depth + 1, gitignore_ctx);
+                walkDir(allocator, io, full_path, unconsumed.items, opts, results, depth + 1, gitignore_ctx);
             }
         }
         allocator.free(full_path);
@@ -1052,123 +1049,67 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
 // Output Formatting
 // ============================================================================
 
-/// Escape the five XML-significant characters in `s` so the result is
-/// safe to interpolate between XML markup. Used for the `pattern`
-/// attribute on `<glob_summary>` — without escaping, a pattern like
-/// `<weird>.zig` would emit literal XML markup that breaks downstream
-/// parsers (per memory `zig-0.16-std-json-fmt-emits-invalid-utf8-as-array`'s
-/// general principle: never build XML/JSON via raw `{s}` format strings).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    // Pre-scan to see if any escaping is needed (avoids a copy in
-    // the common case of a benign pattern).
-    var needs_escape = false;
-    for (s) |c| {
-        switch (c) {
-            '<', '>', '&', '"', '\'' => {
-                needs_escape = true;
-                break;
-            },
-            else => {},
-        }
-    }
-    if (!needs_escape) return allocator.dupe(u8, s);
+/// JSON payload mirrors the old `<glob_summary>` attributes 1:1:
+/// `pattern`, `total`, `returned`, `offset`, `truncated` and
+/// `truncated_by_size`, plus `files` (one entry per former `<f>` tag).
+/// The old `<warning>`-only empty result becomes `files: []` with an
+/// explicit `warning` string; truncation notes also go in `warning`
+/// (null when nothing was truncated). The pattern is sanitized for
+/// control characters; `std.json` handles the remaining escaping.
+pub const GlobJSON = struct {
+    pattern: []const u8,
+    total: usize,
+    returned: usize,
+    offset: usize,
+    truncated: usize,
+    truncated_by_size: bool,
+    files: [][]const u8,
+    warning: ?[]const u8 = null,
+};
 
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
+pub fn toJSONSuccess(allocator: std.mem.Allocator, result: GlobResult, pattern: []const u8) ![]const u8 {
+    const clean_pattern = try helpers.sanitize_control_chars(allocator, pattern);
+    defer allocator.free(clean_pattern);
 
-    for (s) |c| {
-        switch (c) {
-            '<' => try out.appendSlice(allocator, "&lt;"),
-            '>' => try out.appendSlice(allocator, "&gt;"),
-            '&' => try out.appendSlice(allocator, "&amp;"),
-            '"' => try out.appendSlice(allocator, "&quot;"),
-            '\'' => try out.appendSlice(allocator, "&apos;"),
-            else => try out.append(allocator, c),
-        }
-    }
-    return try out.toOwnedSlice(allocator);
-}
-
-pub fn toXmlSuccess(allocator: std.mem.Allocator, result: GlobResult, pattern: []const u8) ![]const u8 {
-    var output = std.ArrayList(u8).empty;
-    // Defer cleanup (not just errdefer) — `output.items` is appended
-    // into `final_out` BELOW on the success path, which copies the bytes
-    // but doesn't free the backing storage. We MUST free on success too.
-    defer output.deinit(allocator);
-
-    // Escape the pattern ONCE up-front so we don't have to thread it
-    // through every error path. The escape is needed because the
-    // pattern appears as an XML attribute value below.
-    const escaped_pattern = try xmlEscape(allocator, pattern);
-    defer allocator.free(escaped_pattern);
+    var files = std.ArrayList([]const u8).empty;
+    defer files.deinit(allocator);
 
     var byte_count: usize = 0;
-    var returned: usize = 0;
     var truncated_by_size_now = false;
 
     for (result.matches.items) |m| {
-        const xml = try std.fmt.allocPrint(allocator, "<f>{s}</f>\n", .{m.path});
-        defer allocator.free(xml);
-
-        if (byte_count + xml.len > DEFAULT_MAX_OUTPUT_BYTES and returned > 0) {
-            // Byte-cap hit — record it so the truncated warning can
-            // distinguish "truncated because of MAX_OUTPUT_BYTES" from
-            // "truncated because user asked for max_results=N".
+        if (byte_count + m.path.len > DEFAULT_MAX_OUTPUT_BYTES and files.items.len > 0) {
             truncated_by_size_now = true;
             break;
         }
-        try output.appendSlice(allocator, xml);
-        byte_count += xml.len;
-        returned += 1;
+        try files.append(allocator, m.path);
+        byte_count += m.path.len;
     }
 
-    if (output.items.len == 0) {
-        // No matches → return the warning directly. The `escaped_pattern`
-        // and `output` allocations are freed by the defer above.
-        return try std.fmt.allocPrint(allocator, "<warning>No files found matching the glob pattern.</warning>", .{});
-    }
-
-    const total_truncated = result.truncated_count + (result.matches.items.len - returned);
-    const truncated_by_size_attr: u8 = if (truncated_by_size_now) '1' else '0';
-    const summary = try std.fmt.allocPrint(allocator,
-        "<glob_summary pattern=\"{s}\" total=\"{d}\" returned=\"{d}\" offset=\"{d}\" truncated=\"{d}\" truncated_by_size=\"{c}\">\n",
-        .{ escaped_pattern, result.total_found, returned, result.offset_applied, total_truncated, truncated_by_size_attr }
-    );
-    // Note: `summary` is appended (which COPIES bytes) into final_out
-    // below, so we must free the original on success too (errdefer only
-    // runs on error). defer covers both paths.
-    defer allocator.free(summary);
-
-    var final_out = std.ArrayList(u8).empty;
-    defer final_out.deinit(allocator);
-
-    try final_out.appendSlice(allocator, summary);
-    try final_out.appendSlice(allocator, output.items);
-    try final_out.appendSlice(allocator, "</glob_summary>\n");
-
-    if (total_truncated > 0) {
-        // Differentiate the warning text by which cap was hit so the
-        // LLM caller knows whether to bump max_results vs max output.
-        const warn = if (truncated_by_size_now)
-            try std.fmt.allocPrint(allocator,
-                "<truncated>{d} files truncated by output size (>{d} bytes). Use more specific patterns to reduce output.</truncated>",
-                .{ total_truncated, DEFAULT_MAX_OUTPUT_BYTES })
+    const total_truncated = result.truncated_count + (result.matches.items.len - files.items.len);
+    var owned_warning: ?[]u8 = null;
+    defer if (owned_warning) |w| allocator.free(w);
+    const warning: ?[]const u8 = if (files.items.len == 0)
+        "No files found matching the glob pattern."
+    else if (total_truncated > 0) blk: {
+        owned_warning = if (truncated_by_size_now)
+            try std.fmt.allocPrint(allocator, "{d} files truncated by output size (>{d} bytes). Use more specific patterns to reduce output.", .{ total_truncated, DEFAULT_MAX_OUTPUT_BYTES })
         else
-            try std.fmt.allocPrint(allocator,
-                "<truncated>{d} files truncated. Use more specific patterns or pagination.</truncated>",
-                .{total_truncated});
-        // Same pattern as `summary` — appendSlice copies, so we must
-        // free on success too. Use defer (not errdefer).
-        defer allocator.free(warn);
-        try final_out.appendSlice(allocator, warn);
-    }
+            try std.fmt.allocPrint(allocator, "{d} files truncated. Use more specific patterns or pagination.", .{total_truncated});
+        break :blk owned_warning;
+    } else null;
 
-    return try final_out.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, GlobJSON{
+        .pattern = clean_pattern,
+        .total = result.total_found,
+        .returned = files.items.len,
+        .offset = result.offset_applied,
+        .truncated = total_truncated,
+        .truncated_by_size = truncated_by_size_now,
+        .files = files.items,
+        .warning = warning,
+    }, .{});
 }
-
-// ============================================================================
-// Tool Definition
-// ============================================================================
 
 pub const glob_tool_system_prompt =
     \\## Glob Tool — Behavior
@@ -1185,7 +1126,7 @@ pub const glob_tool = AgentTool{
         .description =
         \\Find files matching glob patterns (like node-glob).
         \\Automatically respects .gitignore files - ignored files are excluded from results.
-        \\Returns: <f>path</f> for each match wrapped in <glob_summary> with stats.
+        \\Returns JSON: {"pattern": ..., "files": [...], "total": ..., "returned": ..., "truncated": ...}.
         \\
         \\Gitignore behavior:
         \\  - Respects .gitignore rules from the search path and subdirectories
@@ -1305,7 +1246,7 @@ test "GitignoreContext.isIgnored - direct test" {
     // Test isIgnored directly with a known path
     // The path /tmp/gitignore_test_ctx/debug.log should be checked against the context
     const test_path = "/tmp/gitignore_test_ctx/debug.log";
-    
+
     // Initially, no rules loaded - nothing should be ignored
     try std.testing.expect(ctx.isIgnored(test_path) == false);
 }
@@ -1342,7 +1283,9 @@ test "loadGitignoreForDir with relative path does not crash" {
     const tmp_dir_path = "/tmp/glob_relative_path_test";
     std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir_path) catch {};
     std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir_path) catch {};
-    defer { std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir_path) catch {}; }
+    defer {
+        std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir_path) catch {};
+    }
 
     // Create the subdirectory
     const subdir_path = std.fs.path.join(allocator, &.{ tmp_dir_path, "test_subdir" }) catch unreachable;
@@ -1368,7 +1311,9 @@ test "loadGitignoreForDir with absolute path and existing gitignore" {
     const tmp_dir_path = "/tmp/glob_absolute_gitignore_test";
     std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir_path) catch {};
     std.Io.Dir.cwd().createDirPath(std.testing.io, tmp_dir_path) catch {};
-    defer { std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir_path) catch {}; }
+    defer {
+        std.Io.Dir.cwd().deleteTree(std.testing.io, tmp_dir_path) catch {};
+    }
 
     var ctx = GitignoreContext.init(tmp_dir_path);
     defer ctx.deinit(allocator);
@@ -1941,7 +1886,7 @@ test "glob: offset + max_results exceeds total returns what's available" {
 // Section 3: Output shape tests (no fs needed — pure formatting)
 // ============================================================================
 
-test "glob: toXmlSuccess with empty results emits `<warning>` (no `<glob_summary>`)" {
+test "glob: toJSONSuccess with empty results emits empty files array with warning" {
     const allocator = std.testing.allocator;
 
     const empty_result: GlobResult = .{
@@ -1952,14 +1897,20 @@ test "glob: toXmlSuccess with empty results emits `<warning>` (no `<glob_summary
         .truncated_by_size = false,
     };
 
-    const xml = try toXmlSuccess(allocator, empty_result, "*");
-    defer allocator.free(xml);
+    const payload = try toJSONSuccess(allocator, empty_result, "*");
+    defer allocator.free(payload);
 
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<warning>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<glob_summary") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("*", obj.get("pattern").?.string);
+    try std.testing.expectEqual(@as(usize, 0), obj.get("files").?.array.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, obj.get("warning").?.string, "No files found") != null);
+    try std.testing.expectEqual(@as(i64, 0), obj.get("total").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), obj.get("truncated").?.integer);
 }
 
-test "glob: toXmlSuccess escapes XML metacharacters in pattern attribute" {
+test "glob: toJSONSuccess keeps pattern with XML metacharacters raw" {
     const allocator = std.testing.allocator;
 
     var matches = std.ArrayList(GlobMatch).empty;
@@ -1977,26 +1928,23 @@ test "glob: toXmlSuccess escapes XML metacharacters in pattern attribute" {
         .truncated_by_size = false,
     };
 
-    // Pattern with `<`, `>`, `&` — must be XML-escaped in the
-    // `<glob_summary pattern="...">` attribute.
-    const xml = try toXmlSuccess(allocator, result, "<weird>&pattern.zig");
-    defer allocator.free(xml);
+    // Pattern with `<`, `>`, `&` — JSON needs no escaping for these, so
+    // the field must equal the raw input.
+    const payload = try toJSONSuccess(allocator, result, "<weird>&pattern.zig");
+    defer allocator.free(payload);
 
-    // `<` → `&lt;`, `>` → `&gt;`, `&` → `&amp;` in attribute values.
-    try std.testing.expect(std.mem.indexOf(u8, xml, "&lt;weird&gt;") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "&amp;pattern") != null);
-    // And the literal unescaped form must NOT appear in the attribute.
-    const pattern_attr_marker = std.mem.indexOf(u8, xml, "pattern=\"");
-    try std.testing.expect(pattern_attr_marker != null);
-    // Start searching AFTER `pattern="` (the marker is 9 chars: pattern=").
-    const attr_start = pattern_attr_marker.? + 9;
-    const attr_end = std.mem.indexOfPos(u8, xml, attr_start, "\"") orelse unreachable;
-    // No raw `<` between `pattern="` and the closing `"`.
-    const attr_value = xml[attr_start..attr_end];
-    try std.testing.expect(std.mem.indexOfScalar(u8, attr_value, '<') == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("<weird>&pattern.zig", obj.get("pattern").?.string);
+    const files = obj.get("files").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    try std.testing.expectEqualStrings("/tmp/foo.zig", files[0].string);
+    try std.testing.expectEqual(@as(i64, 1), obj.get("total").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), obj.get("returned").?.integer);
+    try std.testing.expect(obj.get("warning").? == .null);
 }
 
-// ============================================================================
 // respect_ignore_files tests (TDD: these reference a not-yet-existing field)
 // =============================================================================
 //

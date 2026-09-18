@@ -40,14 +40,14 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const result = text_replace_mod.executeTextReplace(
+    var tr_result = text_replace_mod.executeTextReplace(
         ctx.allocator,
         ctx.io,
         parsed.value.path,
         parsed.value.old_str,
         parsed.value.new_str,
     ) catch |err| {
-        const inner = text_replace_mod.toXmlError(
+        const inner = try text_replace_mod.toJSONError(
             ctx.allocator,
             err,
             parsed.value.path,
@@ -58,7 +58,9 @@ pub fn execTextReplace(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    const inner = text_replace_mod.toXmlSuccess(ctx.allocator, result, parsed.value.path);
+    defer tr_result.deinit(ctx.allocator);
+
+    const inner = try text_replace_mod.toJSONSuccess(ctx.allocator, tr_result, parsed.value.path);
     const output = try wrapToolOutput(ctx.allocator, "text_replace", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -97,6 +99,16 @@ fn minimalCtxTr(allocator: std.mem.Allocator) ToolExecContext {
         .environment = null,
         .active_loops = undefined,
     };
+}
+
+/// Helper: assert the exec output is a success JSON envelope whose
+/// `data.path` equals the expected path.
+fn expectTextReplaceSuccess(output: []const u8, expected_path: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("success").?.bool);
+    try testing.expectEqualStrings(expected_path, obj.get("data").?.object.get("path").?.string);
 }
 
 fn readAllTr(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -154,7 +166,7 @@ test "execTextReplace: writes back the full modified file (truncates + overwrite
         const result = try execTextReplace(minimalCtxTr(a), tc);
         defer if (result.output_allocated) a.free(result.output);
 
-        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try expectTextReplaceSuccess(result.output, target_path);
 
         // Read back — file must be EXACTLY "[OK] then keep this trailing junk
         // after the marker to detect any append-mode corruption"
@@ -208,7 +220,7 @@ test "execTextReplace: existing file with matching content is modified in place"
         const result = try execTextReplace(minimalCtxTr(a), tc);
         defer if (result.output_allocated) a.free(result.output);
 
-        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try expectTextReplaceSuccess(result.output, target_path);
         const read = try readAllTr(a, target_path);
         try testing.expectEqualStrings("Goodbye World\n", read);
     }

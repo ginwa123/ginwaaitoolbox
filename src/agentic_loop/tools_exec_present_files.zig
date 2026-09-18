@@ -21,10 +21,10 @@ pub fn execPresentFiles(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     };
     defer parsed.deinit();
 
-    // executePresentFilesToString returns an XML string. Validation
+    // executePresentFilesToString returns a JSON string. Validation
     // failures (missing file, relative path, too many files) are
-    // encoded as <present_files><error>...</error></present_files> so
-    // the LLM sees a structured failure rather than a tool crash.
+    // encoded as {"status":null,"error":...} so the LLM sees a
+    // structured failure rather than a tool crash.
     const inner = present_files_mod.executePresentFilesToString(
         ctx.allocator,
         ctx.io,
@@ -36,15 +36,28 @@ pub fn execPresentFiles(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     };
     defer ctx.allocator.free(inner);
 
-    // Detect the <present_files><error>...</error></present_files> shape
-    // and surface it as a tool failure (so the LLM sees
-    // `success=false` rather than a successful wrapper around an
-    // error body). The inner envelope is still passed through as
-    // `data` so the LLM can read the full diagnostic.
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
+    // Detect the {"status":null,"error":...} shape and surface it as a
+    // tool failure (so the LLM sees `success=false` rather than a
+    // successful wrapper around an error body). The inner object is
+    // still passed through as `data` so the LLM can read the full
+    // diagnostic.
+    const inner_failed: bool = blk: {
+        const parsed_inner = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch break :blk true;
+        defer parsed_inner.deinit();
+        if (parsed_inner.value != .object) break :blk true;
+        const status = parsed_inner.value.object.get("status") orelse break :blk true;
+        if (status != .string) break :blk true;
+        break :blk !std.mem.eql(u8, status.string, "presented");
+    };
+    if (inner_failed) {
+        const err_msg: []const u8 = blk: {
+            const parsed_inner = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch break :blk inner;
+            defer parsed_inner.deinit();
+            if (parsed_inner.value != .object) break :blk inner;
+            const e = parsed_inner.value.object.get("error") orelse break :blk inner;
+            if (e != .string) break :blk inner;
+            break :blk e.string;
+        };
         const output = try wrapToolOutput(ctx.allocator, "present_files", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }

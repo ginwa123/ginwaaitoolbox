@@ -5,28 +5,6 @@ const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 
-/// XML-escape a string for safe inclusion in tool-result XML output.
-/// Mirrors `src/agentic_loop/llm_history.zig xmlEscape` exactly so the
-/// frontend's `unwrapToolOutput` can safely un-escape (& -> &amp; first
-/// during decoding to avoid double-decoding).
-/// Local definition (rather than importing the canonical one) keeps
-/// `text_replace.zig` free of cross-module dependencies.
-pub fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-    for (s) |c| {
-        switch (c) {
-            '&' => try out.appendSlice(allocator, "&amp;"),
-            '<' => try out.appendSlice(allocator, "&lt;"),
-            '>' => try out.appendSlice(allocator, "&gt;"),
-            '"' => try out.appendSlice(allocator, "&quot;"),
-            '\'' => try out.appendSlice(allocator, "&apos;"),
-            else => try out.append(allocator, c),
-        }
-    }
-    return out.toOwnedSlice(allocator);
-}
-
 pub const TextReplaceInput = struct {
     path: []const u8,
     old_str: []const u8,
@@ -478,75 +456,66 @@ pub fn executeTextReplace(
     return TextReplaceResult{ .ok = {}, .diff_view = diff_view };
 }
 
-/// Create a minimal XML error output (no success field, just error + original args)
-pub fn xmlError(allocator: std.mem.Allocator, err_msg: []const u8, path: []const u8, old_str: []const u8, new_str: []const u8) []const u8 {
-    // XML-escape every user-controlled field. Otherwise a `&` or `<` in the
-    // path / old_str / new_str silently corrupts the parsed XML on the
-    // frontend (the `toolOutputParser.extractTag` will misalign).
-    const escaped_err = xmlEscape(allocator, err_msg) catch "<success>false</success><error>UnknownError</error>";
-    defer allocator.free(escaped_err);
-    const escaped_path = xmlEscape(allocator, path) catch "<success>false</success><error>UnknownError</error>";
-    defer allocator.free(escaped_path);
-    const escaped_old = xmlEscape(allocator, old_str) catch "<success>false</success><error>UnknownError</error>";
-    defer allocator.free(escaped_old);
-    const escaped_new = xmlEscape(allocator, new_str) catch "<success>false</success><error>UnknownError</error>";
-    defer allocator.free(escaped_new);
-    return std.fmt.allocPrint(allocator,
-        \\<error>{s}</error>
-        \\<path>{s}</path>
-        \\<old_str>{s}</old_str>
-        \\<new_str>{s}</new_str>
-        \\<success>false</success>
-    , .{ escaped_err, escaped_path, escaped_old, escaped_new }) catch "<success>false</success><error>UnknownError</error>";
+/// JSON payloads mirror the old XML tags 1:1: `path` plus the
+/// `diff_view` children (`unified`, `before`, `after`, `lines_changed`).
+/// Tags omitted when empty become explicit nulls. `std.json` handles
+/// all escaping, so `<`, `&` and quotes in paths and diffs need no
+/// manual layer.
+pub const TextReplaceSuccessJSON = struct {
+    path: []const u8,
+    unified: ?[]const u8 = null,
+    before: ?[]const u8 = null,
+    after: ?[]const u8 = null,
+    lines_changed: ?usize = null,
+    @"error": ?[]const u8 = null,
+};
+
+pub const TextReplaceErrorJSON = struct {
+    path: []const u8,
+    old_str: ?[]const u8 = null,
+    new_str: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
+fn errorMessageFor(allocator: std.mem.Allocator, err: anyerror, path: []const u8) ![]u8 {
+    return switch (err) {
+        error.OldStrNotFound => try allocator.dupe(u8, "Make sure the text exists exactly once in the file."),
+        error.OldStrNotUnique => try allocator.dupe(u8, "There are multiple occurrences of the text in the file. Expand old_str to include more context to make it unique."),
+        error.PathNotFound => try std.fmt.allocPrint(allocator, "File '{s}' not found. Check if the path is correct.", .{path}),
+        error.WriteFailed => try std.fmt.allocPrint(allocator, "Failed to write to file '{s}'.", .{path}),
+        else => try std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(err)}),
+    };
 }
 
-/// Serialize result to XML string with diff view (split + unified)
-pub fn toXmlSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) []const u8 {
+pub fn toJSONSuccess(allocator: std.mem.Allocator, result: TextReplaceResult, path: []const u8) ![]u8 {
     const dv = result.diff_view;
-    const unified = if (dv) |d| d.unified else "";
-    const before = if (dv) |d| d.before else "";
-    const after = if (dv) |d| d.after else "";
-    const lines_changed = if (dv) |d| d.lines_changed else 0;
-
-    // XML-escape every user-controlled field. Without this, a `&`, `<`, or
-    // `>` in the path / before / after content would silently corrupt the
-    // parsed XML on the frontend.
-    const escaped_path = xmlEscape(allocator, path) catch "<success>true</success><path>Unknown</path>";
-    defer allocator.free(escaped_path);
-    const escaped_unified = xmlEscape(allocator, unified) catch "<success>true</success><path>Unknown</path>";
-    defer allocator.free(escaped_unified);
-    const escaped_before = xmlEscape(allocator, before) catch "<success>true</success><path>Unknown</path>";
-    defer allocator.free(escaped_before);
-    const escaped_after = xmlEscape(allocator, after) catch "<success>true</success><path>Unknown</path>";
-    defer allocator.free(escaped_after);
-
-    return std.fmt.allocPrint(allocator,
-        \\<success>true</success>
-        \\<path>{s}</path>
-        \\<diff_view>
-        \\<unified>{s}</unified>
-        \\<before>{s}</before>
-        \\<after>{s}</after>
-        \\<lines_changed>{d}</lines_changed>
-        \\</diff_view>
-    , .{ escaped_path, escaped_unified, escaped_before, escaped_after, lines_changed }) catch "<success>true</success><path>Unknown</path>";
+    return try std.json.Stringify.valueAlloc(allocator, TextReplaceSuccessJSON{
+        .path = path,
+        .unified = if (dv) |d| d.unified else null,
+        .before = if (dv) |d| d.before else null,
+        .after = if (dv) |d| d.after else null,
+        .lines_changed = if (dv) |d| d.lines_changed else null,
+    }, .{});
 }
 
-pub fn toXmlError(allocator: std.mem.Allocator, result: anyerror, path: []const u8, old_str: []const u8) []const u8 {
-    _ = old_str;
-    const error_msg = switch (result) {
-        error.OldStrNotFound => std.fmt.allocPrint(allocator, "Make sure the text exists exactly once in the file.", .{}) catch return "<success>false</success><error>UnknownError</error>",
-        error.OldStrNotUnique => std.fmt.allocPrint(allocator, "There are multiple occurrences of the text in the file. Expand old_str to include more context to make it unique.", .{}) catch return "<success>false</success><error>UnknownError</error>",
-        error.PathNotFound => std.fmt.allocPrint(allocator, "File '{s}' not found. Check if the path is correct.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
-        error.WriteFailed => std.fmt.allocPrint(allocator, "Failed to write to file '{s}'.", .{path}) catch return "<success>false</success><error>UnknownError</error>",
-        else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(result)}) catch return "<success>false</success><error>UnknownError</error>",
-    };
-    const output = std.fmt.allocPrint(allocator, "<success>false</success><error>{s}</error>", .{error_msg}) catch {
-        allocator.free(error_msg);
-        return "<success>false</success><error>UnknownError</error>";
-    };
-    allocator.free(error_msg);
-    return output;
+pub fn toJSONError(allocator: std.mem.Allocator, err: anyerror, path: []const u8, old_str: []const u8) ![]u8 {
+    const message = try errorMessageFor(allocator, err, path);
+    defer allocator.free(message);
+    return try std.json.Stringify.valueAlloc(allocator, TextReplaceErrorJSON{
+        .path = path,
+        .old_str = old_str,
+        .@"error" = message,
+    }, .{});
+}
+
+/// Detailed error payload carrying the original args (replaces `xmlError`).
+pub fn toJSONErrorDetailed(allocator: std.mem.Allocator, err_msg: []const u8, path: []const u8, old_str: []const u8, new_str: []const u8) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, TextReplaceErrorJSON{
+        .path = path,
+        .old_str = old_str,
+        .new_str = new_str,
+        .@"error" = err_msg,
+    }, .{});
 }
 
 /// Properties for text_replace tool
@@ -1058,17 +1027,12 @@ test "generateUnifiedDiff unified output has both traditional diff and conflict 
     deleteTestFile(test_path);
 }
 
-// ─── Chunk 4: XML-escape + unified-diff coverage ───────────────────────────
+// ─── Chunk 4: JSON output coverage ───────────────────────────────────
 
-test "toXmlSuccess XML-escapes path containing & and <" {
-    // A file with a `&` or `<` in its path used to break toolOutputParser on
-    // the frontend (the <path> tag was misaligned). This test ensures the
-    // backend escapes such characters.
+test "toJSONSuccess keeps raw path with & and < (JSON needs no escaping)" {
     const allocator = std.testing.allocator;
     var result: text_replace.TextReplaceResult = .{ .ok = {} };
     defer result.deinit(allocator);
-    // Populate the diff_view with a fixed value so we can assert on the
-    // emitted XML.
     const before = allocator.dupe(u8, "x") catch unreachable;
     const after = allocator.dupe(u8, "y") catch unreachable;
     const unified = allocator.dupe(u8, "--- a\n+++ b\n-old\n+new") catch unreachable;
@@ -1078,17 +1042,39 @@ test "toXmlSuccess XML-escapes path containing & and <" {
         .after = after,
         .lines_changed = 1,
     };
-    const xml = text_replace.toXmlSuccess(allocator, result, "/abs/path with & and < and > and \"");
-    defer allocator.free(xml);
+    const payload = try text_replace.toJSONSuccess(allocator, result, "/abs/path with & and < and > and \"");
+    defer allocator.free(payload);
 
-    // The escaped path must appear, with & < > " all converted to entities.
-    try std.testing.expect(std.mem.indexOf(u8, xml, "/abs/path with &amp; and &lt; and &gt; and &quot;") != null);
-    // The raw (un-escaped) path must NOT appear inside the body (only in
-    // the escaped form).
-    try std.testing.expect(std.mem.indexOf(u8, xml, "/abs/path with & and <") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("/abs/path with & and < and > and \"", obj.get("path").?.string);
+    try std.testing.expectEqualStrings("--- a\n+++ b\n-old\n+new", obj.get("unified").?.string);
+    try std.testing.expectEqualStrings("x", obj.get("before").?.string);
+    try std.testing.expectEqualStrings("y", obj.get("after").?.string);
+    try std.testing.expectEqual(@as(i64, 1), obj.get("lines_changed").?.integer);
+    try std.testing.expect(obj.get("error").? == .null);
 }
 
-test "toXmlSuccess includes the unified diff field" {
+test "toJSONSuccess emits null diff fields when diff_view is absent" {
+    const allocator = std.testing.allocator;
+    var result: text_replace.TextReplaceResult = .{ .ok = {} };
+    defer result.deinit(allocator);
+    const payload = try text_replace.toJSONSuccess(allocator, result, "/x");
+    defer allocator.free(payload);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("/x", obj.get("path").?.string);
+    try std.testing.expect(obj.get("unified").? == .null);
+    try std.testing.expect(obj.get("before").? == .null);
+    try std.testing.expect(obj.get("after").? == .null);
+    try std.testing.expect(obj.get("lines_changed").? == .null);
+    try std.testing.expect(obj.get("error").? == .null);
+}
+
+test "toJSONSuccess includes the unified diff field" {
     const allocator = std.testing.allocator;
     var result: text_replace.TextReplaceResult = .{ .ok = {} };
     defer result.deinit(allocator);
@@ -1101,171 +1087,51 @@ test "toXmlSuccess includes the unified diff field" {
         .after = after,
         .lines_changed = 1,
     };
-    const xml = text_replace.toXmlSuccess(allocator, result, "/x");
-    defer allocator.free(xml);
+    const payload = try text_replace.toJSONSuccess(allocator, result, "/x");
+    defer allocator.free(payload);
 
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<unified>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "@@ -1,1 +1,1 @@") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "-old line") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "+new line") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    const unified_out = obj.get("unified").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, unified_out, "@@ -1,1 +1,1 @@") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unified_out, "-old line") != null);
+    try std.testing.expect(std.mem.indexOf(u8, unified_out, "+new line") != null);
 }
 
-test "xmlError XML-escapes path/old_str/new_str containing special chars" {
+test "toJSONErrorDetailed carries error, path, old_str and new_str" {
     const allocator = std.testing.allocator;
-    const xml = text_replace.xmlError(
+    const payload = try text_replace.toJSONErrorDetailed(
         allocator,
         "make & sure",
         "/path with &",
         "old < thing",
         "new > thing",
     );
-    defer allocator.free(xml);
+    defer allocator.free(payload);
 
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<error>make &amp; sure</error>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<path>/path with &amp;</path>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<old_str>old &lt; thing</old_str>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<new_str>new &gt; thing</new_str>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "<success>false</success>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("make & sure", obj.get("error").?.string);
+    try std.testing.expectEqualStrings("/path with &", obj.get("path").?.string);
+    try std.testing.expectEqualStrings("old < thing", obj.get("old_str").?.string);
+    try std.testing.expectEqualStrings("new > thing", obj.get("new_str").?.string);
 }
 
-// ============================================================================
-// xmlEscape — edge cases
-// ============================================================================
+test "toJSONError maps OldStrNotFound to a helpful message" {
+    const allocator = std.testing.allocator;
+    const payload = try text_replace.toJSONError(allocator, error.OldStrNotFound, "/x", "missing");
+    defer allocator.free(payload);
 
-test "xmlEscape - empty string returns empty" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(out.len == 0);
-    try std.testing.expect(std.mem.eql(u8, out, ""));
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("/x", obj.get("path").?.string);
+    try std.testing.expectEqualStrings("missing", obj.get("old_str").?.string);
+    try std.testing.expect(obj.get("new_str").? == .null);
+    try std.testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "exactly once") != null);
 }
-
-test "xmlEscape - plain ASCII (no specials) unchanged" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "Hello, World! 123");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "Hello, World! 123"));
-}
-
-test "xmlEscape - all 5 special chars escaped" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "&<>\"'");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&amp;&lt;&gt;&quot;&apos;"));
-}
-
-test "xmlEscape - ampersand alone" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "&");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&amp;"));
-}
-
-test "xmlEscape - less-than alone" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "<");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&lt;"));
-}
-
-test "xmlEscape - greater-than alone" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, ">");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&gt;"));
-}
-
-test "xmlEscape - double-quote alone" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "\"");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&quot;"));
-}
-
-test "xmlEscape - apostrophe alone" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "'");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&apos;"));
-}
-
-test "xmlEscape - ampersand followed by lt does NOT double-escape" {
-    // The naive bug would produce "&amp;lt;" (escaping the '&' AND replacing '<'
-    // separately). The correct output is "&amp;lt;" only if the input was
-    // "&lt;" — when the input is "&<", we want "&amp;&lt;" so that
-    // un-escaping produces "&<" back. Verify both shapes.
-    const out = try text_replace.xmlEscape(std.testing.allocator, "&<");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&amp;&lt;"));
-}
-
-test "xmlEscape - adjacent specials produce distinct entities" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "<>");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&lt;&gt;"));
-}
-
-test "xmlEscape - special at start, middle, and end" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "<a&b>c");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&lt;a&amp;b&gt;c"));
-}
-
-test "xmlEscape - unicode multibyte preserved as-is" {
-    // 2-byte UTF-8: é = 0xC3 0xA9
-    // 3-byte UTF-8: 中 = 0xE4 0xB8 0xAD
-    // 4-byte UTF-8: 🚀 = 0xF0 0x9F 0x9A 0x80
-    const out = try text_replace.xmlEscape(std.testing.allocator, "café 中文 🚀");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "café 中文 🚀"));
-}
-
-test "xmlEscape - unicode adjacent to special char" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "<中&文>");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "&lt;中&amp;文&gt;"));
-}
-
-test "xmlEscape - newlines and tabs preserved" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "line1\nline2\tcol2");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "line1\nline2\tcol2"));
-}
-
-test "xmlEscape - backslash preserved" {
-    const out = try text_replace.xmlEscape(std.testing.allocator, "path\\to\\file");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out, "path\\to\\file"));
-}
-
-test "xmlEscape - mixed content with all specials and safe chars" {
-    const input = "<tag attr=\"val\">it's & 'text'</tag>";
-    const out = try text_replace.xmlEscape(std.testing.allocator, input);
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(std.mem.eql(u8, out,
-        \\&lt;tag attr=&quot;val&quot;&gt;it&apos;s &amp; &apos;text&apos;&lt;/tag&gt;
-    ));
-}
-
-test "xmlEscape - long alternating pattern" {
-    // 100 reps of "&<" alternating → "&<&<..." → expect 100 "&amp;&lt;" pairs.
-    // Each "&amp;" is 5 chars, each "&lt;" is 4 chars, so each pair is 9 chars
-    // total. 100 pairs → 900 chars.
-    var buf: [200]u8 = undefined;
-    for (buf[0..], 0..) |*b, i| b.* = if (@mod(i, 2) == 0) '&' else '<';
-    const out = try text_replace.xmlEscape(std.testing.allocator, &buf);
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(out.len == 900);
-    // First 9 chars should be "&amp;&lt;"
-    try std.testing.expect(std.mem.eql(u8, out[0..9], "&amp;&lt;"));
-    // Last 9 chars should also be "&amp;&lt;"
-    try std.testing.expect(std.mem.eql(u8, out[out.len - 9 ..], "&amp;&lt;"));
-}
-
-test "xmlEscape - null byte preserved as-is" {
-    // Null bytes are NOT escaped (XML allows them, though discouraged).
-    // The function does a per-byte loop, so '\x00' falls into the `else` branch.
-    const out = try text_replace.xmlEscape(std.testing.allocator, "a\x00b");
-    defer std.testing.allocator.free(out);
-    try std.testing.expect(out.len == 3);
-    try std.testing.expect(std.mem.eql(u8, out, "a\x00b"));
-}
-
-// ============================================================================
-// lfToCrlf — edge cases
-// ============================================================================
 
 test "lfToCrlf - empty string returns empty" {
     const out = try text_replace.lfToCrlf(std.testing.allocator, "");
@@ -2187,7 +2053,7 @@ test "executeTextReplace - large file (50 lines) succeeds" {
 }
 
 test "executeTextReplace - special XML chars in old_str (search works on raw bytes)" {
-    // xmlEscape is applied to OUTPUT fields (in toXmlSuccess) only; the
+    // JSON string escaping is applied to OUTPUT fields (in toJSONSuccess) only; the
     // diff_view's `before`/`after` fields hold the RAW bytes from old_str /
     // new_str. So old_str can contain literal '<' / '>' / '&' and still
     // match the file, and the before field will contain them unescaped.
@@ -2213,9 +2079,9 @@ test "executeTextReplace - special XML chars in old_str (search works on raw byt
     }
 }
 
-test "executeTextReplace - XML escaping happens in toXmlSuccess, not in diff_view" {
-    // Verify the boundary: diff_view holds raw bytes; toXmlSuccess produces
-    // XML-escaped output. A user-facing test that verifies both shapes.
+test "executeTextReplace - JSON output preserves raw bytes, diff_view unescaped" {
+    // Verify the boundary: diff_view holds raw bytes; toJSONSuccess carries
+    // them through as JSON strings. A user-facing test that verifies both shapes.
     const test_path = "test_xml_escape_boundary.txt";
     try createTestFile(test_path, "before\n<tag>\nafter\n");
     defer deleteTestFile(test_path);
@@ -2236,12 +2102,14 @@ test "executeTextReplace - XML escaping happens in toXmlSuccess, not in diff_vie
         try std.testing.expect(std.mem.indexOf(u8, dv.after, "&amp;entity") != null);
     }
 
-    // toXmlSuccess: escaped output
-    const xml = text_replace.toXmlSuccess(std.testing.allocator, result, "/x");
-    defer std.testing.allocator.free(xml);
-    try std.testing.expect(std.mem.indexOf(u8, xml, "&lt;tag&gt;") != null);
-    // The & in new_str's "&amp;entity" would get re-escaped to "&amp;amp;entity"
-    try std.testing.expect(std.mem.indexOf(u8, xml, "&amp;amp;entity") != null);
+    // toJSONSuccess: raw bytes preserved (JSON needs no XML escaping)
+    const payload = try text_replace.toJSONSuccess(std.testing.allocator, result, "/x");
+    defer std.testing.allocator.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const pobj = parsed.value.object;
+    try std.testing.expectEqualStrings("<tag>", pobj.get("before").?.string);
+    try std.testing.expectEqualStrings("&amp;entity", pobj.get("after").?.string);
 }
 
 test "executeTextReplace - replacement succeeds when old_str is at byte 0" {
