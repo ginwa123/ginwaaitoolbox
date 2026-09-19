@@ -76,13 +76,15 @@ const paramStr = (obj: Record<string, unknown> | null, ...keys: string[]): strin
 // Diff content: prefer explicit props.diffviewBefore/After, then the
 // envelope's before/after, then the call parameters (covers the error path
 // where the envelope nulls `data` but parameters still carry old_str/new_str).
+// Null-safe: the SSE/REST layer may deliver explicit null (DB column null),
+// which must fall through — passing null into DiffView crashes splitLines.
 const diffBefore = computed(() => {
-  if (props.diffviewBefore !== undefined) return props.diffviewBefore
+  if (props.diffviewBefore != null && props.diffviewBefore !== '') return props.diffviewBefore
   if (parsed.value.before !== '') return parsed.value.before
   return paramStr(paramsObj.value, 'old_str', 'before') ?? ''
 })
 const diffAfter = computed(() => {
-  if (props.diffviewAfter !== undefined) return props.diffviewAfter
+  if (props.diffviewAfter != null && props.diffviewAfter !== '') return props.diffviewAfter
   if (parsed.value.after !== '') return parsed.value.after
   const fallback = paramStr(paramsObj.value, 'new_str', 'after')
   return fallback ?? ''

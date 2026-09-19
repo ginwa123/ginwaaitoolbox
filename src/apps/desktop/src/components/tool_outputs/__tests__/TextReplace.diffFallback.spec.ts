@@ -100,4 +100,62 @@ describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
     })
     expect(wrapper.html()).toContain('Before')
   })
+
+  // Regression: the DB diffview_* columns are NULL (backend only fills them
+  // from legacy XML), so ChatView passes explicit null props. Null must fall
+  // through to the envelope data — passing it into DiffView crashes
+  // splitLines (Cannot read properties of null). Exact shape from the
+  // production crash report.
+  it('explicit null diffview props fall through to envelope data (no crash)', async () => {
+    const params = JSON.stringify({
+      path: '/tmp/nalar_dummy_test.txt',
+      old_str: 'test again - second replacement works!',
+      new_str: 'again - third replacement works! count: 3',
+    })
+    const wrapper = mount(TextReplace, {
+      props: {
+        content: {
+          path: '/tmp/nalar_dummy_test.txt',
+          unified: '@@ -1,2 +1,2 @@',
+          before: 'test again - second replacement works!',
+          after: 'again - third replacement works! count: 3',
+          lines_changed: 2,
+          error: null,
+        },
+        parameters: params,
+        expanded: true,
+        diffviewBefore: null,
+        diffviewAfter: null,
+      } as never,
+    })
+    expect(wrapper.html()).toContain('Before')
+    expect(wrapper.html()).toContain('After')
+  })
+
+  it('null diffview props + error envelope still diffs from parameters', async () => {
+    const params = JSON.stringify({
+      path: '/proj/a.txt',
+      old_str: 'aaa',
+      new_str: 'bbb',
+    })
+    const envelope = JSON.stringify({
+      tool: 'text_replace',
+      parameters: JSON.parse(params),
+      success: false,
+      data: null,
+      error: 'text_replace failed: OldStrNotFound',
+      v: 1,
+    })
+    const wrapper = mount(TextReplace, {
+      props: {
+        content: envelope,
+        parameters: params,
+        expanded: true,
+        diffviewBefore: null,
+        diffviewAfter: null,
+      } as never,
+    })
+    expect(wrapper.html()).toContain('Before')
+    expect(wrapper.html()).toContain('After')
+  })
 })
