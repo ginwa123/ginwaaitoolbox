@@ -47,16 +47,62 @@ const parsed = computed(() => {
   return p
 })
 
+// Parameters as a JSON object (null when unparseable). Used for the
+// error-path diff fallback: on failure the envelope nulls `data`, so the
+// only place old_str/new_str survive is the `parameters` prop.
+const paramsObj = computed((): Record<string, unknown> | null => {
+  try {
+    const raw = (props.parameters ?? '').trim()
+    if (!raw) return null
+    const obj = JSON.parse(raw) as unknown
+    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return null
+    return obj as Record<string, unknown>
+  } catch {
+    return null
+  }
+})
+
+// String field that preserves explicit empty strings (text_replace delete
+// uses new_str=""). Returns null only when the key is missing/non-string.
+const paramStr = (obj: Record<string, unknown> | null, ...keys: string[]): string | null => {
+  if (!obj) return null
+  for (const k of keys) {
+    const v = obj[k]
+    if (typeof v === 'string') return v
+  }
+  return null
+}
+
+// Diff content: prefer explicit props.diffviewBefore/After, then the
+// envelope's before/after, then the call parameters (covers the error path
+// where the envelope nulls `data` but parameters still carry old_str/new_str).
+const diffBefore = computed(() => {
+  if (props.diffviewBefore !== undefined) return props.diffviewBefore
+  if (parsed.value.before !== '') return parsed.value.before
+  return paramStr(paramsObj.value, 'old_str', 'before') ?? ''
+})
+const diffAfter = computed(() => {
+  if (props.diffviewAfter !== undefined) return props.diffviewAfter
+  if (parsed.value.after !== '') return parsed.value.after
+  const fallback = paramStr(paramsObj.value, 'new_str', 'after')
+  return fallback ?? ''
+})
+
+const hasDiff = computed(() => diffBefore.value !== '' || diffAfter.value !== '')
+
+// old_str/new_str are already visualized as the diff above — hide them from
+// Arguments so the expanded card shows a visual diff plus the path instead
+// of a huge raw JSON blob (the screenshot that motivated this fix).
+const ARGS_EXCLUDE = ['old_str', 'new_str', 'before', 'after', 'unified']
+
 const hasArgs = computed(() => {
+  const obj = paramsObj.value
+  if (obj) {
+    return Object.keys(obj).some((k) => !ARGS_EXCLUDE.includes(k))
+  }
   const p = (props.parameters ?? '').trim()
   return p !== '' && p !== '{}'
 })
-
-// Diff content: prefer explicit props.diffviewBefore/After, then parsed before/after.
-const diffBefore = computed(() => props.diffviewBefore ?? parsed.value.before)
-const diffAfter = computed(() => props.diffviewAfter ?? parsed.value.after)
-
-const hasDiff = computed(() => diffBefore.value !== '' || diffAfter.value !== '')
 
 const contentPath = computed((): string | null => {
   const p = parsed.value.path
@@ -120,10 +166,7 @@ const handleToggle = (next: boolean) => {
     />
 
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
-      <div
-        v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
-      >
+      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
@@ -135,7 +178,7 @@ const handleToggle = (next: boolean) => {
         class="rounded-none border-0"
         @jump-to-line="handleJumpToLine"
       />
-      <ToolParameters :parameters="parameters" />
+      <ToolParameters :parameters="parameters" :exclude="ARGS_EXCLUDE" />
     </div>
   </div>
 </template>
