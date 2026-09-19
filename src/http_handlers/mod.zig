@@ -243,6 +243,7 @@ pub const gitStatusHandler = @import("git_status.zig").gitStatusHandler;
 pub const gitChangesHandler = @import("git_changes.zig").gitChangesHandler;
 pub const gitFileDiffHandler = @import("git_file_diff.zig").gitFileDiffHandler;
 pub const gitFileReadHandler = @import("git_file_diff.zig").gitFileReadHandler;
+pub const gitFileDiffsHandler = @import("git_file_diffs.zig").gitFileDiffsHandler;
 pub const gitStageHandler = @import("git_file_stage.zig").gitStageHandler;
 pub const gitUnstageHandler = @import("git_file_stage.zig").gitUnstageHandler;
 pub const gitWorktreeInfoHandler = @import("git_worktree_info.zig").gitWorktreeInfoHandler;

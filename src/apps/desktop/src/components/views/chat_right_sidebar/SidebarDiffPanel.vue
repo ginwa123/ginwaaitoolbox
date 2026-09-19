@@ -352,40 +352,88 @@ const loadGitStatus = async () => {
   }
 }
 
-// Stacked center view: fetch every changed file in parallel so the
-// center column renders all diffs without per-click round-trips.
-// allSettled keeps one failed file from rejecting the batch — its
-// entry carries `error` with empty lines instead.
+// Stacked center view: fetch every changed file so the center column
+// renders all diffs without per-click round-trips. Uses the batch
+// endpoint (POST /git/file/diffs, <=2 git spawns) instead of N parallel
+// GET /git/file/diff — the old fan-out held N Io workers for 6-10s each
+// and starved cheap routes like queue_messages. Falls back to a
+// concurrency-limited per-file fetch (pool of 4) on older servers.
+const DIFF_BATCH_CONCURRENCY = 4
 const loadFullList = async (cwd: string = props.cwd) => {
   if (!cwd) return
+  const seq = loadSeq
   const targets: { path: string; staged: boolean }[] = [
     ...stagedFiles.value.map((f) => ({ path: f.path, staged: true })),
     ...unstagedFiles.value.map((f) => ({ path: f.path, staged: false })),
     ...untrackedFiles.value.map((f) => ({ path: f.path, staged: false })),
   ]
-  const results = await Promise.allSettled(
-    targets.map((t) => api.getGitFileDiff(cwd, t.path, t.staged)),
-  )
-  const list: DiffSelection[] = targets.map((t, i) => {
-    const r = results[i]
-    if (r && r.status === 'fulfilled') {
-      const parsed = parseUnifiedDiff(r.value.diff_content)
-      return {
-        path: t.path,
-        staged: t.staged,
-        lines: parsed.lines,
-        added: parsed.added,
-        removed: parsed.removed,
-      }
-    }
+  if (targets.length === 0) {
+    if (seq === loadSeq) emit('show-diff-list', [])
+    return
+  }
+  const toSelection = (
+    t: { path: string; staged: boolean },
+    diff_content: string,
+  ): DiffSelection => {
+    const parsed = parseUnifiedDiff(diff_content)
     return {
       path: t.path,
       staged: t.staged,
-      lines: [],
-      added: 0,
-      removed: 0,
-      error: 'Failed to load file diff',
+      lines: parsed.lines,
+      added: parsed.added,
+      removed: parsed.removed,
     }
+  }
+  const toError = (t: { path: string; staged: boolean }): DiffSelection => ({
+    path: t.path,
+    staged: t.staged,
+    lines: [],
+    added: 0,
+    removed: 0,
+    error: 'Failed to load file diff',
+  })
+  try {
+    const batch = await api.getGitFileDiffs(
+      cwd,
+      targets.map((t) => ({ file: t.path, staged: t.staged })),
+    )
+    if (seq !== loadSeq) return
+    const byKey = new Map(batch.diffs.map((d) => [`${d.staged ? 1 : 0}:${d.path}`, d.diff_content]))
+    const list: DiffSelection[] = targets.map((t) => {
+      const content = byKey.get(`${t.staged ? 1 : 0}:${t.path}`)
+      if (content !== undefined) return toSelection(t, content)
+      return toError(t)
+    })
+    emit('show-diff-list', list)
+    return
+  } catch {
+    // Older server without the batch route — fall through to limited fetch.
+  }
+  if (seq !== loadSeq) return
+  const results: ({ status: 'fulfilled'; value: api.GitFileDiff } | { status: 'rejected' })[] =
+    Array.from({ length: targets.length }) as (
+      | {
+          status: 'fulfilled'
+          value: api.GitFileDiff
+        }
+      | { status: 'rejected' }
+    )[]
+  for (let i = 0; i < targets.length; i += DIFF_BATCH_CONCURRENCY) {
+    if (seq !== loadSeq) return
+    const chunk = targets.slice(i, i + DIFF_BATCH_CONCURRENCY)
+    const settled = await Promise.allSettled(
+      chunk.map((t) => api.getGitFileDiff(cwd, t.path, t.staged)),
+    )
+    settled.forEach((r, j) => {
+      results[i + j] =
+        r.status === 'fulfilled' ? { status: 'fulfilled', value: r.value } : { status: 'rejected' }
+    })
+  }
+  if (seq !== loadSeq) return
+  const list: DiffSelection[] = targets.map((t, i) => {
+    const r = results[i]
+    if (r && r.status === 'fulfilled') return toSelection(t, r.value.diff_content)
+    return toError(t)
   })
   emit('show-diff-list', list)
 }

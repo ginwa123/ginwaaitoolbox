@@ -4336,6 +4336,30 @@ export async function getGitFileDiff(
   )
 }
 
+// Batch file diffs — one POST replaces N parallel GET /git/file/diff.
+// Collapses the SidebarDiffPanel fan-out (20 files = 20 git spawns
+// holding 20 Io workers) into at most 2 server-side `git diff`
+// invocations. Falls back to per-file fetches on older servers.
+export interface GitFileDiffsBatchItem {
+  file: string
+  staged: boolean
+}
+
+export interface GitFileDiffsResponse {
+  diffs: GitFileDiff[]
+}
+
+export async function getGitFileDiffs(
+  cwd: string,
+  files: GitFileDiffsBatchItem[],
+): Promise<GitFileDiffsResponse> {
+  return await apiFetch<GitFileDiffsResponse>(`/git/file/diffs`, {
+    method: 'POST',
+    body: { path: cwd, files },
+    silent: true,
+  })
+}
+
 export async function readGitFile(
   cwd: string,
   filePath: string,

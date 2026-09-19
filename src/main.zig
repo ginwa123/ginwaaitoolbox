@@ -626,6 +626,7 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/git/status", ai_mod.http_handlers.gitStatusHandler);
     try authed.get("/api/git/changes", ai_mod.http_handlers.gitChangesHandler);
     try authed.get("/api/git/file/diff", ai_mod.http_handlers.gitFileDiffHandler);
+    try authed.post("/api/git/file/diffs", ai_mod.http_handlers.gitFileDiffsHandler);
     try authed.get("/api/git/file/read", ai_mod.http_handlers.gitFileReadHandler);
     try authed.post("/api/git/stage", ai_mod.http_handlers.gitStageHandler);
     try authed.post("/api/git/unstage", ai_mod.http_handlers.gitUnstageHandler);
