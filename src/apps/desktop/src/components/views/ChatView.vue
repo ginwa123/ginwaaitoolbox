@@ -3703,8 +3703,12 @@ watch(
       // the sizer's estimate may overshoot (phantom gap) or undershoot
       // (stick lands short). Gated on isAtBottom — scrolled-up readers
       // are never disturbed; at-bottom users get an exact sizer so the
-      // stick shows the real last message.
-      virtualScrollerRef.value?.remeasure()
+      // stick shows the real last message. (The gate MUST be re-checked
+      // here, not just at fire time above: the user can scroll up in
+      // between, and sizer mutations during active reading are the
+      // bouncing-text bug — same contract as updateStreamingMessage's
+      // rAF branch.)
+      if (isAtBottom.value) virtualScrollerRef.value?.remeasure()
       scrollToBottom(false, 'messages-length')
     })
   },
