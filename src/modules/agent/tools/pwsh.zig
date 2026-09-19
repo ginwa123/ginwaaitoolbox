@@ -20,9 +20,9 @@ pub fn execute_pwsh(
     return command.execute_command(allocator, io, input);
 }
 
-/// XML envelope formatter — same 9-tag shape as `bash_result_to_string`.
+/// JSON payload formatter — same 9-field shape as `bash_result_to_json`.
 /// Re-exported under the pwsh name for ergonomic callers.
-pub const pwsh_result_to_string = command.command_result_to_string;
+pub const pwsh_result_to_json = command.command_result_to_json;
 
 pub const pwsh_tool_system_prompt = command.command_tool_system_prompt;
 

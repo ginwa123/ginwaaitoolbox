@@ -24,11 +24,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 import * as api from '../api'
 import ChatView from '../components/views/ChatView.vue'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 import { makeLocalStorageStub } from './helpers'
 import type { Message } from '../api'
@@ -50,7 +46,8 @@ vi.mock('../components/tool_outputs/UpdatePlan.vue', () => ({
     // the <tool> envelope (mirrors get_plan's wire shape). The
     // dispatcher doesn't thread anything extra.
     props: ['message'],
-    template: '<div class="update-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
+    template:
+      '<div class="update-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
   },
 }))
 
@@ -58,7 +55,8 @@ vi.mock('../components/tool_outputs/GetPlan.vue', () => ({
   default: {
     name: 'GetPlan',
     props: ['message'],
-    template: '<div class="get-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
+    template:
+      '<div class="get-plan-stub" :data-tool-name="message.tool_name" :data-msg-id="message.id"></div>',
   },
 }))
 
@@ -89,31 +87,27 @@ function makeStubClient(initial: SseState): SseClient {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Wire envelope helpers (mirrors the backend's `wrapToolOutput` shape)
+// Wire envelope helpers (mirrors the backend's JSON `wrapToolOutput` shape)
 // ────────────────────────────────────────────────────────────────────────
 
-const wireToolEnvelope = (inner: string, paramsJson: string): string =>
-  '<tool>' +
-  '<name>tool</name>' +
-  `<parameters>${paramsJson}</parameters>` +
-  '<success>true</success>' +
-  `<data>${inner}</data>` +
-  '</tool>'
+const wireToolEnvelope = (inner: unknown, paramsJson: string): string =>
+  JSON.stringify({
+    tool: 'tool',
+    parameters: JSON.parse(paramsJson),
+    success: true,
+    data: inner,
+    error: null,
+    v: 1,
+  })
 
 const updatePlanSuccessEnvelope = (
   sessionId = 's_test_001',
   updatedAt = '2026-08-19 21:00:00',
-): string =>
-  `<update_plan><session_id>${sessionId}</session_id><updated_at>${updatedAt}</updated_at></update_plan>`
+): unknown => ({ session_id: sessionId, updated_at: updatedAt })
 
-const getPlanPresentEnvelope = (markdown: string): string => {
-  // Mirror the backend's CDATA wrap (executeGetPlan.zig). We emit the
-  // markdown verbatim inside CDATA so the test doesn't have to know
-  // about XML-escaping.
-  return `<get_plan><plan><![CDATA[\n${markdown}\n]]></plan></get_plan>`
-}
+const getPlanPresentEnvelope = (markdown: string): unknown => ({ plan: markdown })
 
-const getPlanEmptyEnvelope = (): string => `<get_plan><empty/></get_plan>`
+const getPlanEmptyEnvelope = (): unknown => ({ empty: true })
 
 // ────────────────────────────────────────────────────────────────────────
 // Test helpers — mock the api module + SSE bus + localStorage so the
@@ -301,7 +295,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
     expect(document.querySelector('.update-plan-stub')).toBeNull()
   })
 
-  it('routes a get_plan <empty/> result to the <GetPlan> component too', async () => {
+  it('routes a get_plan {empty:true} result to the <GetPlan> component too', async () => {
     // The empty/no-plan sentinel still belongs to get_plan — the
     // dispatcher must not skip it.
     installChatViewMocks({
@@ -354,10 +348,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
         {
           id: 'm_get_plan',
           role: 'tool',
-          content: wireToolEnvelope(
-            getPlanPresentEnvelope('## Steps\n- [x] step 1'),
-            '{}',
-          ),
+          content: wireToolEnvelope(getPlanPresentEnvelope('## Steps\n- [x] step 1'), '{}'),
           created_at: 1003,
           tool_name: 'get_plan',
           tool_call_id: 'tc2',

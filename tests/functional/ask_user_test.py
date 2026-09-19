@@ -74,39 +74,42 @@ def _create_session(harness: FunctionalHarness, name: str = "ask-user-probe") ->
 
 
 def _pending_envelope(question_id: str, question: str) -> str:
-    """The inner `<data>` payload `execAskUser` produces while pending."""
-    return (
-        "<ask_user>"
-        "<status>pending</status>"
-        f"<question_id>{question_id}</question_id>"
-        "<header>Deploy target</header>"
-        f"<question>{question}</question>"
-        "<allow_free_text>true</allow_free_text>"
-        "<multi_select>false</multi_select>"
-        "<recommended>staging</recommended>"
-        "<options><option>staging</option><option>production</option></options>"
-        "<instruction>The human has been asked and this turn is ending.</instruction>"
-        "</ask_user>"
+    """The inner `data` payload `execAskUser` produces while pending (JSON)."""
+    return json.dumps(
+        {
+            "status": "pending",
+            "question_id": question_id,
+            "header": "Deploy target",
+            "question": question,
+            "answer": None,
+            "answers_count": None,
+            "allow_free_text": True,
+            "multi_select": False,
+            "recommended": "staging",
+            "options": ["staging", "production"],
+            "instruction": "The human has been asked and this turn is ending.",
+        },
+        separators=(",", ":"),
     )
 
 
 def _tool_envelope(question_id: str, question: str, tool_call_id: str = "call_abc") -> str:
-    args = json.dumps(
+    params = {
+        "header": "Deploy target",
+        "question": question,
+        "options": ["staging", "production"],
+        "recommended": "staging",
+    }
+    return json.dumps(
         {
-            "header": "Deploy target",
-            "question": question,
-            "options": ["staging", "production"],
-            "recommended": "staging",
+            "tool": "ask_user",
+            "parameters": params,
+            "success": True,
+            "data": json.loads(_pending_envelope(question_id, question)),
+            "error": None,
+            "v": 1,
         },
         separators=(",", ":"),
-    )
-    return (
-        "<tool><name>ask_user</name>"
-        f"<parameters><header>Deploy target</header><question>{question}</question>"
-        "<options><item>staging</item><item>production</item></options>"
-        "<recommended>staging</recommended></parameters>"
-        "<success>true</success>"
-        f"<data>{_pending_envelope(question_id, question)}</data></tool>"
     )
 
 
@@ -242,9 +245,9 @@ def test_answer_rewrites_the_tool_row_and_resumes_the_run(harness: FunctionalHar
     # 2. the tool-result ROW was rewritten in place — same row id, which is
     #    what the model reads on the next run.
     content = _tool_row_content(harness, row_id)
-    assert "<status>answered</status>" in content, content
-    assert "<answer>staging</answer>" in content, content
-    assert "<status>pending</status>" not in content, content
+    assert '"status":"answered"' in content, content
+    assert '"answer":"staging"' in content, content
+    assert '"status":"pending"' not in content, content
 
     # 3. a run was started.
     assert _wait_for_worker(harness, session_id), "no worker row after answering"
@@ -254,9 +257,9 @@ def test_rewritten_row_satisfies_the_frontend_envelope_contract(
     harness: FunctionalHarness,
 ) -> None:
     """The card parses the row with `unwrapToolOutput`, which THROWS unless the
-    envelope has `<name>`, `<parameters>` and `<success>`.
+    envelope has `tool`, `parameters`, `success` and `v`.
 
-    An earlier version of the rewrite emitted `<tool><name>…</name><success>` —
+    An earlier version of the rewrite emitted an envelope…</name><success>` —
     no `<parameters>` — so every resolved question fell back to an empty
     "pending" card: it looked unanswered and its inputs stayed live.
     """
@@ -271,13 +274,13 @@ def test_rewritten_row_satisfies_the_frontend_envelope_contract(
     )
 
     content = _tool_row_content(harness, row_id)
-    for required in ("<tool>", "<name>ask_user</name>", "<parameters>", "</parameters>", "<success>true</success>"):
+    for required in ('"tool":"ask_user"', '"parameters"', '"success":true', '"v":1'):
         assert required in content, f"{required!r} missing from the rewritten row: {content}"
     # The parameters block is preserved from the placeholder, not dropped.
     assert "Deploy target" in content, content
     # And the payload the card renders is inside <data>.
-    assert "<data><ask_user>" in content, content
-    assert content.endswith("</tool>"), content
+    assert '"data":{"status":"answered"' in content, content
+    assert content.rstrip().endswith("}"), content
 
 
 def test_skipped_question_rewrites_the_row_too(harness: FunctionalHarness) -> None:
@@ -294,9 +297,9 @@ def test_skipped_question_rewrites_the_row_too(harness: FunctionalHarness) -> No
     )
 
     content = _tool_row_content(harness, row_id)
-    assert "<status>skipped</status>" in content, content
-    assert "<parameters>" in content, content
-    assert "<success>true</success>" in content, content
+    assert '"status":"skipped"' in content, content
+    assert '"parameters"' in content, content
+    assert '"success":true' in content, content
 
 
 def test_double_answer_is_idempotent_and_resumes_once(harness: FunctionalHarness) -> None:
@@ -323,7 +326,7 @@ def test_double_answer_is_idempotent_and_resumes_once(harness: FunctionalHarness
     assert second.json()["resumed"] is False, second.json()
 
     # The stored answer is unchanged by the replay.
-    assert "<answer>production</answer>" in _tool_row_content(harness, row_id)
+    assert '"answer":"production"' in _tool_row_content(harness, row_id)
     # The question row stores the RAW value, not the envelope.
     assert _question_answer(harness, question_id) == "production"
 
@@ -350,7 +353,7 @@ def test_empty_answer_is_rejected_on_the_wire(harness: FunctionalHarness) -> Non
     # The question is untouched, so a retry is safe.
     row = _question(harness, question_id)
     assert row is not None and row["status"] == "pending"
-    assert "<status>pending</status>" in _tool_row_content(harness, row_id)
+    assert '"status":"pending"' in _tool_row_content(harness, row_id)
 
 
 def test_unknown_question_is_404_and_other_session_is_403(harness: FunctionalHarness) -> None:
@@ -405,7 +408,7 @@ def test_tool_call_id_is_accepted_as_the_fallback_key(harness: FunctionalHarness
         expect=200,
     )
     assert r.json()["status"] == "answered", r.json()
-    assert "<answer>staging</answer>" in _tool_row_content(harness, row_id)
+    assert '"answer":"staging"' in _tool_row_content(harness, row_id)
 
 
 def test_skip_settles_the_question_and_still_resumes(harness: FunctionalHarness) -> None:
@@ -423,7 +426,7 @@ def test_skip_settles_the_question_and_still_resumes(harness: FunctionalHarness)
     assert r.json()["status"] == "skipped", r.json()
 
     content = _tool_row_content(harness, row_id)
-    assert "<status>skipped</status>" in content, content
+    assert '"status":"skipped"' in content, content
     assert "Do not guess" in content, content
     assert _wait_for_worker(harness, session_id), "skip did not resume the run"
 
@@ -452,12 +455,12 @@ def test_a_new_message_instead_of_an_answer_settles_it_as_abandoned(
     assert row is not None and row["status"] == "abandoned", dict(row) if row else None
 
     content = _tool_row_content(harness, row_id)
-    assert "<status>abandoned</status>" in content, content
+    assert '"status":"abandoned"' in content, content
     # The whole point: the model never sees the pending envelope.
-    assert "<status>pending</status>" not in content, content
+    assert '"status":"pending"' not in content, content
     # …and the card can still read it (see the envelope-contract test).
-    assert "<parameters>" in content, content
-    assert "<success>true</success>" in content, content
+    assert '"parameters"' in content, content
+    assert '"success":true' in content, content
 
     # And any later answer for it is refused rather than re-resumed.
     late = harness.http(

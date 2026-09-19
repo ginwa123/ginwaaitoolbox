@@ -308,24 +308,19 @@ pub fn readLogTruncated(
     };
 }
 
-/// Build the queue message envelope for a finished background command.
+/// Build the queue message payload for a finished background command.
 ///
-/// The envelope is XML (role stays `user` — the frontend renders
-/// `<background_command>` rows with the shell tool card instead of the
+/// The payload is JSON (role stays `user` — the frontend renders
+/// background_command rows with the shell tool card instead of the
 /// user bubble):
-/// ```xml
-/// <background_command>
-/// <pid>{d}</pid>
-/// <command>{escaped}</command>
-/// <stdout>{escaped log tail, or (empty output)}</stdout>
-/// <truncated>false</truncated>
-/// </background_command>
+/// ```json
+/// {"pid":1234,"command":"sleep 10","stdout":"hello\nworld",
+///  "truncated":false,"total_bytes":null,"log_path":null}
 /// ```
-/// When the log was truncated, `<truncated>` is `true` and the envelope
-/// also carries `<total_bytes>` + `<log_path>` so the agent knows where
+/// When the log was truncated, `truncated` is `true` and the payload
+/// also carries `total_bytes` + `log_path` so the agent knows where
 /// the full log lives. `command`, log content, and `log_path` go through
-/// `xml_escape` so the envelope always closes (same contract as
-/// `shell.result_to_xml`).
+/// the control-char sanitizer; Stringify handles the rest.
 pub fn buildCompletionMessage(
     allocator: std.mem.Allocator,
     command: []const u8,
@@ -335,108 +330,78 @@ pub fn buildCompletionMessage(
     total_bytes: usize,
     log_path: []const u8,
 ) ![]u8 {
-    const xml_escape = @import("helpers").xml_escape;
+    const sanitize = @import("helpers").sanitize_control_chars;
     const inner: []const u8 = if (log_content_truncated.len == 0) "(empty output)" else log_content_truncated;
 
-    const esc_command = try xml_escape(allocator, command);
-    defer allocator.free(esc_command);
-    const esc_stdout = try xml_escape(allocator, inner);
-    defer allocator.free(esc_stdout);
+    const clean_command = try sanitize(allocator, command);
+    defer allocator.free(clean_command);
+    const clean_stdout = try sanitize(allocator, inner);
+    defer allocator.free(clean_stdout);
 
     if (!was_truncated) {
-        return std.fmt.allocPrint(
-            allocator,
-            \\<background_command>
-            \\<pid>{d}</pid>
-            \\<command>{s}</command>
-            \\<stdout>{s}</stdout>
-            \\<truncated>false</truncated>
-            \\</background_command>
-            ,
-            .{ pid, esc_command, esc_stdout },
-        );
+        return std.json.Stringify.valueAlloc(allocator, .{
+            .pid = pid,
+            .command = clean_command,
+            .stdout = clean_stdout,
+            .truncated = false,
+            .total_bytes = @as(?usize, null),
+            .log_path = @as(?[]const u8, null),
+        }, .{});
     }
 
-    const esc_log_path = try xml_escape(allocator, log_path);
-    defer allocator.free(esc_log_path);
-    return std.fmt.allocPrint(
-        allocator,
-        \\<background_command>
-        \\<pid>{d}</pid>
-        \\<command>{s}</command>
-        \\<stdout>{s}</stdout>
-        \\<truncated>true</truncated>
-        \\<total_bytes>{d}</total_bytes>
-        \\<log_path>{s}</log_path>
-        \\</background_command>
-        ,
-        .{ pid, esc_command, esc_stdout, total_bytes, esc_log_path },
-    );
+    const clean_log_path = try sanitize(allocator, log_path);
+    defer allocator.free(clean_log_path);
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .pid = pid,
+        .command = clean_command,
+        .stdout = clean_stdout,
+        .truncated = true,
+        .total_bytes = total_bytes,
+        .log_path = clean_log_path,
+    }, .{});
 }
 
-// ─── Tests (inline, project convention — no DB, pure helpers only) ──────────
-
-test "buildCompletionMessage renders the XML envelope" {
+test "buildCompletionMessage renders the JSON payload" {
     const msg = try buildCompletionMessage(testing.allocator, "sleep 10", 1234, "hello\nworld", false, 11, "/tmp/x.log");
     defer testing.allocator.free(msg);
-    try testing.expectEqualStrings(
-        \\<background_command>
-        \\<pid>1234</pid>
-        \\<command>sleep 10</command>
-        \\<stdout>hello
-        \\world</stdout>
-        \\<truncated>false</truncated>
-        \\</background_command>
-        ,
-        msg,
-    );
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, msg, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(@as(i64, 1234), obj.get("pid").?.integer);
+    try testing.expectEqualStrings("sleep 10", obj.get("command").?.string);
+    try testing.expectEqualStrings("hello\nworld", obj.get("stdout").?.string);
+    try testing.expect(!obj.get("truncated").?.bool);
+    try testing.expect(obj.get("total_bytes").? == .null);
+    try testing.expect(obj.get("log_path").? == .null);
 }
 
 test "buildCompletionMessage maps empty log content to (empty output)" {
     const msg = try buildCompletionMessage(testing.allocator, "true", 42, "", false, 0, "/tmp/x.log");
     defer testing.allocator.free(msg);
-    try testing.expectEqualStrings(
-        \\<background_command>
-        \\<pid>42</pid>
-        \\<command>true</command>
-        \\<stdout>(empty output)</stdout>
-        \\<truncated>false</truncated>
-        \\</background_command>
-        ,
-        msg,
-    );
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, msg, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("(empty output)", parsed.value.object.get("stdout").?.string);
 }
 
 test "buildCompletionMessage carries truncation fields when truncated" {
     const msg = try buildCompletionMessage(testing.allocator, "make", 7, "partial", true, 99999, "/tmp/full.log");
     defer testing.allocator.free(msg);
-    try testing.expectEqualStrings(
-        \\<background_command>
-        \\<pid>7</pid>
-        \\<command>make</command>
-        \\<stdout>partial</stdout>
-        \\<truncated>true</truncated>
-        \\<total_bytes>99999</total_bytes>
-        \\<log_path>/tmp/full.log</log_path>
-        \\</background_command>
-        ,
-        msg,
-    );
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, msg, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("truncated").?.bool);
+    try testing.expectEqual(@as(i64, 99999), obj.get("total_bytes").?.integer);
+    try testing.expectEqualStrings("/tmp/full.log", obj.get("log_path").?.string);
 }
 
-test "buildCompletionMessage escapes XML metacharacters" {
+test "buildCompletionMessage preserves metacharacters verbatim in JSON strings" {
     const msg = try buildCompletionMessage(testing.allocator, "echo <a>&", 9, "it's \"done\"", false, 12, "/tmp/x.log");
     defer testing.allocator.free(msg);
-    try testing.expectEqualStrings(
-        \\<background_command>
-        \\<pid>9</pid>
-        \\<command>echo &lt;a&gt;&amp;</command>
-        \\<stdout>it&apos;s &quot;done&quot;</stdout>
-        \\<truncated>false</truncated>
-        \\</background_command>
-        ,
-        msg,
-    );
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, msg, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("echo <a>&", obj.get("command").?.string);
+    try testing.expectEqualStrings("it's \"done\"", obj.get("stdout").?.string);
 }
 
 test "readLogTruncated returns FileNotFound for a missing file" {
@@ -522,4 +487,3 @@ test "readLogTruncated handles an empty file" {
     try testing.expectEqual(@as(usize, 0), got.total_bytes);
     try testing.expectEqual(false, got.truncated);
 }
-

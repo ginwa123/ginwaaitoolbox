@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
+import { normalizeToolContent, parseListSkills } from './_shared/toolOutputParser'
 
 interface SkillInfo {
   name: string
@@ -9,7 +10,7 @@ interface SkillInfo {
 }
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). Surfaced via the
    *  shared <ToolParameters> block in the expanded body; empty/'{}'
@@ -19,60 +20,17 @@ const props = defineProps<{
 
 const isExpanded = ref(props.expanded ?? false)
 
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => parseListSkills(normalized.value.data))
+
 // Parse global skills
-const globalSkills = computed((): SkillInfo[] => {
-  const results: SkillInfo[] = []
-  const match = props.content.match(/<global_skills>([\s\S]*?)<\/global_skills>/)
-  if (!match || !match[1]) return results
-  
-  const skillRegex = /<skill>([\s\S]*?)<\/skill>/g
-  let m
-  while ((m = skillRegex.exec(match[1])) !== null) {
-    const skillContent = m[1]
-    if (!skillContent) continue
-    const nameMatch = skillContent.match(/<name>(.*?)<\/name>/)
-    const descMatch = skillContent.match(/<description>(.*?)<\/description>/)
-    const pathMatch = skillContent.match(/<path>(.*?)<\/path>/)
-    
-    if (nameMatch && nameMatch[1]) {
-      results.push({
-        name: nameMatch[1],
-        description: descMatch?.[1] ?? '',
-        path: pathMatch?.[1] ?? ''
-      })
-    }
-  }
-  return results
-})
+const globalSkills = computed((): SkillInfo[] => parsed.value.globalSkills)
 
 // Parse local skills
-const localSkills = computed((): SkillInfo[] => {
-  const results: SkillInfo[] = []
-  const match = props.content.match(/<local_skills>([\s\S]*?)<\/local_skills>/)
-  if (!match || !match[1]) return results
-  
-  const skillRegex = /<skill>([\s\S]*?)<\/skill>/g
-  let m
-  while ((m = skillRegex.exec(match[1])) !== null) {
-    const skillContent = m[1]
-    if (!skillContent) continue
-    const nameMatch = skillContent.match(/<name>(.*?)<\/name>/)
-    const descMatch = skillContent.match(/<description>(.*?)<\/description>/)
-    const pathMatch = skillContent.match(/<path>(.*?)<\/path>/)
-    
-    if (nameMatch && nameMatch[1]) {
-      results.push({
-        name: nameMatch[1],
-        description: descMatch?.[1] ?? '',
-        path: pathMatch?.[1] ?? ''
-      })
-    }
-  }
-  return results
-})
+const localSkills = computed((): SkillInfo[] => parsed.value.localSkills)
 
 // Total count
-const totalCount = computed(() => globalSkills.value.length + localSkills.value.length)
+const totalCount = computed(() => parsed.value.totalCount)
 
 // Has any skills
 const hasSkills = computed(() => totalCount.value > 0)

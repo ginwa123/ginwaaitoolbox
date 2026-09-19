@@ -21,8 +21,8 @@ pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit();
 
-    // executeSetDesignPageToString returns an XML string. Errors are
-    // encoded as <page><error>...</error></page> so the LLM sees a
+    // executeSetDesignPageToString returns a JSON string. Errors are
+    // encoded as {"error":...</error></page> so the LLM sees a
     // structured failure rather than a tool crash.
     const inner = set_design_page_mod.executeSetDesignPageToString(
         ctx.allocator,
@@ -35,13 +35,19 @@ pub fn execSetDesignPage(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer ctx.allocator.free(inner);
 
-    // Detect the <page><error>...</error></page> shape and surface
-    // it as a tool failure (so the LLM sees `success=false` rather
-    // than a successful wrapper around an error body).
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
+    // Detect {{"error":...}} and surface it as a tool failure (so the
+    // LLM sees `success=false` rather than a successful wrapper around
+    // an error body).
+    const json_err_msg: ?[]u8 = blk: {
+        const inner_parsed = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch break :blk null;
+        defer inner_parsed.deinit();
+        if (inner_parsed.value != .object) break :blk null;
+        const e = inner_parsed.value.object.get("error") orelse break :blk null;
+        if (e != .string) break :blk null;
+        break :blk try ctx.allocator.dupe(u8, e.string);
+    };
+    if (json_err_msg) |err_msg| {
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "set_design_page", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }

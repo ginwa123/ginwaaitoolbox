@@ -8,7 +8,7 @@ const agent = nalarcore.agent;
 const ReadFileInput = nalarcore.tool_models.ReadFileInput;
 const ReadFileOptions = nalarcore.read_file.ReadFileOptions;
 const readFile = nalarcore.read_file.readFile;
-const toXMLSuccess = nalarcore.read_file.toXMLSuccess;
+const toJSONSuccess = nalarcore.read_file.toJSONSuccess;
 const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -40,8 +40,8 @@ pub fn execReadFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer read_result.deinit(ctx.allocator);
 
-    // Single allocation: combines path and content into XML result
-    const inner = try toXMLSuccess(ctx.allocator, read_result, parsed.value.path);
+    // Single allocation: combines path and content into the JSON result
+    const inner = try toJSONSuccess(ctx.allocator, read_result, parsed.value.path);
     const output = try wrapToolOutput(ctx.allocator, "read_file", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

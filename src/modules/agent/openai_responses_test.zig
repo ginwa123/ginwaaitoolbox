@@ -1585,7 +1585,7 @@ test "buildJsonResponsesRequest: regression task_1788204837101_1 — reasoning_i
     //   tool_calls=[bash call_01a05af8ce...], reasoning_content=NULL,
     //   reasoning_id="rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e",
     //   reasoning_encrypted_content="Q-PaDgH1f..." (87k, truncated in test)
-    // tool: role=tool, call_id=call_01a05..., output="<tool>...bash output...</tool>"
+    // tool: role=tool, call_id=call_01a05..., output={"tool":"bash",...} (JSON envelope)
     // Builder must emit a separate reasoning item even when reasoning_content is NULL
     // so that store:false replay can reconstruct the reasoning block verbatim.
     var a = makeResponsesAgent(.{});
@@ -1620,7 +1620,7 @@ test "buildJsonResponsesRequest: regression task_1788204837101_1 — reasoning_i
         },
         .{
             .role = .tool,
-            .content = "<tool><name>bash</name><parameters><command>timeout 10 git checkout main</command></parameters><success>true</success><data>Already on 'main'</data></tool>",
+            .content = "{\"tool\":\"bash\",\"parameters\":{\"command\":\"timeout 10 git checkout main\"},\"success\":true,\"data\":{\"command\":\"timeout 10 git checkout main\",\"stdout\":\"Already on 'main'\",\"stderr\":\"\",\"exit_code\":0,\"truncated\":false,\"timeout\":false,\"stdout_lines\":1,\"stderr_lines\":0,\"is_self\":false},\"error\":null,\"v\":1}",
             .tool_call_id = "call_01a05af8ce457620beb3a5990637e153",
             .tool_calls = null,
             .content_parts = null,

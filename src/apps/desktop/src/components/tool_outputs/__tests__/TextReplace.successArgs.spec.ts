@@ -7,7 +7,7 @@ describe('TextReplace.vue — success without diff but with args is expandable',
   it('header is expandable and expanded body shows Arguments', () => {
     const wrapper = mount(TextReplace, {
       props: {
-        content: '<text_replace><success>true</success><path>/proj/a.txt</path></text_replace>',
+        content: { path: '/proj/a.txt', error: null },
         parameters: '{"path":"/proj/a.txt"}',
         expanded: true,
       } as never,

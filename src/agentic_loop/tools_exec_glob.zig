@@ -48,7 +48,7 @@ pub fn execGlob(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    const inner = try glob_tool_mod.toXmlSuccess(ctx.allocator, glob_result, parsed.value.pattern);
+    const inner = try glob_tool_mod.toJSONSuccess(ctx.allocator, glob_result, parsed.value.pattern);
     glob_result.deinit(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "glob", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };

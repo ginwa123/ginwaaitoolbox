@@ -40,8 +40,20 @@ pub const remove_agent_tool = AgentTool{
     },
 };
 
+/// JSON payloads for remove_agent results.
+pub const RemoveAgentSuccessJSON = struct {
+    name: []const u8,
+    removed: bool,
+    path: []const u8,
+};
+
+pub const RemoveAgentErrorJSON = struct {
+    name: []const u8,
+    @"error": []const u8,
+};
+
 /// Execute the remove_agent tool - deletes agent directory from .nalar/agents/
-/// Returns an XML string with result
+/// Returns an owned JSON string with the result
 /// Caller owns the returned memory and must free it with allocator.free()
 ///
 /// `io: std.Io` is required for the cross-platform recursive-delete
@@ -49,7 +61,7 @@ pub const remove_agent_tool = AgentTool{
 /// removed in Zig 0.16 and on Windows there is no portable libc
 /// equivalent — the Io runtime + `Io.Dir.cwd().deleteTree` is the
 /// only cross-platform option.
-pub fn execute_remove_agent_to_string(
+pub fn execute_remove_agent_to_json(
     allocator: std.mem.Allocator,
     io: std.Io,
     input: RemoveAgentInput,
@@ -65,7 +77,7 @@ pub fn execute_remove_agent_to_string(
     // `helpers.getcwd` wrapper (libc-backed; works on Linux/macOS/Windows
     // without an `io: std.Io` runtime).
     const cwd = helpers.getcwd(&cwd_buf) orelse {
-        return errorToXml(allocator, input.name, "Failed to get current working directory");
+        return try jsonError(allocator, input.name, "Failed to get current working directory");
     };
 
     // Build path to agent directory: .nalar/agents/<name>/
@@ -83,7 +95,7 @@ pub fn execute_remove_agent_to_string(
 
     if (!dir_exists) {
         // Agent directory doesn't exist
-        return errorToXml(allocator, input.name, "Agent directory not found in .nalar/agents/");
+        return try jsonError(allocator, input.name, "Agent directory not found in .nalar/agents/");
     }
 
     // Delete the agent directory recursively. `std.fs.deleteTreeAbsolute`
@@ -91,63 +103,70 @@ pub fn execute_remove_agent_to_string(
     // `std.Io.Dir.cwd().deleteTree` (POSIX: recursive unlink + rmdir;
     // Windows: Win32 DeleteFileW/RemoveDirectoryW per design_io.zig).
     std.Io.Dir.cwd().deleteTree(io, agent_dir_path) catch {
-        return errorToXml(allocator, input.name, "Failed to delete agent directory");
+        return try jsonError(allocator, input.name, "Failed to delete agent directory");
     };
 
     // Return success
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    try result.appendSlice(allocator, "<name>");
-    try appendXmlContent(allocator, &result, input.name);
-    try result.appendSlice(allocator, "</name>\n<removed>true</removed>\n<path>");
-    try appendXmlContent(allocator, &result, agent_dir_path);
-    try result.appendSlice(allocator, "</path>");
-
-    return try result.toOwnedSlice(allocator);
+    const clean_name = try helpers.sanitize_control_chars(allocator, input.name);
+    defer allocator.free(clean_name);
+    const clean_path = try helpers.sanitize_control_chars(allocator, agent_dir_path);
+    defer allocator.free(clean_path);
+    return try std.json.Stringify.valueAlloc(allocator, RemoveAgentSuccessJSON{
+        .name = clean_name,
+        .removed = true,
+        .path = clean_path,
+    }, .{});
 }
 
-/// Generate error XML response
-pub fn xmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<name>") catch return "";
-    appendXmlContent(allocator, &result, name) catch return "";
-    result.appendSlice(allocator, "</name>\n<removed>false</removed>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+/// Generate error JSON response (owned; caller frees)
+pub fn jsonError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) ![]const u8 {
+    const clean_name = try helpers.sanitize_control_chars(allocator, name);
+    defer allocator.free(clean_name);
+    const clean_err = try helpers.sanitize_control_chars(allocator, error_msg);
+    defer allocator.free(clean_err);
+    return try std.json.Stringify.valueAlloc(allocator, RemoveAgentErrorJSON{
+        .name = clean_name,
+        .@"error" = clean_err,
+    }, .{});
 }
 
-/// Generate error XML response for parse failures (no name available)
-pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<name></name>\n<removed>false</removed>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+/// Generate error JSON response for parse failures (no name available; owned)
+pub fn jsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) ![]const u8 {
+    return try jsonError(allocator, "", error_msg);
 }
 
-/// Append XML-safe content to an ArrayList
-fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
+test "remove_agent jsonError emits JSON error shape" {
+    const allocator = std.testing.allocator;
+    const out = try jsonError(allocator, "my-agent", "Agent directory not found in .nalar/agents/");
+    defer allocator.free(out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("my-agent", obj.get("name").?.string);
+    try std.testing.expectEqualStrings("Agent directory not found in .nalar/agents/", obj.get("error").?.string);
 }
 
-/// Internal error-to-XML helper (doesn't return error)
-fn errorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    return xmlError(allocator, name, error_msg);
+test "remove_agent jsonErrorEmpty emits empty name with error" {
+    const allocator = std.testing.allocator;
+    const out = try jsonErrorEmpty(allocator, "boom");
+    defer allocator.free(out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("", obj.get("name").?.string);
+    try std.testing.expectEqualStrings("boom", obj.get("error").?.string);
+}
+
+test "remove_agent missing directory returns JSON error" {
+    const allocator = std.testing.allocator;
+    const out = try execute_remove_agent_to_json(allocator, std.testing.io, .{
+        .name = "definitely-not-a-real-agent-xyz",
+        .session_id = "s",
+    });
+    defer allocator.free(out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try std.testing.expectEqualStrings("definitely-not-a-real-agent-xyz", obj.get("name").?.string);
+    try std.testing.expect(obj.get("error").? == .string);
 }

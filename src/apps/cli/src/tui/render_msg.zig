@@ -88,8 +88,10 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
     }
 
     if (std.mem.eql(u8, msg.role, "tool")) {
-        if (tool_envelope.tryParseToolEnvelope(msg.content)) |env| {
-            const primary = tool_envelope.toolEnvelopePrimary(env);
+        if (tool_envelope.tryParseToolEnvelope(allocator, msg.content)) |env| {
+            defer env.deinit(allocator);
+            const primary = try tool_envelope.toolEnvelopePrimary(allocator, env);
+            defer allocator.free(primary);
             const badge = if (env.success) "✓" else "✗";
             // Header shape adapts to whether the primary field is
             // known. Empty primary → `▶ name  ✓` (no duplicated
@@ -121,7 +123,6 @@ pub fn renderMessage(allocator: std.mem.Allocator, msg: MessageView) ![]Line {
     }});
     return lines;
 }
-
 
 /// Strip markdown syntax for TUI plain-text display.
 /// Removes **, __, `, #, >, and normalizes bullet markers.
@@ -174,7 +175,6 @@ fn stripMarkdown(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
 // ----------------------------------------------------------------------------
 // Tests (RED — impl added below after tests fail)
 // ----------------------------------------------------------------------------
-
 
 fn freeLines(allocator: std.mem.Allocator, lines: []Line) void {
     for (lines) |l| allocator.free(l.text);
@@ -423,4 +423,3 @@ test "stripMarkdown: handles heading" {
     defer testing.allocator.free(got);
     try testing.expectEqualStrings("My Heading", got);
 }
-

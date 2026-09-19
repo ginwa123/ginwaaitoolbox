@@ -3,18 +3,23 @@ import { describe, expect, it } from 'vitest'
 import SpawnSubAgent from '../SpawnSubAgent.vue'
 import type { SubAgentProgress } from '../../../helpers/subagentProgress'
 
-const envelope = `<results>
-  <agent name="alpha" success="true" random_fallback="false">
-    <session_id>subagent_1_alpha</session_id>
-    <response>done</response>
-  </agent>
-  <summary succeeded="1" failed="0" />
-</results>`
+const envelope = {
+  results: [
+    {
+      name: 'alpha',
+      success: true,
+      random_fallback: false,
+      session_id: 'subagent_1_alpha',
+      response: 'done',
+      error: null,
+    },
+  ],
+  summary: { succeeded: 1, failed: 0 },
+}
 
 // Realistic tool-call args as produced by ChatView's
 // getParametersForMessage (jsonArgsToXml / tool_calls_json arguments).
-const parameters =
-  '{"agents":[{"agent_name":"researcher","instruction":"do the thing"}]}'
+const parameters = '{"agents":[{"agent_name":"researcher","instruction":"do the thing"}]}'
 
 describe('SpawnSubAgent.vue — parameters (Arguments block)', () => {
   it('live content + non-empty parameters shows Arguments', () => {

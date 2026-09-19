@@ -25,32 +25,66 @@ import GetPlan from '../GetPlan.vue'
 // ────────────────────────────────────────────────────────────────────────
 
 /**
- * Build a present-plan envelope with the CDN-wrapped markdown body
- * the backend emits (`executeGetPlan.zig` wraps the full markdown in
- * CDATA inside `<plan>` so the raw `<` / `>` in the body don't need
- * XML escaping).
+ * Build a present-plan JSON envelope with the markdown body the backend
+ * emits (`executeGetPlan` returns `{plan: <markdown>}`).
  */
 const makePresentContent = (markdown: string): string =>
-  `<get_plan><plan><![CDATA[\n${markdown}\n]]></plan></get_plan>`
+  JSON.stringify({
+    tool: 'get_plan',
+    parameters: {},
+    success: true,
+    data: { plan: markdown },
+    error: null,
+    v: 1,
+  })
 
-const makeEmptyContent = (): string => `<get_plan><empty/></get_plan>`
+const makeEmptyContent = (): string =>
+  JSON.stringify({
+    tool: 'get_plan',
+    parameters: {},
+    success: true,
+    data: { empty: true },
+    error: null,
+    v: 1,
+  })
 
 const makeErrorContent = (msg = 'database is locked') =>
-  `<get_plan><error>${msg}</error></get_plan>`
+  JSON.stringify({
+    tool: 'get_plan',
+    parameters: {},
+    success: false,
+    data: null,
+    error: msg,
+    v: 1,
+  })
 
 /**
- * Wrap the inner envelope in the full `<tool>...</tool>` wire shape the
- * dispatcher actually passes through. Mirrors the backend's `wrapToolOutput`
- * (one of the two shapes the component's `findInnerEnvelope` regex must
- * defensively handle).
+ * Wrap the inner data payload in the full JSON wire envelope the
+ * dispatcher actually passes through. Mirrors the backend's
+ * `wrapToolOutput`. Accepts a data object (or a full envelope string,
+ * passed through unchanged).
  */
-const wrapInToolEnvelope = (inner: string): string =>
-  '<tool>' +
-  '<name>tool</name>' +
-  '<parameters>{}</parameters>' +
-  '<success>true</success>' +
-  `<data>${inner}</data>` +
-  '</tool>'
+const wrapInToolEnvelope = (inner: string): string => {
+  if (inner.trim().startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(inner)
+      if (typeof parsed === 'object' && parsed !== null && 'tool' in (parsed as Record<string, unknown>)) {
+        return inner
+      }
+      return JSON.stringify({
+        tool: 'get_plan',
+        parameters: {},
+        success: true,
+        data: parsed,
+        error: null,
+        v: 1,
+      })
+    } catch {
+      return inner
+    }
+  }
+  return inner
+}
 
 // ────────────────────────────────────────────────────────────────────────
 // Tests
@@ -187,11 +221,11 @@ describe('GetPlan.vue — present plan', () => {
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    // Body has a leading \n (from the CDATA wrap), so line 0 is empty,
-    // line 1 is "  - [x] step 1" (checked) → ☑, line 2 is "  - [ ] step 2"
-    // (unchecked) → ☐.
-    const checkedLine = wrapper.find('[data-testid="get-plan-line-1"]')
-    const uncheckedLine = wrapper.find('[data-testid="get-plan-line-2"]')
+    // JSON `plan` carries the body verbatim (no CDATA leading newline),
+    // so line 0 is "- [x] step 1" (checked) → ☑, line 1 is
+    // "- [ ] step 2" (unchecked) → ☐.
+    const checkedLine = wrapper.find('[data-testid="get-plan-line-0"]')
+    const uncheckedLine = wrapper.find('[data-testid="get-plan-line-1"]')
     expect(checkedLine.attributes('data-kind')).toBe('checked')
     expect(uncheckedLine.attributes('data-kind')).toBe('unchecked')
 
@@ -229,12 +263,12 @@ describe('GetPlan.vue — present plan', () => {
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    // Line 1 = checked, line 2 = unchecked.
-    const checkedText = wrapper.find('[data-testid="get-plan-line-1"]').find('span.line-through')
+    // Line 0 = checked, line 1 = unchecked.
+    const checkedText = wrapper.find('[data-testid="get-plan-line-0"]').find('span.line-through')
     expect(checkedText.exists()).toBe(true)
     expect(checkedText.text()).toContain('step 1')
 
-    const uncheckedText = wrapper.find('[data-testid="get-plan-line-2"]').find('span.line-through')
+    const uncheckedText = wrapper.find('[data-testid="get-plan-line-1"]').find('span.line-through')
     expect(uncheckedText.exists()).toBe(false)
   })
 
@@ -251,10 +285,10 @@ describe('GetPlan.vue — present plan', () => {
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    // Strict ordering preserved (line 0 = "" from leading \n, 1 = "## Goal",
-    // 2 = "Build the whole thing", 3 = "", 4 = "## Steps", 5 = "- [x] step 1").
+    // Strict ordering preserved (line 0 = "## Goal", 1 = "Build the whole
+    // thing", 2 = "", 3 = "## Steps", 4 = "- [x] step 1").
+    expect(wrapper.find('[data-testid="get-plan-line-0"]').attributes('data-kind')).toBe('text')
     expect(wrapper.find('[data-testid="get-plan-line-1"]').attributes('data-kind')).toBe('text')
-    expect(wrapper.find('[data-testid="get-plan-line-2"]').attributes('data-kind')).toBe('text')
     expect(wrapper.text()).toContain('Build the whole thing')
   })
 
@@ -265,7 +299,7 @@ describe('GetPlan.vue — present plan', () => {
     const wrapper = mount(GetPlan, {
       props: {
         message: {
-          content: `<get_plan><plan><![CDATA[]]></plan></get_plan>`,
+          content: makePresentContent(''),
         },
       },
       attachTo: document.body,
@@ -443,11 +477,11 @@ describe('GetPlan.vue — inner envelope extraction', () => {
     expect(wrapper.text()).toContain('step 2')
   })
 
-  it('handles a raw <get_plan> envelope (no <tool> wrapper)', async () => {
+  it('handles a bare data object (no envelope wrapper)', async () => {
     const wrapper = mount(GetPlan, {
       props: {
         message: {
-          content: makePresentContent('## Steps\n- [x] step 1'),
+          content: JSON.stringify({ plan: '## Steps\n- [x] step 1' }),
         },
       },
       attachTo: document.body,
@@ -484,14 +518,13 @@ describe('GetPlan.vue — inner envelope extraction', () => {
     expect(wrapper.find('[data-testid="get-plan"]').classes()).toContain('border-red-500/50')
   })
 
-  it('treats an unrecognised envelope as empty (no <error>, no <plan>, no <empty/>)', () => {
+  it('treats non-JSON content as an error (hard cut: no XML fallback)', () => {
     const wrapper = mount(GetPlan, {
       props: {
         message: { content: '<foo>bar</foo>' },
       },
     })
-    expect(wrapper.text()).toContain('(empty)')
-    expect(wrapper.text()).toContain('no plan set')
-    expect(wrapper.text()).toContain('✓')
+    expect(wrapper.text()).toContain('tool failed')
+    expect(wrapper.text()).toContain('✗')
   })
 })

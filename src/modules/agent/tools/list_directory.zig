@@ -131,26 +131,39 @@ pub fn execute_list_directory(
     return entries.toOwnedSlice(allocator);
 }
 
-/// XML-serialise entries into the LLM-facing envelope.
-pub fn toXml(allocator: std.mem.Allocator, entries: []const Entry, dir_path: []const u8) ![]u8 {
-    var xml = std.ArrayList(u8).empty;
-    errdefer xml.deinit(allocator);
+/// JSON payload mirrors the old `<directory_listing>` envelope 1:1:
+/// `path`, `count`, and `entries` (one object per former `<file>` /
+/// `<directory>` tag with `name`, `path`, `is_directory`, `is_symlink`).
+/// `std.json` handles all escaping.
+pub const ListDirectoryEntryJSON = struct {
+    name: []const u8,
+    path: []const u8,
+    is_directory: bool,
+    is_symlink: bool,
+};
 
-    try xml.appendSlice(allocator, "<directory_listing");
-    try xml.print(allocator, " path=\"{s}\" count=\"{d}\"", .{ dir_path, entries.len });
-    try xml.appendSlice(allocator, ">");
-    for (entries) |e| {
-        const tag: []const u8 = if (e.is_directory) "directory" else "file";
-        try xml.print(allocator, "<{s} name=\"{s}\" path=\"{s}\" is_symlink=\"{s}\"/>", .{
-            tag,
-            e.name,
-            e.path,
-            if (e.is_symlink) "true" else "false",
-        });
+pub const ListDirectoryJSON = struct {
+    path: []const u8,
+    count: usize,
+    entries: []ListDirectoryEntryJSON,
+};
+
+pub fn toJSON(allocator: std.mem.Allocator, entries: []const Entry, dir_path: []const u8) ![]u8 {
+    const items = try allocator.alloc(ListDirectoryEntryJSON, entries.len);
+    defer allocator.free(items);
+    for (entries, 0..) |e, i| {
+        items[i] = .{
+            .name = e.name,
+            .path = e.path,
+            .is_directory = e.is_directory,
+            .is_symlink = e.is_symlink,
+        };
     }
-    try xml.appendSlice(allocator, "</directory_listing>");
-
-    return xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, ListDirectoryJSON{
+        .path = dir_path,
+        .count = entries.len,
+        .entries = items,
+    }, .{});
 }
 
 /// Tool definition for the LLM-facing API.
@@ -175,8 +188,8 @@ pub const list_directory_tool = AgentTool{
         \\skipped unless `hidden=true`.
         \\
         \\Results are sorted: directories first, then files, alphabetically.
-        \\Each entry is wrapped as `<directory name=... path=.../>` or
-        \\`<file name=... path=.../>` inside a single `<directory_listing>`.
+        \\Each entry is an object {name, path, is_directory, is_symlink}
+        \\inside `entries`, with `path` and `count` alongside.
         \\
         \\Path is RELATIVE to the session's cwd by default. Absolute
         \\paths are accepted (passed through to openDirAbsolute).
@@ -292,7 +305,11 @@ test "execute_list_directory: hidden=true includes dotfiles" {
     }
 
     const entries = try list_directory.execute_list_directory(
-        alloc, testing.io, env.root_abs, true, false,
+        alloc,
+        testing.io,
+        env.root_abs,
+        true,
+        false,
     );
     defer list_directory.freeEntries(alloc, entries);
 
@@ -307,7 +324,11 @@ test "execute_list_directory: returns PathNotFound for missing dir" {
 
     // Path that almost certainly does not exist.
     const result = list_directory.execute_list_directory(
-        alloc, testing.io, "/tmp/this_path_definitely_does_not_exist_xyz_123", false, false,
+        alloc,
+        testing.io,
+        "/tmp/this_path_definitely_does_not_exist_xyz_123",
+        false,
+        false,
     );
     try testing.expectError(error.PathNotFound, result);
 }
@@ -339,7 +360,11 @@ test "execute_list_directory: respects .gitignore (gitignored entries filtered)"
         defer f2.close(testing.io);
     }
     const entries = try list_directory.execute_list_directory(
-        alloc, testing.io, env.root_abs, false, true,
+        alloc,
+        testing.io,
+        env.root_abs,
+        false,
+        true,
     );
     defer list_directory.freeEntries(alloc, entries);
 
@@ -375,7 +400,11 @@ test "execute_list_directory: respect_ignore_files=false lists gitignored paths"
 
     // respect_ignore_files=false → foo.log is listed despite .gitignore.
     const entries = try list_directory.execute_list_directory(
-        alloc, testing.io, env.root_abs, false, false,
+        alloc,
+        testing.io,
+        env.root_abs,
+        false,
+        false,
     );
     defer list_directory.freeEntries(alloc, entries);
 
@@ -384,10 +413,10 @@ test "execute_list_directory: respect_ignore_files=false lists gitignored paths"
 }
 
 // -------------------------------------------------------------------------
-// toXml — XML envelope
+// toJSON — JSON envelope
 // -------------------------------------------------------------------------
 
-test "toXml: emits <directory_listing path=... count=...>" {
+test "toJSON: emits path, count and entries" {
     const alloc = testing.allocator;
 
     const entries = &[_]list_directory.Entry{
@@ -395,30 +424,38 @@ test "toXml: emits <directory_listing path=... count=...>" {
         .{ .name = "main.zig", .path = "/proj/main.zig", .is_directory = false, .is_symlink = false },
     };
 
-    const xml = try list_directory.toXml(alloc, entries, "/proj");
-    defer alloc.free(xml);
+    const payload = try list_directory.toJSON(alloc, entries, "/proj");
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<directory_listing") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "path=\"/proj\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "count=\"2\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<directory name=\"src\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<file name=\"main.zig\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</directory_listing>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("/proj", obj.get("path").?.string);
+    try testing.expectEqual(@as(i64, 2), obj.get("count").?.integer);
+    const items = obj.get("entries").?.array.items;
+    try testing.expectEqual(@as(usize, 2), items.len);
+    try testing.expectEqualStrings("src", items[0].object.get("name").?.string);
+    try testing.expectEqualStrings("/proj/src", items[0].object.get("path").?.string);
+    try testing.expect(items[0].object.get("is_directory").?.bool);
+    try testing.expect(!items[0].object.get("is_symlink").?.bool);
+    try testing.expectEqualStrings("main.zig", items[1].object.get("name").?.string);
+    try testing.expect(!items[1].object.get("is_directory").?.bool);
 }
 
-test "toXml: empty list produces empty <directory_listing>" {
+test "toJSON: empty list produces empty entries array" {
     const alloc = testing.allocator;
     const entries = &[_]list_directory.Entry{};
 
-    const xml = try list_directory.toXml(alloc, entries, "/empty");
-    defer alloc.free(xml);
+    const payload = try list_directory.toJSON(alloc, entries, "/empty");
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "count=\"0\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<directory ") == null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<file ") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
+    try testing.expectEqual(@as(usize, 0), obj.get("entries").?.array.items.len);
 }
 
-// -------------------------------------------------------------------------
 // Schema contract — mirrors the static-contract tests in glob_test.zig
 // -------------------------------------------------------------------------
 

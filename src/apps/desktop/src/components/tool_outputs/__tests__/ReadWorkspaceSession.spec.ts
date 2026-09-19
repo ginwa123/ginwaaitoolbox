@@ -50,37 +50,24 @@ const makeSearchContent = (
   const count = opts.count ?? opts.entries?.length ?? 0
   const total = opts.total_count ?? count
   const entries = opts.entries ?? []
-  const entryXml = entries
-    .map((e) => {
-      const id = e.id
-      const sid = e.session_id ?? 's_default'
-      const sname = e.session_name ?? 'Default chat'
-      const role = e.role ?? 'user'
-      const ca = e.created_at ?? '2026-01-01 10:00:00'
-      const snip = e.snippet ?? '...the login [match]bug[/match] needs fixing...'
-      return [
-        '    <entry>',
-        `      <id>${id}</id>`,
-        `      <session_id>${sid}</session_id>`,
-        `      <session_name>${sname}</session_name>`,
-        `      <role>${role}</role>`,
-        `      <created_at>${ca}</created_at>`,
-        `      <snippet>${snip}</snippet>`,
-        '    </entry>',
-      ].join('\n')
-    })
-    .join('\n')
-  const sidLine = opts.session_id ? `  <session_id>${opts.session_id}</session_id>\n` : ''
-  return [
-    `<read_workspace_session behavior="${behavior}" offset="${offset}" limit="${limit}">`,
-    `  <query>${query}</query>`,
-    sidLine + `  <count>${count}</count>`,
-    `  <total_count>${total}</total_count>`,
-    `  <results>`,
-    entryXml,
-    `  </results>`,
-    `</read_workspace_session>`,
-  ].join('\n')
+  const results = entries.map((e) => ({
+    id: e.id,
+    session_id: e.session_id ?? 's_default',
+    session_name: e.session_name ?? 'Default chat',
+    role: e.role ?? 'user',
+    created_at: e.created_at ?? '2026-01-01 10:00:00',
+    snippet: e.snippet ?? '...the login [match]bug[/match] needs fixing...',
+  }))
+  return {
+    behavior,
+    query,
+    session_id: opts.session_id ?? null,
+    offset,
+    limit,
+    count,
+    total_count: total,
+    results,
+  }
 }
 
 const makeReadContent = (
@@ -106,38 +93,24 @@ const makeReadContent = (
   const count = opts.count ?? opts.entries?.length ?? 0
   const total = opts.total_count ?? count
   const entries = opts.entries ?? []
-  const entryXml = entries
-    .map((e) => {
-      const role = e.role ?? 'user'
-      const ca = e.created_at ?? '2026-01-01 10:00:00'
-      const preview = e.preview ?? 'short preview'
-      const parts = [
-        '    <entry>',
-        `      <id>${e.id}</id>`,
-        `      <role>${role}</role>`,
-        `      <created_at>${ca}</created_at>`,
-        `      <preview>${preview}</preview>`,
-      ]
-      if (e.tool_call_id) parts.push(`      <tool_call_id>${e.tool_call_id}</tool_call_id>`)
-      if (e.tool_name) parts.push(`      <tool_name>${e.tool_name}</tool_name>`)
-      if (e.content !== undefined) {
-        const trunc = e.content_truncated ? ' truncated="1"' : ' truncated="0"'
-        parts.push(`      <content${trunc}>${e.content}</content>`)
-      }
-      parts.push('    </entry>')
-      return parts.join('\n')
-    })
-    .join('\n')
-  return [
-    `<read_workspace_session behavior="read" order="${order}">`,
-    `  <session_id>${sid}</session_id>`,
-    `  <count>${count}</count>`,
-    `  <total_count>${total}</total_count>`,
-    `  <message_index>`,
-    entryXml,
-    `  </message_index>`,
-    `</read_workspace_session>`,
-  ].join('\n')
+  const message_index = entries.map((e) => ({
+    id: e.id,
+    role: e.role ?? 'user',
+    created_at: e.created_at ?? '2026-01-01 10:00:00',
+    preview: e.preview ?? 'short preview',
+    tool_call_id: e.tool_call_id ?? null,
+    tool_name: e.tool_name ?? null,
+    content: e.content ?? null,
+    content_truncated: e.content !== undefined ? (e.content_truncated ?? false) : null,
+  }))
+  return {
+    behavior: 'read',
+    order,
+    session_id: sid,
+    count,
+    total_count: total,
+    message_index,
+  }
 }
 
 const makeListContent = (
@@ -157,36 +130,30 @@ const makeListContent = (
   const sessions = opts.sessions ?? []
   const count = opts.count ?? sessions.length
   const total = opts.total_count ?? count
-  const sessionXml = sessions
-    .map((s) => {
-      return [
-        '    <session>',
-        `      <id>${s.id}</id>`,
-        `      <name>${s.name ?? s.id}</name>`,
-        `      <status>${s.status ?? 'active'}</status>`,
-        `      <message_count>${s.message_count ?? 3}</message_count>`,
-        `      <last_activity>${s.last_activity ?? '2026-01-01 10:00:00'}</last_activity>`,
-        `      <preview>${s.preview ?? 'latest human message'}</preview>`,
-        '    </session>',
-      ].join('\n')
-    })
-    .join('\n')
-  return [
-    `<read_workspace_session behavior="list" limit="50">`,
-    `  <count>${count}</count>`,
-    `  <total_count>${total}</total_count>`,
-    `  <sessions>`,
-    sessionXml,
-    `  </sessions>`,
-    `</read_workspace_session>`,
-  ].join('\n')
+  const sessionRows = sessions.map((s) => ({
+    id: s.id,
+    name: s.name ?? s.id,
+    status: s.status ?? 'active',
+    message_count: s.message_count ?? 3,
+    last_activity: s.last_activity ?? '2026-01-01 10:00:00',
+    preview: s.preview ?? 'latest human message',
+  }))
+  return {
+    behavior: 'list',
+    limit: 50,
+    count,
+    total_count: total,
+    sessions: sessionRows,
+  }
 }
 
-const makeDeniedContent = (sid = 's_other') =>
-  `<read_workspace_session><denied session_id="${sid}">Session is not in your workspace.</denied></read_workspace_session>`
+const makeDeniedContent = (sid = 's_other') => ({
+  denied: true,
+  session_id: sid,
+  message: 'Session is not in your workspace.',
+})
 
-const makeErrorContent = (msg = 'Database query failed: SyntaxError') =>
-  `<read_workspace_session><error>${msg}</error></read_workspace_session>`
+const makeErrorContent = (msg = 'Database query failed: SyntaxError') => ({ error: msg })
 
 // ────────────────────────────────────────────────────────────────────────
 // jsdom doesn't ship a clipboard by default; provide a minimal stub.

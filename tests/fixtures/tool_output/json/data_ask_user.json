@@ -1,0 +1,1 @@
+{"data":{"allow_free_text":true,"answer":"a","answers_count":1,"header":null,"instruction":"Reply with the selected option.","multi_select":false,"options":["a","b"],"question":"Pick one","question_id":"q1","recommended":null,"status":"answered"},"error":null,"parameters":{},"success":true,"tool":"ask_user","v":1}

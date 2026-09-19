@@ -95,7 +95,7 @@ fn fakeToolCall(name: []const u8) agent.ToolCall {
 
 // ─── Test 1: absent plan returns wrapped `<empty/>` (D6) ───────────────────
 
-test "execGetPlan: absent plan returns wrapped envelope with <empty/>" {
+test "execGetPlan: absent plan returns wrapped envelope with empty:true" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -108,23 +108,22 @@ test "execGetPlan: absent plan returns wrapped envelope with <empty/>" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>get_plan</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<data>") != null);
+    const env_parsed = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env_parsed.deinit();
+    const env = env_parsed.value.object;
+    try testing.expectEqualStrings("get_plan", env.get("tool").?.string);
+    try testing.expect(env.get("success").?.bool);
+    try testing.expect(env.get("error").? == .null);
 
-    // The inner envelope is the `<empty/>` absent signal — no <plan> tag.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<get_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<empty/>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<plan>") == null);
-
-    // No <error> on the happy absent path.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    // The inner payload is the `empty` absent signal — no `plan` field.
+    const data = env.get("data").?.object;
+    try testing.expect(data.get("empty").?.bool);
+    try testing.expect(data.get("plan") == null);
 }
 
-// ─── Test 2: present plan returns wrapped `<plan><![CDATA[...]]></plan>` ────
+// ─── Test 2: present plan returns wrapped plan field ────────────────
 
-test "execGetPlan: present plan returns wrapped envelope with CDATA-wrapped <plan>" {
+test "execGetPlan: present plan returns wrapped envelope with plan field" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -149,22 +148,20 @@ test "execGetPlan: present plan returns wrapped envelope with CDATA-wrapped <pla
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>get_plan</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<data>") != null);
+    const env2 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env2.deinit();
+    const env = env2.value.object;
+    try testing.expectEqualStrings("get_plan", env.get("tool").?.string);
+    try testing.expect(env.get("success").?.bool);
+    try testing.expect(env.get("error").? == .null);
 
-    // The inner envelope wraps the plan body in CDATA inside <plan>.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<get_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<![CDATA[") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "]]>") != null);
-    // The raw markdown body should survive verbatim inside the CDATA.
-    try testing.expect(std.mem.indexOf(u8, result.output, "# Goal") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "[x] done") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "[ ] pending") != null);
+    // The inner payload carries the plan body in the `plan` field.
+    const data = env.get("data").?.object;
+    const plan = data.get("plan").?.string;
+    try testing.expect(std.mem.indexOf(u8, plan, "# Goal") != null);
+    try testing.expect(std.mem.indexOf(u8, plan, "[x] done") != null);
+    try testing.expect(std.mem.indexOf(u8, plan, "[ ] pending") != null);
 
-    // No <empty/> or <error> on the present branch.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<empty/>") == null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    // No `empty` marker on the present branch.
+    try testing.expect(data.get("empty") == null);
 }

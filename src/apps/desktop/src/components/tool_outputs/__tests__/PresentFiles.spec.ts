@@ -52,24 +52,21 @@ afterEach(() => {
 
 // ─── Test helpers ──────────────────────────────────────────────────────────
 
-const makeSuccessContent = () =>
-  [
-    '<present_files>',
-    '<status>presented</status>',
-    '<count>2</count>',
-    '<files>',
-    '<file path="/tmp/notes.txt" bytes="11" mime="text/plain; charset=utf-8" label="notes"/>',
-    '<file path="/tmp/photo.jpg" bytes="48211" mime="image/jpeg" label="photo.jpg"/>',
-    '</files>',
-    '</present_files>',
-  ].join('')
+const makeSuccessContent = () => ({
+  status: 'presented',
+  count: 2,
+  files: [
+    { path: '/tmp/notes.txt', bytes: 11, mime: 'text/plain; charset=utf-8', label: 'notes' },
+    { path: '/tmp/photo.jpg', bytes: 48211, mime: 'image/jpeg', label: 'photo.jpg' },
+  ],
+})
 
 const makeErrorContent = (
   msg = 'present_files: file not found (or is a directory): "/tmp/nope.txt".',
-) => `<present_files><error>${msg}</error></present_files>`
+) => ({ status: null, count: 0, files: [], error: msg })
 
-const mountCard = (content: string, sessionId = 'sess_123', expanded = true) =>
-  mount(PresentFiles, { props: { content, sessionId, expanded } })
+const mountCard = (content: unknown, sessionId = 'sess_123', expanded = true) =>
+  mount(PresentFiles, { props: { content, sessionId, expanded } as never })
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
@@ -142,15 +139,13 @@ describe('PresentFiles', () => {
   })
 
   it('html files render fetched source in a sandboxed srcdoc iframe (no src navigation)', async () => {
-    const content = [
-      '<present_files>',
-      '<status>presented</status>',
-      '<count>1</count>',
-      '<files>',
-      '<file path="/tmp/test-page.html" bytes="655" mime="text/html; charset=utf-8" label="test-page.html"/>',
-      '</files>',
-      '</present_files>',
-    ].join('')
+    const content = {
+      status: 'presented',
+      count: 1,
+      files: [
+      { path: '/tmp/test-page.html', bytes: 655, mime: 'text/html; charset=utf-8', label: 'test-page.html' },
+      ],
+    }
     const wrapper = mountCard(content)
     await flushPromises()
     const frame = wrapper.find('[data-testid="present-files-inline-html-0"] iframe')
@@ -171,15 +166,13 @@ describe('PresentFiles', () => {
   })
 
   it('oversize html files skip the inline preview but keep open-in-new-tab', async () => {
-    const content = [
-      '<present_files>',
-      '<status>presented</status>',
-      '<count>1</count>',
-      '<files>',
-      '<file path="/tmp/big.html" bytes="2097152" mime="text/html; charset=utf-8" label="big.html"/>',
-      '</files>',
-      '</present_files>',
-    ].join('')
+    const content = {
+      status: 'presented',
+      count: 1,
+      files: [
+      { path: '/tmp/big.html', bytes: 2097152, mime: 'text/html; charset=utf-8', label: 'big.html' },
+      ],
+    }
     const wrapper = mountCard(content)
     await flushPromises()
     expect(wrapper.find('[data-testid="present-files-inline-html-0"] iframe').exists()).toBe(false)
@@ -191,15 +184,13 @@ describe('PresentFiles', () => {
 
   it('html fetch failure shows an error with the open-in-new-tab fallback', async () => {
     fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 403 }) as Response)
-    const content = [
-      '<present_files>',
-      '<status>presented</status>',
-      '<count>1</count>',
-      '<files>',
-      '<file path="/tmp/gone.html" bytes="10" mime="text/html; charset=utf-8" label="gone.html"/>',
-      '</files>',
-      '</present_files>',
-    ].join('')
+    const content = {
+      status: 'presented',
+      count: 1,
+      files: [
+      { path: '/tmp/gone.html', bytes: 10, mime: 'text/html; charset=utf-8', label: 'gone.html' },
+      ],
+    }
     const wrapper = mountCard(content)
     await flushPromises()
     expect(wrapper.find('[data-testid="present-files-inline-html-0"] iframe').exists()).toBe(false)
@@ -210,15 +201,13 @@ describe('PresentFiles', () => {
   })
 
   it('pdf files render a fetched blob object URL (no src navigation) + open-in-new-tab', async () => {
-    const content = [
-      '<present_files>',
-      '<status>presented</status>',
-      '<count>1</count>',
-      '<files>',
-      '<file path="/tmp/doc.pdf" bytes="100" mime="application/pdf" label="doc.pdf"/>',
-      '</files>',
-      '</present_files>',
-    ].join('')
+    const content = {
+      status: 'presented',
+      count: 1,
+      files: [
+      { path: '/tmp/doc.pdf', bytes: 100, mime: 'application/pdf', label: 'doc.pdf' },
+      ],
+    }
     const wrapper = mountCard(content)
     await flushPromises()
     const pdf = wrapper.find('[data-testid="present-files-inline-pdf-0"] iframe')
@@ -231,16 +220,14 @@ describe('PresentFiles', () => {
   })
 
   it('video / audio files render native inline players', () => {
-    const content = [
-      '<present_files>',
-      '<status>presented</status>',
-      '<count>2</count>',
-      '<files>',
-      '<file path="/tmp/clip.mp4" bytes="200" mime="video/mp4" label="clip.mp4"/>',
-      '<file path="/tmp/song.mp3" bytes="300" mime="audio/mpeg" label="song.mp3"/>',
-      '</files>',
-      '</present_files>',
-    ].join('')
+    const content = {
+      status: 'presented',
+      count: 2,
+      files: [
+      { path: '/tmp/clip.mp4', bytes: 200, mime: 'video/mp4', label: 'clip.mp4' },
+      { path: '/tmp/song.mp3', bytes: 300, mime: 'audio/mpeg', label: 'song.mp3' },
+      ],
+    }
     const wrapper = mountCard(content)
     const video = wrapper.find('[data-testid="present-files-inline-video-0"] video')
     expect(video.exists()).toBe(true)
@@ -251,15 +238,13 @@ describe('PresentFiles', () => {
   })
 
   it('markdown files render fetched source via the shared renderer', async () => {
-    const content = [
-      '<present_files>',
-      '<status>presented</status>',
-      '<count>1</count>',
-      '<files>',
-      '<file path="/tmp/readme.md" bytes="7" mime="text/markdown; charset=utf-8" label="readme.md"/>',
-      '</files>',
-      '</present_files>',
-    ].join('')
+    const content = {
+      status: 'presented',
+      count: 1,
+      files: [
+      { path: '/tmp/readme.md', bytes: 7, mime: 'text/markdown; charset=utf-8', label: 'readme.md' },
+      ],
+    }
     const wrapper = mountCard(content)
     await flushPromises()
     expect(wrapper.find('[data-testid="present-files-inline-text-0"]').exists()).toBe(true)

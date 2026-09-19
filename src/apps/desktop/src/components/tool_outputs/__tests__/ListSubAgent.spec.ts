@@ -45,7 +45,7 @@ const subAgent = (opts: {
   budget?: string | null
   effort?: string | null
   prompt?: string
-}): string => {
+}): Record<string, unknown> => {
   const {
     name,
     model = 'm1',
@@ -58,27 +58,42 @@ const subAgent = (opts: {
     effort = null,
     prompt = 'You are helpful.',
   } = opts
-  const optional =
-    (maxCapacity !== null ? `<max_capacity_tokens>${maxCapacity}</max_capacity_tokens>` : '') +
-    (compactionPct !== null ? `<compaction_threshold_percent>${compactionPct}</compaction_threshold_percent>` : '') +
-    (budget !== null ? `<thinking_budget_tokens>${budget}</thinking_budget_tokens>` : '') +
-    (effort !== null ? `<reasoning_effort>${effort}</reasoning_effort>` : '')
-  return (
-    `<sub_agent><name>${name}</name><model>${model}</model>` +
-    `<url_style>${urlStyle}</url_style><thinking>${thinking}</thinking>` +
-    `<temperature>${temperature}</temperature>${optional}` +
-    `<system_prompt><![CDATA[${prompt}]]></system_prompt></sub_agent>`
-  )
+  const row: Record<string, unknown> = {
+    name,
+    model,
+    url_style: urlStyle,
+    thinking,
+    temperature,
+    system_prompt: prompt,
+  }
+  if (maxCapacity !== null) row.max_capacity_tokens = maxCapacity
+  if (compactionPct !== null) row.compaction_threshold_percent = compactionPct
+  if (budget !== null) row.thinking_budget_tokens = budget
+  if (effort !== null) row.reasoning_effort = effort
+  return row
 }
 
-const makePopulated = (): string =>
-  `<list_sub_agent><profile>dev</profile><count>2</count><sub_agents>` +
-  subAgent({ name: 'coder', model: 'gpt-5', urlStyle: 'openai-response', thinking: 'high', temperature: '0.2', prompt: 'Coder prompt.' }) +
-  subAgent({ name: 'reviewer', model: 'claude-4', urlStyle: 'anthropic', thinking: 'off', temperature: '0.9', budget: '8000', effort: 'medium', prompt: 'Reviewer prompt.' }) +
-  `</sub_agents></list_sub_agent>`
+const makeEnvelope = (data: unknown): string =>
+  JSON.stringify({
+    tool: 'list_sub_agent',
+    parameters: {},
+    success: true,
+    data,
+    error: null,
+    v: 1,
+  })
 
-const makeEmpty = (profile = 'dev'): string =>
-  `<list_sub_agent><profile>${profile}</profile><empty/></list_sub_agent>`
+const makePopulated = (): string =>
+  makeEnvelope({
+    profile: 'dev',
+    count: 2,
+    sub_agents: [
+      subAgent({ name: 'coder', model: 'gpt-5', urlStyle: 'openai-response', thinking: 'high', temperature: '0.2', prompt: 'Coder prompt.' }),
+      subAgent({ name: 'reviewer', model: 'claude-4', urlStyle: 'anthropic', thinking: 'off', temperature: '0.9', budget: '8000', effort: 'medium', prompt: 'Reviewer prompt.' }),
+    ],
+  })
+
+const makeEmpty = (profile = 'dev'): string => makeEnvelope({ profile, count: 0, sub_agents: [] })
 
 // ────────────────────────────────────────────────────────────────────────
 // Tests
@@ -139,7 +154,7 @@ describe('ListSubAgent.vue — empty / profile', () => {
 
   it('missing <profile> falls back to a placeholder string', () => {
     const wrapper = mount(ListSubAgent, {
-      props: { message: { content: `<list_sub_agent><count>0</count><empty/></list_sub_agent>` } },
+      props: { message: { content: makeEnvelope({ count: 0, sub_agents: [] }) } },
     })
     // Must render *something* for the profile slot — never blank/undefined.
     expect(wrapper.text()).toMatch(/unknown|profile/i)
@@ -148,10 +163,11 @@ describe('ListSubAgent.vue — empty / profile', () => {
 
 describe('ListSubAgent.vue — tuning presence + prompt + secrets', () => {
   it('absent optional tuning tags render no cells', async () => {
-    const content =
-      `<list_sub_agent><profile>dev</profile><count>1</count><sub_agents>` +
-      subAgent({ name: 'plain', maxCapacity: null, compactionPct: null, budget: null, effort: null }) +
-      `</sub_agents></list_sub_agent>`
+    const content = makeEnvelope({
+      profile: 'dev',
+      count: 1,
+      sub_agents: [subAgent({ name: 'plain', maxCapacity: null, compactionPct: null, budget: null, effort: null })],
+    })
     const wrapper = mount(ListSubAgent, {
       props: { message: { content } },
       attachTo: document.body,
@@ -168,10 +184,11 @@ describe('ListSubAgent.vue — tuning presence + prompt + secrets', () => {
 
   it('long system_prompt renders in FULL inside the collapsible block', async () => {
     const longPrompt = 'PROMPT-START ' + 'x'.repeat(5000) + ' PROMPT-END'
-    const content =
-      `<list_sub_agent><profile>dev</profile><count>1</count><sub_agents>` +
-      subAgent({ name: 'verbose', prompt: longPrompt }) +
-      `</sub_agents></list_sub_agent>`
+    const content = makeEnvelope({
+      profile: 'dev',
+      count: 1,
+      sub_agents: [subAgent({ name: 'verbose', prompt: longPrompt })],
+    })
     const wrapper = mount(ListSubAgent, {
       props: { message: { content } },
       attachTo: document.body,
@@ -188,13 +205,22 @@ describe('ListSubAgent.vue — tuning presence + prompt + secrets', () => {
   })
 
   it('never renders api_key/base_url even if injected (defense in depth)', async () => {
-    const content =
-      `<list_sub_agent><profile>dev</profile><count>1</count><sub_agents>` +
-      `<sub_agent><name>evil</name><model>m</model><url_style>openai</url_style>` +
-      `<thinking>off</thinking><temperature>0.5</temperature>` +
-      `<api_key>sk-SECRET-123</api_key><base_url>https://secret.example.com</base_url>` +
-      `<system_prompt><![CDATA[hi]]></system_prompt></sub_agent>` +
-      `</sub_agents></list_sub_agent>`
+    const content = makeEnvelope({
+      profile: 'dev',
+      count: 1,
+      sub_agents: [
+        {
+          name: 'evil',
+          model: 'm',
+          url_style: 'openai',
+          thinking: 'off',
+          temperature: '0.5',
+          api_key: 'sk-SECRET-123',
+          base_url: 'https://secret.example.com',
+          system_prompt: 'hi',
+        },
+      ],
+    })
     const wrapper = mount(ListSubAgent, {
       props: { message: { content } },
       attachTo: document.body,

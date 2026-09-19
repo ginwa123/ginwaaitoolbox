@@ -20,52 +20,68 @@ import { tryUnwrapToolOutput } from '@/helpers/unwrapToolOutput'
 // Helpers
 // ────────────────────────────────────────────────────────────────────────
 
+const makeEnvelope = (data: unknown, success = true, error: string | null = null): string =>
+  JSON.stringify({
+    tool: 'update_plan',
+    parameters: {
+      content:
+        typeof data === 'object' && data !== null
+          ? ((data as Record<string, unknown>).plan ?? '')
+          : '',
+    },
+    success,
+    data,
+    error,
+    v: 1,
+  })
+
 const makeSuccessContent = (opts: {
   sessionId?: string
   updatedAt?: string
-  /** The markdown body — wrapped in <plan><![CDATA[...]]></plan>. Default:
-   *  `''` (no plan block), so tests that don't care about the body just
+  /** The markdown body — carried in the `plan` key. Default: undefined
+   *  (no plan key), so tests that don't care about the body just
    *  see session_id + updated_at metadata. Pass a value to render the
    *  checklist section. */
   body?: string
 } = {}) => {
   const sessionId = opts.sessionId ?? 's_1787073929852_8'
   const updatedAt = opts.updatedAt ?? '2026-08-19 21:00:00'
-  const planBlock =
-    opts.body === undefined
-      ? ''
-      : `<plan><![CDATA[\n${opts.body}\n]]></plan>`
-  return [
-    `<update_plan>`,
-    `<session_id>${sessionId}</session_id>`,
-    `<updated_at>${updatedAt}</updated_at>`,
-    planBlock,
-    `</update_plan>`,
-  ].join('')
+  const data: Record<string, unknown> = {
+    session_id: sessionId,
+    updated_at: updatedAt,
+  }
+  if (opts.body !== undefined) data.plan = opts.body
+  return makeEnvelope(data)
 }
 
-const makeErrorContent = (msg = 'session_id mismatch') =>
-  `<update_plan><error>${msg}</error></update_plan>`
+const makeErrorContent = (msg = 'session_id mismatch') => makeEnvelope(null, false, msg)
 
-const makeEmptyContent = () => `<update_plan></update_plan>`
+const makeEmptyContent = () => makeEnvelope({})
 
 /**
- * Wrap the inner envelope in the full `<tool>...</tool>` wire shape the
- * dispatcher actually passes through. Mirrors the backend's `wrapToolOutput`
- * (which is one of the two shapes the component's `findInnerEnvelope`
- * regex must defensively handle).
+ * Wrap the inner data payload in the full JSON wire envelope the
+ * dispatcher actually passes through. Mirrors the backend's
+ * `wrapToolOutput`. Accepts a data object (or a full envelope string,
+ * passed through unchanged).
  */
-const wrapInToolEnvelope = (inner: string): string =>
-  '<tool>' +
-  '<name>tool</name>' +
-  '<parameters>{}</parameters>' +
-  '<success>true</success>' +
-  `<data>${inner}</data>` +
-  '</tool>'
-
-// ────────────────────────────────────────────────────────────────────────
-// Tests
-// ────────────────────────────────────────────────────────────────────────
+const wrapInToolEnvelope = (inner: string): string => {
+  if (inner.trim().startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(inner)
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        'tool' in (parsed as Record<string, unknown>)
+      ) {
+        return inner
+      }
+      return makeEnvelope(parsed)
+    } catch {
+      return inner
+    }
+  }
+  return inner
+}
 
 describe('UpdatePlan.vue — happy path', () => {
   let clipboardWrites: string[] = []
@@ -243,7 +259,7 @@ describe('UpdatePlan.vue — empty envelope edge case', () => {
     const wrapper = mount(UpdatePlan, {
       props: {
         message: {
-          content: `<update_plan><updated_at>2026-08-19 21:00:00</updated_at></update_plan>`,
+          content: makeEnvelope({ updated_at: '2026-08-19 21:00:00' }),
         },
       },
     })
@@ -252,7 +268,7 @@ describe('UpdatePlan.vue — empty envelope edge case', () => {
 })
 
 describe('UpdatePlan.vue — inner envelope extraction', () => {
-  it('finds the inner <update_plan> envelope inside a <tool> wrapper', async () => {
+  it('parses the full JSON envelope from the dispatcher', async () => {
     const wrapper = mount(UpdatePlan, {
       props: {
         message: {
@@ -266,10 +282,12 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
     expect(wrapper.text()).toContain('s_1787073929852_8')
   })
 
-  it('handles a raw <update_plan> envelope (no <tool> wrapper)', async () => {
+  it('handles a bare data object (no envelope wrapper)', async () => {
     const wrapper = mount(UpdatePlan, {
       props: {
-        message: { content: makeSuccessContent() },
+        message: {
+          content: JSON.stringify({ session_id: 's_1787073929852_8', updated_at: '2026-08-19 21:00:00' }),
+        },
       },
       attachTo: document.body,
     })
@@ -278,7 +296,7 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
     expect(wrapper.text()).toContain('s_1787073929852_8')
   })
 
-  it('treats an unrecognised envelope as empty (no error tag, no fields)', async () => {
+  it('treats non-JSON content as an error (hard cut: no XML fallback)', async () => {
     const wrapper = mount(UpdatePlan, {
       props: {
         message: { content: '<foo>bar</foo>' },
@@ -286,8 +304,8 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
       attachTo: document.body,
     })
     await wrapper.find('[role="button"]').trigger('click')
-    expect(wrapper.find('[data-testid="update-plan-empty"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('✓')
+    expect(wrapper.find('[data-testid="update-plan-error"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('✗')
   })
 })
 
@@ -329,14 +347,11 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    // Body from <plan><![CDATA[...]]></plan> starts with a leading
-    // \n (the CDATA wrapper inserts one — matches get_plan's wire
-    // shape, see `executeGetPlan.zig`), so line 0 is the empty
-    // text-row before the checklist proper. Line 1 is "- [x] step 1"
-    // (checked -> ☑) and line 2 is "- [ ] step 2" (unchecked -> ☐).
-    // Same convention as GetPlan.spec.ts -> "renders ☑/☐".
-    const checkedLine = wrapper.find('[data-testid="update-plan-line-1"]')
-    const uncheckedLine = wrapper.find('[data-testid="update-plan-line-2"]')
+    // JSON `plan` carries the body verbatim (no CDATA wrapper newline),
+    // so line 0 is "- [x] step 1" (checked -> ☑) and line 1 is
+    // "- [ ] step 2" (unchecked -> ☐).
+    const checkedLine = wrapper.find('[data-testid="update-plan-line-0"]')
+    const uncheckedLine = wrapper.find('[data-testid="update-plan-line-1"]')
     expect(checkedLine.exists()).toBe(true)
     expect(uncheckedLine.exists()).toBe(true)
     expect(checkedLine.attributes('data-kind')).toBe('checked')
@@ -358,12 +373,12 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
     })
     await wrapper.find('[role="button"]').trigger('click')
 
-    // Line 1 is `- [x] step 1` (after the leading CDATA newline).
-    const checkedText = wrapper.find('[data-testid="update-plan-line-1"]').find('span.line-through')
+    // Line 0 is `- [x] step 1` (no leading CDATA newline in JSON).
+    const checkedText = wrapper.find('[data-testid="update-plan-line-0"]').find('span.line-through')
     expect(checkedText.exists()).toBe(true)
     expect(checkedText.text()).toContain('step 1')
 
-    const uncheckedText = wrapper.find('[data-testid="update-plan-line-2"]').find('span.line-through')
+    const uncheckedText = wrapper.find('[data-testid="update-plan-line-1"]').find('span.line-through')
     expect(uncheckedText.exists()).toBe(false)
   })
 
@@ -464,19 +479,38 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
 //     </data>
 //   </tool>
 
-/** Build a `<tool>...</tool>` envelope with the agent's input args in
- *  `<parameters>` and the just-written plan body in `<plan><![CDATA[...]]></plan>`.
+/** Build a full JSON wire envelope with the agent's input args in
+ *  `parameters` and the just-written plan body in `data.plan`.
  *  Mirrors the backend's `wrapToolOutput` shape (success path). */
 const wrapAsFullToolEnvelope = (
   inner: string,
   parametersJson: string,
-): string =>
-  '<tool>' +
-  '<name>update_plan</name>' +
-  `<parameters>${parametersJson}</parameters>` +
-  '<success>true</success>' +
-  `<data>${inner}</data>` +
-  '</tool>'
+): string => {
+  let data: unknown = {}
+  try {
+    const parsed: unknown = JSON.parse(inner)
+    if (typeof parsed === 'object' && parsed !== null && 'tool' in (parsed as Record<string, unknown>)) {
+      return inner
+    }
+    data = parsed
+  } catch {
+    data = {}
+  }
+  let parameters: unknown = {}
+  try {
+    parameters = JSON.parse(parametersJson)
+  } catch {
+    parameters = {}
+  }
+  return JSON.stringify({
+    tool: 'update_plan',
+    parameters,
+    success: true,
+    data,
+    error: null,
+    v: 1,
+  })
+}
 
 describe('UpdatePlan.vue — full <tool> envelope from the dispatcher', () => {
   it('renders the checklist when fed the production wire shape (no parameters prop needed)', async () => {

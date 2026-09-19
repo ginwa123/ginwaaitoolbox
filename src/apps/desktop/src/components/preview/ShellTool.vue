@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
-import { parseShell } from '../tool_outputs/_shared/toolOutputParser'
+import { normalizeToolContent, parseShell } from '../tool_outputs/_shared/toolOutputParser'
 
 /**
  * ShellTool — the canonical renderer for shell-tool outputs.
@@ -22,14 +22,15 @@ import { parseShell } from '../tool_outputs/_shared/toolOutputParser'
  *      `parsePwsh(envelope) === parseBash(envelope)`.
  */
 const props = defineProps<{
-  content: string
+  content: unknown
   toolName: string
   expanded?: boolean
   parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parseShell(props.toolName, props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => parseShell(props.toolName, normalized.value.data))
 
 const stdout = computed(() => parsed.value.stdout)
 const stderr = computed(() => parsed.value.stderr)
@@ -73,8 +74,13 @@ const displayCommand = computed((): string | null => {
 })
 
 // Running: no exit code yet, empty envelope content, but we know the command.
+const isEmptyContent = (c: unknown): boolean =>
+  c === null ||
+  c === undefined ||
+  (typeof c === 'string' && c.trim().length === 0) ||
+  (typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0)
 const isRunning = computed(() => {
-  return exitCode.value === null && props.content.trim().length === 0 && displayCommand.value !== null
+  return exitCode.value === null && isEmptyContent(props.content) && displayCommand.value !== null
 })
 
 // Has stderr content (not empty and not "No errors.")

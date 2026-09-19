@@ -38,9 +38,10 @@
 import { computed, ref } from 'vue'
 import { extractParam } from '../../helpers/extractParam'
 import ToolParameters from './_shared/ToolParameters.vue'
+import { normalizeToolContent, parseKanbanMove } from './_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). The backend input
    *  shape (`KanbanMoveTaskInput`) uses `task_id` + `target_column_id` /
@@ -54,20 +55,24 @@ const isExpanded = ref(props.expanded ?? false)
 
 // ---- Parsers ---------------------------------------------------------------
 
-const isSuccess = computed(() => {
-  const match = props.content.match(/<success>([\s\S]*?)<\/success>/)
-  return match?.[1]?.trim() === 'true'
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseKanbanMove(normalized.value.data)
+  if (normalized.value.error) {
+    return { ...p, success: false, error: normalized.value.error }
+  }
+  return p
 })
 
+const isSuccess = computed(() => parsed.value.success)
+
 const taskId = computed(() => {
-  const match = props.content.match(/<task_id>([\s\S]*?)<\/task_id>/)
-  if (match?.[1]?.trim()) return match[1].trim()
+  if (parsed.value.taskId) return parsed.value.taskId
   return extractParam(props.parameters, 'task_id')
 })
 
 const taskName = computed(() => {
-  const match = props.content.match(/<task_name>([\s\S]*?)<\/task_name>/)
-  if (match?.[1]?.trim()) return match[1].trim()
+  if (parsed.value.taskName) return parsed.value.taskName
   // Best effort: the input shape has no `task_name` — fall back to the
   // raw `task_id` the tool was called with so the header shows something
   // meaningful while running.
@@ -75,14 +80,12 @@ const taskName = computed(() => {
 })
 
 const columnId = computed(() => {
-  const match = props.content.match(/<column_id>([\s\S]*?)<\/column_id>/)
-  if (match?.[1]?.trim()) return match[1].trim()
+  if (parsed.value.columnId) return parsed.value.columnId
   return extractParam(props.parameters, 'target_column_id') ?? extractParam(props.parameters, 'column_id')
 })
 
 const columnName = computed(() => {
-  const match = props.content.match(/<column_name>([\s\S]*?)<\/column_name>/)
-  if (match?.[1]?.trim()) return match[1].trim()
+  if (parsed.value.columnName) return parsed.value.columnName
   // Best effort across both input + envelope naming (`target_column_name`
   // is the backend input field; `column_name` covers JSON callers).
   return (
@@ -93,19 +96,21 @@ const columnName = computed(() => {
 })
 
 const position = computed(() => {
-  const match = props.content.match(/<position>([\s\S]*?)<\/position>/)
-  return match?.[1]?.trim() ?? null
+  const n = parsed.value.position
+  return n === null || n === undefined ? null : String(n)
 })
 
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  return match?.[1]?.trim() ?? null
-})
+const errorMessage = computed(() => parsed.value.error)
 
 // ---- Derived display values ------------------------------------------------
 
-// Running: result envelope is still empty (no <success> yet).
-const isRunning = computed(() => props.content.trim() === '')
+// Running: result envelope is still empty (no data yet).
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content))
 
 const statusIndicator = computed(() => (isRunning.value ? '…' : isSuccess.value ? '✓' : '✗'))
 

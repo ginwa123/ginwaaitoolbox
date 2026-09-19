@@ -4,8 +4,8 @@
 //! `workspace_item_id` to get ALL pages of the design item. Exactly one of
 //! the two must be provided.
 //!
-//! Returns an XML envelope mirroring the design DB wire shape (every element
-//! field the agent needs for layout reasoning is rendered as an attribute).
+//! Returns a JSON object mirroring the design DB wire shape (every element
+//! field the agent needs for layout reasoning is a key).
 //! HTML bodies are intentionally NOT included — the agent can read them
 //! individually with `read_file` if needed (matches the existing
 //! `set_design_page` convention).
@@ -18,6 +18,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input structure for `get_design_context` tool.
 ///
@@ -45,30 +47,25 @@ pub const get_design_context_tool = AgentTool{
     .function = .{
         .name = "get_design_context",
         .description =
-            \\Inspect the structure of a design canvas (pages + elements). Pass EITHER `page_id` to get one page with its elements, OR `workspace_item_id` to get ALL pages of the design item. Exactly one of the two must be provided.
-            \\
-            \\Returns an XML envelope:
-            \\
-            \\<design_context>
-            \\  <pages count="N">
-            \\    <page id="page_X" name="Login" width="1440" height="1024" position="0">
-            \\      <design_page_elements count="M">
-            \\        <element id="elem_Y" page_id="page_X" name="..." type="rectangle"
-            \\                x="..." y="..." width="..." height="..." rotation="..."
-            \\                fill="..." stroke="..." corner_radius="..." opacity="..."
-            \\                text_content="..." image_url="..." parent_id="..."
-            \\                file_path="..." z_index="..." position="..."
-            \\                created_at="..." updated_at="..." />
-            \\      </design_page_elements>
-            \\    </page>
-            \\  </pages>
-            \\</design_context>
-            \\
-            \\Each element attribute matches the design DB row wire shape (so the agent can spot `x`/`y`/`width`/`height` for layout, `parent_id` for grouping, `text_content` for content).
-            \\
-            \\HTML bodies are intentionally NOT included — the agent can read them individually with `read_file` if needed. If the page has no HTML bodies yet, use `add_element` (or `set_design_page` to create the page) first.
-            \\
-            \\On error, the response is wrapped in `<design_context><error>...</error></design_context>`.
+        \\Inspect the structure of a design canvas (pages + elements). Pass EITHER `page_id` to get one page with its elements, OR `workspace_item_id` to get ALL pages of the design item. Exactly one of the two must be provided.
+        \\
+        \\Returns a JSON object:
+        \\
+        \\{"pages": [{"id": "page_X", "name": "Login", "width": 1440,
+        \\"height": 1024, "position": 0, "elements": [{"id": "elem_Y",
+        \\"page_id": "page_X", "name": "...", "type": "rectangle",
+        \\"x": ..., "y": ..., "width": ..., "height": ...,
+        \\"rotation": ..., "fill": ..., "stroke": ...,
+        \\"corner_radius": ..., "opacity": ..., "text_content": ...,
+        \\"image_url": ..., "parent_id": ..., "file_path": ...,
+        \\"z_index": ..., "position": ..., "created_at": ...,
+        \\"updated_at": ...}]}]}
+        \\
+        \\Each element key matches the design DB row wire shape (so the agent can spot `x`/`y`/`width`/`height` for layout, `parent_id` for grouping, `text_content` for content).
+        \\
+        \\HTML bodies are intentionally NOT included — the agent can read them individually with `read_file` if needed. If the page has no HTML bodies yet, use `add_element` (or `set_design_page` to create the page) first.
+        \\
+        \\On error, the response is `{"error":...}`.
         ,
         .parameters = .{
             .type = "object",
@@ -90,48 +87,24 @@ pub const get_design_context_tool = AgentTool{
     },
 };
 
-// ─── XML helpers (local — project convention is per-file duplication) ────
+// ─── JSON helpers ────
 
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
-}
-
-fn errorEnvelope(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<design_context><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></design_context>");
-    return try xml.toOwnedSlice(allocator);
+fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
 // ─── Execute ─────────────────────────────────────────────────────────────
 
 /// Execute `get_design_context`.
 ///
-/// Returns an XML envelope:
-///   - success: `<design_context>...</design_context>`
-///   - error:   `<design_context><error>...</error></design_context>`
+/// Returns a JSON object:
+///   - success: `{"pages":[...]}`
+///   - error:   `{"error":...}`
 ///
-/// Both forms are detectable by the exec wrapper via the `<error>` substring
-/// search (matches the convention used by `set_design_page`).
+/// The error form is detectable by the exec wrapper via the top-level
+/// `error` key (matches the convention used by `set_design_page`).
 pub fn executeGetDesignContextToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -141,7 +114,7 @@ pub fn executeGetDesignContextToString(
     const page_id_present = input.page_id != null and input.page_id.?.len > 0;
     const item_id_present = input.workspace_item_id != null and input.workspace_item_id.?.len > 0;
     if (page_id_present == item_id_present) {
-        return try errorEnvelope(
+        return try errorJSON(
             allocator,
             "exactly one of `page_id` or `workspace_item_id` must be provided (use Workspace Context to find the design item_id)",
         );
@@ -167,20 +140,16 @@ fn executeForPage(
             .{ page_id, @errorName(err) },
         );
         defer allocator.free(msg);
-        return try errorEnvelope(allocator, msg);
+        return try errorJSON(allocator, msg);
     };
     defer bundle.deinit(allocator);
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<design_context>");
-    try xml.appendSlice(allocator, "<pages count=\"1\">");
-    try appendPage(&xml, allocator, bundle.page, bundle.elements);
-    try xml.appendSlice(allocator, "</pages>");
-    try xml.appendSlice(allocator, "</design_context>");
-
-    return try xml.toOwnedSlice(allocator);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const page = try contextPageJSON(a, bundle.page, bundle.elements);
+    const pages = [_]ContextPageJSON{page};
+    return try std.json.Stringify.valueAlloc(allocator, .{ .pages = pages }, .{});
 }
 
 fn executeForItem(
@@ -195,241 +164,112 @@ fn executeForItem(
             .{ item_id, @errorName(err) },
         );
         defer allocator.free(msg);
-        return try errorEnvelope(allocator, msg);
+        return try errorJSON(allocator, msg);
     };
     defer design_model.freePagesWithElements(allocator, pages);
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    var count_buf: [32]u8 = undefined;
-    const count_str = std.fmt.bufPrint(&count_buf, "{d}", .{pages.len}) catch "0";
-
-    try xml.appendSlice(allocator, "<design_context>");
-    try xml.appendSlice(allocator, "<pages count=\"");
-    try xml.appendSlice(allocator, count_str);
-    try xml.appendSlice(allocator, "\">");
-
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(ContextPageJSON) = .empty;
     for (pages) |*page| {
-        try appendPage(&xml, allocator, page.page, page.elements);
+        try out.append(a, try contextPageJSON(a, page.page, page.elements));
     }
-
-    try xml.appendSlice(allocator, "</pages>");
-    try xml.appendSlice(allocator, "</design_context>");
-
-    return try xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .pages = out.items }, .{});
 }
 
-fn appendPage(
-    xml: *std.ArrayList(u8),
+/// JSON page object (keys mirror the old `<page ...>` attributes 1:1;
+/// repeated `<element>` children become the `elements` array).
+pub const ContextPageJSON = struct {
+    id: []const u8,
+    name: []const u8,
+    width: i64,
+    height: i64,
+    position: i64,
+    elements: []ContextElementJSON,
+};
+
+/// JSON element object (keys mirror the old `<element ... />` attributes
+/// 1:1; attributes rendered-when-empty become explicit nulls).
+pub const ContextElementJSON = struct {
+    id: []const u8,
+    page_id: []const u8,
+    name: []const u8,
+    file_path: ?[]const u8,
+    x: i64,
+    y: i64,
+    width: i64,
+    height: i64,
+    z_index: i64,
+    position: i64,
+    type: []const u8,
+    rotation: f64,
+    opacity: f64,
+    fill: ?[]const u8,
+    stroke: ?[]const u8,
+    stroke_width: i64,
+    corner_radius: i64,
+    text_content: ?[]const u8,
+    text_style: ?[]const u8,
+    image_url: ?[]const u8,
+    parent_id: ?[]const u8,
+    created_at: ?[]const u8,
+    updated_at: ?[]const u8,
+};
+
+fn contextPageJSON(
     allocator: std.mem.Allocator,
     page: design_model.DesignPage,
     elements: []const design_model.DesignElement,
-) !void {
-    try xml.appendSlice(allocator, "<page");
-
-    const eid = try xmlEscape(allocator, page.id);
-    defer allocator.free(eid);
-    try xml.appendSlice(allocator, " id=\"");
-    try xml.appendSlice(allocator, eid);
-    try xml.appendSlice(allocator, "\"");
-
-    const ename = try xmlEscape(allocator, page.name);
-    defer allocator.free(ename);
-    try xml.appendSlice(allocator, " name=\"");
-    try xml.appendSlice(allocator, ename);
-    try xml.appendSlice(allocator, "\"");
-
-    try appendIntAttr(xml, allocator, "width", page.width);
-    try appendIntAttr(xml, allocator, "height", page.height);
-    try appendIntAttr(xml, allocator, "position", page.position);
-
-    try xml.appendSlice(allocator, ">");
-
-    // The wrapper element name mirrors the user's request:
-    // `design_page_elements` (the DB table name). count="N" is required so
-    // the agent can iterate without first parsing the children.
-    var count_buf: [32]u8 = undefined;
-    const count_str = std.fmt.bufPrint(&count_buf, "{d}", .{elements.len}) catch "0";
-    try xml.appendSlice(allocator, "<design_page_elements count=\"");
-    try xml.appendSlice(allocator, count_str);
-    try xml.appendSlice(allocator, "\">");
-
+) !ContextPageJSON {
+    var out: std.ArrayList(ContextElementJSON) = .empty;
     for (elements) |e| {
-        try appendElement(xml, allocator, e);
+        try out.append(allocator, try contextElementJSON(allocator, e));
     }
-
-    try xml.appendSlice(allocator, "</design_page_elements>");
-    try xml.appendSlice(allocator, "</page>");
+    return .{
+        .id = try sanitizeControlChars(allocator, page.id),
+        .name = try sanitizeControlChars(allocator, page.name),
+        .width = page.width,
+        .height = page.height,
+        .position = page.position,
+        .elements = out.items,
+    };
 }
 
-fn appendElement(
-    xml: *std.ArrayList(u8),
+fn contextElementJSON(
     allocator: std.mem.Allocator,
     e: design_model.DesignElement,
-) !void {
-    try xml.appendSlice(allocator, "<element");
-
-    // Required ident attributes
-    const eid = try xmlEscape(allocator, e.id);
-    defer allocator.free(eid);
-    try xml.appendSlice(allocator, " id=\"");
-    try xml.appendSlice(allocator, eid);
-    try xml.appendSlice(allocator, "\"");
-
-    const epid = try xmlEscape(allocator, e.page_id);
-    defer allocator.free(epid);
-    try xml.appendSlice(allocator, " page_id=\"");
-    try xml.appendSlice(allocator, epid);
-    try xml.appendSlice(allocator, "\"");
-
-    const ename = try xmlEscape(allocator, e.name);
-    defer allocator.free(ename);
-    try xml.appendSlice(allocator, " name=\"");
-    try xml.appendSlice(allocator, ename);
-    try xml.appendSlice(allocator, "\"");
-
-    // File path: the on-disk HTML location. Always rendered (even when
-    // empty) so the slot is visible. xmlEscape handles path traversal
-    // characters safely.
-    if (e.file_path.len > 0) {
-        const v = try xmlEscape(allocator, e.file_path);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " file_path=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " file_path=\"\"");
-    }
-
-    // Geometry
-    try appendIntAttr(xml, allocator, "x", e.x);
-    try appendIntAttr(xml, allocator, "y", e.y);
-    try appendIntAttr(xml, allocator, "width", e.width);
-    try appendIntAttr(xml, allocator, "height", e.height);
-    try appendIntAttr(xml, allocator, "z_index", e.z_index);
-    try appendIntAttr(xml, allocator, "position", e.position);
-
-    // Type
-    const etype = try xmlEscape(allocator, e.elem_type);
-    defer allocator.free(etype);
-    try xml.appendSlice(allocator, " type=\"");
-    try xml.appendSlice(allocator, etype);
-    try xml.appendSlice(allocator, "\"");
-
-    // Visual props
-    try appendFloatAttr(xml, allocator, "rotation", e.rotation);
-    try appendFloatAttr(xml, allocator, "opacity", e.opacity);
-
-    // fill / stroke — always rendered (even when empty) so the slot is
-    // visible to the agent.
-    if (e.fill.len > 0) {
-        const v = try xmlEscape(allocator, e.fill);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " fill=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " fill=\"\"");
-    }
-    if (e.stroke.len > 0) {
-        const v = try xmlEscape(allocator, e.stroke);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " stroke=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " stroke=\"\"");
-    }
-
-    try appendIntAttr(xml, allocator, "stroke_width", e.stroke_width);
-    try appendIntAttr(xml, allocator, "corner_radius", e.corner_radius);
-
-    // Content fields — always rendered so the slot is visible.
-    if (e.text_content.len > 0) {
-        const v = try xmlEscape(allocator, e.text_content);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " text_content=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " text_content=\"\"");
-    }
-    if (e.text_style.len > 0) {
-        const v = try xmlEscape(allocator, e.text_style);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " text_style=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " text_style=\"\"");
-    }
-    if (e.image_url.len > 0) {
-        const v = try xmlEscape(allocator, e.image_url);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " image_url=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " image_url=\"\"");
-    }
-
-    // parent_id — always rendered (empty string for top-level).
-    if (e.parent_id.len > 0) {
-        const v = try xmlEscape(allocator, e.parent_id);
-        defer allocator.free(v);
-        try xml.appendSlice(allocator, " parent_id=\"");
-        try xml.appendSlice(allocator, v);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " parent_id=\"\"");
-    }
-
-    // Timestamps
-    if (e.created_at.len > 0) {
-        try xml.appendSlice(allocator, " created_at=\"");
-        try xml.appendSlice(allocator, e.created_at);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " created_at=\"\"");
-    }
-    if (e.updated_at.len > 0) {
-        try xml.appendSlice(allocator, " updated_at=\"");
-        try xml.appendSlice(allocator, e.updated_at);
-        try xml.appendSlice(allocator, "\"");
-    } else {
-        try xml.appendSlice(allocator, " updated_at=\"\"");
-    }
-
-    try xml.appendSlice(allocator, " />");
+) !ContextElementJSON {
+    return .{
+        .id = try sanitizeControlChars(allocator, e.id),
+        .page_id = try sanitizeControlChars(allocator, e.page_id),
+        .name = try sanitizeControlChars(allocator, e.name),
+        .file_path = try optClean(allocator, e.file_path),
+        .x = e.x,
+        .y = e.y,
+        .width = e.width,
+        .height = e.height,
+        .z_index = e.z_index,
+        .position = e.position,
+        .type = try sanitizeControlChars(allocator, e.elem_type),
+        .rotation = e.rotation,
+        .opacity = e.opacity,
+        .fill = try optClean(allocator, e.fill),
+        .stroke = try optClean(allocator, e.stroke),
+        .stroke_width = e.stroke_width,
+        .corner_radius = e.corner_radius,
+        .text_content = try optClean(allocator, e.text_content),
+        .text_style = try optClean(allocator, e.text_style),
+        .image_url = try optClean(allocator, e.image_url),
+        .parent_id = try optClean(allocator, e.parent_id),
+        .created_at = try optClean(allocator, e.created_at),
+        .updated_at = try optClean(allocator, e.updated_at),
+    };
 }
 
-fn appendIntAttr(
-    xml: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    value: i64,
-) !void {
-    var buf: [32]u8 = undefined;
-    const str = std.fmt.bufPrint(&buf, "{d}", .{value}) catch "0";
-    try xml.appendSlice(allocator, " ");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, "=\"");
-    try xml.appendSlice(allocator, str);
-    try xml.appendSlice(allocator, "\"");
-}
-
-fn appendFloatAttr(
-    xml: *std.ArrayList(u8),
-    allocator: std.mem.Allocator,
-    name: []const u8,
-    value: f64,
-) !void {
-    var buf: [64]u8 = undefined;
-    const str = std.fmt.bufPrint(&buf, "{d:.6}", .{value}) catch "0";
-    try xml.appendSlice(allocator, " ");
-    try xml.appendSlice(allocator, name);
-    try xml.appendSlice(allocator, "=\"");
-    try xml.appendSlice(allocator, str);
-    try xml.appendSlice(allocator, "\"");
+/// Clean an optional free-text field: empty becomes null, otherwise the
+/// control-char-sanitized copy owned by the caller's arena.
+fn optClean(allocator: std.mem.Allocator, s: []const u8) !?[]u8 {
+    if (s.len == 0) return null;
+    return try sanitizeControlChars(allocator, s);
 }

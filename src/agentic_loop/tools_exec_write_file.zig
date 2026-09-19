@@ -41,12 +41,12 @@ pub fn execWriteFile(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     defer parsed.deinit();
 
     const write_result = write_file_mod.writeFile(ctx.allocator, ctx.io, parsed.value) catch |err| {
-        const inner = write_file_mod.toXmlError(ctx.allocator, err, parsed.value.path);
+        const inner = try write_file_mod.toJSONError(ctx.allocator, err, parsed.value.path);
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "write_file failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
-    const inner = write_file_mod.toXmlSuccess(ctx.allocator, write_result);
+    const inner = try write_file_mod.toJSONSuccess(ctx.allocator, write_result);
     write_result.deinit(ctx.allocator);
     const output = try wrapToolOutput(ctx.allocator, "write_file", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
@@ -102,6 +102,16 @@ fn readAll(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(4 << 20));
 }
 
+/// Helper: assert the exec output is a success JSON envelope whose
+/// `data.file_write` equals the expected path.
+fn expectWriteFileSuccess(output: []const u8, expected_path: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("success").?.bool);
+    try testing.expectEqualStrings(expected_path, obj.get("data").?.object.get("file_write").?.string);
+}
+
 /// Helper: return the on-disk size of a file (0 if missing).
 fn fileSize(path: []const u8) u64 {
     var f = std.Io.Dir.cwd().openFile(testing.io, path, .{}) catch return 0;
@@ -153,7 +163,7 @@ test "execWriteFile: overwrites existing file (truncates to shorter content)" {
         defer if (result.output_allocated) a.free(result.output);
 
         // The wrapper must report success
-        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try expectWriteFileSuccess(result.output, target_path);
     }
 
     // The file must be TRUNCATED to the new length, NOT appended/appended
@@ -202,7 +212,7 @@ test "execWriteFile: overwrites existing file (extends to longer content)" {
         const result = try execWriteFile(minimalCtx(a), tc);
         defer if (result.output_allocated) a.free(result.output);
 
-        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try expectWriteFileSuccess(result.output, target_path);
         try testing.expectEqual(@as(u64, longer_payload.len), fileSize(target_path));
         const read = try readAll(a, target_path);
         try testing.expectEqualStrings(longer_payload, read);
@@ -241,7 +251,7 @@ test "execWriteFile: two consecutive calls — second content wins, no append" {
         };
         const r1 = try execWriteFile(minimalCtx(a), tc1);
         defer if (r1.output_allocated) a.free(r1.output);
-        try testing.expect(std.mem.indexOf(u8, r1.output, "<success>true</success>") != null);
+        try expectWriteFileSuccess(r1.output, target_path);
     }
 
     // Second call: longer, DIFFERENT content.
@@ -256,7 +266,7 @@ test "execWriteFile: two consecutive calls — second content wins, no append" {
         };
         const r2 = try execWriteFile(minimalCtx(a), tc2);
         defer if (r2.output_allocated) a.free(r2.output);
-        try testing.expect(std.mem.indexOf(u8, r2.output, "<success>true</success>") != null);
+        try expectWriteFileSuccess(r2.output, target_path);
     }
 
     // File must contain ONLY the second call's content — not "first version" + tail
@@ -303,7 +313,7 @@ test "execWriteFile: overwriting with empty content truncates to zero bytes" {
 
         const result = try execWriteFile(minimalCtx(a), tc);
         defer if (result.output_allocated) a.free(result.output);
-        try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+        try expectWriteFileSuccess(result.output, target_path);
 
         try testing.expectEqual(@as(u64, 0), fileSize(target_path));
     }

@@ -2,18 +2,26 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
-import { parseReadFile } from './_shared/toolOutputParser'
+import { parseReadFile, normalizeToolContent } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   cwd?: string
   parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parseReadFile(props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseReadFile(normalized.value.data)
+  if (normalized.value.error) {
+    p.success = false
+    p.error = normalized.value.error
+  }
+  return p
+})
 
 // Display the parsed content; the parser already strips XML wrappers.
 const fileContent = computed(() => parsed.value.content || '')
@@ -45,9 +53,15 @@ const displayPath = computed((): string | null => {
   return contentPath.value ?? extractParam(props.parameters, 'path')
 })
 
-// Running: empty envelope content, but we know the path.
+// Running: empty content, but we know the path.
 const isRunning = computed(() => {
-  return props.content.trim().length === 0 && displayPath.value !== null
+  const c = props.content
+  const isEmpty =
+    c === null ||
+    c === undefined ||
+    (typeof c === 'string' && c.trim().length === 0) ||
+    (typeof c === 'object' && !Array.isArray(c) && Object.keys(c).length === 0)
+  return isEmpty && displayPath.value !== null
 })
 
 const handleToggle = (next: boolean) => {

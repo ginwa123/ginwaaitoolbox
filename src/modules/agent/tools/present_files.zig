@@ -3,8 +3,8 @@
 //! cards in the chat transcript.
 //!
 //! The LLM calls this tool with a list of ABSOLUTE file paths. The
-//! server stats each file (existence, size, mime) and returns an XML
-//! envelope listing them. The frontend's `<PresentFiles>` card renders
+//! server stats each file (existence, size, mime) and returns a JSON
+//! object listing them. The frontend's `<PresentFiles>` card renders
 //! one section per file with an inline preview plus a download action:
 //! images (`image/*`) render full-width, html renders in a sandboxed
 //! iframe, text/markdown/code render fetched source inline, pdf renders
@@ -16,17 +16,13 @@
 //! come from `GET /api/files/download?disposition=inline`.
 //!
 //! Response shape (per project convention, like `generate_image.zig`):
-//!   <present_files>
-//!     <status>presented</status>
-//!     <count>2</count>
-//!     <files>
-//!       <file path="/abs/a.txt" bytes="12" mime="text/plain; charset=utf-8" label="notes"/>
-//!       <file path="/abs/b.jpg" bytes="48211" mime="image/jpeg" label=""/>
-//!     </files>
-//!   </present_files>
+//!   {"status":"presented","count":2,"files":[
+//!     {"path":"/abs/a.txt","bytes":12,"mime":"text/plain; charset=utf-8","label":"notes"},
+//!     {"path":"/abs/b.jpg","bytes":48211,"mime":"image/jpeg","label":"b.jpg"}
+//!   ],"error":null}
 //!
 //! On error (any file fails validation):
-//!   <present_files><error>...</error></present_files>
+//!   {"status":null,"count":0,"files":[],"error":"..."}
 //!
 //! Design: docs/plans/2026-09-14-agent-tool-present-files.md
 //! This tool never reads file bytes — only `stat` — so the SSE payload
@@ -80,16 +76,16 @@ pub const present_files_tool = AgentTool{
     .function = .{
         .name = "present_files",
         .description =
-            \\Present one or more workspace files as inline-preview cards in the chat transcript. Use this tool when the user asks to "share", "attach", "present", "send", "show", "preview", "render", or "download" a file — or when you just created/edited a file (report, image, export, notes, html page) and want the user to see it inline with one click to download.
-            \\
-            \\INPUT: files (required, array of 1-10 objects). Each object: path (required, ABSOLUTE path to an existing file, e.g. "/home/user/report.md"), label (optional, short display name — defaults to the filename), caption (optional, note shown below the row).
-            \\
-            \\BEHAVIOUR: The server stats each file (existence, size, mime) and returns metadata only — file bytes are served on demand via GET /api/files/download (disposition=inline for previews, attachment for downloads). The card renders each file inline: images (jpg/png/gif/webp/svg) full-width with click-to-fullscreen, html in a sandboxed iframe with an "open in new tab" action, text/markdown/code (md/txt/json/csv/log/zig/ts/py/js/css) as fetched source with syntax-aware rendering, pdf embedded, video/audio with native players; every other type (zip, etc.) renders a file row with a download button. Files must be ≤ 50 MiB each; missing files, directories, relative paths, and oversized files are rejected with a structured error.
-            \\
-            \\OUTPUT (XML success envelope): <present_files><status>presented</status><count>N</count><files><file path="..." bytes="..." mime="..." label="..."/>...</files></present_files>. On error: <present_files><error>...</error></present_files>.
-            \\
-            \\This tool does NOT write anything to disk — it only presents existing files. To show generated content inline, first save it with `write_file`, then present the saved file.
-            ,
+        \\Present one or more workspace files as inline-preview cards in the chat transcript. Use this tool when the user asks to "share", "attach", "present", "send", "show", "preview", "render", or "download" a file — or when you just created/edited a file (report, image, export, notes, html page) and want the user to see it inline with one click to download.
+        \\
+        \\INPUT: files (required, array of 1-10 objects). Each object: path (required, ABSOLUTE path to an existing file, e.g. "/home/user/report.md"), label (optional, short display name — defaults to the filename), caption (optional, note shown below the row).
+        \\
+        \\BEHAVIOUR: The server stats each file (existence, size, mime) and returns metadata only — file bytes are served on demand via GET /api/files/download (disposition=inline for previews, attachment for downloads). The card renders each file inline: images (jpg/png/gif/webp/svg) full-width with click-to-fullscreen, html in a sandboxed iframe with an "open in new tab" action, text/markdown/code (md/txt/json/csv/log/zig/ts/py/js/css) as fetched source with syntax-aware rendering, pdf embedded, video/audio with native players; every other type (zip, etc.) renders a file row with a download button. Files must be ≤ 50 MiB each; missing files, directories, relative paths, and oversized files are rejected with a structured error.
+        \\
+        \\OUTPUT (JSON success envelope): {"status":"presented","count":N,"files":[{"path":...,"bytes":...,"mime":...,"label":...}],"error":null}. On error: {"status":null,"count":0,"files":[],"error":"..."}.
+        \\
+        \\This tool does NOT write anything to disk — it only presents existing files. To show generated content inline, first save it with `write_file`, then present the saved file.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -105,44 +101,39 @@ pub const present_files_tool = AgentTool{
     },
 };
 
-// ─── XML helpers ─────────────────────────────────────────────────────────
+// ─── JSON helpers ──────────────────────────────────────────────────────
 //
-// Local helpers — kept private to this file (the project convention
-// is to duplicate `xmlEscape` in every tool file rather than share
-// via a public module — see `kanban_list.zig:115`, `list_memory.zig`).
+// JSON payloads mirror the old `<present_files>` envelope 1:1: `status`,
+// `count`, and `files` (one object per former `<file>` tag with `path`,
+// `bytes`, `mime`, `label`). The old `<error>`-only envelope becomes the
+// same object with an explicit `error` string and null `status`.
+// Free-text fields are sanitized for control characters; `std.json`
+// handles the remaining escaping.
 
-/// Escape XML special characters. Mirrors the helper in
-/// `kanban_list.zig` / `list_memory.zig`.
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
+pub const PresentFileJSON = struct {
+    path: []const u8,
+    bytes: u64,
+    mime: []const u8,
+    label: []const u8,
+};
 
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
+pub const PresentFilesJSON = struct {
+    status: ?[]const u8 = null,
+    count: usize = 0,
+    files: []PresentFileJSON = &.{},
+    @"error": ?[]const u8 = null,
+};
 
-    return try result.toOwnedSlice(allocator);
-}
+const sanitize_control_chars = @import("helpers").sanitize_control_chars;
 
-/// Escape XML special characters for an attribute value. Same escaping
-/// as `xmlEscape` — attributes are double-quoted, so `"` must be
-/// escaped (which `xmlEscape` already does).
-fn xmlEscapeAttr(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    return xmlEscape(allocator, s);
-}
-
-/// Build the error envelope: `<present_files><error>...</error></present_files>`.
-fn errorEnvelope(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const emsg = try xmlEscape(allocator, msg);
-    defer allocator.free(emsg);
-    return try std.fmt.allocPrint(allocator, "<present_files><error>{s}</error></present_files>", .{emsg});
+/// Build the error envelope: `{"error": ...}` with explicit nulls for
+/// the success fields.
+fn jsonErrorEnvelope(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitize_control_chars(allocator, msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, PresentFilesJSON{
+        .@"error" = clean,
+    }, .{});
 }
 
 // ─── MIME detection ──────────────────────────────────────────────────────
@@ -222,8 +213,8 @@ fn statFileSize(io: std.Io, path: []const u8) !u64 {
 }
 
 /// Execute the tool: validate every file, then build the success
-/// envelope. Any validation failure yields an `<error>` envelope naming
-/// the offending path (never a Zig error return — the LLM sees a
+/// object. Any validation failure yields an `{"error": ...}` object
+/// naming the offending path (never a Zig error return — the LLM sees a
 /// structured failure it can act on).
 pub fn executePresentFilesToString(
     allocator: std.mem.Allocator,
@@ -231,7 +222,7 @@ pub fn executePresentFilesToString(
     input: PresentFilesInput,
 ) ![]u8 {
     if (input.files.len == 0) {
-        return errorEnvelope(allocator, "present_files requires at least 1 file in `files`.");
+        return jsonErrorEnvelope(allocator, "present_files requires at least 1 file in `files`.");
     }
     if (input.files.len > MAX_FILES) {
         const msg = try std.fmt.allocPrint(
@@ -240,68 +231,63 @@ pub fn executePresentFilesToString(
             .{ MAX_FILES, input.files.len },
         );
         defer allocator.free(msg);
-        return errorEnvelope(allocator, msg);
+        return jsonErrorEnvelope(allocator, msg);
     }
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<present_files><status>presented</status>");
-    const count_str = try std.fmt.allocPrint(allocator, "<count>{d}</count><files>", .{input.files.len});
-    defer allocator.free(count_str);
-    try xml.appendSlice(allocator, count_str);
+    var files = std.ArrayList(PresentFileJSON).empty;
+    defer files.deinit(allocator);
+    // Sanitized labels are owned here and freed after serialization
+    // (`Stringify` copies every byte into the returned payload).
+    var owned_labels = std.ArrayList([]u8).empty;
+    defer {
+        for (owned_labels.items) |l| allocator.free(l);
+        owned_labels.deinit(allocator);
+    }
 
     for (input.files) |f| {
         // Empty path is what an LLM that emits `"path": ""` produces
         // (the frontend's atomic-mode-switch trap in PR #291) — reject
         // with a clear message, never pass "" to isAbsolute/stat.
         if (f.path.len == 0) {
-            allocator.free(try xml.toOwnedSlice(allocator));
-            return errorEnvelope(allocator, "present_files: one entry has an empty `path`. Each file needs a non-empty ABSOLUTE path.");
+            return jsonErrorEnvelope(allocator, "present_files: one entry has an empty `path`. Each file needs a non-empty ABSOLUTE path.");
         }
         if (!std.fs.path.isAbsolute(f.path)) {
             const msg = try std.fmt.allocPrint(allocator, "present_files: path \"{s}\" is not absolute. Pass an ABSOLUTE path.", .{f.path});
             defer allocator.free(msg);
-            allocator.free(try xml.toOwnedSlice(allocator));
-            return errorEnvelope(allocator, msg);
+            return jsonErrorEnvelope(allocator, msg);
         }
         const size = statFileSize(io, f.path) catch |err| switch (err) {
             error.FileNotFound => {
                 const msg = try std.fmt.allocPrint(allocator, "present_files: file not found (or is a directory): \"{s}\".", .{f.path});
                 defer allocator.free(msg);
-                allocator.free(try xml.toOwnedSlice(allocator));
-                return errorEnvelope(allocator, msg);
+                return jsonErrorEnvelope(allocator, msg);
             },
             error.FileTooLarge => {
                 const msg = try std.fmt.allocPrint(allocator, "present_files: file \"{s}\" exceeds the {d} MiB limit.", .{ f.path, MAX_FILE_BYTES / (1024 * 1024) });
                 defer allocator.free(msg);
-                allocator.free(try xml.toOwnedSlice(allocator));
-                return errorEnvelope(allocator, msg);
+                return jsonErrorEnvelope(allocator, msg);
             },
         };
 
         const mime = mimeForPath(f.path);
         const raw_label = f.label orelse "";
-        const label: []const u8 = if (raw_label.len > 0) raw_label else std.fs.path.basename(f.path);
+        const base_label: []const u8 = if (raw_label.len > 0) raw_label else std.fs.path.basename(f.path);
+        const clean_label = try sanitize_control_chars(allocator, base_label);
+        try owned_labels.append(allocator, clean_label);
 
-        const epath = try xmlEscapeAttr(allocator, f.path);
-        defer allocator.free(epath);
-        const elabel = try xmlEscapeAttr(allocator, label);
-        defer allocator.free(elabel);
-        const emime = try xmlEscapeAttr(allocator, mime);
-        defer allocator.free(emime);
-
-        const row = try std.fmt.allocPrint(
-            allocator,
-            "<file path=\"{s}\" bytes=\"{d}\" mime=\"{s}\" label=\"{s}\"/>",
-            .{ epath, size, emime, elabel },
-        );
-        defer allocator.free(row);
-        try xml.appendSlice(allocator, row);
+        try files.append(allocator, .{
+            .path = f.path,
+            .bytes = size,
+            .mime = mime,
+            .label = clean_label,
+        });
     }
 
-    try xml.appendSlice(allocator, "</files></present_files>");
-    return try xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, PresentFilesJSON{
+        .status = "presented",
+        .count = files.items.len,
+        .files = files.items,
+    }, .{});
 }
 
 const testing = std.testing;
@@ -402,11 +388,14 @@ test "executePresentFilesToString rejects empty files list" {
     const io = threaded.io();
 
     const input = PresentFilesInput{ .files = @constCast(&[_]PresentFileRef{}) };
-    const xml = try present_files.executePresentFilesToString(alloc, io, input);
-    defer alloc.free(xml);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<present_files>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("status").? == .null);
+    try testing.expect(obj.get("error").? == .string);
 }
 
 test "executePresentFilesToString rejects relative path" {
@@ -417,11 +406,14 @@ test "executePresentFilesToString rejects relative path" {
 
     var refs = [_]PresentFileRef{.{ .path = "relative/path.txt" }};
     const input = PresentFilesInput{ .files = &refs };
-    const xml = try present_files.executePresentFilesToString(alloc, io, input);
-    defer alloc.free(xml);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "not absolute") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("status").? == .null);
+    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "not absolute") != null);
 }
 
 test "executePresentFilesToString rejects empty path" {
@@ -432,10 +424,12 @@ test "executePresentFilesToString rejects empty path" {
 
     var refs = [_]PresentFileRef{.{ .path = "" }};
     const input = PresentFilesInput{ .files = &refs };
-    const xml = try present_files.executePresentFilesToString(alloc, io, input);
-    defer alloc.free(xml);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("error").? == .string);
 }
 
 test "executePresentFilesToString rejects missing file" {
@@ -446,11 +440,13 @@ test "executePresentFilesToString rejects missing file" {
 
     var refs = [_]PresentFileRef{.{ .path = "/tmp/nalar-present-files-does-not-exist-xyz.txt" }};
     const input = PresentFilesInput{ .files = &refs };
-    const xml = try present_files.executePresentFilesToString(alloc, io, input);
-    defer alloc.free(xml);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "not found") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "not found") != null);
 }
 
 test "executePresentFilesToString rejects too many files" {
@@ -462,10 +458,12 @@ test "executePresentFilesToString rejects too many files" {
     var refs: [11]PresentFileRef = undefined;
     for (&refs) |*r| r.* = .{ .path = "/tmp/x.txt" };
     const input = PresentFilesInput{ .files = &refs };
-    const xml = try present_files.executePresentFilesToString(alloc, io, input);
-    defer alloc.free(xml);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("error").? == .string);
 }
 
 test "executePresentFilesToString returns success envelope for real files" {
@@ -498,19 +496,23 @@ test "executePresentFilesToString returns success envelope for real files" {
         .{ .path = jpg_path },
     };
     const input = PresentFilesInput{ .files = &refs };
-    const xml = try present_files.executePresentFilesToString(alloc, io, input);
-    defer alloc.free(xml);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    defer alloc.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<present_files>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<status>presented</status>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<count>2</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "label=\"notes\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "label=\"notes.txt\"") == null); // label overrides basename
-    try testing.expect(std.mem.indexOf(u8, xml, "label=\"photo.jpg\"") != null); // basename fallback
-    try testing.expect(std.mem.indexOf(u8, xml, "mime=\"text/plain; charset=utf-8\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "mime=\"image/jpeg\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "bytes=\"11\"") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("presented", obj.get("status").?.string);
+    try testing.expectEqual(@as(i64, 2), obj.get("count").?.integer);
+    const files = obj.get("files").?.array.items;
+    try testing.expectEqual(@as(usize, 2), files.len);
+    try testing.expectEqualStrings("notes", files[0].object.get("label").?.string);
+    try testing.expectEqualStrings(txt_path, files[0].object.get("path").?.string);
+    try testing.expectEqualStrings("text/plain; charset=utf-8", files[0].object.get("mime").?.string);
+    try testing.expectEqual(@as(i64, 11), files[0].object.get("bytes").?.integer);
+    try testing.expectEqualStrings("photo.jpg", files[1].object.get("label").?.string);
+    try testing.expectEqualStrings("image/jpeg", files[1].object.get("mime").?.string);
+    try testing.expect(obj.get("error").? == .null);
 }
 
 test "mimeForPath maps common extensions and falls back to octet-stream" {

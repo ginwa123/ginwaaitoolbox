@@ -102,7 +102,7 @@ pub fn runWithContext(
         }
     }
 
-    const res_command = try command_tool_mod.command_result_to_string(allocator, command_output);
+    const res_command = try command_tool_mod.command_result_to_json(allocator, command_output);
 
     return res_command;
 }

@@ -29,7 +29,7 @@ pub fn execWebSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer result.deinit(ctx.allocator);
 
-    const inner = try web_search_mod.web_search_result_to_string(ctx.allocator, result);
+    const inner = try web_search_mod.web_search_result_to_json(ctx.allocator, result);
     const output = try wrapToolOutput(ctx.allocator, "web_search", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }

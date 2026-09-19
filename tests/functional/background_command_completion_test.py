@@ -5,9 +5,9 @@ Exercises the cron `cleanup_stale_background_process`
 30ab8253) against a REAL nalar binary + REAL SQLite:
 
   * A `session_background_process` row whose PID is dead gets notified
-    into `session_queue_messages` with the XML envelope from
+    into `session_queue_messages` with the JSON envelope from
     `background_process.buildCompletionMessage`:
-      <background_command><pid>..<command>..<stdout>..<truncated>..
+      {pid,command,stdout,truncated,...}
     (role stays `user` — the frontend renders `<background_command>`
     rows with the shell tool card) and the row is DELETEd
     (notify-then-delete).
@@ -187,16 +187,15 @@ def test_dead_background_process_notifies_completion_queue(
         f"bg rows left: {_count_bg_rows(harness, session_id)}"
     )
 
-    # XML envelope shape (background_process.zig: buildCompletionMessage):
-    # <background_command> with pid/command/stdout/truncated children.
-    # Role stays user — no tool_call_id, no prose header, no quote fence.
-    assert "<background_command>" in envelope, f"envelope missing root tag: {envelope!r}"
-    assert f"<pid>{DEAD_PID}</pid>" in envelope, f"envelope pid mismatch: {envelope!r}"
-    assert f"<command>{command}</command>" in envelope, (
+    # JSON envelope shape (background_process.zig: buildCompletionMessage):
+    # {pid,command,stdout,truncated,...} object. Role stays user — no tool_call_id, no prose header, no quote fence.
+    assert '"pid":' in envelope, f"envelope missing pid key: {envelope!r}"
+    assert f'"pid":{DEAD_PID}' in envelope, f"envelope pid mismatch: {envelope!r}"
+    assert f'"command":"{command}"' in envelope, (
         f"envelope command mismatch: {envelope!r}"
     )
     assert marker in envelope, f"envelope missing log content: {envelope!r}"
-    assert "<truncated>false</truncated>" in envelope, (
+    assert '"truncated":false' in envelope, (
         f"envelope truncated flag mismatch: {envelope!r}"
     )
     assert '"""""' not in envelope, f"envelope still uses quote fence: {envelope!r}"

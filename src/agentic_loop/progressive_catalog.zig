@@ -195,7 +195,7 @@ pub const QueryResult = struct {
     entries: []const Entry,
     mode: QueryMode,
     /// Non-empty only when the query was reinterpreted or the match ran out of
-    /// budget. Rendered as `<pattern_warning>`.
+    /// budget. Rendered as `pattern_warning`.
     warning: []const u8 = "",
 };
 
@@ -243,9 +243,7 @@ pub fn matchQuery(
             mode = .regex_fallback;
             warning = try std.fmt.allocPrint(
                 allocator,
-                "query is not a valid regex ({s}) — matched as a case-insensitive literal substring instead."
-                    ++ " Supported: literals, '.', '[...]', '\\d \\w \\s \\b', '*', '+', '?', '{{m,n}}' ranges, '( )' groups, '|', '^', '$'."
-                    ++ " Pass literal:true when the query is literal text.",
+                "query is not a valid regex ({s}) — matched as a case-insensitive literal substring instead." ++ " Supported: literals, '.', '[...]', '\\d \\w \\s \\b', '*', '+', '?', '{{m,n}}' ranges, '( )' groups, '|', '^', '$'." ++ " Pass literal:true when the query is literal text.",
                 .{@errorName(err)},
             );
         }
@@ -740,7 +738,7 @@ test "matchQuery: an invalid pattern falls back to a literal substring and says 
     try testing.expect(std.mem.indexOf(u8, result.warning, "not a valid regex") != null);
     try testing.expect(std.mem.indexOf(u8, result.warning, "literal:true") != null);
 
-    // The warning survives rendering, XML-escaped.
+    // The warning survives rendering as JSON.
     const out = try renderSearchResult(a, result.entries, .{
         .total = result.entries.len,
         .offset = 0,
@@ -750,9 +748,12 @@ test "matchQuery: an invalid pattern falls back to a literal substring and says 
         .mode = result.mode,
         .warning = result.warning,
     });
-    try testing.expect(std.mem.indexOf(u8, out, "<pattern_mode>literal_fallback</pattern_mode>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<pattern_warning>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "literal:true") != null);
+    const parsed = try parseResult(a, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("literal_fallback", obj.get("pattern_mode").?.string);
+    try testing.expect(obj.get("pattern_warning").? != .null);
+    try testing.expect(std.mem.indexOf(u8, obj.get("pattern_warning").?.string, "literal:true") != null);
 }
 
 test "matchQuery: regex mode ignores substring artifacts of the old implementation" {
@@ -846,19 +847,6 @@ pub fn pageSlice(entries: []const Entry, offset: usize, limit: usize) []const En
     return entries[offset..end];
 }
 
-fn xmlEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '<' => try out.appendSlice(allocator, "&lt;"),
-            '>' => try out.appendSlice(allocator, "&gt;"),
-            '&' => try out.appendSlice(allocator, "&amp;"),
-            '"' => try out.appendSlice(allocator, "&quot;"),
-            '\'' => try out.appendSlice(allocator, "&apos;"),
-            else => try out.append(allocator, c),
-        }
-    }
-}
-
 fn jsonEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
     for (s) |c| {
         switch (c) {
@@ -879,18 +867,6 @@ fn jsonEscapeInto(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []co
             },
         }
     }
-}
-
-/// Append `s` inside a CDATA section, splitting on a literal `]]>` so the
-/// section cannot be terminated early (same idiom as get_plan/list_sub_agent).
-fn appendCdata(out: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
-    var rest = s;
-    while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
-        try out.appendSlice(allocator, rest[0..idx]);
-        try out.appendSlice(allocator, "]]><![CDATA[>");
-        rest = rest[idx + 3 ..];
-    }
-    try out.appendSlice(allocator, rest);
 }
 
 /// The tool's parameter schema as compact JSON:
@@ -923,28 +899,81 @@ fn appendToolJsonSchema(out: *std.ArrayList(u8), allocator: std.mem.Allocator, t
     try out.appendSlice(allocator, "]}");
 }
 
-fn appendEntryRow(out: *std.ArrayList(u8), allocator: std.mem.Allocator, entry: Entry) !void {
-    try out.appendSlice(allocator, "<tool><name>");
-    try xmlEscapeInto(out, allocator, entry.name);
-    try out.appendSlice(allocator, "</name><kind>");
-    try out.appendSlice(allocator, switch (entry.kind) {
+fn kindStr(kind: Kind) []const u8 {
+    return switch (kind) {
         .builtin => "builtin",
         .mcp => "mcp",
-    });
-    try out.appendSlice(allocator, "</kind><server>");
-    try xmlEscapeInto(out, allocator, entry.server);
-    try out.appendSlice(allocator, "</server><equipped>");
-    try out.appendSlice(allocator, switch (entry.equipped) {
-        .session => "session",
-        .no => "no",
-    });
-    try out.appendSlice(allocator, "</equipped><summary>");
-    try xmlEscapeInto(out, allocator, summaryOf(entry.tool.function.description, SUMMARY_MAX));
-    try out.appendSlice(allocator, "</summary></tool>");
+    };
 }
 
-/// `<search_tool>` result. `page` is the `offset`/`limit` window (the renderer
+fn equippedStr(equipped: Equipped) []const u8 {
+    return switch (equipped) {
+        .session => "session",
+        .no => "no",
+    };
+}
+
+fn modeStr(mode: QueryMode) []const u8 {
+    return switch (mode) {
+        .all => "all",
+        .regex => "regex",
+        .literal => "literal",
+        .regex_fallback => "literal_fallback",
+    };
+}
+
+const ToolRowJson = struct {
+    name: []const u8,
+    kind: []const u8,
+    server: []const u8,
+    equipped: []const u8,
+    summary: []const u8,
+};
+
+fn toolRowJson(entry: Entry) ToolRowJson {
+    return .{
+        .name = entry.name,
+        .kind = kindStr(entry.kind),
+        .server = entry.server,
+        .equipped = equippedStr(entry.equipped),
+        .summary = summaryOf(entry.tool.function.description, SUMMARY_MAX),
+    };
+}
+
+/// The tool's parameter schema as a JSON value:
+/// `{"type":"object","properties":{...},"required":[...]}`.
+fn schemaValue(allocator: std.mem.Allocator, tool: AgentTool) !std.json.Value {
+    const params = tool.function.parameters;
+    var props = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    for (params.properties) |prop| {
+        var inner = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+        try inner.put(allocator, "type", .{ .string = prop.type });
+        try inner.put(allocator, "description", .{ .string = prop.description });
+        try props.put(allocator, prop.name, .{ .object = inner });
+    }
+    var required = std.json.Array.init(allocator);
+    for (params.required) |req| try required.append(.{ .string = req });
+    var schema = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    try schema.put(allocator, "type", .{ .string = params.type });
+    try schema.put(allocator, "properties", .{ .object = props });
+    try schema.put(allocator, "required", .{ .array = required });
+    return .{ .object = schema };
+}
+
+/// Parse a renderer result in tests.
+fn parseResult(a: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    return try std.json.parseFromSlice(std.json.Value, a, out, .{});
+}
+
+/// `search_tool` result as JSON. `page` is the `offset`/`limit` window (the renderer
 /// re-caps it at `params.limit`); `params.total` is the pre-page match count and
+/// `params.offset` the window start, so the model knows exactly how much it has
+/// not seen and which offset continues the listing. `mode` + `warning` report
+/// how the query was interpreted, so a literal fallback is never silent.
+/// `search_tool` result as JSON: `{"query","pattern_mode","pattern_warning",
+/// "server","count","total","offset","limit","tools","truncated","next_offset",
+/// "hint"}`. `page` is the `offset`/`limit` window (the renderer re-caps it at
+/// `params.limit`); `params.total` is the pre-page match count and
 /// `params.offset` the window start, so the model knows exactly how much it has
 /// not seen and which offset continues the listing. `mode` + `warning` report
 /// how the query was interpreted, so a literal fallback is never silent.
@@ -953,136 +982,86 @@ pub fn renderSearchResult(
     page: []const Entry,
     params: SearchPageParams,
 ) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<search_tool><query>");
-    try xmlEscapeInto(&out, allocator, params.query);
-    try out.appendSlice(allocator, "</query><pattern_mode>");
-    try out.appendSlice(allocator, switch (params.mode) {
-        .all => "all",
-        .regex => "regex",
-        .literal => "literal",
-        .regex_fallback => "literal_fallback",
-    });
-    try out.appendSlice(allocator, "</pattern_mode>");
-    if (params.warning.len > 0) {
-        try out.appendSlice(allocator, "<pattern_warning>");
-        try xmlEscapeInto(&out, allocator, params.warning);
-        try out.appendSlice(allocator, "</pattern_warning>");
-    }
-    if (params.server.len > 0) {
-        try out.appendSlice(allocator, "<server>");
-        try xmlEscapeInto(&out, allocator, params.server);
-        try out.appendSlice(allocator, "</server>");
-    }
-    {
-        const n = try std.fmt.allocPrint(
-            allocator,
-            "<count>{d}</count><total>{d}</total><offset>{d}</offset><limit>{d}</limit><tools>",
-            .{
-                @min(page.len, params.limit),
-                params.total,
-                params.offset,
-                params.limit,
-            },
-        );
-        defer allocator.free(n);
-        try out.appendSlice(allocator, n);
-    }
-
     const shown = @min(page.len, params.limit);
-    for (page[0..shown]) |entry| try appendEntryRow(&out, allocator, entry);
-    try out.appendSlice(allocator, "</tools>");
+    const rows = try allocator.alloc(ToolRowJson, shown);
+    defer allocator.free(rows);
+    for (page[0..shown], 0..) |entry, k| rows[k] = toolRowJson(entry);
 
-    if (params.offset + shown < params.total) {
-        const next = params.offset + shown;
-        const n = try std.fmt.allocPrint(
+    const truncated = params.offset + shown < params.total;
+    const next_offset: ?usize = if (truncated) params.offset + shown else null;
+    const hint = if (truncated)
+        try std.fmt.allocPrint(
             allocator,
-            "<truncated/><hint>Showing {d}-{d} of {d} matches — call again with offset={d} (same query) for the next page, or narrow the query.</hint>",
-            .{ params.offset, next, params.total, next },
-        );
-        defer allocator.free(n);
-        try out.appendSlice(allocator, n);
-    } else {
-        try out.appendSlice(allocator,
-            "<hint>Call view_tool for the full parameter schema, then use_tool to enable it for this session. Tools you already have in your tool list are NOT listed here.</hint>",
-        );
-    }
+            "Showing {d}-{d} of {d} matches — call again with offset={d} (same query) for the next page, or narrow the query.",
+            .{ params.offset, params.offset + shown, params.total, params.offset + shown },
+        )
+    else
+        try allocator.dupe(u8, "Call view_tool for the full parameter schema, then use_tool to enable it for this session. Tools you already have in your tool list are NOT listed here.");
+    defer allocator.free(hint);
 
-    try out.appendSlice(allocator, "</search_tool>");
-    return try out.toOwnedSlice(allocator);
+    const warning: ?[]const u8 = if (params.warning.len > 0) params.warning else null;
+    const server: ?[]const u8 = if (params.server.len > 0) params.server else null;
+
+    return try std.json.Stringify.valueAlloc(allocator, .{
+        .query = params.query,
+        .pattern_mode = modeStr(params.mode),
+        .pattern_warning = warning,
+        .server = server,
+        .count = shown,
+        .total = params.total,
+        .offset = params.offset,
+        .limit = params.limit,
+        .tools = rows,
+        .truncated = truncated,
+        .next_offset = next_offset,
+        .hint = hint,
+    }, .{});
 }
 
-/// `<view_tool>` result for a found entry.
+/// `view_tool` result for a found entry.
 pub fn renderViewTool(allocator: std.mem.Allocator, entry: Entry) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<view_tool><name>");
-    try xmlEscapeInto(&out, allocator, entry.name);
-    try out.appendSlice(allocator, "</name><kind>");
-    try out.appendSlice(allocator, switch (entry.kind) {
-        .builtin => "builtin",
-        .mcp => "mcp",
-    });
-    try out.appendSlice(allocator, "</kind><server>");
-    try xmlEscapeInto(&out, allocator, entry.server);
-    try out.appendSlice(allocator, "</server><equipped>");
-    try out.appendSlice(allocator, switch (entry.equipped) {
-        .session => "session",
-        .no => "no",
-    });
-    try out.appendSlice(allocator, "</equipped><description>");
-    try xmlEscapeInto(&out, allocator, entry.tool.function.description);
-    try out.appendSlice(allocator, "</description><parameters><![CDATA[");
-    try appendToolJsonSchema(&out, allocator, entry.tool);
-    try out.appendSlice(allocator, "]]></parameters>");
-
-    if (entry.equipped == .session) {
-        try out.appendSlice(allocator,
-            "<note>Already enabled for this session — call it directly.</note>",
-        );
-    } else {
-        try out.appendSlice(allocator,
-            "<hint>Call use_tool with this name to enable it for this session.</hint>",
-        );
-    }
-    try out.appendSlice(allocator, "</view_tool>");
-    return try out.toOwnedSlice(allocator);
+    const note: ?[]const u8 = if (entry.equipped == .session)
+        "Already enabled for this session — call it directly."
+    else
+        null;
+    const hint: ?[]const u8 = if (entry.equipped == .session)
+        null
+    else
+        "Call use_tool with this name to enable it for this session.";
+    return try std.json.Stringify.valueAlloc(allocator, .{
+        .name = entry.name,
+        .kind = kindStr(entry.kind),
+        .server = entry.server,
+        .equipped = equippedStr(entry.equipped),
+        .description = entry.tool.function.description,
+        .parameters = try schemaValue(allocator, entry.tool),
+        .note = note,
+        .hint = hint,
+    }, .{});
 }
 
-fn appendDidYouMean(out: *std.ArrayList(u8), allocator: std.mem.Allocator, suggestions: []const []const u8) !void {
-    if (suggestions.len == 0) return;
-    try out.appendSlice(allocator, "<did_you_mean>");
-    for (suggestions) |s| {
-        try out.appendSlice(allocator, "<name>");
-        try xmlEscapeInto(out, allocator, s);
-        try out.appendSlice(allocator, "</name>");
-    }
-    try out.appendSlice(allocator, "</did_you_mean>");
-}
-
-/// `<view_tool>` result for an unknown name. Never writes anything.
+/// `view_tool` result for an unknown name. Never writes anything.
 pub fn renderViewToolNotFound(
     allocator: std.mem.Allocator,
     name: []const u8,
     suggestions: []const []const u8,
 ) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<view_tool><name>");
-    try xmlEscapeInto(&out, allocator, name);
-    try out.appendSlice(allocator, "</name><found>false</found><error>unknown tool '");
-    try xmlEscapeInto(&out, allocator, name);
-    try out.appendSlice(allocator, "' — not in this session's tool catalog</error>");
-    try appendDidYouMean(&out, allocator, suggestions);
-    try out.appendSlice(allocator, "<hint>Call search_tool to list candidates.</hint></view_tool>");
-    return try out.toOwnedSlice(allocator);
+    const msg = try std.fmt.allocPrint(
+        allocator,
+        "unknown tool '{s}' — not in this session's tool catalog",
+        .{name},
+    );
+    defer allocator.free(msg);
+    return try std.json.Stringify.valueAlloc(allocator, .{
+        .name = name,
+        .found = false,
+        .@"error" = msg,
+        .did_you_mean = suggestions,
+        .hint = "Call search_tool to list candidates.",
+    }, .{});
 }
 
-/// `<use_tool>` result. `inserted` must come from the caller's real DB
+/// `use_tool` result. `inserted` must come from the caller's real DB
 /// outcome (a `saveProgressiveTool` that returned true) — never guessed.
 ///
 /// Deliberately minimal: the agent already saw the full spec via `view_tool`,
@@ -1092,55 +1071,44 @@ pub fn renderUseTool(
     entry: Entry,
     inserted: bool,
 ) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<use_tool><name>");
-    try xmlEscapeInto(&out, allocator, entry.name);
-    try out.appendSlice(allocator, "</name><kind>");
-    try out.appendSlice(allocator, switch (entry.kind) {
-        .builtin => "builtin",
-        .mcp => "mcp",
-    });
-    try out.appendSlice(allocator, "</kind><equipped>true</equipped>");
-
-    if (inserted) {
-        try out.appendSlice(allocator, "<inserted>true</inserted><wait_next_turn>true</wait_next_turn>");
-        try out.appendSlice(allocator,
-            "<note>Enabled for this session. Call it directly from your next turn onward — the current turn's tool list was already sent.</note>",
-        );
-    } else {
-        try out.appendSlice(allocator, "<inserted>false</inserted><source>session</source>");
-        try out.appendSlice(allocator,
-            "<note>Already enabled for this session. Call it directly.</note>",
-        );
-    }
-
-    try out.appendSlice(allocator, "</use_tool>");
-    return try out.toOwnedSlice(allocator);
+    const wait_next_turn: ?bool = if (inserted) true else null;
+    const source: ?[]const u8 = if (inserted) null else @as([]const u8, "session");
+    const note: []const u8 = if (inserted)
+        "Enabled for this session. Call it directly from your next turn onward — the current turn's tool list was already sent."
+    else
+        "Already enabled for this session. Call it directly.";
+    return try std.json.Stringify.valueAlloc(allocator, .{
+        .name = entry.name,
+        .kind = kindStr(entry.kind),
+        .equipped = true,
+        .inserted = inserted,
+        .wait_next_turn = wait_next_turn,
+        .source = source,
+        .note = note,
+    }, .{});
 }
 
-/// `<use_tool>` result for an unknown name. Never writes anything — this is
+/// `use_tool` result for an unknown name. Never writes anything — this is
 /// the "never fails open" guard.
 pub fn renderUseToolNotFound(
     allocator: std.mem.Allocator,
     name: []const u8,
     suggestions: []const []const u8,
 ) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<use_tool><name>");
-    try xmlEscapeInto(&out, allocator, name);
-    try out.appendSlice(allocator, "</name><equipped>false</equipped><inserted>false</inserted><error>unknown tool '");
-    try xmlEscapeInto(&out, allocator, name);
-    try out.appendSlice(allocator, "' — not in this session's tool catalog</error>");
-    try appendDidYouMean(&out, allocator, suggestions);
-    try out.appendSlice(allocator,
-        "<hint>Call search_tool, then view_tool, then use_tool with the exact name.</hint>",
+    const msg = try std.fmt.allocPrint(
+        allocator,
+        "unknown tool '{s}' — not in this session's tool catalog",
+        .{name},
     );
-    try out.appendSlice(allocator, "</use_tool>");
-    return try out.toOwnedSlice(allocator);
+    defer allocator.free(msg);
+    return try std.json.Stringify.valueAlloc(allocator, .{
+        .name = name,
+        .equipped = false,
+        .inserted = false,
+        .@"error" = msg,
+        .did_you_mean = suggestions,
+        .hint = "Call search_tool, then view_tool, then use_tool with the exact name.",
+    }, .{});
 }
 
 test "renderSearchResult: rows, chips and the not-listed hint" {
@@ -1165,19 +1133,26 @@ test "renderSearchResult: rows, chips and the not-listed hint" {
         .warning = q.warning,
     });
 
-    try testing.expect(std.mem.indexOf(u8, out, "<count>2</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<total>2</total>") != null);
+    const parsed = try parseResult(a, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(@as(i64, 2), obj.get("count").?.integer);
+    try testing.expectEqual(@as(i64, 2), obj.get("total").?.integer);
     // The page window is always explicit, so a paging model can trust it.
-    try testing.expect(std.mem.indexOf(u8, out, "<offset>0</offset>") != null);
-    const expect_limit = try std.fmt.allocPrint(a, "<limit>{d}</limit>", .{DEFAULT_SEARCH_LIMIT});
-    try testing.expect(std.mem.indexOf(u8, out, expect_limit) != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<name>kanban_list</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<kind>builtin</kind>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<kind>mcp</kind>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<server>ctx</server>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<equipped>no</equipped>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "NOT listed here") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<truncated/>") == null);
+    try testing.expectEqual(@as(i64, 0), obj.get("offset").?.integer);
+    try testing.expectEqual(@as(i64, DEFAULT_SEARCH_LIMIT), obj.get("limit").?.integer);
+    try testing.expectEqualStrings("all", obj.get("pattern_mode").?.string);
+    try testing.expect(obj.get("pattern_warning").? == .null);
+    try testing.expect(obj.get("server").? == .null);
+    const tools = obj.get("tools").?.array.items;
+    try testing.expectEqual(@as(usize, 2), tools.len);
+    try testing.expectEqualStrings("kanban_list", tools[0].object.get("name").?.string);
+    try testing.expectEqualStrings("builtin", tools[0].object.get("kind").?.string);
+    try testing.expectEqualStrings("mcp", tools[1].object.get("kind").?.string);
+    try testing.expectEqualStrings("ctx", tools[1].object.get("server").?.string);
+    try testing.expectEqualStrings("no", tools[0].object.get("equipped").?.string);
+    try testing.expectEqual(false, obj.get("truncated").?.bool);
+    try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "NOT listed here") != null);
 }
 
 test "renderSearchResult: empty match count is not an error" {
@@ -1194,12 +1169,15 @@ test "renderSearchResult: empty match count is not an error" {
         .mode = .all,
         .warning = "",
     });
-    try testing.expect(std.mem.indexOf(u8, out, "<count>0</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<tools></tools>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    const parsed = try parseResult(a, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
+    try testing.expectEqual(@as(usize, 0), obj.get("tools").?.array.items.len);
+    try testing.expect(obj.get("error") == null);
 }
 
-test "renderSearchResult: caps rows and emits <truncated/> with the real total" {
+test "renderSearchResult: capped rows report truncated with the real total" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1207,9 +1185,9 @@ test "renderSearchResult: caps rows and emits <truncated/> with the real total" 
     // Build MAX_SEARCH_ROWS + 2 entries.
     var specs: [MAX_SEARCH_ROWS + 2][2][]const u8 = undefined;
     var names: [MAX_SEARCH_ROWS + 2][]const u8 = undefined;
-    for (0..MAX_SEARCH_ROWS + 2) |i| {
-        names[i] = try std.fmt.allocPrint(a, "tool_{d}", .{i});
-        specs[i] = .{ names[i], "desc" };
+    for (0..MAX_SEARCH_ROWS + 2) |k| {
+        names[k] = try std.fmt.allocPrint(a, "tool_{d}", .{k});
+        specs[k] = .{ names[k], "desc" };
     }
     const tools_list = try makeToolList(a, &specs);
     const entries = try buildCatalog(a, tools_list, NONE_ENABLED, false, null, &.{}, "agent");
@@ -1225,15 +1203,17 @@ test "renderSearchResult: caps rows and emits <truncated/> with the real total" 
         .mode = q.mode,
         .warning = q.warning,
     });
-    try testing.expect(std.mem.indexOf(u8, out, "<truncated/>") != null);
-    const expect_count = try std.fmt.allocPrint(a, "<count>{d}</count>", .{MAX_SEARCH_ROWS});
-    try testing.expect(std.mem.indexOf(u8, out, expect_count) != null);
-    const expect_total = try std.fmt.allocPrint(a, "<total>{d}</total>", .{MAX_SEARCH_ROWS + 2});
-    try testing.expect(std.mem.indexOf(u8, out, expect_total) != null);
+    const parsed = try parseResult(a, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqual(true, obj.get("truncated").?.bool);
+    try testing.expectEqual(@as(i64, MAX_SEARCH_ROWS), obj.get("count").?.integer);
+    try testing.expectEqual(@as(i64, MAX_SEARCH_ROWS + 2), obj.get("total").?.integer);
     // The hint must name the offset that continues the listing, not merely say
     // "narrow it" — a big catalog is browsed page by page.
+    try testing.expectEqual(@as(i64, MAX_SEARCH_ROWS), obj.get("next_offset").?.integer);
     const expect_next = try std.fmt.allocPrint(a, "offset={d}", .{MAX_SEARCH_ROWS});
-    try testing.expect(std.mem.indexOf(u8, out, expect_next) != null);
+    try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, expect_next) != null);
 }
 
 test "pageSlice: window arithmetic, including past-the-end" {
@@ -1271,16 +1251,16 @@ test "pageSlice: window arithmetic, including past-the-end" {
     try testing.expectEqual(@as(usize, 0), pageSlice(entries, 0, 0).len);
 }
 
-test "renderSearchResult: paging walks the matches and ends without a truncation hint" {
+test "renderSearchResult: paging walks the matches and ends without truncation" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
 
     var specs: [5][2][]const u8 = undefined;
     var names: [5][]const u8 = undefined;
-    for (0..5) |i| {
-        names[i] = try std.fmt.allocPrint(a, "tool_{d}", .{i});
-        specs[i] = .{ names[i], "desc" };
+    for (0..5) |k| {
+        names[k] = try std.fmt.allocPrint(a, "tool_{d}", .{k});
+        specs[k] = .{ names[k], "desc" };
     }
     const tools_list = try makeToolList(a, &specs);
     const entries = try buildCatalog(a, tools_list, NONE_ENABLED, false, null, &.{}, "agent");
@@ -1295,14 +1275,22 @@ test "renderSearchResult: paging walks the matches and ends without a truncation
         .mode = .all,
         .warning = "",
     });
-    try testing.expect(std.mem.indexOf(u8, p1, "<count>2</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, p1, "<total>5</total>") != null);
-    try testing.expect(std.mem.indexOf(u8, p1, "<offset>0</offset><limit>2</limit>") != null);
-    try testing.expect(std.mem.indexOf(u8, p1, "<name>tool_0</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, p1, "<name>tool_2</name>") == null);
-    try testing.expect(std.mem.indexOf(u8, p1, "offset=2") != null);
+    {
+        const parsed = try parseResult(a, p1);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(@as(i64, 2), obj.get("count").?.integer);
+        try testing.expectEqual(@as(i64, 5), obj.get("total").?.integer);
+        try testing.expectEqual(@as(i64, 0), obj.get("offset").?.integer);
+        try testing.expectEqual(@as(i64, 2), obj.get("limit").?.integer);
+        const tools = obj.get("tools").?.array.items;
+        try testing.expectEqualStrings("tool_0", tools[0].object.get("name").?.string);
+        try testing.expectEqual(@as(usize, 2), tools.len);
+        try testing.expectEqual(true, obj.get("truncated").?.bool);
+        try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "offset=2") != null);
+    }
 
-    // Page 3 (last): no <truncated/>, and the enable-it hint is back.
+    // Page 3 (last): not truncated, and the enable-it hint is back.
     const p3 = try renderSearchResult(a, pageSlice(entries, 4, 2), .{
         .total = entries.len,
         .offset = 4,
@@ -1312,11 +1300,18 @@ test "renderSearchResult: paging walks the matches and ends without a truncation
         .mode = .all,
         .warning = "",
     });
-    try testing.expect(std.mem.indexOf(u8, p3, "<count>1</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, p3, "<total>5</total>") != null);
-    try testing.expect(std.mem.indexOf(u8, p3, "<name>tool_4</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, p3, "<truncated/>") == null);
-    try testing.expect(std.mem.indexOf(u8, p3, "NOT listed here") != null);
+    {
+        const parsed = try parseResult(a, p3);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(@as(i64, 1), obj.get("count").?.integer);
+        try testing.expectEqual(@as(i64, 5), obj.get("total").?.integer);
+        const tools = obj.get("tools").?.array.items;
+        try testing.expectEqualStrings("tool_4", tools[0].object.get("name").?.string);
+        try testing.expectEqual(false, obj.get("truncated").?.bool);
+        try testing.expect(obj.get("next_offset").? == .null);
+        try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "NOT listed here") != null);
+    }
 
     // An offset past the end is an empty page that still reports the total,
     // so the model can recover instead of guessing.
@@ -1329,13 +1324,18 @@ test "renderSearchResult: paging walks the matches and ends without a truncation
         .mode = .all,
         .warning = "",
     });
-    try testing.expect(std.mem.indexOf(u8, past, "<count>0</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, past, "<total>5</total>") != null);
-    try testing.expect(std.mem.indexOf(u8, past, "<tools></tools>") != null);
-    try testing.expect(std.mem.indexOf(u8, past, "<error>") == null);
+    {
+        const parsed = try parseResult(a, past);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
+        try testing.expectEqual(@as(i64, 5), obj.get("total").?.integer);
+        try testing.expectEqual(@as(usize, 0), obj.get("tools").?.array.items.len);
+        try testing.expect(obj.get("error") == null);
+    }
 }
 
-test "renderViewTool: full schema in CDATA, hint to enable" {
+test "renderViewTool: full schema as JSON, hint to enable" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -1344,11 +1344,16 @@ test "renderViewTool: full schema in CDATA, hint to enable" {
     const entry = Entry{ .name = "kanban_list", .kind = .builtin, .server = "", .equipped = .no, .tool = tool };
     const out = try renderViewTool(a, entry);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<name>kanban_list</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<equipped>no</equipped>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<parameters><![CDATA[{") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "]]></parameters>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "Call use_tool") != null);
+    const parsed = try parseResult(a, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("kanban_list", obj.get("name").?.string);
+    try testing.expectEqualStrings("no", obj.get("equipped").?.string);
+    const params = obj.get("parameters").?.object;
+    try testing.expectEqualStrings("object", params.get("type").?.string);
+    try testing.expect(obj.get("hint").? != .null);
+    try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "Call use_tool") != null);
+    try testing.expect(obj.get("note").? == .null);
 }
 
 test "renderViewToolNotFound / renderUseToolNotFound: found=false + did-you-mean, no writes implied" {
@@ -1357,14 +1362,26 @@ test "renderViewToolNotFound / renderUseToolNotFound: found=false + did-you-mean
     const a = arena.allocator();
 
     const view = try renderViewToolNotFound(a, "kanban_lst", &.{"kanban_list"});
-    try testing.expect(std.mem.indexOf(u8, view, "<found>false</found>") != null);
-    try testing.expect(std.mem.indexOf(u8, view, "<name>kanban_list</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, view, "<error>") != null);
+    {
+        const parsed = try parseResult(a, view);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(false, obj.get("found").?.bool);
+        const sug = obj.get("did_you_mean").?.array.items;
+        try testing.expectEqual(@as(usize, 1), sug.len);
+        try testing.expectEqualStrings("kanban_list", sug[0].string);
+        try testing.expect(obj.get("error").? != .null);
+    }
 
     const use = try renderUseToolNotFound(a, "kanban_lst", &.{"kanban_list"});
-    try testing.expect(std.mem.indexOf(u8, use, "<equipped>false</equipped>") != null);
-    try testing.expect(std.mem.indexOf(u8, use, "<inserted>false</inserted>") != null);
-    try testing.expect(std.mem.indexOf(u8, use, "<did_you_mean>") != null);
+    {
+        const parsed = try parseResult(a, use);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(false, obj.get("equipped").?.bool);
+        try testing.expectEqual(false, obj.get("inserted").?.bool);
+        try testing.expectEqual(@as(usize, 1), obj.get("did_you_mean").?.array.items.len);
+    }
 }
 
 test "renderUseTool: inserted=true is just the equip signal, no repeated schema" {
@@ -1376,14 +1393,24 @@ test "renderUseTool: inserted=true is just the equip signal, no repeated schema"
     const entry = Entry{ .name = "glob", .kind = .builtin, .server = "", .equipped = .no, .tool = tool };
 
     const inserted = try renderUseTool(a, entry, true);
-    try testing.expect(std.mem.indexOf(u8, inserted, "<inserted>true</inserted>") != null);
-    try testing.expect(std.mem.indexOf(u8, inserted, "<wait_next_turn>true</wait_next_turn>") != null);
-    // The agent already saw the full spec via view_tool — no repeat here.
-    try testing.expect(std.mem.indexOf(u8, inserted, "<parameters>") == null);
-    try testing.expect(std.mem.indexOf(u8, inserted, "Find files.") == null);
+    {
+        const parsed = try parseResult(a, inserted);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(true, obj.get("inserted").?.bool);
+        try testing.expectEqual(true, obj.get("wait_next_turn").?.bool);
+        // The agent already saw the full spec via view_tool — no repeat here.
+        try testing.expect(obj.get("parameters") == null);
+        try testing.expect(obj.get("description") == null);
+    }
 
     const already = try renderUseTool(a, entry, false);
-    try testing.expect(std.mem.indexOf(u8, already, "<inserted>false</inserted>") != null);
-    try testing.expect(std.mem.indexOf(u8, already, "<wait_next_turn>") == null);
-    try testing.expect(std.mem.indexOf(u8, already, "Already enabled") != null);
+    {
+        const parsed = try parseResult(a, already);
+        defer parsed.deinit();
+        const obj = parsed.value.object;
+        try testing.expectEqual(false, obj.get("inserted").?.bool);
+        try testing.expect(obj.get("wait_next_turn").? == .null);
+        try testing.expect(std.mem.indexOf(u8, obj.get("note").?.string, "Already enabled") != null);
+    }
 }

@@ -44,10 +44,14 @@ describe('McpTool', () => {
   })
 
   it('renders the error envelope', () => {
-    const envelope =
-      '<tool><name>mcp_graphify_graph_stats</name>' +
-      '<parameters>{}</parameters><success>false</success>' +
-      '<error>connection refused</error><data></data></tool>'
+    const envelope = JSON.stringify({
+      tool: 'mcp_graphify_graph_stats',
+      parameters: {},
+      success: false,
+      data: null,
+      error: 'connection refused',
+      v: 1,
+    })
     const wrapper = mount(McpTool, {
       props: { content: envelope, toolName: 'mcp_graphify_graph_stats', expanded: true },
     })

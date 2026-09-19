@@ -6,33 +6,28 @@
 //!
 //! Wire shape:
 //!   input:  {} (no params — session_id is implicit per D3)
-//!   output: <get_plan><plan><![CDATA[...markdown...]]></plan></get_plan>
-//!   or:     <get_plan><empty/></get_plan> (when no plan set, per D6)
+//!   output: {"plan":"...markdown..."} (when a plan is set)
+//!   or:     {"empty":true} (when no plan set, per D6)
 //!
 //! The actual read lives in `session_plan.getPlan`. This file is a
-//! thin XML wrapper around it (mirrors the `memory.zig` load_memory pattern —
+//! thin JSON wrapper around it (mirrors the `memory.zig` load_memory pattern —
 //! thin wrapper around `agent_memories.loadMemoriesByFts`).
 //!
-//! CDATA wrapping: the plan content is wrapped in CDATA so the raw
-//! `<`, `>`, `&` inside user-written markdown never breaks the XML
-//! envelope. Mirrors the `enrichCompactionXml` session_skills
-//! section at `workflow_compact_message.zig:409` — including the
-//! `]]>` boundary split (line 414), which is the same edge case
-//! (literal `]]>` inside the body would otherwise terminate the
-//! CDATA section early and break the XML envelope).
+//! Plain JSON strings carry the plan content; the raw `<`, `>`, `&`
+//! inside user-written markdown need no envelope-level escaping.
 //!
 //! Design choices:
 //!   - `session_id` is NOT in the input (D3 — implicit from
 //!     `ToolExecContext.session_id` in the exec adapter). The pure-fn
 //!     API takes `session_id` as an explicit parameter so this file
 //!     stays testable in isolation (mirrors `executeUpdatePlan`).
-//!   - No `<session_id>` echo in the success XML (mirrors
+//!   - No `session_id` echo in the success payload (mirrors
 //!     `load_memory`'s omission — the LLM already knows which session
 //!     it's operating on; echoing wastes context).
-//!   - CDATA wrapping (vs. `helpers.xml_escape`) preserves the
-//!     user's exact markdown byte-for-byte; the agent sees its own
-//!     plan back without any escape substitutions that would
-//!     complicate regex/checklist matching in the LLM.
+//!   - JSON string encoding preserves the user's markdown with only
+//!     JSON string escaping; the agent sees its own plan back without
+//!     substitutions that would complicate regex/checklist matching
+//!     in the LLM.
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -56,7 +51,7 @@ pub const get_plan_tool_system_prompt =
     \\## Get Plan Tool — Behavior
     \\Use `get_plan` to read the current session plan.
     \\- No parameters. Use to verify progress before updating, or after compaction to confirm the injected copy.
-    \\- Returns `<plan>` with CDATA or `<empty/>` if no plan exists.
+    \\- Returns `plan` text or `{"empty":true}` if no plan exists.
     \\
 ;
 
@@ -65,16 +60,16 @@ pub const get_plan_tool = AgentTool{
     .function = .{
         .name = "get_plan",
         .description =
-            \\Fetch the agent's current task plan for this session. Returns the markdown body wrapped in `<plan><![CDATA[...]]></plan>`, or `<empty/>` when no plan has been set yet (use `update_plan` to lay one out).
-            \\
-            \\The plan is also re-injected into your system prompt on every iteration, so calling `get_plan` is mostly useful for explicit verification, or after you've made several changes and want to see the current state without scrolling back through the system prompt.
-            \\
-            \\Use this tool to:
-            \\1. Verify the current plan before flipping a `- [ ]` to `- [x]` in `update_plan`.
-            \\2. Confirm `<empty/>` before laying out your first plan with `update_plan` (e.g. after a session handoff where the new agent didn't inherit a plan).
-            \\3. Re-read the plan after a compaction event, to check that the auto-injected copy matches what you expect.
-            \\
-            \\The output is wrapped in XML CDATA, so the raw `<`, `>`, `&` inside the markdown body are preserved verbatim — the LLM sees its own plan back byte-for-byte.
+        \\Fetch the agent's current task plan for this session. Returns the markdown body in the `plan` field, or `{"empty":true}` when no plan has been set yet (use `update_plan` to lay one out).
+        \\
+        \\The plan is also re-injected into your system prompt on every iteration, so calling `get_plan` is mostly useful for explicit verification, or after you've made several changes and want to see the current state without scrolling back through the system prompt.
+        \\
+        \\Use this tool to:
+        \\1. Verify the current plan before flipping a `- [ ]` to `- [x]` in `update_plan`.
+        \\2. Confirm `<empty/>` before laying out your first plan with `update_plan` (e.g. after a session handoff where the new agent didn't inherit a plan).
+        \\3. Re-read the plan after a compaction event, to check that the auto-injected copy matches what you expect.
+        \\
+        \\The output is a JSON payload, so the raw `<`, `>`, `&` inside the markdown body are preserved verbatim — the LLM sees its own plan back byte-for-byte.
         ,
         .parameters = .{
             .type = "object",
@@ -85,7 +80,7 @@ pub const get_plan_tool = AgentTool{
     },
 };
 
-/// Execute get_plan. Returns an XML string for the LLM.
+/// Execute get_plan. Returns a JSON string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
 ///
@@ -97,46 +92,21 @@ pub fn executeGetPlan(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) ![]const u8 {
+    const helpers = @import("helpers");
+    const sanitize = helpers.sanitize_control_chars;
+
     // session_plan.getPlan returns an allocated copy of the markdown body,
     // or an allocated "" when absent (canonical "no plan" sentinel).
     const plan = try session_plan.getPlan(allocator, db, session_id);
     defer allocator.free(plan);
 
     if (plan.len == 0) {
-        return allocator.dupe(u8, "<get_plan><empty/></get_plan>");
+        return std.json.Stringify.valueAlloc(allocator, .{ .empty = true }, .{});
     }
 
-    // Present branch: wrap the plan body in CDATA inside <plan>...</plan>.
-    // CDATA preserves the raw `<`, `>`, `&` bytes verbatim — no XML
-    // escape substitution. The only escape we DO need is splitting
-    // on the literal `]]>` sequence, which would otherwise terminate
-    // the CDATA section early and break the XML envelope.
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    try out.appendSlice(allocator, "<get_plan><plan><![CDATA[\n");
-    if (std.mem.indexOf(u8, plan, "]]>") == null) {
-        // Fast path: no `]]>` in the body — append verbatim.
-        try out.appendSlice(allocator, plan);
-    } else {
-        // Slow path: split on each `]]>` boundary, mirroring the
-        // session_skills CDATA escape in enrichCompactionXml at
-        // workflow_compact_message.zig:414. We close the current
-        // CDATA section with the `]]` (already in the data), reopen
-        // with `<![CDATA[`, and emit the literal `>` as content of
-        // the new section. On the wire this reads as
-        // `...]]><![CDATA[>...` — the `>` between `]]` and `<![CDATA[`
-        // is the escaped-then-replayed end of the original sequence.
-        var rest = plan;
-        while (std.mem.indexOf(u8, rest, "]]>")) |idx| {
-            try out.appendSlice(allocator, rest[0..idx]); // up to but NOT incl "]]"
-            try out.appendSlice(allocator, "]]><![CDATA[>"); // close current, reopen, literal '>'
-            rest = rest[idx + 3 ..];
-        }
-        try out.appendSlice(allocator, rest);
-    }
-    try out.appendSlice(allocator, "\n]]></plan></get_plan>");
-    return out.toOwnedSlice(allocator);
+    const clean = try sanitize(allocator, plan);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, .{ .plan = clean }, .{});
 }
 
 const testing = std.testing;
@@ -166,9 +136,13 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
-// ─── Test 1: present — returns the plan wrapped in CDATA inside <plan> ──────
+fn parseTestJson(alloc: std.mem.Allocator, out: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, alloc, out, .{});
+}
 
-test "executeGetPlan: returns the plan when present, wrapped in CDATA" {
+// ─── Test 1: present — returns the plan in the `plan` field ─────────────────
+
+test "executeGetPlan: returns the plan when present, in the plan field" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -184,31 +158,22 @@ test "executeGetPlan: returns the plan when present, wrapped in CDATA" {
     const result = try get_plan_mod.executeGetPlan(alloc, &ctx.db, session_id);
     defer alloc.free(result);
 
-    // Envelope shape:
-    //   <get_plan><plan><![CDATA[
-    //   <markdown body>
-    //   ]]></plan></get_plan>
-    try testing.expect(std.mem.indexOf(u8, result, "<get_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</get_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</plan>") != null);
-    // CDATA wrappers present (so the raw `<`, `>` inside the markdown body
-    // cannot break the envelope — mirrors the enrichCompactionXml
-    // session_skills pattern).
-    try testing.expect(std.mem.indexOf(u8, result, "<![CDATA[") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "]]>") != null);
-    // No <empty/> when present.
-    try testing.expect(std.mem.indexOf(u8, result, "<empty/>") == null);
+    // Payload shape: {"plan":"<markdown body>"}.
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    const plan = parsed.value.object.get("plan").?.string;
+    // No `empty` marker when present.
+    try testing.expect(parsed.value.object.get("empty") == null);
 
-    // Markdown body parts (CDATA preserves raw chars verbatim).
-    try testing.expect(std.mem.indexOf(u8, result, "# Plan") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "[x] done") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "[ ] pending") != null);
+    // Markdown body parts (JSON preserves raw chars verbatim).
+    try testing.expect(std.mem.indexOf(u8, plan, "# Plan") != null);
+    try testing.expect(std.mem.indexOf(u8, plan, "[x] done") != null);
+    try testing.expect(std.mem.indexOf(u8, plan, "[ ] pending") != null);
 }
 
 // ─── Test 2: absent — returns <empty/> per D6 ───────────────────────────────
 
-test "executeGetPlan: returns <empty/> when no plan exists (D6)" {
+test "executeGetPlan: returns empty:true when no plan exists (D6)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -218,28 +183,25 @@ test "executeGetPlan: returns <empty/> when no plan exists (D6)" {
     const result = try get_plan_mod.executeGetPlan(alloc, &ctx.db, "nonexistent");
     defer alloc.free(result);
 
-    // Envelope shape: <get_plan><empty/></get_plan>
-    try testing.expect(std.mem.indexOf(u8, result, "<get_plan>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<empty/>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</get_plan>") != null);
-    // No <plan> tag when absent — the agent should use the absence
+    // Payload shape: {"empty":true} — the agent uses the absence
     // signal as a "use update_plan to lay out a plan" cue.
-    try testing.expect(std.mem.indexOf(u8, result, "<plan>") == null);
-    try testing.expect(std.mem.indexOf(u8, result, "</plan>") == null);
-    // No CDATA section either (nothing to wrap).
-    try testing.expect(std.mem.indexOf(u8, result, "<![CDATA[") == null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("empty").?.bool);
+    // No `plan` field when absent.
+    try testing.expect(parsed.value.object.get("plan") == null);
 }
 
-// ─── Test 3: XML escape — CDATA preserves raw chars verbatim ───────────────
+// ─── Test 3: JSON preserves raw chars verbatim ─────────────────────────────
 
-test "executeGetPlan: CDATA preserves raw special chars verbatim (no XML escape)" {
+test "executeGetPlan: JSON preserves raw special chars verbatim (no XML escape)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
     // Write a plan containing `<hello>` and `&` — these MUST survive
-    // verbatim inside the CDATA section (no &lt; / &amp; substitution).
+    // verbatim in the JSON string (no &lt; / &amp; substitution).
     const session_id = "test_session_escape";
     const seed_result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, session_id, .{
         .content = "Note: <hello> & 'world'",
@@ -249,29 +211,31 @@ test "executeGetPlan: CDATA preserves raw special chars verbatim (no XML escape)
     const result = try get_plan_mod.executeGetPlan(alloc, &ctx.db, session_id);
     defer alloc.free(result);
 
-    // Raw `<hello>` and `&` MUST appear inside the CDATA verbatim —
-    // that's the whole point of using CDATA for free-form content.
+    // Raw `<hello>` and `&` MUST appear in the payload verbatim —
+    // that's the point of plain JSON strings for free-form content.
     try testing.expect(std.mem.indexOf(u8, result, "<hello>") != null);
     try testing.expect(std.mem.indexOf(u8, result, " & ") != null);
-    // The XML-escaped forms MUST NOT appear — that's the alternative
-    // approach (helpers.xml_escape + non-CDATA envelope) which we
-    // explicitly avoid here. If a future refactor accidentally drops
-    // the CDATA wrapping, the assertions below will fail closed.
+    // The XML-escaped forms MUST NOT appear.
     try testing.expect(std.mem.indexOf(u8, result, "&lt;hello&gt;") == null);
     try testing.expect(std.mem.indexOf(u8, result, "&amp;") == null);
+    // And the parsed field round-trips byte-for-byte.
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("Note: <hello> & 'world'", parsed.value.object.get("plan").?.string);
 }
 
-// ─── Test 4: CDATA split on `]]>` boundary ──────────────────────────────────
+// ─── Test 4: `]]>` inside the body round-trips through JSON ─────────────────
+//
+// The literal `]]>` sequence needed CDATA splitting under the old XML
+// envelope. JSON strings have no such hazard — the content round-trips
+// byte-for-byte with no transformation.
 
-test "executeGetPlan: splits CDATA on `]]>` boundary inside plan body" {
+test "executeGetPlan: ]]> inside plan body round-trips verbatim" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    // Embed a literal `]]>` sequence — the CDATA section MUST split
-    // (mirror of the enrichCompactionXml session_skills pattern at
-    // workflow_compact_message.zig).
     const session_id = "test_session_cdata";
     const seed_result = try update_plan_mod.executeUpdatePlan(alloc, &ctx.db, session_id, .{
         .content = "before ]]> middle ]]> after",
@@ -281,11 +245,9 @@ test "executeGetPlan: splits CDATA on `]]>` boundary inside plan body" {
     const result = try get_plan_mod.executeGetPlan(alloc, &ctx.db, session_id);
     defer alloc.free(result);
 
-    // The two `]]>` sequences must be split into adjacent CDATA sections
-    // so the envelope is still well-formed XML, with the literal `>`
-    // reappearing between them (close current + reopen with the `>`
-    // as content of the new section).
-    try testing.expect(std.mem.indexOf(u8, result, "before ]]><![CDATA[> middle ]]><![CDATA[> after") != null);
+    const parsed = try parseTestJson(alloc, result);
+    defer parsed.deinit();
+    try testing.expectEqualStrings("before ]]> middle ]]> after", parsed.value.object.get("plan").?.string);
 }
 
 // ─── Test 5: JSON schema shape (name / required / properties) ───────────────
@@ -304,7 +266,7 @@ test "get_plan_tool JSON schema: name='get_plan', no required params, no propert
     // this" signal.
     const description = tool.function.description;
     try testing.expect(std.mem.indexOf(u8, description, "get_plan") != null);
-    try testing.expect(std.mem.indexOf(u8, description, "<empty/>") != null);
+    try testing.expect(std.mem.indexOf(u8, description, "empty") != null);
 
     // Required: empty slice — get_plan needs no input (D3 — session_id
     // is implicit).

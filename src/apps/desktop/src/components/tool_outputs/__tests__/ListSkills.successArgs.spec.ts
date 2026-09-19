@@ -6,7 +6,7 @@ describe('ListSkills.vue — success with args shows Arguments when expanded', (
   it('expanded body shows Arguments', () => {
     const wrapper = mount(ListSkills, {
       props: {
-        content: '<list_skills><global_skills></global_skills><local_skills></local_skills></list_skills>',
+        content: { global_skills: [], local_skills: [] },
         parameters: '{"filter":"all"}',
         expanded: true,
       } as never,

@@ -2,7 +2,7 @@
 //!
 //! Composes four steps:
 //!   1. Parse the LLM JSON arguments into `AddMcpServerInput`
-//!   2. Call the pure-fn primitive `executeAddMcpServerToString`, which
+//!   2. Call the pure-fn primitive `executeAddMcpServerToJSON`, which
 //!      validates + mutates the live `LlmConfig.mcp_servers` typed map
 //!      and rebuilds `mcpServers_parsed` (the JSON mirror `buildMCPToolsRun`
 //!      reads when rebuilding the system prompt each iteration).
@@ -29,7 +29,6 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
-const helpers = @import("helpers");
 
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
@@ -71,7 +70,7 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     // just to discourage accidental writes through this pointer". Same
     // pattern as the LlmConfig clone path.
     const config_mut = @constCast(ctx.config);
-    const inner = add_mcp_server_mod.executeAddMcpServerToString(
+    const inner = add_mcp_server_mod.executeAddMcpServerToJSON(
         ctx.allocator,
         ctx.io,
         config_mut,
@@ -90,18 +89,22 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
 
     // ── 3. Detect the <error>...</error> shape from the pure fn ─────────
     //
-    // The pure fn returns `<add_mcp_server><error>...</error></add_mcp_server>`
-    // on validation failures. The exec wrapper surfaces these as
-    // `success=false` in the standard envelope (so the LLM sees the error
-    // rather than a successful wrapper around an error body). The inner
-    // XML is still surfaced in `<data>` so the LLM can see the per-tool
-    // detail.
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "add_mcp_server", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // The pure fn returns `{"error":...}` on validation failures. The exec
+    // wrapper surfaces these as `success=false` in the standard envelope
+    // (so the LLM sees the error rather than a successful wrapper around
+    // an error body). The inner JSON is still surfaced in `data` so the
+    // LLM can see the per-tool detail.
+    var inner_parsed: ?std.json.Parsed(std.json.Value) = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch null;
+    defer if (inner_parsed) |*par| par.deinit();
+    if (inner_parsed) |par| {
+        if (par.value == .object) {
+            if (par.value.object.get("error")) |e| {
+                if (e == .string and e.string.len > 0) {
+                    const output = try wrapToolOutput(ctx.allocator, "add_mcp_server", tc.function.arguments, false, e.string, inner);
+                    return ToolExecResult{ .output = output, .output_allocated = true };
+                }
+            }
+        }
     }
 
     // ── 4. Persist to disk + hot-reload `di.llm_config` ────────────────
@@ -125,19 +128,19 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     defer ctx.allocator.free(persist_status_owned);
     const persist_status: []const u8 = persist_status_owned;
 
-    // ── 5. Inject the persisted status into the inner XML. ─────────────
+    // ── 5. Inject the persisted status into the inner JSON. ─────────────
     //
-    // The pure-fn envelope hard-codes `<persisted>false</persisted>` as a
+    // The pure-fn payload hard-codes `"persisted":"false"` as a
     // placeholder (it doesn't know whether persistence will happen —
     // that's the exec wrapper's responsibility). We substitute the
     // placeholder with the actual outcome. We assume the placeholder
-    // appears EXACTLY once — the inner XML comes from
-    // `successXml` in tools/add_mcp_server.zig which builds it via a
-    // single string concatenation (no duplication).
+    // appears EXACTLY once — the inner JSON comes from
+    // `successJSON` in tools/add_mcp_server.zig which emits it via a
+    // single Stringify call (no duplication).
     //
     // We can do a more precise substitution than "true"/"false": the
-    // placeholder is literal `<persisted>false</persisted>`. We replace
-    // it with the full `<persisted>{status}</persisted>`. When the
+    // placeholder is literal `"persisted":"false"`. We replace
+    // it with `"persisted":"{status}"` (JSON-escaped). When the
     // status is just "true" or "false" this preserves the LLM-friendly
     // exact shape; when it's "false: <reason>" it carries the failure
     // mode so the LLM can self-correct on retry.
@@ -165,47 +168,47 @@ pub fn execAddMcpServer(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResul
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-/// Substitute the `<persisted>false</persisted>` placeholder in the
-/// pure-fn envelope with the actual disk-write + live-reload status.
+/// Substitute the `"persisted":"false"` placeholder in the
+/// pure-fn payload with the actual disk-write + live-reload status.
 ///
-/// `inner_xml` is the pure-fn output (built by `add_mcp_server.executeAddMcpServerToString`).
-/// The placeholder appears exactly once — emitted by `successXml` via a
-/// single string concatenation. We swap the placeholder `<persisted>...</persisted>`
-/// shell with `<persisted>{status}</persisted>` where `status` is the
-/// caller-provided persist_status (typically `"true"`, `"false"`, or
-/// `"false: <reason>"`). The `status` argument is escaped via
-/// `xmlEscape` so any embedded `<` or `&` doesn't corrupt the envelope
-/// shape — the caller passes a single line of text from `persistAndReload`
-/// and we keep the whole envelope well-formed.
+/// `inner_json` is the pure-fn output (built by `add_mcp_server.executeAddMcpServerToJSON`).
+/// The placeholder appears exactly once — emitted by `successJSON` via a
+/// single Stringify call. We swap the placeholder `"persisted":"false"`
+/// with `"persisted":"{status}"` where `status` is the caller-provided
+/// persist_status (typically `"true"`, `"false"`, or `"false: <reason>"`).
+/// The `status` argument is JSON-escaped via Stringify so any embedded
+/// `"` or control char doesn't corrupt the payload shape — the caller
+/// passes a single line of text from `persistAndReload` and we keep the
+/// whole payload well-formed.
 ///
 /// Returns a freshly-allocated slice; caller frees.
 fn substitutePersistedStatus(
     allocator: std.mem.Allocator,
-    inner_xml: []const u8,
+    inner_json: []const u8,
     status: []const u8,
 ) ![]u8 {
-    const placeholder = "<persisted>false</persisted>";
+    const placeholder = "\"persisted\":\"false\"";
 
-    const idx = std.mem.indexOf(u8, inner_xml, placeholder) orelse {
-        // Defensive: if the pure-fn envelope shape ever drifts and the
+    const idx = std.mem.indexOf(u8, inner_json, placeholder) orelse {
+        // Defensive: if the pure-fn payload shape ever drifts and the
         // placeholder is missing, surface a clear error rather than
-        // return the unmodified XML (which would lie to the LLM by
+        // return the unmodified JSON (which would lie to the LLM by
         // saying "persisted=false" when actually unknown).
         return error.MissingPersistedPlaceholder;
     };
 
-    const status_e = try helpers.xml_escape(allocator, status);
-    defer allocator.free(status_e);
-    const replacement = try std.fmt.allocPrint(allocator, "<persisted>{s}</persisted>", .{status_e});
+    const status_json = try std.json.Stringify.valueAlloc(allocator, status, .{});
+    defer allocator.free(status_json);
+    const replacement = try std.fmt.allocPrint(allocator, "\"persisted\":{s}", .{status_json});
     defer allocator.free(replacement);
 
-    const prefix = inner_xml[0..idx];
+    const prefix = inner_json[0..idx];
     const suffix_start = idx + placeholder.len;
-    const suffix = inner_xml[suffix_start..];
+    const suffix = inner_json[suffix_start..];
     const result_len = prefix.len + replacement.len + suffix.len;
     const result = try allocator.alloc(u8, result_len);
     @memcpy(result[0..prefix.len], prefix);
-    @memcpy(result[prefix.len ..][0..replacement.len], replacement);
+    @memcpy(result[prefix.len..][0..replacement.len], replacement);
     @memcpy(result[prefix.len + replacement.len ..][0..suffix.len], suffix);
     return result;
 }
@@ -228,7 +231,7 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
     const di = nalarcore.getSingleton() catch return ctx.allocator.dupe(u8, "false: getSingleton failed") catch return ctx.allocator.dupe(u8, "false") catch unreachable;
     const env_ptr = di.environment orelse return std.fmt.allocPrint(ctx.allocator, "false: environment unavailable", .{}) catch ctx.allocator.dupe(u8, "false") catch unreachable;
     // getDefaultConfigDir takes a non-const pointer but doesn't mutate.
-    const environment: *std.process.Environ.Map = @constCast(@ptrCast(env_ptr));
+    const environment: *std.process.Environ.Map = @ptrCast(@constCast(env_ptr));
 
     const config_dir = config_mod.getDefaultConfigDir(ctx.allocator, environment) catch |err| {
         return failStatus(ctx.allocator, "getDefaultConfigDir", @errorName(err));
@@ -285,7 +288,7 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
     }
 
     // Hot-reload: re-parse + atomically swap di.llm_config.
-    const env_for_reload: *std.process.Environ.Map = @constCast(@ptrCast(di.environment orelse environment));
+    const env_for_reload: *std.process.Environ.Map = @ptrCast(@constCast(di.environment orelse environment));
     var new_cfg = config_mod.LlmConfig.init(di.allocator, ctx.io, null, env_for_reload) catch |err| {
         return failStatus(ctx.allocator, "live reload parse", @errorName(err));
     };
@@ -434,25 +437,25 @@ fn buildUpdatedConfigJson(ctx: ToolExecContext, existing: ?[]const u8) ![]u8 {
 // ───────────────────────────────────────────────────────────────────────
 
 /// Spawn the just-added server and run a `tools/list` JSON-RPC roundtrip,
-/// appending `<tools>...</tools>` to the success envelope. On any failure
-/// (spawn / send / recv / parse), the original inner XML is returned
+/// filling the `tools` array of the success payload. On any failure
+/// (spawn / send / recv / parse), the original inner JSON is returned
 /// unchanged — the server IS registered, this is just a courtesy.
-fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: []const u8) ![]const u8 {
-    const server = ctx.config.mcpServerConfig(server_name) orelse return inner_xml;
+fn listAndAppendTools(ctx: ToolExecContext, inner_json: []const u8, server_name: []const u8) ![]const u8 {
+    const server = ctx.config.mcpServerConfig(server_name) orelse return inner_json;
 
     var argv_list: std.ArrayList([]const u8) = .empty;
     defer argv_list.deinit(ctx.allocator);
     if (server.command) |cmd| {
-        argv_list.append(ctx.allocator, ctx.allocator.dupe(u8, cmd) catch return inner_xml) catch return inner_xml;
+        argv_list.append(ctx.allocator, ctx.allocator.dupe(u8, cmd) catch return inner_json) catch return inner_json;
     } else {
-        return inner_xml;
+        return inner_json;
     }
     if (server.args) |a| {
         for (a) |arg| {
-            argv_list.append(ctx.allocator, ctx.allocator.dupe(u8, arg) catch return inner_xml) catch return inner_xml;
+            argv_list.append(ctx.allocator, ctx.allocator.dupe(u8, arg) catch return inner_json) catch return inner_json;
         }
     }
-    const argv = argv_list.toOwnedSlice(ctx.allocator) catch return inner_xml;
+    const argv = argv_list.toOwnedSlice(ctx.allocator) catch return inner_json;
     defer {
         for (argv) |a| ctx.allocator.free(a);
         ctx.allocator.free(argv);
@@ -460,10 +463,10 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
 
     // Via the singleton struct (see root.zig `mcpStdioRegistry`).
     const reg = nalarcore.mcpStdioRegistry(ctx.allocator);
-    const client = reg.getOrSpawn(server_name, argv) catch return inner_xml;
+    const client = reg.getOrSpawn(server_name, argv) catch return inner_json;
     const req = ctx.allocator.dupe(u8,
         \\{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}
-    ) catch return inner_xml;
+    ) catch return inner_json;
     defer ctx.allocator.free(req);
     // 60s deadline matches `handle_mcp_tool.zig:79` and
     // `prompts_build_messages_for_agent_prompt.zig:637`. Without a
@@ -475,11 +478,11 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
     const deadline_ns: u64 = 60 * std.time.ns_per_s;
     client.send(req, deadline_ns) catch |err| {
         if (err == error.SendTimeout) reg.markStale(server_name);
-        return inner_xml;
+        return inner_json;
     };
     const resp = client.recv(deadline_ns, null) catch |err| {
         if (err == error.RecvTimeout) reg.markStale(server_name);
-        return inner_xml;
+        return inner_json;
     };
     defer ctx.allocator.free(resp);
 
@@ -487,17 +490,17 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
     defer arena.deinit();
     const parsed = std.json.parseFromSlice(std.json.Value, arena.allocator(), resp, .{
         .ignore_unknown_fields = true,
-    }) catch return inner_xml;
+    }) catch return inner_json;
     const root = parsed.value;
-    const result_val = root.object.get("result") orelse return inner_xml;
-    const tools_val = result_val.object.get("tools") orelse return inner_xml;
+    const result_val = root.object.get("result") orelse return inner_json;
+    const tools_val = result_val.object.get("tools") orelse return inner_json;
     const arr = switch (tools_val) {
         .array => |a| a,
-        else => return inner_xml,
+        else => return inner_json,
     };
 
-    var lines: std.ArrayList(u8) = .empty;
-    defer lines.deinit(ctx.allocator);
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(ctx.allocator);
     for (arr.items) |tool_value| {
         const obj = switch (tool_value) {
             .object => |o| o,
@@ -508,24 +511,29 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_xml: []const u8, server_name: 
             .string => |s| s,
             else => continue,
         };
-        const line = std.fmt.allocPrint(ctx.allocator, "mcp_{s}_{s}\n", .{ server_name, name }) catch continue;
-        defer ctx.allocator.free(line);
-        lines.appendSlice(ctx.allocator, line) catch return inner_xml;
+        const entry = std.fmt.allocPrint(ctx.allocator, "mcp_{s}_{s}", .{ server_name, name }) catch continue;
+        names.append(ctx.allocator, entry) catch {
+            ctx.allocator.free(entry);
+            return inner_json;
+        };
     }
-    if (lines.items.len == 0) return inner_xml;
+    if (names.items.len == 0) return inner_json;
+    defer for (names.items) |n| ctx.allocator.free(n);
 
-    // Append `<tools>...</tools>` before the closing </add_mcp_server>.
-    const close_tag = "</add_mcp_server>";
-    const close_idx = std.mem.indexOf(u8, inner_xml, close_tag) orelse return inner_xml;
-    const tools_block_str = std.fmt.allocPrint(ctx.allocator, "<tools>{s}</tools>", .{lines.items}) catch return inner_xml;
-    defer ctx.allocator.free(tools_block_str);
+    // Fill the payload's `"tools":null` with the string array.
+    const placeholder = "\"tools\":null";
+    const tools_idx = std.mem.indexOf(u8, inner_json, placeholder) orelse return inner_json;
+    const tools_json = std.json.Stringify.valueAlloc(ctx.allocator, names.items, .{}) catch return inner_json;
+    defer ctx.allocator.free(tools_json);
+    const replacement = std.fmt.allocPrint(ctx.allocator, "\"tools\":{s}", .{tools_json}) catch return inner_json;
+    defer ctx.allocator.free(replacement);
 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(ctx.allocator);
-    try result.appendSlice(ctx.allocator, inner_xml[0..close_idx]);
-    try result.appendSlice(ctx.allocator, tools_block_str);
-    try result.appendSlice(ctx.allocator, inner_xml[close_idx..]);
-    return result.toOwnedSlice(ctx.allocator) catch inner_xml;
+    result.appendSlice(ctx.allocator, inner_json[0..tools_idx]) catch return inner_json;
+    result.appendSlice(ctx.allocator, replacement) catch return inner_json;
+    result.appendSlice(ctx.allocator, inner_json[tools_idx + placeholder.len ..]) catch return inner_json;
+    return result.toOwnedSlice(ctx.allocator) catch inner_json;
 }
 
 // ───────────────────────────────────────────────────────────────────────
@@ -626,17 +634,19 @@ test "execAddMcpServer: valid stdio entry → wrapped success envelope" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>add_mcp_server</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<data>") != null);
-    // The pure-fn envelope is surfaced in <data>.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>hello</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<command>mcp-hello-world</command>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<item>--port</item>") != null);
-
-    // No <error> tag on success.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    const env_parsed = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env_parsed.deinit();
+    const env = env_parsed.value.object;
+    try testing.expectEqualStrings("add_mcp_server", env.get("tool").?.string);
+    try testing.expect(env.get("success").?.bool);
+    try testing.expect(env.get("error").? == .null);
+    // The pure-fn payload is surfaced in `data`.
+    const data = env.get("data").?.object;
+    try testing.expectEqualStrings("hello", data.get("name").?.string);
+    try testing.expectEqualStrings("mcp-hello-world", data.get("command").?.string);
+    const args = data.get("args").?.array;
+    try testing.expectEqual(@as(usize, 2), args.items.len);
+    try testing.expectEqualStrings("--port", args.items[0].string);
 
     // Live config mutated.
     try testing.expect(cfg.hasMcpServer("hello"));
@@ -663,9 +673,10 @@ test "execAddMcpServer: malformed JSON args → wrapped error envelope" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "failed to parse input") != null);
+    const env2 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env2.deinit();
+    try testing.expect(!env2.value.object.get("success").?.bool);
+    try testing.expect(std.mem.indexOf(u8, env2.value.object.get("error").?.string, "failed to parse input") != null);
 
     // No server added.
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
@@ -692,12 +703,13 @@ test "execAddMcpServer: empty name → wrapped error envelope (success=false)" {
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "name is required") != null);
-    // The <data> block is NOT emitted on the error path — it lives
-    // ONLY on success (see wrapToolOutput). Mirrors save_memory's
-    // error-envelope contract.
+    const env3 = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env3.deinit();
+    try testing.expect(!env3.value.object.get("success").?.bool);
+    try testing.expect(std.mem.indexOf(u8, env3.value.object.get("error").?.string, "name is required") != null);
+    // `data` is null on the error path — it lives ONLY on success
+    // (see wrapToolOutput). Mirrors save_memory's error contract.
+    try testing.expect(env3.value.object.get("data").? == .null);
 
     // No server added.
     try testing.expectEqual(@as(usize, 0), cfg.mcp_servers.count());
@@ -705,47 +717,55 @@ test "execAddMcpServer: empty name → wrapped error envelope (success=false)" {
 
 // ─── Test 4: substitutePersistedStatus replaces the placeholder correctly ─
 //
-// F1 fix regression guard. The pure-fn envelope hard-codes
-// `<persisted>false</persisted>` as a placeholder (it doesn't know the
+// F1 fix regression guard. The pure-fn payload hard-codes
+// `"persisted":"false"` as a placeholder (it doesn't know the
 // disk-write outcome). This test pins the substitution contract so a
-// future drift in `successXml` (e.g., renaming the placeholder, removing
+// future drift in `successJSON` (e.g., renaming the placeholder, removing
 // it, or duplicating it) gets caught here rather than silently returning
 // the wrong status to the LLM.
 test "substitutePersistedStatus: replaces placeholder with success status" {
     const alloc = testing.allocator;
     const inner =
-        "<add_mcp_server>" ++
-        "<name>ctx7</name>" ++
-        "<persisted>false</persisted>" ++
-        "</add_mcp_server>";
+        "{\"name\":\"ctx7\"," ++
+        "\"persisted\":\"false\"}";
     const result = try substitutePersistedStatus(alloc, inner, "true");
     defer alloc.free(result);
 
-    try testing.expect(std.mem.indexOf(u8, result, "<persisted>true</persisted>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "<persisted>false</persisted>") == null);
-    // Sibling tags are preserved byte-for-byte.
-    try testing.expect(std.mem.indexOf(u8, result, "<name>ctx7</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result, "</add_mcp_server>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, result, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("true", parsed.value.object.get("persisted").?.string);
+    // Sibling fields are preserved.
+    try testing.expectEqualStrings("ctx7", parsed.value.object.get("name").?.string);
 }
 
 test "substitutePersistedStatus: replaces placeholder with failure reason" {
     const alloc = testing.allocator;
-    const inner =
-        "<add_mcp_server><persisted>false</persisted></add_mcp_server>";
+    const inner = "{\"persisted\":\"false\"}";
     const result = try substitutePersistedStatus(alloc, inner, "false: createDirPath FileNotFound");
     defer alloc.free(result);
 
-    // `<` and `&` in the status are XML-escaped so the envelope stays
-    // well-formed even if the failure message contains reserved chars.
-    try testing.expect(std.mem.indexOf(u8, result, "<persisted>false: createDirPath FileNotFound</persisted>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, result, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("false: createDirPath FileNotFound", parsed.value.object.get("persisted").?.string);
+}
+
+test "substitutePersistedStatus: status with quotes stays valid JSON" {
+    const alloc = testing.allocator;
+    const inner = "{\"persisted\":\"false\"}";
+    const result = try substitutePersistedStatus(alloc, inner, "false: write \"oops\" failed");
+    defer alloc.free(result);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, result, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("false: write \"oops\" failed", parsed.value.object.get("persisted").?.string);
 }
 
 test "substitutePersistedStatus: missing placeholder returns error" {
-    // F1 defense-in-depth: if the pure-fn envelope ever drops the
-    // `<persisted>false</persisted>` placeholder, the exec wrapper
+    // F1 defense-in-depth: if the pure-fn payload ever drops the
+    // `"persisted":"false"` placeholder, the exec wrapper
     // refuses to substitute a lie and surfaces an error instead.
     const alloc = testing.allocator;
-    const inner = "<add_mcp_server><name>ctx7</name></add_mcp_server>";
+    const inner = "{\"name\":\"ctx7\"}";
     const result = substitutePersistedStatus(alloc, inner, "true");
     try testing.expectError(error.MissingPersistedPlaceholder, result);
 }

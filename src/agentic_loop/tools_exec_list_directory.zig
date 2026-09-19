@@ -49,8 +49,8 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer list_directory_mod.freeEntries(ctx.allocator, entries);
 
-    // 3. Serialise to XML and wrap.
-    const inner = try list_directory_mod.toXml(ctx.allocator, entries, parsed.value.path);
+    // 3. Serialise to JSON and wrap.
+    const inner = try list_directory_mod.toJSON(ctx.allocator, entries, parsed.value.path);
     const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -80,11 +80,19 @@ test "execListDirectory: absolute path passes through and lists entries" {
     var dummy_f32: f32 = 0.0;
     var dummy_bool: bool = false;
     const ctx = ToolExecContext{
-        .allocator = a, .io = testing.io, .db = undefined,
-        .logger = undefined, .session_id = "test", .model = "test",
-        .cwd = root_abs, .api_key = "test", .base_url = "test",
-        .config = undefined, .agent_temperature = &dummy_f32,
-        .is_thinking = &dummy_bool, .environment = null,
+        .allocator = a,
+        .io = testing.io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test",
+        .model = "test",
+        .cwd = root_abs,
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &dummy_f32,
+        .is_thinking = &dummy_bool,
+        .environment = null,
         .active_loops = undefined,
     };
     // Build JSON with the absolute path embedded. The previous
@@ -109,20 +117,35 @@ test "execListDirectory: absolute path passes through and lists entries" {
         .{escaped_path.items},
     );
     const tc = agent.ToolCall{
-        .id = "call_1", .type = "function",
+        .id = "call_1",
+        .type = "function",
         .function = .{ .name = "list_directory", .arguments = args_json },
     };
 
     const result = try execListDirectory(ctx, tc);
     defer if (result.output_allocated) a.free(result.output);
 
-    // Success envelope + both entries visible.
-    try testing.expect(std.mem.indexOf(u8, result.output, "alpha.txt") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "beta") != null);
+    // Success JSON envelope + both entries visible in data.entries.
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, result.output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("success").?.bool);
+    const data = obj.get("data").?.object;
     // Path is passed through unchanged (no relative-path transform).
-    try testing.expect(std.mem.indexOf(u8, result.output, root_abs) != null);
-    // No validator error envelope (the validator was removed by the revert).
-    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
+    try testing.expectEqualStrings(root_abs, data.get("path").?.string);
+    const entries = data.get("entries").?.array.items;
+    try testing.expectEqual(@as(usize, 2), entries.len);
+    var saw_alpha = false;
+    var saw_beta = false;
+    for (entries) |e| {
+        const name = e.object.get("name").?.string;
+        if (std.mem.eql(u8, name, "alpha.txt")) saw_alpha = true;
+        if (std.mem.eql(u8, name, "beta")) saw_beta = true;
+    }
+    try testing.expect(saw_alpha);
+    try testing.expect(saw_beta);
+    // No validator error (the validator was removed by the revert).
+    try testing.expect(obj.get("error").? == .null);
 }
 
 test "execListDirectory: absolute path returns success envelope without validator error" {
@@ -135,7 +158,7 @@ test "execListDirectory: absolute path returns success envelope without validato
     //
     // Uses an arena to paper over the current `execListDirectory`
     // implementation allocating an intermediate `inner` XML string
-    // (from `list_directory.toXml`) that is never explicitly freed
+    // (from `list_directory.toJSON`) that is never explicitly freed
     // by the wrapper — `wrapToolOutput` borrows the slice into its
     // own output, so the leak is benign and the arena cleans it up
     // at test teardown.
@@ -175,8 +198,10 @@ test "execListDirectory: absolute path returns success envelope without validato
     defer if (result.output_allocated) a.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<directory_listing") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "path=\"/tmp\"") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "absolute paths are not allowed") == null);
+    const parsed2 = try std.json.parseFromSlice(std.json.Value, a, result.output, .{});
+    defer parsed2.deinit();
+    const obj2 = parsed2.value.object;
+    try testing.expect(obj2.get("success").?.bool);
+    try testing.expectEqualStrings("/tmp", obj2.get("data").?.object.get("path").?.string);
+    try testing.expect(obj2.get("error").? == .null);
 }

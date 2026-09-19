@@ -10,14 +10,16 @@
 //! a fresh id — no update, no delete. (`delete_memory` was removed per
 //! user decision: "memory is always add, no need edit or delete".)
 //!
-//! Wire shapes:
+//! Wire shapes (JSON, via std.json.Stringify.valueAlloc):
 //!   save:   input { content, tags? } →
-//!           <save_memory><id/><created_at/><updated_at/></save_memory>
-//!           or <save_memory><error/></save_memory>
+//!           {"id","created_at","updated_at"}
+//!           or {"error"}
 //!   load:   input { query?, id?, tags?, limit?=10, offset?=0,
 //!                   with_content?=false } →
-//!           <load_memory ...><count/><total_count/><results/></load_memory>
-//!           or <load_memory><error/></load_memory>
+//!           {"query","limit","offset","with_content","count","total_count",
+//!            "results":[{"id","tags","created_at","updated_at","snippet",
+//!                         "content","truncated"}]}
+//!           or {"error"}
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -27,7 +29,7 @@ const sqlite = nalarcore.sqlite;
 const agent_memories = nalarcore.agent_memories;
 
 const helpers = @import("helpers");
-const xmlEscape = helpers.xml_escape;
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 const testing = std.testing;
 const migration = @import("../../../migrations/migration.zig");
@@ -53,13 +55,31 @@ fn setupDb() !TestCtx {
     return .{ .db = db, .threaded = threaded };
 }
 
-/// Test helper: extract the `<id>...</id>` value from a `save_memory`
-/// success envelope. Returns an allocator-owned dupe the caller frees.
+/// Test helper: extract the `"id"` value from a `save_memory`
+/// success payload. Returns an allocator-owned dupe the caller frees.
 fn extractSavedId(allocator: std.mem.Allocator, save_out: []const u8) ![]u8 {
-    const open = std.mem.indexOf(u8, save_out, "<id>") orelse return error.MissingId;
-    const close = std.mem.indexOf(u8, save_out, "</id>") orelse return error.MissingIdClose;
-    return allocator.dupe(u8, save_out[open + "<id>".len .. close]);
+    const parsed = std.json.parseFromSlice(
+        SaveMemorySuccess,
+        allocator,
+        save_out,
+        .{ .allocate = .alloc_always },
+    ) catch return error.MissingId;
+    defer parsed.deinit();
+    return allocator.dupe(u8, parsed.value.id);
 }
+
+/// Success payload for `save_memory`. Tag names from the old XML
+/// envelope become keys 1:1.
+pub const SaveMemorySuccess = struct {
+    id: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Error payload shared by `save_memory` / `load_memory`.
+pub const MemoryError = struct {
+    @"error": []const u8,
+};
 
 // ─── save_memory ───
 
@@ -71,9 +91,8 @@ fn extractSavedId(allocator: std.mem.Allocator, save_out: []const u8) ![]u8 {
 //
 // Wire shape:
 //   input:  { content: string, tags?: string }
-//   output: <save_memory><id>...</id><created_at>...</created_at>
-//            <updated_at>...</updated_at></save_memory>
-//   or:     <save_memory><error>...</error></save_memory>
+//   output: {"id":...,"created_at":...,"updated_at":...}
+//   or:     {"error":...}
 //
 // The actual INSERT lives in `agent_memories.saveMemory`.
 // This file is a thin XML wrapper around it (mirrors the
@@ -154,7 +173,7 @@ pub const save_memory_tool = AgentTool{
     },
 };
 
-/// Execute save_memory. Returns an XML string for the LLM.
+/// Execute save_memory. Returns a JSON string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
 pub fn executeSaveMemory(
@@ -177,11 +196,11 @@ pub fn executeSaveMemory(
             error.RowNotFoundAfterInsert => "row missing after insert (DB inconsistency)",
             else => @errorName(err),
         };
-        return saveErrorXml(allocator, msg);
+        return saveErrorJSON(allocator, msg);
     };
     defer agent_memories.freeMemoryRow(allocator, row);
 
-    return saveSuccessXml(allocator, row);
+    return saveSuccessJSON(allocator, row);
 }
 
 /// Split a tags wire string by `||` (preferred), `|`, `,`, and space.
@@ -238,24 +257,20 @@ fn trimWhitespace(s: []const u8) []const u8 {
     return s[start..end];
 }
 
-fn saveSuccessXml(allocator: std.mem.Allocator, row: agent_memories.MemoryRow) ![]u8 {
-    const id_e = try xmlEscape(allocator, row.id);
-    defer allocator.free(id_e);
-    const created_at_e = try xmlEscape(allocator, row.created_at);
-    defer allocator.free(created_at_e);
-    const updated_at_e = try xmlEscape(allocator, row.updated_at);
-    defer allocator.free(updated_at_e);
-    return std.fmt.allocPrint(allocator, "<save_memory>" ++
-        "<id>{s}</id>" ++
-        "<created_at>{s}</created_at>" ++
-        "<updated_at>{s}</updated_at>" ++
-        "</save_memory>", .{ id_e, created_at_e, updated_at_e });
+fn saveSuccessJSON(allocator: std.mem.Allocator, row: agent_memories.MemoryRow) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, SaveMemorySuccess{
+        .id = row.id,
+        .created_at = row.created_at,
+        .updated_at = row.updated_at,
+    }, .{});
 }
 
-fn saveErrorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, "<save_memory><error>{s}</error></save_memory>", .{escaped});
+fn saveErrorJSON(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, MemoryError{
+        .@"error" = clean,
+    }, .{});
 }
 
 // ─── load_memory ───
@@ -274,21 +289,14 @@ fn saveErrorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
 //           Either `query` or `id` must be non-empty (validated at
 //           runtime — the OpenAI schema DSL has no `oneOf` for primitive
 //           strings, so the validation lives in `executeLoadMemory`).
-//   output: <load_memory query="..." id="..." by_id="0|1" limit="..."
-//                    offset="..." with_content="0|1">
-//            <count>N</count>
-//            <total_count>M</total_count>
-//            <results>
-//              <memory id="..." tags="..." created_at="..." updated_at="...">
-//                <snippet>...[match]...</snippet>
-//                <content truncated="0|1">...</content> (when with_content=true,
-//                                                     OR when by-id is used —
-//                                                     full body, no 2 KiB cap)
-//              </memory>
-//              ...
-//            </results>
-//          </load_memory>
-//   or:     <load_memory><error>...</error></load_memory>
+//   output: {"query":...,"limit":...,"offset":...,"with_content":...,
+//            "count":N,"total_count":M,
+//            "results":[{"id":...,"tags":...,"created_at":...,"updated_at":...,
+//                        "snippet":"...[match]...",
+//                        "content":...,"truncated":...}]}
+//            ("content" is null unless with_content=true or by-id is used —
+//             by-id returns the full body, no 2 KiB cap)
+//   or:     {"error":...}
 //           Errors: "must supply either query or id" (both empty),
 //                   "not found: <id>" (id given but row missing),
 //                   FTS5 / DB errors.
@@ -373,7 +381,7 @@ pub const load_memory_tool_system_prompt =
     \\| Tool | Signature | Behavior |
     \\|---|---|---|
     \\| `save_memory` | `{ content, tags? }` | APPENDS a new row with an auto-generated `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. `content`: 1 KiB–1 MiB (empty/oversized = rejected, never silently truncated). No update, no delete — corrections are new rows. |
-    \\| `load_memory` | `{ query, tags?, limit?, offset?, with_content? }` | FTS5 phrase search over `content` + `tags`. Returns ranked hits with `<snippet>`. `with_content=true` → full body, capped 2 KiB/row. `limit` default 10, max 50. Paginate with `<total_count>` + `offset`. |
+    \\| `load_memory` | `{ query, tags?, limit?, offset?, with_content? }` | FTS5 phrase search over `content` + `tags`. Returns ranked hits with `"snippet"`. `with_content=true` → full body, capped 2 KiB/row. `limit` default 10, max 50. Paginate with `"total_count"` + `offset`. |
     \\
     \\### Wire format
     \\- `tags`: **one string**, not an array. Separator preference order: `||` >
@@ -423,11 +431,11 @@ pub const load_memory_tool = AgentTool{
     .function = .{
         .name = "load_memory",
         .description =
-        \\Search your saved notes (from `save_memory`) using SQLite FTS5 search. Returns ranked hits with a short `<snippet>` (10-token window with `[match]` markers) per row.
+        \\Search your saved notes (from `save_memory`) using SQLite FTS5 search. Returns ranked hits with a short `"snippet"` (10-token window with `[match]` markers) per row.
         \\
         \\BY-ID LOOKUP: pass `id="mem_xxx"` to fetch a single memory by its exact id (no FTS5, no 2 KiB snippet cap, returns the full body up to 1 MiB). When `id` is set, `tags` is ignored. Either `query` or `id` must be non-empty — supplying both is allowed (by-id wins).
         \\
-        \\Context anti-bloat: by default, only `<snippet>` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
+        \\Context anti-bloat: by default, only `"snippet"` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
         \\
         \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
         \\
@@ -435,7 +443,7 @@ pub const load_memory_tool = AgentTool{
         \\
         \\Tags filter: AND semantics. Every tag in the `tags` array must be present in the row's tags (substring match). Empty `tags` = no filter. Ignored when `id` is set.
         \\
-        \\Pagination: use `offset` to walk through more results. The `<total_count>` field tells you how many total matches exist.
+        \\Pagination: use `offset` to walk through more results. The `"total_count"` field tells you how many total matches exist.
         \\
         \\Example: {"query": "preferred model", "tags": "user"} — finds memories about either preference OR model.
         \\Example: {"query": "AGENTS.md", "limit": 3}
@@ -449,29 +457,29 @@ pub const load_memory_tool = AgentTool{
                 .{ .name = "id", .type = "string", .description = "Look up a single memory by exact id (e.g. 'mem_aabbcc...'). When non-empty, FTS5 is skipped and the full body is included (no 2 KiB cap). When set, `tags` is ignored." },
                 .{ .name = "tags", .type = "string", .description = "Optional AND filter as a single string. Multiple tags separated by `||` (preferred), e.g. 'preferences||user'. Also accepts `|`, `,`, or space as separators. Empty string = no filter. Ignored when `id` is set." },
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 10, hard cap 50." },
-                .{ .name = "offset", .type = "number", .description = "Skip the first N results. Default 0. Use <total_count> to know when to stop." },
+                .{ .name = "offset", .type = "number", .description = "Skip the first N results. Default 0. Use total_count to know when to stop." },
                 .{ .name = "with_content", .type = "boolean", .description = "Include truncated full content (max 2 KiB per row) for FTS hits. Default false (snippet-only — anti-bloat). Ignored when `id` is set (by-id always returns full content)." },
             },
             // `query` was previously the only required field. With the
             // 2026-08-19 by-id addition, EITHER `query` OR `id` must be
             // supplied — but the OpenAI tool-schema DSL has no `oneOf`
             // for primitive strings, so the validation moves to
-            // `executeLoadMemory` (returns <error> when both are empty).
+            // `executeLoadMemory` (returns {"error"} when both are empty).
             .required = &.{},
         },
         .system_prompt = load_memory_tool_system_prompt,
     },
 };
 
-/// Execute load_memory. Returns an XML string for the LLM.
+/// Execute load_memory. Returns a JSON string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
 ///
 /// Branches on `input.id`:
 ///   - When `id` is non-empty: bypass FTS5, call
 ///     `agent_memories.getMemoryById`, return a single-row
-///     `<results>` response with the FULL content (no
-///     MAX_FULL_CONTENT_BYTES 2 KiB cap). Not-found → `<error>`.
+///     `"results"` response with the FULL content (no
+///     MAX_FULL_CONTENT_BYTES 2 KiB cap). Not-found → `{"error"}`.
 ///   - When `id` is empty: run the existing FTS5 path.
 pub fn executeLoadMemory(
     allocator: std.mem.Allocator,
@@ -482,7 +490,7 @@ pub fn executeLoadMemory(
     // can't express "oneOf: query OR id" for primitive strings, so the
     // validation lives here.
     if (input.id.len == 0 and input.query.len == 0) {
-        return loadErrorXml(allocator, "must supply either query or id");
+        return loadErrorJSON(allocator, "must supply either query or id");
     }
 
     // By-id path: skip FTS5 entirely. Storage layer's `getMemoryById`
@@ -511,7 +519,7 @@ pub fn executeLoadMemory(
             error.OutOfMemory => "out of memory",
             else => @errorName(err),
         };
-        return loadErrorXml(allocator, msg);
+        return loadErrorJSON(allocator, msg);
     };
     defer agent_memories.freeMemoryHits(allocator, hits);
 
@@ -531,7 +539,7 @@ pub fn executeLoadMemory(
             const row = agent_memories.getMemoryById(allocator, db, hit.id) catch |err| {
                 const msg = std.fmt.allocPrint(allocator, "getMemoryById failed: {s}", .{@errorName(err)}) catch "?";
                 defer allocator.free(msg);
-                return loadErrorXml(allocator, msg);
+                return loadErrorJSON(allocator, msg);
             };
             if (row) |r| {
                 defer agent_memories.freeMemoryRow(allocator, r);
@@ -544,11 +552,11 @@ pub fn executeLoadMemory(
         }
     }
 
-    return loadSuccessXml(allocator, hits, contents, input, effective_limit);
+    return loadSuccessJSON(allocator, hits, contents, input, effective_limit);
 }
 
 /// By-id branch of `executeLoadMemory`. Single-row SELECT against
-/// `agent_memories`, returns the same `<results>` shape as the FTS5
+/// `agent_memories`, returns the same `"results"` shape as the FTS5
 /// path (one `<memory>` entry) so the LLM only learns one XML
 /// structure regardless of which branch ran.
 ///
@@ -563,140 +571,156 @@ fn executeById(
     const row = agent_memories.getMemoryById(allocator, db, input.id) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "getMemoryById failed: {s}", .{@errorName(err)}) catch "?";
         defer allocator.free(msg);
-        return loadErrorXml(allocator, msg);
+        return loadErrorJSON(allocator, msg);
     };
 
     const r = row orelse {
         const msg = std.fmt.allocPrint(allocator, "not found: {s}", .{input.id}) catch "?";
         defer allocator.free(msg);
-        return loadErrorXml(allocator, msg);
+        return loadErrorJSON(allocator, msg);
     };
     defer agent_memories.freeMemoryRow(allocator, r);
 
-    return loadSuccessByIdXml(allocator, r, input);
+    return loadSuccessByIdJSON(allocator, r, input);
 }
 
-fn loadSuccessXml(
+/// One hit in a `load_memory` results array. Keys mirror the old
+/// `<memory>` child tags 1:1; tags omitted-when-empty in XML
+/// (`created_at`, `updated_at`, `content`) are explicit nulls here.
+pub const LoadMemoryHitJSON = struct {
+    id: []const u8,
+    tags: []const u8,
+    created_at: ?[]const u8,
+    updated_at: ?[]const u8,
+    snippet: []const u8,
+    content: ?[]const u8 = null,
+    truncated: ?bool = null,
+};
+
+/// Success payload for `load_memory` (both the FTS5 and by-id branches).
+/// Attribute names from the old `<load_memory ...>` wrapper become keys
+/// 1:1; `id`/`by_id` are null/false on the FTS5 path.
+pub const LoadMemorySuccess = struct {
+    query: []const u8,
+    id: ?[]const u8 = null,
+    by_id: bool = false,
+    limit: u32,
+    offset: u32,
+    with_content: bool,
+    count: u32,
+    total_count: u32,
+    results: []const LoadMemoryHitJSON,
+};
+
+fn loadSuccessJSON(
     allocator: std.mem.Allocator,
     hits: []agent_memories.MemoryHit,
     contents: ?[]?[]u8,
     input: LoadMemoryInput,
     effective_limit: u32,
 ) ![]u8 {
-    const query_e = try xmlEscape(allocator, input.query);
-    defer allocator.free(query_e);
-    const with_content_str = if (input.with_content) "1" else "0";
+    const query = try sanitizeControlChars(allocator, input.query);
+    defer allocator.free(query);
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.print(allocator, "<load_memory query=\"{s}\" limit=\"{d}\" offset=\"{d}\" with_content=\"{s}\">\n", .{ query_e, effective_limit, input.offset, with_content_str });
+    var owned = std.ArrayList([]u8).empty;
+    defer {
+        for (owned.items) |b| allocator.free(b);
+        owned.deinit(allocator);
+    }
+    var results = try allocator.alloc(LoadMemoryHitJSON, hits.len);
+    defer allocator.free(results);
 
     const total_count: u32 = if (hits.len > 0) hits[0].total_count else 0;
-    try xml.print(allocator, "  <count>{d}</count>\n" ++
-        "  <total_count>{d}</total_count>\n" ++
-        "  <results>\n", .{ hits.len, total_count });
-
     for (hits, 0..) |hit, i| {
-        const id_e = try xmlEscape(allocator, hit.id);
-        defer allocator.free(id_e);
-        const tags_e = try xmlEscape(allocator, hit.tags);
-        defer allocator.free(tags_e);
-        const snippet_e = try xmlEscape(allocator, hit.snippet);
-        defer allocator.free(snippet_e);
-        const created_at_e = try xmlEscape(allocator, hit.created_at);
-        defer allocator.free(created_at_e);
-        const updated_at_e = try xmlEscape(allocator, hit.updated_at);
-        defer allocator.free(updated_at_e);
-
-        try xml.appendSlice(allocator, "    <memory>\n");
-        try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
-        try xml.print(allocator, "      <tags>{s}</tags>\n", .{tags_e});
-        if (hit.created_at.len > 0) {
-            try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{created_at_e});
-        }
-        if (hit.updated_at.len > 0) {
-            try xml.print(allocator, "      <updated_at>{s}</updated_at>\n", .{updated_at_e});
-        }
-        try xml.print(allocator, "      <snippet>{s}</snippet>\n", .{snippet_e});
-
-        // Optional <content> when with_content=true.
+        const tags = try sanitizeControlChars(allocator, hit.tags);
+        try owned.append(allocator, tags);
+        const snippet = try sanitizeControlChars(allocator, hit.snippet);
+        try owned.append(allocator, snippet);
+        var content: ?[]const u8 = null;
+        var truncated: ?bool = null;
         if (contents) |cs| {
             if (cs[i]) |c| {
-                const content_e = try xmlEscape(allocator, c);
-                defer allocator.free(content_e);
-                const was_truncated = c.len == MAX_FULL_CONTENT_BYTES;
-                try xml.print(allocator, "      <content truncated=\"{c}\">{s}</content>\n", .{ @as(u8, if (was_truncated) '1' else '0'), content_e });
+                const clean = try sanitizeControlChars(allocator, c);
+                try owned.append(allocator, clean);
+                content = clean;
+                truncated = c.len == MAX_FULL_CONTENT_BYTES;
             }
         }
-        try xml.appendSlice(allocator, "    </memory>\n");
+        results[i] = .{
+            .id = hit.id,
+            .tags = tags,
+            .created_at = if (hit.created_at.len > 0) hit.created_at else null,
+            .updated_at = if (hit.updated_at.len > 0) hit.updated_at else null,
+            .snippet = snippet,
+            .content = content,
+            .truncated = truncated,
+        };
     }
 
-    try xml.appendSlice(allocator, "  </results>\n</load_memory>\n");
-    return try xml.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, LoadMemorySuccess{
+        .query = query,
+        .limit = effective_limit,
+        .offset = input.offset,
+        .with_content = input.with_content,
+        .count = @intCast(hits.len),
+        .total_count = total_count,
+        .results = results,
+    }, .{});
 }
 
-/// Build the success XML for the by-id branch. Mirrors `successXml`'s
-/// shape (one `<memory>` wrapped in `<results>`) so the LLM sees the
-/// same XML structure regardless of which branch ran.
+/// Build the success payload for the by-id branch. Mirrors the FTS5
+/// shape (one hit wrapped in `results`) so the LLM sees the same JSON
+/// structure regardless of which branch ran.
 ///
-/// Differences from `successXml`:
-///   - `<load_memory>` includes `id="..." by_id="1"` attribute pair.
-///   - `<memory>` includes `<content>` with the FULL body
-///     (no MAX_FULL_CONTENT_BYTES cap; `truncated="0"` is hardcoded
+/// Differences from the FTS5 path:
+///   - Includes `"id"` + `"by_id":true`.
+///   - The hit includes `"content"` with the FULL body
+///     (no MAX_FULL_CONTENT_BYTES cap; `"truncated":false` is hardcoded
 ///     because `saveMemory` rejects content > 1 MiB at write time).
-///   - No `<snippet>` — the by-id path is targeted, not a search hit.
-fn loadSuccessByIdXml(
+///   - `"snippet"` is null — the by-id path is targeted, not a search hit.
+fn loadSuccessByIdJSON(
     allocator: std.mem.Allocator,
     row: agent_memories.MemoryRow,
     input: LoadMemoryInput,
 ) ![]u8 {
-    const id_e = try xmlEscape(allocator, row.id);
-    defer allocator.free(id_e);
-    const tags_e = try xmlEscape(allocator, row.tags);
-    defer allocator.free(tags_e);
-    const created_at_e = try xmlEscape(allocator, row.created_at);
-    defer allocator.free(created_at_e);
-    const updated_at_e = try xmlEscape(allocator, row.updated_at);
-    defer allocator.free(updated_at_e);
-    const content_e = try xmlEscape(allocator, row.content);
-    defer allocator.free(content_e);
+    const tags = try sanitizeControlChars(allocator, row.tags);
+    defer allocator.free(tags);
+    const content = try sanitizeControlChars(allocator, row.content);
+    defer allocator.free(content);
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
+    const results = [_]LoadMemoryHitJSON{.{
+        .id = row.id,
+        .tags = tags,
+        .created_at = if (row.created_at.len > 0) row.created_at else null,
+        .updated_at = if (row.updated_at.len > 0) row.updated_at else null,
+        .snippet = "",
+        .content = content,
+        .truncated = false,
+    }};
 
-    // <load_memory id="..." by_id="1" with_content="1"> — by-id always
-    // carries full content, so the with_content attribute is "1".
-    // query="", limit/offset echo the caller's input for symmetry.
-    try xml.print(allocator, "<load_memory query=\"\" id=\"{s}\" by_id=\"1\" limit=\"{d}\" offset=\"{d}\" with_content=\"1\">\n", .{ id_e, input.limit, input.offset });
-
-    try xml.appendSlice(allocator, "  <count>1</count>\n" ++
-        "  <total_count>1</total_count>\n" ++
-        "  <results>\n");
-
-    try xml.appendSlice(allocator, "    <memory>\n");
-    try xml.print(allocator, "      <id>{s}</id>\n", .{id_e});
-    try xml.print(allocator, "      <tags>{s}</tags>\n", .{tags_e});
-    if (row.created_at.len > 0) {
-        try xml.print(allocator, "      <created_at>{s}</created_at>\n", .{created_at_e});
-    }
-    if (row.updated_at.len > 0) {
-        try xml.print(allocator, "      <updated_at>{s}</updated_at>\n", .{updated_at_e});
-    }
-    // Full body — `saveMemory` enforces MAX_CONTENT_BYTES (1 MiB) at
-    // write time, so the truncation flag is always "0" for by-id.
-    try xml.print(allocator, "      <content truncated=\"0\">{s}</content>\n", .{content_e});
-
-    try xml.appendSlice(allocator, "    </memory>\n" ++
-        "  </results>\n</load_memory>\n");
-    return try xml.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, LoadMemorySuccess{
+        .query = "",
+        .id = row.id,
+        .by_id = true,
+        .limit = input.limit,
+        .offset = input.offset,
+        .with_content = true,
+        .count = 1,
+        .total_count = 1,
+        .results = &results,
+    }, .{});
 }
 
-fn loadErrorXml(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
-    const escaped = try xmlEscape(allocator, msg);
-    defer allocator.free(escaped);
-    return std.fmt.allocPrint(allocator, "<load_memory><error>{s}</error></load_memory>", .{escaped});
+fn loadErrorJSON(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, MemoryError{
+        .@"error" = clean,
+    }, .{});
 }
+
+/// Parsed shape of `executeLoadMemory` output, for tests.
+pub const LoadMemoryOutput = LoadMemorySuccess;
 
 // ─── tests: save_memory ───
 
@@ -720,7 +744,7 @@ test "save_memory_tool: parameters include content and tags (no id — append-on
     try testing.expect(!found_id);
 }
 
-test "save_memory_tool: returns success XML envelope on insert" {
+test "save_memory_tool: returns success JSON payload on insert" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -733,21 +757,27 @@ test "save_memory_tool: returns success XML envelope on insert" {
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // Returns <save_memory> envelope on success.
-    try testing.expect(std.mem.indexOf(u8, out, "<save_memory>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "</save_memory>") != null);
+    // Returns {"id","created_at","updated_at"} on success.
+    try testing.expect(std.mem.indexOf(u8, out, "\"id\":") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"created_at\":") != null);
     // Auto-generated mem_<16-hex> id.
     const generated_id = try extractSavedId(alloc, out);
     defer alloc.free(generated_id);
     try testing.expectEqual(@as(usize, 4 + 16), generated_id.len);
     try testing.expect(std.mem.startsWith(u8, generated_id, "mem_"));
-    try testing.expect(std.mem.indexOf(u8, out, "<created_at>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<updated_at>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"created_at\":") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"updated_at\":") != null);
     // No error envelope.
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
+
+    const parsed = try std.json.parseFromSlice(SaveMemorySuccess, alloc, out, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(generated_id, parsed.value.id);
+    try std.testing.expect(parsed.value.created_at.len > 0);
+    try std.testing.expect(parsed.value.updated_at.len > 0);
 }
 
-test "save_memory_tool: returns error XML on empty content" {
+test "save_memory_tool: returns error JSON on empty content" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -760,12 +790,13 @@ test "save_memory_tool: returns error XML on empty content" {
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "empty") != null or
-        std.mem.indexOf(u8, out, "InvalidContent") != null);
+    const parsed = try std.json.parseFromSlice(MemoryError, alloc, out, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.@"error", "empty") != null or
+        std.mem.indexOf(u8, parsed.value.@"error", "InvalidContent") != null);
 }
 
-test "save_memory_tool: returns error XML on content > 1 MiB" {
+test "save_memory_tool: returns error JSON on content > 1 MiB" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -783,7 +814,7 @@ test "save_memory_tool: returns error XML on content > 1 MiB" {
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
 }
 
 test "save_memory_tool: saving twice appends two rows (never overwrites)" {
@@ -813,7 +844,7 @@ test "save_memory_tool: saving twice appends two rows (never overwrites)" {
 
     // Different ids — the second save did NOT overwrite the first.
     try testing.expect(!std.mem.eql(u8, id1, id2));
-    try testing.expect(std.mem.indexOf(u8, out2, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out2, "\"error\":") == null);
 
     // TWO rows in the DB (append, not UPSERT).
     var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM agent_memories", &.{});
@@ -837,9 +868,8 @@ test "save_memory_tool: auto-generates mem_<16-hex> id when none provided" {
     defer alloc.free(out);
 
     // Extract the auto-generated id.
-    const id_open = std.mem.indexOf(u8, out, "<id>") orelse return error.MissingId;
-    const id_close = std.mem.indexOf(u8, out, "</id>") orelse return error.MissingIdClose;
-    const generated_id = out[id_open + "<id>".len .. id_close];
+    const generated_id = try extractSavedId(alloc, out);
+    defer alloc.free(generated_id);
 
     // Format: mem_<16 hex chars>.
     try testing.expectEqual(@as(usize, 4 + 16), generated_id.len);
@@ -916,7 +946,7 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
     // (split on || at the wire boundary, joined back to || in DB).
     const out = try executeSaveMemory(alloc, &ctx.db, parsed.value);
     defer alloc.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     const saved_id = try extractSavedId(alloc, out);
     defer alloc.free(saved_id);
 
@@ -941,7 +971,7 @@ test "save_memory_tool: single tag (no separator) round-trips" {
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     const saved_id = try extractSavedId(alloc, out);
     defer alloc.free(saved_id);
 
@@ -964,7 +994,7 @@ test "save_memory_tool: empty tags string saves empty tags" {
     };
     const out = try executeSaveMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     const saved_id = try extractSavedId(alloc, out);
     defer alloc.free(saved_id);
 
@@ -1065,7 +1095,7 @@ test "load_memory_tool: parameters include query, id, tags, limit, offset, with_
     try testing.expect(found_with_content);
 }
 
-test "load_memory_tool: returns success XML envelope" {
+test "load_memory_tool: returns success JSON payload" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -1090,18 +1120,18 @@ test "load_memory_tool: returns success XML envelope" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "</load_memory>") != null);
-    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
-    defer alloc.free(expected_id);
-    try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<snippet>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "[") != null); // [match] marker
-    try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<total_count>1</total_count>") != null);
+    const parsed = try std.json.parseFromSlice(LoadMemorySuccess, alloc, out, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.count);
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.total_count);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.results.len);
+    try std.testing.expectEqualStrings(seeded_id, parsed.value.results[0].id);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.results[0].snippet, "[") != null); // [match] marker
+    try std.testing.expect(parsed.value.results[0].content == null);
+    try std.testing.expect(parsed.value.results[0].truncated == null);
 }
 
-test "load_memory_tool: returns error XML on empty query" {
+test "load_memory_tool: returns error JSON on empty query" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -1117,7 +1147,9 @@ test "load_memory_tool: returns error XML on empty query" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    const parsed = try std.json.parseFromSlice(MemoryError, alloc, out, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("must supply either query or id", parsed.value.@"error");
 }
 
 test "load_memory_tool: limits result count to MAX_LIMIT (50) when caller requests more" {
@@ -1147,9 +1179,9 @@ test "load_memory_tool: limits result count to MAX_LIMIT (50) when caller reques
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // Verify <count>50</count> appears (the cap).
-    try testing.expect(std.mem.indexOf(u8, out, "<count>50</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<total_count>60</total_count>") != null);
+    // Verify "count":50 appears (the cap).
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":50") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"total_count\":60") != null);
 }
 
 test "load_memory_tool: snippets contain [match] markers (FTS5 convention)" {
@@ -1175,7 +1207,7 @@ test "load_memory_tool: snippets contain [match] markers (FTS5 convention)" {
     defer alloc.free(out);
 
     // Every snippet must have [match] markers (the FTS5 convention).
-    try testing.expect(std.mem.indexOf(u8, out, "<snippet>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"snippet\":") != null);
     try testing.expect(std.mem.indexOf(u8, out, "[dark]") != null or
         std.mem.indexOf(u8, out, "[dark mode]") != null);
 }
@@ -1219,20 +1251,20 @@ test "load_memory_tool: AND-filters by tags" {
     defer alloc.free(out);
 
     // row two + row three match (both have "context" + "project" tag).
-    const needle2 = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{id2});
+    const needle2 = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{id2});
     defer alloc.free(needle2);
     try testing.expect(std.mem.indexOf(u8, out, needle2) != null);
-    const needle3 = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{id3});
+    const needle3 = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{id3});
     defer alloc.free(needle3);
     try testing.expect(std.mem.indexOf(u8, out, needle3) != null);
     // row one does NOT match (no "context" in content).
-    const needle1 = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{id1});
+    const needle1 = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{id1});
     defer alloc.free(needle1);
     try testing.expect(std.mem.indexOf(u8, out, needle1) == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<count>2</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":2") != null);
 }
 
-test "load_memory_tool: without with_content, snippets only (no raw <content>)" {
+test "load_memory_tool: without with_content, snippets only (content is null)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -1254,9 +1286,9 @@ test "load_memory_tool: without with_content, snippets only (no raw <content>)" 
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // <snippet> present, <content> NOT present.
-    try testing.expect(std.mem.indexOf(u8, out, "<snippet>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<content") == null);
+    // "snippet" present, "content" explicitly null.
+    try testing.expect(std.mem.indexOf(u8, out, "\"snippet\":") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"content\":null") != null);
 }
 
 test "load_memory_tool: paginates via limit + offset" {
@@ -1284,8 +1316,8 @@ test "load_memory_tool: paginates via limit + offset" {
         .with_content = false,
     });
     defer alloc.free(out1);
-    try testing.expect(std.mem.indexOf(u8, out1, "<count>3</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out1, "<total_count>5</total_count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out1, "\"count\":3") != null);
+    try testing.expect(std.mem.indexOf(u8, out1, "\"total_count\":5") != null);
 
     // Page 2: limit=3 offset=3 → 2 hits.
     const out2 = try executeLoadMemory(alloc, &ctx.db, .{
@@ -1296,8 +1328,8 @@ test "load_memory_tool: paginates via limit + offset" {
         .with_content = false,
     });
     defer alloc.free(out2);
-    try testing.expect(std.mem.indexOf(u8, out2, "<count>2</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out2, "<total_count>5</total_count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out2, "\"count\":2") != null);
+    try testing.expect(std.mem.indexOf(u8, out2, "\"total_count\":5") != null);
 }
 
 test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't crash)" {
@@ -1327,13 +1359,13 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // No <error> — the query didn't crash. The row should be found
+    // No "error" — the query didn't crash. The row should be found
     // because FTS5's tokenizer splits `handle_tool.zig` (in the
     // indexed content) on the dot, and the OR-joined query asks for
     // either `handle_tool` OR `zig` — both present in the row.
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
-    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"results\":") != null);
+    const expected_id = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{seeded_id});
     defer alloc.free(expected_id);
     try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
 }
@@ -1388,17 +1420,17 @@ test "load_memory_tool: multi-token query joins with OR (regression for strict-s
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    // No error, no crash.
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    // No "error", no crash.
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
 
     // All 3 memories should be found (each contains at least one of the
     // two tokens).
     for ([_][]u8{ id1, id2, id3 }) |saved_id| {
-        const needle = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{saved_id});
+        const needle = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{saved_id});
         defer alloc.free(needle);
         try testing.expect(std.mem.indexOf(u8, out, needle) != null);
     }
-    try testing.expect(std.mem.indexOf(u8, out, "<count>3</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":3") != null);
 }
 
 test "load_memory_tool: single-token query still works (regression guard)" {
@@ -1425,11 +1457,11 @@ test "load_memory_tool: single-token query still works (regression guard)" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
+    const expected_id = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{seeded_id});
     defer alloc.free(expected_id);
     try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":1") != null);
 }
 
 test "load_memory_tool: hyphenated date query returns sanitized recall (no crash)" {
@@ -1461,8 +1493,8 @@ test "load_memory_tool: hyphenated date query returns sanitized recall (no crash
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    const expected_date_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
+    const expected_date_id = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{seeded_id});
     defer alloc.free(expected_date_id);
     try testing.expect(std.mem.indexOf(u8, out, expected_date_id) != null);
 }
@@ -1486,8 +1518,8 @@ test "load_memory_tool: empty-after-sanitize query returns empty results (no cra
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    try testing.expect(std.mem.indexOf(u8, out, "<count>0</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":0") != null);
 }
 
 // ─── by-id lookup (Task 1 of 2026-08-19-load-memory-by-id) ──────────────
@@ -1498,9 +1530,9 @@ test "load_memory_tool: empty-after-sanitize query returns empty results (no cra
 //   - When `id` is non-empty, FTS5 is skipped — `agent_memories.getMemoryById`
 //     does a single-row SELECT and returns the full content (up to 1 MiB).
 //   - When `id` is empty, the FTS5 path runs as before (no behaviour change).
-//   - When both `id` and `query` are empty → `<error>must supply either
-//     query or id</error>`.
-//   - When `id` is non-empty but no row exists → `<error>not found: <id></error>`.
+//   - When both `id` and `query` are empty → `{"error":"must supply either
+//     query or id"}`.
+//   - When `id` is non-empty but no row exists → `{"error":"not found: ..."}`.
 //   - `tags` is ignored when `id` is set (only 1 row can match anyway).
 
 test "load_memory_tool: by-id lookup returns single row with full content" {
@@ -1530,18 +1562,18 @@ test "load_memory_tool: by-id lookup returns single row with full content" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<load_memory") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
-    const expected_id = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{seeded_id});
+    try testing.expect(std.mem.indexOf(u8, out, "\"results\":") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
+    const expected_id = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{seeded_id});
     defer alloc.free(expected_id);
     try testing.expect(std.mem.indexOf(u8, out, expected_id) != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<tags>preferences||user</tags>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"tags\":\"preferences||user\"") != null);
     // Full body, not just a 10-token snippet.
     try testing.expect(std.mem.indexOf(u8, out, "preferred model is claude-sonnet") != null);
-    // Wrapped in <results> for shape consistency with the FTS path.
-    try testing.expect(std.mem.indexOf(u8, out, "<count>1</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<total_count>1</total_count>") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "<results>") != null);
+    // Wrapped in "results" for shape consistency with the FTS path.
+    try testing.expect(std.mem.indexOf(u8, out, "\"count\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"total_count\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"results\":") != null);
 }
 
 test "load_memory_tool: by-id lookup returns content beyond 2 KiB (no MAX_FULL_CONTENT_BYTES cap)" {
@@ -1581,12 +1613,12 @@ test "load_memory_tool: by-id lookup returns content beyond 2 KiB (no MAX_FULL_C
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") == null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     // Tail marker is well past the 2 KiB cutoff — only reachable if the
     // by-id path bypasses MAX_FULL_CONTENT_BYTES.
     try testing.expect(std.mem.indexOf(u8, out, "DISTINCT_TAIL_TOKEN_AFTER_2KIB_MARK") != null);
-    // No <content truncated="1"> flag — content is not truncated.
-    try testing.expect(std.mem.indexOf(u8, out, "<content truncated=\"1\">") == null);
+    // No "truncated":true — content is not truncated.
+    try testing.expect(std.mem.indexOf(u8, out, "\"truncated\":true") == null);
 }
 
 test "load_memory_tool: by-id lookup returns error when id not found" {
@@ -1606,10 +1638,10 @@ test "load_memory_tool: by-id lookup returns error when id not found" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
     try testing.expect(std.mem.indexOf(u8, out, "not found") != null);
-    // No empty <results> — error shape only.
-    try testing.expect(std.mem.indexOf(u8, out, "<results>") == null);
+    // No "results" key — error shape only.
+    try testing.expect(std.mem.indexOf(u8, out, "\"results\":") == null);
 }
 
 test "load_memory_tool: empty id + empty query returns error" {
@@ -1629,7 +1661,7 @@ test "load_memory_tool: empty id + empty query returns error" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    try testing.expect(std.mem.indexOf(u8, out, "<error>") != null);
+    try testing.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
     try testing.expect(std.mem.indexOf(u8, out, "must supply either query or id") != null);
 }
 
@@ -1667,10 +1699,10 @@ test "load_memory_tool: by-id ignores tags (only one row can match anyway)" {
     const out = try executeLoadMemory(alloc, &ctx.db, input);
     defer alloc.free(out);
 
-    const needle_alpha = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{alpha_id});
+    const needle_alpha = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{alpha_id});
     defer alloc.free(needle_alpha);
     try testing.expect(std.mem.indexOf(u8, out, needle_alpha) != null);
-    const needle_beta = try std.fmt.allocPrint(alloc, "<id>{s}</id>", .{beta_id});
+    const needle_beta = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{beta_id});
     defer alloc.free(needle_beta);
     try testing.expect(std.mem.indexOf(u8, out, needle_beta) == null);
 }

@@ -4,9 +4,10 @@ import { computed, ref } from 'vue'
 import ToolParameters from '../tool_outputs/_shared/ToolParameters.vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 import { extractParam } from '../../helpers/extractParam'
+import { normalizeToolContent } from '../tool_outputs/_shared/toolOutputParser'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   cwd?: string
   parameters?: string
@@ -15,64 +16,60 @@ const props = defineProps<{
 const isExpanded = ref(props.expanded ?? false)
 const openInEditor = useInjectOpenInCodeEditor()
 
-// Parse glob pattern
-const globPattern = computed(() => {
-  const match = props.content.match(/pattern="([^"]+)"/)
-  return match ? match[1] : null
+// The card receives the bare `data` object (or a full envelope, or a
+// blank string while running). Field access replaces the old
+// pattern="…"/<f>…</f> regex parsing.
+const dataRecord = computed((): Record<string, unknown> => {
+  const { data } = normalizeToolContent(props.content)
+  if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
+    return data as Record<string, unknown>
+  }
+  return {}
 })
 
-// Parse glob path
-const globPath = computed(() => {
-  const match = props.content.match(/path="([^"]+)"/)
-  return match ? match[1] : null
-})
+const strOf = (v: unknown): string | null => (typeof v === 'string' ? v : null)
+const numOf = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+
+// Parse glob pattern
+const globPattern = computed(() => strOf(dataRecord.value['pattern']))
+
+// GlobJSON carries no path field — fall back to tool-call parameters.
+const globPath = computed(() => null as string | null)
 
 // In-progress fallback: prefer envelope, fall back to tool-call parameters
-const displayPattern = computed(() => globPattern.value ?? extractParam(props.parameters, 'pattern'))
+const displayPattern = computed(
+  () => globPattern.value ?? extractParam(props.parameters, 'pattern'),
+)
 const displayPath = computed(() => globPath.value ?? extractParam(props.parameters, 'path'))
-const isRunning = computed(() => props.content.trim() === '' && displayPattern.value !== null)
+const isRunning = computed(
+  () =>
+    typeof props.content === 'string' &&
+    props.content.trim() === '' &&
+    displayPattern.value !== null,
+)
 
 // Parse total count
-const totalCount = computed(() => {
-  const match = props.content.match(/total="(\d+)"/)
-  return match ? parseInt(match[1] ?? '0', 10) : 0
-})
+const totalCount = computed(() => numOf(dataRecord.value['total']))
 
 // Parse returned count
-const returnedCount = computed(() => {
-  const match = props.content.match(/returned="(\d+)"/)
-  return match ? parseInt(match[1] ?? '0', 10) : 0
-})
+const returnedCount = computed(() => numOf(dataRecord.value['returned']))
 
 // Parse truncated count
-const truncatedCount = computed(() => {
-  const match = props.content.match(/truncated="(\d+)"/)
-  return match ? parseInt(match[1] ?? '0', 10) : 0
-})
+const truncatedCount = computed(() => numOf(dataRecord.value['truncated']))
 
 // Parse offset
-const offsetValue = computed(() => {
-  const match = props.content.match(/offset="(\d+)"/)
-  return match ? parseInt(match[1] ?? '0', 10) : 0
-})
+const offsetValue = computed(() => numOf(dataRecord.value['offset']))
 
 // Parse warning if no matches
-const warningMessage = computed(() => {
-  const match = props.content.match(/<warning>(.*?)<\/warning>/)
-  return match ? match[1] : null
-})
+const warningMessage = computed(() => strOf(dataRecord.value['warning']))
 
 const hasWarning = computed(() => !!warningMessage.value)
 
 // Parse all file paths
 const filePaths = computed((): string[] => {
-  const results: string[] = []
-  const fileRegex = /<f>(.*?)<\/f>/g
-  let match
-  while ((match = fileRegex.exec(props.content)) !== null) {
-    results.push(match[1] ?? '')
-  }
-  return results
+  const files = dataRecord.value['files']
+  if (!Array.isArray(files)) return []
+  return files.filter((f): f is string => typeof f === 'string')
 })
 
 // Arguments guard (mirrors ToolParameters.vue hasArgs): non-empty params
@@ -116,24 +113,37 @@ const handleOpenInEditor = (e: Event, path: string) => {
   >
     <!-- Header -->
     <div
-    role="button" tabindex="0"
-    class="group flex items-center flex-wrap gap-1.5 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
-    @click="toggle">
+      role="button"
+      tabindex="0"
+      class="group flex items-center flex-wrap gap-1.5 px-2 py-1 cursor-pointer select-none hover:bg-violet-500/5"
+      @click="toggle"
+    >
       <span class="gl-title">glob</span>
       <span class="gl-pattern" :title="displayPattern || ''">
         "{{ displayPattern || 'unknown' }}"
       </span>
-      <span v-if="displayPath" class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate" :title="displayPath">
+      <span
+        v-if="displayPath"
+        class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate"
+        :title="displayPath"
+      >
         in {{ displayPath }}
       </span>
-      <span v-if="isRunning" data-testid="glob-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
+      <span
+        v-if="isRunning"
+        data-testid="glob-running"
+        class="text-[0.65rem] text-yellow-500 animate-pulse"
+        >running…</span
+      >
 
       <!-- Results summary -->
       <template v-if="!warningMessage">
         <span class="gl-summary">
           {{ totalCount }} {{ totalCount === 1 ? 'file' : 'files' }}
           <template v-if="returnedCount < totalCount">
-            ({{ returnedCount }} returned{{ truncatedCount > 0 ? `, ${truncatedCount} truncated` : '' }})
+            ({{ returnedCount }} returned{{
+              truncatedCount > 0 ? `, ${truncatedCount} truncated` : ''
+            }})
           </template>
           <template v-if="offsetValue > 0">
             <span class="gl-offset">offset: {{ offsetValue }}</span>
@@ -165,7 +175,12 @@ const handleOpenInEditor = (e: Event, path: string) => {
             title="Open in code editor"
           >
             <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+              />
             </svg>
           </button>
         </div>

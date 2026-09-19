@@ -51,6 +51,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
+import { normalizeToolContent } from './_shared/toolOutputParser'
 
 interface MemoryEntry {
   id: string
@@ -63,7 +64,7 @@ interface MemoryEntry {
 }
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   /** Tool-call args (XML from jsonArgsToXml, or JSON). Accepted so the
    *  dispatcher can thread call args uniformly; the load result carries
@@ -73,72 +74,91 @@ const props = defineProps<{
 
 const isExpanded = ref(props.expanded ?? false)
 
+function asRecord(v: unknown): Record<string, unknown> {
+  if (typeof v === 'string') {
+    try {
+      const p: unknown = JSON.parse(v)
+      return typeof p === 'object' && p !== null && !Array.isArray(p)
+        ? (p as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
+}
+
+function strOrNull(v: unknown): string | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return null
+}
+
+function numOrNull(v: unknown): number | null {
+  if (v === null || v === undefined) return null
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v.trim())
+    return Number.isFinite(n) ? n : null
+  }
+  return null
+}
+
+const normalized = computed(() => normalizeToolContent(props.content))
+const dataRecord = computed(() => asRecord(normalized.value.data))
+
 // Running: result envelope is still empty (no entries/error yet).
-const isRunning = computed(() => props.content.trim() === '')
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const isRunning = computed(() => isEmptyContent(props.content))
 
 // ── Parse outer envelope ──────────────────────────────────────────────────
 
-const errorMessage = computed(() => {
-  const match = props.content.match(/<error>([\s\S]*?)<\/error>/)
-  if (!match || !match[1]) return null
-  return match[1].trim()
-})
+const errorMessage = computed(() => normalized.value.error ?? strOrNull(dataRecord.value.error))
 
-const queryText = computed(() => {
-  const match = props.content.match(/<load_memory[^>]*\squery="([^"]+)"/)
-  if (!match || !match[1]) return null
-  return match[1]
-})
+const queryText = computed(() => strOrNull(dataRecord.value.query))
 
 const withContent = computed(() => {
-  return /<load_memory[^>]*\swith_content="1"/.test(props.content)
+  const v = dataRecord.value.with_content
+  if (typeof v === 'boolean') return v
+  if (typeof v === 'string') return v === 'true' || v === '1'
+  if (typeof v === 'number') return v !== 0
+  return false
 })
 
 /** Returned-page size (count of entries in *this* response). */
-const count = computed((): number | null => {
-  const match = props.content.match(/<count>(\d+)<\/count>/)
-  if (!match || !match[1]) return null
-  return parseInt(match[1], 10)
-})
+const count = computed((): number | null => numOrNull(dataRecord.value.count))
 
 /** Total rows matching the FTS5 query (before LIMIT/OFFSET). The LLM
  *  uses this to know whether more pages exist via offset. */
-const totalCount = computed((): number | null => {
-  const match = props.content.match(/<total_count>(\d+)<\/total_count>/)
-  if (!match || !match[1]) return null
-  return parseInt(match[1], 10)
-})
+const totalCount = computed((): number | null => numOrNull(dataRecord.value.total_count))
 
 // ── Parse entries ─────────────────────────────────────────────────────────
 
 const entries = computed((): MemoryEntry[] => {
   const results: MemoryEntry[] = []
-  const entryRegex = /<memory>([\s\S]*?)<\/memory>/g
-  let m
-  while ((m = entryRegex.exec(props.content)) !== null) {
-    const body = m[1]
-    if (body === undefined) continue
-
-    const idMatch = body.match(/<id>([\s\S]*?)<\/id>/)
-    const tagsMatch = body.match(/<tags>([\s\S]*?)<\/tags>/)
-    const createdAtMatch = body.match(/<created_at>([\s\S]*?)<\/created_at>/)
-    const updatedAtMatch = body.match(/<updated_at>([\s\S]*?)<\/updated_at>/)
-    const snippetMatch = body.match(/<snippet>([\s\S]*?)<\/snippet>/)
-
-    // Content block has an optional `truncated="0|1"` attribute.
-    const contentMatch = body.match(/<content(?:\s+truncated="([01])")?\s*>([\s\S]*?)<\/content>/)
-
-    const tagsRaw = (tagsMatch?.[1] ?? '').trim()
+  const raw = dataRecord.value.results
+  if (!Array.isArray(raw)) return results
+  for (const item of raw) {
+    const r = asRecord(item)
+    const tagsRaw =
+      typeof r.tags === 'string' ? r.tags : Array.isArray(r.tags) ? r.tags.join('||') : ''
     const tags: string[] = tagsRaw.length > 0 ? tagsRaw.split('||').filter((t) => t.length > 0) : []
-
+    const truncatedRaw = r.truncated
     results.push({
-      id: (idMatch?.[1] ?? '').trim(),
+      id: typeof r.id === 'string' ? r.id : '',
       tags,
-      created_at: createdAtMatch?.[1]?.trim() || null,
-      updated_at: updatedAtMatch?.[1]?.trim() || null,
-      snippet: (snippetMatch?.[1] ?? '').trim(),
-      content: contentMatch?.[2]?.trim() ?? null,
-      content_truncated: contentMatch?.[1] === '1',
+      created_at: strOrNull(r.created_at),
+      updated_at: strOrNull(r.updated_at),
+      snippet: typeof r.snippet === 'string' ? r.snippet : '',
+      content: strOrNull(r.content),
+      content_truncated: truncatedRaw === true || truncatedRaw === 'true' || truncatedRaw === 1,
     })
   }
   return results

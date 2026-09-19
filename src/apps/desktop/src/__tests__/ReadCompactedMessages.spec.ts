@@ -11,55 +11,42 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import ReadCompactedMessages from '../components/tool_outputs/ReadCompactedMessages.vue'
 
-const FULL_INDEX_ENVELOPE = `<read_compacted_messages mode="index">
-  <session_id>task_1782443377620</session_id>
-  <count>3</count>
-  <message_index>
-    <entry>
-      <id>h_001</id>
-      <role>user</role>
-      <created_at>2025-01-15 12:34:56</created_at>
-      <preview>Fix the login bug</preview>
-    </entry>
-    <entry>
-      <id>h_002</id>
-      <role>assistant</role>
-      <created_at>2025-01-15 12:35:10</created_at>
-      <preview>Investigating the auth flow</preview>
-    </entry>
-    <entry>
-      <id>h_003</id>
-      <role>tool</role>
-      <created_at>2025-01-15 12:36:02</created_at>
-      <preview>tests pass: 42/42</preview>
-      <tool_call_id>tc_bash_1</tool_call_id>
-      <tool_name>bash</tool_name>
-    </entry>
-  </message_index>
-</read_compacted_messages>`
+const FULL_INDEX_ENVELOPE = {
+  mode: 'index',
+  session_id: 'task_1782443377620',
+  count: 3,
+  message_index: [
+    { id: 'h_001', role: 'user', created_at: '2025-01-15 12:34:56', preview: 'Fix the login bug' },
+    { id: 'h_002', role: 'assistant', created_at: '2025-01-15 12:35:10', preview: 'Investigating the auth flow' },
+    {
+      id: 'h_003',
+      role: 'tool',
+      created_at: '2025-01-15 12:36:02',
+      preview: 'tests pass: 42/42',
+      tool_call_id: 'tc_bash_1',
+      tool_name: 'bash',
+    },
+  ],
+}
 
-const FULL_MODE_ENVELOPE = `<read_compacted_messages mode="full">
-  <session_id>sess_xyz</session_id>
-  <count>1</count>
-  <message_index>
-    <entry>
-      <id>h_999</id>
-      <role>user</role>
-      <created_at>2025-02-01 09:00:00</created_at>
-      <preview>long question preview</preview>
-      <content>Full user content body that is only present in mode=full</content>
-    </entry>
-  </message_index>
-</read_compacted_messages>`
+const FULL_MODE_ENVELOPE = {
+  mode: 'full',
+  session_id: 'sess_xyz',
+  count: 1,
+  message_index: [
+    {
+      id: 'h_999',
+      role: 'user',
+      created_at: '2025-02-01 09:00:00',
+      preview: 'long question preview',
+      content: 'Full user content body that is only present in mode=full',
+    },
+  ],
+}
 
-const ERROR_ENVELOPE = `<read_compacted_messages><error>Database query failed: TableNotFound</error></read_compacted_messages>`
+const ERROR_ENVELOPE = { error: 'Database query failed: TableNotFound' }
 
-const EMPTY_INDEX_ENVELOPE = `<read_compacted_messages mode="index">
-  <session_id>sess_empty</session_id>
-  <count>0</count>
-  <message_index>
-  </message_index>
-</read_compacted_messages>`
+const EMPTY_INDEX_ENVELOPE = { mode: 'index', session_id: 'sess_empty', count: 0, message_index: [] }
 
 describe('ReadCompactedMessages', () => {
   let wrapper: ReturnType<typeof mount> | null = null

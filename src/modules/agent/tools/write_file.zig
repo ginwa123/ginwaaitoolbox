@@ -80,23 +80,31 @@ pub fn writeFile(
     };
 }
 
-/// Serialize result to XML string
-pub fn toXmlSuccess(allocator: std.mem.Allocator, result: WriteFileResult) []const u8 {
-    return std.fmt.allocPrint(allocator, "<success>true</success><file_write>{s}</file_write>", .{result.path}) catch "<success>false</success>";
+/// JSON payload for a write result: mirrors the old `<file_write>` tag
+/// 1:1. The old success envelope omitted `<error>`; that becomes an
+/// explicit null. `std.json` handles all escaping — no manual layer.
+pub const WriteFileJSON = struct {
+    file_write: []const u8,
+    @"error": ?[]const u8 = null,
+};
+
+pub fn toJSONSuccess(allocator: std.mem.Allocator, result: WriteFileResult) ![]u8 {
+    return try std.json.Stringify.valueAlloc(allocator, WriteFileJSON{
+        .file_write = result.path,
+    }, .{});
 }
 
-pub fn toXmlError(allocator: std.mem.Allocator, err: anyerror, path: []const u8) []const u8 {
+pub fn toJSONError(allocator: std.mem.Allocator, err: anyerror, path: []const u8) ![]u8 {
     const message: []const u8 = switch (err) {
-        error.PathNotFound => std.fmt.allocPrint(allocator, "Directory for path '{s}' not found. Check if the parent directory exists.", .{path}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
-        error.InputOutput => std.fmt.allocPrint(allocator, "Failed to write file '{s}'. Check write permissions.", .{path}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
-        else => std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(err)}) catch return "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>",
+        error.PathNotFound => try std.fmt.allocPrint(allocator, "Directory for path '{s}' not found. Check if the parent directory exists.", .{path}),
+        error.InputOutput => try std.fmt.allocPrint(allocator, "Failed to write file '{s}'. Check write permissions.", .{path}),
+        else => try std.fmt.allocPrint(allocator, "Unexpected error: {s}", .{@errorName(err)}),
     };
-    // From here on, `message` is always a heap allocation (the catch
-    // branches above `return` early when allocPrint fails). Release it
-    // on every return path — both success (the wrapped XML embeds
-    // `message` by value) and the outer-catch fallback.
     defer allocator.free(message);
-    return std.fmt.allocPrint(allocator, "<success>false</success><file_write>{s}</file_write><error>{s}</error>", .{ path, message }) catch "<success>false</success><file_write>{s}</file_write><error>UnknownError</error>";
+    return try std.json.Stringify.valueAlloc(allocator, WriteFileJSON{
+        .file_write = path,
+        .@"error" = message,
+    }, .{});
 }
 
 pub const write_file_tool_system_prompt =
@@ -115,7 +123,7 @@ pub const write_file_tool = AgentTool{
         \\Write content to a new file. Creates file if it doesn't exist, overwrites if it does.
         \\For partial file updates, use text_replace tool instead.
         \\Set create_with_dir to true to automatically create parent directories.
-        \\return <file_write>{path}</file_write>
+        \\return {"file_write": <path>, "error": null}
         ,
         .parameters = .{
             .type = "object",
@@ -437,7 +445,7 @@ test "writeFile - overwriting with empty content truncates to zero bytes" {
         .content = "this content will be wiped",
     });
     defer _wf_r.deinit(testing.allocator);
-    try testing.expectEqual(@as(u64, 26), fileSize(path));  // "this content will be wiped" = 26 chars
+    try testing.expectEqual(@as(u64, 26), fileSize(path)); // "this content will be wiped" = 26 chars
 
     var _wf_r2 = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -508,7 +516,7 @@ test "writeFile - content containing XML special chars preserved in file" {
     const path = "test_wf_xml_chars.txt";
     defer deleteFile(path);
 
-    // The file on disk stores RAW bytes — escaping only happens in toXmlSuccess.
+    // The file on disk stores RAW bytes — escaping is handled by std.json in toJSONSuccess.
     const content = "<tag attr=\"value\">&entity;'apos'</tag>";
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -960,7 +968,7 @@ test "writeFile - path with .. segments resolves relative to cwd" {
         deleteDir("test_wf_dotdot_target");
     }
 
-    std.Io.Dir.cwd().createDir(testing.io, dir, .default_dir) catch {};  // idempotent
+    std.Io.Dir.cwd().createDir(testing.io, dir, .default_dir) catch {}; // idempotent
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -1041,134 +1049,100 @@ test "writeFileResult.path has same bytes as input path" {
 }
 
 // ===========================================================================
-// Section 8: toXmlSuccess
+// Section 8: toJSONSuccess
 // ===========================================================================
 
-test "toXmlSuccess contains <success>true</success>" {
-    const wf_path = try testing.allocator.dupe(u8, "/x");
-    defer testing.allocator.free(wf_path);
-    const xml = write_file.toXmlSuccess(testing.allocator, .{ .path = wf_path });
-    defer testing.allocator.free(xml);
-
-    try testing.expect(std.mem.indexOf(u8, xml, "<success>true</success>") != null);
-}
-
-test "toXmlSuccess includes the file_write path" {
+test "toJSONSuccess carries the file_write path with null error" {
     const wf_path = try testing.allocator.dupe(u8, "/abs/path/to/file.txt");
     defer testing.allocator.free(wf_path);
-    const xml = write_file.toXmlSuccess(testing.allocator, .{ .path = wf_path });
-    defer testing.allocator.free(xml);
+    const payload = try write_file.toJSONSuccess(testing.allocator, .{ .path = wf_path });
+    defer testing.allocator.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<file_write>/abs/path/to/file.txt</file_write>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("/abs/path/to/file.txt", obj.get("file_write").?.string);
+    try testing.expect(obj.get("error").? == .null);
 }
 
-test "toXmlSuccess emits well-formed XML (open+close tags match)" {
-    const wf_path = try testing.allocator.dupe(u8, "/x/y/z.txt");
+test "toJSONSuccess keeps special characters raw (JSON needs no XML escaping)" {
+    const wf_path = try testing.allocator.dupe(u8, "/x/with & < > \" ' chars.txt");
     defer testing.allocator.free(wf_path);
-    const xml = write_file.toXmlSuccess(testing.allocator, .{ .path = wf_path });
-    defer testing.allocator.free(xml);
+    const payload = try write_file.toJSONSuccess(testing.allocator, .{ .path = wf_path });
+    defer testing.allocator.free(payload);
 
-    // Exactly one <success> open + one </success> close
-    var open_count: usize = 0;
-    var close_count: usize = 0;
-    var idx: usize = 0;
-    while (std.mem.indexOfPos(u8, xml, idx, "<success>")) |p| {
-        open_count += 1;
-        idx = p + "<success>".len;
-    }
-    idx = 0;
-    while (std.mem.indexOfPos(u8, xml, idx, "</success>")) |p| {
-        close_count += 1;
-        idx = p + "</success>".len;
-    }
-    try testing.expectEqual(@as(usize, 1), open_count);
-    try testing.expectEqual(@as(usize, 1), close_count);
-
-    var fw_open: usize = 0;
-    var fw_close: usize = 0;
-    idx = 0;
-    while (std.mem.indexOfPos(u8, xml, idx, "<file_write>")) |p| {
-        fw_open += 1;
-        idx = p + "<file_write>".len;
-    }
-    idx = 0;
-    while (std.mem.indexOfPos(u8, xml, idx, "</file_write>")) |p| {
-        fw_close += 1;
-        idx = p + "</file_write>".len;
-    }
-    try testing.expectEqual(@as(usize, 1), fw_open);
-    try testing.expectEqual(@as(usize, 1), fw_close);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("/x/with & < > \" ' chars.txt", obj.get("file_write").?.string);
+    try testing.expect(obj.get("error").? == .null);
 }
 
 // ===========================================================================
-// Section 9: toXmlError
+// Section 9: toJSONError
 // ===========================================================================
 
-test "toXmlError for PathNotFound contains descriptive message" {
-    const xml = write_file.toXmlError(
+test "toJSONError for PathNotFound contains descriptive message" {
+    const payload = try write_file.toJSONError(
         testing.allocator,
         error.PathNotFound,
         "/abs/missing/file.txt",
     );
-    defer testing.allocator.free(xml);
+    defer testing.allocator.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<file_write>/abs/missing/file.txt</file_write>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</error>") != null);
-    // The PathNotFound message names "Directory" and "parent directory"
-    try testing.expect(std.mem.indexOf(u8, xml, "Directory") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "parent directory") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("/abs/missing/file.txt", obj.get("file_write").?.string);
+    const msg = obj.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, msg, "Directory") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "parent directory") != null);
 }
 
-test "toXmlError for InputOutput contains permission-related message" {
-    const xml = write_file.toXmlError(
+test "toJSONError for InputOutput contains permission-related message" {
+    const payload = try write_file.toJSONError(
         testing.allocator,
         error.InputOutput,
         "/readonly/file.txt",
     );
-    defer testing.allocator.free(xml);
+    defer testing.allocator.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "permission") != null or
-        std.mem.indexOf(u8, xml, "Permission") != null or
-        std.mem.indexOf(u8, xml, "write permissions") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const msg = parsed.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, msg, "permission") != null or
+        std.mem.indexOf(u8, msg, "Permission") != null or
+        std.mem.indexOf(u8, msg, "write permissions") != null);
 }
 
-test "toXmlError for generic error uses Unexpected error fallback" {
-    const xml = write_file.toXmlError(
+test "toJSONError for generic error uses Unexpected error fallback" {
+    const payload = try write_file.toJSONError(
         testing.allocator,
         error.AccessDenied,
         "/some/path",
     );
-    defer testing.allocator.free(xml);
+    defer testing.allocator.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "AccessDenied") != null or
-        std.mem.indexOf(u8, xml, "Unexpected") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("/some/path", obj.get("file_write").?.string);
+    const msg = obj.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, msg, "AccessDenied") != null or
+        std.mem.indexOf(u8, msg, "Unexpected") != null);
 }
 
-test "toXmlError path is rendered as-is in the XML body" {
-    const xml = write_file.toXmlError(
-        testing.allocator,
-        error.PathNotFound,
-        "/x/y/z.txt",
-    );
-    defer testing.allocator.free(xml);
+test "toJSONError keeps an empty path without crashing" {
+    const payload = try write_file.toJSONError(testing.allocator, error.PathNotFound, "");
+    defer testing.allocator.free(payload);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<file_write>/x/y/z.txt</file_write>") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("", obj.get("file_write").?.string);
+    try testing.expect(obj.get("error").? == .string);
 }
 
-test "toXmlError wraps an empty path without crashing" {
-    const xml = write_file.toXmlError(testing.allocator, error.PathNotFound, "");
-    defer testing.allocator.free(xml);
-
-    try testing.expect(std.mem.indexOf(u8, xml, "<success>false</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<file_write></file_write>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-}
-
-// ===========================================================================
 // Section 10: Tool schema contract
 // ===========================================================================
 
@@ -1312,7 +1286,7 @@ test "writeFile - 20 alternating-size overwrites all leave correct final state" 
             .path = path,
             .content = content,
         });
-    defer _wf_r.deinit(testing.allocator);
+        defer _wf_r.deinit(testing.allocator);
         last_was_large = !last_was_large;
     }
 

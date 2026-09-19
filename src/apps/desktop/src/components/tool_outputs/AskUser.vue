@@ -7,28 +7,25 @@
   rewrites this tool's result row in place and starts a new run, so the model
   continues with the answer in context.
 
-  Wire shape — the component parses the inner `<ask_user>…</ask_user>`
-  envelope out of `content` (which ChatView passes as the unwrapped `<data>`
-  payload, or the whole `<tool>` envelope when the call failed):
+  Wire shape — the component parses the JSON `data` object out of
+  `content` (which ChatView passes as the unwrapped `data` payload, or the
+  whole envelope JSON string when the call failed):
 
     Pending (the card's interactive state):
-      <ask_user><status>pending</status><question_id>q_…</question_id>
-        <header>Deploy target</header>
-        <question>Which environment should I deploy to?</question>
-        <allow_free_text>true</allow_free_text>
-        <multi_select>false</multi_select>
-        <recommended>staging</recommended>
-        <options><option>staging</option><option>production</option></options>
-        <instruction>…</instruction></ask_user>
+      {"status":"pending","question_id":"q_…","header":"Deploy target",
+       "question":"Which environment should I deploy to?",
+       "allow_free_text":true,"multi_select":false,
+       "recommended":"staging","options":["staging","production"],
+       "instruction":"…"}
 
     Resolved (written in place by POST …/answer):
-      …<status>answered</status><answer>staging</answer><answers_count>1</answers_count>
-      …<status>skipped</status>  |  <status>abandoned</status>
-      …<status>unavailable</status><reason>no_human</reason>
+      …{"status":"answered","answer":"staging","answers_count":1}
+      …{"status":"skipped"}  |  {"status":"abandoned"}
+      …{"status":"unavailable"}
 
     Invalid input (never a row):
-      <tool><name>ask_user</name>…<success>false</success>
-        <error>recommended must exactly match one of the strings in options</error></tool>
+      {"tool":"ask_user",…,"success":false,
+       "error":"recommended must exactly match one of the strings in options"}
 
   The question's SHAPE travels in the envelope rather than being read from
   the tool row's `<parameters>` block: `wrapToolOutput` converts the arguments
@@ -47,8 +44,8 @@ import { tryUnwrapToolOutput } from '../../helpers/unwrapToolOutput'
 import { answerAskUser } from '../../api'
 
 interface Props {
-  /** Inner `<data>` payload (or the full `<tool>` envelope on failure). */
-  content: string
+  /** Unwrapped `data` object (or the full envelope JSON string on failure). */
+  content: unknown
   /** Raw tool-call arguments, for the collapsible Arguments block. */
   parameters?: string
   expanded?: boolean
@@ -62,46 +59,64 @@ const props = defineProps<Props>()
 // Envelope parsing
 // ---------------------------------------------------------------------------
 
-/** Reverse one level of `xmlEscape` from the backend. `&amp;` MUST be last. */
-function unescapeOnce(s: string): string {
-  return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&')
+function asRecord(v: unknown): Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+    ? (v as Record<string, unknown>)
+    : {}
 }
 
-function tag(haystack: string, name: string): string | null {
-  const open = `<${name}>`
-  const close = `</${name}>`
-  const start = haystack.indexOf(open)
-  if (start === -1) return null
-  const valueStart = start + open.length
-  const end = haystack.indexOf(close, valueStart)
-  if (end === -1) return null
-  return unescapeOnce(haystack.slice(valueStart, end))
+function strField(o: Record<string, unknown>, key: string): string {
+  const v = o[key]
+  if (typeof v === 'string') return v
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  return ''
 }
 
-/** All `<option>` children of the `<options>` block, in order. */
-function parseOptions(inner: string): string[] {
-  const block = tag(inner, 'options')
-  if (block === null || block.length === 0) return []
-  const out: string[] = []
-  const open = '<option>'
-  const close = '</option>'
-  let cursor = 0
-  for (;;) {
-    const start = block.indexOf(open, cursor)
-    if (start === -1) break
-    const valueStart = start + open.length
-    const end = block.indexOf(close, valueStart)
-    if (end === -1) break
-    out.push(block.slice(valueStart, end))
-    cursor = end + close.length
+/**
+ * Resolve `content` to the ask_user `data` object. Accepts the bare data
+ * object (ChatView's success path), a full envelope object, or either form
+ * as a JSON string (ChatView's error fallback hands us the raw envelope
+ * string). Returns the envelope error when the call failed.
+ */
+function resolveData(content: unknown): {
+  data: Record<string, unknown> | null
+  error: string | null
+} {
+  if (content === null || content === undefined) return { data: null, error: null }
+  if (typeof content === 'string') {
+    if (content.trim() === '') return { data: null, error: null }
+    const unwrapped = tryUnwrapToolOutput(content)
+    if (unwrapped) {
+      if (!unwrapped.success) {
+        return { data: null, error: unwrapped.error ?? 'ask_user failed' }
+      }
+      return { data: asRecord(unwrapped.data), error: null }
+    }
+    try {
+      const parsed: unknown = JSON.parse(content)
+      if (typeof parsed === 'object' && parsed !== null) {
+        return resolveData(parsed)
+      }
+    } catch {
+      /* not JSON — fall through to empty */
+    }
+    return { data: null, error: null }
   }
-  return out
+  if (typeof content === 'object' && !Array.isArray(content)) {
+    const o = content as Record<string, unknown>
+    if (typeof o.tool === 'string' || (typeof o.success === 'boolean' && 'data' in o)) {
+      if (o.success === false) {
+        return {
+          data: null,
+          error: typeof o.error === 'string' ? o.error : 'ask_user failed',
+        }
+      }
+      return { data: asRecord(o.data), error: null }
+    }
+    return { data: o, error: null }
+  }
+  return { data: null, error: null }
 }
 
 type ViewState = 'pending' | 'answered' | 'skipped' | 'abandoned' | 'unavailable' | 'invalid'
@@ -135,32 +150,19 @@ const parsed = computed<ParsedEnvelope>(() => {
     error: '',
   }
 
-  const raw = (props.content ?? '').trim()
-  if (raw.length === 0) return fallback
-
-  // A failed call arrives as the whole `<tool>` envelope with success=false
-  // and no `<data>` (ChatView falls back to the full content).
-  if (raw.startsWith('<tool>')) {
-    const unwrapped = tryUnwrapToolOutput(raw)
-    if (unwrapped && !unwrapped.success) {
-      return { ...fallback, state: 'invalid', error: unwrapped.error ?? 'ask_user failed' }
+  const resolved = resolveData(props.content)
+  if (resolved.data === null) {
+    if (resolved.error !== null) {
+      return { ...fallback, state: 'invalid', error: resolved.error }
     }
-    if (unwrapped?.data) return parseInner(unwrapped.data)
-    // `unwrapToolOutput` throws when the envelope is missing one of
-    // name/parameters/success, and ChatView then hands us the RAW envelope.
-    // Recover the `<data>` payload by slicing instead of giving up: a card
-    // that cannot read its own state renders as a bare "pending" question,
-    // which is exactly how a resolved question looked unanswered.
-    const data = tag(raw, 'data')
-    if (data !== null) return parseInner(data)
     return fallback
   }
 
-  return parseInner(raw)
+  return parseData(resolved.data)
 })
 
-function parseInner(inner: string): ParsedEnvelope {
-  const status = (tag(inner, 'status') ?? '').trim()
+function parseData(data: Record<string, unknown>): ParsedEnvelope {
+  const status = typeof data.status === 'string' ? data.status.trim() : ''
 
   // Unknown / missing status degrades to a readable completed card rather
   // than throwing — a new backend status must never blank the transcript.
@@ -173,22 +175,36 @@ function parseInner(inner: string): ParsedEnvelope {
       ? (status as ViewState)
       : 'invalid'
 
-  const freeTextTag = tag(inner, 'allow_free_text')
-  const multiTag = tag(inner, 'multi_select')
+  const freeTextRaw = data.allow_free_text
+  const multiRaw = data.multi_select
+  const optionsRaw = data.options
+  const answersCountRaw = data.answers_count
 
   return {
     state,
-    questionId: tag(inner, 'question_id') ?? '',
-    header: tag(inner, 'header') ?? '',
-    question: tag(inner, 'question') ?? '',
-    options: parseOptions(inner),
+    questionId: strField(data, 'question_id'),
+    header: strField(data, 'header'),
+    question: strField(data, 'question'),
+    options: Array.isArray(optionsRaw) ? optionsRaw.map((v) => String(v)) : [],
     // Absent means "not specified" → the tool's own defaults.
-    allowFreeText: freeTextTag === null ? true : freeTextTag.trim() !== 'false',
-    multiSelect: multiTag !== null && multiTag.trim() === 'true',
-    recommended: tag(inner, 'recommended') ?? '',
-    answer: tag(inner, 'answer') ?? '',
-    answersCount: Number.parseInt(tag(inner, 'answers_count') ?? '0', 10) || 0,
-    error: tag(inner, 'error') ?? 'ask_user returned an unrecognised status',
+    allowFreeText:
+      freeTextRaw === null || freeTextRaw === undefined
+        ? true
+        : freeTextRaw !== false &&
+          !(typeof freeTextRaw === 'string' && freeTextRaw.trim() === 'false'),
+    multiSelect: multiRaw === true || (typeof multiRaw === 'string' && multiRaw.trim() === 'true'),
+    recommended: strField(data, 'recommended'),
+    answer:
+      typeof data.answer === 'string'
+        ? data.answer
+        : data.answer === null || data.answer === undefined
+          ? ''
+          : String(data.answer),
+    answersCount:
+      typeof answersCountRaw === 'number' && Number.isFinite(answersCountRaw)
+        ? answersCountRaw
+        : Number.parseInt(strField(data, 'answers_count'), 10) || 0,
+    error: strField(data, 'error') || 'ask_user returned an unrecognised status',
   }
 }
 

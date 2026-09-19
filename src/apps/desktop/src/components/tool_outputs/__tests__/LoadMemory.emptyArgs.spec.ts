@@ -2,13 +2,15 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import LoadMemory from '../LoadMemory.vue'
 
-const EMPTY_CONTENT = [
-  `<load_memory query="no-such-memory" limit="10" offset="0" with_content="0">`,
-  `  <count>0</count>`,
-  `  <total_count>0</total_count>`,
-  `  <results/>`,
-  `</load_memory>`,
-].join('\n')
+const EMPTY_CONTENT = {
+  query: 'no-such-memory',
+  limit: 10,
+  offset: 0,
+  with_content: false,
+  count: 0,
+  total_count: 0,
+  results: [],
+}
 
 describe('LoadMemory.vue — empty results with args shows Arguments when expanded', () => {
   it('expanded body shows Arguments on empty results', () => {

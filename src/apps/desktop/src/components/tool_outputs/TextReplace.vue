@@ -3,12 +3,12 @@ import { computed, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import DiffView from './_shared/DiffView.vue'
-import { parseTextReplace } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseTextReplace } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   diffviewBefore?: string
   diffviewAfter?: string
@@ -17,6 +17,12 @@ const props = defineProps<{
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
+
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
 
 // Keep local toggle state in sync with the parent's `expanded` prop so the
 // component behaves as a *controlled* component (parent owns the truth).
@@ -31,7 +37,15 @@ watch(
   },
 )
 
-const parsed = computed(() => parseTextReplace(props.content))
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseTextReplace(normalized.value.data)
+  if (normalized.value.error) {
+    p.success = false
+    p.error = normalized.value.error
+  }
+  return p
+})
 
 const hasArgs = computed(() => {
   const p = (props.parameters ?? '').trim()
@@ -62,7 +76,7 @@ const displayPath = computed((): string | null => {
 
 // Running: empty envelope content, but we know the path.
 const isRunning = computed(() => {
-  return props.content.trim().length === 0 && displayPath.value !== null
+  return isEmptyContent(props.content) && displayPath.value !== null
 })
 
 const openInEditor = useInjectOpenInCodeEditor()

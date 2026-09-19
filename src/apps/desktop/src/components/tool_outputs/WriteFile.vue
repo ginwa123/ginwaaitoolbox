@@ -2,18 +2,32 @@
 import { computed, ref } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
-import { parseWriteFile } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseWriteFile } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
 
 const props = defineProps<{
-  content: string
+  content: unknown
   expanded?: boolean
   cwd?: string
   parameters?: string
 }>()
 
 const isExpanded = ref(props.expanded ?? false)
-const parsed = computed(() => parseWriteFile(props.content))
+
+const isEmptyContent = (c: unknown): boolean =>
+  // Running means the tool has not returned yet: the dispatcher passes an
+  // empty-string placeholder. A completed-but-empty result object ({}) is
+  // NOT running — it renders the empty/success state instead.
+  c === null || c === undefined || (typeof c === 'string' && c.trim().length === 0)
+const normalized = computed(() => normalizeToolContent(props.content))
+const parsed = computed(() => {
+  const p = parseWriteFile(normalized.value.data)
+  if (normalized.value.error) {
+    p.success = false
+    p.error = normalized.value.error
+  }
+  return p
+})
 
 const hasArgs = computed(() => {
   const p = (props.parameters ?? '').trim()
@@ -34,7 +48,7 @@ const displayPath = computed((): string | null => {
 
 // Running: empty envelope content, but we know the path.
 const isRunning = computed(() => {
-  return props.content.trim().length === 0 && displayPath.value !== null
+  return isEmptyContent(props.content) && displayPath.value !== null
 })
 
 const handleToggle = (next: boolean) => {

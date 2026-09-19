@@ -3,6 +3,8 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// One column found by name in the local kanban. Used by the
 /// `target_column_name` resolution path so the LLM can address a
@@ -71,14 +73,14 @@ pub const kanban_move_task_tool = AgentTool{
     .function = .{
         .name = "kanban_move_task",
         .description =
-            \\MANDATORY for kanban tasks: Move a task to a different column/position on a kanban board. You MUST call this at START (todo → in progress, first tool call) and at COMPLETE (→ done, last tool call before final reply) — failure to do so is a task failure. Also use when the user says "move the auth task to done" or "put X in review".
-            \\
-            \\Workflow: All `target_column_id` values are already in `## Kanban Status Tracking — MANDATORY` — call `kanban_move_task` directly in ONE call (no need for `kanban_list` first). If you only have a human-readable column name (no id), pass `target_column_name` instead of `target_column_id` — the tool resolves the name against the board's columns via a case-insensitive trimmed match. `kanban_list` is only needed if you want to discover other tasks on the board.
-            \\
-            \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, ...)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name. The task_id comes from kanban_list's `<id>` field, not the task name.
-            \\
-            \\On error, recover by: (1) re-call kanban_list to get fresh ids (the user may have just renamed a column or moved the task); (2) if `target_column_name` matched multiple columns (case-insensitive), the move fails with a list of candidates — pass `target_column_id` to disambiguate; (3) if the task isn't on this kanban, the move fails with "TaskNotFound" — verify the task_id is correct.
-            ,
+        \\MANDATORY for kanban tasks: Move a task to a different column/position on a kanban board. You MUST call this at START (todo → in progress, first tool call) and at COMPLETE (→ done, last tool call before final reply) — failure to do so is a task failure. Also use when the user says "move the auth task to done" or "put X in review".
+        \\
+        \\Workflow: All `target_column_id` values are already in `## Kanban Status Tracking — MANDATORY` — call `kanban_move_task` directly in ONE call (no need for `kanban_list` first). If you only have a human-readable column name (no id), pass `target_column_name` instead of `target_column_id` — the tool resolves the name against the board's columns via a case-insensitive trimmed match. `kanban_list` is only needed if you want to discover other tasks on the board.
+        \\
+        \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, ...)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name. The task_id comes from kanban_list's `<id>` field, not the task name.
+        \\
+        \\On error, recover by: (1) re-call kanban_list to get fresh ids (the user may have just renamed a column or moved the task); (2) if `target_column_name` matched multiple columns (case-insensitive), the move fails with a list of candidates — pass `target_column_id` to disambiguate; (3) if the task isn't on this kanban, the move fails with "TaskNotFound" — verify the task_id is correct.
+        ,
         .parameters = .{
             .type = "object",
             .properties = &.{
@@ -217,24 +219,15 @@ fn readTaskCurrentColumn(
     return error.TaskNotFound;
 }
 
-/// Execute the kanban_move_task tool. Returns an XML string for the
+/// Execute the kanban_move_task tool. Returns a JSON string for the
 /// LLM.
 ///
 /// Response shape on success:
-///   <kanban_move>
-///     <success>true</success>
-///     <task_id>...</task_id>
-///     <task_name>...</task_name>
-///     <column_id>...</column_id>
-///     <column_name>...</column_name>
-///     <position>...</position>
-///   </kanban_move>
+///   {"success":true,"task_id":...,"task_name":...,
+///    "column_id":...,"column_name":...,"position":...}
 ///
 /// Response shape on error:
-///   <kanban_move>
-///     <success>false</success>
-///     <error>...</error>
-///   </kanban_move>
+///   {"success":false,"error":...}
 ///
 /// Common error variants (encoded as structured strings so the LLM
 /// can recognize them):
@@ -244,14 +237,14 @@ fn readTaskCurrentColumn(
 ///   - "Ambiguous column name: '<name>' matches N columns — pass target_column_id"
 ///   - "TaskNotFound: <id>" (no row in workspace_item_tasks for task_id)
 ///   - "DB: moveTask failed: <error_name>"
-pub fn executeKanbanMoveTaskToString(
+pub fn executeKanbanMoveTaskToJSON(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: KanbanMoveTaskInput,
 ) ![]u8 {
-    if (input.workspace_id.len == 0) return errorXml(allocator, "Missing required field: workspace_id");
-    if (input.item_id.len == 0) return errorXml(allocator, "Missing required field: item_id");
-    if (input.task_id.len == 0) return errorXml(allocator, "Missing required field: task_id");
+    if (input.workspace_id.len == 0) return errorJSON(allocator, "Missing required field: workspace_id");
+    if (input.item_id.len == 0) return errorJSON(allocator, "Missing required field: item_id");
+    if (input.task_id.len == 0) return errorJSON(allocator, "Missing required field: task_id");
 
     // Matches array (for target_column_name resolution) must outlive
     // the use of `target_column_id` (which borrows from matches[0].id).
@@ -262,24 +255,22 @@ pub fn executeKanbanMoveTaskToString(
 
     const target_column_id: []const u8 = if (input.target_column_id) |cid| cid else blk: {
         const name = input.target_column_name orelse {
-            return errorXml(allocator, "Need at least one of target_column_id or target_column_name");
+            return errorJSON(allocator, "Need at least one of target_column_id or target_column_name");
         };
         if (name.len == 0) {
-            return errorXml(allocator, "Need at least one of target_column_id or target_column_name");
+            return errorJSON(allocator, "Need at least one of target_column_id or target_column_name");
         }
         const matches = findColumnsByName(allocator, db, input.item_id, name) catch |err| {
-            return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: findColumnsByName failed: {s}", .{@errorName(err)}));
+            return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: findColumnsByName failed: {s}", .{@errorName(err)}));
         };
 
         if (matches.len == 0) {
             freeColumnMatches(allocator, matches);
-            return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "Column not found: {s}", .{name}));
+            return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "Column not found: {s}", .{name}));
         }
         if (matches.len > 1) {
             freeColumnMatches(allocator, matches);
-            return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-                "Ambiguous column name: '{s}' matches {d} columns - pass target_column_id",
-                .{ name, matches.len }));
+            return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "Ambiguous column name: '{s}' matches {d} columns - pass target_column_id", .{ name, matches.len }));
         }
         name_matches = matches;
         break :blk matches[0].id;
@@ -299,7 +290,7 @@ pub fn executeKanbanMoveTaskToString(
             }
             break :blk try allocator.dupe(u8, name);
         }
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "TaskNotFound: {s}", .{input.task_id}));
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "TaskNotFound: {s}", .{input.task_id}));
     };
     defer if (task_name_slice.ptr != task_name_buf[0..].ptr) allocator.free(task_name_slice);
 
@@ -316,7 +307,8 @@ pub fn executeKanbanMoveTaskToString(
     //    so the move is visibly "appended" rather than "parked at
     //    sentinel 1_000_000".
     const position: i64 = input.position orelse blk: {
-        var q = try db.query(allocator,
+        var q = try db.query(
+            allocator,
             "SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?",
             &.{target_column_id},
         );
@@ -338,7 +330,7 @@ pub fn executeKanbanMoveTaskToString(
         target_column_id,
         position,
     ) catch |err| {
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveTask failed: {s}", .{@errorName(err)}));
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveTask failed: {s}", .{@errorName(err)}));
     };
 
     // 3a. Emit the `kanban_task` SSE event so connected KanbanView
@@ -374,16 +366,33 @@ pub fn executeKanbanMoveTaskToString(
     //    response. The task was just moved to target_column_id, so
     //    we know its new column id — just look up the name.
     const post = readTaskCurrentColumn(allocator, db, input.task_id) catch |err| {
-        return errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: readTaskCurrentColumn failed: {s}", .{@errorName(err)}));
+        return errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: readTaskCurrentColumn failed: {s}", .{@errorName(err)}));
     };
     defer allocator.free(post.column_id);
     defer allocator.free(post.column_name);
 
-    return successXml(allocator, input.task_id, task_name_slice, post.column_id, post.column_name, position);
+    return successJSON(allocator, input.task_id, task_name_slice, post.column_id, post.column_name, position);
 }
 
-/// Generate the success XML response.
-pub fn successXml(
+/// Success payload for `kanban_move_task`. Keys mirror the old
+/// `<kanban_move>` child tags 1:1.
+pub const KanbanMoveSuccess = struct {
+    success: bool,
+    task_id: []const u8,
+    task_name: []const u8,
+    column_id: []const u8,
+    column_name: []const u8,
+    position: i64,
+};
+
+/// Error payload for `kanban_move_task`.
+pub const KanbanMoveError = struct {
+    success: bool,
+    @"error": []const u8,
+};
+
+/// Generate the success JSON payload.
+pub fn successJSON(
     allocator: std.mem.Allocator,
     task_id: []const u8,
     task_name: []const u8,
@@ -391,99 +400,50 @@ pub fn successXml(
     column_name: []const u8,
     position: i64,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban_move><success>true</success>");
-
-    const eid = try xmlEscape(allocator, task_id);
-    defer allocator.free(eid);
-    try xml.appendSlice(allocator, "<task_id>");
-    try xml.appendSlice(allocator, eid);
-    try xml.appendSlice(allocator, "</task_id>");
-
-    const ename = try xmlEscape(allocator, task_name);
-    defer allocator.free(ename);
-    try xml.appendSlice(allocator, "<task_name>");
-    try xml.appendSlice(allocator, ename);
-    try xml.appendSlice(allocator, "</task_name>");
-
-    const ecid = try xmlEscape(allocator, column_id);
-    defer allocator.free(ecid);
-    try xml.appendSlice(allocator, "<column_id>");
-    try xml.appendSlice(allocator, ecid);
-    try xml.appendSlice(allocator, "</column_id>");
-
-    const ecname = try xmlEscape(allocator, column_name);
-    defer allocator.free(ecname);
-    try xml.appendSlice(allocator, "<column_name>");
-    try xml.appendSlice(allocator, ecname);
-    try xml.appendSlice(allocator, "</column_name>");
-
-    var pos_buf: [32]u8 = undefined;
-    const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
-    try xml.appendSlice(allocator, "<position>");
-    try xml.appendSlice(allocator, pos_str);
-    try xml.appendSlice(allocator, "</position>");
-
-    try xml.appendSlice(allocator, "</kanban_move>");
-    return try xml.toOwnedSlice(allocator);
+    const clean_name = try sanitizeControlChars(allocator, task_name);
+    defer allocator.free(clean_name);
+    const clean_col = try sanitizeControlChars(allocator, column_name);
+    defer allocator.free(clean_col);
+    return std.json.Stringify.valueAlloc(allocator, KanbanMoveSuccess{
+        .success = true,
+        .task_id = task_id,
+        .task_name = clean_name,
+        .column_id = column_id,
+        .column_name = clean_col,
+        .position = position,
+    }, .{});
 }
 
-/// Generate the error XML response. Mirrors the pattern in
+/// Generate the error JSON payload. Mirrors the pattern in
 /// `set_git_worktree.zig` / `add_skill.zig`.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban_move><success>false</success><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></kanban_move>");
-    return try xml.toOwnedSlice(allocator);
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, KanbanMoveError{
+        .success = false,
+        .@"error" = clean,
+    }, .{});
 }
 
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees
-/// it after escaping. Used for `errorXml(allocator, try std.fmt.allocPrint(...))`
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees
+/// it after use. Used for `errorJSON(allocator, try std.fmt.allocPrint(...))`
 /// where the caller can't `defer` the allocPrint result across a
-/// `return errorXml(...)` expression. Mirrors the pattern from
-/// `add_skill.zig`'s `xmlErrorOwned` (not actually called that in
-/// add_skill.zig — we use this approach to avoid the leak).
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
-    // We always own error_msg — free it on any path. errdefer
-    // handles the "this function returned an error" path; the
-    // trailing free handles the success path (we're about to
-    // return the owned slice).
+/// `return errorJSON(...)` expression.
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban_move><success>false</success><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></kanban_move>");
-    return try xml.toOwnedSlice(allocator);
+    return errorJSON(allocator, error_msg);
 }
 
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-    return try result.toOwnedSlice(allocator);
-}
+/// Parsed shape of `executeKanbanMoveTaskToJSON` output, for tests.
+pub const KanbanMoveOutput = struct {
+    success: bool,
+    task_id: ?[]const u8 = null,
+    task_name: ?[]const u8 = null,
+    column_id: ?[]const u8 = null,
+    column_name: ?[]const u8 = null,
+    position: ?i64 = null,
+    @"error": ?[]const u8 = null,
+};
 
 const testing = std.testing;
 const kanban_move_task = @import("kanban_move_task.zig");
@@ -622,7 +582,7 @@ test "kanban_move_task.zig emits a kanban_task SSE event on success" {
     // /api/kanban/events stream never saw a kanban_task event when
     // the AI agent moved a task. This test fails if anyone removes
     // the emit call (e.g., a future refactor that bypasses
-    // executeKanbanMoveTaskToString and inlines moveTask directly).
+    // executeKanbanMoveTaskToJSON and inlines moveTask directly).
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
@@ -746,22 +706,21 @@ test "nalarcore root.zig exposes kanban_move_task module" {
     }
 }
 
-// ─── XML serialization behavioral tests (no DB required) ───────────────
+// ─── JSON serialization behavioral tests (no DB required) ───────────────
 
-test "errorXml on missing field returns <kanban_move><success>false</success><error>...</error></kanban_move>" {
+test "errorJSON on missing field returns parsed error payload" {
     const alloc = testing.allocator;
-    const xml = try kanban_move_task.errorXml(alloc, "Missing required field: workspace_id");
-    defer alloc.free(xml);
-    try testing.expect(std.mem.startsWith(u8, xml, "<kanban_move>"));
-    try testing.expect(std.mem.endsWith(u8, xml, "</kanban_move>"));
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "Missing required field: workspace_id"));
+    const json = try kanban_move_task.errorJSON(alloc, "Missing required field: workspace_id");
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_move_task.KanbanMoveOutput, alloc, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.success);
+    try std.testing.expectEqualStrings("Missing required field: workspace_id", parsed.value.@"error" orelse "");
 }
 
-test "successXml renders all fields" {
+test "successJSON renders all fields, parsed" {
     const alloc = testing.allocator;
-    const xml = try kanban_move_task.successXml(
+    const json = try kanban_move_task.successJSON(
         alloc,
         "task_123",
         "My task",
@@ -769,18 +728,21 @@ test "successXml renders all fields" {
         "done",
         2,
     );
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>true</success>"));
-    try testing.expect(contains(xml, "<task_id>task_123</task_id>"));
-    try testing.expect(contains(xml, "<task_name>My task</task_name>"));
-    try testing.expect(contains(xml, "<column_id>col_done</column_id>"));
-    try testing.expect(contains(xml, "<column_name>done</column_name>"));
-    try testing.expect(contains(xml, "<position>2</position>"));
+    defer alloc.free(json);
+    const parsed = try std.json.parseFromSlice(kanban_move_task.KanbanMoveOutput, alloc, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.success);
+    try std.testing.expectEqualStrings("task_123", parsed.value.task_id orelse "");
+    try std.testing.expectEqualStrings("My task", parsed.value.task_name orelse "");
+    try std.testing.expectEqualStrings("col_done", parsed.value.column_id orelse "");
+    try std.testing.expectEqualStrings("done", parsed.value.column_name orelse "");
+    try std.testing.expectEqual(@as(i64, 2), parsed.value.position orelse -1);
+    try std.testing.expect(parsed.value.@"error" == null);
 }
 
-test "successXml escapes special characters" {
+test "successJSON keeps raw characters, parsed" {
     const alloc = testing.allocator;
-    const xml = try kanban_move_task.successXml(
+    const json = try kanban_move_task.successJSON(
         alloc,
         "task_&x",
         "<fancy>",
@@ -788,13 +750,13 @@ test "successXml escapes special characters" {
         "in <review>",
         0,
     );
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "&amp;x"));
-    try testing.expect(contains(xml, "&lt;fancy&gt;"));
-    try testing.expect(contains(xml, "in &lt;review&gt;"));
-    // Make sure the unescaped angle-bracket forms do NOT appear
-    try testing.expect(!contains(xml, "<fancy>"));
-    try testing.expect(!contains(xml, "in <review>"));
+    defer alloc.free(json);
+    // Raw text needs no escaping in JSON — parse and compare verbatim.
+    const parsed = try std.json.parseFromSlice(kanban_move_task.KanbanMoveOutput, alloc, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("task_&x", parsed.value.task_id orelse "");
+    try std.testing.expectEqualStrings("<fancy>", parsed.value.task_name orelse "");
+    try std.testing.expectEqualStrings("in <review>", parsed.value.column_name orelse "");
 }
 
 // ─── DB integration behavioral tests (in-memory SQLite) ────────────────
@@ -911,7 +873,7 @@ test "findColumnsByName matches 'in progress' with space" {
     try testing.expectEqualStrings("col_ip", matches[0].id);
 }
 
-test "executeKanbanMoveTaskToString returns success XML on valid move" {
+test "executeKanbanMoveTaskToJSON returns success JSON on valid move" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -924,17 +886,19 @@ test "executeKanbanMoveTaskToString returns success XML on valid move" {
         .target_column_id = "col_done",
         .position = 0,
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>true</success>"));
-    try testing.expect(contains(xml, "<task_id>t1</task_id>"));
-    try testing.expect(contains(xml, "<task_name>Auth task</task_name>"));
-    try testing.expect(contains(xml, "<column_id>col_done</column_id>"));
-    try testing.expect(contains(xml, "<column_name>done</column_name>"));
+    const parsed = try std.json.parseFromSlice(kanban_move_task.KanbanMoveOutput, alloc, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.success);
+    try std.testing.expectEqualStrings("t1", parsed.value.task_id orelse "");
+    try std.testing.expectEqualStrings("Auth task", parsed.value.task_name orelse "");
+    try std.testing.expectEqualStrings("col_done", parsed.value.column_id orelse "");
+    try std.testing.expectEqualStrings("done", parsed.value.column_name orelse "");
 }
 
-test "executeKanbanMoveTaskToString resolves column name to id" {
+test "executeKanbanMoveTaskToJSON resolves column name to id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -948,13 +912,13 @@ test "executeKanbanMoveTaskToString resolves column name to id" {
         .target_column_name = "DONE", // case-insensitive match against "done"
         .position = 0,
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>true</success>"));
-    try testing.expect(contains(xml, "<column_id>col_done</column_id>"));
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"success\":true"));
+    try testing.expect(contains(json, "\"column_id\":\"col_done\""));
 }
 
-test "executeKanbanMoveTaskToString returns Column not found error" {
+test "executeKanbanMoveTaskToJSON returns Column not found error" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -966,13 +930,13 @@ test "executeKanbanMoveTaskToString returns Column not found error" {
         .task_id = "t1",
         .target_column_name = "nonexistent",
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "Column not found"));
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "Column not found"));
 }
 
-test "executeKanbanMoveTaskToString returns Need target_column_id/name error" {
+test "executeKanbanMoveTaskToJSON returns Need target_column_id/name error" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -984,13 +948,13 @@ test "executeKanbanMoveTaskToString returns Need target_column_id/name error" {
         .task_id = "t1",
         // Both target_column_id and target_column_name are null.
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "target_column_id or target_column_name"));
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "target_column_id or target_column_name"));
 }
 
-test "executeKanbanMoveTaskToString returns TaskNotFound error" {
+test "executeKanbanMoveTaskToJSON returns TaskNotFound error" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1002,13 +966,13 @@ test "executeKanbanMoveTaskToString returns TaskNotFound error" {
         .task_id = "nonexistent_task",
         .target_column_id = "col_done",
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "TaskNotFound"));
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "TaskNotFound"));
 }
 
-test "executeKanbanMoveTaskToString returns Missing required field for empty workspace_id" {
+test "executeKanbanMoveTaskToJSON returns Missing required field for empty workspace_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1020,13 +984,13 @@ test "executeKanbanMoveTaskToString returns Missing required field for empty wor
         .task_id = "t1",
         .target_column_id = "col_done",
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "workspace_id"));
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "workspace_id"));
 }
 
-test "executeKanbanMoveTaskToString without position appends to end of column" {
+test "executeKanbanMoveTaskToJSON without position appends to end of column" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1044,9 +1008,9 @@ test "executeKanbanMoveTaskToString without position appends to end of column" {
         .target_column_id = "col_done",
         // position = null → end-of-column
     };
-    const xml = try kanban_move_task.executeKanbanMoveTaskToString(alloc, &s.db, input);
-    defer alloc.free(xml);
-    try testing.expect(contains(xml, "<success>true</success>"));
+    const json = try kanban_move_task.executeKanbanMoveTaskToJSON(alloc, &s.db, input);
+    defer alloc.free(json);
+    try testing.expect(contains(json, "\"success\":true"));
     // The position should be MAX(0) + 1 = 1
-    try testing.expect(contains(xml, "<position>1</position>"));
+    try testing.expect(contains(json, "\"position\":1"));
 }

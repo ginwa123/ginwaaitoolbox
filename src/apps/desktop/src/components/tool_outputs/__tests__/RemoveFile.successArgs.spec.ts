@@ -7,7 +7,7 @@ describe('RemoveFile.vue — success with args is expandable', () => {
   it('header is expandable and expanded body shows Arguments', () => {
     const wrapper = mount(RemoveFile, {
       props: {
-        content: '<path>/proj/del.txt</path><deleted>true</deleted>',
+        content: { path: '/proj/del.txt', deleted: true, error: null },
         parameters: '{"path":"/proj/del.txt"}',
         expanded: true,
       } as never,

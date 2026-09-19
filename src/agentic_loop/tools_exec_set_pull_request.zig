@@ -9,16 +9,13 @@ const llm_history = nalarcore.llm_history;
 const set_pull_request_mod = nalarcore.set_pull_request;
 const wrapToolOutput = tools.wrapToolOutput;
 
-fn extractTag(inner: []const u8, name: []const u8) ?[]const u8 {
-    var open_buf: [64]u8 = undefined;
-    var close_buf: [64]u8 = undefined;
-    const open = std.fmt.bufPrint(&open_buf, "<{s}>", .{name}) catch return null;
-    const close = std.fmt.bufPrint(&close_buf, "</{s}>", .{name}) catch return null;
-    const start = (std.mem.indexOf(u8, inner, open) orelse return null) + open.len;
-    const end = std.mem.indexOf(u8, inner[start..], close) orelse return null;
-    const value = inner[start .. start + end];
-    if (value.len == 0) return null;
-    return value;
+fn payloadString(inner_parsed: ?std.json.Parsed(std.json.Value), field: []const u8) ?[]const u8 {
+    const p = inner_parsed orelse return null;
+    if (p.value != .object) return null;
+    const v = p.value.object.get(field) orelse return null;
+    if (v != .string) return null;
+    if (v.string.len == 0) return null;
+    return v.string;
 }
 
 pub fn execSetPullRequest(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
@@ -34,7 +31,7 @@ pub fn execSetPullRequest(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     };
     defer parsed.deinit();
 
-    const inner = set_pull_request_mod.executeSetPullRequestToString(
+    const inner = set_pull_request_mod.executeSetPullRequestToJSON(
         ctx.allocator,
         ctx.io,
         ctx.session_id,
@@ -45,10 +42,10 @@ pub fn execSetPullRequest(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
+    var inner_parsed: ?std.json.Parsed(std.json.Value) = std.json.parseFromSlice(std.json.Value, ctx.allocator, inner, .{}) catch null;
+    defer if (inner_parsed) |*p| p.deinit();
+
+    if (payloadString(inner_parsed, "error")) |err_msg| {
         const output = try wrapToolOutput(ctx.allocator, "set_pull_request", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
@@ -56,16 +53,16 @@ pub fn execSetPullRequest(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     // SUCCESS: persist the attached PR binding so the session (and its
     // right panel) remembers it across tool calls. For CLEAR, pass
     // nulls (updateSessionPrUrl treats null and "" identically as
-    // "clear the binding"). For SET, extract <url> + <provider> from
-    // the inner XML (slices borrow from `inner`, still alive here;
+    // "clear the binding"). For SET, read `url` + `provider` from the
+    // inner JSON (slices borrow from `inner`, still alive here;
     // updateSessionPrUrl only reads them).
     if (parsed.value.clear) {
         llm_history.updateSessionPrUrl(ctx.allocator, ctx.db, ctx.session_id, null, null) catch |err| {
             ctx.logger.errFmt("set_pull_request: failed to clear pr_url: {s}", .{@errorName(err)});
         };
     } else {
-        const url = extractTag(inner, "url");
-        const provider = extractTag(inner, "provider");
+        const url = payloadString(inner_parsed, "url");
+        const provider = payloadString(inner_parsed, "provider");
         llm_history.updateSessionPrUrl(ctx.allocator, ctx.db, ctx.session_id, url, provider) catch |err| {
             ctx.logger.errFmt("set_pull_request: failed to persist pr_url: {s}", .{@errorName(err)});
         };

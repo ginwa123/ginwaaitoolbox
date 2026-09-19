@@ -24,7 +24,7 @@
 //!      docs/superpowers/plans/2026-09-09-fix-agent-create-kanban-task-session.md).
 //!   7. Emit `session_created` + `kanban_task created` SSE events
 //!      (fire-and-forget; log + continue on error).
-//!   8. Return the success XML to the LLM.
+//!   8. Return the success JSON to the LLM.
 //!
 //! Plan: docs/superpowers/plans/2026-07-29-create-kanban-task-tool.md
 //! Parallel HTTP handler: `src/http_handlers/task_create.zig`
@@ -35,6 +35,8 @@ const schemas = @import("schemas.zig");
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 const tags_validation = @import("../../../http_handlers/tags_validation.zig");
 const image_urls_validation = @import("../../../http_handlers/image_urls_validation.zig");
 
@@ -149,19 +151,19 @@ pub const create_kanban_task_tool = AgentTool{
     .function = .{
         .name = "create_kanban_task",
         .description =
-            \\Create a new task/card on a kanban board. Use this tool when the user asks to add a new task to a kanban, "create a card for X", "add 'do the thing' to the sprint", or any other instruction that means "make a new card". The task is auto-assigned to the first column at MAX(kanban_position)+1 unless column_id is supplied.
-            \\
-            \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "sprint 1"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item is the one with `item_type='kanban'` marked with `*(this task)*` in the Workspace Context.
-            \\
-            \\REQUIRED fields (must be non-empty): name (card title shown on the board), description (card tooltip text — promoted to required on 2026-08-18 so the kanban view always has enough context for human triage), and cwd (absolute path to the task's project root — also promoted to required on 2026-08-18; a cwd-less LLM session is useless because the agent has nothing to `bash` into). column_id is OPTIONAL — when omitted, the task is auto-assigned to the first kanban column at MAX(kanban_position)+1; when supplied, the column must belong to the same kanban item. To set a specific position, call kanban_move_task after this tool returns.
-            \\
-            \\Optional fields (mirror the user-facing KanbanTaskDetailDialog form, Migration 062 / 067 / 069 / 071 — all four are persisted on create, not just on chat-spawn):
-            \\  - tags: JSON-encoded array string like "[\"bug\",\"urgent\"]". Letters/digits/`_`/`-` only, ≤50 chars per tag, case-insensitive dedupe. Null/empty = no tags.
-            \\  - image_urls: `||`-delimited `data:image/<mime>;base64,<payload>` URLs. Null/empty = no images. 10 MB cap.
-            \\  - is_auto_retry_until_stop: "1" enables unattended mode (agent keeps retrying past the 10-error TooManyRetries bail). Anything else normalizes to "0". A sessions row is always created keyed by the new task's id; this flag only sets its column.
-            \\  - selected_profile_model: name of the profile in `LlmConfig.profiles` to bind on the new sessions row (Path A — persisted on the chat session, not on the task). Null/empty = backend default.
-            \\
-            \\Workflow: (1) call kanban_list first to discover the kanban item id and (optionally) the column id if the user named one, (2) call create_kanban_task with those ids, (3) use kanban_move_task if the task needs to land in a non-default position. On error, recover by: (1) verify item_id from the Workspace Context listing; (2) if the parent item is not a kanban, the tool returns a structured error — pick the item marked `*(this task)*` instead; (3) if column_id was rejected, omit it and let auto-assign place the card.
+        \\Create a new task/card on a kanban board. Use this tool when the user asks to add a new task to a kanban, "create a card for X", "add 'do the thing' to the sprint", or any other instruction that means "make a new card". The task is auto-assigned to the first column at MAX(kanban_position)+1 unless column_id is supplied.
+        \\
+        \\The workspace_id and item_id must come from the chat context — see the "## Workspace Context" section of the system prompt. Each sibling item is rendered as `- **<name>** (id: <id>, item_type: <type>, path: <path>)` where the id is a backtick-quoted id (e.g. item_1782313125507292140). The id is the **canonical** lookup key — do NOT pass the human-readable name (e.g. "sprint 1"); the DB columns are indexed by id and a name lookup returns zero rows. The kanban item is the one with `item_type='kanban'` marked with `*(this task)*` in the Workspace Context.
+        \\
+        \\REQUIRED fields (must be non-empty): name (card title shown on the board), description (card tooltip text — promoted to required on 2026-08-18 so the kanban view always has enough context for human triage), and cwd (absolute path to the task's project root — also promoted to required on 2026-08-18; a cwd-less LLM session is useless because the agent has nothing to `bash` into). column_id is OPTIONAL — when omitted, the task is auto-assigned to the first kanban column at MAX(kanban_position)+1; when supplied, the column must belong to the same kanban item. To set a specific position, call kanban_move_task after this tool returns.
+        \\
+        \\Optional fields (mirror the user-facing KanbanTaskDetailDialog form, Migration 062 / 067 / 069 / 071 — all four are persisted on create, not just on chat-spawn):
+        \\  - tags: JSON-encoded array string like "[\"bug\",\"urgent\"]". Letters/digits/`_`/`-` only, ≤50 chars per tag, case-insensitive dedupe. Null/empty = no tags.
+        \\  - image_urls: `||`-delimited `data:image/<mime>;base64,<payload>` URLs. Null/empty = no images. 10 MB cap.
+        \\  - is_auto_retry_until_stop: "1" enables unattended mode (agent keeps retrying past the 10-error TooManyRetries bail). Anything else normalizes to "0". A sessions row is always created keyed by the new task's id; this flag only sets its column.
+        \\  - selected_profile_model: name of the profile in `LlmConfig.profiles` to bind on the new sessions row (Path A — persisted on the chat session, not on the task). Null/empty = backend default.
+        \\
+        \\Workflow: (1) call kanban_list first to discover the kanban item id and (optionally) the column id if the user named one, (2) call create_kanban_task with those ids, (3) use kanban_move_task if the task needs to land in a non-default position. On error, recover by: (1) verify item_id from the Workspace Context listing; (2) if the parent item is not a kanban, the tool returns a structured error — pick the item marked `*(this task)*` instead; (3) if column_id was rejected, omit it and let auto-assign place the card.
         ,
         .parameters = .{
             .type = "object",
@@ -236,118 +238,96 @@ pub const create_kanban_task_tool = AgentTool{
 // and writes DB directly via the `nalarcore.ai_mod.*` helpers, the
 // same pattern used by `kanban_list` / `kanban_move_task`.
 
-/// Escape XML special characters. Mirrors the helper in
-/// `kanban_list.zig:115-131` / `kanban_move_task.zig:456-471`.
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
+/// Success payload for `create_kanban_task`. Keys mirror the old
+/// `<kanban_task>` child tags 1:1.
+pub const CreateKanbanTaskSuccess = struct {
+    success: bool,
+    task_id: []const u8,
+    column_id: []const u8,
+    position: i64,
+};
 
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
+/// Error payload for `create_kanban_task`.
+pub const CreateKanbanTaskError = struct {
+    success: bool,
+    @"error": []const u8,
+};
 
-    return try result.toOwnedSlice(allocator);
-}
-
-/// Generate an error XML response. The error body is wrapped in
-/// `<kanban_task><error>...</error></kanban_task>` so the
-/// `tools_exec_create_kanban_task.zig` wrapper can detect it via
-/// `<error>` substring search and surface the structured error to
+/// Generate an error JSON payload. The error body is wrapped in
+/// `{"success":false,"error":...}` so the
+/// `tools_exec_create_kanban_task.zig` wrapper can detect it via the
+/// `"error"` key and surface the structured error to
 /// the LLM as `success=false`. The function DUPs the input so callers
 /// don't need to free it (avoids a leak when the input is the
 /// result of `std.fmt.allocPrint(...)`).
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    const owned = try allocator.dupe(u8, error_msg);
-    defer allocator.free(owned);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban_task><success>false</success><error>");
-    const escaped = try xmlEscape(allocator, owned);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></kanban_task>");
-    return try xml.toOwnedSlice(allocator);
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, CreateKanbanTaskError{
+        .success = false,
+        .@"error" = clean,
+    }, .{});
 }
 
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees it
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it
 /// on return. Use this when the caller already has a heap-allocated
 /// message that they want to free (e.g. via defer). Errors from
 /// allocPrint can be passed here without an extra dup.
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
 
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban_task><success>false</success><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></kanban_task>");
-    return try xml.toOwnedSlice(allocator);
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, CreateKanbanTaskError{
+        .success = false,
+        .@"error" = clean,
+    }, .{});
 }
 
-/// Generate the success XML response.
-fn successXml(
+/// Generate the success JSON payload.
+fn successJSON(
     allocator: std.mem.Allocator,
     task_id: []const u8,
     column_id: []const u8,
     position: i64,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<kanban_task><success>true</success>");
-
-    try xml.appendSlice(allocator, "<task_id>");
-    const eid = try xmlEscape(allocator, task_id);
-    defer allocator.free(eid);
-    try xml.appendSlice(allocator, eid);
-    try xml.appendSlice(allocator, "</task_id>");
-
-    try xml.appendSlice(allocator, "<column_id>");
-    const ecid = try xmlEscape(allocator, column_id);
-    defer allocator.free(ecid);
-    try xml.appendSlice(allocator, ecid);
-    try xml.appendSlice(allocator, "</column_id>");
-
-    var pos_buf: [32]u8 = undefined;
-    const pos_str = std.fmt.bufPrint(&pos_buf, "{d}", .{position}) catch "0";
-    try xml.appendSlice(allocator, "<position>");
-    try xml.appendSlice(allocator, pos_str);
-    try xml.appendSlice(allocator, "</position>");
-
-    try xml.appendSlice(allocator, "</kanban_task>");
-    return try xml.toOwnedSlice(allocator);
+    return std.json.Stringify.valueAlloc(allocator, CreateKanbanTaskSuccess{
+        .success = true,
+        .task_id = task_id,
+        .column_id = column_id,
+        .position = position,
+    }, .{});
 }
 
+/// Parsed shape of `executeCreateKanbanTaskToJSON` output, for tests.
+pub const CreateKanbanTaskOutput = struct {
+    success: bool,
+    task_id: ?[]const u8 = null,
+    column_id: ?[]const u8 = null,
+    position: ?i64 = null,
+    @"error": ?[]const u8 = null,
+};
+
 /// Verify the parent `workspace_items` row exists and has
-/// `item_type='kanban'`. Returns null on success, or an error XML
+/// `item_type='kanban'`. Returns null on success, or an error JSON
 /// string when the parent isn't a kanban (or doesn't exist).
 fn validateItemTypeIsKanban(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     item_id: []const u8,
 ) !?[]u8 {
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         "SELECT item_type FROM workspace_items WHERE id = ?",
         &[_][]const u8{item_id},
     ) catch {
-        const msg = try std.fmt.allocPrint(allocator,
+        const msg = try std.fmt.allocPrint(
+            allocator,
             "item_id '{s}' does not exist in workspace_items",
             .{item_id},
         );
         defer allocator.free(msg);
-        return try errorXml(allocator, msg);
+        return try errorJSON(allocator, msg);
     };
     defer q.deinit();
 
@@ -356,20 +336,22 @@ fn validateItemTypeIsKanban(
         defer row.deinit(allocator);
         const item_type = row.values[0];
         if (std.mem.eql(u8, item_type, "kanban")) return null;
-        const msg = try std.fmt.allocPrint(allocator,
+        const msg = try std.fmt.allocPrint(
+            allocator,
             "item_id '{s}' has item_type='{s}', not 'kanban'. create_kanban_task only works on kanban items — pick the kanban item marked *(this task)* in the Workspace Context.",
             .{ item_id, item_type },
         );
         defer allocator.free(msg);
-        return try errorXml(allocator, msg);
+        return try errorJSON(allocator, msg);
     }
 
-    const msg = try std.fmt.allocPrint(allocator,
+    const msg = try std.fmt.allocPrint(
+        allocator,
         "item_id '{s}' does not exist in workspace_items",
         .{item_id},
     );
     defer allocator.free(msg);
-    return try errorXml(allocator, msg);
+    return try errorJSON(allocator, msg);
 }
 
 /// Validate that a target column exists. Returns null on success, or an
@@ -382,16 +364,18 @@ fn resolveTargetColumnId(
     input_column_id: ?[]const u8,
 ) !?[]u8 {
     if (input_column_id) |cid| {
-        var q = db.query(allocator,
+        var q = db.query(
+            allocator,
             "SELECT 1 FROM kanban_columns WHERE id = ? AND workspace_item_id = ?",
             &.{ cid, item_id },
         ) catch {
-            const msg = try std.fmt.allocPrint(allocator,
+            const msg = try std.fmt.allocPrint(
+                allocator,
                 "DB query failed while resolving column_id '{s}'",
                 .{cid},
             );
             defer allocator.free(msg);
-            return try errorXml(allocator, msg);
+            return try errorJSON(allocator, msg);
         };
         defer q.deinit();
 
@@ -401,25 +385,28 @@ fn resolveTargetColumnId(
             return null;
         }
 
-        const msg = try std.fmt.allocPrint(allocator,
+        const msg = try std.fmt.allocPrint(
+            allocator,
             "column_id '{s}' does not exist in this kanban item. Call kanban_list first to discover the column ids, or omit column_id to auto-assign.",
             .{cid},
         );
         defer allocator.free(msg);
-        return try errorXml(allocator, msg);
+        return try errorJSON(allocator, msg);
     }
 
     // No explicit column — pick the first by position ASC.
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         "SELECT 1 FROM kanban_columns WHERE workspace_item_id = ? ORDER BY position ASC LIMIT 1",
         &[_][]const u8{item_id},
     ) catch {
-        const msg = try std.fmt.allocPrint(allocator,
+        const msg = try std.fmt.allocPrint(
+            allocator,
             "DB query failed while looking up first column for item '{s}'",
             .{item_id},
         );
         defer allocator.free(msg);
-        return try errorXml(allocator, msg);
+        return try errorJSON(allocator, msg);
     };
     defer q.deinit();
 
@@ -429,12 +416,13 @@ fn resolveTargetColumnId(
         return null;
     }
 
-    const msg = try std.fmt.allocPrint(allocator,
+    const msg = try std.fmt.allocPrint(
+        allocator,
         "kanban item '{s}' has zero columns — cannot auto-assign. The kanban may be in an inconsistent state (create_kanban requires at least one column).",
         .{item_id},
     );
     defer allocator.free(msg);
-    return try errorXml(allocator, msg);
+    return try errorJSON(allocator, msg);
 }
 
 /// Fetch the actual column id (assumes `resolveTargetColumnId` returned
@@ -449,7 +437,8 @@ fn fetchTargetColumnId(
         return try allocator.dupe(u8, cid);
     }
 
-    var q = try db.query(allocator,
+    var q = try db.query(
+        allocator,
         "SELECT id FROM kanban_columns WHERE workspace_item_id = ? ORDER BY position ASC LIMIT 1",
         &[_][]const u8{item_id},
     );
@@ -468,7 +457,8 @@ fn computeNextPosition(
     db: *sqlite.SqliteBackend,
     column_id: []const u8,
 ) i64 {
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         "SELECT COALESCE(MAX(k.kanban_position), -1) + 1 FROM kanban k WHERE k.kanban_column_id = ?",
         &[_][]const u8{column_id},
     ) catch return 0;
@@ -482,22 +472,22 @@ fn computeNextPosition(
     return 0;
 }
 
-/// Execute the tool. Returns an XML string for the LLM.
-pub fn executeCreateKanbanTaskToString(
+/// Execute the tool. Returns a JSON string for the LLM.
+pub fn executeKanbanTaskToJSON(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: CreateKanbanTaskInput,
 ) ![]u8 {
     // 1. Validate required fields.
     if (input.workspace_id.len == 0) {
-        return errorXml(allocator, "workspace_id is required (pass it from the Workspace Context listing)");
+        return errorJSON(allocator, "workspace_id is required (pass it from the Workspace Context listing)");
     }
     if (input.item_id.len == 0) {
-        return errorXml(allocator, "item_id is required (pass the kanban item's id from the Workspace Context listing)");
+        return errorJSON(allocator, "item_id is required (pass the kanban item's id from the Workspace Context listing)");
     }
     const trimmed_name = std.mem.trim(u8, input.name, " \t\n\r");
     if (trimmed_name.len == 0) {
-        return errorXml(allocator, "name is required and must be non-empty after trim");
+        return errorJSON(allocator, "name is required and must be non-empty after trim");
     }
     // description + cwd were promoted from optional to required on
     // 2026-08-18. Both are validated here (right after `name`) so the
@@ -508,7 +498,7 @@ pub fn executeCreateKanbanTaskToString(
     // circuit there was removed in the same change).
     const trimmed_description = std.mem.trim(u8, input.description, " \t\n\r");
     if (trimmed_description.len == 0) {
-        return errorXml(allocator, "description is required and must be non-empty after trim (one-to-three sentences about what this task is about)");
+        return errorJSON(allocator, "description is required and must be non-empty after trim (one-to-three sentences about what this task is about)");
     }
 
     // 2. Validate parent item_type='kanban'.
@@ -533,13 +523,14 @@ pub fn executeCreateKanbanTaskToString(
         allocator,
         input.tags,
     ) catch |err| {
-        // errorXmlOwned takes ownership of `msg` — do NOT also
+        // errorJSONOwned takes ownership of `msg` — do NOT also
         // `defer allocator.free(msg)` (would be a double-free).
-        const msg = std.fmt.allocPrint(allocator,
+        const msg = std.fmt.allocPrint(
+            allocator,
             "tags validation failed: {s}. tags must be a JSON-encoded array of strings — letters/digits/`_`/`-` only, ≤50 chars per tag, e.g. \"[\\\"bug\\\",\\\"urgent\\\"]\".",
             .{@errorName(err)},
-        ) catch return errorXml(allocator, "Out of memory while formatting tags validation error");
-        return try errorXmlOwned(allocator, msg);
+        ) catch return errorJSON(allocator, "Out of memory while formatting tags validation error");
+        return try errorJSONOwned(allocator, msg);
     };
     defer allocator.free(validated_tags);
 
@@ -550,10 +541,10 @@ pub fn executeCreateKanbanTaskToString(
         input.image_urls orelse "",
     ) catch |err| switch (err) {
         error.ImageUrlsTooLarge => {
-            return errorXml(allocator, "image_urls payload too large (max 10 MB)");
+            return errorJSON(allocator, "image_urls payload too large (max 10 MB)");
         },
         error.InvalidImageUrl => {
-            return errorXml(allocator, "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs");
+            return errorJSON(allocator, "image_urls must be `||`-delimited data:image/<mime>;base64,... URLs");
         },
     };
 
@@ -568,11 +559,11 @@ pub fn executeCreateKanbanTaskToString(
     //    only the LLM tool requires it.
     const validated_cwd = blk: {
         const raw = input.cwd;
-        if (raw.len == 0) return errorXml(allocator, "cwd is required (pass the absolute path to this task's project root — the UI form supports cwd-less tasks, but the LLM tool requires it because a cwd-less session has nothing to bash into)");
-        if (raw.len > 4096) return errorXml(allocator, "cwd path too long (max 4 KiB)");
-        if (!std.fs.path.isAbsolute(raw)) return errorXml(allocator, "cwd must be an absolute path");
+        if (raw.len == 0) return errorJSON(allocator, "cwd is required (pass the absolute path to this task's project root — the UI form supports cwd-less tasks, but the LLM tool requires it because a cwd-less session has nothing to bash into)");
+        if (raw.len > 4096) return errorJSON(allocator, "cwd path too long (max 4 KiB)");
+        if (!std.fs.path.isAbsolute(raw)) return errorJSON(allocator, "cwd must be an absolute path");
         for (raw) |c| {
-            if (c < 0x20 or c == 0x7f) return errorXml(allocator, "cwd contains a control character");
+            if (c < 0x20 or c == 0x7f) return errorJSON(allocator, "cwd contains a control character");
         }
         break :blk raw;
     };
@@ -580,7 +571,7 @@ pub fn executeCreateKanbanTaskToString(
     // 7. Generate task id.
     const timestamp_ns = @import("helpers").unixTimestampNanos();
     const task_id = std.fmt.allocPrint(allocator, "task_{d}", .{timestamp_ns}) catch {
-        return errorXml(allocator, "Out of memory while generating task id");
+        return errorJSON(allocator, "Out of memory while generating task id");
     };
     defer allocator.free(task_id);
 
@@ -614,19 +605,20 @@ pub fn executeCreateKanbanTaskToString(
         // null omits the column (DEFAULT '' applies).
         null,
     ) catch {
-        // NOTE: do NOT `defer allocator.free(msg)` here — `errorXmlOwned`
+        // NOTE: do NOT `defer allocator.free(msg)` here — `errorJSONOwned`
         // takes ownership of `msg` and frees it on success. The previous
-        // `defer free` before `errorXmlOwned` was a latent double-free
+        // `defer free` before `errorJSONOwned` was a latent double-free
         // that fired only when the INSERT actually failed; my changes to
         // pass `""` instead of `null` for tags/image_urls/cwd made this
         // path reachable from the happy-path tests (the test schema was
         // missing the new columns). Ownership now lives entirely with
-        // `errorXmlOwned`.
-        const msg = std.fmt.allocPrint(allocator,
+        // `errorJSONOwned`.
+        const msg = std.fmt.allocPrint(
+            allocator,
             "Failed to INSERT task row into workspace_item_tasks",
             .{},
-        ) catch return errorXml(allocator, "Out of memory");
-        return try errorXmlOwned(allocator, msg);
+        ) catch return errorJSON(allocator, "Out of memory");
+        return try errorJSONOwned(allocator, msg);
     };
     defer task.deinit(allocator);
 
@@ -634,7 +626,8 @@ pub fn executeCreateKanbanTaskToString(
     const position = computeNextPosition(allocator, db, target_column_id);
     const position_str = std.fmt.allocPrint(allocator, "{d}", .{position}) catch "0";
     defer allocator.free(position_str);
-    db.exec(allocator,
+    db.exec(
+        allocator,
         "INSERT OR REPLACE INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) VALUES (?, ?, ?)",
         &[_][]const u8{ task_id, target_column_id, position_str },
     ) catch |err| {
@@ -686,7 +679,8 @@ pub fn executeCreateKanbanTaskToString(
         };
         const profile: []const u8 = input.selected_profile_model orelse "";
 
-        db.exec(allocator,
+        db.exec(
+            allocator,
             "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
                 "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)",
             &[_][]const u8{
@@ -788,8 +782,8 @@ pub fn executeCreateKanbanTaskToString(
         std.log.warn("create_kanban_task: SSE emit failed (non-fatal): {s}", .{@errorName(err)});
     };
 
-    // 14. Return success XML.
-    return successXml(allocator, task_id, target_column_id, position);
+    // 14. Return success JSON.
+    return successJSON(allocator, task_id, target_column_id, position);
 }
 
 const testing = std.testing;
@@ -831,7 +825,8 @@ test "create_kanban_task tool definition has correct name" {
     if (!contains(source, ".name = \"create_kanban_task\"")) {
         std.debug.print(
             "\n!! create_kanban_task.zig does not define the tool with .name = \"create_kanban_task\" !!\n" ++
-                "   The LLM dispatch will fail to find the tool by its schema name.\n", .{},
+                "   The LLM dispatch will fail to find the tool by its schema name.\n",
+            .{},
         );
         return error.ToolNameMissing;
     }
@@ -847,14 +842,16 @@ test "create_kanban_task description mentions kanban + task/card" {
     if (!contains(source, "kanban")) {
         std.debug.print(
             "\n!! create_kanban_task description does not contain 'kanban' !!\n" ++
-                "   LLM can't scope the tool to kanban contexts.\n", .{},
+                "   LLM can't scope the tool to kanban contexts.\n",
+            .{},
         );
         return error.KanbanKeywordMissing;
     }
     if (!contains(source, "task")) {
         std.debug.print(
             "\n!! create_kanban_task description does not contain 'task' !!\n" ++
-                "   LLM can't recognize this as a card-creation tool.\n", .{},
+                "   LLM can't recognize this as a card-creation tool.\n",
+            .{},
         );
         return error.TaskKeywordMissing;
     }
@@ -871,7 +868,8 @@ test "create_kanban_task required fields are workspace_id + item_id + name + des
     if (!contains(source, ".required = &.{ \"workspace_id\", \"item_id\", \"name\", \"description\", \"cwd\" }")) {
         std.debug.print(
             "\n!! create_kanban_task .required field is missing one of workspace_id / item_id / name / description / cwd !!\n" ++
-                "   The tool must require all five; missing any one returns an undefined slice.\n", .{},
+                "   The tool must require all five; missing any one returns an undefined slice.\n",
+            .{},
         );
         return error.RequiredFieldsMissing;
     }
@@ -885,21 +883,21 @@ test "create_kanban_task input struct has workspace_id + item_id + name fields" 
     if (!contains(source, "workspace_id: []const u8")) {
         std.debug.print(
             "\n!! CreateKanbanTaskInput is missing the 'workspace_id' field !!\n",
-        .{},
+            .{},
         );
         return error.WorkspaceIdFieldMissing;
     }
     if (!contains(source, "item_id: []const u8")) {
         std.debug.print(
             "\n!! CreateKanbanTaskInput is missing the 'item_id' field !!\n",
-        .{},
+            .{},
         );
         return error.ItemIdFieldMissing;
     }
     if (!contains(source, "name: []const u8")) {
         std.debug.print(
             "\n!! CreateKanbanTaskInput is missing the 'name' field !!\n",
-        .{},
+            .{},
         );
         return error.NameFieldMissing;
     }
@@ -914,7 +912,8 @@ test "create_kanban_task description marks column_id as optional" {
     if (!contains(source, "column_id")) {
         std.debug.print(
             "\n!! create_kanban_task description does not mention 'column_id' !!\n" ++
-                "   LLM won't know it can omit the field for auto-assign.\n", .{},
+                "   LLM won't know it can omit the field for auto-assign.\n",
+            .{},
         );
         return error.ColumnIdMentionMissing;
     }
@@ -932,21 +931,24 @@ test "create_kanban_task always inserts sessions with HTTP-parity columns" {
     if (!contains(source, "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop)")) {
         std.debug.print(
             "\n!! create_kanban_task sessions INSERT is missing or not HTTP-parity !!\n" ++
-                "   The tool must always INSERT the full sessions row (create_session parity).\n", .{},
+                "   The tool must always INSERT the full sessions row (create_session parity).\n",
+            .{},
         );
         return error.SessionsInsertNotUnconditional;
     }
     if (!contains(source, "INSERT INTO llm_history")) {
         std.debug.print(
             "\n!! create_kanban_task does not seed llm_history !!\n" ++
-                "   The tool must INSERT the initial user llm_history row.\n", .{},
+                "   The tool must INSERT the initial user llm_history row.\n",
+            .{},
         );
         return error.LlmHistorySeedMissing;
     }
     if (!contains(source, "onEventSendSessions")) {
         std.debug.print(
             "\n!! create_kanban_task does not emit session_created SSE !!\n" ++
-                "   The tool must call onEventSendSessions(action=created).\n", .{},
+                "   The tool must call onEventSendSessions(action=created).\n",
+            .{},
         );
         return error.SessionCreatedSseMissing;
     }
@@ -964,14 +966,15 @@ test "create_kanban_task description tells LLM ids come from Workspace Context" 
     {
         std.debug.print(
             "\n!! create_kanban_task description does not mention Workspace Context !!\n" ++
-                "   LLM will hallucinate workspace_id / item_id without this hint.\n", .{},
+                "   LLM will hallucinate workspace_id / item_id without this hint.\n",
+            .{},
         );
         return error.WorkspaceContextHintMissing;
     }
 }
 // ─── DB integration behavioral tests (in-memory SQLite) ────────────────────
 //
-// These tests exercise `executeCreateKanbanTaskToString` end-to-end:
+// These tests exercise `executeKanbanTaskToJSON` end-to-end:
 // they seed a workspace + kanban item + columns + (optionally) tasks,
 // call the tool with crafted inputs, and assert on the returned XML
 // + the DB state.
@@ -1085,22 +1088,26 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
 
     try db.exec(alloc, "INSERT INTO workspaces (id, name) VALUES ('ws_1', 'Test')", &[_][]const u8{});
     // Default seeded item — a kanban named 'Sprint' with 3 columns.
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name) " ++
             "VALUES ('item_k1', 'ws_1', 'kanban', 'Sprint')",
         &[_][]const u8{},
     );
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) " ++
             "VALUES ('col_todo', 'item_k1', 'todo', 0)",
         &[_][]const u8{},
     );
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) " ++
             "VALUES ('col_ip', 'item_k1', 'in progress', 1)",
         &[_][]const u8{},
     );
-    try db.exec(alloc,
+    try db.exec(
+        alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) " ++
             "VALUES ('col_done', 'item_k1', 'done', 2)",
         &[_][]const u8{},
@@ -1112,7 +1119,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
 /// Count rows in `workspace_item_tasks` matching `WHERE id = ?`.
 /// Used to assert the tool inserted exactly one row.
 fn taskRowExists(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, task_id: []const u8) !bool {
-    var q = try db.query(alloc,
+    var q = try db.query(
+        alloc,
         "SELECT 1 FROM workspace_item_tasks WHERE id = ?",
         &.{task_id},
     );
@@ -1134,78 +1142,83 @@ fn readColumn(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const 
     return try alloc.dupe(u8, row.values[0]);
 }
 
-/// Extract the task_id from the success XML returned by the tool.
-/// Returns the borrowed slice (no allocation).
-fn extractTaskId(xml: []const u8) ![]const u8 {
-    const start = std.mem.indexOf(u8, xml, "<task_id>") orelse return error.MissingTaskIdTag;
-    const task_id_start = start + "<task_id>".len;
-    const end = std.mem.indexOf(u8, xml[task_id_start..], "</task_id>") orelse return error.MissingTaskIdCloseTag;
-    return xml[task_id_start .. task_id_start + end];
+/// Extract the task_id from the success JSON returned by the tool.
+/// Returns an allocator-owned dupe the caller frees.
+fn extractTaskId(allocator: std.mem.Allocator, json: []const u8) ![]u8 {
+    const parsed = std.json.parseFromSlice(
+        CreateKanbanTaskOutput,
+        allocator,
+        json,
+        .{ .allocate = .alloc_always },
+    ) catch return error.MissingTaskIdTag;
+    defer parsed.deinit();
+    const task_id = parsed.value.task_id orelse return error.MissingTaskIdTag;
+    return allocator.dupe(u8, task_id);
 }
 
-test "executeCreateKanbanTaskToString returns success XML on happy path" {
+test "executeKanbanTaskToJSON returns success JSON on happy path" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "new task",
         .description = "happy path task",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<kanban_task>"));
-    try testing.expect(contains(xml, "<success>true</success>"));
-    try testing.expect(contains(xml, "<task_id>"));
-    try testing.expect(contains(xml, "<column_id>col_todo</column_id>"));
-    try testing.expect(contains(xml, "<position>0</position>"));
-    try testing.expect(!contains(xml, "<error>"));
+    const parsed = try std.json.parseFromSlice(create_kanban_task.CreateKanbanTaskOutput, alloc, json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.success);
+    try std.testing.expect((parsed.value.task_id orelse @as([]const u8, "")).len > 0);
+    try std.testing.expectEqualStrings("col_todo", parsed.value.column_id orelse "");
+    try std.testing.expectEqual(@as(i64, 0), parsed.value.position orelse -1);
+    try std.testing.expect(parsed.value.@"error" == null);
 }
 
-test "executeCreateKanbanTaskToString inserts a row into workspace_item_tasks" {
+test "executeKanbanTaskToJSON inserts a row into workspace_item_tasks" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "insert me",
         .description = "insert me desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    // Extract the task_id from the XML (between <task_id> and </task_id>).
-    const start = std.mem.indexOf(u8, xml, "<task_id>") orelse return error.MissingTaskIdTag;
-    const task_id_start = start + "<task_id>".len;
-    const end = std.mem.indexOf(u8, xml[task_id_start..], "</task_id>") orelse return error.MissingTaskIdCloseTag;
-    const task_id = xml[task_id_start .. task_id_start + end];
+    // Extract the task_id from the JSON payload.
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
 
     try testing.expect(try taskRowExists(alloc, &s.db, task_id));
 }
 
-test "executeCreateKanbanTaskToString always inserts sessions row without flag or profile" {
+test "executeKanbanTaskToJSON always inserts sessions row without flag or profile" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "plain card",
         .description = "no flag no profile",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
     const name = try readColumn(alloc, &s.db, "SELECT name FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(name);
     try testing.expectEqualStrings("plain card", name);
@@ -1220,13 +1233,13 @@ test "executeCreateKanbanTaskToString always inserts sessions row without flag o
     try testing.expectEqualStrings("0", flag);
 }
 
-test "executeCreateKanbanTaskToString sessions row honors flag and profile" {
+test "executeKanbanTaskToJSON sessions row honors flag and profile" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "flagged card",
@@ -1235,9 +1248,10 @@ test "executeCreateKanbanTaskToString sessions row honors flag and profile" {
         .is_auto_retry_until_stop = "1",
         .selected_profile_model = "code",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
     const flag = try readColumn(alloc, &s.db, "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(flag);
     try testing.expectEqualStrings("1", flag);
@@ -1246,22 +1260,23 @@ test "executeCreateKanbanTaskToString sessions row honors flag and profile" {
     try testing.expectEqualStrings("code", profile);
 }
 
-test "executeCreateKanbanTaskToString inserts initial user llm_history row" {
+test "executeKanbanTaskToJSON inserts initial user llm_history row" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "seed me",
         .description = "seed desc here",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
     const content = try readColumn(alloc, &s.db, "SELECT response_content FROM llm_history WHERE session_id = ?", &.{task_id});
     defer alloc.free(content);
     try testing.expectEqualStrings("seed me\n\nseed desc here", content);
@@ -1270,121 +1285,124 @@ test "executeCreateKanbanTaskToString inserts initial user llm_history row" {
     try testing.expectEqualStrings("user", role);
 }
 
-test "executeCreateKanbanTaskToString appends at MAX(kanban_position)+1 when column has existing tasks" {
+test "executeKanbanTaskToJSON appends at MAX(kanban_position)+1 when column has existing tasks" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
     // Seed 2 existing tasks in the todo column at positions 0 and 1.
-    try s.db.exec(alloc,
+    try s.db.exec(
+        alloc,
         "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) " ++
             "VALUES ('t_existing_1', 'item_k1', 'first', 'standard')",
         &[_][]const u8{},
     );
-    try s.db.exec(alloc,
+    try s.db.exec(
+        alloc,
         "INSERT INTO workspace_item_tasks (id, workspace_item_id, name, task_type) " ++
             "VALUES ('t_existing_2', 'item_k1', 'second', 'standard')",
         &[_][]const u8{},
     );
-    try s.db.exec(alloc,
+    try s.db.exec(
+        alloc,
         "INSERT INTO kanban (workspace_item_task_id, kanban_column_id, kanban_position) " ++
             "VALUES ('t_existing_1', 'col_todo', 0), ('t_existing_2', 'col_todo', 1)",
         &[_][]const u8{},
     );
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "third",
         .description = "third desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
     // The first column is col_todo — position 2 should be appended.
-    try testing.expect(contains(xml, "<column_id>col_todo</column_id>"));
-    try testing.expect(contains(xml, "<position>2</position>"));
+    try testing.expect(contains(json, "\"column_id\":\"col_todo\""));
+    try testing.expect(contains(json, "\"position\":2"));
 }
 
-test "executeCreateKanbanTaskToString returns error when workspace_id is empty" {
+test "executeKanbanTaskToJSON returns error when workspace_id is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "",
         .item_id = "item_k1",
         .name = "x",
         .description = "test desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "workspace_id"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "workspace_id"));
 }
 
-test "executeCreateKanbanTaskToString returns error when item_id is empty" {
+test "executeKanbanTaskToJSON returns error when item_id is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "",
         .name = "x",
         .description = "test desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "item_id"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "item_id"));
 }
 
-test "executeCreateKanbanTaskToString returns error when name is empty" {
+test "executeKanbanTaskToJSON returns error when name is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "",
         .description = "test desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "name"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "name"));
 }
 
-test "executeCreateKanbanTaskToString returns error when name is whitespace-only" {
+test "executeKanbanTaskToJSON returns error when name is whitespace-only" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "   \t\n  ",
         .description = "test desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "name"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "name"));
 }
 
 // ─── description + cwd became required on 2026-08-18 ──────────────────
@@ -1398,94 +1416,95 @@ test "executeCreateKanbanTaskToString returns error when name is whitespace-only
 // the test runner's narrative — name first because it has been required
 // longest, then description + cwd because they were promoted together.
 
-test "executeCreateKanbanTaskToString returns error when description is empty" {
+test "executeKanbanTaskToJSON returns error when description is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "no desc",
         .description = "",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "description"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "description"));
 }
 
-test "executeCreateKanbanTaskToString returns error when description is whitespace-only" {
+test "executeKanbanTaskToJSON returns error when description is whitespace-only" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "whitespace desc",
         .description = "   \t\n  ",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "description"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "description"));
 }
 
-test "executeCreateKanbanTaskToString returns error when cwd is empty" {
+test "executeKanbanTaskToJSON returns error when cwd is empty" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "no cwd",
         .description = "test desc",
         .cwd = "",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "cwd"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "cwd"));
 }
 
-test "executeCreateKanbanTaskToString returns error when parent item_type is not kanban" {
+test "executeKanbanTaskToJSON returns error when parent item_type is not kanban" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
     // Replace the kanban item with a chat item.
-    try s.db.exec(alloc,
+    try s.db.exec(
+        alloc,
         "UPDATE workspace_items SET item_type = 'chat' WHERE id = 'item_k1'",
         &[_][]const u8{},
     );
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "x",
         .description = "test desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
     // The error must mention the parent type so the LLM can self-correct.
-    try testing.expect(contains(xml, "kanban") or contains(xml, "item_type"));
+    try testing.expect(contains(json, "kanban") or contains(json, "item_type"));
 }
 
-test "executeCreateKanbanTaskToString returns error when kanban has zero columns" {
+test "executeKanbanTaskToJSON returns error when kanban has zero columns" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
@@ -1494,27 +1513,27 @@ test "executeCreateKanbanTaskToString returns error when kanban has zero columns
     // Delete all 3 seeded columns — the kanban is now column-less.
     try s.db.exec(alloc, "DELETE FROM kanban_columns WHERE workspace_item_id = 'item_k1'", &[_][]const u8{});
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "x",
         .description = "test desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "column") or contains(xml, "Column"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "column") or contains(json, "Column"));
 }
 
-test "executeCreateKanbanTaskToString honors explicit column_id" {
+test "executeKanbanTaskToJSON honors explicit column_id" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "explicit placement",
@@ -1522,26 +1541,28 @@ test "executeCreateKanbanTaskToString honors explicit column_id" {
         .cwd = "/test",
         .column_id = "col_ip",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>true</success>"));
-    try testing.expect(contains(xml, "<column_id>col_ip</column_id>"));
-    try testing.expect(contains(xml, "<position>0</position>"));
+    try testing.expect(contains(json, "\"success\":true"));
+    try testing.expect(contains(json, "\"column_id\":\"col_ip\""));
+    try testing.expect(contains(json, "\"position\":0"));
 }
 
-test "executeCreateKanbanTaskToString rejects column_id that does not belong to the item" {
+test "executeKanbanTaskToJSON rejects column_id that does not belong to the item" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
     // Add a column under a DIFFERENT kanban item.
-    try s.db.exec(alloc,
+    try s.db.exec(
+        alloc,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name) " ++
             "VALUES ('item_k2', 'ws_1', 'kanban', 'Other Sprint')",
         &[_][]const u8{},
     );
-    try s.db.exec(alloc,
+    try s.db.exec(
+        alloc,
         "INSERT INTO kanban_columns (id, workspace_item_id, name, position) " ++
             "VALUES ('col_other', 'item_k2', 'todo', 0)",
         &[_][]const u8{},
@@ -1550,7 +1571,7 @@ test "executeCreateKanbanTaskToString rejects column_id that does not belong to 
     // Try to place the new task in 'col_other' while item_id points
     // to 'item_k1'. The tool must reject this — the column does not
     // belong to the item.
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "x",
@@ -1558,11 +1579,11 @@ test "executeCreateKanbanTaskToString rejects column_id that does not belong to 
         .cwd = "/test",
         .column_id = "col_other",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "column") or contains(xml, "Column"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "column") or contains(json, "Column"));
 }
 
 // ─── New optional fields: tags / image_urls / cwd / unattended / profile ──
@@ -1741,13 +1762,13 @@ test "create_kanban_task source mentions tags_validation and image_urls_validati
 
 // ─── DB behavior tests for new optional fields ──────────────────────────
 
-test "executeCreateKanbanTaskToString persists tags when supplied" {
+test "executeKanbanTaskToJSON persists tags when supplied" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "tagged",
@@ -1755,23 +1776,22 @@ test "executeCreateKanbanTaskToString persists tags when supplied" {
         .cwd = "/test",
         .tags = "[\"bug\",\"urgent\"]",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT tags FROM workspace_item_tasks WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT tags FROM workspace_item_tasks WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     try testing.expectEqualStrings("[\"bug\",\"urgent\"]", stored);
 }
 
-test "executeCreateKanbanTaskToString persists image_urls when supplied" {
+test "executeKanbanTaskToJSON persists image_urls when supplied" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "with images",
@@ -1779,58 +1799,55 @@ test "executeCreateKanbanTaskToString persists image_urls when supplied" {
         .cwd = "/test",
         .image_urls = "data:image/png;base64,abc||data:image/jpeg;base64,def",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT image_urls FROM workspace_item_tasks WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT image_urls FROM workspace_item_tasks WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     try testing.expectEqualStrings("data:image/png;base64,abc||data:image/jpeg;base64,def", stored);
 }
 
-test "executeCreateKanbanTaskToString persists cwd when supplied" {
+test "executeKanbanTaskToJSON persists cwd when supplied" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "with cwd",
         .description = "with cwd desc",
         .cwd = "/home/me/proj",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT cwd FROM workspace_item_tasks WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT cwd FROM workspace_item_tasks WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     try testing.expectEqualStrings("/home/me/proj", stored);
 }
 
-test "executeCreateKanbanTaskToString stamps last_human_touched_at on happy path" {
+test "executeKanbanTaskToJSON stamps last_human_touched_at on happy path" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "stamped",
         .description = "stamped desc",
         .cwd = "/test",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT COALESCE(last_human_touched_at_nano, '') FROM workspace_item_tasks WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT COALESCE(last_human_touched_at_nano, '') FROM workspace_item_tasks WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     // The stamp must be non-empty (a unix-ms integer string). The
     // pre-stamp default is NULL → COALESCE returns ''. After the
@@ -1839,13 +1856,13 @@ test "executeCreateKanbanTaskToString stamps last_human_touched_at on happy path
     try testing.expect(stored.len > 0 and stored[0] >= '0' and stored[0] <= '9');
 }
 
-test "executeCreateKanbanTaskToString creates sessions row when is_auto_retry_until_stop=1" {
+test "executeKanbanTaskToJSON creates sessions row when is_auto_retry_until_stop=1" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "unattended",
@@ -1853,23 +1870,22 @@ test "executeCreateKanbanTaskToString creates sessions row when is_auto_retry_un
         .cwd = "/test",
         .is_auto_retry_until_stop = "1",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     try testing.expectEqualStrings("1", stored);
 }
 
-test "executeCreateKanbanTaskToString persists selected_profile_model when supplied" {
+test "executeKanbanTaskToJSON persists selected_profile_model when supplied" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "with profile",
@@ -1877,23 +1893,22 @@ test "executeCreateKanbanTaskToString persists selected_profile_model when suppl
         .cwd = "/test",
         .selected_profile_model = "fast-model",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT selected_profile_model FROM sessions WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT selected_profile_model FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     try testing.expectEqualStrings("fast-model", stored);
 }
 
-test "executeCreateKanbanTaskToString writes both unattended and profile in single sessions row" {
+test "executeKanbanTaskToJSON writes both unattended and profile in single sessions row" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "combined",
@@ -1902,18 +1917,15 @@ test "executeCreateKanbanTaskToString writes both unattended and profile in sing
         .is_auto_retry_until_stop = "1",
         .selected_profile_model = "my-profile",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const flag = try readColumn(alloc, &s.db,
-        "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const flag = try readColumn(alloc, &s.db, "SELECT is_auto_retry_until_stop FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(flag);
     try testing.expectEqualStrings("1", flag);
 
-    const profile = try readColumn(alloc, &s.db,
-        "SELECT selected_profile_model FROM sessions WHERE id = ?",
-        &.{task_id});
+    const profile = try readColumn(alloc, &s.db, "SELECT selected_profile_model FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(profile);
     try testing.expectEqualStrings("my-profile", profile);
 }
@@ -1932,13 +1944,13 @@ test "executeCreateKanbanTaskToString writes both unattended and profile in sing
 // returns the trimmed user-facing title in both the unattended-only
 // and profile-only code paths.
 
-test "executeCreateKanbanTaskToString persists sessions.name == trimmed task name (unattended)" {
+test "executeKanbanTaskToJSON persists sessions.name == trimmed task name (unattended)" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "workspace item task nama and session name",
@@ -1946,52 +1958,50 @@ test "executeCreateKanbanTaskToString persists sessions.name == trimmed task nam
         .cwd = "/test",
         .is_auto_retry_until_stop = "1",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT name FROM sessions WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT name FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     // Pre-fix this returned task_id (the literal task id). Post-fix it
     // must equal the trimmed user-facing title.
     try testing.expectEqualStrings("workspace item task nama and session name", stored);
 }
 
-test "executeCreateKanbanTaskToString persists sessions.name == trimmed task name (profile)" {
+test "executeKanbanTaskToJSON persists sessions.name == trimmed task name (profile)" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         // Leading/trailing whitespace; the tool trims before INSERT
-        // (see executeCreateKanbanTaskToString line 463-466), so the
+        // (see executeKanbanTaskToJSON line 463-466), so the
         // sessions.name must be the trimmed value.
         .name = "   my chatty task   ",
         .description = "sessions.name == trimmed profile desc",
         .cwd = "/test",
         .selected_profile_model = "fast-model",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    const task_id = try extractTaskId(xml);
-    const stored = try readColumn(alloc, &s.db,
-        "SELECT name FROM sessions WHERE id = ?",
-        &.{task_id});
+    const task_id = try extractTaskId(alloc, json);
+    defer alloc.free(task_id);
+    const stored = try readColumn(alloc, &s.db, "SELECT name FROM sessions WHERE id = ?", &.{task_id});
     defer alloc.free(stored);
     try testing.expectEqualStrings("my chatty task", stored);
 }
 
-test "executeCreateKanbanTaskToString rejects malformed tags" {
+test "executeKanbanTaskToJSON rejects malformed tags" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "bad tags",
@@ -1999,20 +2009,20 @@ test "executeCreateKanbanTaskToString rejects malformed tags" {
         .cwd = "/test",
         .tags = "not-a-json-array",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "tags"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "tags"));
 }
 
-test "executeCreateKanbanTaskToString rejects invalid image_urls" {
+test "executeKanbanTaskToJSON rejects invalid image_urls" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "bad images",
@@ -2020,31 +2030,31 @@ test "executeCreateKanbanTaskToString rejects invalid image_urls" {
         .cwd = "/test",
         .image_urls = "not-a-data-url",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "image_urls"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "image_urls"));
 }
 
-test "executeCreateKanbanTaskToString rejects relative cwd" {
+test "executeKanbanTaskToJSON rejects relative cwd" {
     const alloc = testing.allocator;
     var s = try setupDb();
     defer s.threaded.deinit();
     defer s.db.deinit();
 
-    const xml = try create_kanban_task.executeCreateKanbanTaskToString(alloc, &s.db, .{
+    const json = try create_kanban_task.executeKanbanTaskToJSON(alloc, &s.db, .{
         .workspace_id = "ws_1",
         .item_id = "item_k1",
         .name = "relative",
         .description = "relative path desc",
         .cwd = "relative/path",
     });
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(contains(xml, "<success>false</success>"));
-    try testing.expect(contains(xml, "<error>"));
-    try testing.expect(contains(xml, "absolute"));
+    try testing.expect(contains(json, "\"success\":false"));
+    try testing.expect(contains(json, "\"error\":"));
+    try testing.expect(contains(json, "absolute"));
 }
 
 // ─── Registration static-contract tests (Task 7) ────────────────────────

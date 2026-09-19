@@ -19,7 +19,7 @@ const std = @import("std");
 ///     `PosixTimespec`, `nanosleep`, `clock_gettime`,
 ///     `CLOCK_REALTIME`, `CLOCK_MONOTONIC`.
 /// Plus the per-file re-exports (`xml`, `db_path`, `process`,
-/// `random`, `dir`, `sanitize`, `image`, `json_value_to_xml`,
+/// `random`, `dir`, `sanitize`, `image`,
 /// `xml_escape`, `text_normalize`, `xmlUnescape`).
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});

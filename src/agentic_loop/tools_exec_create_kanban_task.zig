@@ -1,8 +1,8 @@
 //! LLM tool wrapper: `create_kanban_task`.
 //!
 //! Parses the LLM's tool-call arguments, calls the implementation in
-//! `src/modules/agent/tools/create_kanban_task.zig::executeCreateKanbanTaskToString`,
-//! wraps the returned XML via `wrapToolOutput`, and detects `<error>`
+//! `src/modules/agent/tools/create_kanban_task.zig::executeKanbanTaskToJSON`,
+//! wraps the returned JSON via `wrapToolOutput`, and detects `"error"`
 //! to surface structured failures as `success=false` to the LLM.
 //!
 //! Mirrors the pattern in `tools_exec_kanban_list.zig` (parse with
@@ -33,11 +33,11 @@ pub fn execCreateKanbanTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecR
     };
     defer parsed.deinit();
 
-    // executeCreateKanbanTaskToString returns an XML string. Errors
+    // executeKanbanTaskToJSON returns a JSON string. Errors
     // (missing input, DB failure, validation rejection) are encoded as
-    // <kanban_task><error>...</error></kanban_task> so the LLM sees
+    // {"success":false,"error":...} so the LLM sees
     // a structured failure rather than a tool crash.
-    const inner = create_kanban_task_mod.executeCreateKanbanTaskToString(
+    const inner = create_kanban_task_mod.executeKanbanTaskToJSON(
         ctx.allocator,
         ctx.db,
         parsed.value,
@@ -48,15 +48,16 @@ pub fn execCreateKanbanTask(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecR
     };
     defer ctx.allocator.free(inner);
 
-    // Detect the <kanban_task><error>...</error></kanban_task> shape
-    // and surface it as a tool failure (so the LLM sees success=false
-    // rather than a successful wrapper around an error body).
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
-        const output = try wrapToolOutput(ctx.allocator, "create_kanban_task", tc.function.arguments, false, err_msg, inner);
-        return ToolExecResult{ .output = output, .output_allocated = true };
+    // Detect the {"success":false,"error":...} shape via the top-level
+    // "error" key (parsed, not substring-matched) and surface it as a
+    // tool failure (so the LLM sees success=false rather than a
+    // successful wrapper around an error body).
+    if (std.json.parseFromSlice(struct { @"error": ?[]const u8 = null }, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true }) catch null) |probe| {
+        defer probe.deinit();
+        if (probe.value.@"error") |err_msg| {
+            const output = try wrapToolOutput(ctx.allocator, "create_kanban_task", tc.function.arguments, false, err_msg, inner);
+            return ToolExecResult{ .output = output, .output_allocated = true };
+        }
     }
 
     const output = try wrapToolOutput(ctx.allocator, "create_kanban_task", tc.function.arguments, true, null, inner);

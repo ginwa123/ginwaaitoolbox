@@ -17,6 +17,8 @@ const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const sqlite = nalarcore.sqlite;
 const design_model = nalarcore.ai_mod.design_model;
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Input structure for `move_design_element` tool.
 ///
@@ -59,13 +61,13 @@ pub const move_design_element_tool = AgentTool{
     .function = .{
         .name = "move_design_element",
         .description =
-            \\Translate an existing design element by a (dx, dy) delta in one atomic batch PATCH. When apply_to_children=true (the default), the delta cascades to every transitive descendant of the element — so moving a `group`/`frame` moves the whole subtree (Figma parity). Optional width/height/rotation apply ONLY to the root element (resize is per-element, Figma convention).
-            \\
-            \\The element_id must reference an element on the active page. The dx/dy is mandatory (zero is valid for a pure resize). Pass apply_to_children=false to move a single element WITHOUT cascading to its children (rare — e.g. "I want to move a leaf out from inside a group without taking the group with it").
-            \\
-            \\Discover ids via `set_design_page` — each `<element id="...">` block carries the id.
-            \\
-            \\On error, recover by: (1) verify `element_id` from a fresh `set_design_page` call; (2) if dx/dy is huge and the cascade leaves the canvas, use `update_design_element` with explicit x/y values instead.
+        \\Translate an existing design element by a (dx, dy) delta in one atomic batch PATCH. When apply_to_children=true (the default), the delta cascades to every transitive descendant of the element — so moving a `group`/`frame` moves the whole subtree (Figma parity). Optional width/height/rotation apply ONLY to the root element (resize is per-element, Figma convention).
+        \\
+        \\The element_id must reference an element on the active page. The dx/dy is mandatory (zero is valid for a pure resize). Pass apply_to_children=false to move a single element WITHOUT cascading to its children (rare — e.g. "I want to move a leaf out from inside a group without taking the group with it").
+        \\
+        \\Discover ids via `set_design_page` — each element object's `id` field carries the id.
+        \\
+        \\On error, recover by: (1) verify `element_id` from a fresh `set_design_page` call; (2) if dx/dy is huge and the cascade leaves the canvas, use `update_design_element` with explicit x/y values instead.
         ,
         .parameters = .{
             .type = "object",
@@ -73,7 +75,7 @@ pub const move_design_element_tool = AgentTool{
                 .{
                     .name = "element_id",
                     .type = "string",
-                    .description = "The element id to translate (NOT a page_id or workspace_id). Find it in the `id=\"...\"` attribute of an `<element>` block in a previous set_design_page response.",
+                    .description = "The element id to translate (NOT a page_id or workspace_id). Find it in the `id` field of an element object in a previous set_design_page response.",
                 },
                 .{
                     .name = "dx",
@@ -112,82 +114,46 @@ pub const move_design_element_tool = AgentTool{
     },
 };
 
-/// Escape XML special characters. Mirrors the helper in
-/// `update_design_element.zig` / `group_design_elements.zig`
-/// (duplicated locally to keep this tool file self-contained).
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
+/// Generate an error JSON object (replaces the old per-tool XML escape +
+/// error envelope helpers).
+/// Generate an error JSON object `{"error":...}` for the tool dispatcher.
+pub fn errorJSON(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, error_msg);
+    defer allocator.free(clean);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .@"error" = clean }, .{});
 }
 
-/// Generate an error XML response. The error body is wrapped in
-/// `<move_design_element><error>...</error></move_design_element>` so
-/// the tool dispatcher can detect it via `<error>` substring search.
-pub fn errorXml(allocator: std.mem.Allocator, error_msg: []const u8) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<move_design_element><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></move_design_element>");
-    return try xml.toOwnedSlice(allocator);
-}
-
-/// Same as `errorXml` but TAKES OWNERSHIP of `error_msg` and frees it.
-pub fn errorXmlOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
+/// Same as `errorJSON` but TAKES OWNERSHIP of `error_msg` and frees it.
+pub fn errorJSONOwned(allocator: std.mem.Allocator, error_msg: []u8) ![]u8 {
     defer allocator.free(error_msg);
-
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<move_design_element><error>");
-    const escaped = try xmlEscape(allocator, error_msg);
-    defer allocator.free(escaped);
-    try xml.appendSlice(allocator, escaped);
-    try xml.appendSlice(allocator, "</error></move_design_element>");
-    return try xml.toOwnedSlice(allocator);
+    return try errorJSON(allocator, error_msg);
 }
 
 /// Validate `element_id` is non-empty and has the right `elem_` prefix.
-/// Returns null when shape is correct, or an error XML on mismatch.
+/// Returns null when shape is correct, or an error JSON object on mismatch.
 fn validateElementIdShape(allocator: std.mem.Allocator, element_id: []const u8) !?[]u8 {
     if (element_id.len == 0) {
-        return try errorXml(allocator, "element_id is required (find it in the `id=\"...\"` attribute of an `<element>` block in a previous set_design_page response)");
+        return try errorJSON(allocator, "element_id is required (find it in the `id` field of an element object in a previous set_design_page response)");
     }
     if (std.mem.startsWith(u8, element_id, "page_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id="..."` attribute of an `<element>` block in a `set_design_page` response.
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\element_id '{s}' looks like a PAGE id (starts with 'page_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
         , .{element_id}));
     }
     if (std.mem.startsWith(u8, element_id, "item_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
-            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id="..."` attribute of an `<element>` block in a `set_design_page` response.
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
+            \\element_id '{s}' looks like an ITEM id (starts with 'item_'). Pass the ELEMENT id instead — find it in the `id` field of an element object in a `set_design_page` response.
         , .{element_id}));
     }
     if (!std.mem.startsWith(u8, element_id, "elem_")) {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator,
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator,
             \\element_id '{s}' has an unrecognized prefix (expected 'elem_'). move_design_element expects an element id from a previous set_design_page response, not a free-form string.
         , .{element_id}));
     }
     return null;
 }
 
-/// Execute the `move_design_element` tool. Returns an XML string for
+/// Execute the `move_design_element` tool. Returns a JSON string for
 /// the LLM.
 ///
 /// The tool supports two modes:
@@ -202,15 +168,10 @@ fn validateElementIdShape(allocator: std.mem.Allocator, element_id: []const u8) 
 ///   group without taking the group with it.
 ///
 /// On success, the response shape is:
-/// ```xml
-/// <move_design_element>
-///   <updated>...elements...</updated>
-/// </move_design_element>
-/// ```
-/// where `<updated>` contains the cascaded element ids.
+/// `{"updated":[{"id":...,"x":...,"y":...}, ...]}` where `updated`
+/// contains the cascaded element ids.
 ///
-/// On error, the response is wrapped in
-/// `<move_design_element><error>...</error></move_design_element>`.
+/// On error, the response is `{"error":...}`.
 pub fn executeMoveDesignElementToString(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -224,8 +185,8 @@ pub fn executeMoveDesignElementToString(
     //    OLD x/y to compute the new x/y).
     const current = design_model.getElement(allocator, db, input.element_id) catch |err| {
         return switch (err) {
-            error.ElementNotFound => try errorXml(allocator, "element_id does not reference any design element — call set_design_page first"),
-            else => try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)})),
+            error.ElementNotFound => try errorJSON(allocator, "element_id does not reference any design element — call set_design_page first"),
+            else => try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)})),
         };
     };
     defer design_model.freeElement(allocator, current);
@@ -250,16 +211,16 @@ pub fn executeMoveDesignElementToString(
             .items = &items,
         }) catch |err| {
             return switch (err) {
-                error.EmptyItems => try errorXml(allocator, "items array was empty (this is an internal error — should not happen with a single item)"),
-                error.ElementNotFound => try errorXml(allocator, "element_id does not reference any design element — call set_design_page first"),
-                error.PageNotFound => try errorXml(allocator, "page_id does not reference any design page (this is an internal error — the page should exist if the element exists)"),
-                else => try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveElementsWithDescendantsBatch failed: {s}", .{@errorName(err)})),
+                error.EmptyItems => try errorJSON(allocator, "items array was empty (this is an internal error — should not happen with a single item)"),
+                error.ElementNotFound => try errorJSON(allocator, "element_id does not reference any design element — call set_design_page first"),
+                error.PageNotFound => try errorJSON(allocator, "page_id does not reference any design page (this is an internal error — the page should exist if the element exists)"),
+                else => try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: moveElementsWithDescendantsBatch failed: {s}", .{@errorName(err)})),
             };
         };
         defer allocator.free(updated);
         for (updated) |e| design_model.freeElement(allocator, e);
 
-        return try renderSuccessXml(allocator, updated);
+        return try renderSuccessJSON(allocator, updated);
     }
 
     // 2b. Single-element path (apply_to_children = false). Use the
@@ -280,42 +241,42 @@ pub fn executeMoveDesignElementToString(
 
     // Re-fetch the element to confirm the new state.
     const after = design_model.getElement(allocator, db, input.element_id) catch |err| {
-        return try errorXmlOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)}));
+        return try errorJSONOwned(allocator, try std.fmt.allocPrint(allocator, "DB: getElement failed: {s}", .{@errorName(err)}));
     };
     defer design_model.freeElement(allocator, after);
 
     const single: []const design_model.DesignElement = &[_]design_model.DesignElement{after};
-    return try renderSuccessXml(allocator, single);
+    return try renderSuccessJSON(allocator, single);
 }
 
-/// Render the success XML response. Lists every cascaded element id
+/// Render the success JSON response. Lists every cascaded element id
 /// + their new x/y. Heap-borrows the input slice; the caller is
 /// responsible for the input's lifetime.
-fn renderSuccessXml(
+/// Render the success JSON response. Lists every cascaded element id
+/// + their new x/y. Heap-borrows the input slice; the caller is
+/// responsible for the input's lifetime.
+pub const UpdatedElementJSON = struct {
+    id: []const u8,
+    x: i64,
+    y: i64,
+};
+
+fn renderSuccessJSON(
     allocator: std.mem.Allocator,
     updated: []const design_model.DesignElement,
 ) ![]u8 {
-    var xml: std.ArrayList(u8) = .empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<move_design_element><updated>");
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(UpdatedElementJSON) = .empty;
     for (updated) |e| {
-        const id_esc = try xmlEscape(allocator, e.id);
-        defer allocator.free(id_esc);
-        try xml.appendSlice(allocator, "<element id=\"");
-        try xml.appendSlice(allocator, id_esc);
-        try xml.appendSlice(allocator, "\" x=\"");
-        const x_str = try std.fmt.allocPrint(allocator, "{d}", .{e.x});
-        defer allocator.free(x_str);
-        try xml.appendSlice(allocator, x_str);
-        try xml.appendSlice(allocator, "\" y=\"");
-        const y_str = try std.fmt.allocPrint(allocator, "{d}", .{e.y});
-        defer allocator.free(y_str);
-        try xml.appendSlice(allocator, y_str);
-        try xml.appendSlice(allocator, "\"/>");
+        try out.append(a, .{
+            .id = try sanitizeControlChars(a, e.id),
+            .x = e.x,
+            .y = e.y,
+        });
     }
-    try xml.appendSlice(allocator, "</updated></move_design_element>");
-    return try xml.toOwnedSlice(allocator);
+    return try std.json.Stringify.valueAlloc(allocator, .{ .updated = out.items }, .{});
 }
 
 const testing = std.testing;
@@ -393,10 +354,8 @@ fn setupDbAndItem() !struct {
     const tmpdir_path = try testing.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
 
     const item_id_const = "item_design_move_element_tool";
-    try db.exec(alloc,
-        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
-        "VALUES (?, 'ws_test', 'design', ?)",
-        &.{ item_id_const, tmpdir_path });
+    try db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)", &.{ item_id_const, tmpdir_path });
 
     const item_id_slice = try alloc.dupe(u8, item_id_const);
     return .{
@@ -412,14 +371,16 @@ fn teardownDb(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
     threaded.deinit();
 }
 
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
 fn readX(
     alloc: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     element_id: []const u8,
 ) !i64 {
-    var q = try db.query(alloc,
-        "SELECT x FROM design_page_elements WHERE id = ?",
-        &.{element_id});
+    var q = try db.query(alloc, "SELECT x FROM design_page_elements WHERE id = ?", &.{element_id});
     defer q.deinit();
     const row = (try q.next()) orelse return error.ElementNotFound;
     defer row.deinit(alloc);
@@ -446,8 +407,14 @@ test "executeMoveDesignElementToString with apply_to_children=true (default) cas
         .name = "group",
         .elem_type = .frame,
         .html = "<div></div>",
-        .x = 50, .y = 100, .width = 300, .height = 200,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 50,
+        .y = 100,
+        .width = 300,
+        .height = 200,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(group);
 
@@ -456,8 +423,14 @@ test "executeMoveDesignElementToString with apply_to_children=true (default) cas
         .name = "child1",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 70, .y = 110, .width = 30, .height = 30,
-        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 70,
+        .y = 110,
+        .width = 30,
+        .height = 30,
+        .fill = "#000000",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
         .parent_id = group,
     });
     defer alloc.free(child1);
@@ -467,26 +440,35 @@ test "executeMoveDesignElementToString with apply_to_children=true (default) cas
         .name = "child2",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 200, .y = 200, .width = 30, .height = 30,
-        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 200,
+        .y = 200,
+        .width = 30,
+        .height = 30,
+        .fill = "#000000",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
         .parent_id = group,
     });
     defer alloc.free(child2);
 
     // Call with apply_to_children omitted (defaults to true).
-    const xml = try move_design_element.executeMoveDesignElementToString(
+    const json = try move_design_element.executeMoveDesignElementToString(
         alloc,
-        &ctx.db, .{ .element_id = group, .dx = 100, .dy = 50 },
+        &ctx.db,
+        .{ .element_id = group, .dx = 100, .dy = 50 },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    // Tool response shape: `<move_design_element><updated>...<element id="..." x="..." y="..."/>...</updated></move_design_element>`.
-    try testing.expect(std.mem.indexOf(u8, xml, "<move_design_element>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</move_design_element>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<updated>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "</updated>") != null);
-    // No error block.
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
+    // Tool response shape: `{"updated":[{"id":...,"x":...,"y":...}, ...]}`.
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .object);
+    const updated = parsed.value.object.get("updated").?.array.items;
+    // Group + 2 children cascaded.
+    try testing.expectEqual(@as(usize, 3), updated.len);
+    // No error key.
+    try testing.expect(parsed.value.object.get("error") == null);
 
     // DB cascade verified — group + children all moved by (100, 50).
     try testing.expectEqual(@as(i64, 150), try readX(alloc, &ctx.db, group));
@@ -514,19 +496,32 @@ test "executeMoveDesignElementToString with apply_to_children=false moves ONLY t
         .name = "leaf",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 100, .y = 100, .width = 50, .height = 50,
-        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 100,
+        .y = 100,
+        .width = 50,
+        .height = 50,
+        .fill = "#000000",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(leaf);
 
-    const xml = try move_design_element.executeMoveDesignElementToString(
+    const json = try move_design_element.executeMoveDesignElementToString(
         alloc,
-        &ctx.db, .{ .element_id = leaf, .dx = 30, .dy = 20, .apply_to_children = false },
+        &ctx.db,
+        .{ .element_id = leaf, .dx = 30, .dy = 20, .apply_to_children = false },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<move_design_element>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const updated = parsed.value.object.get("updated").?.array.items;
+    try testing.expectEqual(@as(usize, 1), updated.len);
+    try testing.expectEqualStrings(leaf, updated[0].object.get("id").?.string);
+    try testing.expectEqual(@as(i64, 130), updated[0].object.get("x").?.integer);
+    try testing.expectEqual(@as(i64, 120), updated[0].object.get("y").?.integer);
+    try testing.expect(parsed.value.object.get("error") == null);
 
     try testing.expectEqual(@as(i64, 130), try readX(alloc, &ctx.db, leaf));
 }
@@ -551,8 +546,14 @@ test "executeMoveDesignElementToString with width/height/rotation applies to roo
         .name = "g",
         .elem_type = .frame,
         .html = "<div></div>",
-        .x = 0, .y = 0, .width = 200, .height = 150,
-        .fill = "#ffffff", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 0,
+        .y = 0,
+        .width = 200,
+        .height = 150,
+        .fill = "#ffffff",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
     });
     defer alloc.free(group);
 
@@ -561,15 +562,22 @@ test "executeMoveDesignElementToString with width/height/rotation applies to roo
         .name = "c",
         .elem_type = .rectangle,
         .html = "<div></div>",
-        .x = 10, .y = 10, .width = 80, .height = 60,
-        .fill = "#000000", .rotation = 0.0, .corner_radius = 0, .opacity = 1.0,
+        .x = 10,
+        .y = 10,
+        .width = 80,
+        .height = 60,
+        .fill = "#000000",
+        .rotation = 0.0,
+        .corner_radius = 0,
+        .opacity = 1.0,
         .parent_id = group,
     });
     defer alloc.free(child);
 
-    const xml = try move_design_element.executeMoveDesignElementToString(
+    const json = try move_design_element.executeMoveDesignElementToString(
         alloc,
-        &ctx.db, .{
+        &ctx.db,
+        .{
             .element_id = group,
             .dx = 0,
             .dy = 0,
@@ -578,15 +586,15 @@ test "executeMoveDesignElementToString with width/height/rotation applies to roo
             .rotation = 0.5,
         },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") == null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("error") == null);
 
     // Group resized in DB.
     {
-        var q = try ctx.db.query(alloc,
-            "SELECT width, height, rotation FROM design_page_elements WHERE id = ?",
-            &.{group});
+        var q = try ctx.db.query(alloc, "SELECT width, height, rotation FROM design_page_elements WHERE id = ?", &.{group});
         defer q.deinit();
         const row = (try q.next()) orelse unreachable;
         defer row.deinit(alloc);
@@ -600,9 +608,7 @@ test "executeMoveDesignElementToString with width/height/rotation applies to roo
 
     // Child width UNCHANGED.
     {
-        var q = try ctx.db.query(alloc,
-            "SELECT width FROM design_page_elements WHERE id = ?",
-            &.{child});
+        var q = try ctx.db.query(alloc, "SELECT width FROM design_page_elements WHERE id = ?", &.{child});
         defer q.deinit();
         const row = (try q.next()) orelse unreachable;
         defer row.deinit(alloc);
@@ -611,36 +617,42 @@ test "executeMoveDesignElementToString with width/height/rotation applies to roo
     }
 }
 
-test "executeMoveDesignElementToString returns <error> for non-existent element_id" {
+test "executeMoveDesignElementToString returns an error object for non-existent element_id" {
     const alloc = testing.allocator;
     var ctx = try setupDbAndItem();
     defer teardownDb(&ctx.db, &ctx.threaded);
     defer alloc.free(ctx.item_id);
     defer alloc.free(ctx.item_path);
 
-    const xml = try move_design_element.executeMoveDesignElementToString(
+    const json = try move_design_element.executeMoveDesignElementToString(
         alloc,
-        &ctx.db, .{ .element_id = "elem_ghost", .dx = 10, .dy = 0 },
+        &ctx.db,
+        .{ .element_id = "elem_ghost", .dx = 10, .dy = 0 },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "element_id does not reference") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "element_id does not reference"));
 }
 
-test "executeMoveDesignElementToString returns <error> for invalid element_id prefix" {
+test "executeMoveDesignElementToString returns an error object for invalid element_id prefix" {
     const alloc = testing.allocator;
     var ctx = try setupDbAndItem();
     defer teardownDb(&ctx.db, &ctx.threaded);
     defer alloc.free(ctx.item_id);
     defer alloc.free(ctx.item_path);
 
-    const xml = try move_design_element.executeMoveDesignElementToString(
+    const json = try move_design_element.executeMoveDesignElementToString(
         alloc,
-        &ctx.db, .{ .element_id = "page_something", .dx = 10, .dy = 0 },
+        &ctx.db,
+        .{ .element_id = "page_something", .dx = 10, .dy = 0 },
     );
-    defer alloc.free(xml);
+    defer alloc.free(json);
 
-    try testing.expect(std.mem.indexOf(u8, xml, "<error>") != null);
-    try testing.expect(std.mem.indexOf(u8, xml, "PAGE id") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, json, .{});
+    defer parsed.deinit();
+    const err_val = parsed.value.object.get("error") orelse return error.MissingErrorField;
+    try testing.expect(contains(err_val.string, "PAGE id"));
 }

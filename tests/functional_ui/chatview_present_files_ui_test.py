@@ -28,6 +28,7 @@ Each test:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from db_seed import DbSeed
@@ -129,15 +130,27 @@ def test_present_files_html_renders_inline_in_chatview(
     )
 
     # 3. Seed the conversation: user + assistant tool-call + tool result.
-    envelope = (
-        "<present_files>"
-        "<status>presented</status>"
-        "<count>1</count>"
-        "<files>"
-        f'<file path="{html_path}" bytes="{html_bytes}" '
-        'mime="text/html; charset=utf-8" label="wireframe"/>'
-        "</files>"
-        "</present_files>"
+    envelope = json.dumps(
+        {
+            "tool": "present_files",
+            "parameters": {"files": [{"path": str(html_path)}]},
+            "success": True,
+            "data": {
+                "status": "presented",
+                "count": 1,
+                "files": [
+                    {
+                        "path": str(html_path),
+                        "bytes": html_bytes,
+                        "mime": "text/html; charset=utf-8",
+                        "label": "wireframe",
+                    }
+                ],
+                "error": None,
+            },
+            "error": None,
+            "v": 1,
+        }
     )
     with seed.connect() as conn:
         ts = DbSeed.baseline_timestamps(count=3, interval_seconds=30)

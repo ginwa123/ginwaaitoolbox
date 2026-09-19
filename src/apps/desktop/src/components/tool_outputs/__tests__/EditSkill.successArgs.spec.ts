@@ -7,7 +7,7 @@ describe('EditSkill.vue — clean success with args is expandable', () => {
   it('header is expandable and expanded body shows Arguments', () => {
     const wrapper = mount(EditSkill, {
       props: {
-        content: '<edit_skill><edited>true</edited><name>my-skill</name></edit_skill>',
+        content: { name: 'my-skill', edited: true, error: null },
         parameters: '{"name":"my-skill"}',
         expanded: true,
       } as never,

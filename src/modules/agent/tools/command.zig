@@ -12,7 +12,7 @@
 //   * `execute_command` — dispatches per-OS (`pwsh` on Windows with a
 //     `cmd.exe` retry on `error.FileNotFound`, `bash` elsewhere) via
 //     `shell.execute_shell`.
-//   * `command_result_to_string` — the shared 9-tag XML envelope.
+//   * `command_result_to_json` — the shared 9-field JSON payload.
 //   * `command_tool` — the merged `AgentTool` (name "command").
 //
 // `bash.zig` / `pwsh.zig` are now deprecated shims over this module.
@@ -27,7 +27,7 @@ const AgentTool = schemas.AgentTool;
 /// old `bash` / `pwsh` tools.
 pub const CommandInput = shell.ShellInput;
 
-/// Canonical output type — alias so the XML envelope is identical to the
+/// Canonical output type — alias so the JSON payload is identical to the
 /// old `bash` / `pwsh` tools.
 pub const CommandOutput = shell.ShellOutput;
 
@@ -85,9 +85,9 @@ pub fn execute_command(
     }
 }
 
-/// XML envelope formatter — same 9-tag shape as the old
+/// JSON payload formatter — same 9-field shape as the old
 /// `bash_result_to_string` / `pwsh_result_to_string`.
-pub const command_result_to_string = shell.result_to_xml;
+pub const command_result_to_json = shell.result_to_json;
 
 pub const command_tool_system_prompt =
     \\## Command Tool — Behavior

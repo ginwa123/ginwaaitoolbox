@@ -3,9 +3,9 @@
 // `list_sub_agent` declares zero required parameters — profile_name is
 // implicit (pulled from `ctx.selected_profile_model` here, mirroring
 // how `get_plan` pulls `session_id` from `ctx.session_id`). The wrapper
-// calls the pure-fn layer (which returns `<empty/>` for empty/unknown
-// profiles or zero rows) and wraps the result in the standard
-// `<tool>...</tool>` envelope. Read-only, no side effects.
+// calls the pure-fn layer (which returns an empty `sub_agents` list for
+// empty/unknown profiles or zero rows) and wraps the result in the
+// standard JSON envelope. Read-only, no side effects.
 
 const std = @import("std");
 const testing = std.testing;
@@ -23,8 +23,8 @@ const wrapToolOutput = tools.wrapToolOutput;
 
 pub fn execListSubAgent(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // No input to parse — the schema declares zero required params.
-    // Use `tc.function.arguments` for the envelope's `<parameters>`
-    // block verbatim (the LLM is expected to send `{}`).
+    // Use `tc.function.arguments` for the envelope's `parameters`
+    // field verbatim (the LLM is expected to send `{}`).
     const inner = list_sub_agent_mod.executeListSubAgent(ctx.allocator, ctx.config, ctx.selected_profile_model) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_sub_agent failed: {s}", .{@errorName(err)});
         defer ctx.allocator.free(err_msg);
@@ -165,16 +165,14 @@ test "execListSubAgent: populated profile returns wrapped envelope with sub_agen
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>list_sub_agent</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<data>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"tool\":\"list_sub_agent\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"success\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"data\":{") != null);
 
-    // Inner envelope carries the row.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<list_sub_agent>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<profile>dev</profile>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<count>1</count>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>coder</name>") != null);
+    // Inner payload carries the row.
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"profile\":\"dev\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"count\":1") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"name\":\"coder\"") != null);
     try testing.expect(std.mem.indexOf(u8, result.output, "strict code reviewer") != null);
 
     // Secrets never reach the wire, even through the adapter.
@@ -182,14 +180,13 @@ test "execListSubAgent: populated profile returns wrapped envelope with sub_agen
     try testing.expect(std.mem.indexOf(u8, result.output, "api_key") == null);
     try testing.expect(std.mem.indexOf(u8, result.output, "base_url") == null);
 
-    // No <empty/> or <error> on the populated branch.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<empty/>") == null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    // No error on the populated branch.
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"error\":null") != null);
 }
 
-// ─── Test 2: unknown profile returns wrapped `<empty/>` ─────────────────────
+// ─── Test 2: unknown profile returns wrapped empty list ─────────────────────
 
-test "execListSubAgent: unknown profile returns wrapped envelope with <empty/>" {
+test "execListSubAgent: unknown profile returns wrapped envelope with empty list" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
@@ -204,18 +201,16 @@ test "execListSubAgent: unknown profile returns wrapped envelope with <empty/>" 
     defer if (result.output_allocated) alloc.free(result.output);
 
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<tool>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<name>list_sub_agent</name>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"tool\":\"list_sub_agent\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"success\":true") != null);
 
-    // The inner envelope is the `<empty/>` absent signal — no <count>.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<list_sub_agent>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<profile>ghost-profile</profile>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<empty/>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<count>") == null);
+    // The inner payload is the empty-list signal.
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"profile\":\"ghost-profile\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"count\":0") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"sub_agents\":[]") != null);
 
-    // No <error> on the happy absent path.
-    try testing.expect(std.mem.indexOf(u8, result.output, "<error>") == null);
+    // No error on the happy absent path.
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"error\":null") != null);
 }
 
 // ─── Test 3: empty args object tolerated (missing/empty {} args) ─────────────
@@ -240,8 +235,8 @@ test "execListSubAgent: empty-string args still return the wrapped envelope" {
 
     // The adapter never parses args — empty input is tolerated.
     try testing.expect(result.output_allocated);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<success>true</success>") != null);
-    try testing.expect(std.mem.indexOf(u8, result.output, "<count>1</count>") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"success\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, result.output, "\"count\":1") != null);
 }
 
 // ─── Static contracts: registry + re-export wiring ───────────────────────────

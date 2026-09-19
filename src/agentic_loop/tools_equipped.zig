@@ -69,7 +69,6 @@ const command_tool_mod = nalarcore.command_tool;
 // lives in `nalarcore.progressive_tools`; the catalog + renderers live in
 // `src/agentic_loop/progressive_catalog.zig`.
 const progressive_tools_mod = nalarcore.progressive_tools;
-const xmlEscape = helpers.xml_escape;
 const ToolExecContext = tools.ToolExecContext;
 const ToolExecResult = tools.ToolExecResult;
 
@@ -137,7 +136,6 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
     return allocator.dupe(AgentTool, tools_list) catch return &.{};
 }
 
-
 pub const ToolExecFunc = *const fn (ctx: ToolExecContext, tc: agent.ToolCall) anyerror!ToolExecResult;
 
 pub const ToolInfo = struct {
@@ -147,7 +145,6 @@ pub const ToolInfo = struct {
     auto_save_skill: bool = false,
     auto_save_agent: bool = false,
 };
-
 
 pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
     return &.{
@@ -315,7 +312,6 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     load_memory_mod.load_memory_tool.function.name,
     read_workspace_session_mod.read_workspace_session_tool.function.name,
 
-
     // skill tools
     use_skill_mod.use_skill_tool.function.name,
     remove_skill_mod.remove_skill_tool.function.name,
@@ -359,7 +355,8 @@ pub fn seedDefaultAgentTools(
     for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "at_{d}_{d}", .{ ts, i });
         defer allocator.free(id);
-        try db.exec(allocator,
+        try db.exec(
+            allocator,
             "INSERT OR IGNORE INTO agent_tools (id, agent_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
             &.{ id, agent_id, tool_name },
         );
@@ -378,7 +375,8 @@ pub fn seedDefaultKanbanTools(
     for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, i });
         defer allocator.free(id);
-        try db.exec(allocator,
+        try db.exec(
+            allocator,
             "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
             &.{ id, kanban_id, tool_name },
         );
@@ -387,7 +385,8 @@ pub fn seedDefaultKanbanTools(
     for (DEFAULT_KANBAN_TOOLS, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, DEFAULT_AGENT_TOOLS.len + i });
         defer allocator.free(id);
-        try db.exec(allocator,
+        try db.exec(
+            allocator,
             "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
             &.{ id, kanban_id, tool_name },
         );
@@ -414,4 +413,3 @@ test "DEFAULT_AGENT_TOOLS ships the spawn pair and the progressive meta-tools" {
         try std.testing.expect(found);
     }
 }
-

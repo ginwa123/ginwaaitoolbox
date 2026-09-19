@@ -5,11 +5,11 @@
 //! skills-merge refactor) — one file, five tools. The public surface is
 //! unchanged: every `*Input` struct, `*_tool` definition,
 //! `execute_*` entry point, and the `listAllSkills` / `freeSkillsListData`
-//! / `toJson` / `toXml` helpers shared with the HTTP layer keep their
+//! / `toJson` helper shared with the HTTP layer keeps its
 //! names. Only colliding private helpers gained per-tool prefixes
-//! (`addSkill*` / `editSkill*` / `removeSkill*`); the three identical
-//! `appendXmlContent` copies and the two identical `contains` test
-//! helpers were deduplicated to one each.
+//! (`addSkill*` / `editSkill*` / `removeSkill*`); the two identical
+//! `contains` test helpers were deduplicated to one. Every tool result
+//! is a JSON object built with `std.json.Stringify.valueAlloc`.
 //!
 //! Note: `skills.zig` next to this file is the storage/filesystem layer
 //! (imported here as `skills`), not a tool definition.
@@ -21,6 +21,7 @@ const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
 const AgentTool = schemas.AgentTool;
 const skills = @import("skills.zig");
+const helpers = @import("helpers");
 
 // Helper to check if string contains substring (shared by the list/use skill tests)
 fn contains(haystack: []const u8, needle: []const u8) bool {
@@ -118,94 +119,7 @@ pub fn toJson(allocator: std.mem.Allocator, data: SkillsListData) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, data, .{});
 }
 
-/// Escape XML special characters for safe output
-fn xmlEscape(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-
-    return try result.toOwnedSlice(allocator);
-}
-
-/// Serialize SkillsListData to XML string for AI agent tool output
-/// Caller owns the returned memory and must free it with allocator.free()
-pub fn toXml(allocator: std.mem.Allocator, data: SkillsListData) ![]u8 {
-    var xml = std.ArrayList(u8).empty;
-    errdefer xml.deinit(allocator);
-
-    try xml.appendSlice(allocator, "<skills>");
-
-    // Global skills section
-    try xml.appendSlice(allocator, "<global_skills>");
-    for (data.global_skills) |skill| {
-        try xml.appendSlice(allocator, "<skill>");
-        const escaped_name = try xmlEscape(allocator, skill.name);
-        defer allocator.free(escaped_name);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, escaped_name);
-        try xml.appendSlice(allocator, "</name>");
-        const escaped_desc = try xmlEscape(allocator, skill.description);
-        defer allocator.free(escaped_desc);
-        try xml.appendSlice(allocator, "<description>");
-        try xml.appendSlice(allocator, escaped_desc);
-        try xml.appendSlice(allocator, "</description>");
-        const escaped_path = try xmlEscape(allocator, skill.path);
-        defer allocator.free(escaped_path);
-        try xml.appendSlice(allocator, "<path>");
-        try xml.appendSlice(allocator, escaped_path);
-        try xml.appendSlice(allocator, "</path>");
-        try xml.appendSlice(allocator, "</skill>");
-    }
-    try xml.appendSlice(allocator, "</global_skills>");
-
-    // Local skills section
-    try xml.appendSlice(allocator, "<local_skills>");
-    for (data.local_skills) |skill| {
-        try xml.appendSlice(allocator, "<skill>");
-        const escaped_name = try xmlEscape(allocator, skill.name);
-        defer allocator.free(escaped_name);
-        try xml.appendSlice(allocator, "<name>");
-        try xml.appendSlice(allocator, escaped_name);
-        try xml.appendSlice(allocator, "</name>");
-        const escaped_desc = try xmlEscape(allocator, skill.description);
-        defer allocator.free(escaped_desc);
-        try xml.appendSlice(allocator, "<description>");
-        try xml.appendSlice(allocator, escaped_desc);
-        try xml.appendSlice(allocator, "</description>");
-        const escaped_path = try xmlEscape(allocator, skill.path);
-        defer allocator.free(escaped_path);
-        try xml.appendSlice(allocator, "<path>");
-        try xml.appendSlice(allocator, escaped_path);
-        try xml.appendSlice(allocator, "</path>");
-        try xml.appendSlice(allocator, "</skill>");
-    }
-    try xml.appendSlice(allocator, "</local_skills>");
-
-    // CWD if present
-    if (data.cwd) |cwd| {
-        const escaped_cwd = try xmlEscape(allocator, cwd);
-        defer allocator.free(escaped_cwd);
-        try xml.appendSlice(allocator, "<cwd>");
-        try xml.appendSlice(allocator, escaped_cwd);
-        try xml.appendSlice(allocator, "</cwd>");
-    }
-
-    try xml.appendSlice(allocator, "</skills>");
-
-    return xml.toOwnedSlice(allocator);
-}
-
-/// Execute the list_skills tool - returns XML string for AI agent
+/// Execute the list_skills tool - returns a JSON string for AI agent
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn execute_list_skills(
     allocator: std.mem.Allocator,
@@ -215,8 +129,15 @@ pub fn execute_list_skills(
 ) ![]const u8 {
     const data = try listAllSkills(allocator, io, cwd_param, environment);
     defer freeSkillsListData(allocator, data);
-    return toXml(allocator, data);
+    return toJson(allocator, data);
 }
+
+/// Parsed shape of `execute_list_skills` output, for tests.
+pub const ListSkillsOutput = struct {
+    global_skills: []skills.SkillInfo,
+    local_skills: []skills.SkillInfo,
+    cwd: ?[]const u8 = null,
+};
 
 // ─── use_skill ───
 
@@ -273,8 +194,40 @@ pub const use_skill_tool = AgentTool{
     },
 };
 
+/// JSON payload for use_skill results.
+pub const UseSkillJSON = struct {
+    skill_name: []const u8,
+    content: []const u8,
+    loaded: bool,
+    @"error": ?[]const u8 = null,
+    available_skills: ?[]const []const u8 = null,
+};
+
+/// Parsed shape of `execute_use_skill_to_string` output, for tests.
+pub const UseSkillOutput = struct {
+    skill_name: []const u8 = "",
+    content: []const u8 = "",
+    loaded: bool = false,
+    @"error": ?[]const u8 = null,
+    available_skills: ?[]const []const u8 = null,
+};
+
+fn useSkillJsonError(allocator: std.mem.Allocator, skill_name: []const u8, err_msg: []const u8) ![]const u8 {
+    const clean_name = try helpers.sanitize_control_chars(allocator, skill_name);
+    defer allocator.free(clean_name);
+    const clean_err = try helpers.sanitize_control_chars(allocator, err_msg);
+    defer allocator.free(clean_err);
+    return try std.json.Stringify.valueAlloc(allocator, UseSkillJSON{
+        .skill_name = clean_name,
+        .content = "",
+        .loaded = false,
+        .@"error" = clean_err,
+        .available_skills = null,
+    }, .{});
+}
+
 /// Execute the use_skill tool
-/// Returns an XML string with the skill content or error message
+/// Returns a JSON string with the skill content or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn execute_use_skill_to_string(allocator: std.mem.Allocator, io: std.Io, input: UseSkillInput, environment: ?*const std.process.Environ.Map) ![]const u8 {
     _ = environment; // kept for signature compatibility; not used by the path-only code path
@@ -294,31 +247,23 @@ pub fn execute_use_skill_to_string(allocator: std.mem.Allocator, io: std.Io, inp
 /// literally `openFile(.cwd(), ...)` + that assert.
 fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]const u8 {
     const file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<skill_name></skill_name>
-            \\<content></content>
-            \\<loaded>false</loaded>
-            \\<error>Failed to open file "{s}": {s}</error>
-        , .{ path, @errorName(err) });
-        return result;
+        const msg = try std.fmt.allocPrint(allocator, "Failed to open file \"{s}\": {s}", .{ path, @errorName(err) });
+        defer allocator.free(msg);
+        return try useSkillJsonError(allocator, "", msg);
     };
     defer std.Io.File.close(file, io);
 
     const content = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize))) catch |err| {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<skill_name></skill_name>
-            \\<content></content>
-            \\<loaded>false</loaded>
-            \\<error>Failed to read file "{s}": {s}</error>
-        , .{ path, @errorName(err) });
-        return result;
+        const msg = try std.fmt.allocPrint(allocator, "Failed to read file \"{s}\": {s}", .{ path, @errorName(err) });
+        defer allocator.free(msg);
+        return try useSkillJsonError(allocator, "", msg);
     };
     defer allocator.free(content);
 
     // Extract skill_name: prefer the YAML frontmatter `name:` field;
     // fall back to the file basename (without extension) for files that
     // don't use the frontmatter convention. In both branches we own the
-    // returned slice and free it after the XML result is built.
+    // returned slice and free it after the JSON result is built.
     const skill_name: []const u8 = blk: {
         const filename = std.fs.path.basename(path);
         const ext = std.fs.path.extension(filename);
@@ -327,7 +272,7 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
         if (skills.parseYamlFrontmatter(allocator, content)) |fm| {
             defer allocator.free(fm.description);
             // Take ownership of fm.name; the defer below frees it after
-            // allocPrint copies the bytes into the result.
+            // Stringify copies the bytes into the result.
             break :blk fm.name;
         }
         // basename points into `content` (freed below); dupe to give it
@@ -336,12 +281,17 @@ fn loadSkillFromPath(allocator: std.mem.Allocator, io: std.Io, path: []const u8)
     };
     defer allocator.free(skill_name);
 
-    const result = try std.fmt.allocPrint(allocator,
-        \\<skill_name>{s}</skill_name>
-        \\<content>{s}</content>
-        \\<loaded>true</loaded>
-    , .{ skill_name, content });
-    return result;
+    const clean_name = try helpers.sanitize_control_chars(allocator, skill_name);
+    defer allocator.free(clean_name);
+    const clean_content = try helpers.sanitize_control_chars(allocator, content);
+    defer allocator.free(clean_content);
+    return try std.json.Stringify.valueAlloc(allocator, UseSkillJSON{
+        .skill_name = clean_name,
+        .content = clean_content,
+        .loaded = true,
+        .@"error" = null,
+        .available_skills = null,
+    }, .{});
 }
 
 // ─── remove_skill ───
@@ -362,18 +312,47 @@ pub const RemoveSkillResult = struct {
     err_msg: ?[]const u8 = null,
 };
 
-/// Create XML error output for remove_skill
-pub fn removeSkillXmlError(allocator: std.mem.Allocator, skill_name: []const u8, err_msg: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
+/// JSON payload for remove_skill results.
+pub const RemoveSkillJSON = struct {
+    skill_name: []const u8,
+    removed: bool,
+    path: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
 
-    result.appendSlice(allocator, "<skill_name>") catch return "";
-    appendXmlContent(allocator, &result, skill_name) catch return "";
-    result.appendSlice(allocator, "</skill_name>\n<removed>false</removed>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, err_msg) catch return "";
-    result.appendSlice(allocator, "</error>") catch return "";
+/// Parsed shape of `execute_remove_skill_to_string` output, for tests.
+pub const RemoveSkillOutput = struct {
+    skill_name: []const u8 = "",
+    removed: bool = false,
+    path: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
 
-    return result.toOwnedSlice(allocator) catch "";
+/// Create JSON error output for remove_skill
+pub fn removeSkillJsonError(allocator: std.mem.Allocator, skill_name: []const u8, err_msg: []const u8) []const u8 {
+    const clean_name = helpers.sanitize_control_chars(allocator, skill_name) catch return "";
+    defer allocator.free(clean_name);
+    const clean_err = helpers.sanitize_control_chars(allocator, err_msg) catch return "";
+    defer allocator.free(clean_err);
+    return std.json.Stringify.valueAlloc(allocator, RemoveSkillJSON{
+        .skill_name = clean_name,
+        .removed = false,
+        .path = null,
+        .@"error" = clean_err,
+    }, .{}) catch "";
+}
+
+fn removeSkillJsonSuccess(allocator: std.mem.Allocator, skill_name: []const u8, path: []const u8) []const u8 {
+    const clean_name = helpers.sanitize_control_chars(allocator, skill_name) catch return "";
+    defer allocator.free(clean_name);
+    const clean_path = helpers.sanitize_control_chars(allocator, path) catch return "";
+    defer allocator.free(clean_path);
+    return std.json.Stringify.valueAlloc(allocator, RemoveSkillJSON{
+        .skill_name = clean_name,
+        .removed = true,
+        .path = clean_path,
+        .@"error" = null,
+    }, .{}) catch "";
 }
 
 /// Tool definition for remove_skill
@@ -416,7 +395,7 @@ pub const remove_skill_tool = AgentTool{
 
 /// Execute the remove_skill tool - removes from session AND deletes file
 /// Deletes skill file at .nalar/skills/<skill_name>/ or global ~/.config/nalar/skills/<skill_name>/
-/// Returns an XML string with result
+/// Returns a JSON string with the result
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn execute_remove_skill_to_string(
     allocator: std.mem.Allocator,
@@ -427,33 +406,18 @@ pub fn execute_remove_skill_to_string(
 ) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
-        const result = try std.fmt.allocPrint(allocator,
-            \\<skill_name></skill_name>
-            \\<removed>false</removed>
-            \\<error>skill_name cannot be empty</error>
-        , .{});
-        return result;
+        return removeSkillJsonError(allocator, "", "skill_name cannot be empty");
     }
 
     // Determine skills directory based on is_global flag
     const skills_dir: []const u8 = if (input.is_global) blk: {
         if (environment) |env| {
             const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
-                const result = try std.fmt.allocPrint(allocator,
-                    \\<skill_name>{s}</skill_name>
-                    \\<removed>false</removed>
-                    \\<error>Failed to get global skills path</error>
-                , .{input.skill_name});
-                return result;
+                return removeSkillJsonError(allocator, input.skill_name, "Failed to get global skills path");
             };
             break :blk path;
         } else {
-            const result = try std.fmt.allocPrint(allocator,
-                \\<skill_name>{s}</skill_name>
-                \\<removed>false</removed>
-                \\<error>Environment not available for global skills</error>
-            , .{input.skill_name});
-            return result;
+            return removeSkillJsonError(allocator, input.skill_name, "Environment not available for global skills");
         }
     } else try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
 
@@ -476,59 +440,35 @@ pub fn execute_remove_skill_to_string(
 
     if (!dir_exists) {
         // Skill directory doesn't exist - might be a built-in skill or already removed
-        var result = std.ArrayList(u8).empty;
-        errdefer result.deinit(allocator);
-
-        try result.appendSlice(allocator, "<skill_name>");
-        try appendXmlContent(allocator, &result, input.skill_name);
-        try result.appendSlice(allocator, "</skill_name>\n<removed>false</removed>\n<error>Skill directory not found</error>");
+        const out = removeSkillJsonError(allocator, input.skill_name, "Skill directory not found");
 
         if (input.is_global) allocator.free(skills_dir);
         allocator.free(skill_dir_path);
-        return try result.toOwnedSlice(allocator);
+        return out;
     }
 
     // Delete the skill directory recursively
     std.Io.Dir.cwd().deleteTree(io, skill_dir_path) catch {
-        var result = std.ArrayList(u8).empty;
-        errdefer result.deinit(allocator);
-
-        try result.appendSlice(allocator, "<skill_name>");
-        try appendXmlContent(allocator, &result, input.skill_name);
-        try result.appendSlice(allocator, "</skill_name>\n<removed>false</removed>\n<error>Failed to delete skill directory</error>");
+        const out = removeSkillJsonError(allocator, input.skill_name, "Failed to delete skill directory");
 
         if (input.is_global) allocator.free(skills_dir);
         allocator.free(skill_dir_path);
-        return try result.toOwnedSlice(allocator);
+        return out;
     };
 
     // Return success
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    try result.appendSlice(allocator, "<skill_name>");
-    try appendXmlContent(allocator, &result, input.skill_name);
-    try result.appendSlice(allocator, "</skill_name>\n<removed>true</removed>\n<path>");
-    try appendXmlContent(allocator, &result, skill_dir_path);
-    try result.appendSlice(allocator, "</path>");
+    const out = removeSkillJsonSuccess(allocator, input.skill_name, skill_dir_path);
 
     // Clean up allocated memory
     if (input.is_global) allocator.free(skills_dir);
     allocator.free(skill_dir_path);
 
-    return try result.toOwnedSlice(allocator);
+    return out;
 }
 
-/// Generate error XML response for parse failures (no name available)
-pub fn removeSkillXmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<skill_name></skill_name>\n<removed>false</removed>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+/// Generate error JSON response for parse failures (no name available)
+pub fn removeSkillJsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return removeSkillJsonError(allocator, "", error_msg);
 }
 
 // ─── add_skill ───
@@ -592,28 +532,48 @@ pub const add_skill_tool = AgentTool{
     },
 };
 
+/// JSON payload for add_skill results. Both `skill_name` and `name` carry
+/// the skill name: `skill_name` matches the tool schema, `name` matches the
+/// legacy tag name read by existing JSON parsers.
+pub const AddSkillJSON = struct {
+    skill_name: []const u8,
+    name: []const u8,
+    created: bool,
+    path: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
+/// Parsed shape of `executeAddSkillToString` output, for tests.
+pub const AddSkillOutput = struct {
+    skill_name: []const u8 = "",
+    name: []const u8 = "",
+    created: bool = false,
+    path: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
 /// Execute the add_skill tool
 /// Creates a new skill file at .nalar/skills/<name>/SKILL.MD or global ~/.config/nalar/skills/<name>/SKILL.MD
-/// Returns an XML string with the result or error message
+/// Returns a JSON string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: AddSkillInput) []const u8 {
     // Validate input
-    if (input.name.len == 0) return addSkillErrorToXml(allocator, input.name, "Skill name cannot be empty");
-    if (input.description.len == 0) return addSkillErrorToXml(allocator, input.name, "Description cannot be empty");
-    if (input.content.len == 0) return addSkillErrorToXml(allocator, input.name, "Content cannot be empty");
+    if (input.name.len == 0) return addSkillJsonError(allocator, input.name, "Skill name cannot be empty");
+    if (input.description.len == 0) return addSkillJsonError(allocator, input.name, "Description cannot be empty");
+    if (input.content.len == 0) return addSkillJsonError(allocator, input.name, "Content cannot be empty");
 
     // Determine skills directory based on is_global flag
     const skills_dir: []const u8 = if (input.is_global) blk: {
         if (environment) |env| {
             const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
-                return addSkillXmlError(allocator, input.name, "Failed to get global skills path");
+                return addSkillJsonError(allocator, input.name, "Failed to get global skills path");
             };
             break :blk path;
         } else {
-            return addSkillXmlError(allocator, input.name, "Environment not available for global skills");
+            return addSkillJsonError(allocator, input.name, "Environment not available for global skills");
         }
     } else std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" }) catch {
-        return addSkillXmlError(allocator, input.name, "Failed to build skills directory path");
+        return addSkillJsonError(allocator, input.name, "Failed to build skills directory path");
     };
     // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
     // local via path.join). Free it once at the end of the function via a single defer.
@@ -621,17 +581,17 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
 
     // Duplicate input.name to ensure no aliasing with path.join's internal buffer allocation
     const name_copy = allocator.dupe(u8, input.name) catch {
-        return addSkillXmlError(allocator, input.name, "Failed to allocate memory for skill name");
+        return addSkillJsonError(allocator, input.name, "Failed to allocate memory for skill name");
     };
     defer allocator.free(name_copy);
 
     const skill_dir = std.fs.path.join(allocator, &[_][]const u8{ skills_dir, name_copy }) catch {
-        return addSkillXmlError(allocator, input.name, "Failed to build skill directory path");
+        return addSkillJsonError(allocator, input.name, "Failed to build skill directory path");
     };
     defer allocator.free(skill_dir);
 
     const skill_file = std.fs.path.join(allocator, &[_][]const u8{ skill_dir, "SKILL.MD" }) catch {
-        return addSkillXmlError(allocator, input.name, "Failed to build skill file path");
+        return addSkillJsonError(allocator, input.name, "Failed to build skill file path");
     };
     defer allocator.free(skill_file);
 
@@ -639,7 +599,7 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     if (input.create_with_dir) {
         const cwd_dir = std.Io.Dir.cwd();
         cwd_dir.createDirPath(io, skill_dir) catch {
-            return addSkillXmlError(allocator, input.name, "Failed to create skill directory");
+            return addSkillJsonError(allocator, input.name, "Failed to create skill directory");
         };
     }
 
@@ -647,21 +607,21 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     const file_content = buildSkillContent(allocator, input);
     defer allocator.free(file_content);
     if (file_content.len == 0) {
-        return addSkillXmlError(allocator, input.name, "Failed to build skill content");
+        return addSkillJsonError(allocator, input.name, "Failed to build skill content");
     }
 
     // Write the file using absolute path with Io.Dir
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
-        return addSkillXmlError(allocator, input.name, "Failed to create skill file");
+        return addSkillJsonError(allocator, input.name, "Failed to create skill file");
     };
     defer std.Io.File.close(file, io);
 
     std.Io.File.writeStreamingAll(file, io, file_content) catch {
-        return addSkillXmlError(allocator, input.name, "Failed to write skill file");
+        return addSkillJsonError(allocator, input.name, "Failed to write skill file");
     };
 
-    // Return success XML
-    return addSkillSuccessToXml(allocator, input.name, skill_file);
+    // Return success JSON
+    return addSkillJsonSuccess(allocator, input.name, skill_file);
 }
 
 /// Build skill file content with YAML frontmatter
@@ -722,63 +682,42 @@ fn addSkillEscapeYamlString(allocator: std.mem.Allocator, s: []const u8) []const
 }
 
 /// Generate success XML response
-fn addSkillSuccessToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) []const u8 {
-    // Build XML using ArrayList to avoid issues with null-terminated strings
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<skill>\n<name>") catch return "";
-    appendXmlContent(allocator, &result, name) catch return "";
-    result.appendSlice(allocator, "</name>\n<created>true</created>\n<path>") catch return "";
-    appendXmlContent(allocator, &result, path) catch return "";
-    result.appendSlice(allocator, "</path>\n</skill>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+fn addSkillJsonSuccess(allocator: std.mem.Allocator, name: []const u8, path: []const u8) []const u8 {
+    const clean_name = helpers.sanitize_control_chars(allocator, name) catch return "";
+    defer allocator.free(clean_name);
+    const clean_path = helpers.sanitize_control_chars(allocator, path) catch return "";
+    defer allocator.free(clean_path);
+    return std.json.Stringify.valueAlloc(allocator, AddSkillJSON{
+        .skill_name = clean_name,
+        .name = clean_name,
+        .created = true,
+        .path = clean_path,
+        .@"error" = null,
+    }, .{}) catch "";
 }
 
 /// Internal error-to-XML helper (doesn't return error)
-fn addSkillErrorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    // Build XML using ArrayList to avoid issues with null-terminated strings
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<skill>\n<name>") catch return "";
-    appendXmlContent(allocator, &result, name) catch return "";
-    result.appendSlice(allocator, "</name>\n<created>false</created>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>\n</skill>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+/// Generate error JSON response
+pub fn addSkillJsonError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    const clean_name = helpers.sanitize_control_chars(allocator, name) catch return "";
+    defer allocator.free(clean_name);
+    const clean_err = helpers.sanitize_control_chars(allocator, error_msg) catch return "";
+    defer allocator.free(clean_err);
+    return std.json.Stringify.valueAlloc(allocator, AddSkillJSON{
+        .skill_name = clean_name,
+        .name = clean_name,
+        .created = false,
+        .path = null,
+        .@"error" = clean_err,
+    }, .{}) catch "";
 }
 
 /// Append XML-safe content to an ArrayList
-fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-}
-
 /// Generate error XML response
-pub fn addSkillXmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    return addSkillErrorToXml(allocator, name, error_msg);
-}
-
 /// Generate error XML response for parse failures (no name available)
-pub fn addSkillXmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<skill>
-        \\<name></name>
-        \\<created>false</created>
-        \\<error>{s}</error>
-        \\</skill>
-    , .{error_msg}) catch "<skill><name></name><created>false</created><error>UnknownError</error></skill>";
+/// Generate error JSON response for parse failures (no name available)
+pub fn addSkillJsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return addSkillJsonError(allocator, "", error_msg);
 }
 
 // ─── edit_skill ───
@@ -839,30 +778,52 @@ pub const edit_skill_tool = AgentTool{
     },
 };
 
+/// JSON payload for edit_skill results. `skill_name`/`name` and
+/// `updated`/`edited` are duplicated: the first of each pair matches the
+/// tool schema, the second matches the legacy tag name.
+pub const EditSkillJSON = struct {
+    skill_name: []const u8,
+    name: []const u8,
+    updated: bool,
+    edited: bool,
+    path: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
+/// Parsed shape of `executeEditSkillToString` output, for tests.
+pub const EditSkillOutput = struct {
+    skill_name: []const u8 = "",
+    name: []const u8 = "",
+    updated: bool = false,
+    edited: bool = false,
+    path: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
 /// Execute the edit_skill tool
 /// Updates an existing skill file at .nalar/skills/<skill_name>/SKILL.MD or global ~/.config/nalar/skills/<skill_name>/SKILL.MD
-/// Returns an XML string with the result or error message
+/// Returns a JSON string with the result or error message
 /// Caller owns the returned memory and must free it with allocator.free()
 pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, environment: ?*const std.process.Environ.Map, input: EditSkillInput) ![]const u8 {
     // Validate input
     if (input.skill_name.len == 0) {
-        return editSkillErrorToXml(allocator, input.skill_name, "Skill name cannot be empty");
+        return editSkillJsonError(allocator, input.skill_name, "Skill name cannot be empty");
     }
 
     // At least one of description or content must be provided
     if (input.description == null and input.content == null) {
-        return editSkillErrorToXml(allocator, input.skill_name, "At least one of description or content must be provided");
+        return editSkillJsonError(allocator, input.skill_name, "At least one of description or content must be provided");
     }
 
     // Determine skills directory based on is_global flag
     const skills_dir: []const u8 = if (input.is_global) blk: {
         if (environment) |env| {
             const path = skills.get_global_skills_path_from_env(allocator, env) orelse {
-                return editSkillErrorToXml(allocator, input.skill_name, "Failed to get global skills path");
+                return editSkillJsonError(allocator, input.skill_name, "Failed to get global skills path");
             };
             break :blk path;
         } else {
-            return editSkillErrorToXml(allocator, input.skill_name, "Environment not available for global skills");
+            return editSkillJsonError(allocator, input.skill_name, "Environment not available for global skills");
         }
     } else try std.fs.path.join(allocator, &[_][]const u8{ cwd, ".nalar", "skills" });
     // skills_dir is heap-allocated in both branches (global via get_global_skills_path_from_env,
@@ -886,12 +847,12 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
     };
 
     if (!file_exists) {
-        return editSkillErrorToXml(allocator, input.skill_name, "Skill file not found");
+        return editSkillJsonError(allocator, input.skill_name, "Skill file not found");
     }
 
     // Read existing skill content
     const existing_content = std.Io.Dir.cwd().readFileAlloc(io, skill_file, allocator, std.Io.Limit.limited(1024 * 1024)) catch {
-        return editSkillErrorToXml(allocator, input.skill_name, "Failed to read existing skill file");
+        return editSkillJsonError(allocator, input.skill_name, "Failed to read existing skill file");
     };
     defer allocator.free(existing_content);
 
@@ -912,16 +873,16 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
 
     // Write the updated file
     const file = std.Io.Dir.createFileAbsolute(io, skill_file, .{}) catch {
-        return editSkillErrorToXml(allocator, input.skill_name, "Failed to create skill file for writing");
+        return editSkillJsonError(allocator, input.skill_name, "Failed to create skill file for writing");
     };
     defer std.Io.File.close(file, io);
 
     std.Io.File.writeStreamingAll(file, io, updated_content) catch {
-        return editSkillErrorToXml(allocator, input.skill_name, "Failed to write skill file");
+        return editSkillJsonError(allocator, input.skill_name, "Failed to write skill file");
     };
 
-    // Return success XML
-    return try editSkillSuccessToXml(allocator, input.skill_name, skill_file);
+    // Return success JSON
+    return try editSkillJsonSuccess(allocator, input.skill_name, skill_file);
 }
 
 /// Parsed skill file structure
@@ -1098,54 +1059,48 @@ fn uneditSkillEscapeYamlString(allocator: std.mem.Allocator, s: []const u8) ![]c
 }
 
 /// Generate success XML response
-fn editSkillSuccessToXml(allocator: std.mem.Allocator, name: []const u8, path: []const u8) ![]const u8 {
-    // Build XML using ArrayList to avoid issues with null-terminated strings
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    try result.appendSlice(allocator, "<skill>\n<name>");
-    try appendXmlContent(allocator, &result, name);
-    try result.appendSlice(allocator, "</name>\n<edited>true</edited>\n<path>");
-    try appendXmlContent(allocator, &result, path);
-    try result.appendSlice(allocator, "</path>\n</skill>");
-
-    return try result.toOwnedSlice(allocator);
+fn editSkillJsonSuccess(allocator: std.mem.Allocator, name: []const u8, path: []const u8) ![]const u8 {
+    const clean_name = try helpers.sanitize_control_chars(allocator, name);
+    defer allocator.free(clean_name);
+    const clean_path = try helpers.sanitize_control_chars(allocator, path);
+    defer allocator.free(clean_path);
+    return try std.json.Stringify.valueAlloc(allocator, EditSkillJSON{
+        .skill_name = clean_name,
+        .name = clean_name,
+        .updated = true,
+        .edited = true,
+        .path = clean_path,
+        .@"error" = null,
+    }, .{});
 }
 
 /// Internal error-to-XML helper (doesn't return error)
-fn editSkillErrorToXml(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    // Build XML using ArrayList to avoid issues with null-terminated strings
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<skill>\n<name>") catch return "";
-    appendXmlContent(allocator, &result, name) catch return "";
-    result.appendSlice(allocator, "</name>\n<edited>false</edited>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>\n</skill>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+/// Generate error JSON response
+pub fn editSkillJsonError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
+    const clean_name = helpers.sanitize_control_chars(allocator, name) catch return "";
+    defer allocator.free(clean_name);
+    const clean_err = helpers.sanitize_control_chars(allocator, error_msg) catch return "";
+    defer allocator.free(clean_err);
+    return std.json.Stringify.valueAlloc(allocator, EditSkillJSON{
+        .skill_name = clean_name,
+        .name = clean_name,
+        .updated = false,
+        .edited = false,
+        .path = null,
+        .@"error" = clean_err,
+    }, .{}) catch "";
 }
 
 /// Generate error XML response
-pub fn editSkillXmlError(allocator: std.mem.Allocator, name: []const u8, error_msg: []const u8) []const u8 {
-    return editSkillErrorToXml(allocator, name, error_msg);
-}
-
 /// Generate error XML response for parse failures (no name available)
-pub fn editSkillXmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    return std.fmt.allocPrint(allocator,
-        \\<skill>
-        \\<name></name>
-        \\<edited>false</edited>
-        \\<error>{s}</error>
-        \\</skill>
-    , .{error_msg}) catch "<skill><name></name><edited>false</edited><error>UnknownError</error></skill>";
+/// Generate error JSON response for parse failures (no name available)
+pub fn editSkillJsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return editSkillJsonError(allocator, "", error_msg);
 }
 
 // ─── tests: list_skills ───
 
-test "toXml generates valid XML structure" {
+test "toJson on empty lists parses to empty arrays and null cwd" {
     const alloc = std.testing.allocator;
 
     const data = SkillsListData{
@@ -1154,16 +1109,17 @@ test "toXml generates valid XML structure" {
         .cwd = null,
     };
 
-    const xml = try toXml(alloc, data);
-    defer alloc.free(xml);
+    const json = try toJson(alloc, data);
+    defer alloc.free(json);
 
-    try std.testing.expect(std.mem.startsWith(u8, xml, "<skills>"));
-    try std.testing.expect(std.mem.endsWith(u8, xml, "</skills>"));
-    try std.testing.expect(contains(xml, "<global_skills>"));
-    try std.testing.expect(contains(xml, "<local_skills>"));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.global_skills.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
+    try std.testing.expect(parsed.value.cwd == null);
 }
 
-test "toXml escapes special characters in skill data" {
+test "toJson carries raw skill fields, parsed" {
     const alloc = std.testing.allocator;
 
     const data = SkillsListData{
@@ -1178,18 +1134,19 @@ test "toXml escapes special characters in skill data" {
         .cwd = null,
     };
 
-    const xml = try toXml(alloc, data);
-    defer alloc.free(xml);
+    const json = try toJson(alloc, data);
+    defer alloc.free(json);
 
-    // Should contain escaped versions
-    try std.testing.expect(contains(xml, "&lt;skill&gt;"));
-    try std.testing.expect(contains(xml, "&amp;"));
-    try std.testing.expect(contains(xml, "&quot;"));
-    // Should NOT contain unescaped < or > outside of XML tags
-    // (we allow <global_skills>, <local_skills>, <skill>, etc. which are valid XML tags)
+    // Raw text needs no escaping in JSON — parse and compare verbatim.
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.global_skills.len);
+    try std.testing.expectEqualStrings("test <skill>", parsed.value.global_skills[0].name);
+    try std.testing.expectEqualStrings("desc & more", parsed.value.global_skills[0].description);
+    try std.testing.expectEqualStrings("/path/with \"quotes\"", parsed.value.global_skills[0].path);
 }
 
-test "toXml includes cwd when present" {
+test "toJson includes cwd when present, parsed" {
     const alloc = std.testing.allocator;
 
     const data = SkillsListData{
@@ -1198,11 +1155,12 @@ test "toXml includes cwd when present" {
         .cwd = "/test/cwd",
     };
 
-    const xml = try toXml(alloc, data);
-    defer alloc.free(xml);
+    const json = try toJson(alloc, data);
+    defer alloc.free(json);
 
-    try std.testing.expect(contains(xml, "<cwd>"));
-    try std.testing.expect(contains(xml, "/test/cwd"));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("/test/cwd", parsed.value.cwd orelse "");
 }
 
 test "toJson generates valid JSON" {
@@ -1220,8 +1178,10 @@ test "toJson generates valid JSON" {
     // Should be valid JSON structure
     try std.testing.expect(std.mem.startsWith(u8, json, "{"));
     try std.testing.expect(std.mem.endsWith(u8, json, "}"));
-    try std.testing.expect(contains(json, "global_skills"));
-    try std.testing.expect(contains(json, "local_skills"));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, json, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.global_skills.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
 }
 
 test "freeSkillsListData handles empty arrays" {
@@ -1285,12 +1245,13 @@ test "execute_list_skills - finds local skill in cwd workspace" {
     const output = try execute_list_skills(alloc, io, tmp_path, &env);
     defer alloc.free(output);
 
-    // The local skill should appear in the local_skills block
-    try std.testing.expect(contains(output, "<local_skills>"));
-    try std.testing.expect(contains(output, skill_name));
-    try std.testing.expect(contains(output, "Test description for list regression"));
-    try std.testing.expect(contains(output, "<cwd>"));
-    try std.testing.expect(contains(output, tmp_path));
+    // The local skill should appear in the local_skills array
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.local_skills.len);
+    try std.testing.expectEqualStrings(skill_name, parsed.value.local_skills[0].name);
+    try std.testing.expectEqualStrings("Test description for list regression", parsed.value.local_skills[0].description);
+    try std.testing.expectEqualStrings(tmp_path, parsed.value.cwd orelse "");
 }
 
 test "execute_list_skills - does not show local skill from a different cwd" {
@@ -1345,7 +1306,9 @@ test "execute_list_skills - does not show local skill from a different cwd" {
     defer alloc.free(output);
 
     // The local skill should NOT appear (because it's in skill_cwd, not query_cwd)
-    try std.testing.expect(!contains(output, skill_name));
+    const parsed = try std.json.parseFromSlice(ListSkillsOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.local_skills.len);
 }
 // ─── tests: use_skill ───
 
@@ -1439,10 +1402,12 @@ test "execute_use_skill_to_string - loaded skill output preserves skill name" {
     );
     defer alloc.free(output);
 
-    try std.testing.expect(contains(output, "<loaded>true</loaded>"));
-    try std.testing.expect(contains(output, unique_skill_name));
-    try std.testing.expect(contains(output, unique_marker));
-    try std.testing.expect(std.mem.indexOfScalar(u8, output, 0xAA) == null);
+    const parsed = try std.json.parseFromSlice(UseSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.loaded);
+    try std.testing.expectEqualStrings(unique_skill_name, parsed.value.skill_name);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.content, unique_marker) != null);
+    try std.testing.expect(parsed.value.@"error" == null);
 }
 
 test "use_skill_tool - schema declares is_global property" {
@@ -1492,9 +1457,11 @@ test "execute_use_skill_to_string - absolute path loads skill file (loadSkillFro
     const output = try execute_use_skill_to_string(alloc, io, input, null);
     defer alloc.free(output);
 
-    try std.testing.expect(contains(output, "<loaded>true</loaded>"));
-    try std.testing.expect(contains(output, "absolute-path-test"));
-    try std.testing.expect(contains(output, "Absolute path body"));
+    const parsed = try std.json.parseFromSlice(UseSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.loaded);
+    try std.testing.expectEqualStrings("absolute-path-test", parsed.value.skill_name);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.content, "Absolute path body") != null);
 }
 
 test "execute_use_skill_to_string - relative path resolves against cwd (panic regression)" {
@@ -1533,12 +1500,14 @@ test "execute_use_skill_to_string - relative path resolves against cwd (panic re
     const output = try execute_use_skill_to_string(alloc, io, input, null);
     defer alloc.free(output);
 
-    try std.testing.expect(contains(output, "<loaded>true</loaded>"));
-    try std.testing.expect(contains(output, "relative-path-test"));
-    try std.testing.expect(contains(output, "Relative path body"));
+    const parsed = try std.json.parseFromSlice(UseSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.loaded);
+    try std.testing.expectEqualStrings("relative-path-test", parsed.value.skill_name);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.content, "Relative path body") != null);
 }
 
-test "execute_use_skill_to_string - non-existent path returns XML error (no panic, includes path)" {
+test "execute_use_skill_to_string - non-existent path returns JSON error (no panic, includes path)" {
     // REGRESSION: previously, a non-existent relative path would return a
     // generic "Failed to open file" with no path or OS error info — and if
     // a future caller ever wrapped openFileAbsolute without the same
@@ -1553,9 +1522,11 @@ test "execute_use_skill_to_string - non-existent path returns XML error (no pani
     const output = try execute_use_skill_to_string(alloc, io, input, null);
     defer alloc.free(output);
 
-    try std.testing.expect(contains(output, "<loaded>false</loaded>"));
+    const parsed = try std.json.parseFromSlice(UseSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.loaded);
     // The path must appear in the error so the LLM knows what was tried.
-    try std.testing.expect(contains(output, missing_path));
+    try std.testing.expect(std.mem.indexOf(u8, parsed.value.@"error" orelse "", missing_path) != null);
     // Must NOT contain the word "unreachable" from the panic message.
     try std.testing.expect(std.mem.indexOf(u8, output, "unreachable") == null);
 }
@@ -1574,8 +1545,10 @@ test "remove_skill - empty skill_name returns error" {
     const output = try execute_remove_skill_to_string(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<removed>false</removed>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "skill_name cannot be empty") != null);
+    const parsed = try std.json.parseFromSlice(RemoveSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.removed);
+    try std.testing.expectEqualStrings("skill_name cannot be empty", parsed.value.@"error" orelse "");
 }
 
 test "remove_skill - tool definition includes is_global parameter" {
@@ -1625,8 +1598,10 @@ test "add_skill - empty name returns error" {
     const output = executeAddSkillToString(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<created>false</created>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Skill name cannot be empty") != null);
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.created);
+    try std.testing.expectEqualStrings("Skill name cannot be empty", parsed.value.@"error" orelse "");
 }
 
 test "add_skill - empty description returns error" {
@@ -1643,8 +1618,10 @@ test "add_skill - empty description returns error" {
     const output = executeAddSkillToString(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<created>false</created>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Description cannot be empty") != null);
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.created);
+    try std.testing.expectEqualStrings("Description cannot be empty", parsed.value.@"error" orelse "");
 }
 
 test "add_skill - empty content returns error" {
@@ -1661,8 +1638,10 @@ test "add_skill - empty content returns error" {
     const output = executeAddSkillToString(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<created>false</created>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Content cannot be empty") != null);
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.created);
+    try std.testing.expectEqualStrings("Content cannot be empty", parsed.value.@"error" orelse "");
 }
 
 test "add_skill - tool definition includes is_global parameter" {
@@ -1730,8 +1709,10 @@ test "add_skill - executeAddSkillToString validates empty content" {
     const output = executeAddSkillToString(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<created>false</created>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Content cannot be empty") != null);
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.created);
+    try std.testing.expectEqualStrings("Content cannot be empty", parsed.value.@"error" orelse "");
 }
 
 test "add_skill - buildSkillContent escapes special characters" {
@@ -1797,7 +1778,9 @@ test "add_skill - re-running with same name OVERWRITES (truncates, no append)" {
     };
     const first_output = executeAddSkillToString(alloc, io, tmp_path, null, first_input);
     defer alloc.free(first_output);
-    try std.testing.expect(std.mem.indexOf(u8, first_output, "<created>true</created>") != null);
+    const first_parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, first_output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer first_parsed.deinit();
+    try std.testing.expect(first_parsed.value.created);
 
     // Sanity-check the first version landed on disk
     const first_read = try std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, alloc, std.Io.Limit.limited(64 * 1024));
@@ -1816,7 +1799,9 @@ test "add_skill - re-running with same name OVERWRITES (truncates, no append)" {
     };
     const second_output = executeAddSkillToString(alloc, io, tmp_path, null, second_input);
     defer alloc.free(second_output);
-    try std.testing.expect(std.mem.indexOf(u8, second_output, "<created>true</created>") != null);
+    const second_parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, second_output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer second_parsed.deinit();
+    try std.testing.expect(second_parsed.value.created);
 
     // Read back — must contain ONLY second-version markers, NO first-version
     const second_read = try std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, alloc, std.Io.Limit.limited(64 * 1024));
@@ -1858,8 +1843,10 @@ test "add_skill - local creation (is_global=false) writes to .nalar/skills/<name
     defer alloc.free(output);
 
     // Verify the success response
-    try std.testing.expect(std.mem.indexOf(u8, output, "<created>true</created>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, skill_name) != null);
+    const parsed = try std.json.parseFromSlice(AddSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.created);
+    try std.testing.expectEqualStrings(skill_name, parsed.value.skill_name);
 
     // Verify the file was actually created at the correct path:
     // <tmp_path>/.nalar/skills/<skill_name>/SKILL.MD
@@ -1908,8 +1895,10 @@ test "edit_skill - empty skill_name returns error" {
     const output = try executeEditSkillToString(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<edited>false</edited>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "Skill name cannot be empty") != null);
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.updated);
+    try std.testing.expectEqualStrings("Skill name cannot be empty", parsed.value.@"error" orelse "");
 }
 
 test "edit_skill - neither description nor content provided returns error" {
@@ -1926,8 +1915,10 @@ test "edit_skill - neither description nor content provided returns error" {
     const output = try executeEditSkillToString(alloc, io, "/tmp", null, input);
     defer alloc.free(output);
 
-    try std.testing.expect(std.mem.indexOf(u8, output, "<edited>false</edited>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, "At least one of description or content must be provided") != null);
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.updated);
+    try std.testing.expectEqualStrings("At least one of description or content must be provided", parsed.value.@"error" orelse "");
 }
 
 test "edit_skill - tool definition includes is_global parameter" {
@@ -2017,8 +2008,10 @@ test "edit_skill - local edit (is_global=false) updates .nalar/skills/<name>/SKI
     defer alloc.free(output);
 
     // Verify the success response
-    try std.testing.expect(std.mem.indexOf(u8, output, "<edited>true</edited>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, output, skill_name) != null);
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.updated);
+    try std.testing.expectEqualStrings(skill_name, parsed.value.skill_name);
 
     // Read the file and verify it was actually updated with the new content
     const updated_file_content = try std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, alloc, std.Io.Limit.limited(64 * 1024));
@@ -2084,7 +2077,9 @@ test "edit_skill - edit truncates existing skill file (no append-mode corruption
     };
     const output = try executeEditSkillToString(alloc, io, tmp_path, null, input);
     defer alloc.free(output);
-    try std.testing.expect(std.mem.indexOf(u8, output, "<edited>true</edited>") != null);
+    const parsed = try std.json.parseFromSlice(EditSkillOutput, alloc, output, .{ .allocate = .alloc_always, .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.updated);
 
     // Read back — must contain ONLY the new description+content; ALL of the
     // OLD markers and trailing junk must be GONE.
