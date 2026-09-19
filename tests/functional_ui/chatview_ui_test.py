@@ -21,6 +21,7 @@ Plan: docs/superpowers/plans/2026-08-20-functional-ui-chatview-test.md
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -206,7 +207,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
     The chatview dispatches the rendering to a per-tool Vue
     component based on ``tool_name`` (``ShellTool`` for ``bash``,
     ``ReadFile`` for ``read_file``, etc.). ``ShellTool`` parses the
-    XML envelope from the tool output and renders the command,
+    JSON envelope from the tool output and renders the command,
     stdout, stderr, and exit code.
 
     Collapsed state (default): the header shows the tool name
@@ -217,16 +218,26 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
     h = ui_harness
     session_id = "sess_chatview_toolresult_001"
     seed = DbSeed(_seed_db_path(h))
-    # The shell tool envelope (per docs/superpowers/plans/2026-08-14-pwsh-tool.md):
-    #   <command>ls</command>
-    #   <stdout>file1.txt\nfile2.txt\nfile3.txt</stdout>
-    #   <stderr></stderr>
-    #   <exit_code>0</exit_code>
-    shell_output = (
-        "<command>ls</command>\n"
-        "<stdout>file1.txt\nfile2.txt\nfile3.txt</stdout>\n"
-        "<stderr></stderr>\n"
-        "<exit_code>0</exit_code>"
+    # The shell tool envelope (JSON, per the tool-output JSON schema).
+    shell_output = json.dumps(
+        {
+            "tool": "bash",
+            "parameters": {"command": "ls"},
+            "success": True,
+            "data": {
+                "command": "ls",
+                "stdout": "file1.txt\nfile2.txt\nfile3.txt",
+                "stderr": "",
+                "exit_code": 0,
+                "truncated": False,
+                "timeout": False,
+                "stdout_lines": 3,
+                "stderr_lines": 0,
+                "is_self": False,
+            },
+            "error": None,
+            "v": 1,
+        }
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Tool-call result")
