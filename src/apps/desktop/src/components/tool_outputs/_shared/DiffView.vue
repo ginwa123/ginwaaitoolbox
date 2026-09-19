@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineComponent, h, ref, type PropType } from 'vue'
+import { computed, defineComponent, h, ref, type PropType, type VNode } from 'vue'
 import {
   computeSplitView,
   computeUnifiedView,
@@ -7,6 +7,7 @@ import {
   type SplitRow,
   type UnifiedRow,
 } from './myersDiff'
+import { detectLanguage, highlightLine } from '@/helpers/codeHighlight'
 
 /**
  * Renders a side-by-side or unified diff for two strings.
@@ -50,12 +51,17 @@ interface Props {
   after: string
   /** Optional path — used as a title on the diff header for context. */
   filePath?: string
+  /** Optional monaco language id for code coloring. When omitted it is
+   * derived from `filePath` via `detectLanguage`; unknown extensions fall
+   * back to plaintext (plain-text rendering, exactly as before). */
+  language?: string
   /** Initial mode. Default 'split'. */
   initialMode?: 'split' | 'unified'
 }
 
 const props = withDefaults(defineProps<Props>(), {
   filePath: undefined,
+  language: undefined,
   initialMode: 'split',
 })
 
@@ -104,12 +110,28 @@ const changeCount = computed(() => {
   if (mode.value === 'split') {
     return splitRows.value.filter((r) => r.isChanged).length
   }
-  return unifiedRows.value.filter(
-    (r) => r.kind === 'delete' || r.kind === 'insert',
-  ).length
+  return unifiedRows.value.filter((r) => r.kind === 'delete' || r.kind === 'insert').length
 })
 
 const hasChanges = computed(() => changeCount.value > 0)
+
+/** Effective language for code coloring: explicit prop wins, otherwise
+ * derived from the file path. Plaintext disables token spans. */
+const effectiveLanguage = computed(() => props.language ?? detectLanguage(props.filePath ?? ''))
+
+/**
+ * Split one line into colored token spans. Plaintext (or an empty line)
+ * returns a single text node — identical output to the old plain-text
+ * rendering. Tokens render as framework text nodes, never HTML strings,
+ * so `old_str` content cannot inject markup.
+ */
+function renderHighlighted(text: string, language: string): VNode[] {
+  const tokens = highlightLine(text, language)
+  if (tokens.length === 1 && tokens[0]!.type === 'plain') {
+    return [h('span', { class: 'tok-plain' }, tokens[0]!.text || '\u00a0')]
+  }
+  return tokens.map((t, i) => h('span', { class: `tok-${t.type}`, key: i }, t.text))
+}
 
 const readMode = readStoredMode // suppress unused warning if some bundler tree-shakes
 
@@ -132,6 +154,7 @@ const DiffSplitSide = defineComponent({
   props: {
     rows: { type: Array as PropType<SplitRow[]>, required: true },
     side: { type: String as PropType<'before' | 'after'>, required: true },
+    language: { type: String as PropType<string>, required: true },
   },
   setup(props) {
     return () => {
@@ -139,15 +162,13 @@ const DiffSplitSide = defineComponent({
         return h(
           'div',
           {
-            class:
-              'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+            class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
           },
           [
             h(
               'div',
               {
-                class:
-                  'px-2 py-1 text-[var(--semantic-text-muted)] italic text-center',
+                class: 'px-2 py-1 text-[var(--semantic-text-muted)] italic text-center',
               },
               '(no content)',
             ),
@@ -157,8 +178,7 @@ const DiffSplitSide = defineComponent({
       return h(
         'div',
         {
-          class:
-            'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+          class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
         },
         [
           h(
@@ -170,7 +190,7 @@ const DiffSplitSide = defineComponent({
               // every row below inherits the same final width.
               style: { width: 'max-content', minWidth: '100%' },
             },
-            props.rows.map((row, idx) => renderSplitRow(row, idx, props.side)),
+            props.rows.map((row, idx) => renderSplitRow(row, idx, props.side, props.language)),
           ),
         ],
       )
@@ -178,7 +198,7 @@ const DiffSplitSide = defineComponent({
   },
 })
 
-function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
+function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after', language: string) {
   const isBefore = side === 'before'
   const text = isBefore ? row.beforeText : row.afterText
   const lineNum = isBefore ? row.beforeLine : row.afterLine
@@ -220,8 +240,7 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
         },
         onMouseover: (e: MouseEvent) => {
           ;(e.currentTarget as HTMLElement).style.cursor = 'pointer'
-          ;(e.currentTarget as HTMLElement).style.color =
-            'var(--color-violet)'
+          ;(e.currentTarget as HTMLElement).style.color = 'var(--color-violet)'
         },
         onMouseout: (e: MouseEvent) => {
           ;(e.currentTarget as HTMLElement).style.color = ''
@@ -268,16 +287,18 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
         },
         lineNum !== null ? String(lineNum) : '\u00a0',
       ),
-      // Line content. Plain text — no inline highlights. Sits in normal
-      // flow after the sticky gutter; long content extends past the
-      // pane's visible edge, which is what makes the shared wrapper (and
-      // therefore the ancestor scroll container) wide enough to scroll.
+      // Line content. Token-colored spans (code) or a single plain-text
+      // node (plaintext/unknown language — identical to the old rendering).
+      // Sits in normal flow after the sticky gutter; long content extends
+      // past the pane's visible edge, which is what makes the shared
+      // wrapper (and therefore the ancestor scroll container) wide enough
+      // to scroll.
       h(
         'span',
         {
           class: ['inline-block py-0.5 pr-2 whitespace-pre align-top', textColorClass],
         },
-        text ?? '\u00a0',
+        text == null ? '\u00a0' : renderHighlighted(text, language),
       ),
     ],
   )
@@ -285,8 +306,9 @@ function renderSplitRow(row: SplitRow, idx: number, side: 'before' | 'after') {
 
 // renderInlineChanges was removed in the chunks 5+6 redesign — users
 // found the combination of row bg + strikethrough + per-word highlight
-// on the same line impossible to parse. See renderSplitRow and
-// renderUnifiedRow for the new plain-text rendering.
+// on the same line impossible to parse. renderSplitRow and
+// renderUnifiedRow now render token-colored spans (via renderHighlighted)
+// on top of the row bg instead.
 
 /**
  * Renders the unified-view rows: line numbers, diff prefix, and content,
@@ -299,6 +321,7 @@ const DiffUnifiedSide = defineComponent({
   name: 'DiffUnifiedSide',
   props: {
     rows: { type: Array as PropType<UnifiedRow[]>, required: true },
+    language: { type: String as PropType<string>, required: true },
   },
   setup(props) {
     return () => {
@@ -306,15 +329,13 @@ const DiffUnifiedSide = defineComponent({
         return h(
           'div',
           {
-            class:
-              'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+            class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
           },
           [
             h(
               'div',
               {
-                class:
-                  'px-2 py-1 text-[var(--semantic-text-muted)] italic text-center',
+                class: 'px-2 py-1 text-[var(--semantic-text-muted)] italic text-center',
               },
               '(no content)',
             ),
@@ -324,8 +345,7 @@ const DiffUnifiedSide = defineComponent({
       return h(
         'div',
         {
-          class:
-            'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+          class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
         },
         [
           h(
@@ -333,7 +353,7 @@ const DiffUnifiedSide = defineComponent({
             {
               style: { width: 'max-content', minWidth: '100%' },
             },
-            props.rows.map((row, idx) => renderUnifiedRow(row, idx)),
+            props.rows.map((row, idx) => renderUnifiedRow(row, idx, props.language)),
           ),
         ],
       )
@@ -341,7 +361,7 @@ const DiffUnifiedSide = defineComponent({
   },
 })
 
-function renderUnifiedRow(row: UnifiedRow, idx: number) {
+function renderUnifiedRow(row: UnifiedRow, idx: number, language: string) {
   if (row.kind === 'hunk') {
     return h(
       'div',
@@ -372,8 +392,7 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
           },
           onMouseover: (e: MouseEvent) => {
             ;(e.currentTarget as HTMLElement).style.cursor = 'pointer'
-            ;(e.currentTarget as HTMLElement).style.color =
-              'var(--color-violet)'
+            ;(e.currentTarget as HTMLElement).style.color = 'var(--color-violet)'
           },
           onMouseout: (e: MouseEvent) => {
             ;(e.currentTarget as HTMLElement).style.color = ''
@@ -400,9 +419,7 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
           class:
             'shrink-0 w-10 sticky left-0 z-10 px-2 py-0.5 text-right text-[var(--semantic-text-muted)] font-mono select-none border-r border-[var(--color-border)]',
           style: { background: 'var(--semantic-card-bg)' },
-          ...(row.beforeLine !== null && row.beforeLine !== undefined
-            ? gutterClickHandler
-            : {}),
+          ...(row.beforeLine !== null && row.beforeLine !== undefined ? gutterClickHandler : {}),
         },
         row.beforeLine ?? '',
       ),
@@ -412,17 +429,14 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
           class:
             'shrink-0 w-10 sticky left-10 z-10 px-2 py-0.5 text-right text-[var(--semantic-text-muted)] font-mono select-none border-r border-[var(--color-border)]',
           style: { background: 'var(--semantic-card-bg)' },
-          ...(row.afterLine !== null && row.afterLine !== undefined
-            ? gutterClickHandler
-            : {}),
+          ...(row.afterLine !== null && row.afterLine !== undefined ? gutterClickHandler : {}),
         },
         row.afterLine ?? '',
       ),
       h(
         'span',
         {
-          class:
-            'shrink-0 w-4 sticky left-20 z-10 mr-3 font-semibold text-center',
+          class: 'shrink-0 w-4 sticky left-20 z-10 mr-3 font-semibold text-center',
           style: { background: 'var(--semantic-card-bg)' },
         },
         row.text.charAt(0),
@@ -430,7 +444,9 @@ function renderUnifiedRow(row: UnifiedRow, idx: number) {
       h(
         'span',
         { class: 'shrink-0 px-2 py-0.5 whitespace-pre' },
-        row.text.slice(1),
+        row.kind === 'context' || row.kind === 'delete' || row.kind === 'insert'
+          ? renderHighlighted(row.text.slice(1), language)
+          : row.text.slice(1),
       ),
     ],
   )
@@ -454,15 +470,14 @@ void readMode
           v-if="filePath"
           class="text-[var(--semantic-text-muted)] truncate"
           :title="filePath"
-        >{{ filePath }}</span>
+          >{{ filePath }}</span
+        >
       </div>
       <div class="flex items-center gap-2 shrink-0">
         <span v-if="hasChanges" class="text-[var(--semantic-text-muted)]">
           {{ changeCount }} {{ changeCount === 1 ? 'change' : 'changes' }}
         </span>
-        <div
-          class="inline-flex rounded border border-[var(--color-border)] overflow-hidden"
-        >
+        <div class="inline-flex rounded border border-[var(--color-border)] overflow-hidden">
           <button
             type="button"
             class="px-2 py-0.5 text-xs border-none cursor-pointer"
@@ -472,7 +487,9 @@ void readMode
                 : 'bg-transparent text-[var(--semantic-text-muted)] hover:bg-violet-500/10'
             "
             @click="setMode('split')"
-          >Split</button>
+          >
+            Split
+          </button>
           <button
             type="button"
             class="px-2 py-0.5 text-xs border-none cursor-pointer"
@@ -482,7 +499,9 @@ void readMode
                 : 'bg-transparent text-[var(--semantic-text-muted)] hover:bg-violet-500/10'
             "
             @click="setMode('unified')"
-          >Unified</button>
+          >
+            Unified
+          </button>
         </div>
       </div>
     </div>
@@ -492,18 +511,53 @@ void readMode
       <div class="flex-1 min-w-0">
         <div
           class="px-2 py-0.5 text-xs font-semibold uppercase bg-black/[0.02] border-b border-[var(--color-border)] text-red-500"
-        >Before</div>
-        <DiffSplitSide :rows="splitRows" side="before" />
+        >
+          Before
+        </div>
+        <DiffSplitSide :rows="splitRows" side="before" :language="effectiveLanguage" />
       </div>
       <div class="flex-1 min-w-0">
         <div
           class="px-2 py-0.5 text-xs font-semibold uppercase bg-black/[0.02] border-b border-[var(--color-border)] text-green-500"
-        >After</div>
-        <DiffSplitSide :rows="splitRows" side="after" />
+        >
+          After
+        </div>
+        <DiffSplitSide :rows="splitRows" side="after" :language="effectiveLanguage" />
       </div>
     </div>
 
     <!-- Unified view -->
-    <DiffUnifiedSide v-else :rows="unifiedRows" />
+    <DiffUnifiedSide v-else :rows="unifiedRows" :language="effectiveLanguage" />
   </div>
 </template>
+
+<style scoped>
+/* Code token colors — mirrors the `nalar-dark` monaco theme in
+ * CodeEditor.vue so diff output matches the full editor. The row
+ * red/green background stays the source of truth for removed/added;
+ * these tints only color tokens *within* the row. Scoped to this
+ * component; no light-palette hardcodes (dark transcript theme). */
+.tok-plain {
+  color: inherit;
+}
+.tok-keyword {
+  color: #8992a7;
+  font-weight: 600;
+}
+.tok-string {
+  color: #87a987;
+}
+.tok-comment {
+  color: #7a8382;
+  font-style: italic;
+}
+.tok-number {
+  color: #c4b28a;
+}
+.tok-function {
+  color: #8ea4a2;
+}
+.tok-type {
+  color: #8ba4b0;
+}
+</style>

@@ -81,8 +81,14 @@ describe('DiffView', () => {
     const wrapper = mount(DiffView, {
       props: { before: 'a\nb', after: 'a\nB' },
     })
-    await wrapper.findAll('button').find((b) => b.text() === 'Unified')!.trigger('click')
-    await wrapper.findAll('button').find((b) => b.text() === 'Split')!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Unified')!
+      .trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Split')!
+      .trigger('click')
     expect(wrapper.text()).toContain('Before')
   })
 
@@ -108,7 +114,10 @@ describe('DiffView', () => {
         after: 'ctx1\nctx2\nNEW\nctx3\nctx4',
       },
     })
-    await wrapper.findAll('button').find((b) => b.text() === 'Unified')!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Unified')!
+      .trigger('click')
     const hunks = wrapper.findAll('[data-hunk]')
     expect(hunks.length).toBeGreaterThan(0)
     expect(hunks[0]!.text()).toMatch(/^@@ -\d+,\d+ \+\d+,\d+ @@$/)
@@ -141,10 +150,16 @@ describe('DiffView', () => {
     const wrapper = mount(DiffView, {
       props: { before: 'a\nb', after: 'a\nB' },
     })
-    await wrapper.findAll('button').find((b) => b.text() === 'Unified')!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Unified')!
+      .trigger('click')
     expect(localStorage.getItem('diffview.mode')).toBe('unified')
     // Set split and verify
-    await wrapper.findAll('button').find((b) => b.text() === 'Split')!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Split')!
+      .trigger('click')
     expect(localStorage.getItem('diffview.mode')).toBe('split')
   })
 
@@ -189,7 +204,10 @@ describe('DiffView', () => {
     const wrapper = mount(DiffView, {
       props: { before: 'a\nb', after: 'a\nB' },
     })
-    await wrapper.findAll('button').find((b) => b.text() === 'Unified')!.trigger('click')
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Unified')!
+      .trigger('click')
     // Find the unified row for the inserted 'B' line — its afterLine is 2
     const insertedRows = wrapper.findAll('[data-kind="insert"][data-after-line="2"]')
     expect(insertedRows.length).toBe(1)
@@ -342,5 +360,64 @@ describe('DiffView', () => {
     const gutterStyle = gutter.getAttribute('style') ?? ''
     expect(gutterStyle).toMatch(/position:\s*sticky/)
     expect(gutterStyle).toMatch(/left:\s*0/)
+  })
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Code coloring (text_replace output code coloring)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it('colorizes tokens when filePath has a known extension', () => {
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'const a = "old"',
+        after: 'const a = "new"',
+        filePath: '/repo/src/foo.ts',
+      },
+    })
+    const html = wrapper.html()
+    expect(html).toContain('tok-keyword')
+    expect(html).toContain('tok-string')
+  })
+
+  it('renders plain text (no token spans) for unknown extensions', () => {
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'const a = "old"',
+        after: 'const a = "new"',
+        filePath: '/repo/notes.log',
+      },
+    })
+    const html = wrapper.html()
+    expect(html).not.toContain('tok-keyword')
+    expect(html).not.toContain('tok-string')
+    // Content still renders.
+    expect(wrapper.text()).toContain('const a =')
+  })
+
+  it('explicit language prop overrides the filePath derivation', () => {
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'const a = "old"',
+        after: 'const a = "new"',
+        filePath: '/repo/notes.log',
+        language: 'typescript',
+      },
+    })
+    expect(wrapper.html()).toContain('tok-keyword')
+  })
+
+  it('colorizes unified view rows too', async () => {
+    const wrapper = mount(DiffView, {
+      props: {
+        before: 'const a = "old"',
+        after: 'const a = "new"',
+        filePath: '/repo/src/foo.py',
+      },
+    })
+    await wrapper
+      .findAll('button')
+      .find((b) => b.text() === 'Unified')!
+      .trigger('click')
+    expect(wrapper.html()).toContain('tok-string')
   })
 })
