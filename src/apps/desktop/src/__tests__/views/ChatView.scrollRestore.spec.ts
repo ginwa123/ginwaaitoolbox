@@ -49,12 +49,24 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 
 import * as api from '../../api'
 import ChatView from '../../components/views/ChatView.vue'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../../helpers/sseClient'
+
+// ChatView calls useRoute()/useRouter() on mount (URL param sync). In jsdom
+// there is no router — stub the pair (same pattern as
+// AppLayout.chatview.spec.ts).
+vi.mock('vue-router', async () => {
+  const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
+  return {
+    ...actual,
+    useRoute: () => ({ query: {}, path: '/app', params: {} }),
+    useRouter: () => ({
+      replace: vi.fn(() => Promise.resolve()),
+      push: vi.fn(() => Promise.resolve()),
+      back: vi.fn(),
+    }),
+  }
+})
 
 // jsdom 29 does NOT implement HTMLElement.prototype.scrollTo. The
 // VirtualScroller's scrollToBottom / scrollToPosition call this
@@ -103,7 +115,6 @@ Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
 })
 
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -131,7 +142,7 @@ function installApiMocks(): void {
     image_url: '',
     finish_reason: '',
   }))
-   
+
   vi.spyOn(api, 'getChatHistory').mockResolvedValue({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     messages: messages as any,
@@ -139,37 +150,37 @@ function installApiMocks(): void {
     next_cursor: null,
     cwd: '/tmp',
     git_worktree_cwd: '',
-     
+
     max_total_tokens: 0,
-     
+
     max_capacity_total_tokens: 0,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
   vi.spyOn(api, 'getSession').mockResolvedValue({
     session_id: 'placeholder',
-     
+
     session_name: '',
     selectedProfile: null,
     cwd: '',
     git_worktree_cwd: '',
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({
     is_git_repo: false,
-     
+
     branch: '',
     has_changes: false,
     is_clean: true,
-     
+
     current: '',
     status: 'clean',
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({
     profiles: {},
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
 
