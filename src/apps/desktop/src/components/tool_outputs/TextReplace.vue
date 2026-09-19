@@ -4,6 +4,7 @@ import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import DiffView from './_shared/DiffView.vue'
 import { normalizeToolContent, parseTextReplace } from './_shared/toolOutputParser'
+import { detectLanguage } from '@/helpers/codeHighlight'
 import { extractParam } from '@/helpers/extractParam'
 import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
 
@@ -127,6 +128,10 @@ const isRunning = computed(() => {
   return isEmptyContent(props.content) && displayPath.value !== null
 })
 
+// Language for diff code coloring, derived from the target file path.
+// DiffView falls back to plaintext (plain rendering) when unknown.
+const diffLanguage = computed(() => detectLanguage(displayPath.value ?? ''))
+
 const openInEditor = useInjectOpenInCodeEditor()
 
 // Forward the diff-view's @jump-to-line to the in-app code editor so the
@@ -177,6 +182,7 @@ const handleToggle = (next: boolean) => {
         :before="diffBefore"
         :after="diffAfter"
         :file-path="displayPath || undefined"
+        :language="diffLanguage"
         class="rounded-none border-0"
         @jump-to-line="handleJumpToLine"
       />

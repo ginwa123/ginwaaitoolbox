@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, shallowRef } from 'vue'
+import { detectLanguage } from '@/helpers/codeHighlight'
 
 // LAZY LOADED — DO NOT statically `import 'monaco-editor'`.
 //
@@ -117,8 +118,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'close': []
-  'save': [content: string]
+  close: []
+  save: [content: string]
   'content-change': [content: string]
 }>()
 
@@ -132,83 +133,34 @@ const monacoNs = shallowRef<MonacoNs | null>(null)
 const isModified = ref(false)
 const originalContent = ref(props.content || '')
 
-// Detect language from file extension
-const detectLanguage = (fileName: string): string => {
-  const ext = fileName.split('.').pop()?.toLowerCase() || ''
-  const languageMap: Record<string, string> = {
-    'js': 'javascript',
-    'jsx': 'javascript',
-    'ts': 'typescript',
-    'tsx': 'typescript',
-    'vue': 'html',
-    'html': 'html',
-    'htm': 'html',
-    'css': 'css',
-    'scss': 'scss',
-    'less': 'less',
-    'json': 'json',
-    'jsonc': 'json',
-    'md': 'markdown',
-    'markdown': 'markdown',
-    'xml': 'xml',
-    'yaml': 'yaml',
-    'yml': 'yaml',
-    'py': 'python',
-    'python': 'python',
-    'sh': 'shell',
-    'bash': 'shell',
-    'zsh': 'shell',
-    'ps1': 'powershell',
-    'psm1': 'powershell',
-    'psd1': 'powershell',
-    'powershell': 'powershell',
-    'zig': 'zig',
-    'rs': 'rust',
-    'toml': 'ini',
-    'ini': 'ini',
-    'txt': 'plaintext',
-    'log': 'plaintext',
-    'gitignore': 'plaintext',
-    'env': 'plaintext',
-    'sql': 'sql',
-    'graphql': 'graphql',
-    'go': 'go',
-    'java': 'java',
-    'c': 'c',
-    'cpp': 'cpp',
-    'h': 'c',
-    'hpp': 'cpp',
-  }
-  return languageMap[ext] || 'plaintext'
-}
-
+// detectLanguage lives in @/helpers/codeHighlight (shared with DiffView).
 // Get file icon for display
 const getFileIcon = (fileName: string): string => {
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const iconMap: Record<string, string> = {
-    'js': '📜',
-    'jsx': '⚛️',
-    'ts': '📘',
-    'tsx': '⚛️',
-    'vue': '💚',
-    'html': '🌐',
-    'htm': '🌐',
-    'css': '🎨',
-    'scss': '🎨',
-    'less': '🎨',
-    'json': '📋',
-    'md': '📝',
-    'markdown': '📝',
-    'xml': '📄',
-    'yaml': '⚙️',
-    'yml': '⚙️',
-    'py': '🐍',
-    'zig': '⚡',
-    'rs': '🦀',
-    'go': '🔵',
-    'txt': '📄',
-    'gitignore': '🔒',
-    'env': '🔐',
+    js: '📜',
+    jsx: '⚛️',
+    ts: '📘',
+    tsx: '⚛️',
+    vue: '💚',
+    html: '🌐',
+    htm: '🌐',
+    css: '🎨',
+    scss: '🎨',
+    less: '🎨',
+    json: '📋',
+    md: '📝',
+    markdown: '📝',
+    xml: '📄',
+    yaml: '⚙️',
+    yml: '⚙️',
+    py: '🐍',
+    zig: '⚡',
+    rs: '🦀',
+    go: '🔵',
+    txt: '📄',
+    gitignore: '🔒',
+    env: '🔐',
   }
   return iconMap[ext] || '📄'
 }
@@ -231,7 +183,7 @@ onMounted(async () => {
   // stays separate and is only fetched when the user actually opens
   // a file in the editor.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const monaco = await import(/* @vite-ignore */ 'monaco-editor') as any
+  const monaco = (await import(/* @vite-ignore */ 'monaco-editor')) as any
   monacoNs.value = monaco
 
   // Configure editor theme to match Kanagawa Dragon theme
@@ -332,24 +284,30 @@ onUnmounted(() => {
 })
 
 // Watch for external content changes
-watch(() => props.content, (newContent) => {
-  if (editor.value && newContent !== editor.value.getValue()) {
-    editor.value.setValue(newContent || '')
-    originalContent.value = newContent || ''
-    isModified.value = false
-  }
-})
+watch(
+  () => props.content,
+  (newContent) => {
+    if (editor.value && newContent !== editor.value.getValue()) {
+      editor.value.setValue(newContent || '')
+      originalContent.value = newContent || ''
+      isModified.value = false
+    }
+  },
+)
 
 // Watch for language changes
-watch(() => props.language, (newLanguage) => {
-  if (editor.value && newLanguage && monacoNs.value) {
-    const model = editor.value.getModel()
-    if (model) {
-      monacoNs.value.editor.setModelLanguage(model, newLanguage)
-      detectedLanguage.value = newLanguage
+watch(
+  () => props.language,
+  (newLanguage) => {
+    if (editor.value && newLanguage && monacoNs.value) {
+      const model = editor.value.getModel()
+      if (model) {
+        monacoNs.value.editor.setModelLanguage(model, newLanguage)
+        detectedLanguage.value = newLanguage
+      }
     }
-  }
-})
+  },
+)
 
 const handleClose = () => {
   emit('close')
@@ -378,7 +336,7 @@ const handleReadOnlyToggle = () => {
     <!-- Header -->
     <div
       class="h-12 flex items-center justify-between px-4 shrink-0"
-      style="background-color: var(--color-bg-m2); border-bottom: 1px solid var(--color-border);"
+      style="background-color: var(--color-bg-m2); border-bottom: 1px solid var(--color-border)"
     >
       <div class="flex items-center gap-3">
         <button
@@ -386,25 +344,36 @@ const handleReadOnlyToggle = () => {
           class="p-2 rounded-lg hover:opacity-70 transition-opacity"
           title="Close"
         >
-          <svg class="w-4 h-4" style="color: var(--semantic-text);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+          <svg
+            class="w-4 h-4"
+            style="color: var(--semantic-text)"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M15 19l-7-7 7-7"
+            />
           </svg>
         </button>
         <span class="text-lg">{{ getFileIcon(fileName) }}</span>
         <div class="flex items-center gap-2">
-          <span class="text-sm font-medium" style="color: var(--semantic-text);">
+          <span class="text-sm font-medium" style="color: var(--semantic-text)">
             {{ fileName }}
           </span>
           <span
             v-if="isModified"
             class="w-2 h-2 rounded-full"
-            style="background-color: var(--color-orange);"
+            style="background-color: var(--color-orange)"
             title="Unsaved changes"
           />
           <span
             v-if="props.readonly"
             class="text-xs px-2 py-0.5 rounded"
-            style="background-color: var(--semantic-active-bg); color: var(--semantic-text-dim);"
+            style="background-color: var(--semantic-active-bg); color: var(--semantic-text-dim)"
           >
             READONLY
           </span>
@@ -415,7 +384,7 @@ const handleReadOnlyToggle = () => {
         <!-- Language indicator -->
         <span
           class="text-xs px-2 py-1 rounded"
-          style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted);"
+          style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
         >
           {{ detectedLanguage }}
         </span>
@@ -427,9 +396,25 @@ const handleReadOnlyToggle = () => {
           class="p-2 rounded-lg hover:opacity-70 transition-opacity"
           :title="props.readonly ? 'Enable editing' : 'Make readonly'"
         >
-          <svg class="w-4 h-4" style="color: var(--semantic-text-dim);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+          <svg
+            class="w-4 h-4"
+            style="color: var(--semantic-text-dim)"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
+            />
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+            />
           </svg>
         </button>
 
@@ -438,7 +423,7 @@ const handleReadOnlyToggle = () => {
           v-if="isModified && !props.readonly"
           @click="handleSave"
           class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
-          style="background-color: var(--color-green); color: var(--color-bg);"
+          style="background-color: var(--color-green); color: var(--color-bg)"
           title="Save (Ctrl+S)"
         >
           Save
@@ -448,7 +433,7 @@ const handleReadOnlyToggle = () => {
         <span
           v-if="isModified && !props.readonly"
           class="text-xs"
-          style="color: var(--color-orange);"
+          style="color: var(--color-orange)"
         >
           Unsaved
         </span>
@@ -456,16 +441,17 @@ const handleReadOnlyToggle = () => {
     </div>
 
     <!-- Editor container -->
-    <div
-      ref="editorContainer"
-      class="flex-1 overflow-hidden"
-    />
+    <div ref="editorContainer" class="flex-1 overflow-hidden" />
 
     <!-- Footer with file path -->
     <div
       v-if="props.cwd || filePath"
       class="h-6 flex items-center px-3 shrink-0 text-xs truncate"
-      style="background-color: var(--color-bg-m2); border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
+      style="
+        background-color: var(--color-bg-m2);
+        border-top: 1px solid var(--color-border);
+        color: var(--semantic-text-dim);
+      "
       :title="cwd ? `${cwd}/${filePath}` : filePath"
     >
       {{ cwd ? `${cwd}/${filePath}` : filePath }}

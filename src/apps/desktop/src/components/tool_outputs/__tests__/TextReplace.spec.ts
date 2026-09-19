@@ -14,10 +14,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, provide } from 'vue'
 
 import TextReplace from '../TextReplace.vue'
-import {
-  OPEN_IN_CODE_EDITOR_KEY,
-  type OpenInCodeEditorFn,
-} from '@/composables/useCodeEditor'
+import { OPEN_IN_CODE_EDITOR_KEY, type OpenInCodeEditorFn } from '@/composables/useCodeEditor'
 
 // ────────────────────────────────────────────────────────────────────────
 // Test helpers
@@ -131,9 +128,9 @@ describe('TextReplace', () => {
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
     const afterLineRow = afterLineRows[0]!
-    await afterLineRow.element.querySelector("span:not([data-bg])")!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true }),
-    )
+    await afterLineRow.element
+      .querySelector('span:not([data-bg])')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
     // Verify the editor handler was called with the right args.
     expect(calls).toHaveLength(1)
@@ -160,9 +157,9 @@ describe('TextReplace', () => {
 
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
-    await afterLineRows[0]!.element.querySelector("span:not([data-bg])")!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true }),
-    )
+    await afterLineRows[0]!.element
+      .querySelector('span:not([data-bg])')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
 
     expect(calls).toHaveLength(0)
   })
@@ -177,10 +174,29 @@ describe('TextReplace', () => {
     const afterLineRows = wrapper.findAll('[data-side="after"][data-line="2"]')
     expect(afterLineRows.length).toBe(1)
     // Click should NOT throw and NOT call any handler.
-    await afterLineRows[0]!.element.querySelector("span:not([data-bg])")!.dispatchEvent(
-      new MouseEvent('click', { bubbles: true }),
-    )
+    await afterLineRows[0]!.element
+      .querySelector('span:not([data-bg])')!
+      .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     // No assertions on emitted events — just that nothing crashed.
     expect(wrapper.exists()).toBe(true)
+  })
+
+  it('passes a derived language to DiffView so zig output is colorized', async () => {
+    const { default: DiffView } = await import('../_shared/DiffView.vue')
+    wrapper = makeWrapper({
+      content: {
+        path: '/repo/src/main.zig',
+        before: 'const x = 1',
+        after: 'const x = 2',
+        unified: null,
+        lines_changed: 1,
+        error: null,
+      },
+      expanded: true,
+    })
+    const diff = wrapper.findComponent(DiffView)
+    expect(diff.exists()).toBe(true)
+    expect(diff.props('language')).toBe('zig')
+    expect(wrapper.html()).toContain('tok-keyword')
   })
 })
