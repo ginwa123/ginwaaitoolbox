@@ -85,3 +85,63 @@ describe('ReadFile.vue — line-number gutter from start_line', () => {
     expect(lines(wrapper)).toEqual(['<div>& "hi"</div>'])
   })
 })
+
+describe('ReadFile.vue — code coloring', () => {
+  it('highlights keywords/strings for a known language (zig)', () => {
+    const wrapper = makeWrapper({
+      content: {
+        path: '/main.zig',
+        content: 'const name = "ada"; // greeting',
+        total_lines: 1,
+        start_line: 0,
+        end_line: 0,
+      },
+    })
+    // Verbatim text preserved through token spans.
+    expect(lines(wrapper)).toEqual(['const name = "ada"; // greeting'])
+    const html = wrapper.html()
+    expect(html).toContain('tok-keyword')
+    expect(html).toContain('tok-string')
+    expect(html).toContain('tok-comment')
+  })
+
+  it('renders plaintext without token colors for .txt', () => {
+    const wrapper = makeWrapper({
+      content: {
+        path: '/notes.txt',
+        content: 'const name = "ada"; // greeting',
+        total_lines: 1,
+        start_line: 0,
+        end_line: 0,
+      },
+    })
+    expect(lines(wrapper)).toEqual(['const name = "ada"; // greeting'])
+    const html = wrapper.html()
+    expect(html).not.toContain('tok-keyword')
+    expect(html).not.toContain('tok-string')
+    expect(html).toContain('tok-plain')
+  })
+
+  it('falls back to plaintext for unknown extensions', () => {
+    const wrapper = makeWrapper({
+      content: {
+        path: '/file.unknownext',
+        content: 'const x = 42',
+        total_lines: 1,
+        start_line: 0,
+        end_line: 0,
+      },
+    })
+    expect(lines(wrapper)).toEqual(['const x = 42'])
+    expect(wrapper.html()).not.toContain('tok-keyword')
+  })
+
+  it('derives language from parameters path when envelope path is empty', () => {
+    const wrapper = makeWrapper({
+      content: JSON.stringify({ path: '', content: 'const x = 1', start_line: 0 }),
+      parameters: JSON.stringify({ path: '/app.ts' }),
+    })
+    expect(wrapper.html()).toContain('tok-keyword')
+    expect(wrapper.html()).toContain('tok-number')
+  })
+})

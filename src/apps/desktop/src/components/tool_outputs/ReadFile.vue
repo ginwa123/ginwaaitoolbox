@@ -4,6 +4,7 @@ import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { parseReadFile, normalizeToolContent } from './_shared/toolOutputParser'
 import { extractParam } from '@/helpers/extractParam'
+import { detectLanguage, highlightLine, type Token } from '@/helpers/codeHighlight'
 
 const props = defineProps<{
   content: unknown
@@ -64,6 +65,17 @@ const isRunning = computed(() => {
   return isEmpty && displayPath.value !== null
 })
 
+// Language for code coloring, derived from the file path. Unknown
+// extensions fall back to plaintext (plain-text rendering, exactly as before).
+const fileLanguage = computed(() => detectLanguage(displayPath.value ?? ''))
+
+// Per-line tokens for code coloring. Tokens render as framework text
+// nodes (never HTML strings), so file content cannot inject markup.
+const highlightedLines = computed((): Token[][] => {
+  const lang = fileLanguage.value
+  return contentLines.value.map((line) => highlightLine(line, lang))
+})
+
 const handleToggle = (next: boolean) => {
   isExpanded.value = next
 }
@@ -94,12 +106,20 @@ const handleToggle = (next: boolean) => {
         v-else-if="contentLines.length > 0"
         class="p-2 m-0 bg-black/[0.02] overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs"
       >
-        <div v-for="(line, idx) in contentLines" :key="idx" class="flex hover:bg-violet-500/5">
+        <div
+          v-for="(tokens, idx) in highlightedLines"
+          :key="idx"
+          class="flex hover:bg-violet-500/5"
+        >
           <span
             class="rf-gutter min-w-[3rem] text-right mr-3 text-[var(--semantic-text-dim)] select-none shrink-0"
             >{{ baseLine + idx }}</span
           >
-          <span class="rf-line whitespace-pre">{{ line }}</span>
+          <span class="rf-line whitespace-pre"
+            ><span v-for="(tok, tIdx) in tokens" :key="tIdx" :class="'tok-' + tok.type">{{
+              tok.text || ' '
+            }}</span></span
+          >
         </div>
       </div>
       <pre
@@ -111,3 +131,32 @@ const handleToggle = (next: boolean) => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Code token colors — mirrors the `nalar-dark` monaco theme in
+ * CodeEditor.vue so read output matches the full editor and DiffView.
+ * Scoped to this component; no light-palette hardcodes (dark transcript theme). */
+.tok-plain {
+  color: inherit;
+}
+.tok-keyword {
+  color: #8992a7;
+  font-weight: 600;
+}
+.tok-string {
+  color: #87a987;
+}
+.tok-comment {
+  color: #7a8382;
+  font-style: italic;
+}
+.tok-number {
+  color: #c4b28a;
+}
+.tok-function {
+  color: #8ea4a2;
+}
+.tok-type {
+  color: #8ba4b0;
+}
+</style>
