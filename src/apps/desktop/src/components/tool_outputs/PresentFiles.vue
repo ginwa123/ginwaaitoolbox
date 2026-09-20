@@ -25,7 +25,8 @@
       (click either → fullscreen `ImagePreview` modal). Filename + ⬇
       button download (`disposition=attachment`).
     - text/html: fetched source rendered into a sandboxed `srcdoc`
-      iframe (fixed 480px height) + "Open in new tab" action. Same
+      iframe (auto-grows to full content height, no inner scrollbar) +
+      "Open in new tab" action. Same
       sandbox contract as the former `show_preview` html branch
       (allow-scripts only: no allow-same-origin, no allow-forms, no
       top navigation). Fetched via same-origin `fetch` (cookies ride
@@ -53,11 +54,18 @@
   ✗/✓ status indicators, expand/collapse `+`/`−` toggle.
 -->
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
 import PreviewContentRenderer from '../preview/PreviewContentRenderer.vue'
+import {
+  autoResizeScript,
+  findSenderFrame,
+  growFrameToContent,
+  readAutoResizeHeight,
+  FRAME_NO_SCROLLBAR_STYLE,
+} from '../../helpers/iframeAutoResize'
 import {
   normalizeToolContent,
   parsePresentFiles,
@@ -269,11 +277,34 @@ async function fetchHtmlFor(f: ParsedPresentFile): Promise<void> {
  * encodes them, and the iframe parser decodes them back (same contract
  * as PreviewContentRenderer's html branch). The margin reset keeps
  * unstyled docs flush like the previous direct-navigation render.
+ * The frame reports its own content height (postMessage) so the parent
+ * grows it to FULL height — no inner scrollbar, the outer chat owns
+ * scrolling. The no-scrollbar style hides any residual frame scrollbars.
  */
+const PRESENT_FILES_HTML_RESIZE_SOURCE = 'present-files-html-auto-resize'
+
 function htmlSrcDoc(f: ParsedPresentFile): string {
   const raw = htmlByPath.value[f.path]?.content ?? ''
-  return `<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
+  return (
+    `${autoResizeScript(PRESENT_FILES_HTML_RESIZE_SOURCE)}` +
+    `<style>html,body{margin:0;padding:0;background:#fff;}${FRAME_NO_SCROLLBAR_STYLE}</style>${raw}`
+  )
 }
+
+function onPresentHtmlResize(e: MessageEvent): void {
+  const reported = readAutoResizeHeight(e, PRESENT_FILES_HTML_RESIZE_SOURCE)
+  if (reported === null) return
+  if (typeof document === 'undefined') return
+  const frame = findSenderFrame(document, e, 'iframe.present-files-html-frame')
+  if (!frame) return
+  frame.style.height = `${growFrameToContent(reported, 200)}px`
+}
+
+onMounted(() => {
+  if (typeof window !== 'undefined') {
+    window.addEventListener('message', onPresentHtmlResize)
+  }
+})
 
 interface PdfState {
   status: 'loading' | 'ready' | 'error' | 'skipped'
@@ -308,6 +339,9 @@ async function fetchPdfFor(f: ParsedPresentFile): Promise<void> {
 }
 
 onUnmounted(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('message', onPresentHtmlResize)
+  }
   for (const key of Object.keys(pdfByPath.value)) {
     const url = pdfByPath.value[key]?.url
     if (url) {
@@ -446,7 +480,9 @@ const openInNewTab = (f: ParsedPresentFile) => {
 
           <!--
             Inline preview: HTML fetched over same-origin fetch and
-            rendered into a sandboxed srcdoc iframe. A direct
+            rendered into a sandboxed srcdoc iframe that grows to its
+            FULL content height (no inner scrollbar — the outer chat
+            scroller owns scrolling). A direct
             `<iframe src=downloadUrl>` is refused by the server's
             framing headers (X-Frame-Options: DENY + frame-ancestors
             'none') while top-level "Open in new tab" keeps working,
@@ -461,8 +497,9 @@ const openInNewTab = (f: ParsedPresentFile) => {
               v-if="htmlByPath[f.path]?.status === 'ready'"
               :srcdoc="htmlSrcDoc(f)"
               sandbox="allow-scripts"
-              style="height: 480px"
-              class="block w-full border-0"
+              scrolling="no"
+              style="min-height: 200px; overflow: hidden; scrollbar-width: none"
+              class="present-files-html-frame block w-full border-0"
               :title="displayName(f)"
             />
             <div
@@ -599,3 +636,14 @@ const openInNewTab = (f: ParsedPresentFile) => {
     <ImagePreview :src="fullscreenSrc ?? ''" @close="closeFullscreen" />
   </div>
 </template>
+
+<style scoped>
+.present-files-html-frame {
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.present-files-html-frame::-webkit-scrollbar {
+  display: none;
+}
+</style>

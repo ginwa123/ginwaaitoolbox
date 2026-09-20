@@ -41,6 +41,8 @@ export {
   MIN_FRAME_HEIGHT,
   MAX_FRAME_HEIGHT,
   clampFrameHeight,
+  growFrameToContent,
+  FRAME_NO_SCROLLBAR_STYLE,
   readAutoResizeHeight,
   findSenderFrame,
   autoResizeScript,

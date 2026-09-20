@@ -31,13 +31,7 @@ import { stripThinkingTags } from '../helpers/stripTags'
 const readChatViewSource = async (): Promise<string> => {
   const fs = await import('node:fs/promises')
   const path = await import('node:path')
-  const chatviewPath = path.resolve(
-    __dirname,
-    '..',
-    'components',
-    'views',
-    'ChatView.vue',
-  )
+  const chatviewPath = path.resolve(__dirname, '..', 'components', 'views', 'ChatView.vue')
   return fs.readFile(chatviewPath, 'utf8')
 }
 
@@ -65,9 +59,7 @@ describe('F2 — user group renders ALL messages (source contract)', () => {
   it('template v-fors over group.messages instead of rendering [0] only', async () => {
     const source = await readChatViewSource()
     // The user branch must iterate every message...
-    expect(source).toMatch(
-      /v-for="\(userMsg, userMsgIdx\) in group\.messages"/,
-    )
+    expect(source).toMatch(/v-for="\(userMsg, userMsgIdx\) in group\.messages"/)
     // ...and must NOT render the old [0]-only text interpolation.
     expect(source).not.toMatch(/\{\{ group\.messages\[0\]!\.content \}\}/)
   })
@@ -76,9 +68,7 @@ describe('F2 — user group renders ALL messages (source contract)', () => {
     const source = await readChatViewSource()
     // The user branch of hasBubbleContent must use .some(...) over all
     // messages (the old code read group.messages[0] directly).
-    const userBranch = source.match(
-      /if \(group\.role === 'user'\) \{[\s\S]*?\n  \}/,
-    )
+    const userBranch = source.match(/if \(group\.role === 'user'\) \{[\s\S]*?\n  \}/)
     expect(userBranch).not.toBeNull()
     expect(userBranch![0]).toContain('group.messages.some(')
     expect(userBranch![0]).not.toContain('group.messages[0]')
@@ -101,7 +91,9 @@ describe('F3 — NO optimistic user message push (source contract)', () => {
     // The optimistic push has been removed; the send-error path now
     // just surfaces a single assistant error bubble.
     expect(source).not.toMatch(/id: `optimistic-user-\$\{Date\.now\(\)\}`/)
-    expect(source).not.toMatch(/role: 'user',\s*\n\s*content: userMessage,\s*\n\s*timestamp: new Date\(\),\s*\n\s*image_urls: imageUrls\.length > 0 \? imageUrls : undefined/)
+    expect(source).not.toMatch(
+      /role: 'user',\s*\n\s*content: userMessage,\s*\n\s*timestamp: new Date\(\),\s*\n\s*image_urls: imageUrls\.length > 0 \? imageUrls : undefined/,
+    )
   })
 
   it('does NOT dedupe the SSE echo against a synthetic optimistic id', async () => {
@@ -116,7 +108,9 @@ describe('F3 — NO optimistic user message push (source contract)', () => {
     // The send-error branch now appends a single error assistant bubble
     // instead of rolling back a local placeholder that no longer exists.
     expect(source).toMatch(/await api\.sendChatMessage\(/)
-    expect(source).toMatch(/Sorry, I encountered an error sending your message\. Please try again\./)
+    expect(source).toMatch(
+      /Sorry, I encountered an error sending your message\. Please try again\./,
+    )
   })
 })
 
@@ -136,9 +130,7 @@ describe('B4(frontend) — reasoning_content rendering (source contract)', () =>
     // The old gate `event.finish_reason && event.content` silently
     // dropped tool-result / image-only / reasoning-only events.
     expect(source).toMatch(/hasRenderableFullPayload/)
-    expect(source).not.toMatch(
-      /event\.type === 'full' && event\.finish_reason && event\.content\)/,
-    )
+    expect(source).not.toMatch(/event\.type === 'full' && event\.finish_reason && event\.content\)/)
   })
 
   it('renders a collapsible reasoning section in the assistant bubble', async () => {
@@ -170,9 +162,7 @@ describe('stripThinkingTags — filter interplay (unit)', () => {
   it('keeps lone <think> content intact (rendered as thinking bubble)', () => {
     // Lone <think> is returned unchanged by design — renderResponse
     // detects it via isThinkingTags and renders the collapsed variant.
-    expect(stripThinkingTags('<think>reasoning only</think>')).toBe(
-      '<think>reasoning only</think>',
-    )
+    expect(stripThinkingTags('<think>reasoning only</think>')).toBe('<think>reasoning only</think>')
   })
 })
 
@@ -183,9 +173,7 @@ describe('stripThinkingTags — filter interplay (unit)', () => {
 describe('HTML tag support — ChatView render branch (source contract)', () => {
   it('imports the html helpers from @/helpers', async () => {
     const source = await readChatViewSource()
-    expect(source).toMatch(
-      /import \{[^}]*isHtmlTags[^}]*\} from '@\/helpers'/,
-    )
+    expect(source).toMatch(/import \{[^}]*isHtmlTags[^}]*\} from '@\/helpers'/)
   })
 
   it('branches the assistant template on msgHasHtml before the v-html path', async () => {
@@ -255,10 +243,23 @@ describe('HTML tag support — ChatView render branch (source contract)', () => 
   it('forces the text surfaces so payload-authored light colours cannot win', async () => {
     const source = await readChatViewSource()
     // `!important` is the point: an inline style loses to it.
-    expect(source).toMatch(/pre,code,th,td\{background:\$\{p\.chip\}!important;color:\$\{p\.fg\}!important\}/)
+    expect(source).toMatch(
+      /pre,code,th,td\{background:\$\{p\.chip\}!important;color:\$\{p\.fg\}!important\}/,
+    )
     expect(source).toMatch(/pre code\{background:transparent!important;padding:0\}/)
     // Chip + inline-code ink come from the app's own markdown tokens.
     expect(source).toMatch(/readCssVar\('--color-bg-p1'/)
     expect(source).toMatch(/readCssVar\('--color-aqua'/)
+  })
+
+  // 2026-09-20 no-inner-scrollbar: HTML frames grow to their FULL content
+  // height (no 2000px cap) with scrolling="no" + overflow hidden, so the
+  // outer chat scroller owns scrolling and no gray inner scrollbar appears.
+  it('grows html frames to full height with no inner scrollbar', async () => {
+    const source = await readChatViewSource()
+    expect(source).toMatch(/growFrameToContent\(reported\)/)
+    expect(source).toMatch(/scrolling="no"/)
+    expect(source).toMatch(/FRAME_NO_SCROLLBAR_STYLE/)
+    expect(source).toMatch(/\.chat-html-frame::-webkit-scrollbar/)
   })
 })

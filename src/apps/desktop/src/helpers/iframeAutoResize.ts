@@ -34,7 +34,12 @@ export const CHAT_HTML_FRAME_RESIZE_SOURCE = 'chat-html-frame-auto-resize'
 export const MIN_FRAME_HEIGHT = 120
 
 /** Upper bound — runaway content (huge dashboards, infinite scroll) must
- *  not break the chat layout; those frames stay scrollable instead. */
+ *  not break the chat layout; those frames stay scrollable instead.
+ *
+ *  NOTE (2026-09-20 no-inner-scrollbar): HTML frames no longer clamp to
+ *  this max — they grow to their full content height so the outer chat
+ *  scroller owns scrolling and no inner scrollbar ever appears. Kept for
+ *  backward compat (clampFrameHeight default) only. */
 export const MAX_FRAME_HEIGHT = 2000
 
 /** Clamp a reported content height into the accepted range. `NaN` (a metric
@@ -48,6 +53,27 @@ export function clampFrameHeight(
   if (Number.isNaN(height)) return min
   return Math.max(min, Math.min(max, height))
 }
+
+/**
+ * Grow a frame to its full reported content height with no upper bound.
+ * HTML frames use this (not clampFrameHeight) so long reports never get
+ * an inner scrollbar — the outer chat scroller owns scrolling.
+ */
+export function growFrameToContent(height: number, min: number = MIN_FRAME_HEIGHT): number {
+  if (!Number.isFinite(height) || height <= 0) return min
+  return Math.max(min, height)
+}
+
+/**
+ * CSS snippet injected into every HTML srcdoc shell so the frame document
+ * itself never shows scrollbars. The parent sizes the iframe element to
+ * the content height (see growFrameToContent), so page-level scrolling
+ * inside the frame is never needed — inner `pre` blocks keep their own
+ * `overflow-x:auto` for wide code.
+ */
+export const FRAME_NO_SCROLLBAR_STYLE =
+  'html,body{overflow:hidden!important;scrollbar-width:none!important}' +
+  'html::-webkit-scrollbar,body::-webkit-scrollbar{display:none!important}'
 
 /**
  * Read a sender's reported height out of a `message` event.

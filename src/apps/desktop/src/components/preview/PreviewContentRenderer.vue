@@ -47,7 +47,8 @@ import { marked } from 'marked'
 import {
   PREVIEW_AUTO_RESIZE_SCRIPT,
   PREVIEW_AUTO_RESIZE_SOURCE,
-  clampFrameHeight,
+  FRAME_NO_SCROLLBAR_STYLE,
+  growFrameToContent,
   readAutoResizeHeight,
 } from '@/helpers'
 
@@ -74,32 +75,20 @@ const props = withDefaults(
 )
 
 // ─── Iframe ref + auto-resize message handling ──────────────────────
-//
-// The inline iframe auto-sizes to fit its content via a tiny postMessage
-// protocol: a script inside the iframe reports its scrollHeight to the
-// parent, which clamps the value (200px ≤ h ≤ 2000px) and sets
-// `iframe.style.height`. This way the user sees the full HTML inline
-// without a scrollbar.
-//
-// Why 200px min: empty/short content shouldn't collapse the iframe to
-// zero (the surrounding bubble has visible borders).
-// Why 2000px max: runaway content (huge dashboards, infinite-scroll pages)
-// must not break the chat layout — the user clicks "Open full" for that.
-
 const iframeRef = ref<HTMLIFrameElement | null>(null)
 const MIN_IFRAME_HEIGHT = 200
-const MAX_IFRAME_HEIGHT = 2000
 
 function onIframeMessage(e: MessageEvent) {
   // Filter by source — only messages from our own auto-resize script.
-  // The parser + clamp live in helpers/iframeAutoResize.ts so ChatView's
+  // The parser lives in helpers/iframeAutoResize.ts so ChatView's
   // `<html>` frames share the same protocol (with their own source tag).
+  // Grows to the FULL content height (no upper cap) so no inner
+  // scrollbar ever appears — the outer chat scroller owns scrolling.
   const reported = readAutoResizeHeight(e, PREVIEW_AUTO_RESIZE_SOURCE)
   if (reported === null) return
   const iframe = iframeRef.value
   if (!iframe) return
-  const clampedH = clampFrameHeight(reported, MIN_IFRAME_HEIGHT, MAX_IFRAME_HEIGHT)
-  iframe.style.height = `${clampedH}px`
+  iframe.style.height = `${growFrameToContent(reported, MIN_IFRAME_HEIGHT)}px`
 }
 
 onMounted(() => {
@@ -188,7 +177,7 @@ const imageSrc = computed<string | null>(() => {
 const htmlSrcDoc = computed<string | null>(() => {
   if (props.contentType !== 'html') return null
   const raw = props.args.content ?? ''
-  return `${PREVIEW_AUTO_RESIZE_SCRIPT}<style>html,body{margin:0;padding:0;background:#fff;}</style>${raw}`
+  return `${PREVIEW_AUTO_RESIZE_SCRIPT}<style>html,body{margin:0;padding:0;background:#fff;}${FRAME_NO_SCROLLBAR_STYLE}</style>${raw}`
 })
 
 // ─── Open in new tab ───────────────────────────────────────────────
@@ -252,8 +241,9 @@ function openInNewTab() {
     <!--
       HTML iframe container — auto-sized via the postMessage protocol
       in AUTO_RESIZE_SCRIPT (see <script setup>). The script reports
-      the iframe's content height to the parent, which sets
-      `iframe.style.height` accordingly (clamped 200-2000px).
+      the iframe's content height to the parent, which grows the frame
+      to its FULL content height (no upper cap, no inner scrollbar —
+      the outer chat scroller owns scrolling).
       The action row below the iframe offers "Open in new tab" for
       full-width viewing.
     -->
@@ -265,9 +255,10 @@ function openInNewTab() {
       <iframe
         ref="iframeRef"
         sandbox="allow-scripts"
+        scrolling="no"
         :srcdoc="htmlSrcDoc"
-        style="min-height: 200px"
-        class="w-full border-0 block"
+        style="min-height: 200px; overflow: hidden; scrollbar-width: none"
+        class="preview-html-iframe w-full border-0 block"
         :title="args.title || 'HTML preview'"
         data-testid="preview-html-iframe"
       />
@@ -306,6 +297,15 @@ function openInNewTab() {
 </template>
 
 <style scoped>
+.preview-html-iframe {
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.preview-html-iframe::-webkit-scrollbar {
+  display: none;
+}
+
 .markdown-content :deep(pre) {
   background: var(--color-code-bg, rgba(0, 0, 0, 0.05));
   padding: 0.5rem;
