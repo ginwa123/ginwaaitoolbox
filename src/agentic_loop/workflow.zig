@@ -654,6 +654,19 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         };
     }
 
+    // Migration 091 — stamp sub-agent identity alongside the parent
+    // profile. selected_profile_model stays as the parent (needed for
+    // thinking inheritance); sub_agent_name records who actually ran
+    // so DB inspection shows "implementator" instead of only the parent.
+    if (params.sub_agent_overrides) |ov| {
+        if (ov.resolved_name.len > 0) {
+            _ = llm_history.ensureSessionExists(parent_allocator, db, copy_session_id) catch {};
+            llm_history.updateSessionSubAgentInfo(parent_allocator, db, copy_session_id, ov.resolved_name, params.parent_session_id) catch |err| {
+                logger.errFmt("[CHECKPOINT] persist sub-agent identity failed session_id={s}: {s}", .{ copy_session_id, @errorName(err) });
+            };
+        }
+    }
+
     const initial_agent_state = try llm_history.get_current_agent_by_session_id(
         parent_allocator,
         db,

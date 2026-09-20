@@ -158,6 +158,9 @@ pub fn sessionMessagesHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         // "Default" because the read endpoint never returned the field
         // that PUT /api/llm/session/:id persists.
         .selected_profile_model = selected_profile_model_final,
+        // Migration 091 — sub-agent identity passthrough.
+        .sub_agent_name = msg_response.sub_agent_name,
+        .parent_session_id = msg_response.parent_session_id,
         .skills = msg_response.skills,
         .max_total_tokens = msg_response.max_total_tokens,
         .max_capacity_total_tokens = msg_response.max_capacity_total_tokens,

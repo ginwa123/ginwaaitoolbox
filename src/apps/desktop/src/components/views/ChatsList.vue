@@ -70,7 +70,22 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // State
 const chatsLoading = ref(false)
-const navItems = ref<{ id: string; name: string; active?: boolean; processing?: boolean; relativeTime?: string; selected_profile_model?: string; git_worktree_cwd?: string; is_auto_retry_until_stop?: string; last_human_touched_at?: string; updated_at?: string }[]>([])
+const navItems = ref<
+  {
+    id: string
+    name: string
+    active?: boolean
+    processing?: boolean
+    relativeTime?: string
+    selected_profile_model?: string
+    sub_agent_name?: string
+    parent_session_id?: string
+    git_worktree_cwd?: string
+    is_auto_retry_until_stop?: string
+    last_human_touched_at?: string
+    updated_at?: string
+  }[]
+>([])
 const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
@@ -251,15 +266,17 @@ const loadChats = async () => {
       // Migration 082 — prefer human-touched timestamp when present.
       relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
       selected_profile_model: session.selected_profile_model || '',
+      sub_agent_name: session.sub_agent_name || '',
+      parent_session_id: session.parent_session_id || '',
       git_worktree_cwd: session.git_worktree_cwd || '',
       // Migration 063 — defaulted to "0" in getChats mapping so the
       // `=== '1'` badge check below is well-defined.
       is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
-        // Migration 082 — captured separately for the stale-dot check
-        // (compares updated_at vs last_human_touched_at to render the
-        // amber "AI is ahead of you" indicator).
-        last_human_touched_at: session.last_human_touched_at || '',
-        updated_at: session.updated_at || '',
+      // Migration 082 — captured separately for the stale-dot check
+      // (compares updated_at vs last_human_touched_at to render the
+      // amber "AI is ahead of you" indicator).
+      last_human_touched_at: session.last_human_touched_at || '',
+      updated_at: session.updated_at || '',
     }))
     console.log('[ChatsList] navItems set to:', navItems.value)
     chatsHasMore.value = data.has_more
@@ -517,7 +534,7 @@ onMounted(async () => {
 // Watch for navItems changes to sync active state
 watch(
   navItems,
-   
+
   (newItems) => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
     newItems.forEach((item, index) => {
@@ -602,18 +619,22 @@ defineExpose({
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
         <button
           @click.stop="onSortToggle"
-          :title="chatsSortDirection === 'desc' ? 'Newest first (click to flip)' : 'Oldest first (click to flip)'"
+          :title="
+            chatsSortDirection === 'desc'
+              ? 'Newest first (click to flip)'
+              : 'Oldest first (click to flip)'
+          "
           :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
           data-testid="chats-sort-toggle"
           class="w-7 h-7 text-base font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
-          style="color: var(--semantic-text-dim); opacity: 0.7;"
+          style="color: var(--semantic-text-dim); opacity: 0.7"
         >
           {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
         </button>
         <button
           @click.stop="createChat"
           class="w-7 h-7 text-xl font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
-          style="color: var(--semantic-text-dim); opacity: 0.7;"
+          style="color: var(--semantic-text-dim); opacity: 0.7"
           title="New Chat"
           aria-label="New Chat"
           data-testid="chats-new-chat-button"
@@ -653,8 +674,17 @@ defineExpose({
               <span
                 v-if="item.selected_profile_model"
                 class="ml-1 text-[10px]"
-                style="color: var(--color-violet);"
+                style="color: var(--color-violet)"
                 >🤖 {{ item.selected_profile_model }}</span
+              >
+              <span
+                v-if="item.sub_agent_name"
+                class="ml-1 text-[10px] font-mono"
+                style="color: var(--color-violet)"
+                :title="
+                  item.parent_session_id ? 'Sub-agent of ' + item.parent_session_id : 'Sub-agent'
+                "
+                >🔧 {{ item.sub_agent_name }}</span
               >
               <span
                 v-if="item.git_worktree_cwd"
@@ -680,11 +710,14 @@ defineExpose({
                 data-testid="chat-stale-dot"
               />
               <span
-                :title="item.last_human_touched_at
-                  ? 'Last human activity'
-                  : 'Last activity (never touched by you yet)'"
+                :title="
+                  item.last_human_touched_at
+                    ? 'Last human activity'
+                    : 'Last activity (never touched by you yet)'
+                "
                 data-testid="chat-time-pill"
-              >{{ item.relativeTime || 'now' }}</span>
+                >{{ item.relativeTime || 'now' }}</span
+              >
             </span>
             <button
               v-if="item.id !== 'chat'"
@@ -722,7 +755,7 @@ defineExpose({
       >
         <div
           class="w-2/3 h-0.5 transition-all duration-200 group-hover/resize:h-1 rounded"
-          style="background: var(--color-border);"
+          style="background: var(--color-border)"
         />
       </div>
     </div>
@@ -739,7 +772,7 @@ defineExpose({
       title="New Chat"
       aria-label="New Chat"
       class="w-9 h-9 rounded-md flex items-center justify-center text-xl transition-colors duration-150 hover:text-[--semantic-text]"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
     >
       +
     </button>
