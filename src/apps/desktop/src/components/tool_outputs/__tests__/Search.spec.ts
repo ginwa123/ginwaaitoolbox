@@ -389,3 +389,101 @@ describe('Search.vue — truncation summary from returned/total/truncated', () =
     expect(wrapper.text()).toContain('1 file, 1 match')
   })
 })
+
+describe('Search.vue — code coloring (parity with ReadFile/DiffView)', () => {
+  it('highlights keywords/strings/comments for a known language (ts)', () => {
+    const wrapper = makeWrapper({
+      content: payloadWithSummary(
+        {
+          path: '/tmp/repo/main.ts',
+          total: 1,
+          count: 1,
+          lines: [{ line: 1, text: 'const name = "ada"; // greeting' }],
+        },
+        { returned: 1, total: 1, truncated: false },
+      ),
+      expanded: true,
+    })
+
+    // Verbatim text preserved through token spans.
+    expect(wrapper.text()).toContain('const name = "ada"; // greeting')
+    const html = wrapper.html()
+    expect(html).toContain('tok-keyword')
+    expect(html).toContain('tok-string')
+    expect(html).toContain('tok-comment')
+  })
+
+  it('renders plaintext without token colors for .txt', () => {
+    const wrapper = makeWrapper({
+      content: payloadWithSummary(
+        {
+          path: '/tmp/repo/notes.txt',
+          total: 1,
+          count: 1,
+          lines: [{ line: 1, text: 'const name = "ada"; // greeting' }],
+        },
+        { returned: 1, total: 1, truncated: false },
+      ),
+      expanded: true,
+    })
+
+    expect(wrapper.text()).toContain('const name = "ada"; // greeting')
+    const html = wrapper.html()
+    expect(html).not.toContain('tok-keyword')
+    expect(html).not.toContain('tok-string')
+    expect(html).toContain('tok-plain')
+  })
+
+  it('falls back to plaintext for unknown extensions', () => {
+    const wrapper = makeWrapper({
+      content: payloadWithSummary(
+        {
+          path: '/tmp/repo/file.unknownext',
+          total: 1,
+          count: 1,
+          lines: [{ line: 1, text: 'const x = 42' }],
+        },
+        { returned: 1, total: 1, truncated: false },
+      ),
+      expanded: true,
+    })
+
+    expect(wrapper.text()).toContain('const x = 42')
+    expect(wrapper.html()).not.toContain('tok-keyword')
+  })
+
+  it('derives language per file so mixed results highlight independently', () => {
+    const wrapper = makeWrapper({
+      content: {
+        pattern: 'x',
+        path: '/tmp/repo',
+        returned: 2,
+        total: 2,
+        truncated: false,
+        truncated_hint: null,
+        files: [
+          {
+            path: '/tmp/repo/a.ts',
+            total: 1,
+            count: 1,
+            matches: [{ line: 1, text: 'const x = 42' }],
+          },
+          {
+            path: '/tmp/repo/notes.txt',
+            total: 1,
+            count: 1,
+            matches: [{ line: 1, text: 'const x = 42' }],
+          },
+        ],
+        warning: null,
+      },
+      expanded: true,
+    })
+
+    const html = wrapper.html()
+    // TS file contributes keyword/number tokens; txt file stays plain.
+    expect(html).toContain('tok-keyword')
+    expect(html).toContain('tok-number')
+    expect(html).toContain('tok-plain')
+  })
+})

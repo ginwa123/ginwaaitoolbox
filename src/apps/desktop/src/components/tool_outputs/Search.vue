@@ -4,6 +4,7 @@ import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { useInjectOpenInCodeEditor } from '../../composables/useCodeEditor'
 import { extractParam } from '../../helpers/extractParam'
+import { detectLanguage, highlightLine, type Token } from '../../helpers/codeHighlight'
 import { parseSearch, normalizeToolContent } from './_shared/toolOutputParser'
 
 const props = defineProps<{
@@ -112,6 +113,15 @@ const handleOpenInEditor = (e: Event, path: string) => {
   e.stopPropagation()
   if (!props.cwd || !openInEditor) return
   openInEditor({ filePath: path, cwd: props.cwd })
+}
+
+// Per-snippet tokens for code coloring. Language comes from the result
+// file path so each file block highlights in its own language; unknown
+// extensions fall back to plaintext (single plain token, as before).
+// Tokens render as framework text nodes (never HTML strings), so snippet
+// content cannot inject markup.
+const tokensForSnippet = (snippet: string, filePath: string): Token[] => {
+  return highlightLine(snippet, detectLanguage(filePath ?? ''))
 }
 </script>
 
@@ -234,11 +244,14 @@ const handleOpenInEditor = (e: Event, path: string) => {
               >
                 {{ m.lineNumber }}
               </span>
-              <span
-                class="whitespace-pre-wrap break-all text-[0.72rem] text-[var(--semantic-text)]"
+              <span class="whitespace-pre-wrap break-all text-[0.72rem] text-[var(--semantic-text)]"
+                ><span
+                  v-for="(tok, tIdx) in tokensForSnippet(m.snippet, file.path)"
+                  :key="tIdx"
+                  :class="'tok-' + tok.type"
+                  >{{ tok.text || ' ' }}</span
+                ></span
               >
-                {{ m.snippet }}
-              </span>
             </div>
           </div>
         </div>
@@ -247,3 +260,32 @@ const handleOpenInEditor = (e: Event, path: string) => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Code token colors — mirrors the `nalar-dark` monaco theme in
+ * CodeEditor.vue so search output matches ReadFile and DiffView.
+ * Scoped to this component; no light-palette hardcodes (dark transcript theme). */
+.tok-plain {
+  color: inherit;
+}
+.tok-keyword {
+  color: #8992a7;
+  font-weight: 600;
+}
+.tok-string {
+  color: #87a987;
+}
+.tok-comment {
+  color: #7a8382;
+  font-style: italic;
+}
+.tok-number {
+  color: #c4b28a;
+}
+.tok-function {
+  color: #8ea4a2;
+}
+.tok-type {
+  color: #8ba4b0;
+}
+</style>
