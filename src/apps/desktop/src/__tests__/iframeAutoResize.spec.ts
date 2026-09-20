@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   CHAT_HTML_FRAME_RESIZE_SOURCE,
+  FRAME_NO_SCROLLBAR_STYLE,
   MAX_FRAME_HEIGHT,
   MIN_FRAME_HEIGHT,
   PREVIEW_AUTO_RESIZE_SCRIPT,
@@ -9,6 +10,7 @@ import {
   autoResizeScript,
   clampFrameHeight,
   findSenderFrame,
+  growFrameToContent,
   readAutoResizeHeight,
 } from '@/helpers/iframeAutoResize'
 
@@ -125,5 +127,24 @@ describe('autoResizeScript', () => {
 
   it('pre-tags the preview HTML iframe with its own source', () => {
     expect(PREVIEW_AUTO_RESIZE_SCRIPT).toContain(JSON.stringify(PREVIEW_AUTO_RESIZE_SOURCE))
+  })
+})
+
+describe('growFrameToContent (no inner scrollbar)', () => {
+  it('grows past the old 2000px cap instead of clipping behind a scrollbar', () => {
+    expect(growFrameToContent(5000)).toBe(5000)
+    expect(growFrameToContent(99999)).toBe(99999)
+  })
+
+  it('keeps the minimum floor for empty/short frames', () => {
+    expect(growFrameToContent(12)).toBe(MIN_FRAME_HEIGHT)
+    expect(growFrameToContent(0)).toBe(MIN_FRAME_HEIGHT)
+    expect(growFrameToContent(Number.NaN)).toBe(MIN_FRAME_HEIGHT)
+  })
+
+  it('hides page-level scrollbars without touching inner pre scrolling', () => {
+    expect(FRAME_NO_SCROLLBAR_STYLE).toContain('overflow:hidden')
+    expect(FRAME_NO_SCROLLBAR_STYLE).toContain('scrollbar-width:none')
+    expect(FRAME_NO_SCROLLBAR_STYLE).toContain('::-webkit-scrollbar')
   })
 })

@@ -10,7 +10,8 @@ import {
   renderResponse,
   CHAT_HTML_FRAME_RESIZE_SOURCE,
   autoResizeScript,
-  clampFrameHeight,
+  growFrameToContent,
+  FRAME_NO_SCROLLBAR_STYLE,
   findSenderFrame,
   readAutoResizeHeight,
 } from '@/helpers'
@@ -383,7 +384,15 @@ const resolveHtmlFramePalette = (): HtmlFramePalette => {
 const buildHtmlSrcdoc = (block: string): string => {
   const trimmed = block.trim()
   if (/<!doctype html|<html[\s>]/i.test(trimmed)) {
-    return trimmed
+    // Full documents pass through, but still get the no-scrollbar shell
+    // + reporter so they grow to full height instead of clipping behind
+    // the browser's 150px default with an inner scrollbar.
+    const noScrollbar = `<style>${FRAME_NO_SCROLLBAR_STYLE}</style>`
+    const reporter = autoResizeScript(CHAT_HTML_FRAME_RESIZE_SOURCE)
+    if (/<\/body\s*>/i.test(trimmed)) {
+      return trimmed.replace(/<\/body\s*>/i, `${noScrollbar}${reporter}</body>`)
+    }
+    return `${trimmed}${noScrollbar}${reporter}`
   }
   const p = resolveHtmlFramePalette()
   return (
@@ -405,6 +414,7 @@ const buildHtmlSrcdoc = (block: string): string => {
     `th,td{border:1px solid ${p.border};padding:4px 8px}` +
     `hr{border:none;border-top:1px solid ${p.border}}` +
     `blockquote{margin:.6em 0;padding-left:.8em;border-left:3px solid ${p.border};color:${p.muted}}` +
+    FRAME_NO_SCROLLBAR_STYLE +
     '</style>' +
     '</head><body>' +
     trimmed +
@@ -416,17 +426,19 @@ const buildHtmlSrcdoc = (block: string): string => {
 
 /**
  * The reporter script inside each frame posts its content height; grow the
- * frame that sent it. Identity-matching on `contentWindow` is the only
- * handle a null-origin sandbox leaves the parent (see
- * helpers/iframeAutoResize.ts). Without this a long `<html>` block renders
- * at the browser's 150 px default inside its own scrollbar.
+ * frame that sent it to its FULL content height (no upper cap) so no inner
+ * scrollbar ever appears — the outer chat scroller owns scrolling.
+ * Identity-matching on `contentWindow` is the only handle a null-origin
+ * sandbox leaves the parent (see helpers/iframeAutoResize.ts). Without
+ * this a long `<html>` block renders at the browser's 150 px default
+ * inside its own scrollbar.
  */
 const onHtmlFrameResize = (event: MessageEvent): void => {
   const reported = readAutoResizeHeight(event, CHAT_HTML_FRAME_RESIZE_SOURCE)
   if (reported === null) return
   const frame = findSenderFrame(document, event, 'iframe.chat-html-frame')
   if (!frame) return
-  frame.style.height = `${clampFrameHeight(reported)}px`
+  frame.style.height = `${growFrameToContent(reported)}px`
 }
 
 // Detect a compaction summary message — a user-role message whose
@@ -4607,6 +4619,8 @@ const compactSession = async () => {
                                 v-if="seg.html"
                                 class="chat-html-frame"
                                 sandbox="allow-scripts"
+                                scrolling="no"
+                                style="overflow: hidden"
                                 :srcdoc="buildHtmlSrcdoc(seg.html)"
                               ></iframe>
                             </template>
@@ -5371,7 +5385,8 @@ const compactSession = async () => {
    transcript, and a hardcoded #fff read as a bright slab in the dark
    theme. `color-scheme: dark` keeps the frame's native scrollbars dark
    too. Height is set inline by the frame's own auto-resize report
-   (helpers/iframeAutoResize.ts) once it has measured its content. */
+   (helpers/iframeAutoResize.ts) to its FULL content height — no inner
+   scrollbar, the outer chat scroller owns scrolling. */
 .chat-html-frame {
   display: block;
   width: 100%;
@@ -5380,6 +5395,12 @@ const compactSession = async () => {
   border-radius: 8px;
   background: var(--semantic-card-bg, #1d1c19);
   color-scheme: dark;
+  overflow: hidden;
+  scrollbar-width: none;
+}
+
+.chat-html-frame::-webkit-scrollbar {
+  display: none;
 }
 
 /* ─── Tool-output cards, de-bubbled (2026-08-23) ────────────────────────
