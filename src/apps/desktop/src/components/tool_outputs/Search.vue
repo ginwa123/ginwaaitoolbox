@@ -13,7 +13,10 @@ const props = defineProps<{
   parameters?: string
 }>()
 
-const isExpanded = ref(props.expanded ?? false)
+// Expanded by default: results stay visible without an extra click.
+// A user who collapses the card keeps it collapsed — this is only the
+// initial value.
+const isExpanded = ref(true)
 const openInEditor = useInjectOpenInCodeEditor()
 
 const normalized = computed(() => normalizeToolContent(props.content))

@@ -7,9 +7,9 @@
  *    the header MUST show `"X"` and `in Y` (not the literal "unknown").
  *  - When the payload contains a `warning` (no-match warning),
  *    the warning text MUST appear in the header's right-hand side.
- *  - The default view MUST stay minimal — the operator can click to
- *    expand and see the full Arguments block (handled by the surrounding
- *    ChatView parent, not Search.vue itself).
+ *  - The default view is expanded — results and the Arguments block
+ *    stay visible without an extra click (the operator can click to
+ *    collapse).
  *
  * See docs/superpowers/plans/2026-08-06-search-better-error.md.
  */
@@ -205,10 +205,12 @@ describe('Search.vue — warning payload still shows Arguments (empty/no-match)'
     expect(html).toContain('foo')
   })
 
-  it('shows Arguments after header click', async () => {
+  it('shows Arguments by default (expanded), header click collapses and re-expands', async () => {
     const wrapper = makeWrapper({ content: warningContent, parameters: params })
 
-    // Collapsed initially: Arguments hidden.
+    // Expanded initially: Arguments visible without a click.
+    expect(wrapper.html()).toContain('Arguments')
+    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.html()).not.toContain('Arguments')
     await wrapper.find('[role="button"]').trigger('click')
     const html = wrapper.html()
