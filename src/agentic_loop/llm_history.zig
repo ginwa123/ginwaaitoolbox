@@ -120,6 +120,10 @@ pub const SessionBroadcastInfo = struct {
     is_auto_retry_until_stop: []const u8,
     /// Migration 063 — most recent finish_reason the workflow observed.
     last_finish_reason: []const u8,
+    /// Migration 091 — resolved sub-agent name ("" = main session).
+    sub_agent_name: []const u8 = "",
+    /// Migration 091 — parent session id for sub-agents.
+    parent_session_id: []const u8 = "",
 };
 
 /// Get a list of sessions from the database
@@ -575,6 +579,10 @@ pub const SessionMessageResponse = struct {
     /// read endpoint never returned the field that PUT
     /// `/api/llm/session/:id` writes.
     selected_profile_model: ?[]const u8 = null,
+    /// Migration 091 — resolved sub-agent name (e.g. "implementator").
+    sub_agent_name: ?[]const u8 = null,
+    /// Migration 091 — parent session id for sub-agent sessions.
+    parent_session_id: ?[]const u8 = null,
     max_total_tokens: u32 = 0,
     max_capacity_total_tokens: u32 = 0,
     total_count: ?u32 = null, // Total count of messages in session (for VirtualScroller)
@@ -653,7 +661,7 @@ pub fn getSessionMessagesSorted(
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.video_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
-            \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
+            \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, ''), COALESCE(s.sub_agent_name, ''), COALESCE(s.parent_session_id, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s}{s} LIMIT ?
         , .{ cursor_cmp, order_part });
@@ -672,7 +680,7 @@ pub fn getSessionMessagesSorted(
             \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
             \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
             \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.video_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
-            \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
+            \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, ''), COALESCE(s.sub_agent_name, ''), COALESCE(s.parent_session_id, '')
             \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
             \\WHERE h.session_id = ?{s} LIMIT ?
         , .{order_part});
@@ -680,7 +688,58 @@ pub fn getSessionMessagesSorted(
     }
     defer allocator.free(sql);
 
-    var rows = try db.query(allocator, sql, argv);
+    var rows = db.query(allocator, sql, argv) catch blk: {
+        // Fallback for pre-Migration-091 tables: retry without the new
+        // sessions columns. New identity fields stay null.
+        allocator.free(sql);
+        // Rebuild the legacy SELECT (same branch, without new cols).
+        // We rebuild from scratch to keep column indices consistent.
+        if (cursor) |c| {
+            const is_asc = switch (sort_spec) {
+                .created_at_asc, .role_asc, .id_asc => true,
+                else => false,
+            };
+            const cursor_cmp = if (is_asc) " AND h.created_at_nano > ?" else " AND h.created_at_nano < ?";
+            const order_part = switch (sort_spec) {
+                .created_at_asc => " ORDER BY h.created_at_nano ASC, h.id ASC",
+                .created_at_desc => " ORDER BY h.created_at_nano DESC, h.id DESC",
+                .id_asc => " ORDER BY h.id ASC",
+                .id_desc => " ORDER BY h.id DESC",
+                .role_asc => " ORDER BY h.role ASC, h.created_at_nano ASC, h.id ASC",
+                .role_desc => " ORDER BY h.role DESC, h.created_at_nano DESC, h.id DESC",
+            };
+            sql = try std.fmt.allocPrint(allocator,
+                \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
+                \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
+                \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
+                \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.video_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
+                \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
+                \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
+                \\WHERE h.session_id = ?{s}{s} LIMIT ?
+            , .{ cursor_cmp, order_part });
+            argv = &.{ session_id, c, limit_str };
+        } else {
+            const order_part = switch (sort_spec) {
+                .created_at_asc => " ORDER BY s.created_at ASC, h.id ASC",
+                .created_at_desc => " ORDER BY s.created_at DESC, h.id DESC",
+                .id_asc => " ORDER BY h.id ASC",
+                .id_desc => " ORDER BY h.id DESC",
+                .role_asc => " ORDER BY h.role ASC, s.created_at ASC, h.id ASC",
+                .role_desc => " ORDER BY h.role DESC, s.created_at DESC, h.id DESC",
+            };
+            sql = try std.fmt.allocPrint(allocator,
+                \\SELECT h.id, h.session_id, h.role, h.response_content, h.created_at_nano AS created_at,
+                \\       COALESCE(h.is_input, 0), COALESCE(h.is_output, 0), COALESCE(h.tool_name, ''),
+                \\       COALESCE(h.finish_reason, ''), COALESCE(s.cwd, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(h.reasoning_content, ''), COALESCE(h.reasoning_id, ''), COALESCE(h.reasoning_encrypted_content, ''),
+                \\       COALESCE(h.diffview_before, ''), COALESCE(h.diffview_after, ''), COALESCE(h.image_url, ''), COALESCE(h.video_url, ''), COALESCE(h.tool_call_id, ''), COALESCE(h.tool_calls_json, ''),
+                \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
+                \\FROM llm_history h LEFT JOIN sessions s ON h.session_id = s.id
+                \\WHERE h.session_id = ?{s} LIMIT ?
+            , .{order_part});
+            argv = &.{ session_id, limit_str };
+        }
+        break :blk try db.query(allocator, sql, argv);
+    };
     defer rows.deinit();
 
     var messages = std.ArrayList(SessionMessage).empty;
@@ -698,6 +757,9 @@ pub fn getSessionMessagesSorted(
     // `selected_profile_model` from the joined sessions row so the
     // frontend's profile chip survives a page refresh.
     var selected_profile_model: ?[]u8 = null;
+    // Migration 091 — sub-agent identity, same first-row pattern.
+    var sub_agent_name: ?[]u8 = null;
+    var parent_session_id: ?[]u8 = null;
 
     while (try rows.next()) |row| {
         // Extract cwd + git_worktree_cwd + selected_profile_model from the
@@ -707,7 +769,8 @@ pub fn getSessionMessagesSorted(
         // reasoning_id at 12, reasoning_encrypted_content at 13,
         // diffview_before at 14, diffview_after at 15, image_url at 16,
         // video_url at 17, tool_call_id at 18, tool_calls_json at 19,
-        // selected_profile_model at 20.
+        // selected_profile_model at 20, pr_url at 21, pr_provider at 22,
+        // sub_agent_name at 23, parent_session_id at 24.
         if (cwd == null) {
             const cwd_val = row.values[9];
             if (cwd_val.len > 0) {
@@ -738,6 +801,18 @@ pub fn getSessionMessagesSorted(
             const spm_val = row.values[20];
             if (spm_val.len > 0) {
                 selected_profile_model = try allocator.dupe(u8, spm_val);
+            }
+        }
+        if (sub_agent_name == null and row.values.len > 23) {
+            const sa_val = row.values[23];
+            if (sa_val.len > 0) {
+                sub_agent_name = try allocator.dupe(u8, sa_val);
+            }
+        }
+        if (parent_session_id == null and row.values.len > 24) {
+            const ps_val = row.values[24];
+            if (ps_val.len > 0) {
+                parent_session_id = try allocator.dupe(u8, ps_val);
             }
         }
 
@@ -827,6 +902,8 @@ pub fn getSessionMessagesSorted(
         .pr_url = pr_url,
         .pr_provider = pr_provider,
         .selected_profile_model = selected_profile_model,
+        .sub_agent_name = sub_agent_name,
+        .parent_session_id = parent_session_id,
         .max_total_tokens = getMaxTotalTokensForSession(allocator, db, session_id) catch 0,
         .max_capacity_total_tokens = blk: {
             // Resolve the per-config override when the singleton is alive,
@@ -3266,6 +3343,13 @@ pub const SessionTableInfo = struct {
     /// Migration 063 — most recent `finish_reason` the workflow observed
     /// for this session. Empty string before the first successful turn.
     last_finish_reason: []u8,
+    /// Migration 091 — resolved sub-agent name for sub-agent sessions
+    /// (e.g. "implementator"). Empty for main-agent sessions. Kept
+    /// alongside selected_profile_model (which stays as the parent
+    /// profile for model resolution) so DB inspection shows who ran.
+    sub_agent_name: []u8,
+    /// Migration 091 — parent session id for sub-agent sessions.
+    parent_session_id: []u8,
 
     pub fn deinit(self: SessionTableInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -3280,6 +3364,8 @@ pub const SessionTableInfo = struct {
         allocator.free(self.pr_provider);
         allocator.free(self.is_auto_retry_until_stop);
         allocator.free(self.last_finish_reason);
+        allocator.free(self.sub_agent_name);
+        allocator.free(self.parent_session_id);
     }
 };
 
@@ -3344,6 +3430,9 @@ pub fn create_session(
         // the first value (Chunk 2 Task 2.1).
         .is_auto_retry_until_stop = try allocator.dupe(u8, flag),
         .last_finish_reason = try allocator.dupe(u8, ""),
+        // Migration 091 — empty until workflow stamps sub-agent identity.
+        .sub_agent_name = try allocator.dupe(u8, ""),
+        .parent_session_id = try allocator.dupe(u8, ""),
     };
 }
 
@@ -3386,11 +3475,17 @@ pub fn getSession(
         \\       COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''),
         \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''),
         \\       COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''),
-        \\       COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
+        \\       COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, ''),
+        \\       COALESCE(s.sub_agent_name, ''), COALESCE(s.parent_session_id, '')
         \\FROM sessions s WHERE s.id = ?
     ;
 
-    var rows = try db.query(allocator, sql, &.{id});
+    var rows = db.query(allocator, sql, &.{id}) catch {
+        // Fallback for pre-Migration-091 DBs and minimal test schemas
+        // without the new columns: read the legacy column set and
+        // return empty sub-agent identity.
+        return getSessionLegacy(allocator, db, id);
+    };
     defer rows.deinit();
 
     if (try rows.next()) |row| {
@@ -3410,6 +3505,53 @@ pub fn getSession(
             // (COALESCE'd to '').
             .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
             .last_finish_reason = try allocator.dupe(u8, row.values[9]),
+            // Migration 091 — sub-agent identity (empty for main sessions).
+            .sub_agent_name = try allocator.dupe(u8, row.values[12]),
+            .parent_session_id = try allocator.dupe(u8, row.values[13]),
+        };
+        row.deinit(allocator);
+        return session;
+    }
+
+    return null;
+}
+
+/// Legacy getSession without Migration-091 columns. Used as a fallback
+/// when the sessions table predates the migration or a minimal test
+/// schema omits the new columns. Returns empty sub-agent identity.
+fn getSessionLegacy(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+) !?SessionTableInfo {
+    const sql =
+        \\SELECT s.id, s.name, s.status, COALESCE(s.cwd, ''),
+        \\       COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''),
+        \\       COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''),
+        \\       COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''),
+        \\       COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '')
+        \\FROM sessions s WHERE s.id = ?
+    ;
+
+    var rows = try db.query(allocator, sql, &.{id});
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const session = SessionTableInfo{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .name = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+            .cwd = try allocator.dupe(u8, row.values[3]),
+            .created_at = try allocator.dupe(u8, row.values[4]),
+            .updated_at = try allocator.dupe(u8, row.values[5]),
+            .selected_profile_model = try allocator.dupe(u8, row.values[6]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
+            .pr_url = try allocator.dupe(u8, row.values[10]),
+            .pr_provider = try allocator.dupe(u8, row.values[11]),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[8]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[9]),
+            .sub_agent_name = try allocator.dupe(u8, ""),
+            .parent_session_id = try allocator.dupe(u8, ""),
         };
         row.deinit(allocator);
         return session;
@@ -3780,6 +3922,28 @@ pub fn updateSessionSelectedProfileModel(
     }
 }
 
+/// Migration 091 — stamp sub-agent identity onto a session row.
+/// sub_agent_name is the resolved sub-agent name (e.g. "implementator"),
+/// parent_session_id links back to the spawner. Both are nullable TEXT;
+/// empty binds as NULL via SqliteBackend and reads back as "".
+/// Only writes non-empty values so we never clobber with empty.
+pub fn updateSessionSubAgentInfo(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    sub_agent_name: []const u8,
+    parent_session_id: []const u8,
+) !void {
+    if (sub_agent_name.len > 0) {
+        const sql = "UPDATE sessions SET sub_agent_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+        try db.exec(allocator, sql, &.{ sub_agent_name, id });
+    }
+    if (parent_session_id.len > 0) {
+        const sql = "UPDATE sessions SET parent_session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?";
+        try db.exec(allocator, sql, &.{ parent_session_id, id });
+    }
+}
+
 /// Update session git_worktree_cwd. Pass empty string or null to clear.
 /// When the value changes, broadcast a session.updated SSE event so the
 /// ChatsList sidebar updates its 🌳 badge in real time.
@@ -3877,7 +4041,7 @@ pub fn list_sessions(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]SessionTableInfo {
-    const sql = "SELECT id, name, status, COALESCE(selected_profile_model, '') FROM sessions ORDER BY id";
+    const sql = "SELECT id, name, status, COALESCE(selected_profile_model, ''), COALESCE(cwd, ''), COALESCE(created_at, ''), COALESCE(updated_at, ''), COALESCE(git_worktree_cwd, ''), COALESCE(pr_url, ''), COALESCE(pr_provider, ''), COALESCE(is_auto_retry_until_stop, '0'), COALESCE(last_finish_reason, ''), COALESCE(sub_agent_name, ''), COALESCE(parent_session_id, '') FROM sessions ORDER BY id";
 
     var rows = try db.query(allocator, sql, &.{});
     defer rows.deinit();
@@ -3894,6 +4058,16 @@ pub fn list_sessions(
             .name = try allocator.dupe(u8, row.values[1]),
             .status = try allocator.dupe(u8, row.values[2]),
             .selected_profile_model = try allocator.dupe(u8, row.values[3]),
+            .cwd = try allocator.dupe(u8, row.values[4]),
+            .created_at = try allocator.dupe(u8, row.values[5]),
+            .updated_at = try allocator.dupe(u8, row.values[6]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[7]),
+            .pr_url = try allocator.dupe(u8, row.values[8]),
+            .pr_provider = try allocator.dupe(u8, row.values[9]),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, row.values[10]),
+            .last_finish_reason = try allocator.dupe(u8, row.values[11]),
+            .sub_agent_name = try allocator.dupe(u8, row.values[12]),
+            .parent_session_id = try allocator.dupe(u8, row.values[13]),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -5751,7 +5925,7 @@ pub fn getSessionsForBroadcast(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
 ) ![]SessionBroadcastInfo {
-    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
+    const sql = "SELECT s.id, COALESCE(s.name, ''), COALESCE(s.status, 'active'), COALESCE(s.cwd, ''), COALESCE(s.created_at, ''), COALESCE(s.updated_at, ''), COALESCE(h.agent, 'Agent'), COALESCE(s.selected_profile_model, ''), COALESCE(s.git_worktree_cwd, ''), COALESCE(s.pr_url, ''), COALESCE(s.pr_provider, ''), COALESCE(s.sub_agent_name, ''), COALESCE(s.parent_session_id, '') FROM sessions s LEFT JOIN llm_history h ON s.id = h.session_id ORDER BY s.updated_at DESC";
 
     var rows = db.query(allocator, sql, &[_][]const u8{}) catch return &[_]SessionBroadcastInfo{};
     defer rows.deinit();
@@ -5772,6 +5946,8 @@ pub fn getSessionsForBroadcast(
             .git_worktree_cwd = try allocator.dupe(u8, row.values[8]),
             .pr_url = try allocator.dupe(u8, row.values[9]),
             .pr_provider = try allocator.dupe(u8, row.values[10]),
+            .sub_agent_name = try allocator.dupe(u8, row.values[11]),
+            .parent_session_id = try allocator.dupe(u8, row.values[12]),
         };
         try sessions.append(allocator, session);
     }
@@ -5792,6 +5968,8 @@ pub fn freeSessionsForBroadcast(allocator: std.mem.Allocator, sessions: []Sessio
         allocator.free(s.git_worktree_cwd);
         allocator.free(s.pr_url);
         allocator.free(s.pr_provider);
+        allocator.free(s.sub_agent_name);
+        allocator.free(s.parent_session_id);
     }
     allocator.free(sessions);
 }
@@ -7049,7 +7227,9 @@ fn sessionUpdateSetupDb() !TestCtx {
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
         \\    pr_url TEXT,
-        \\    pr_provider TEXT
+        \\    pr_provider TEXT,
+        \\    sub_agent_name TEXT,
+        \\    parent_session_id TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded, .alloc = alloc };
@@ -7169,6 +7349,34 @@ test "ensureSessionExists + updateSessionSelectedProfileModel: preserves the pro
         return error.NoRow;
     defer alloc.free(profile);
     try testing.expectEqualStrings("900ribu", profile);
+}
+
+test "updateSessionSubAgentInfo: stamps sub-agent name and parent" {
+    const alloc = testing.allocator;
+    var ctx = try sessionUpdateSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    _ = try ensureSessionExists(alloc, &ctx.db, "subagent_1_implementator");
+    try updateSessionSelectedProfileModel(alloc, &ctx.db, "subagent_1_implementator", "muse spark auto");
+    try updateSessionSubAgentInfo(alloc, &ctx.db, "subagent_1_implementator", "implementator", "parent_1");
+
+    const sub = (try sessionUpdateReadColumn(&ctx, alloc, "sub_agent_name", "subagent_1_implementator")) orelse
+        return error.NoRow;
+    defer alloc.free(sub);
+    try testing.expectEqualStrings("implementator", sub);
+
+    const par = (try sessionUpdateReadColumn(&ctx, alloc, "parent_session_id", "subagent_1_implementator")) orelse
+        return error.NoRow;
+    defer alloc.free(par);
+    try testing.expectEqualStrings("parent_1", par);
+
+    // Parent profile is preserved alongside the sub-agent identity.
+    const sess = (try getSession(alloc, &ctx.db, "subagent_1_implementator")) orelse return error.NoRow;
+    defer sess.deinit(alloc);
+    try testing.expectEqualStrings("muse spark auto", sess.selected_profile_model);
+    try testing.expectEqualStrings("implementator", sess.sub_agent_name);
+    try testing.expectEqualStrings("parent_1", sess.parent_session_id);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

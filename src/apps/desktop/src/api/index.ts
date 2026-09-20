@@ -1716,6 +1716,9 @@ export interface Session {
   agent: string
   sessionName: string
   selectedProfile?: string
+  // Migration 091 — resolved sub-agent name (e.g. "implementator").
+  subAgentName?: string
+  parentSessionId?: string
   // Bound git worktree path (empty string when no worktree is bound;
   // optional because older sessions predate the set_git_worktree tool).
   git_worktree_cwd?: string
@@ -1737,6 +1740,8 @@ export async function getSession(sessionId: string): Promise<Session | null> {
       // `getChatHistory()`. The backend's GET messages endpoint
       // returns it via `SessionMessageResponse.selected_profile_model`.
       selected_profile_model?: string
+      sub_agent_name?: string
+      parent_session_id?: string
     }>(`/llm/session/${sessionId}/messages?limit=1`, { silent: true })
     // The session info is in the cwd field - construct session object
     return {
@@ -1750,6 +1755,8 @@ export async function getSession(sessionId: string): Promise<Session | null> {
       // backend's COALESCE-on-NULL) is preserved here; ChatView
       // coerces empty → null.
       selectedProfile: data.selected_profile_model,
+      subAgentName: data.sub_agent_name,
+      parentSessionId: data.parent_session_id,
     }
   } catch (error) {
     console.error('Failed to get session:', error)

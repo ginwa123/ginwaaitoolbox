@@ -1992,6 +1992,9 @@ pub const allMigrations: []const Migration = &.{
     // Migration 090 — `video_urls` / `video_url` columns for full video
     // upload to LLM (mirrors Migration 069 image_urls, 25 MB cap).
     .{ .version = Migration090AddVideoUrls.version, .name = Migration090AddVideoUrls.name, .up = Migration090AddVideoUrls.up },
+    // Migration 091 — sessions.sub_agent_name + parent_session_id so a
+    // sub-agent row shows its own identity alongside the parent profile.
+    .{ .version = Migration091AddSubAgentNameToSessions.version, .name = Migration091AddSubAgentNameToSessions.name, .up = Migration091AddSubAgentNameToSessions.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4874,6 +4877,35 @@ pub const Migration090AddVideoUrls = struct {
     }
 };
 
+// Migration 091 — sessions.sub_agent_name + sessions.parent_session_id.
+// A sub-agent session keeps its parent's selected_profile_model (Migration
+// 040, forwarded by #554 so thinking/temperature inherit correctly) but
+// now also records its own identity: the resolved sub-agent name
+// (e.g. "implementator") and the parent session id. Both nullable TEXT,
+// read back via COALESCE(col,''). Lets DB inspection and the UI show
+// which sub-agent actually ran instead of only the parent profile.
+pub const Migration091AddSubAgentNameToSessions = struct {
+    pub const version: u32 = 91;
+    pub const name = "add_sub_agent_name_to_sessions";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "sessions",
+            "sub_agent_name",
+            "sub_agent_name TEXT",
+        );
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "sessions",
+            "parent_session_id",
+            "parent_session_id TEXT",
+        );
+    }
+};
+
 // ============================================================================
 // Migration 087 — agent config tables for routine workspace items.
 // ============================================================================
@@ -5753,4 +5785,68 @@ test "Migration087 is registered in allMigrations" {
         if (m.version == Migration087CreateAgentRoutines.version) return;
     }
     return error.Migration087NotRegistered;
+}
+
+test "Migration091 adds sub_agent_name + parent_session_id to sessions" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &.{});
+
+    try Migration091AddSubAgentNameToSessions.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "sessions");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var has_sub = false;
+    var has_parent = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "sub_agent_name")) has_sub = true;
+        if (std.mem.eql(u8, c, "parent_session_id")) has_parent = true;
+    }
+    try testing.expect(has_sub);
+    try testing.expect(has_parent);
+}
+
+test "Migration091 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &.{});
+
+    try Migration091AddSubAgentNameToSessions.up(&ctx.db, alloc);
+    try Migration091AddSubAgentNameToSessions.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name IN ('sub_agent_name', 'parent_session_id')",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
+}
+
+test "Migration091 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration091AddSubAgentNameToSessions.version) return;
+    }
+    return error.Migration091NotRegistered;
 }
