@@ -28,7 +28,8 @@
         //   .hash = "kabelweb-0.0.0-<hash>",
         // after pushing the kabelweb commit you want to pin.
         .kabelweb = .{
-            .path = "git+https://github.com/ginwa123/kabelweb.git#7e97a09ea9e01cec0fe1d46e54aedce76852f7b1",
+            .url = "git+https://github.com/ginwa123/kabelweb.git#7e97a09ea9e01cec0fe1d46e54aedce76852f7b1",
+            .hash = "kabelweb-0.0.0-vhZamwtCGwBXhC83xJYgLDg8ZfAclFjoLZ-wMAnEHsWI",
         },
         // Cross-platform portable helpers (sleep, fileExists,
         // unixTimestampNanos, etc.) used by every module. Promoted
