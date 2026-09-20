@@ -128,7 +128,7 @@ const VALID_KINDS = [_][]const u8{
 ///      convention; microsecond timestamps are unique enough for this
 ///      error-event volume).
 ///   3. Dedup check: SELECT id FROM logs WHERE kind = ? AND message = ?
-///      AND IFNULL(stack,'') = IFNULL(?,'') AND created_at >= ?.
+///      AND IFNULL(stack,'') = IFNULL(?,'') AND created_at_nano >= ?.
 ///      If a row matches within the last second, UPDATE count + 1
 ///      and return success (no second row created).
 ///   4. Otherwise INSERT a new row.
@@ -166,12 +166,14 @@ fn useCase(
     // Dedup check: same kind + message + stack within the last 1 second.
     // The `IFNULL(stack,'') = IFNULL(?,'')` form treats NULL and ""
     // as equivalent dedup keys (matches the design doc contract).
+    // Column is `created_at_nano` since Migration 075 renamed
+    // `logs.created_at` (same unit, self-documenting name).
     const dedup_sql =
         \\SELECT id FROM logs
         \\WHERE kind = ?
         \\  AND message = ?
         \\  AND IFNULL(stack,'') = IFNULL(?,'')
-        \\  AND created_at >= ?
+        \\  AND created_at_nano >= ?
         \\LIMIT 1
     ;
     var dedup_rows = db.query(
@@ -639,6 +641,22 @@ fn setupDbWithLogs() !struct {
     try db.init(io, ":memory:");
 
     try nalarcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
+    // Production DBs also run Migration 075, which renames
+    // `logs.created_at` → `logs.created_at_nano`. Mirror that rename
+    // here so these tests exercise the post-rename schema the live
+    // useCase targets (missing this is what let the stale `created_at`
+    // dedup SELECT pass tests while failing in production).
+    // We inline the logs half of Migration 075 instead of calling
+    // `Migration075...up` directly because the full migration also
+    // CREATEs an index on `worker`, which doesn't exist in this
+    // logs-only :memory: DB.
+    try db.exec(alloc, "ALTER TABLE logs RENAME COLUMN created_at TO created_at_nano", &.{});
+    try db.exec(alloc, "DROP INDEX IF EXISTS idx_logs_created_at", &.{});
+    try db.exec(
+        alloc,
+        "CREATE INDEX IF NOT EXISTS idx_logs_created_at_nano ON logs(created_at_nano DESC)",
+        &.{},
+    );
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -661,14 +679,14 @@ test "dedup SQL: same kind+message+stack within 1s increments count" {
     // Insert first row at now.
     try s.db.exec(
         alloc,
-        "INSERT INTO logs (id, created_at, level, kind, message, stack, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        "INSERT INTO logs (id, created_at_nano, level, kind, message, stack, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
         &.{ "log_first", now_us_str, "error", "console_error", "boom", "stack-A" },
     );
 
     // Dedup SELECT — same key within last 1s → matches.
     var rows = try s.db.query(
         alloc,
-        "SELECT id FROM logs WHERE kind = ? AND message = ? AND IFNULL(stack,'') = IFNULL(?,'') AND created_at >= ? LIMIT 1",
+        "SELECT id FROM logs WHERE kind = ? AND message = ? AND IFNULL(stack,'') = IFNULL(?,'') AND created_at_nano >= ? LIMIT 1",
         &.{ "console_error", "boom", "stack-A", dedup_cutoff_str },
     );
     defer rows.deinit();
@@ -709,14 +727,14 @@ test "dedup SQL: different stack within 1s does NOT match (insert second row)" {
     // Insert first row with stack-A.
     try s.db.exec(
         alloc,
-        "INSERT INTO logs (id, created_at, level, kind, message, stack, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        "INSERT INTO logs (id, created_at_nano, level, kind, message, stack, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
         &.{ "log_first", now_us_str, "error", "console_error", "boom", "stack-A" },
     );
 
     // Dedup query with a DIFFERENT stack — should NOT match.
     var rows = try s.db.query(
         alloc,
-        "SELECT id FROM logs WHERE kind = ? AND message = ? AND IFNULL(stack,'') = IFNULL(?,'') AND created_at >= ? LIMIT 1",
+        "SELECT id FROM logs WHERE kind = ? AND message = ? AND IFNULL(stack,'') = IFNULL(?,'') AND created_at_nano >= ? LIMIT 1",
         &.{ "console_error", "boom", "stack-B", dedup_cutoff_str },
     );
     defer rows.deinit();
@@ -757,7 +775,7 @@ test "dedup SQL: same key but >1s apart does NOT match (no dedup across window)"
     // Row at t1 with stack-A.
     try s.db.exec(
         alloc,
-        "INSERT INTO logs (id, created_at, level, kind, message, stack, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
+        "INSERT INTO logs (id, created_at_nano, level, kind, message, stack, count) VALUES (?, ?, ?, ?, ?, ?, 1)",
         &.{ "log_t1", t1_str, "error", "console_error", "boom", "stack-A" },
     );
 
@@ -765,7 +783,7 @@ test "dedup SQL: same key but >1s apart does NOT match (no dedup across window)"
     // handler would INSERT a new row.
     var rows = try s.db.query(
         alloc,
-        "SELECT id FROM logs WHERE kind = ? AND message = ? AND IFNULL(stack,'') = IFNULL(?,'') AND created_at >= ? LIMIT 1",
+        "SELECT id FROM logs WHERE kind = ? AND message = ? AND IFNULL(stack,'') = IFNULL(?,'') AND created_at_nano >= ? LIMIT 1",
         &.{ "console_error", "boom", "stack-A", dedup_cutoff_str },
     );
     defer rows.deinit();

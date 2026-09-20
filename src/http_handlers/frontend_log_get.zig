@@ -583,13 +583,16 @@ test "frontend_log_get handler orders by created_at DESC" {
 
     // Most-recent-first is the documented order (design doc §2,
     // GET handler). Static test guards against a refactor that
-    // accidentally drops the DESC clause.
-    if (std.mem.indexOf(u8, source, "ORDER BY created_at DESC") == null) {
+    // accidentally drops the DESC clause. Matches
+    // `created_at_nano` (not bare `created_at`) since Migration 075
+    // renamed the column — a bare-`created_at` grep would pass
+    // vacuously via test-helper strings while missing live code.
+    if (std.mem.indexOf(u8, source, "ORDER BY created_at_nano DESC") == null) {
         std.debug.print(
-            "\n!! {s} is missing 'ORDER BY created_at DESC' !!\n" ++
-                "   The GET handler must order by created_at DESC so the\n" ++
+            "\n!! {s} is missing 'ORDER BY created_at_nano DESC' !!\n" ++
+                "   The GET handler must order by created_at_nano DESC so the\n" ++
                 "   most recent error appears first. The design doc says\n" ++
-                "   this explicitly; the index idx_logs_created_at also\n" ++
+                "   this explicitly; the index idx_logs_created_at_nano also\n" ++
                 "   expects DESC ordering.\n",
             .{HANDLER_PATH},
         );
@@ -664,6 +667,20 @@ fn setupDbWithLogs() !struct {
     try db.init(io, ":memory:");
 
     try nalarcore.migrations_mod.migration.Migration064AddFrontendLogs.up(&db, alloc);
+    // Also apply the logs half of Migration 075
+    // (`logs.created_at` → `logs.created_at_nano`) so these tests
+    // target the production schema (see
+    // `frontend_log_post.zig::setupDbWithLogs` for the precedent —
+    // the full `Migration075...up` can't run here because it also
+    // CREATEs an index on `worker`, which doesn't exist in this
+    // logs-only :memory: DB).
+    try db.exec(alloc, "ALTER TABLE logs RENAME COLUMN created_at TO created_at_nano", &.{});
+    try db.exec(alloc, "DROP INDEX IF EXISTS idx_logs_created_at", &.{});
+    try db.exec(
+        alloc,
+        "CREATE INDEX IF NOT EXISTS idx_logs_created_at_nano ON logs(created_at_nano DESC)",
+        &.{},
+    );
     return .{ .db = db, .threaded = threaded };
 }
 
@@ -683,7 +700,7 @@ fn insertLog(
     defer alloc.free(ts_str);
     try db.exec(
         alloc,
-        "INSERT INTO logs (id, created_at, level, kind, message, count) VALUES (?, ?, ?, ?, ?, 1)",
+        "INSERT INTO logs (id, created_at_nano, level, kind, message, count) VALUES (?, ?, ?, ?, ?, 1)",
         &.{ id, ts_str, level, kind, message },
     );
 }
@@ -706,7 +723,7 @@ fn selectLogs(
 ) ![]SelectedLogRow {
     const sql = try std.fmt.allocPrint(
         alloc,
-        "SELECT id, created_at, level, message FROM logs WHERE 1=1{s} ORDER BY created_at DESC LIMIT {d}",
+        "SELECT id, created_at_nano, level, message FROM logs WHERE 1=1{s} ORDER BY created_at_nano DESC LIMIT {d}",
         .{ where_clause, limit },
     );
     defer alloc.free(sql);
@@ -802,9 +819,9 @@ test "behavioural: WHERE created_at >= ? (since filter)" {
     try insertLog(&s.db, alloc, "log_t3", 300, "info", "console_error", "new-1");
 
     // Use the exact WHERE clause shape the use-case appends:
-    //   "\n  AND created_at >= ?"
+    //   "\n  AND created_at_nano >= ?"
     // (the newline + 2-space indent is cosmetic but we mirror it).
-    const rows = try selectLogs(&s.db, alloc, "\n  AND created_at >= '200'", 100);
+    const rows = try selectLogs(&s.db, alloc, "\n  AND created_at_nano >= '200'", 100);
     defer freeSelectedLogRows(alloc, rows);
 
     try testing.expectEqual(@as(usize, 2), rows.len);
