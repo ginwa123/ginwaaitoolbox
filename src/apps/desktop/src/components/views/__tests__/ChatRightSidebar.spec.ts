@@ -4,12 +4,30 @@ import ChatRightSidebar from '../chat_right_sidebar/ChatRightSidebar.vue'
 
 const { getGitChangesMock } = vi.hoisted(() => ({ getGitChangesMock: vi.fn() }))
 
+// jsdom has no layout/canvas for the real xterm renderer — stub it so the
+// always-mounted TerminalTab does not crash the suite (matchMedia).
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    loadAddon() {}
+    open() {}
+    write() {}
+    onData() {}
+    dispose() {}
+  },
+}))
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    fit() {}
+  },
+}))
+
 vi.mock('../../../api', async () => {
   const actual = await vi.importActual<typeof import('../../../api')>('../../../api')
   return {
     ...actual,
     getGitChanges: getGitChangesMock,
     getGitFileDiff: vi.fn().mockResolvedValue({ path: '', diff_content: '', staged: false }),
+    listFolder: vi.fn().mockResolvedValue({ entries: [] }),
     stageGitFiles: vi.fn(),
     unstageGitFiles: vi.fn(),
   }
