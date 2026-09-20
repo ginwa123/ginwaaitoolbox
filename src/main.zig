@@ -895,7 +895,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Failed to register cleanup_stale_background_process cron: {s}\n", .{@errorName(err)});
     };
 
-    try gs.listenEventLoop(); // blocks until the server is stopped
+    try gs.listenEventLoop(.{});
 
     // Clean shutdown after listen() returns (shutdown endpoint, SIGINT
     // Ctrl+C, or SIGTERM). The signal path sets `shutdown_requested`
@@ -1180,7 +1180,8 @@ fn dispatchCreateAdmin(
     const ts = std.Io.Timestamp.now(io, .real);
     const id = try std.fmt.allocPrint(allocator, "user_{d}", .{@divTrunc(ts.nanoseconds, 1_000_000)});
     defer allocator.free(id);
-    dbSqlite.exec(allocator,
+    dbSqlite.exec(
+        allocator,
         "INSERT INTO users (id, email, name, password_hash, role, is_active) VALUES (?, ?, COALESCE(?, ''), ?, 'admin', 1)",
         &[_][]const u8{ id, email_v, name, hash_slice },
     ) catch {

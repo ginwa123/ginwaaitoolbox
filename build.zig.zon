@@ -12,12 +12,23 @@
             .hash = "databases-0.0.0-vy-BCG1iBAAzeOdFZ6dHzUnb1ZLUOxYXK44fuHRsZgbr",
         },
         // External web-framework library (pure-Zig HTTP server +
-        // libcurl-backed HTTP client). Pinned by URL + hash; exposes a
-        // single `kabelweb` module — consumers `@import("kabelweb")`
-        // and reach `kabelweb.server` / `kabelweb.client`.
+        // libcurl-backed HTTP client). Exposes a single `kabelweb` module
+        // — consumers `@import("kabelweb")` and reach
+        // `kabelweb.server` / `kabelweb.client`.
+        //
+        // LOCAL DEV OVERRIDE: this is the sibling checkout so the SSE fixes
+        // developed in ../kabelweb are exercised here immediately (notably
+        // commit 7e97a09 — "keep SSE clients registered after the handler
+        // returns + real loop threads", which stops /api/events from
+        // delivering a single `connected` frame and then going silent).
+        //
+        // To restore the released/pinned dependency (CI, other machines),
+        // swap this back to:
+        //   .url = "git+https://github.com/ginwa123/kabelweb.git#<commit>",
+        //   .hash = "kabelweb-0.0.0-<hash>",
+        // after pushing the kabelweb commit you want to pin.
         .kabelweb = .{
-            .url = "git+https://github.com/ginwa123/kabelweb.git#539e9576723e907008e120c763d79f81bf36982f",
-            .hash = "kabelweb-0.0.0-vhZam5giGwC6gKunOB_xALmcI0I4WZRTsbsPn1AVxgiR",
+            .path = "git+https://github.com/ginwa123/kabelweb.git#7e97a09ea9e01cec0fe1d46e54aedce76852f7b1",
         },
         // Cross-platform portable helpers (sleep, fileExists,
         // unixTimestampNanos, etc.) used by every module. Promoted
