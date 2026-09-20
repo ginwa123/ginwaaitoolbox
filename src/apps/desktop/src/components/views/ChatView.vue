@@ -4313,6 +4313,7 @@ const compactSession = async () => {
                           <Glob
                             v-else-if="msg.tool_name === 'glob'"
                             :content="innerToolData(msg)"
+                            :expanded="expandedToolIds.has(toolExpandKey(msg, groupIndex, idx))"
                             :cwd="sessionCwd"
                             :parameters="getParametersForMessage(msg)"
                           />

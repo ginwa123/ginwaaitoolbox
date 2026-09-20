@@ -19,13 +19,20 @@ const openInEditor = useInjectOpenInCodeEditor()
 // The card receives the bare `data` object (or a full envelope, or a
 // blank string while running). Field access replaces the old
 // pattern="…"/<f>…</f> regex parsing.
+const normalized = computed(() => normalizeToolContent(props.content))
 const dataRecord = computed((): Record<string, unknown> => {
-  const { data } = normalizeToolContent(props.content)
+  const { data } = normalized.value
   if (data !== null && typeof data === 'object' && !Array.isArray(data)) {
     return data as Record<string, unknown>
   }
   return {}
 })
+
+// Envelope-level failure (ChatView falls back to the full envelope
+// content). Without this the card renders a bare "0 files" with no
+// explanation — the "not showing output" report.
+const errorMessage = computed(() => normalized.value.error)
+const hasError = computed(() => !!errorMessage.value)
 
 const strOf = (v: unknown): string | null => (typeof v === 'string' ? v : null)
 const numOf = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
@@ -82,7 +89,7 @@ const hasArgs = computed(() => {
 // Expandable unless pure-running-empty (in-flight, no display info yet).
 const isExpandable = computed(() => {
   if (isRunning.value) return false
-  return hasWarning.value || filePaths.value.length > 0 || hasArgs.value
+  return hasWarning.value || hasError.value || filePaths.value.length > 0 || hasArgs.value
 })
 
 // Toggle expansion
@@ -109,7 +116,10 @@ const handleOpenInEditor = (e: Event, path: string) => {
 <template>
   <div
     class="chat-tool-card font-mono text-xs"
-    :class="{ 'border-orange-500/50 opacity-85': warningMessage }"
+    :class="{
+      'border-orange-500/50 opacity-85': warningMessage && !hasError,
+      'border-red-500/50 opacity-90': hasError,
+    }"
   >
     <!-- Header -->
     <div
@@ -137,7 +147,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
       >
 
       <!-- Results summary -->
-      <template v-if="!warningMessage">
+      <template v-if="!warningMessage && !hasError">
         <span class="gl-summary">
           {{ totalCount }} {{ totalCount === 1 ? 'file' : 'files' }}
           <template v-if="returnedCount < totalCount">
@@ -149,6 +159,11 @@ const handleOpenInEditor = (e: Event, path: string) => {
             <span class="gl-offset">offset: {{ offsetValue }}</span>
           </template>
         </span>
+      </template>
+
+      <!-- Error message (envelope failure) takes precedence over warning -->
+      <template v-else-if="hasError">
+        <span class="gl-error-text">{{ errorMessage }}</span>
       </template>
 
       <!-- Warning message -->
@@ -164,7 +179,15 @@ const handleOpenInEditor = (e: Event, path: string) => {
 
     <!-- File list (expanded state only - no scroll) -->
     <div v-if="isExpanded" class="gl-content">
-      <div v-if="filePaths.length > 0">
+      <div
+        v-if="hasError && errorMessage"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        data-testid="glob-error"
+      >
+        <span class="font-semibold shrink-0">Error:</span>
+        <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
+      </div>
+      <div v-else-if="filePaths.length > 0">
         <div v-for="(path, idx) in filePaths" :key="idx" class="gl-file">
           <span class="gl-file-path" :title="path">{{ path }}</span>
           <button class="gl-copy" @click="(e) => copyPath(e, path)" title="Copy path">⎘</button>
@@ -184,6 +207,20 @@ const handleOpenInEditor = (e: Event, path: string) => {
             </svg>
           </button>
         </div>
+      </div>
+      <div
+        v-else-if="warningMessage"
+        class="px-3 py-2 text-center text-[var(--color-orange)] text-xs"
+        data-testid="glob-empty"
+      >
+        {{ warningMessage }}
+      </div>
+      <div
+        v-else
+        class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+        data-testid="glob-empty"
+      >
+        (no files)
       </div>
       <ToolParameters :parameters="parameters" />
     </div>
@@ -229,6 +266,12 @@ const handleOpenInEditor = (e: Event, path: string) => {
   margin-left: auto;
   font-size: 0.7rem;
   color: var(--color-orange);
+}
+
+.gl-error-text {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: #f87171;
 }
 
 .gl-toggle {

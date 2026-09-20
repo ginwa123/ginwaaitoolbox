@@ -202,3 +202,50 @@ describe('Glob.vue — warning data still shows Arguments (empty/no-match)', () 
     expect(html).toContain('foo')
   })
 })
+
+// ────────────────────────────────────────────────────────────────────────
+// Error/empty states — the "not showing output" fix.
+//
+// - Envelope failures render a red error block instead of a bare "0 files".
+// - Expanded empty results show the warning/empty state, not just Arguments.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('Glob.vue — error/empty states', () => {
+  it('shows a red error block for envelope failures', async () => {
+    const envelope = {
+      tool: 'glob',
+      parameters: JSON.stringify({ pattern: 'x*', path: '/nope' }),
+      success: false,
+      data: null,
+      error: 'glob failed: PathDoesNotExist',
+      v: 1,
+    }
+    const wrapper = makeWrapper({ content: envelope, expanded: true })
+    const html = wrapper.html()
+    expect(html).toContain('glob failed: PathDoesNotExist')
+    expect(wrapper.find('[data-testid="glob-error"]').exists()).toBe(true)
+    expect(wrapper.find('.chat-tool-card').classes()).toContain('border-red-500/50')
+  })
+
+  it('shows the warning text in the expanded body for empty results', () => {
+    const wrapper = makeWrapper({ content: noMatchData(), expanded: true })
+    expect(wrapper.find('[data-testid="glob-empty"]').exists()).toBe(true)
+    expect(wrapper.html()).toContain('no files found matching pattern')
+  })
+
+  it('shows a (no files) empty state when payload has no warning', () => {
+    const bare = {
+      pattern: 'zzz*',
+      total: 0,
+      returned: 0,
+      offset: 0,
+      truncated: 0,
+      truncated_by_size: false,
+      files: [],
+      warning: null,
+    }
+    const wrapper = makeWrapper({ content: bare, expanded: true })
+    expect(wrapper.find('[data-testid="glob-empty"]').exists()).toBe(true)
+    expect(wrapper.html()).toContain('(no files)')
+  })
+})
