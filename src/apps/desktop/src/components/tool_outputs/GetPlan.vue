@@ -82,7 +82,7 @@ const props = defineProps<{
   message: ToolMessageLike
 }>()
 
-const isExpanded = ref(false)
+const isExpanded = ref(true)
 
 /**
  * Envelope `<parameters>` for this tool message (Task 6).

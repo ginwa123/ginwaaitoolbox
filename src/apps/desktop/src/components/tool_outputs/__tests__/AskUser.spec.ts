@@ -224,25 +224,27 @@ describe('AskUser — rendering', () => {
     wrapper.unmount()
   })
 
-  it('expands itself while the question is unanswered, and collapses once resolved', () => {
-    // An inline card that hides the thing the human must act on is a card
-    // nobody acts on — so a PENDING question ignores `expanded: false`.
+  it('expands itself by default in every state (pending and resolved)', () => {
+    // Cards default expanded so the question, options, and outcome stay
+    // visible without an extra click.
     const pending = mountCard(pendingData(), { expanded: false })
     expect(pending.find('[data-testid="ask-user-send"]').exists()).toBe(true)
     expect(pending.text()).toContain('Which environment should I deploy to?')
     pending.unmount()
 
-    // A resolved card behaves like every other tool card: a one-line summary.
+    // A resolved card is expanded too: the detailed outcome shows, not the
+    // collapsed one-line summary.
     const resolved = mountCard(resolvedData('answered', { answer: 'staging' }), {
       expanded: false,
     })
-    expect(resolved.find('[data-testid="ask-user-collapsed-summary"]').text()).toContain('staging')
-    expect(resolved.find('[data-testid="ask-user-answer-chip"]').exists()).toBe(false)
+    expect(resolved.find('[data-testid="ask-user-answer-chip"]').exists()).toBe(true)
+    expect(resolved.find('[data-testid="ask-user-collapsed-summary"]').exists()).toBe(false)
     resolved.unmount()
 
-    // …including for the non-answered outcomes, which used to render nothing.
+    // …including for the non-answered outcomes.
     const skipped = mountCard(resolvedData('skipped'), { expanded: false })
-    expect(skipped.find('[data-testid="ask-user-collapsed-summary"]').text()).toContain('skipped')
+    expect(skipped.find('[data-testid="ask-user-skipped"]').exists()).toBe(true)
+    expect(skipped.find('[data-testid="ask-user-collapsed-summary"]').exists()).toBe(false)
     skipped.unmount()
   })
 

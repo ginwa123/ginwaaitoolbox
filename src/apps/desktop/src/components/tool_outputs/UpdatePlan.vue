@@ -77,7 +77,7 @@ const props = defineProps<{
   message: ToolMessageLike
 }>()
 
-const isExpanded = ref(false)
+const isExpanded = ref(true)
 
 function asRecord(v: unknown): Record<string, unknown> {
   if (typeof v === 'string') {

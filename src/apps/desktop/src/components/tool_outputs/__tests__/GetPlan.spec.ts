@@ -178,7 +178,7 @@ describe('GetPlan.vue — present plan', () => {
     expect(root.classes()).not.toContain('border-red-500/50')
   })
 
-  it('does NOT auto-expand (collapsed by default)', () => {
+  it('auto-expands (expanded by default)', () => {
     const wrapper = mount(GetPlan, {
       props: {
         message: {
@@ -186,7 +186,7 @@ describe('GetPlan.vue — present plan', () => {
         },
       },
     })
-    expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
   })
 
   it('renders the checklist when expanded', async () => {
@@ -200,8 +200,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('step 1 done')
@@ -219,7 +217,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // JSON `plan` carries the body verbatim (no CDATA leading newline),
     // so line 0 is "- [x] step 1" (checked) → ☑, line 1 is
@@ -245,7 +242,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // The raw "- [x] " prefix must NOT appear in the rendered text.
     expect(wrapper.text()).not.toContain('- [x]')
@@ -261,7 +257,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // Line 0 = checked, line 1 = unchecked.
     const checkedText = wrapper.find('[data-testid="get-plan-line-0"]').find('span.line-through')
@@ -283,7 +278,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // Strict ordering preserved (line 0 = "## Goal", 1 = "Build the whole
     // thing", 2 = "", 3 = "## Steps", 4 = "- [x] step 1").
@@ -304,7 +298,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.find('[data-testid="get-plan-no-checklist"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('no checklist lines')
@@ -322,7 +315,6 @@ describe('GetPlan.vue — present plan', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="get-plan-no-checklist"]').exists()).toBe(false)
@@ -330,7 +322,7 @@ describe('GetPlan.vue — present plan', () => {
     expect(wrapper.text()).toContain('Some prose, no list')
   })
 
-  it('clicking the header a second time collapses the body', async () => {
+  it('clicking the header collapses the body, clicking again re-expands it', async () => {
     const wrapper = mount(GetPlan, {
       props: {
         message: {
@@ -340,11 +332,14 @@ describe('GetPlan.vue — present plan', () => {
       attachTo: document.body,
     })
 
-    await wrapper.find('[role="button"]').trigger('click')
+    // Expanded by default — no click needed.
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
 
     await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(false)
+
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
   })
 })
 
@@ -392,7 +387,6 @@ describe('GetPlan.vue — empty plan (<empty/>)', () => {
       props: { message: { content: makeEmptyContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-empty"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('No plan set')
     expect(wrapper.text()).toContain('update_plan')
@@ -403,7 +397,6 @@ describe('GetPlan.vue — empty plan (<empty/>)', () => {
       props: { message: { content: makeEmptyContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(false)
   })
 })
@@ -414,7 +407,6 @@ describe('GetPlan.vue — error path', () => {
       props: { message: { content: makeErrorContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-error"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('database is locked')
   })
@@ -446,7 +438,6 @@ describe('GetPlan.vue — error path', () => {
       props: { message: { content: makeErrorContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="get-plan-empty"]').exists()).toBe(false)
   })
@@ -471,7 +462,6 @@ describe('GetPlan.vue — inner envelope extraction', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('step 1')
     expect(wrapper.text()).toContain('step 2')
@@ -486,7 +476,6 @@ describe('GetPlan.vue — inner envelope extraction', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-checklist"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('step 1')
   })
@@ -512,7 +501,6 @@ describe('GetPlan.vue — inner envelope extraction', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="get-plan-error"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('boom')
     expect(wrapper.find('[data-testid="get-plan"]').classes()).toContain('border-red-500/50')

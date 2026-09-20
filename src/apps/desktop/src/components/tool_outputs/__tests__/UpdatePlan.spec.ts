@@ -130,22 +130,21 @@ describe('UpdatePlan.vue — happy path', () => {
     expect(wrapper.text()).toContain('2026-08-19 21:00:00')
   })
 
-  it('does NOT auto-expand (collapsed by default)', () => {
+  it('auto-expands (expanded by default)', () => {
     const wrapper = mount(UpdatePlan, {
       props: { message: { content: makeSuccessContent() } },
     })
-    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="update-plan-updated-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="update-plan-updated-row"]').exists()).toBe(true)
   })
 
-  it('renders session_id + updated_at rows when expanded', async () => {
+  it('renders session_id + updated_at rows by default (expanded)', async () => {
     const wrapper = mount(UpdatePlan, {
       props: { message: { content: makeSuccessContent() } },
       attachTo: document.body,
     })
 
     // Click the header to expand.
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="update-plan-updated-row"]').exists()).toBe(true)
@@ -158,22 +157,24 @@ describe('UpdatePlan.vue — happy path', () => {
       props: { message: { content: makeSuccessContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.text()).toContain('Session:')
     expect(wrapper.text()).toContain('Updated:')
   })
 
-  it('clicking the header a second time collapses the body', async () => {
+  it('clicking the header collapses the body, clicking again re-expands it', async () => {
     const wrapper = mount(UpdatePlan, {
       props: { message: { content: makeSuccessContent() } },
       attachTo: document.body,
     })
 
-    await wrapper.find('[role="button"]').trigger('click')
+    // Expanded by default — no click needed.
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
 
     await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(false)
+
+    await wrapper.find('[role="button"]').trigger('click')
+    expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
   })
 })
 
@@ -183,7 +184,6 @@ describe('UpdatePlan.vue — error path', () => {
       props: { message: { content: makeErrorContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-error"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('session_id mismatch')
   })
@@ -216,7 +216,6 @@ describe('UpdatePlan.vue — error path', () => {
       props: { message: { content: makeErrorContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="update-plan-updated-row"]').exists()).toBe(false)
   })
@@ -235,7 +234,6 @@ describe('UpdatePlan.vue — empty envelope edge case', () => {
       props: { message: { content: makeEmptyContent() } },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-empty"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('no fields in envelope')
   })
@@ -277,7 +275,6 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('s_1787073929852_8')
   })
@@ -291,7 +288,6 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('s_1787073929852_8')
   })
@@ -303,7 +299,6 @@ describe('UpdatePlan.vue — inner envelope extraction', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-error"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('✗')
   })
@@ -329,7 +324,6 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('step 1 done')
@@ -345,7 +339,6 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // JSON `plan` carries the body verbatim (no CDATA wrapper newline),
     // so line 0 is "- [x] step 1" (checked -> ☑) and line 1 is
@@ -371,7 +364,6 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // Line 0 is `- [x] step 1` (no leading CDATA newline in JSON).
     const checkedText = wrapper.find('[data-testid="update-plan-line-0"]').find('span.line-through')
@@ -390,21 +382,20 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.text()).toContain('Build the whole thing')
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
   })
 
-  it('does NOT render the plan body when collapsed', () => {
+  it('renders the plan body by default (expanded)', () => {
     const body = '- [x] step 1 done'
     const wrapper = mount(UpdatePlan, {
       props: {
         message: { content: makeSuccessContent({ body }) },
       },
     })
-    // Default collapsed — no checklist body visible.
-    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
+    // Default expanded — checklist body visible without a click.
+    expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
   })
 
   it('falls back gracefully when the envelope has no <plan> block', async () => {
@@ -414,7 +405,6 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
     // Existing session/updated rows still render.
     expect(wrapper.find('[data-testid="update-plan-session-row"]').exists()).toBe(true)
@@ -429,7 +419,6 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // Raw bytes appear verbatim — no XML escape substitution.
     expect(wrapper.text()).toContain('arr[i] > 0')
@@ -448,7 +437,6 @@ describe('UpdatePlan.vue — plan body from <plan> CDATA', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
     // Error path shows the error block, not the plan body.
     expect(wrapper.find('[data-testid="update-plan-error"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)
@@ -533,7 +521,6 @@ describe('UpdatePlan.vue — full <tool> envelope from the dispatcher', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('step 1 done')
@@ -563,7 +550,6 @@ describe('UpdatePlan.vue — full <tool> envelope from the dispatcher', () => {
       },
       attachTo: document.body,
     })
-    await wrapper.find('[role="button"]').trigger('click')
 
     // No checklist — because the backend envelope has no <plan> block.
     expect(wrapper.find('[data-testid="update-plan-checklist"]').exists()).toBe(false)

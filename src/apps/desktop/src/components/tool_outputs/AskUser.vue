@@ -212,12 +212,10 @@ function parseData(data: Record<string, unknown>): ParsedEnvelope {
 // Local interaction state
 // ---------------------------------------------------------------------------
 
-// Expanded by default while the question is UNANSWERED: an inline card that
-// hides the thing the human must act on is a card nobody acts on. Once it is
-// resolved the card behaves like every other tool card (a one-line summary
-// that the user can expand), and a user who collapses a pending question keeps
+// Expanded by default in every state: the question, options, and outcome
+// stay visible without an extra click. A user who collapses the card keeps
 // it collapsed — this is only the initial value.
-const isExpanded = ref<boolean>(props.expanded === true || parsed.value.state === 'pending')
+const isExpanded = ref<boolean>(true)
 const submitting = ref(false)
 const sendFailed = ref(false)
 /** Set after a successful POST so the card flips even if the SSE frame is missed. */
