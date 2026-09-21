@@ -774,19 +774,50 @@ export async function getTaskMedia(
   workspaceId: string,
   itemId: string,
   taskId: string,
-): Promise<{ imageUrls: string[]; videoUrls: string[] } | null> {
+): Promise<TaskMedia | null> {
   try {
     const data = await apiFetch<{ image_urls?: string; video_urls?: string }>(
       `/workspaces/${encodeURIComponent(workspaceId)}/items/${encodeURIComponent(itemId)}/tasks/${encodeURIComponent(taskId)}/media`,
       { silent: true },
     )
-    const split = (v?: string): string[] =>
-      !v ? [] : v.split('|').filter((seg) => seg.length > 0)
+    const split = (v?: string): string[] => (!v ? [] : v.split('|').filter((seg) => seg.length > 0))
     return { imageUrls: split(data.image_urls), videoUrls: split(data.video_urls) }
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) return null
     throw err
   }
+}
+
+export type TaskMedia = { imageUrls: string[]; videoUrls: string[] }
+
+/**
+ * Parallel media fetch for MANY tasks (media-flags change).
+ *
+ * Fires one `getTaskMedia` per id concurrently and settles every leg
+ * (`Promise.allSettled`): a single 404 / network blip resolves that
+ * entry to null instead of rejecting the whole batch. Callers awaiting
+ * N tasks pay ~one round-trip, not N sequential ones.
+ */
+export async function getTasksMedia(
+  workspaceId: string,
+  itemId: string,
+  taskIds: string[],
+): Promise<Map<string, TaskMedia | null>> {
+  const settled = await Promise.allSettled(
+    taskIds.map(async (taskId): Promise<[string, TaskMedia | null]> => [
+      taskId,
+      await getTaskMedia(workspaceId, itemId, taskId),
+    ]),
+  )
+  const out = new Map<string, TaskMedia | null>()
+  settled.forEach((entry, i) => {
+    if (entry.status === 'fulfilled') out.set(entry.value[0], entry.value[1])
+    // Rejected legs (non-404 throw inside getTaskMedia is already
+    // narrowed to 404→null, so this is defensive): record null so the
+    // caller sees every requested id exactly once.
+    else out.set(taskIds[i] ?? '', null)
+  })
+  return out
 }
 
 export async function markTaskHumanTouched(
