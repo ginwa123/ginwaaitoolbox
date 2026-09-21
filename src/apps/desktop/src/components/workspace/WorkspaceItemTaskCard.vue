@@ -28,7 +28,7 @@
 // composables/useTaskActions.ts; this file owns ONLY the card
 // layout and the card-specific computeds (description preview, meta
 // row, Jira-style type accent).
-import { inject, ref, computed, type Ref } from 'vue'
+import { inject, ref, computed, watch, onMounted, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useAgentErrorStore } from '../../stores/agentError'
 import { useContextMenu } from '../../composables/useContextMenu'
@@ -36,7 +36,7 @@ import { useTaskActions, type TaskComponentProps } from '../../composables/useTa
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
-import { stopSession } from '../../api'
+import { stopSession, getPrStatus } from '../../api'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -364,6 +364,57 @@ const gitBranchBadge = computed<string | null>(() => {
   if (typeof b !== 'string') return null
   if (b.length === 0) return null
   return b
+})
+
+// Git-branch PR state coloring: green = open, purple = merged,
+// red = closed. Same palette as SidebarDiffPanel's prStatusStyle
+// so the kanban card and the PR tab agree. Fail-silent: '' keeps
+// the current dim look for non-git workspaces, branches without a
+// PR, or when `gh` is missing / the fetch fails.
+const prStatus = ref('')
+
+const effectiveCwd = computed<string>(() => props.cwd || props.task.cwd || '')
+
+const gitBranchStyle = computed<Record<string, string>>(() => {
+  if (prStatus.value === 'merged') return { color: 'var(--color-violet)' }
+  if (prStatus.value === 'closed') return { color: 'var(--semantic-error)' }
+  if (prStatus.value === 'open') return { color: 'var(--color-green)' }
+  return {} as Record<string, string>
+})
+
+const gitBranchTitle = computed<string>(() => {
+  const branch = gitBranchBadge.value ?? ''
+  if (prStatus.value === 'merged') return `PR merged — ${branch}`
+  if (prStatus.value === 'closed') return `PR closed — ${branch}`
+  if (prStatus.value === 'open') return `PR open — ${branch}`
+  return branch
+})
+
+let prSeq = 0
+const loadPrStatus = async () => {
+  const branch = gitBranchBadge.value
+  const cwd = effectiveCwd.value
+  if (!branch || !cwd) {
+    prStatus.value = ''
+    return
+  }
+  const seq = ++prSeq
+  try {
+    const data = await getPrStatus(cwd, branch)
+    if (seq !== prSeq) return
+    prStatus.value = (data.status || data.state || '').toLowerCase()
+  } catch {
+    if (seq !== prSeq) return
+    prStatus.value = ''
+  }
+}
+
+onMounted(() => {
+  void loadPrStatus()
+})
+
+watch([gitBranchBadge, effectiveCwd], () => {
+  void loadPrStatus()
 })
 </script>
 
@@ -742,7 +793,9 @@ const gitBranchBadge = computed<string | null>(() => {
       <span
         v-if="gitBranchBadge"
         class="inline-flex items-center gap-1 max-w-[8rem] truncate"
-        :title="gitBranchBadge"
+        :style="gitBranchStyle"
+        :title="gitBranchTitle"
+        :data-pr-status="prStatus || undefined"
         data-testid="task-git-branch"
       >
         <svg
