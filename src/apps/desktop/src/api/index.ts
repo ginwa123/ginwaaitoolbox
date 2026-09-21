@@ -433,7 +433,7 @@ export interface Task {
   // URLs (`data:video/<mime>;base64,<payload>`). Empty array = no
   // videos. Same `||`-delimited wire convention as imageUrls.
   videoUrls?: string[]
-  // NEW (Migration 092 — lightweight list/get payload). The backend
+  // NEW (Media-flags change — lightweight list/get payload). The backend
   // list/get return only these flags; the full base64 TEXT stays
   // server-side for the lazy `getTaskMedia` endpoint below. The
   // frontend fetches media only when the flag is true.
@@ -761,7 +761,7 @@ export async function getTask(
  *   (Chunk 7 — frontend open-task stamp).
  */
 /**
- * Lazy media fetch for ONE task (Migration 092).
+ * Lazy media fetch for ONE task (media-flags change).
  * GET /api/workspaces/:ws/items/:item/tasks/:task_id/media
  *   → { image_urls, video_urls } (`||`-delimited raw strings).
  *

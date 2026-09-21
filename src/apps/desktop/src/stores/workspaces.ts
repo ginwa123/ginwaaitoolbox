@@ -185,7 +185,7 @@ export interface Task {
   // NEW (Migration 090 — kanban video urls column). Same contract
   // as imageUrls, normalized by normalizeTaskVideoUrlsInPlace.
   videoUrls?: string[]
-  // NEW (Migration 092 — lightweight list/get payload). Backend
+  // NEW (Media-flags change — lightweight list/get payload). Backend
   // list/get return only these flags; imageUrls/videoUrls above are
   // populated lazily via fetchTaskMedia when a flag is true.
   is_have_image?: boolean
@@ -2979,7 +2979,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     try {
       const res = await api.createKanbanTask(workspaceId, itemId, wirePayload)
-      // Migration 092 — the create response carries only
+      // Media-flags change — the create response carries only
       // `is_have_image` / `is_have_video` flags (no base64 payload).
       // Normalize in place for tags/dates; the detail dialog
       // lazy-loads media via fetchTaskMedia when a flag is true.
@@ -3656,7 +3656,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  // Lazy media fetch (Migration 092). When list/get report
+  // Lazy media fetch (media-flags change). When list/get report
   // `is_have_image` / `is_have_video`, the detail dialog calls this
   // once to populate the cached task's imageUrls/videoUrls in place
   // (shared with the board card thumbnail). No-op when the flags are

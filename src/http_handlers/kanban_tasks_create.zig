@@ -404,7 +404,7 @@ pub fn kanbanTasksCreateHandler(
         .name = standard_result.name,
         .description = parsed.description,
         .completed = false,
-        // Migration 092 — echo media-presence flags so the frontend knows
+        // Media-flags change — echo media-presence flags so the frontend knows
         // whether to lazy-fetch via the media endpoint.
         .is_have_image = standard_result.is_have_image,
         .is_have_video = standard_result.is_have_video,

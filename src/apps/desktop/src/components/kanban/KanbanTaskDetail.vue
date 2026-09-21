@@ -667,7 +667,7 @@ watch(
       // the dialog already open" case via the watcher source's
       // `props.task?.id` dependency.
       cwdSession.value = props.task.cwd ?? ''
-      // Migration 092 — list/get carry only `is_have_image` /
+      // Media-flags change — list/get carry only `is_have_image` /
       // `is_have_video` flags; the gallery lazy-loads via the
       // store's fetchTaskMedia (GET .../tasks/:id/media) when a flag
       // is true and the arrays are still empty. imageUrls is a
@@ -1117,7 +1117,7 @@ const filteredTagSuggestions = computed<string[]>(() => {
 // task in place, the computed re-evaluates, the gallery re-renders
 // without any re-open dance.
 const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
-// Migration 092 — async lazy media: flags true but arrays still empty
+// Media-flags change — async lazy media: flags true but arrays still empty
 // means the background fetchTaskMedia hasn't resolved yet. Shows a
 // lightweight loading hint instead of a blank gap. Non-blocking: the
 // fetch runs fire-and-forget via `void` (see the dialog-open watcher).

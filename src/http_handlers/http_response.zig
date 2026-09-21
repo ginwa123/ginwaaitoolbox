@@ -101,7 +101,7 @@ pub const TaskCreateResponse = struct {
     name: []const u8,
     description: ?[]const u8,
     completed: bool,
-    /// Lightweight media-presence flags (Migration 092). Echoed from
+    /// Lightweight media-presence flags (media-flags change). Echoed from
     /// the INSERTed row so the optimistic task knows whether to lazy-fetch.
     is_have_image: bool = false,
     is_have_video: bool = false,
@@ -548,7 +548,7 @@ pub const WorkspaceItemTaskResponse = struct {
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: []const u8 = "",
 
-    /// Lightweight media-presence flags (Migration 092). List/get
+    /// Lightweight media-presence flags (media-flags change). List/get
     /// return only these; the full `||`-delimited base64 TEXT columns
     /// stay server-side for the lazy `GET .../tasks/:task_id/media`
     /// endpoint. The frontend fetches media only when the flag is true.

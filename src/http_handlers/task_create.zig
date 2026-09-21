@@ -159,7 +159,7 @@ pub const StandardResult = struct {
     /// kanban path → sandbox). Empty string is the canonical
     /// "no per-task cwd" sentinel.
     cwd: []const u8 = "",
-    /// Media-presence flags (Migration 092). Derived from the validated
+    /// Media-presence flags (media-flags change). Derived from the validated
     /// payload lengths so the create response tells the frontend whether
     /// to lazy-fetch via the media endpoint.
     is_have_image: bool = false,
@@ -211,7 +211,7 @@ const StandardResponse = struct {
     /// path + sandbox). Plan: docs/superpowers/plans/2026-08-06-
     /// kanban-cwd-session-optional.md
     cwd: []const u8 = "",
-    /// Media-presence flags (Migration 092). True when the just-INSERTed
+    /// Media-presence flags (media-flags change). True when the just-INSERTed
     /// row has media; the frontend lazy-fetches via the media endpoint.
     is_have_image: bool = false,
     is_have_video: bool = false,
@@ -585,7 +585,7 @@ fn createStandardTask(
         // per-request arena (validated above). Mirrors what we just
         // INSERTed into the `cwd` column.
         .cwd = validated_cwd,
-        // Migration 092 — media-presence flags derived from the validated
+        // Media-flags change — media-presence flags derived from the validated
         // payloads. The full TEXT stays server-side for lazy fetch.
         .is_have_image = validated_image_urls.len > 0,
         .is_have_video = validated_video_urls.len > 0,
@@ -760,7 +760,7 @@ pub fn tasksCreateHandler(
                     // valueAlloc copies it into the response JSON,
                     // so no use-after-free).
                     .cwd = r.cwd,
-                    // Migration 092 — media-presence flags. The frontend
+                    // Media-flags change — media-presence flags. The frontend
                     // lazy-fetches via the media endpoint when true.
                     .is_have_image = r.is_have_image,
                     .is_have_video = r.is_have_video,

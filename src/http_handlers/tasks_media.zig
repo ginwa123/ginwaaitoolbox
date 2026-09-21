@@ -1,6 +1,6 @@
 //! `GET /api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/media`
 //!
-//! Lazy media fetch for a kanban task (Migration 092). List/get return
+//! Lazy media fetch for a kanban task (media-flags change). List/get return
 //! only `is_have_image` / `is_have_video` flags so board fetches stay
 //! small; the frontend calls this endpoint only when a flag is true.
 //! Returns `{ image_urls, video_urls }` as raw `||`-delimited strings
@@ -88,7 +88,7 @@ pub fn tasksMediaHandler(
     return res.jsonResponse(.{ .status_code = 200, .data = data });
 }
 
-// ─── Static contracts (Migration 092) ─────────────────────────────────────
+// ─── Static contracts (media-flags change) ─────────────────────────────────────
 
 const std_testing = std.testing;
 const text_normalize = @import("helpers").text_normalize;

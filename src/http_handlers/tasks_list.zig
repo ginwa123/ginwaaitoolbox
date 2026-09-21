@@ -217,7 +217,7 @@ fn useCase(
             // string borrowed from WorkspaceItemTaskInfo.tags (the
             // per-request arena reaps it on request teardown).
             .tags = task.tags,
-            // Migration 092 — media-presence flags only. The full
+            // Media-flags change — media-presence flags only. The full
             // base64 TEXT columns stay server-side for the lazy media
             // endpoint; the frontend fetches them when the flag is true.
             .is_have_image = task.is_have_image,
@@ -896,10 +896,10 @@ test "tasks_list llm_history SELECT includes t.image_urls" {
     const body_end = std.mem.indexOf(u8, body, "\npub fn ") orelse body.len;
     const fn_body = body[0..body_end];
 
-    if (std.mem.indexOf(u8, fn_body, "t.is_have_image") == null) {
+    if (std.mem.indexOf(u8, fn_body, "CASE WHEN COALESCE(t.image_urls, '') != '' THEN 1 ELSE 0 END") == null) {
         std.debug.print(
-            "\n!! {s} listWorkspaceItemTasksWithCursor SELECT does not include t.is_have_image !!\n" ++
-                "   List/get return only media-presence flags (Migration 092);\n" ++
+            "\n!! {s} listWorkspaceItemTasksWithCursor SELECT does not derive the image flag !!\n" ++
+                "   List/get return only derived media-presence flags;\n" ++
                 "   the full base64 TEXT stays server-side for the lazy media endpoint.\n",
             .{LLM_HISTORY_PATH},
         );

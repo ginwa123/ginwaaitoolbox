@@ -1,5 +1,5 @@
 /**
- * Tests for the lazy task-media endpoint client (Migration 092).
+ * Tests for the lazy task-media endpoint client (media-flags change).
  *
  * List/get return only `is_have_image` / `is_have_video` flags so board
  * fetches stay small; `getTaskMedia` fetches the full `||`-delimited

@@ -343,7 +343,7 @@ const extraImagesCount = computed<number>(() => {
   return Math.max(0, urls.length - 1)
 })
 
-// Migration 092 — list/get carry only flags; the card avoids a per-card
+// Media-flags change — list/get carry only flags; the card avoids a per-card
 // media fetch and shows a lightweight badge when the task has media
 // that hasn't been lazy-loaded yet (the detail dialog fetches on open).
 const hasUnloadedMedia = computed<boolean>(() => {
@@ -712,7 +712,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
         >+{{ extraImagesCount }}</span
       >
     </div>
-    <!-- Migration 092 — flag-only list payload: show a lightweight badge
+    <!-- Media-flags change — flag-only list payload: show a lightweight badge
          when the task has media that hasn't been lazy-loaded yet.
          No per-card fetch (the detail dialog fetches on open). -->
     <div
