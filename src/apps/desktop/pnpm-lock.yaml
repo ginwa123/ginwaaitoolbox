@@ -17,6 +17,9 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      idb:
+        specifier: ^8.0.3
+        version: 8.0.3
       marked:
         specifier: ^18.0.2
         version: 18.0.2
@@ -1400,6 +1403,9 @@ packages:
     resolution: {integrity: sha512-5gs5ytaNjBrh5Ow3zrvdUUY+0VxIuWVL4i9irt6friV+BqdCfmV11CQTWMiBYWHbXhco+J1kHfTOUkePhCDvMA==}
     engines: {node: '>=18'}
     hasBin: true
+
+  idb@8.0.3:
+    resolution: {integrity: sha512-LtwtVyVYO5BqRvcsKuB2iUMnHwPVByPCXFXOpuU96IZPPoPN6xjOGxZQ74pgSVVLQWtUOYgyeL4GE98BY5D3wg==}
 
   ignore@5.3.2:
     resolution: {integrity: sha512-hsBTNUqQTDwkWtcdYI2i06Y/nUBEsNEDJKjWdigLvegy8kDuJAS8uRlpkkcQpyEXL0Z/pjDy5HBmMjRCJ2gq+g==}
@@ -3545,6 +3551,8 @@ snapshots:
       - '@noble/hashes'
 
   husky@9.1.7: {}
+
+  idb@8.0.3: {}
 
   ignore@5.3.2: {}
 
