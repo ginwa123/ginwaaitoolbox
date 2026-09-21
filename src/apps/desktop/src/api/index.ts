@@ -1294,6 +1294,7 @@ export async function getChatHistory(
   sessionId: string,
   limit = 50,
   cursor?: string,
+  direction: 'asc' | 'desc' = 'desc',
 ): Promise<{
   messages: Message[]
   has_more: boolean
@@ -1321,7 +1322,7 @@ export async function getChatHistory(
   try {
     const params = new URLSearchParams({
       sort_by: 'created_at',
-      direction: 'desc',
+      direction,
       limit: limit.toString(),
     })
     if (cursor) {

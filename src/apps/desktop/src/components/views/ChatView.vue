@@ -2,7 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../../api'
-import { chatEngineDb } from '../../sync/ChatEngineDb'
+import { chatEngineDb, toChatMessage } from '../../sync/ChatEngineDb'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
 import {
   stripThinkingTags,
@@ -1994,21 +1994,26 @@ const toChatMessages = (
  */
 const fetchOlderPage = async (cursor: string | null): Promise<BufferedOlderPage> => {
   const startedAt = performance.now()
-  // Local-first probe (Phase 1): best-effort cache read for the older page.
-  // The network remains authoritative — on any cache miss/failure we fall
-  // through to the REST fetch below. Never changes PAGE_SIZE or prefetch logic.
+  // Cache-first older page: serve from IndexedDB when it holds rows older
+  // than the current oldest, so scroll-back avoids the network. The cursor
+  // is left unchanged on a hit so the next cache MISS resumes the network
+  // exactly where it left off; the commit's id-dedupe covers any overlap.
   try {
     const oldest = messages.value[0]
     if (oldest) {
       const beforeKey = oldest.timestamp ? oldest.timestamp.getTime() * 1e6 : 0
-      // Phase 2 will render from this probe; for now the network stays
-      // authoritative — the probe only warms the cache path.
-      const _cacheProbe = await chatEngineDb.loadOlderFromCache(
-        sessionId.value,
-        beforeKey,
-        PAGE_SIZE,
-      )
-      void _cacheProbe
+      const cached = await chatEngineDb.loadOlderFromCache(sessionId.value, beforeKey, PAGE_SIZE)
+      if (cached.length > 0) {
+        return {
+          fetchedWithCursor: cursor,
+          generation: commitGeneration,
+          messages: toChatMessages(cached.map((c) => c.raw)),
+          hasMore: hasMoreMessages.value,
+          nextCursor: cursor,
+          measuredMs: performance.now() - startedAt,
+          armedAt: performance.now(),
+        }
+      }
     }
   } catch {
     // Cache failure must not break the network path.
@@ -2515,6 +2520,33 @@ const maybeLoadOlder = async (trigger: 'edge' | 'manual') => {
 }
 
 /**
+ * Apply the session metadata piggybacked on the messages endpoint (cwd,
+ * worktree, PR binding, profile, token budgets, skills). Shared by the
+ * cached-mount delta path and the full-load path so the two can never drift.
+ */
+const applyDeltaExtra = (extra: {
+  cwd?: string
+  git_worktree_cwd?: string
+  pr_url?: string
+  pr_provider?: string
+  selected_profile_model?: string
+  max_total_tokens?: number
+  max_capacity_total_tokens?: number
+  skills?: typeof sessionSkills.value
+}) => {
+  if (extra.cwd) sessionCwd.value = extra.cwd
+  if (extra.git_worktree_cwd !== undefined) gitWorktreeCwd.value = extra.git_worktree_cwd
+  if (extra.pr_url !== undefined) chatPrUrl.value = extra.pr_url ?? ''
+  if (extra.pr_provider !== undefined) chatPrProvider.value = extra.pr_provider ?? ''
+  if (extra.selected_profile_model !== undefined)
+    selectedProfile.value = extra.selected_profile_model || null
+  if (extra.max_total_tokens !== undefined) maxTotalTokens.value = extra.max_total_tokens
+  if (extra.max_capacity_total_tokens !== undefined)
+    maxCapacityTotalTokens.value = extra.max_capacity_total_tokens
+  sessionSkills.value = extra.skills || []
+}
+
+/**
  * Initial load / refresh (the old `loadChatHistory(false)`).
  *
  * The `loadMore` branch that used to live here moved to `maybeLoadOlder` /
@@ -2530,14 +2562,54 @@ const loadChatHistory = async () => {
   resetOlderPrefetch('refresh')
   error.value = null
 
+  // Cached mount: paint stored full-fidelity raws instantly (same mapper as
+  // the network path, so no shape drift), restore the cursor from sync_state,
+  // then refresh just the tail with cursor+asc. Miss/IDB failure falls
+  // through to the full-load path below unchanged.
   try {
-    // Local-first prime (Phase 1): best-effort cache warm before the network
-    // delta. Failures fall through to the existing network path unchanged.
-    try {
-      await chatEngineDb.primeFromCache(sessionId.value, PAGE_SIZE)
-    } catch {
-      // Ignore — network path below is authoritative.
+    const sid = sessionId.value
+    const cached = await chatEngineDb.primeFromCache(sid, PAGE_SIZE)
+    if (cached.length > 0 && sessionId.value === sid) {
+      const storedCursor = await chatEngineDb.getCursor(sid)
+      isInitialLoad = true
+      try {
+        messages.value = toChatMessages(cached.map((c) => c.raw))
+          .slice()
+          .reverse()
+        messageCursor.value = storedCursor
+        hasMoreMessages.value = true
+      } finally {
+        isInitialLoad = false
+      }
+      isLoading.value = false
+      await nextTick()
+      scrollToBottom(true, 'cached-mount')
+      try {
+        const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE)
+        if (delta && sessionId.value === sid) {
+          applyDeltaExtra(delta.extra)
+          if (delta.items.length > 0) {
+            const seen = new Set(messages.value.map((m) => m.id))
+            const fresh = toChatMessages(delta.items.map((i) => i.raw)).filter(
+              (m) => !seen.has(m.id),
+            )
+            messages.value = [...messages.value, ...fresh]
+          }
+          messageCursor.value = delta.nextCursor
+          hasMoreMessages.value = delta.hasMore
+        }
+      } catch {
+        // Painted cache stands; the next mount retries the tail.
+      }
+      setupCodeBlockCopyButtons()
+      void rehydrateSubAgentProgress()
+      return
     }
+  } catch {
+    // Ignore — network path below is authoritative.
+  }
+
+  try {
     const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, undefined)
 
     if (data.cwd) {
@@ -2589,35 +2661,17 @@ const loadChatHistory = async () => {
       messages.value = newMessages.slice().reverse()
       messageCursor.value = data.next_cursor
       hasMoreMessages.value = data.has_more
-      // Local-first write-through (Phase 1): persist the fresh page + cursor.
-      // Best-effort — IDB failure keeps the existing in-memory behavior.
+      // Write-through: persist full server rows so the next mount paints
+      // from cache. Best-effort — IDB failure keeps in-memory behavior.
       try {
         const sid = sessionId.value
         await chatEngineDb.putLocal(
           sid,
-          (data.messages ?? []).map((m) => {
-            // Mirror ChatEngineDb.fetchDelta: prefer created_at_nano (nano
-            // precision) when present, fallback to created_at*1e9.
-            const rawNano = (m as unknown as { created_at_nano?: number | string }).created_at_nano
-            const nano =
-              typeof rawNano === 'string'
-                ? parseInt(rawNano, 10)
-                : (rawNano ?? Math.floor(Number(m.created_at ?? 0) * 1e9))
-            const safeNano = Number.isFinite(nano as number) ? (nano as number) : 0
-            return {
-              id: m.id,
-              sortKey: safeNano,
-              session_id: sid,
-              created_at_nano: safeNano,
-              created_at: Number(m.created_at ?? 0),
-              role: m.role ?? '',
-              content: m.content ?? '',
-            }
-          }),
+          (data.messages ?? []).map((m) => toChatMessage(sid, m)),
         )
         await chatEngineDb.setCursor(sid, data.next_cursor)
       } catch {
-        // Ignore — cache is advisory in Phase 1.
+        // Ignore — cache is advisory on write.
       }
 
       const initialContainer = virtualScrollerRef.value?.containerRef
@@ -3438,28 +3492,35 @@ const connectSse = () => {
         // thinking-only turns render their collapsible section.
         reasoning_content: event.reasoning_content || undefined,
       })
-      // Local-first write-through (Phase 1): persist the SSE `full` row.
-      // Best-effort — failures keep the existing in-memory behavior.
+      // Write-through: persist the SSE `full` row with its full wire shape
+      // so cached mounts render it identically. Best-effort.
       try {
         const sid2 = sessionId.value
-        // SseEvent wire (api/index.ts) carries created_at (seconds) but no
-        // created_at_nano — prefer it when present, else Date.now() fallback.
         const evtSec = (event as unknown as { created_at?: number }).created_at
-        const evtMs = Number.isFinite(Number(evtSec)) ? Number(evtSec) * 1000 : Date.now()
-        const evtNano = Math.floor(evtMs * 1e6)
+        const evtCreatedAt = Number.isFinite(Number(evtSec))
+          ? Number(evtSec)
+          : Math.floor(Date.now() / 1000)
         void chatEngineDb.putLocal(sid2, [
-          {
+          toChatMessage(sid2, {
             id: event.id || `assistant-${Date.now()}`,
-            sortKey: evtNano,
-            session_id: sid2,
-            created_at_nano: evtNano,
-            created_at: Math.floor(evtMs / 1000),
             role,
             content: event.content || '',
-          },
+            created_at: evtCreatedAt,
+            tool_name: event.tool_name,
+            diffview_before: event.diffview_before,
+            diffview_after: event.diffview_after,
+            image_url: event.image_url,
+            video_url: event.video_url,
+            finish_reason: event.finish_reason,
+            tool_calls_json: event.tool_calls_json,
+            tool_call_id: event.tool_call_id,
+            is_input: event.is_input,
+            is_output: event.is_output,
+            reasoning_content: event.reasoning_content || undefined,
+          }),
         ])
       } catch {
-        // Ignore — cache is advisory in Phase 1.
+        // Ignore — cache is advisory on write.
       }
       // 2026-09-06 virtual-scroller shrink fix: move the streaming
       // group's measured height onto the canonical row's key so the
