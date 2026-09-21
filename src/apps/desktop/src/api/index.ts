@@ -433,6 +433,12 @@ export interface Task {
   // URLs (`data:video/<mime>;base64,<payload>`). Empty array = no
   // videos. Same `||`-delimited wire convention as imageUrls.
   videoUrls?: string[]
+  // NEW (Media-flags change — lightweight list/get payload). The backend
+  // list/get return only these flags; the full base64 TEXT stays
+  // server-side for the lazy `getTaskMedia` endpoint below. The
+  // frontend fetches media only when the flag is true.
+  is_have_image?: boolean
+  is_have_video?: boolean
   // NEW (Migration 070 — kanban-cwd-session-optional plan).
   // Per-task cwd override (absolute path on disk, or '' for
   // cwd-less). Optional so legacy task literals in tests keep
@@ -754,6 +760,35 @@ export async function getTask(
  * Plan: docs/plans/2026-07-26-kanban-task-notification-icon.md
  *   (Chunk 7 — frontend open-task stamp).
  */
+/**
+ * Lazy media fetch for ONE task (media-flags change).
+ * GET /api/workspaces/:ws/items/:item/tasks/:task_id/media
+ *   → { image_urls, video_urls } (`||`-delimited raw strings).
+ *
+ * List/get return only `is_have_image` / `is_have_video` flags so
+ * board fetches stay small; call this only when a flag is true.
+ * Resolves to split arrays (empty when the column is '').
+ * 404 → null (task deleted / wrong item).
+ */
+export async function getTaskMedia(
+  workspaceId: string,
+  itemId: string,
+  taskId: string,
+): Promise<{ imageUrls: string[]; videoUrls: string[] } | null> {
+  try {
+    const data = await apiFetch<{ image_urls?: string; video_urls?: string }>(
+      `/workspaces/${encodeURIComponent(workspaceId)}/items/${encodeURIComponent(itemId)}/tasks/${encodeURIComponent(taskId)}/media`,
+      { silent: true },
+    )
+    const split = (v?: string): string[] =>
+      !v ? [] : v.split('|').filter((seg) => seg.length > 0)
+    return { imageUrls: split(data.image_urls), videoUrls: split(data.video_urls) }
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null
+    throw err
+  }
+}
+
 export async function markTaskHumanTouched(
   workspaceId: string,
   itemId: string,

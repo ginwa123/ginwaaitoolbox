@@ -217,15 +217,11 @@ fn useCase(
             // string borrowed from WorkspaceItemTaskInfo.tags (the
             // per-request arena reaps it on request teardown).
             .tags = task.tags,
-            // Migration 069 — kanban image urls. `||`-delimited base64
-            // data URL string borrowed from WorkspaceItemTaskInfo
-            // .image_urls (the per-request arena reaps it on request
-            // teardown). The frontend splits on '|' to render the
-            // detail dialog gallery + board card thumbnails.
-            // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-            .image_urls = task.image_urls,
-            // Migration 090 — kanban video urls. Same contract.
-            .video_urls = task.video_urls,
+            // Media-flags change — media-presence flags only. The full
+            // base64 TEXT columns stay server-side for the lazy media
+            // endpoint; the frontend fetches them when the flag is true.
+            .is_have_image = task.is_have_image,
+            .is_have_video = task.is_have_video,
             // Kanban-task-git-branch: computed on-demand per task
             // from the task's cwd (worktree or item path). The
             // borrowed slice is owned by the per-request arena (the
@@ -900,22 +896,18 @@ test "tasks_list llm_history SELECT includes t.image_urls" {
     const body_end = std.mem.indexOf(u8, body, "\npub fn ") orelse body.len;
     const fn_body = body[0..body_end];
 
-    if (std.mem.indexOf(u8, fn_body, "t.image_urls") == null) {
+    if (std.mem.indexOf(u8, fn_body, "CASE WHEN COALESCE(t.image_urls, '') != '' THEN 1 ELSE 0 END") == null) {
         std.debug.print(
-            "\n!! {s} listWorkspaceItemTasksWithCursor SELECT does not include t.image_urls !!\n" ++
-                "   The kanban task detail dialog gallery + board card\n" ++
-                "   thumbnails read this column — without it the images\n" ++
-                "   attached at create time are invisible after refresh.\n" ++
-                "   Add `, t.image_urls` to the SELECT (append AFTER t.cwd\n" ++
-                "   at index 24 — appending keeps every existing index stable).\n" ++
-                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+            "\n!! {s} listWorkspaceItemTasksWithCursor SELECT does not derive the image flag !!\n" ++
+                "   List/get return only derived media-presence flags;\n" ++
+                "   the full base64 TEXT stays server-side for the lazy media endpoint.\n",
             .{LLM_HISTORY_PATH},
         );
         return error.ImageUrlsColumnNotInSelect;
     }
 }
 
-test "tasks_list llm_history struct literal sets image_urls from row" {
+test "tasks_list llm_history struct literal sets is_have_image from row" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, LLM_HISTORY_PATH);
     defer allocator.free(source);
@@ -935,36 +927,34 @@ test "tasks_list llm_history struct literal sets image_urls from row" {
     // column (index 17 post-Migration-084 — the routines JOIN dropped
     // columns 11-17, shifting everything down by 7). Without this the
     // field stays the default empty slice even when the DB row has images.
-    if (std.mem.indexOf(u8, fn_body, ".image_urls = try allocator.dupe(u8, row.values[17])") == null) {
+    if (std.mem.indexOf(u8, fn_body, ".is_have_image") == null) {
         std.debug.print(
-            "\n!! {s} listWorkspaceItemTasksWithCursor does not set .image_urls from row.values[17] !!\n" ++
+            "\n!! {s} listWorkspaceItemTasksWithCursor does not set .is_have_image !!\n" ++
                 "   Add to the WorkspaceItemTaskInfo literal:\n" ++
-                "     .image_urls = try allocator.dupe(u8, row.values[17]),\n" ++
-                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+                "     .is_have_image = std.mem.eql(u8, row.values[17], \"1\"),\n",
             .{LLM_HISTORY_PATH},
         );
         return error.ImageUrlsFieldNotPopulated;
     }
 }
 
-test "tasks_list response forwards image_urls" {
+test "tasks_list response forwards is_have_image" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
 
-    if (std.mem.indexOf(u8, source, ".image_urls = task.image_urls") == null) {
+    if (std.mem.indexOf(u8, source, ".is_have_image = task.is_have_image") == null) {
         std.debug.print(
-            "\n!! {s} does not forward .image_urls into the response !!\n" ++
+            "\n!! {s} does not forward .is_have_image into the response !!\n" ++
                 "   Add next to the .tags forwarding:\n" ++
-                "     .image_urls = task.image_urls,\n" ++
-                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+                "     .is_have_image = task.is_have_image,\n",
             .{HANDLER_PATH},
         );
         return error.ImageUrlsNotForwarded;
     }
 }
 
-test "WorkspaceItemTaskResponse declares image_urls" {
+test "WorkspaceItemTaskResponse declares is_have_image" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HTTP_RESPONSE_PATH);
     defer allocator.free(source);
@@ -981,12 +971,10 @@ test "WorkspaceItemTaskResponse declares image_urls" {
     const window_end = std.mem.indexOf(u8, window, "\npub const ") orelse window.len;
     const struct_body = window[0..window_end];
 
-    if (std.mem.indexOf(u8, struct_body, "image_urls: []const u8 = \"\"") == null) {
+    if (std.mem.indexOf(u8, struct_body, "is_have_image: bool") == null) {
         std.debug.print(
-            "\n!! {s} WorkspaceItemTaskResponse does not declare image_urls !!\n" ++
-                "   Add: image_urls: []const u8 = \"\",\n" ++
-                "   (pipe-pipe-delimited base64 data URLs; empty = no images sentinel)\n" ++
-                "   See docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md.\n",
+            "\n!! {s} WorkspaceItemTaskResponse does not declare is_have_image !!\n" ++
+                "   Add: is_have_image: bool = false,\n",
             .{HTTP_RESPONSE_PATH},
         );
         return error.ImageUrlsFieldMissing;

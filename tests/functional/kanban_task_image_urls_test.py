@@ -1,27 +1,21 @@
-"""Functional wire round-trip for the kanban task image_urls read path.
+"""Migration 092 — lightweight task list/get payload + lazy media endpoint.
 
-Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-(Task 5).
-
-The bug: images attached in the "New task" dialog were PERSISTED
-correctly (workspace_item_tasks.image_urls) but never returned by the
-read path — the paginated task lister didn't SELECT the column, the
-wire response struct had no field, and the create response didn't echo
-it. So the task detail dialog's gallery was always empty after a
-refetch, and image edits via PUT were silently dropped.
+List/get return only `is_have_image` / `is_have_video` flags so board
+fetches stay small; the full `||`-delimited base64 TEXT columns stay
+server-side for `GET .../tasks/:task_id/media`, which the frontend
+calls only when a flag is true.
 
 These tests replay the EXACT wire bodies the frontend sends:
-  1. create (mode='create_session') with image_urls → response echoes
-     image_urls AND the list endpoint returns it.
-  2. PUT /api/workspaces/tasks/:task_id with image_urls → persisted;
-     PUT with '' → cleared.
+  1. create (mode='create_session') with image_urls → response carries
+     is_have_image=true (no image_urls field); list/get carry the flag;
+     the media endpoint returns the persisted column.
+  2. PUT /api/workspaces/tasks/:task_id with image_urls → flag flips;
+     PUT with '' → flag clears.
 """
 
 from __future__ import annotations
 
 from typing import Any
-
-import pytest
 
 from harness import FunctionalHarness
 
@@ -87,78 +81,110 @@ def _list_tasks(harness: FunctionalHarness, workspace_id: str, kanban_id: str) -
     return tasks
 
 
-# ─── Test 1: create echoes image_urls + list returns them ─────────────────
+def _get_task(harness: FunctionalHarness, workspace_id: str, kanban_id: str, task_id: str) -> dict[str, Any]:
+    r = harness.http(
+        "GET",
+        f"/api/workspaces/{workspace_id}/items/{kanban_id}/tasks/{task_id}",
+        expect=200,
+    )
+    return r.json()["task"]
 
 
-def test_create_with_image_then_list_returns_image_urls(harness: FunctionalHarness):
-    """The full read-path round trip: create with an image → the create
-    response echoes image_urls AND the list endpoint returns the
-    persisted column (pre-fix the list returned no image_urls field at
-    all, so the detail dialog gallery was always empty)."""
+def _get_media(harness: FunctionalHarness, workspace_id: str, kanban_id: str, task_id: str) -> dict[str, Any]:
+    r = harness.http(
+        "GET",
+        f"/api/workspaces/{workspace_id}/items/{kanban_id}/tasks/{task_id}/media",
+        expect=200,
+    )
+    return r.json()
+
+
+# ─── Test 1: create → flags on the wire, media via lazy endpoint ──────────
+
+
+def test_create_with_image_returns_flag_and_media_endpoint_serves_urls(harness: FunctionalHarness):
+    """Create with an image → create/list/get carry is_have_image=true
+    (and NO image_urls field — the perf win); the media endpoint
+    returns the persisted column."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
     resp = _create_task_with_image(harness, ws_id, kanban_id, PNG_DATA_URL)
 
-    # Create response echoes image_urls (optimistic gallery contract).
     task = resp.get("task")
     assert isinstance(task, dict), f"expected task object, got: {resp!r}"
-    assert task.get("image_urls") == PNG_DATA_URL, (
-        f"create response should echo image_urls, got: {task!r}"
-    )
+    assert task.get("is_have_image") is True, f"create should flag media, got: {task!r}"
+    assert "image_urls" not in task, f"create must not echo base64 payload, got keys: {sorted(task)!r}"
+    task_id = task["id"]
 
-    # List endpoint returns the persisted column.
     tasks = _list_tasks(harness, ws_id, kanban_id)
     assert len(tasks) == 1, f"expected 1 task, got {len(tasks)}"
-    assert tasks[0]["image_urls"] == PNG_DATA_URL, (
-        f"list should return the persisted image_urls, got: {tasks[0]!r}"
-    )
+    assert tasks[0]["is_have_image"] is True
+    assert tasks[0].get("is_have_video") is False
+    assert "image_urls" not in tasks[0], f"list must stay small, got keys: {sorted(tasks[0])!r}"
+
+    single = _get_task(harness, ws_id, kanban_id, task_id)
+    assert single["is_have_image"] is True
+    assert "image_urls" not in single
+
+    media = _get_media(harness, ws_id, kanban_id, task_id)
+    assert media["image_urls"] == PNG_DATA_URL, f"media endpoint should serve urls, got: {media!r}"
+    assert media["video_urls"] == ""
 
 
-def test_create_with_multiple_images_preserves_order(harness: FunctionalHarness):
+def test_create_with_multiple_images_preserves_order_in_media(harness: FunctionalHarness):
     """Multiple images are stored as the ||-joined string in send order;
-    the list returns them verbatim (the frontend splits on '|' and
-    renders the first as the card thumbnail)."""
+    the media endpoint returns them verbatim."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
     joined = "||".join([PNG_DATA_URL, JPEG_DATA_URL])
-    _create_task_with_image(harness, ws_id, kanban_id, joined)
+    resp = _create_task_with_image(harness, ws_id, kanban_id, joined)
+    task_id = resp["task"]["id"]
 
-    tasks = _list_tasks(harness, ws_id, kanban_id)
-    assert tasks[0]["image_urls"] == joined
+    media = _get_media(harness, ws_id, kanban_id, task_id)
+    assert media["image_urls"] == joined
 
 
-def test_create_without_image_omits_empty_sentinel(harness: FunctionalHarness):
-    """A task created without images carries image_urls as the empty
-    string (the canonical "no images" sentinel — NOT NULL DEFAULT '')."""
+def test_create_without_image_reports_no_media(harness: FunctionalHarness):
+    """A task created without images reports is_have_image=false and the
+    media endpoint returns empty sentinels."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
 
     r = harness.http(
         "POST",
-        f"/api/workspaces/{workspace_id_placeholder(ws_id)}/items/{kanban_id}/kanban/tasks",
+        f"/api/workspaces/{ws_id}/items/{kanban_id}/kanban/tasks",
         json_body={"mode": "create_session", "name": "no img", "description": ""},
         expect=201,
     )
-    assert r.json()["task"]["image_urls"] == ""
+    assert r.json()["task"]["is_have_image"] is False
+    task_id = r.json()["task"]["id"]
 
     tasks = _list_tasks(harness, ws_id, kanban_id)
-    assert tasks[0]["image_urls"] == ""
+    assert tasks[0]["is_have_image"] is False
+
+    media = _get_media(harness, ws_id, kanban_id, task_id)
+    assert media["image_urls"] == ""
+    assert media["video_urls"] == ""
 
 
-def workspace_id_placeholder(ws_id: str) -> str:
-    # (helper kept trivial — the URL just needs the workspace id)
-    return ws_id
+def test_media_endpoint_404_for_unknown_task(harness: FunctionalHarness):
+    ws_id = _create_workspace(harness)
+    kanban_id = _create_kanban(harness, ws_id)
+    harness.http(
+        "GET",
+        f"/api/workspaces/{ws_id}/items/{kanban_id}/tasks/no_such_task/media",
+        expect=404,
+    )
 
 
-# ─── Test 2: PUT updates + clears image_urls ──────────────────────────────
+# ─── Test 2: PUT updates + clears the flag ────────────────────────────────
 
 
-def test_put_image_urls_updates_row(harness: FunctionalHarness):
+def test_put_image_urls_sets_flag(harness: FunctionalHarness):
     """PUT /api/workspaces/tasks/:task_id with image_urls persists the
-    new value (pre-fix the PUT parsed the field but had no UPDATE
-    branch — edits were silently dropped)."""
+    new value and flips the flag (the media endpoint serves it)."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
     resp = _create_task_with_image(harness, ws_id, kanban_id, PNG_DATA_URL)
@@ -172,12 +198,13 @@ def test_put_image_urls_updates_row(harness: FunctionalHarness):
     )
 
     tasks = _list_tasks(harness, ws_id, kanban_id)
-    assert tasks[0]["image_urls"] == JPEG_DATA_URL
+    assert tasks[0]["is_have_image"] is True
+    media = _get_media(harness, ws_id, kanban_id, task_id)
+    assert media["image_urls"] == JPEG_DATA_URL
 
 
-def test_put_empty_image_urls_clears_row(harness: FunctionalHarness):
-    """PUT with image_urls='' clears the column (the canonical "no
-    images" sentinel is persisted, not skipped)."""
+def test_put_empty_image_urls_clears_flag(harness: FunctionalHarness):
+    """PUT with image_urls='' clears the column and the flag."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
     resp = _create_task_with_image(harness, ws_id, kanban_id, PNG_DATA_URL)
@@ -191,12 +218,14 @@ def test_put_empty_image_urls_clears_row(harness: FunctionalHarness):
     )
 
     tasks = _list_tasks(harness, ws_id, kanban_id)
-    assert tasks[0]["image_urls"] == ""
+    assert tasks[0]["is_have_image"] is False
+    media = _get_media(harness, ws_id, kanban_id, task_id)
+    assert media["image_urls"] == ""
 
 
 def test_put_invalid_image_urls_rejected_400(harness: FunctionalHarness):
-    """A malformed data URL is rejected with 400 (InvalidImageUrls) and
-    the stored value is untouched."""
+    """A malformed data URL is rejected with 400 and the stored value
+    (and flag) are untouched."""
     ws_id = _create_workspace(harness)
     kanban_id = _create_kanban(harness, ws_id)
     resp = _create_task_with_image(harness, ws_id, kanban_id, PNG_DATA_URL)
@@ -210,4 +239,6 @@ def test_put_invalid_image_urls_rejected_400(harness: FunctionalHarness):
     )
 
     tasks = _list_tasks(harness, ws_id, kanban_id)
-    assert tasks[0]["image_urls"] == PNG_DATA_URL
+    assert tasks[0]["is_have_image"] is True
+    media = _get_media(harness, ws_id, kanban_id, task_id)
+    assert media["image_urls"] == PNG_DATA_URL

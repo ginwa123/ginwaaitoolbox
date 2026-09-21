@@ -185,6 +185,11 @@ export interface Task {
   // NEW (Migration 090 — kanban video urls column). Same contract
   // as imageUrls, normalized by normalizeTaskVideoUrlsInPlace.
   videoUrls?: string[]
+  // NEW (Media-flags change — lightweight list/get payload). Backend
+  // list/get return only these flags; imageUrls/videoUrls above are
+  // populated lazily via fetchTaskMedia when a flag is true.
+  is_have_image?: boolean
+  is_have_video?: boolean
   // NEW (Migration 070 — kanban-cwd-session-optional plan).
   // Per-task cwd override. Absolute path on disk or '' for
   // cwd-less. Optional for backwards compat with legacy task
@@ -2974,15 +2979,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     try {
       const res = await api.createKanbanTask(workspaceId, itemId, wirePayload)
-      // Migration 069 read-path fix (plan:
-      // docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md).
-      // The create response echoes image_urls as the ||-joined wire
-      // string. Normalize in place so the optimistic task object the
-      // caller receives already has imageUrls: string[] (matches
-      // every other task shape in the store — the detail dialog's
-      // gallery reads task.imageUrls directly). normalizeTaskTags
-      // also normalizes tags + dates, which is harmless here (the
-      // create response carries them as wire strings too).
+      // Media-flags change — the create response carries only
+      // `is_have_image` / `is_have_video` flags (no base64 payload).
+      // Normalize in place for tags/dates; the detail dialog
+      // lazy-loads media via fetchTaskMedia when a flag is true.
       if (res.task) normalizeTaskTags(res.task)
       return res
     } catch (err) {
@@ -3571,8 +3571,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (patch.name !== undefined) task.name = patch.name
     if (patch.description !== undefined) task.description = patch.description
     if (patch.tags !== undefined) task.tags = patch.tags
-    if (patch.imageUrls !== undefined) task.imageUrls = patch.imageUrls
-    if (patch.videoUrls !== undefined) task.videoUrls = patch.videoUrls
+    if (patch.imageUrls !== undefined) {
+      task.imageUrls = patch.imageUrls
+      task.is_have_image = patch.imageUrls.length > 0
+    }
+    if (patch.videoUrls !== undefined) {
+      task.videoUrls = patch.videoUrls
+      task.is_have_video = patch.videoUrls.length > 0
+    }
 
     // Keep the chat-view / chat-list header in sync if this is the
     // active task and a name change is part of the patch.
@@ -3647,6 +3653,37 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       }
     } catch (err) {
       console.warn('Failed to refresh task before dialog open:', err)
+    }
+  }
+
+  // Lazy media fetch (media-flags change). When list/get report
+  // `is_have_image` / `is_have_video`, the detail dialog calls this
+  // once to populate the cached task's imageUrls/videoUrls in place
+  // (shared with the board card thumbnail). No-op when the flags are
+  // false or media is already loaded. Best-effort: failures warn only.
+  async function fetchTaskMedia(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+  ): Promise<void> {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return
+    const task = item.tasks.find((t) => t.id === taskId)
+    if (!task) return
+    const wantImage =
+      task.is_have_image === true && (!task.imageUrls || task.imageUrls.length === 0)
+    const wantVideo =
+      task.is_have_video === true && (!task.videoUrls || task.videoUrls.length === 0)
+    if (!wantImage && !wantVideo) return
+    try {
+      const media = await api.getTaskMedia(workspaceId, itemId, taskId)
+      if (!media) return
+      if (wantImage) task.imageUrls = media.imageUrls
+      if (wantVideo) task.videoUrls = media.videoUrls
+    } catch (err) {
+      console.warn('Failed to fetch task media:', err)
     }
   }
 
@@ -4062,6 +4099,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // on open so the unattended-mode toggle shows server truth
     // instead of the value cached at workspaces store init().
     refreshTask,
+    fetchTaskMedia,
     runRoutineItem,
     runAgentOnNewTask,
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Triggers

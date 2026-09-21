@@ -94,6 +94,7 @@ import {
   inject,
 } from 'vue'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
+import { useWorkspacesStore } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
 import KanbanDescriptionEditor from './KanbanDescriptionEditor.vue'
 import type { PreviewFile } from '../file/FilePreview.vue'
@@ -666,13 +667,26 @@ watch(
       // the dialog already open" case via the watcher source's
       // `props.task?.id` dependency.
       cwdSession.value = props.task.cwd ?? ''
-      // Migration 069 — image_urls are loaded via the store's
-      // normalizeTaskTags (which splits the `||`-joined wire
-      // string into a `string[]`). imageUrls is a computed that
-      // tracks `props.task.imageUrls` so any PATCH that updates the
-      // task row optimistically (the host flow's
-      // `updateTaskDetails({ imageUrls })`) is reflected in the
-      // gallery without a re-open.
+      // Media-flags change — list/get carry only `is_have_image` /
+      // `is_have_video` flags; the gallery lazy-loads via the
+      // store's fetchTaskMedia (GET .../tasks/:id/media) when a flag
+      // is true and the arrays are still empty. imageUrls is a
+      // computed tracking `props.task.imageUrls` so optimistic
+      // `updateTaskDetails({ imageUrls })` writes still re-render
+      // without a re-open.
+      if (props.task?.id) {
+        const t = props.task
+        const needMedia =
+          (t.is_have_image === true && (!t.imageUrls || t.imageUrls.length === 0)) ||
+          (t.is_have_video === true && (!t.videoUrls || t.videoUrls.length === 0))
+        if (needMedia && props.workspaceId && props.column?.workspace_item_id) {
+          void useWorkspacesStore().fetchTaskMedia(
+            props.workspaceId,
+            props.column.workspace_item_id,
+            t.id,
+          )
+        }
+      }
     }
     await nextTick()
     nameInput.value?.focus()
@@ -1103,6 +1117,16 @@ const filteredTagSuggestions = computed<string[]>(() => {
 // task in place, the computed re-evaluates, the gallery re-renders
 // without any re-open dance.
 const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
+// Media-flags change — async lazy media: flags true but arrays still empty
+// means the background fetchTaskMedia hasn't resolved yet. Shows a
+// lightweight loading hint instead of a blank gap. Non-blocking: the
+// fetch runs fire-and-forget via `void` (see the dialog-open watcher).
+const isMediaLoading = computed<boolean>(() => {
+  const t = props.task
+  if (!t || isCreateMode.value) return false
+  if ((t.imageUrls?.length ?? 0) > 0 || (t.videoUrls?.length ?? 0) > 0) return false
+  return t.is_have_image === true || t.is_have_video === true
+})
 </script>
 
 <template>
@@ -1419,6 +1443,14 @@ const imageUrls = computed<string[]>(() => props.task?.imageUrls ?? [])
             :data-testid="`kanban-task-detail-image-${idx}`"
             @click="openImagePopup(url)"
           />
+        </div>
+        <div
+          v-else-if="isMediaLoading"
+          class="mb-3 text-[11px]"
+          style="color: var(--semantic-text-dim)"
+          data-testid="kanban-task-detail-media-loading"
+        >
+          Loading media…
         </div>
 
         <!-- Editor: shown in BOTH create + edit modes. The

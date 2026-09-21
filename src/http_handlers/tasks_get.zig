@@ -89,8 +89,8 @@ fn useCase(
         .last_finish_reason = task.last_finish_reason,
         .needs_human_review = task.needs_human_review,
         .tags = task.tags,
-        .image_urls = task.image_urls,
-        .video_urls = task.video_urls,
+        .is_have_image = task.is_have_image,
+        .is_have_video = task.is_have_video,
         .git_branch = git_branch,
     };
 

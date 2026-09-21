@@ -101,13 +101,10 @@ pub const TaskCreateResponse = struct {
     name: []const u8,
     description: ?[]const u8,
     completed: bool,
-    /// `||`-delimited base64 data URLs (Migration 069). Echoed from
-    /// the INSERTed column so the optimistic task carries images.
-    /// '' = no images.
-    /// Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-    image_urls: []const u8 = "",
-    /// `||`-delimited base64 data URLs (Migration 090). '' = no videos.
-    video_urls: []const u8 = "",
+    /// Lightweight media-presence flags (media-flags change). Echoed from
+    /// the INSERTed row so the optimistic task knows whether to lazy-fetch.
+    is_have_image: bool = false,
+    is_have_video: bool = false,
 };
 
 // Request types
@@ -551,20 +548,12 @@ pub const WorkspaceItemTaskResponse = struct {
     /// docs/superpowers/plans/2026-07-28-kanban-task-tags.md.
     tags: []const u8 = "",
 
-    /// `||`-delimited base64 data URLs (Migration 069 — kanban
-    /// image urls column). Empty string is the canonical "no
-    /// images" sentinel (NOT NULL DEFAULT ''). Mirrors
-    /// `WorkspaceItemTaskInfo.image_urls`. The frontend splits on
-    /// `|` via normalizeTaskImageUrlsInPlace (workspaces.ts) to
-    /// render the detail dialog gallery + board card thumbnails.
-    /// Plan:
-    /// docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-    image_urls: []const u8 = "",
-
-    /// `||`-delimited base64 data URLs (Migration 090 — kanban
-    /// video urls column). Empty string is the canonical "no
-    /// videos" sentinel. Mirrors `WorkspaceItemTaskInfo.video_urls`.
-    video_urls: []const u8 = "",
+    /// Lightweight media-presence flags (media-flags change). List/get
+    /// return only these; the full `||`-delimited base64 TEXT columns
+    /// stay server-side for the lazy `GET .../tasks/:task_id/media`
+    /// endpoint. The frontend fetches media only when the flag is true.
+    is_have_image: bool = false,
+    is_have_video: bool = false,
 
     /// Per-task cwd override (Migration 070 — kanban-cwd-session-
     /// optional plan, 2026-08-06). Empty string is the canonical

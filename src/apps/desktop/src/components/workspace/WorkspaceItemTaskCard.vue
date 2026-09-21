@@ -343,6 +343,15 @@ const extraImagesCount = computed<number>(() => {
   return Math.max(0, urls.length - 1)
 })
 
+// Media-flags change — list/get carry only flags; the card avoids a per-card
+// media fetch and shows a lightweight badge when the task has media
+// that hasn't been lazy-loaded yet (the detail dialog fetches on open).
+const hasUnloadedMedia = computed<boolean>(() => {
+  const t = props.task
+  if ((t.imageUrls?.length ?? 0) > 0) return false
+  return t.is_have_image === true || t.is_have_video === true
+})
+
 // The user-facing task-type label shown in the meta row. Returns
 // 'memory' for memory tasks, or null for plain standard tasks
 // (no badge — the type is implied by the absence of a badge).
@@ -702,6 +711,18 @@ watch([gitBranchBadge, effectiveCwd], () => {
         data-testid="task-image-more"
         >+{{ extraImagesCount }}</span
       >
+    </div>
+    <!-- Media-flags change — flag-only list payload: show a lightweight badge
+         when the task has media that hasn't been lazy-loaded yet.
+         No per-card fetch (the detail dialog fetches on open). -->
+    <div
+      v-else-if="hasUnloadedMedia"
+      class="flex items-center gap-1 text-[11px] self-start"
+      style="color: var(--semantic-text-muted)"
+      data-testid="task-media-badge"
+    >
+      <span aria-hidden="true">🖼</span>
+      <span>has media</span>
     </div>
     <!-- Tags row (Migration 067 — kanban task tags feature).
          Up to 3 chips visible; "+N more" link if more (opens the
