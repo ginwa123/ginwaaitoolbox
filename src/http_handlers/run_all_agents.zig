@@ -27,6 +27,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const sqlite = nalarcore.sqlite;
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 const start_agent = @import("start_agent.zig");
 
 // =====================================================================
@@ -172,11 +173,12 @@ const LiveCtx = struct {
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     di: *nalarcore.ContextIPCTui,
+    request_user_id: []const u8,
 };
 
 fn liveRun(ptr: ?*anyopaque, task_id: []const u8) PerTaskResult {
     const c: *LiveCtx = @ptrCast(@alignCast(ptr.?));
-    const outcome = start_agent.startAgentUseCase(c.allocator, c.db, c.di, task_id) catch return .failed;
+    const outcome = start_agent.startAgentUseCase(c.allocator, c.db, c.di, task_id, c.request_user_id) catch return .failed;
     return switch (outcome) {
         .triggered => .started,
         .worker_already_running => .skipped,
@@ -193,8 +195,9 @@ pub fn runAllAgentsUseCase(
     db: *sqlite.SqliteBackend,
     di: *nalarcore.ContextIPCTui,
     column_id: []const u8,
+    request_user_id: []const u8,
 ) !RunAllAgentsOutcome {
-    var live = LiveCtx{ .allocator = allocator, .db = db, .di = di };
+    var live = LiveCtx{ .allocator = allocator, .db = db, .di = di, .request_user_id = request_user_id };
     // Explicit reference keeps the reuse grep stable: startAgentUseCase
     const starter: TaskStarter = .{ .ptr = &live, .run = liveRun };
     return runAllAgentsWithStarter(allocator, db, column_id, starter);
@@ -235,8 +238,16 @@ pub fn runAllAgentsHandler(
     };
     const sqlite_db = di.db;
 
+    var request_user_id: []const u8 = undefined;
+    var owns_user_id = true;
+    request_user_id = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch blk: {
+        owns_user_id = false;
+        break :blk "user_system";
+    };
+    defer if (owns_user_id) allocator.free(request_user_id);
+
     // 3. Apply the use-case (which reuses startAgentUseCase per task id).
-    const outcome = runAllAgentsUseCase(allocator, sqlite_db, di, column_id) catch |err| {
+    const outcome = runAllAgentsUseCase(allocator, sqlite_db, di, column_id, request_user_id) catch |err| {
         if (err == error.ColumnNotFound) {
             return res.jsonResponse(.{
                 .status_code = 404,

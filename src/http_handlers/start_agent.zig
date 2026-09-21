@@ -48,6 +48,7 @@ const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 
 // =====================================================================
 // Domain types
@@ -107,6 +108,7 @@ pub fn startAgentUseCase(
     db: *sqlite.SqliteBackend,
     di: *nalarcore.ContextIPCTui,
     task_id: []const u8,
+    request_user_id: []const u8,
 ) !StartAgentOutcome {
     // 1. Validate the task exists. `getWorkspaceItemTask` returns
     //    null when the row is absent (vs. propagating a NOT_FOUND
@@ -170,6 +172,7 @@ pub fn startAgentUseCase(
         .selected_profile_model = session_profile,
         .is_auto_retry_until_stop = session_auto_retry,
         .skip_initial_queue_message = true,
+        .user_id = request_user_id,
     });
 
     return .triggered;
@@ -214,8 +217,18 @@ pub fn startAgentHandler(
     };
     const sqlite_db = di.db;
 
+    // Resolve owner server-side from the auth cookie — never trust a
+    // frontend-supplied user_id body field.
+    var request_user_id: []const u8 = undefined;
+    var owns_user_id = true;
+    request_user_id = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch blk: {
+        owns_user_id = false;
+        break :blk "user_system";
+    };
+    defer if (owns_user_id) allocator.free(request_user_id);
+
     // 3. Apply the use-case.
-    const outcome = startAgentUseCase(allocator, sqlite_db, di, task_id) catch |err| {
+    const outcome = startAgentUseCase(allocator, sqlite_db, di, task_id, request_user_id) catch |err| {
         std.log.err("start_agent: useCase failed: {s}", .{@errorName(err)});
         return res.jsonResponse(.{
             .status_code = 500,

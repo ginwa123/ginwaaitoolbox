@@ -95,6 +95,32 @@ pub fn freeSessionLookup(allocator: std.mem.Allocator, s: SessionLookup) void {
     allocator.free(s.role);
 }
 
+/// Resolve the request's owner user id from the auth cookie.
+/// Always returns an owned slice (caller frees).
+/// - auth disabled → 'user_system' (legacy single-user, visible to all).
+/// - no/invalid/expired cookie → 'user_system' (middleware already
+///   401s these when auth is on; the fallback keeps useCases safe
+///   when called without a valid session).
+/// - valid session → the session's user_id.
+pub fn resolveRequestUserId(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    auth_enabled: bool,
+    headers: anytype,
+) ![]const u8 {
+    if (!auth_enabled) return allocator.dupe(u8, "user_system");
+    const tok = parseSessionToken(headers) orelse return allocator.dupe(u8, "user_system");
+    const sess = lookupSession(allocator, db, tok) orelse return allocator.dupe(u8, "user_system");
+    defer allocator.free(sess.email);
+    defer allocator.free(sess.name);
+    defer allocator.free(sess.role);
+    return sess.user_id;
+}
+
+/// Shared worker-visibility predicate (Migration 092).
+/// NULL, '', and 'user_system' rows are visible to all users.
+pub const worker_visibility_clause = "(w.user_id IS NULL OR w.user_id = '' OR w.user_id = 'user_system' OR w.user_id = ?)";
+
 /// Verify a password against a stored `users.password_hash`.
 /// Sentinel `!disabled` (user_system) always fails. Supports bcrypt
 /// hashes; any other format fails closed.

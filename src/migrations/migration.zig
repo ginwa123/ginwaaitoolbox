@@ -1995,6 +1995,10 @@ pub const allMigrations: []const Migration = &.{
     // Migration 091 — sessions.sub_agent_name + parent_session_id so a
     // sub-agent row shows its own identity alongside the parent profile.
     .{ .version = Migration091AddSubAgentNameToSessions.version, .name = Migration091AddSubAgentNameToSessions.name, .up = Migration091AddSubAgentNameToSessions.up },
+    // Migration 092 — worker.user_id for per-user ownership.
+    // Nullable TEXT, no FK (M077 precedent). NULL/''/'user_system'
+    // rows are visible to all users.
+    .{ .version = Migration092AddUserIdToWorker.version, .name = Migration092AddUserIdToWorker.name, .up = Migration092AddUserIdToWorker.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4906,6 +4910,52 @@ pub const Migration091AddSubAgentNameToSessions = struct {
     }
 };
 
+// Migration 092 — worker.user_id for per-user worker ownership.
+// Adds nullable TEXT `user_id` to `worker` (no FK, matches M077
+// workspaces.user_id / sessions.user_id precedent) + index +
+// backfill of legacy NULL rows to 'user_system'. Visibility rule:
+// user_id IS NULL OR user_id = '' OR user_id = 'user_system' means
+// visible to all users; any other value is private to that user.
+pub const Migration092AddUserIdToWorker = struct {
+    pub const version: u32 = 92;
+    pub const name = "add_user_id_to_worker";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // Guard for unit-test :memory: DBs that exercise only the new
+        // tables — when `worker` does not exist yet there is nothing
+        // to alter (M019 creates it on real databases, which always
+        // runs before this migration).
+        {
+            var q = db.query(
+                allocator,
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'worker'",
+                &[_][]const u8{},
+            ) catch return;
+            defer q.deinit();
+            const has_worker = q.next() catch return;
+            if (has_worker) |r| r.deinit(allocator);
+            if (has_worker == null) return;
+        }
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "worker",
+            "user_id",
+            "user_id TEXT",
+        );
+        try db.exec(
+            allocator,
+            "CREATE INDEX IF NOT EXISTS idx_worker_user_id ON worker(user_id)",
+            &[_][]const u8{},
+        );
+        try db.exec(
+            allocator,
+            "UPDATE worker SET user_id = 'user_system' WHERE user_id IS NULL",
+            &[_][]const u8{},
+        );
+    }
+};
+
 // ============================================================================
 // Migration 087 — agent config tables for routine workspace items.
 // ============================================================================
@@ -5849,4 +5899,115 @@ test "Migration091 is registered in allMigrations" {
         if (m.version == Migration091AddSubAgentNameToSessions.version) return;
     }
     return error.Migration091NotRegistered;
+}
+
+test "Migration092 adds user_id column to worker with index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER,
+        \\    last_activity_description TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    cancelled INTEGER DEFAULT 0
+        \\)
+    , &.{});
+
+    try Migration092AddUserIdToWorker.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "worker");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var has_user_id = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "user_id")) has_user_id = true;
+    }
+    try testing.expect(has_user_id);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_worker_user_id'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.IndexMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("idx_worker_user_id", row.values[0]);
+}
+
+test "Migration092 backfills NULL user_id to user_system and is idempotent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER,
+        \\    last_activity_description TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    cancelled INTEGER DEFAULT 0
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO worker (id, session_id) VALUES ('w_legacy', 's_legacy')",
+        &.{});
+
+    try Migration092AddUserIdToWorker.up(&ctx.db, alloc);
+
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM worker WHERE id = 'w_legacy'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("user_system", row.values[0]);
+    }
+
+    // Owned rows are untouched; empty-string rows stay empty (still
+    // visible to all per the visibility rule, no rewrite needed).
+    try ctx.db.exec(alloc,
+        "INSERT INTO worker (id, session_id, user_id) VALUES ('w_owned2', 's_owned2', 'user_123')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO worker (id, session_id, user_id) VALUES ('w_empty', 's_empty', '')",
+        &.{});
+
+    try Migration092AddUserIdToWorker.up(&ctx.db, alloc);
+
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM worker WHERE id = 'w_owned2'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("user_123", row.values[0]);
+    }
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM worker WHERE id = 'w_empty'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("", row.values[0]);
+    }
+}
+
+test "Migration092 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration092AddUserIdToWorker.version) return;
+    }
+    return error.Migration092NotRegistered;
 }

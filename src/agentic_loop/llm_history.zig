@@ -3035,6 +3035,61 @@ pub fn getWorkerBySessionId(
     return null;
 }
 
+/// Scoped variant of `getWorkerBySessionId` (Migration 092).
+/// Returns the worker only when it is visible to `request_user_id`:
+/// user_id IS NULL OR '' OR 'user_system' (shared) OR equals the
+/// requester. Falls back to the unscoped lookup when the worker
+/// table predates Migration 092 (no user_id column).
+pub fn getWorkerBySessionIdForUser(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    request_user_id: []const u8,
+) !?WorkerInfo {
+    var has_user_col = false;
+    {
+        var col_q = db.query(allocator, "SELECT 1 FROM pragma_table_info('worker') WHERE name = 'user_id'", &[_][]const u8{}) catch null;
+        if (col_q) |*cq| {
+            defer cq.deinit();
+            if ((cq.next() catch null)) |col_row| {
+                col_row.deinit(allocator);
+                has_user_col = true;
+            }
+        }
+    }
+    if (!has_user_col) return getWorkerBySessionId(allocator, db, session_id);
+
+    const sql =
+        \\SELECT
+        \\    w.session_id,
+        \\    COALESCE(w.working_directory, ''),
+        \\    w.last_activity_nano AS last_activity,
+        \\    COALESCE(w.last_activity_description, ''),
+        \\    COALESCE(s.git_worktree_cwd, '')
+        \\FROM worker w
+        \\LEFT JOIN sessions s ON s.id = w.session_id
+        \\WHERE w.session_id = ?
+        \\  AND (w.user_id IS NULL OR w.user_id = '' OR w.user_id = 'user_system' OR w.user_id = ?)
+    ;
+
+    var rows = try db.query(allocator, sql, &.{ session_id, request_user_id });
+    defer rows.deinit();
+
+    if (try rows.next()) |row| {
+        const last_activity = std.fmt.parseInt(i64, row.values[2], 10) catch 0;
+        const worker = WorkerInfo{
+            .session_id = try allocator.dupe(u8, row.values[0]),
+            .working_directory = try allocator.dupe(u8, row.values[1]),
+            .last_activity = last_activity,
+            .last_activity_description = try allocator.dupe(u8, row.values[3]),
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[4]),
+        };
+        row.deinit(allocator);
+        return worker;
+    }
+    return null;
+}
+
 /// Check if a task is currently running (a worker row exists for it).
 ///
 /// The nalar convention is `task.id == session.id`, so the worker
@@ -10037,7 +10092,8 @@ fn llmHistoryWorkerInfoSetupDb() !struct {
         \\    working_directory TEXT,
         \\    last_activity_nano INTEGER DEFAULT (strftime('%s', 'now')),
         \\    last_activity_description TEXT,
-        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    user_id TEXT
         \\)
     , &.{});
 
@@ -10199,6 +10255,57 @@ test "getWorkerBySessionId returns worker with empty git_worktree_cwd for orphan
 
     try testing.expectEqualStrings("orphan", worker.session_id);
     try testing.expectEqualStrings("", worker.git_worktree_cwd);
+}
+
+// ─── Test 8: getWorkerBySessionIdForUser visibility (Migration 092) ─────
+
+test "getWorkerBySessionIdForUser hides private rows from other users" {
+    const alloc = testing.allocator;
+    var ctx = try llmHistoryWorkerInfoSetupDb();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id, user_id) VALUES ('w_shared', 's_shared', 'user_system')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id, user_id) VALUES ('w_null', 's_null', NULL)", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id, user_id) VALUES ('w_empty', 's_empty', '')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id, user_id) VALUES ('w_alice', 's_alice', 'user_alice')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id, user_id) VALUES ('w_bob', 's_bob', 'user_bob')", &.{});
+
+    // Alice sees shared + own, not Bob's.
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_shared", "user_alice");
+        var w = (o orelse return error.ExpectedShared);
+        defer w.deinit(alloc);
+    }
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_null", "user_alice");
+        var w = (o orelse return error.ExpectedNull);
+        defer w.deinit(alloc);
+    }
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_empty", "user_alice");
+        var w = (o orelse return error.ExpectedEmpty);
+        defer w.deinit(alloc);
+    }
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_alice", "user_alice");
+        var w = (o orelse return error.ExpectedOwn);
+        defer w.deinit(alloc);
+    }
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_bob", "user_alice");
+        try testing.expect(o == null);
+    }
+    // Bob sees shared + own, not Alice's.
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_bob", "user_bob");
+        var w = (o orelse return error.ExpectedBobOwn);
+        defer w.deinit(alloc);
+    }
+    {
+        const o = try getWorkerBySessionIdForUser(alloc, &ctx.db, "s_alice", "user_bob");
+        try testing.expect(o == null);
+    }
 }
 
 // =============================================================================

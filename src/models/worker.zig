@@ -5,8 +5,10 @@
 //! "Active Workers" in the system prompt and the sidebar status
 //! indicator.
 //!
-//! Schema: Migration 010 (`create_worker_table`) + Migration 015
-//! (`add_worker_extra_fields`).
+//! Schema: Migration 019 (`create_worker_table`) + Migration 020
+//! (`add_worker_extra_fields`) + Migration 033 (`cancelled`) +
+//! Migration 075 (`last_activity_nano` rename) + Migration 092
+//! (`user_id` ownership; NULL/''/'user_system' = visible to all).
 
 const std = @import("std");
 
@@ -24,6 +26,9 @@ created_at: []u8,
 /// filtered out of "Active Workers" listings but kept for
 /// post-mortem debugging.
 cancelled: bool = false,
+/// Owner user id (Migration 092). `user_system`, NULL, or '' means
+/// visible to all users; any other value is private to that user.
+user_id: []u8,
 
 const Self = @This();
 
@@ -35,6 +40,7 @@ pub const InitArgs = struct {
     last_activity_description: ?[]const u8 = null,
     created_at: []const u8 = "",
     cancelled: bool = false,
+    user_id: []const u8 = "user_system",
 };
 
 pub fn init(allocator: std.mem.Allocator, args: InitArgs) !Self {
@@ -52,6 +58,7 @@ pub fn init(allocator: std.mem.Allocator, args: InitArgs) !Self {
             null,
         .created_at = try allocator.dupe(u8, args.created_at),
         .cancelled = args.cancelled,
+        .user_id = try allocator.dupe(u8, args.user_id),
     };
 }
 
@@ -61,6 +68,7 @@ pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
     if (self.working_directory) |wd| allocator.free(wd);
     if (self.last_activity_description) |lad| allocator.free(lad);
     allocator.free(self.created_at);
+    allocator.free(self.user_id);
 }
 
 pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
@@ -75,5 +83,6 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
             null,
         .created_at = self.created_at,
         .cancelled = self.cancelled,
+        .user_id = self.user_id,
     });
 }

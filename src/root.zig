@@ -71,6 +71,10 @@ pub const EmitRunAgentInput = struct {
     // existing session without queueing a new user message. Default
     // `false` preserves the existing create-session behaviour.
     skip_initial_queue_message: bool = false,
+    /// Owner user id (Migration 092). Resolved server-side from the
+    /// auth cookie by the calling handler; defaults to 'user_system'
+    /// (visible to all) for legacy callers.
+    user_id: []const u8 = "user_system",
 };
 
 pub const ContextIPCTui = struct {
@@ -168,6 +172,8 @@ pub const ContextIPCTui = struct {
         errdefer self.allocator.free(owned_selected_profile_model);
         const owned_is_auto_retry_until_stop = try self.allocator.dupe(u8, obj.is_auto_retry_until_stop);
         errdefer self.allocator.free(owned_is_auto_retry_until_stop);
+        const owned_user_id = try self.allocator.dupe(u8, obj.user_id);
+        errdefer self.allocator.free(owned_user_id);
         // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). The
         // flag is a `bool` (no string dupe needed) — pass through the
         // Io group directly.
@@ -209,11 +215,13 @@ pub const ContextIPCTui = struct {
                     spm: []const u8,
                     iaur: []const u8,
                     siqm: bool,
+                    uid: []const u8,
                 ) void {
                     // These slices are owned by the Io task lifetime —
                     // they were duped synchronously by `emit_run_agent`
                     // into `di_inner.allocator` (which lives forever).
                     // Free them all on the way out, in reverse order.
+                    defer di_inner.allocator.free(uid);
                     defer di_inner.allocator.free(iaur);
                     defer di_inner.allocator.free(spm);
                     defer di_inner.allocator.free(vurls);
@@ -238,6 +246,7 @@ pub const ContextIPCTui = struct {
                         .video_urls = vurls,
                         .selected_profile_model = spm,
                         .is_auto_retry_until_stop = iaur,
+                        .user_id = uid,
                     }) catch unreachable;
 
                     event_buss.emit(agentic_loop_mod.RunParamsNew, "ai_worker_flow", .{
@@ -257,7 +266,7 @@ pub const ContextIPCTui = struct {
                     });
                 }
             }.run,
-            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_video_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message },
+            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_video_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message, owned_user_id },
         );
     }
 
@@ -283,6 +292,25 @@ pub const ContextIPCTui = struct {
             session_sql,
             &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry },
         );
+
+        // Stamp owner on the session row so background worker
+        // heartbeats (which have no auth context) can inherit it via
+        // sessions.user_id lookup in updateWorker. Only upgrades
+        // shared rows — never downgrades a real owner back to shared.
+        // Best-effort: guarded by sqlite_master so unit-test DBs
+        // without a user_id column do not fail the whole emit.
+        {
+            var col_q = self.db.query(allocator, "SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'user_id'", &[_][]const u8{}) catch null;
+            if (col_q) |*cq| {
+                defer cq.deinit();
+                if ((cq.next() catch null)) |col_row| {
+                    col_row.deinit(allocator);
+                    if (!std.mem.eql(u8, parsed.user_id, "user_system")) {
+                        self.db.exec(allocator, "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')", &.{ parsed.user_id, session_id }) catch {};
+                    }
+                }
+            }
+        }
 
         // Broadcast session created event
         try agentic_loop_mod.on_event_sent.onEventSendSessions(allocator, .{

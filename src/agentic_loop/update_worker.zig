@@ -17,6 +17,10 @@ pub const UpsertWorkerInput = struct {
     working_directory: []const u8,
     event_bus: ?*event_bus_mod.EventBus,
     is_emit_sse: bool,
+    /// Owner user id (Migration 092). Defaults to 'user_system'
+    /// (visible to all) so legacy callers that do not resolve auth
+    /// keep the old shared-visibility behaviour.
+    user_id: []const u8 = "user_system",
 };
 
 /// Register or update a worker
@@ -46,38 +50,95 @@ pub fn updateWorker(obj: UpsertWorkerInput) !void {
     defer if (maybe_row) |r| r.deinit(allocator);
     const exists = maybe_row != null;
 
-    // Insert or update the worker.
+    // Resolve effective owner: prefer the session's user_id (set by
+    // emit_run_agent from the auth cookie) so background heartbeats
+    // that carry the default 'user_system' do not clobber a real
+    // owner. Falls back to obj.user_id, then 'user_system'.
+    var effective_user_id: []const u8 = obj.user_id;
+    var owned_session_user = false;
+    var sess_q = db.query(allocator, "SELECT COALESCE(user_id, '') FROM sessions WHERE id = ? LIMIT 1", &.{session_id}) catch null;
+    if (sess_q) |*sq| {
+        defer sq.deinit();
+        if ((sq.next() catch null)) |srow| {
+            defer srow.deinit(allocator);
+            if (srow.values.len > 0 and srow.values[0].len > 0 and !std.mem.eql(u8, srow.values[0], "user_system")) {
+                effective_user_id = allocator.dupe(u8, srow.values[0]) catch obj.user_id;
+                if (effective_user_id.ptr != obj.user_id.ptr) owned_session_user = true;
+            }
+        }
+    }
+    defer if (owned_session_user) allocator.free(effective_user_id);
+
+    // Insert or update the worker. user_id is stamped on insert and
+    // preserved across heartbeats: ON CONFLICT updates it to the
+    // latest resolved owner so a worker started as user_system then
+    // re-triggered by a real user migrates to the real owner.
+    // When the effective owner is still 'user_system', keep any
+    // existing real owner instead of downgrading it.
     const worker_sql =
         \\INSERT INTO worker (
         \\    id,
         \\    session_id,
         \\    working_directory,
         \\    last_activity_nano,
-        \\    last_activity_description
+        \\    last_activity_description,
+        \\    user_id
         \\)
         \\VALUES (
         \\    ?,
         \\    ?,
         \\    ?,
         \\    strftime('%s', 'now'),
-        \\    ''
+        \\    '',
+        \\    ?
         \\)
         \\ON CONFLICT(id) DO UPDATE SET
         \\    session_id = excluded.session_id,
         \\    working_directory = excluded.working_directory,
         \\    last_activity_nano = excluded.last_activity_nano,
-        \\    last_activity_description = excluded.last_activity_description;
+        \\    last_activity_description = excluded.last_activity_description,
+        \\    user_id = CASE WHEN excluded.user_id = 'user_system' THEN worker.user_id ELSE excluded.user_id END;
     ;
 
-    try db.exec(
-        allocator,
-        worker_sql,
-        &.{
-            worker_id,
-            session_id,
-            working_directory,
-        },
-    );
+    // When the worker table predates Migration 092 (no user_id
+    // column, e.g. unit-test :memory: DBs), fall back to the legacy
+    // upsert without user_id so old callers keep working.
+    {
+        var col_q = db.query(allocator, "SELECT 1 FROM pragma_table_info('worker') WHERE name = 'user_id'", &[_][]const u8{}) catch null;
+        var has_user_col = false;
+        if (col_q) |*cq| {
+            defer cq.deinit();
+            if ((cq.next() catch null)) |col_row| {
+                col_row.deinit(allocator);
+                has_user_col = true;
+            }
+        }
+        if (has_user_col) {
+            try db.exec(
+                allocator,
+                worker_sql,
+                &.{
+                    worker_id,
+                    session_id,
+                    working_directory,
+                    effective_user_id,
+                },
+            );
+        } else {
+            try db.exec(
+                allocator,
+                \\INSERT INTO worker (id, session_id, working_directory, last_activity_nano, last_activity_description)
+                \\VALUES (?, ?, ?, strftime('%s', 'now'), '')
+                \\ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id, working_directory = excluded.working_directory, last_activity_nano = excluded.last_activity_nano, last_activity_description = excluded.last_activity_description
+                ,
+                &.{
+                    worker_id,
+                    session_id,
+                    working_directory,
+                },
+            );
+        }
+    }
 
     // Ensure the session exists WITHOUT overwriting `name`.
     //
@@ -153,7 +214,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    session_id TEXT,
         \\    working_directory TEXT,
         \\    last_activity_nano INTEGER,
-        \\    last_activity_description TEXT
+        \\    last_activity_description TEXT,
+        \\    user_id TEXT
         \\)
     , &.{});
     try db.exec(alloc,
