@@ -160,6 +160,9 @@ pub const tasksListHandler = @import("tasks_list.zig").tasksListHandler;
 // Single-task GET endpoint (plan:
 // docs/superpowers/plans/2026-08-24-kanban-task-detail-single-fetch.md).
 pub const tasksGetHandler = @import("tasks_get.zig").tasksGetHandler;
+// Lazy media fetch (Migration 092) — full `image_urls` / `video_urls`
+// only when `is_have_image` / `is_have_video` is true.
+pub const tasksMediaHandler = @import("tasks_media.zig").tasksMediaHandler;
 // Kanban tag autocomplete endpoint (Chunk 1 of plan
 // docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
 // Stub-only in this commit — Task 1.4 implements the useCase body.

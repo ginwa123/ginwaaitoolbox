@@ -35,6 +35,7 @@ test {
     _ = @import("migration_068_test.zig");  // llm_history.is_loading + UNIQUE INDEX on tool_call_id (tool-call-loading-placeholder plan)
     _ = @import("migration_069_test.zig");  // workspace_item_tasks.image_urls (kanban-image-urls-column plan, 2026-08-06)
     _ = @import("migration_070_test.zig");  // agent_memories + agent_memories_fts FTS5 (save-load-memory-fts5 plan, 2026-08-06)
+    _ = @import("migration_092_test.zig");  // workspace_item_tasks.is_have_image/is_have_video flags + backfill
     _ = @import("migration_071_test.zig");  // workspace_item_tasks.cwd (kanban-cwd-session-optional plan, 2026-08-06)
     _ = @import("migration_072_test.zig");  // workspace_item_tasks → kanban table extraction (extract-kanban-columns plan, 2026-08-15)
     _ = @import("migration_073_test.zig");  // session_activity append-only log (new-table-session-activity plan, 2026-08-13)

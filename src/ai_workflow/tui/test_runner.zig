@@ -24,6 +24,7 @@ _ = @import("../../http_handlers/task_update.zig");
 _ = @import("../../http_handlers/task_delete.zig");
 _ = @import("../../http_handlers/tasks_list.zig");
 _ = @import("../../http_handlers/tasks_get.zig");
+_ = @import("../../http_handlers/tasks_media.zig");
 _ = @import("../../http_handlers/stream_get.zig");
 _ = @import("../../http_handlers/subagent_progress_get.zig");
     _ = @import("../../http_handlers/background_processes_list.zig");     // session bg-process list GET (bg-completion endpoints)

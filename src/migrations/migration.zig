@@ -1995,6 +1995,12 @@ pub const allMigrations: []const Migration = &.{
     // Migration 091 — sessions.sub_agent_name + parent_session_id so a
     // sub-agent row shows its own identity alongside the parent profile.
     .{ .version = Migration091AddSubAgentNameToSessions.version, .name = Migration091AddSubAgentNameToSessions.name, .up = Migration091AddSubAgentNameToSessions.up },
+    // Migration 092 — `is_have_image` / `is_have_video` flags so the
+    // task list/get payloads stay small. The full `||`-delimited
+    // base64 `image_urls` / `video_urls` TEXT columns stay on disk
+    // for the lazy `GET .../tasks/:task_id/media` endpoint; list/get
+    // select only these INTEGER flags.
+    .{ .version = Migration092AddTaskMediaFlags.version, .name = Migration092AddTaskMediaFlags.name, .up = Migration092AddTaskMediaFlags.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4902,6 +4908,48 @@ pub const Migration091AddSubAgentNameToSessions = struct {
             "sessions",
             "parent_session_id",
             "parent_session_id TEXT",
+        );
+    }
+};
+
+/// Migration 092 — `workspace_item_tasks.is_have_image` +
+/// `is_have_video` flags for a lightweight list/get payload.
+///
+/// Until now list/get selected the full `||`-delimited base64
+/// `image_urls` / `video_urls` TEXT columns on every row, so a board
+/// with a few image-heavy tasks downloaded megabytes on each fetch.
+/// The columns stay on disk (the lazy `GET .../tasks/:task_id/media`
+/// endpoint reads them on demand); list/get select only these
+/// INTEGER flags (0/1). Application code maintains them on every
+/// create/update alongside the TEXT columns.
+pub const Migration092AddTaskMediaFlags = struct {
+    pub const version: u32 = 92;
+    pub const name = "add_task_media_flags";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "workspace_item_tasks",
+            "is_have_image",
+            "is_have_image INTEGER NOT NULL DEFAULT 0",
+        );
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "workspace_item_tasks",
+            "is_have_video",
+            "is_have_video INTEGER NOT NULL DEFAULT 0",
+        );
+        try db.exec(
+            allocator,
+            "UPDATE workspace_item_tasks SET is_have_image = CASE WHEN COALESCE(image_urls, '') != '' THEN 1 ELSE 0 END",
+            &[_][]const u8{},
+        );
+        try db.exec(
+            allocator,
+            "UPDATE workspace_item_tasks SET is_have_video = CASE WHEN COALESCE(video_urls, '') != '' THEN 1 ELSE 0 END",
+            &[_][]const u8{},
         );
     }
 };

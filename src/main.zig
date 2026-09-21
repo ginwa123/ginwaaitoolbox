@@ -763,6 +763,10 @@ pub fn main(init: std.process.Init) !void {
     // Registered AFTER the list route — matchRoute walks routes in
     // registration order (router.zig route-order rule).
     try authed.get("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id", ai_mod.http_handlers.tasksGetHandler);
+    // Lazy media fetch (Migration 092) — full `image_urls` / `video_urls`
+    // only when `is_have_image` / `is_have_video` is true. Longer path
+    // (extra `/media` segment) so no shadowing vs the `:task_id` route.
+    try authed.get("/api/workspaces/:workspace_id/items/:item_id/tasks/:task_id/media", ai_mod.http_handlers.tasksMediaHandler);
     // Kanban task tag autocomplete (Chunk 1 of plan
     // docs/superpowers/plans/2026-07-30-kanban-task-tags-autocomplete.md).
     // Paginated suggestions for the kanban task detail dialog's tag chip

@@ -277,9 +277,9 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
             "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", image_urls = ");
         if (validated_urls.len == 0) {
-            try sql_buf.appendSlice(allocator, "''");
+            try sql_buf.appendSlice(allocator, "'', is_have_image = 0");
         } else {
-            try sql_buf.appendSlice(allocator, "?");
+            try sql_buf.appendSlice(allocator, "?, is_have_image = 1");
             try bind_values.append(allocator, validated_urls);
         }
         try sql_buf.appendSlice(allocator, " WHERE id = ?");
@@ -306,9 +306,9 @@ fn useCase(allocator: std.mem.Allocator, input: TaskUpdateInput) TaskUpdateError
             "UPDATE workspace_item_tasks SET updated_at = datetime('now')");
         try sql_buf.appendSlice(allocator, ", video_urls = ");
         if (validated_urls.len == 0) {
-            try sql_buf.appendSlice(allocator, "''");
+            try sql_buf.appendSlice(allocator, "'', is_have_video = 0");
         } else {
-            try sql_buf.appendSlice(allocator, "?");
+            try sql_buf.appendSlice(allocator, "?, is_have_video = 1");
             try bind_values.append(allocator, validated_urls);
         }
         try sql_buf.appendSlice(allocator, " WHERE id = ?");

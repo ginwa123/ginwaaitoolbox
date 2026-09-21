@@ -404,15 +404,10 @@ pub fn kanbanTasksCreateHandler(
         .name = standard_result.name,
         .description = parsed.description,
         .completed = false,
-        // Migration 069 — echo the persisted image_urls so the
-        // frontend's optimistic task object carries the images
-        // immediately (no refetch needed for the detail dialog
-        // gallery). Borrowed from the arena-owned standard_result —
-        // valueAlloc copies it into the response JSON.
-        // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-        .image_urls = standard_result.image_urls,
-        // Migration 090 — echo persisted video_urls.
-        .video_urls = standard_result.video_urls,
+        // Migration 092 — echo media-presence flags so the frontend knows
+        // whether to lazy-fetch via the media endpoint.
+        .is_have_image = standard_result.is_have_image,
+        .is_have_video = standard_result.is_have_video,
     };
 
     var response_body: ResponseEnvelope = .{ .task = task_resp };
@@ -1160,7 +1155,7 @@ test "kanban_tasks_create forwards unattended flag to useCase ONLY for mode=crea
 // image_urls so the frontend's optimistic task carries the images.
 // =====================================================================
 
-test "kanban create response task echoes image_urls" {
+test "kanban create response task echoes is_have_image" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, HANDLER_PATH);
     defer allocator.free(source);
@@ -1177,10 +1172,10 @@ test "kanban create response task echoes image_urls" {
     const window_end = std.mem.indexOf(u8, window, "};") orelse window.len;
     const body = window[0..window_end];
 
-    if (std.mem.indexOf(u8, body, ".image_urls = standard_result.image_urls") == null) {
+    if (std.mem.indexOf(u8, body, ".is_have_image = standard_result.is_have_image") == null) {
         std.debug.print(
-            "\n!! {s} kanban create response task does not echo image_urls !!\n" ++
-                "   Add: .image_urls = standard_result.image_urls,\n",
+            "\n!! {s} kanban create response task does not echo is_have_image !!\n" ++
+                "   Add: .is_have_image = standard_result.is_have_image,\n",
             .{HANDLER_PATH},
         );
         return error.KanbanCreateRespImageUrlsMissing;

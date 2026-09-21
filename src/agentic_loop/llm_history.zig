@@ -4912,6 +4912,13 @@ pub const WorkspaceItemTaskInfo = struct {
     /// Owned by the lister; freed by `deinit`.
     video_urls: []u8 = &.{},
 
+    /// Lightweight media-presence flags (Migration 092). List/get
+    /// select only these instead of the full base64 TEXT columns so
+    /// board fetches stay small; the lazy `GET .../tasks/:task_id/media`
+    /// endpoint reads the TEXT columns on demand.
+    is_have_image: bool = false,
+    is_have_video: bool = false,
+
     /// Per-task cwd override (Migration 070). Each kanban task can
     /// carry its own cwd path; the session_create handler reads
     /// `task.cwd` before falling back to `workspace_items.path` and
@@ -5116,11 +5123,11 @@ pub fn createWorkspaceItemTask(
         // (NOT NULL DEFAULT '').
         if (image_urls) |u| {
             if (u.len == 0) {
-                try cols_buf.appendSlice(allocator, ", image_urls");
-                try vals_buf.appendSlice(allocator, ", ''");
+                try cols_buf.appendSlice(allocator, ", image_urls, is_have_image");
+                try vals_buf.appendSlice(allocator, ", '', 0");
             } else {
-                try cols_buf.appendSlice(allocator, ", image_urls");
-                try vals_buf.appendSlice(allocator, ", ?");
+                try cols_buf.appendSlice(allocator, ", image_urls, is_have_image");
+                try vals_buf.appendSlice(allocator, ", ?, 1");
                 try bind_values.append(allocator, u);
             }
         }
@@ -5128,11 +5135,11 @@ pub fn createWorkspaceItemTask(
         // Migration 090 — same pattern for video_urls.
         if (video_urls) |u| {
             if (u.len == 0) {
-                try cols_buf.appendSlice(allocator, ", video_urls");
-                try vals_buf.appendSlice(allocator, ", ''");
+                try cols_buf.appendSlice(allocator, ", video_urls, is_have_video");
+                try vals_buf.appendSlice(allocator, ", '', 0");
             } else {
-                try cols_buf.appendSlice(allocator, ", video_urls");
-                try vals_buf.appendSlice(allocator, ", ?");
+                try cols_buf.appendSlice(allocator, ", video_urls, is_have_video");
+                try vals_buf.appendSlice(allocator, ", ?, 1");
                 try bind_values.append(allocator, u);
             }
         }
@@ -5185,6 +5192,9 @@ pub fn createWorkspaceItemTask(
         .image_urls = try allocator.dupe(u8, returned_image_urls),
         // Migration 090 — persist video_urls we just INSERTed.
         .video_urls = try allocator.dupe(u8, returned_video_urls),
+        // Migration 092 — flags mirror the TEXT columns above.
+        .is_have_image = returned_image_urls.len > 0,
+        .is_have_video = returned_video_urls.len > 0,
         // Migration 070 — persist the per-task cwd we just
         // INSERTed. dupe unconditionally so `deinit` can free
         // consistently (the empty-string path also gets duped — a
@@ -5487,7 +5497,7 @@ pub fn getWorkspaceItemTaskById(
     // parent item id and the task id so a task under a different item
     // is never readable through this endpoint (404 at the handler).
     const sql =
-        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
+        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, COALESCE(t.is_have_image, 0), COALESCE(t.is_have_video, 0) FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
     ;
 
     var rows = try db.query(allocator, sql, &.{ workspace_item_id, task_id });
@@ -5524,11 +5534,46 @@ pub fn getWorkspaceItemTaskById(
             .tags = try allocator.dupe(u8, row.values[14]),
             .git_worktree_cwd = try allocator.dupe(u8, row.values[15]),
             .cwd = try allocator.dupe(u8, row.values[16]),
-            .image_urls = try allocator.dupe(u8, row.values[17]),
-            .video_urls = try allocator.dupe(u8, row.values[18]),
+            .is_have_image = std.mem.eql(u8, row.values[17], "1"),
+            .is_have_video = std.mem.eql(u8, row.values[18], "1"),
         };
         row.deinit(allocator);
         return task;
+    }
+    return null;
+}
+
+/// Lazy media fetch for a single task (Migration 092). Returns the raw
+/// `||`-delimited `image_urls` / `video_urls` TEXT columns for one row,
+/// scoped by both parent item id and task id. List/get never select
+/// these columns; the frontend calls the media endpoint only when
+/// `is_have_image` / `is_have_video` is true.
+pub const TaskMedia = struct {
+    image_urls: []u8,
+    video_urls: []u8,
+
+    pub fn deinit(self: TaskMedia, alloc: std.mem.Allocator) void {
+        alloc.free(self.image_urls);
+        alloc.free(self.video_urls);
+    }
+};
+
+pub fn getWorkspaceItemTaskMedia(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    workspace_item_id: []const u8,
+    task_id: []const u8,
+) !?TaskMedia {
+    const sql = "SELECT COALESCE(t.image_urls, ''), COALESCE(t.video_urls, '') FROM workspace_item_tasks t WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1";
+    var rows = try db.query(allocator, sql, &.{ workspace_item_id, task_id });
+    defer rows.deinit();
+    if (try rows.next()) |row| {
+        const media = TaskMedia{
+            .image_urls = try allocator.dupe(u8, row.values[0]),
+            .video_urls = try allocator.dupe(u8, row.values[1]),
+        };
+        row.deinit(allocator);
+        return media;
     }
     return null;
 }
@@ -5696,7 +5741,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         //       present. The frontend splits on '|' via
         //       normalizeTaskImageUrlsInPlace to render the detail
         //       dialog gallery + board card thumbnails.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, COALESCE(t.is_have_image, 0), COALESCE(t.is_have_video, 0) FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5802,9 +5847,9 @@ pub fn listWorkspaceItemTasksWithCursor(
             // normalizeTaskImageUrlsInPlace (workspaces.ts) to render
             // the detail dialog gallery + board card thumbnails.
             // Plan: docs/superpowers/plans/2026-08-24-kanban-task-image-urls-read-path.md
-            .image_urls = try allocator.dupe(u8, row.values[17]),
+            .is_have_image = std.mem.eql(u8, row.values[17], "1"),
             // Video urls (Migration 090): index 18. Same contract.
-            .video_urls = try allocator.dupe(u8, row.values[18]),
+            .is_have_video = std.mem.eql(u8, row.values[18], "1"),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -6246,7 +6291,9 @@ fn setupDb() !TestCtx {
         \\    tags TEXT NOT NULL DEFAULT '',
         \\    cwd TEXT NOT NULL DEFAULT '',
         \\    image_urls TEXT NOT NULL DEFAULT '',
-        \\    video_urls TEXT NOT NULL DEFAULT ''
+        \\    video_urls TEXT NOT NULL DEFAULT '',
+\\    is_have_image INTEGER NOT NULL DEFAULT 0,
+\\    is_have_video INTEGER NOT NULL DEFAULT 0
         \\)
     , &.{});
     try db.exec(alloc,
@@ -7176,7 +7223,7 @@ test "getWorkspaceItemTaskById joins sessions for unattended flag + worktree cwd
     try testing.expect(task.needs_human_review);
 }
 
-test "getWorkspaceItemTaskById returns image_urls and cwd passthrough" {
+test "getWorkspaceItemTaskById returns media flags and cwd passthrough" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.db.deinit();
@@ -7184,7 +7231,7 @@ test "getWorkspaceItemTaskById returns image_urls and cwd passthrough" {
 
     try insertTask(&ctx, alloc, "task_img", "with images", "", "[]");
     try ctx.db.exec(alloc,
-        "UPDATE workspace_item_tasks SET image_urls = 'data:image/png;base64,AAA||data:image/png;base64,BBB', cwd = '/tmp/proj' " ++
+        "UPDATE workspace_item_tasks SET image_urls = 'data:image/png;base64,AAA||data:image/png;base64,BBB', is_have_image = 1, cwd = '/tmp/proj' " ++
         "WHERE id = 'task_img'",
         &.{});
 
@@ -7193,8 +7240,12 @@ test "getWorkspaceItemTaskById returns image_urls and cwd passthrough" {
     var task = opt.?;
     defer task.deinit(alloc);
 
-    try testing.expectEqualStrings("data:image/png;base64,AAA||data:image/png;base64,BBB", task.image_urls);
+    try testing.expect(task.is_have_image);
+    try testing.expect(!task.is_have_video);
     try testing.expectEqualStrings("/tmp/proj", task.cwd);
+    const media = (try getWorkspaceItemTaskMedia(alloc, &ctx.db, "wi_1", "task_img")).?;
+    defer media.deinit(alloc);
+    try testing.expectEqualStrings("data:image/png;base64,AAA||data:image/png;base64,BBB", media.image_urls);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

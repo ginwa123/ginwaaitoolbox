@@ -1036,6 +1036,9 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\  -- these columns present).
         \\  tags TEXT NOT NULL DEFAULT '',
         \\  image_urls TEXT NOT NULL DEFAULT '',
+        \\  video_urls TEXT NOT NULL DEFAULT '',
+        \\  is_have_image INTEGER NOT NULL DEFAULT 0,
+        \\  is_have_video INTEGER NOT NULL DEFAULT 0,
         \\  cwd TEXT NOT NULL DEFAULT ''
         \\)
     , &[_][]const u8{});

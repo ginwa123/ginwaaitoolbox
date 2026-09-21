@@ -35,6 +35,11 @@ tags: []u8 = &.{},
 /// Migration 069 — `||`-delimited base64 data URLs. Empty slice is
 /// the canonical "no images" sentinel.
 image_urls: []u8 = &.{},
+/// Migration 092 — lightweight media-presence flags. List/get return
+/// only these; the full TEXT columns stay server-side for the lazy
+/// media endpoint.
+is_have_image: bool = false,
+is_have_video: bool = false,
 /// Migration 070 — per-task cwd override. Empty slice is the
 /// canonical "inherit from workspace_items.path" sentinel.
 cwd: []u8 = &.{},
@@ -54,6 +59,8 @@ pub const InitArgs = struct {
     last_human_touched_at: ?[]const u8 = null,
     tags: []const u8 = "",
     image_urls: []const u8 = "",
+    is_have_image: bool = false,
+    is_have_video: bool = false,
     cwd: []const u8 = "",
 };
 
@@ -74,6 +81,8 @@ pub fn init(allocator: std.mem.Allocator, args: InitArgs) !Self {
             null,
         .tags = try allocator.dupe(u8, args.tags),
         .image_urls = try allocator.dupe(u8, args.image_urls),
+        .is_have_image = args.is_have_image,
+        .is_have_video = args.is_have_video,
         .cwd = try allocator.dupe(u8, args.cwd),
     };
 }
@@ -106,6 +115,8 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .last_human_touched_at = if (self.last_human_touched_at) |lht| lht else null,
         .tags = self.tags,
         .image_urls = self.image_urls,
+        .is_have_image = self.is_have_image,
+        .is_have_video = self.is_have_video,
         .cwd = self.cwd,
     });
 }
