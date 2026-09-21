@@ -36,7 +36,8 @@ import { useTaskActions, type TaskComponentProps } from '../../composables/useTa
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
-import { stopSession, getPrStatus } from '../../api'
+import { stopSession } from '../../api'
+import { fetchPrStatusCached } from '../../helpers/prStatusCache'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -399,14 +400,11 @@ const loadPrStatus = async () => {
     return
   }
   const seq = ++prSeq
-  try {
-    const data = await getPrStatus(cwd, branch)
-    if (seq !== prSeq) return
-    prStatus.value = (data.status || data.state || '').toLowerCase()
-  } catch {
-    if (seq !== prSeq) return
-    prStatus.value = ''
-  }
+  // Shared cache: dedupes the board-load burst across cards, retries
+  // transient failures, resolves '' (fail-silent) when unknown.
+  const status = await fetchPrStatusCached(cwd, branch)
+  if (seq !== prSeq) return
+  prStatus.value = status
 }
 
 onMounted(() => {

@@ -11,6 +11,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import WorkspaceItemTaskCard from '@/components/workspace/WorkspaceItemTaskCard.vue'
+import { clearPrStatusCache } from '@/helpers/prStatusCache'
 import type { Task } from '@/stores/workspaces'
 
 const { getPrStatusMock } = vi.hoisted(() => ({
@@ -49,6 +50,9 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.clearAllMocks()
+    // The shared prStatusCache is module-level — reset between tests so
+    // each color case fetches fresh instead of reusing a prior test's entry.
+    clearPrStatusCache()
   })
 
   it('colors the badge green when the PR is open', async () => {
