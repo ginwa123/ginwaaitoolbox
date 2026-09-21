@@ -317,31 +317,39 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     wrapper.unmount()
   })
 
-  it('falls back to REST polling when the socket fails', async () => {
+  it('reconnects WS after a pre-open failure (no polling loop)', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
-    apiState.outputs.push({ data: 'fb', cursor: 2, exited: false, exit_code: null })
     await waitForCreates(1)
+    const before = FakeWebSocket.instances.length
     firstSocket().serverError()
     await flush(10)
-    expect(getTerminalOutput).toHaveBeenCalled()
-    expect(firstTerm().written.join('')).toContain('fb')
-    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('polling')
+    // One-shot validation, then backoff reconnect — never a poll interval.
+    expect(getTerminalOutput).toHaveBeenCalledWith('term-1', 0)
+    expect(firstTerm().written.join('')).not.toContain('fb')
+    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('reconnecting')
+    // Backoff fires (0.5-1s for attempt 1): a fresh socket re-attaches same id.
+    await waitFor(() => FakeWebSocket.instances.length > before, 5000)
+    const retry = FakeWebSocket.instances[FakeWebSocket.instances.length - 1]!
+    expect(retry.url).toContain('id=term-1')
+    retry.serverOpen()
+    await flush()
+    expect(wrapper.find('[data-testid="terminal-status"]').text()).toContain('connected')
+    expect(createTerminalSession).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
-  it('REST input triggers an immediate output poll (no 300ms wait)', async () => {
+  it('sends input via REST while reconnecting without polling output', async () => {
     const wrapper = mount(TerminalTab, { props: { cwd: '/tmp/toolbox' } })
     await waitForCreates(1)
-    // Force the REST fallback path.
-    firstSocket().serverError()
+    // Force the REST input path: open then drop so wsOpened=false.
+    firstSocket().serverOpen()
+    firstSocket().serverClose()
     await flush(10)
     vi.clearAllMocks()
-    // Type: input goes via REST, then an output poll fires immediately
-    // (the 300ms interval can't have elapsed during flush).
     firstTerm().dataHandler?.('y')
     await flush()
     expect(sendTerminalInput).toHaveBeenCalledWith('term-1', 'y')
-    expect(getTerminalOutput).toHaveBeenCalled()
+    expect(getTerminalOutput).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
@@ -403,15 +411,14 @@ describe('ChatRightSidebar terminal tab (Phase 4: multi-session)', () => {
     wrapper.unmount()
   })
 
-  it('drops a 404 session hit mid-poll and starts fresh', async () => {
+  it('reclaims a 404 session on attach failure and starts fresh', async () => {
     const wrapper = mount(TerminalTab, {
       props: { cwd: '/tmp/toolbox', sessionKey: 'chat-evict' },
     })
     await waitForCreates(1)
-    socketFor('term-1').serverOpen()
-    // Server loses the session (restart / LRU): next poll 404s.
+    // Server loses the session (restart / LRU): attach fails fast.
     apiState.output404For = 'term-1'
-    firstSocket().serverClose()
+    firstSocket().serverError()
     await waitForCreates(2)
     expect(createTerminalSession).toHaveBeenCalledTimes(2)
     wrapper.unmount()
