@@ -2,6 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../../api'
+import { chatEngineDb } from '../../sync/ChatEngineDb'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
 import {
   stripThinkingTags,
@@ -1993,6 +1994,25 @@ const toChatMessages = (
  */
 const fetchOlderPage = async (cursor: string | null): Promise<BufferedOlderPage> => {
   const startedAt = performance.now()
+  // Local-first probe (Phase 1): best-effort cache read for the older page.
+  // The network remains authoritative — on any cache miss/failure we fall
+  // through to the REST fetch below. Never changes PAGE_SIZE or prefetch logic.
+  try {
+    const oldest = messages.value[0]
+    if (oldest) {
+      const beforeKey = oldest.timestamp ? oldest.timestamp.getTime() * 1e6 : 0
+      // Phase 2 will render from this probe; for now the network stays
+      // authoritative — the probe only warms the cache path.
+      const _cacheProbe = await chatEngineDb.loadOlderFromCache(
+        sessionId.value,
+        beforeKey,
+        PAGE_SIZE,
+      )
+      void _cacheProbe
+    }
+  } catch {
+    // Cache failure must not break the network path.
+  }
   const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, cursor ?? undefined)
   const measuredMs = performance.now() - startedAt
   fetchEstimateMs = nextFetchEstimate(fetchEstimateMs, measuredMs)
@@ -2511,6 +2531,13 @@ const loadChatHistory = async () => {
   error.value = null
 
   try {
+    // Local-first prime (Phase 1): best-effort cache warm before the network
+    // delta. Failures fall through to the existing network path unchanged.
+    try {
+      await chatEngineDb.primeFromCache(sessionId.value, PAGE_SIZE)
+    } catch {
+      // Ignore — network path below is authoritative.
+    }
     const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, undefined)
 
     if (data.cwd) {
@@ -2562,6 +2589,36 @@ const loadChatHistory = async () => {
       messages.value = newMessages.slice().reverse()
       messageCursor.value = data.next_cursor
       hasMoreMessages.value = data.has_more
+      // Local-first write-through (Phase 1): persist the fresh page + cursor.
+      // Best-effort — IDB failure keeps the existing in-memory behavior.
+      try {
+        const sid = sessionId.value
+        await chatEngineDb.putLocal(
+          sid,
+          (data.messages ?? []).map((m) => {
+            // Mirror ChatEngineDb.fetchDelta: prefer created_at_nano (nano
+            // precision) when present, fallback to created_at*1e9.
+            const rawNano = (m as unknown as { created_at_nano?: number | string }).created_at_nano
+            const nano =
+              typeof rawNano === 'string'
+                ? parseInt(rawNano, 10)
+                : (rawNano ?? Math.floor(Number(m.created_at ?? 0) * 1e9))
+            const safeNano = Number.isFinite(nano as number) ? (nano as number) : 0
+            return {
+              id: m.id,
+              sortKey: safeNano,
+              session_id: sid,
+              created_at_nano: safeNano,
+              created_at: Number(m.created_at ?? 0),
+              role: m.role ?? '',
+              content: m.content ?? '',
+            }
+          }),
+        )
+        await chatEngineDb.setCursor(sid, data.next_cursor)
+      } catch {
+        // Ignore — cache is advisory in Phase 1.
+      }
 
       const initialContainer = virtualScrollerRef.value?.containerRef
       const initialCtx = buildScrollContext(initialContainer, {
@@ -3381,6 +3438,29 @@ const connectSse = () => {
         // thinking-only turns render their collapsible section.
         reasoning_content: event.reasoning_content || undefined,
       })
+      // Local-first write-through (Phase 1): persist the SSE `full` row.
+      // Best-effort — failures keep the existing in-memory behavior.
+      try {
+        const sid2 = sessionId.value
+        // SseEvent wire (api/index.ts) carries created_at (seconds) but no
+        // created_at_nano — prefer it when present, else Date.now() fallback.
+        const evtSec = (event as unknown as { created_at?: number }).created_at
+        const evtMs = Number.isFinite(Number(evtSec)) ? Number(evtSec) * 1000 : Date.now()
+        const evtNano = Math.floor(evtMs * 1e6)
+        void chatEngineDb.putLocal(sid2, [
+          {
+            id: event.id || `assistant-${Date.now()}`,
+            sortKey: evtNano,
+            session_id: sid2,
+            created_at_nano: evtNano,
+            created_at: Math.floor(evtMs / 1000),
+            role,
+            content: event.content || '',
+          },
+        ])
+      } catch {
+        // Ignore — cache is advisory in Phase 1.
+      }
       // 2026-09-06 virtual-scroller shrink fix: move the streaming
       // group's measured height onto the canonical row's key so the
       // sizer never dips through the 64px estimate for a frame.
