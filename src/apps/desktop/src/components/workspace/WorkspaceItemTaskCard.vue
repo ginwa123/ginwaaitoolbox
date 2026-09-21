@@ -392,17 +392,29 @@ const gitBranchTitle = computed<string>(() => {
 })
 
 let prSeq = 0
+
+// Preferred PR lookup: the attached PR URL first (a full URL resolves
+// via GET /api/git/pr/status without any local path, so the badge
+// survives deleted worktrees/paths), branch-name fallback otherwise.
+const prLookup = computed<string | null>(() => {
+  const url = props.task.pr_url
+  if (typeof url === 'string' && url.length > 0) return url
+  return gitBranchBadge.value
+})
+
 const loadPrStatus = async () => {
-  const branch = gitBranchBadge.value
+  const ref = prLookup.value
   const cwd = effectiveCwd.value
-  if (!branch || !cwd) {
+  if (!ref) {
     prStatus.value = ''
     return
   }
   const seq = ++prSeq
   // Shared cache: dedupes the board-load burst across cards, retries
-  // transient failures, resolves '' (fail-silent) when unknown.
-  const status = await fetchPrStatusCached(cwd, branch)
+  // transient failures, resolves '' (fail-silent) when unknown. The
+  // helper skips branch lookups without a cwd but always attempts
+  // full URLs (no local path needed).
+  const status = await fetchPrStatusCached(cwd, ref)
   if (seq !== prSeq) return
   prStatus.value = status
 }
@@ -411,7 +423,7 @@ onMounted(() => {
   void loadPrStatus()
 })
 
-watch([gitBranchBadge, effectiveCwd], () => {
+watch([prLookup, effectiveCwd], () => {
   void loadPrStatus()
 })
 </script>

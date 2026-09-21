@@ -92,6 +92,11 @@ fn useCase(
         .image_urls = task.image_urls,
         .video_urls = task.video_urls,
         .git_branch = git_branch,
+        // Attached PR URL (sessions join, set_pull_request).
+        // Borrowed slice, same lifetime as the fields above. Null
+        // when no PR is bound so the frontend prefers the URL
+        // lookup and falls back to the branch lookup.
+        .pr_url = if (task.pr_url.len == 0) null else task.pr_url,
     };
 
     // Wrap in `{ "task": {...} }` — the frontend's getTask() reads

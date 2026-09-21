@@ -4930,6 +4930,15 @@ pub const WorkspaceItemTaskInfo = struct {
     /// Plan: docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md
     git_worktree_cwd: []u8 = &.{},
 
+    /// Joined from `sessions.pr_url` (set_pull_request tool,
+    /// Migration 086). Empty string when no session row exists or no
+    /// PR is attached. Owned by the lister; freed by `deinit`. The
+    /// frontend's kanban card prefers this URL for the PR-state badge
+    /// (`GET /api/git/pr/status` resolves a full URL without any
+    /// local path, so the badge survives deleted worktrees/paths);
+    /// falls back to the `git_branch` lookup when empty.
+    pr_url: []u8 = &.{},
+
     /// Computed `git rev-parse --abbrev-ref HEAD` output for the
     /// task's cwd (`git_worktree_cwd` or the parent
     /// `workspace_items.path`). Null when the cwd is empty, the
@@ -4955,6 +4964,7 @@ pub const WorkspaceItemTaskInfo = struct {
         if (self.video_urls.len > 0) allocator.free(self.video_urls);
         if (self.cwd.len > 0) allocator.free(self.cwd);
         if (self.git_worktree_cwd.len > 0) allocator.free(self.git_worktree_cwd);
+        if (self.pr_url.len > 0) allocator.free(self.pr_url);
         if (self.git_branch) |gb| allocator.free(gb);
     }
 };
@@ -5487,7 +5497,7 @@ pub fn getWorkspaceItemTaskById(
     // parent item id and the task id so a task under a different item
     // is never readable through this endpoint (404 at the handler).
     const sql =
-        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
+        \\SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, ''), COALESCE(s.pr_url, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ? AND t.id = ? LIMIT 1
     ;
 
     var rows = try db.query(allocator, sql, &.{ workspace_item_id, task_id });
@@ -5497,7 +5507,8 @@ pub fn getWorkspaceItemTaskById(
         // Row indices are identical to the lister (see its mapping
         // block): 0-10 task/kanban fields, 11-12 session-joined
         // fields, 13 needs_human_review, 14 tags, 15 worktree cwd,
-        // 16 per-task cwd, 17 image_urls. (Migration 084 dropped the
+        // 16 per-task cwd, 17 image_urls, 18 video_urls,
+        // 19 pr_url (sessions join). (Migration 084 dropped the
         // routines JOIN — old indices 11-17 routine, 18-24 rest.)
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
@@ -5526,6 +5537,11 @@ pub fn getWorkspaceItemTaskById(
             .cwd = try allocator.dupe(u8, row.values[16]),
             .image_urls = try allocator.dupe(u8, row.values[17]),
             .video_urls = try allocator.dupe(u8, row.values[18]),
+            // Attached PR URL (set_pull_request, Migration 086):
+            // index 19. COALESCE'd to '' when no session row exists
+            // or no PR is attached; empty string is the "no PR"
+            // sentinel the frontend's pr_url badge lookup reads.
+            .pr_url = try allocator.dupe(u8, row.values[19]),
         };
         row.deinit(allocator);
         return task;
@@ -5619,18 +5635,25 @@ pub fn listWorkspaceItemTasksWithCursor(
     // in the data, not every row.
     var q_pattern: ?[]u8 = null;
     defer if (q_pattern) |p| allocator.free(p);
+    // Single `defer` owns q_clause on ALL exits. (A previous
+    // `errdefer` + `defer` pair double-freed on error paths — any
+    // db.query failure below segfaulted the process. The pr_url
+    // column addition exposed it when test fixtures lagged the
+    // schema.) Reassignment frees the old value first so the
+    // initial "" dupe never leaks.
     var q_clause: []u8 = try allocator.dupe(u8, "");
-    errdefer allocator.free(q_clause);
     if (q) |raw_q| {
         if (raw_q.len > 0) {
             const escaped = try escapeLikePattern(allocator, raw_q);
             defer allocator.free(escaped);
             q_pattern = try std.fmt.allocPrint(allocator, "%{s}%", .{escaped});
-            q_clause = try std.fmt.allocPrint(
+            const new_q_clause = try std.fmt.allocPrint(
                 allocator,
                 " AND (LOWER(t.name) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.description, '')) LIKE ? ESCAPE '\\' OR LOWER(COALESCE(t.tags, '')) LIKE ? ESCAPE '\\')",
                 .{},
             );
+            allocator.free(q_clause);
+            q_clause = new_q_clause;
         }
     }
     defer allocator.free(q_clause);
@@ -5643,15 +5666,18 @@ pub fn listWorkspaceItemTasksWithCursor(
     // still match the user's request for a "column" (defensive —
     // the kanban UI normally never shows NULL-column tasks, but the
     // DB schema permits it per Migration 048).
+    // Single `defer` owns column_id_clause on ALL exits (same
+    // double-free rationale as q_clause above).
     var column_id_clause: []u8 = try allocator.dupe(u8, "");
-    errdefer allocator.free(column_id_clause);
     if (column_id) |cid| {
         if (cid.len > 0) {
-            column_id_clause = try std.fmt.allocPrint(
+            const new_column_id_clause = try std.fmt.allocPrint(
                 allocator,
                 " AND (k.kanban_column_id = ? OR k.kanban_column_id IS NULL)",
                 .{},
             );
+            allocator.free(column_id_clause);
+            column_id_clause = new_column_id_clause;
         }
     }
     defer allocator.free(column_id_clause);
@@ -5696,7 +5722,7 @@ pub fn listWorkspaceItemTasksWithCursor(
         //       present. The frontend splits on '|' via
         //       normalizeTaskImageUrlsInPlace to render the detail
         //       dialog gallery + board card thumbnails.
-        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
+        "SELECT t.id, t.name, t.workspace_item_id, t.description, t.created_at, t.updated_at, t.task_type, COALESCE(t.is_pinned, 0), COALESCE(t.pinned_position, 0), k.kanban_column_id, COALESCE(k.kanban_position, 0), COALESCE(s.is_auto_retry_until_stop, '0'), COALESCE(s.last_finish_reason, ''), CASE WHEN COALESCE(s.last_finish_reason, '') = 'stop' AND (t.last_human_touched_at_nano IS NULL OR t.last_human_touched_at_nano < CAST(strftime('%s', s.updated_at) AS INTEGER) * 1000) THEN 1 ELSE 0 END, t.tags, COALESCE(s.git_worktree_cwd, ''), t.cwd, t.image_urls, COALESCE(t.video_urls, ''), COALESCE(s.pr_url, '') FROM workspace_item_tasks t LEFT JOIN kanban k ON k.workspace_item_task_id = t.id LEFT JOIN sessions s ON s.id = t.id WHERE t.workspace_item_id = ?{s}{s}{s} {s} LIMIT {s}",
         .{ cursor_clause, column_id_clause, q_clause, order_by, limit_str },
     );
     defer allocator.free(sql);
@@ -5754,6 +5780,9 @@ pub fn listWorkspaceItemTasksWithCursor(
         //   17: image_urls (Migration 069 — ||-delimited base64 data
         //       URLs). NOT NULL DEFAULT '' so always present; empty
         //       string is the "no images" sentinel.
+        //   18: video_urls (Migration 090). Same contract.
+        //   19: pr_url (sessions join — set_pull_request). COALESCE'd
+        //       to '' when no session row exists or no PR attached.
         const task_type = if (row.values[6].len > 0)
             try allocator.dupe(u8, row.values[6])
         else
@@ -5805,6 +5834,9 @@ pub fn listWorkspaceItemTasksWithCursor(
             .image_urls = try allocator.dupe(u8, row.values[17]),
             // Video urls (Migration 090): index 18. Same contract.
             .video_urls = try allocator.dupe(u8, row.values[18]),
+            // Attached PR URL (set_pull_request, Migration 086):
+            // index 19. Same COALESCE-to-'' contract.
+            .pr_url = try allocator.dupe(u8, row.values[19]),
         };
         try tasks.append(allocator, task);
         row.deinit(allocator);
@@ -6262,7 +6294,8 @@ fn setupDb() !TestCtx {
         \\    is_auto_retry_until_stop TEXT DEFAULT '0',
         \\    last_finish_reason TEXT,
         \\    updated_at TEXT,
-        \\    git_worktree_cwd TEXT
+        \\    git_worktree_cwd TEXT,
+        \\    pr_url TEXT
         \\)
     , &.{});
     return .{ .db = db, .threaded = threaded, .alloc = alloc };

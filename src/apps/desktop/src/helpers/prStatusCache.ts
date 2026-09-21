@@ -74,12 +74,18 @@ async function fetchWithRetry(cwd: string, branch: string): Promise<string> {
 }
 
 /**
- * Lowercase PR status (`open` | `merged` | `closed`) for a repo + branch,
- * or `''` when unknown (no cwd/branch, no PR, `gh` missing, or the fetch
- * kept failing). Never rejects.
+ * Lowercase PR status (`open` | `merged` | `closed`) for a repo + branch
+ * (or a full PR URL), or `''` when unknown (no ref, branch lookup
+ * without a cwd, no PR, `gh` missing, or the fetch kept failing).
+ * Never rejects.
+ *
+ * Full URLs resolve without any local path (the backend skips its repo
+ * check in URL mode), so callers may pass an empty cwd for them —
+ * branch names still require one.
  */
 export function fetchPrStatusCached(cwd: string, branch: string): Promise<string> {
-  if (!cwd || !branch) return Promise.resolve('')
+  if (!branch) return Promise.resolve('')
+  if (!cwd && !branch.includes('://')) return Promise.resolve('')
   const k = cacheKey(cwd, branch)
   const hit = cache.get(k)
   if (hit && Date.now() - hit.at < TTL_MS) return Promise.resolve(hit.status)

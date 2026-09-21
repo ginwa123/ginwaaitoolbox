@@ -207,6 +207,11 @@ export interface Task {
   // wire tasks raw, so the wire name IS the TS name. No
   // normalization needed.
   git_branch?: string | null
+  // Attached PR URL joined from `sessions.pr_url` (set_pull_request).
+  // Null when no PR is bound. The kanban card prefers this URL for
+  // the PR-state badge (a full URL resolves without any local path)
+  // and falls back to the `git_branch` lookup when null.
+  pr_url?: string | null
 }
 
 // localStorage keys for state persistence

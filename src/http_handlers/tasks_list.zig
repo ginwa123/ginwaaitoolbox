@@ -178,6 +178,12 @@ fn useCase(
             if (branch.len == 0) break :blk null;
             break :blk branch;
         };
+        // Attached PR URL joined from sessions (set_pull_request).
+        // Borrowed slice owned by WorkspaceItemTaskInfo.deinit, same
+        // lifetime as git_branch above. Null when no PR is bound so
+        // the frontend can prefer the URL lookup and fall back to
+        // the branch lookup.
+        const pr_url: ?[]const u8 = if (task.pr_url.len == 0) null else task.pr_url;
 
         try task_responses.append(allocator, http_response.WorkspaceItemTaskResponse{
             .id = task.id,
@@ -232,6 +238,9 @@ fn useCase(
             // subprocess stdout is allocated into the arena) and
             // stays valid until the request ends.
             .git_branch = git_branch,
+            // Attached PR URL (sessions join, set_pull_request).
+            // Null when no PR is bound.
+            .pr_url = pr_url,
         });
     }
 
@@ -990,5 +999,66 @@ test "WorkspaceItemTaskResponse declares image_urls" {
             .{HTTP_RESPONSE_PATH},
         );
         return error.ImageUrlsFieldMissing;
+    }
+}
+
+// ─── Contract: attached PR URL propagates from sessions join to wire ──
+// The kanban card prefers `pr_url` for the PR-state badge (a full URL
+// resolves via GET /api/git/pr/status without any local path, so the
+// badge survives deleted worktrees/paths); falls back to the
+// `git_branch` lookup when null.
+
+test "task lister selects sessions pr_url" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, LLM_HISTORY_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "COALESCE(s.pr_url, '')") == null) {
+        std.debug.print(
+            "\n!! {s} task lister does not select COALESCE(s.pr_url, '') !!\n" ++
+                "   Append `, COALESCE(s.pr_url, '')` to the task list + byId SELECTs\n" ++
+                "   (index 19) and map row.values[19] into WorkspaceItemTaskInfo.pr_url.\n",
+            .{LLM_HISTORY_PATH},
+        );
+        return error.PrUrlNotSelected;
+    }
+}
+
+test "WorkspaceItemTaskResponse declares pr_url" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HTTP_RESPONSE_PATH);
+    defer allocator.free(source);
+
+    // Scope to the WorkspaceItemTaskResponse struct window.
+    const struct_start = std.mem.indexOf(u8, source, "pub const WorkspaceItemTaskResponse = struct") orelse {
+        return error.ResponseStructMissing;
+    };
+    const window = source[struct_start..];
+    const window_end = std.mem.indexOf(u8, window, "\npub const ") orelse window.len;
+    const struct_body = window[0..window_end];
+
+    if (std.mem.indexOf(u8, struct_body, "pr_url") == null) {
+        std.debug.print(
+            "\n!! {s} WorkspaceItemTaskResponse does not declare pr_url !!\n" ++
+                "   Add: pr_url: ?[]const u8 = null,\n" ++
+                "   (attached PR URL from the sessions join; null = no PR bound)\n",
+            .{HTTP_RESPONSE_PATH},
+        );
+        return error.PrUrlFieldMissing;
+    }
+}
+
+test "tasks_list response forwards pr_url" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    if (std.mem.indexOf(u8, source, ".pr_url") == null) {
+        std.debug.print(
+            "\n!! {s} does not forward .pr_url into the response !!\n" ++
+                "   Add next to the .git_branch forwarding:\n" ++
+                "     .pr_url = if (task.pr_url.len == 0) null else task.pr_url,\n",
+            .{HANDLER_PATH},
+        );
+        return error.PrUrlNotForwarded;
     }
 }

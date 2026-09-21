@@ -141,8 +141,12 @@ fn useCase(
     pr_arg: []const u8,
     provider_override: ?[]const u8,
 ) !http_response.GitPrStatusResponse {
-    // 1) Must be a git repo.
-    {
+    // 1) Must be a git repo — unless this is a URL-mode lookup. A
+    // full PR URL carries its own repo identity (`gh` resolves
+    // owner/repo from the URL, auth is HOME-based), so the local
+    // path may be deleted or absent entirely.
+    const url_mode = pr_arg.len > 0 and std.mem.indexOf(u8, pr_arg, "://") != null;
+    if (!url_mode) {
         const check = std.process.run(allocator, io, .{ .argv = &.{ "git", "-C", path, "rev-parse", "--git-dir" } }) catch return error.NotARepository;
         defer {
             allocator.free(check.stdout);
@@ -168,7 +172,11 @@ fn useCase(
         }
     }
 
-    const raw = try runGhPrView(allocator, io, path, pr_arg);
+    // In URL mode without a path there is no repo to run in — `gh`
+    // ignores cwd for full URLs (verified from a non-repo dir), so
+    // fall back to "." instead of failing the spawn.
+    const gh_cwd = if (path.len > 0) path else ".";
+    const raw = try runGhPrView(allocator, io, gh_cwd, pr_arg);
     defer allocator.free(raw);
 
     const trimmed = std.mem.trim(u8, raw, " \n\r");
@@ -199,22 +207,29 @@ fn useCase(
     };
 }
 
-/// GET /api/git/pr/status?path=<repo>[&pr=<number|url|branch>][&provider=github]
+/// GET /api/git/pr/status?[path=<repo>][&pr=<number|url|branch>][&provider=github]
 /// Returns the PR's open/merged/closed status via `gh pr view`.
 /// `pr` is optional: when omitted, `gh` resolves the PR for the
 /// current branch. Only the github provider is supported in v1.
+///
+/// `path` is optional when `pr` is a full PR URL: the URL carries its
+/// own repo identity (`gh` resolves owner/repo from it, auth is
+/// HOME-based), so no local checkout is needed. URL-only lookups keep
+/// working when the local worktree/path was deleted. With a branch
+/// name, number, or no `pr` at all, `path` is still required (400).
 pub fn gitPrStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const io = ctx.io;
 
     const query = req.query;
-    const path_param = query.get("path") orelse {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Missing path parameter") });
-    };
-    if (path_param.len == 0) {
-        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path cannot be empty") });
-    }
     const pr_param = query.get("pr") orelse "";
+    const raw_path = query.get("path") orelse "";
+    // URL mode: a full PR URL resolves without any local repo.
+    const is_url = pr_param.len > 0 and std.mem.indexOf(u8, pr_param, "://") != null;
+    if (raw_path.len == 0 and !is_url) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Missing path parameter (path is optional when pr is a full PR URL)") });
+    }
+    const path_param = raw_path;
     const provider_param = query.get("provider");
     if (provider_param) |pv| {
         if (pv.len > 0 and pr_provider.PrProvider.fromString(pv) == null) {
@@ -300,4 +315,32 @@ test "normalizeStatus maps OPEN/CLOSED/MERGED" {
     try testing.expectEqualStrings("open", normalizeStatus("open"));
     try testing.expectEqualStrings("closed", normalizeStatus("CLOSED"));
     try testing.expectEqualStrings("merged", normalizeStatus("MERGED"));
+}
+
+test "git_pr_status accepts pr URL without path" {
+    // A full PR URL carries its own repo identity — the handler must
+    // not 400 when `path` is absent as long as `pr` is URL-shaped.
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, "src/http_handlers/git_pr_status.zig");
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "path is optional when pr is a full PR URL") == null) {
+        std.debug.print("!! git_pr_status handler does not allow URL-only lookups !!\n", .{});
+        return error.UrlWithoutPathUnsupported;
+    }
+}
+
+test "git_pr_status skips the repo check for URL lookups" {
+    // `git -C <path> rev-parse` fails for deleted/absent paths — URL
+    // mode must bypass it and run `gh` with a neutral cwd instead.
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, "src/http_handlers/git_pr_status.zig");
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "const url_mode = pr_arg.len > 0") == null) {
+        std.debug.print("!! git_pr_status useCase has no URL-mode repo-check bypass !!\n", .{});
+        return error.UrlModeBypassMissing;
+    }
+    if (std.mem.indexOf(u8, source, "const gh_cwd = if (path.len > 0) path else") == null) {
+        std.debug.print("!! git_pr_status useCase has no neutral-cwd fallback !!\n", .{});
+        return error.NeutralCwdMissing;
+    }
 }

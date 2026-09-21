@@ -585,6 +585,14 @@ pub const WorkspaceItemTaskResponse = struct {
     /// GitHub-style fork/branch badge in the meta row. Plan:
     /// docs/superpowers/plans/2026-08-06-kanban-task-git-branch.md
     git_branch: ?[]const u8 = null,
+
+    /// Attached PR URL joined from `sessions.pr_url`
+    /// (set_pull_request tool). Empty/absent when no PR is attached.
+    /// Null when the task has no session row or no PR bound — the
+    /// frontend prefers this URL for the PR-state badge (a full URL
+    /// resolves without any local path) and falls back to the
+    /// `git_branch` lookup when null.
+    pr_url: ?[]const u8 = null,
 };
 
 pub const WorkspaceItemTaskListResponse = struct {

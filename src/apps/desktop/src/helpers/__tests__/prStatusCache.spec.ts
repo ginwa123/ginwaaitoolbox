@@ -97,4 +97,14 @@ describe('prStatusCache', () => {
     await expect(fetchPrStatusCached('/repo', '')).resolves.toBe('')
     expect(getPrStatusMock).not.toHaveBeenCalled()
   })
+
+  it('fetches full URLs even without a cwd', async () => {
+    // URL-mode backend lookups need no local path (deleted worktree).
+    getPrStatusMock.mockResolvedValue({ status: 'merged', state: 'MERGED' })
+    await expect(fetchPrStatusCached('', 'https://github.com/acme/app/pull/99')).resolves.toBe(
+      'merged',
+    )
+    expect(getPrStatusMock).toHaveBeenCalledTimes(1)
+    expect(getPrStatusMock).toHaveBeenCalledWith('', 'https://github.com/acme/app/pull/99')
+  })
 })

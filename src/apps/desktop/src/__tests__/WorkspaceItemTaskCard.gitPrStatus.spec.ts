@@ -11,6 +11,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { setActivePinia, createPinia } from 'pinia'
 import WorkspaceItemTaskCard from '@/components/workspace/WorkspaceItemTaskCard.vue'
+import { ApiError } from '@/api'
 import { clearPrStatusCache } from '@/helpers/prStatusCache'
 import type { Task } from '@/stores/workspaces'
 
@@ -87,7 +88,9 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
   })
 
   it('falls back to the dim look when the fetch fails', async () => {
-    getPrStatusMock.mockRejectedValue(new Error('no pr'))
+    // 404 = no PR for the branch: deterministic, no retry (so no
+    // orphaned retry timers can leak into later tests).
+    getPrStatusMock.mockRejectedValue(new ApiError(404, 'Not Found', ''))
     const wrapper = mountCard(makeTask({ git_branch: 'feature/x', cwd: '/repo' }), '/repo')
     await flushPromises()
     const badge = wrapper.find('[data-testid="task-git-branch"]')
@@ -104,5 +107,30 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     const badge = wrapper.find('[data-testid="task-git-branch"]')
     expect(badge.attributes('data-pr-status')).toBeUndefined()
     expect(badge.attributes('title')).toBe('feature/x')
+  })
+
+  it('prefers the attached pr_url over the branch lookup', async () => {
+    getPrStatusMock.mockResolvedValue({ status: 'merged', state: 'MERGED' })
+    const url = 'https://github.com/acme/app/pull/99'
+    const wrapper = mountCard(
+      makeTask({ git_branch: 'feature/x', pr_url: url, cwd: '/repo' }),
+      '/repo',
+    )
+    await flushPromises()
+    expect(getPrStatusMock).toHaveBeenCalledWith('/repo', url)
+    const badge = wrapper.find('[data-testid="task-git-branch"]')
+    expect(badge.attributes('data-pr-status')).toBe('merged')
+    expect(badge.attributes('style') ?? '').toContain('var(--color-violet)')
+  })
+
+  it('looks up pr_url even without a cwd (deleted worktree)', async () => {
+    getPrStatusMock.mockResolvedValue({ status: 'open', state: 'OPEN' })
+    const url = 'https://github.com/acme/app/pull/100'
+    const wrapper = mountCard(makeTask({ git_branch: 'feature/x', pr_url: url }), '')
+    await flushPromises()
+    expect(getPrStatusMock).toHaveBeenCalledWith('', url)
+    const badge = wrapper.find('[data-testid="task-git-branch"]')
+    expect(badge.attributes('data-pr-status')).toBe('open')
+    expect(badge.attributes('style') ?? '').toContain('var(--color-green)')
   })
 })
