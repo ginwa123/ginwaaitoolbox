@@ -64,6 +64,9 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
   // we're no longer owning the EventSource.
   let stopStateWatch: (() => void) | null = null
 
+  // Throttle for open-triggered refetches (see fetchInitialKanban).
+  let lastKanbanFetchAt = 0
+
   /**
    * Subscribe the kanban store to the bus's `kanban` channel. The
    * function signature stays `async` + `Promise<void>` to preserve
@@ -297,6 +300,11 @@ export const useKanbanSseStore = defineStore('kanbanSse', () => {
    * filtered out at the dispatch layer anyway).
    */
   async function fetchInitialKanban(workspaceId: string): Promise<void> {
+    // Throttled: bus.state flips to 'open' on every reconnect, and without a
+    // guard each reconnect would refetch columns (the columns/workers storm in
+    // the Network panel). Skips when the last fetch was <10s ago.
+    if (Date.now() - lastKanbanFetchAt < 10_000) return
+    lastKanbanFetchAt = Date.now()
     const ws = useWorkspacesStore()
     const item = ws.activeWorkspaceItem
     const parentWs = ws.activeWorkspace

@@ -345,9 +345,11 @@ export interface SseClientOptions {
    * Stall threshold in ms. While `state === 'open'`, if no event
    * (message / heartbeat / connected) arrives within this window,
    * the client treats the stream as silently dead and reconnects
-   * (see `stallRecovery`). Default: 7_000 (well below the 15s
-   * backend keep-alive timeout). Tests may pass a smaller value
-   * for determinism.
+   * (see `stallRecovery`). Default: 30_000 — well ABOVE the ~15s
+   * backend keep-alive (`sse_manager.sendHeartbeat`), with margin
+   * for timer jitter. A threshold below the heartbeat interval
+   * guarantees false-positive reconnects on every idle window.
+   * Tests may pass a smaller value for determinism.
    */
   stallThresholdMs?: number
   /**
@@ -490,7 +492,7 @@ export function createSseClient(opts: SseClientOptions): SseClient {
   // toggle below.
   const stallDetectorOn: boolean =
     (globalThis as { __sseStallDetector?: boolean }).__sseStallDetector !== false
-  const stallThresholdMs: number = opts.stallThresholdMs ?? 7_000 // 7s — well below the 15s bug
+  const stallThresholdMs: number = opts.stallThresholdMs ?? 30_000 // 30s — well above the ~15s backend heartbeat
   const stallRecovery: boolean = opts.stallRecovery ?? true
   let stallTimer: ReturnType<typeof setTimeout> | null = null
   // Connected-handshake timeout: armed in start(), cleared on the

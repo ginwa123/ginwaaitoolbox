@@ -49,7 +49,13 @@ const handleWorkerEvent = (event: api.WorkerEvent) => {
 }
 
 // Fetch initial worker state (fallback for when SSE connection starts)
+// Throttled: bus.state flips to 'open' on every reconnect, and without a
+// guard each reconnect would refetch workers (the columns/workers storm in
+// the Network panel). Skips when the last fetch was <10s ago.
+let lastWorkersFetchAt = 0
 const fetchInitialWorkers = async () => {
+  if (Date.now() - lastWorkersFetchAt < 10_000) return
+  lastWorkersFetchAt = Date.now()
   try {
     const { workers } = await api.getWorkers(undefined, 50)
     const newState: Record<string, boolean> = {}

@@ -49,10 +49,7 @@ function createMockCtor(): { ctor: typeof EventSource; instance: () => MockEvent
         if (set) set.delete(listener)
       },
       emit(type, data) {
-        const ev =
-          data !== undefined
-            ? new MessageEvent(type, { data })
-            : new Event(type)
+        const ev = data !== undefined ? new MessageEvent(type, { data }) : new Event(type)
         // 'error' is special: browsers fire BOTH the onerror
         // property AND any listeners registered via
         // addEventListener('error', ...). The SseClient relies on
@@ -236,6 +233,7 @@ describe('SseClient deep v2 logger — stall detector', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      stallThresholdMs: 7_000,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
@@ -262,6 +260,7 @@ describe('SseClient deep v2 logger — stall detector', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      stallThresholdMs: 7_000,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
@@ -285,6 +284,7 @@ describe('SseClient deep v2 logger — stall detector', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      stallThresholdMs: 7_000,
     })
     void vi.advanceTimersByTime(0)
     // Don't fire connected — state is still 'connecting'.
@@ -322,7 +322,7 @@ describe('SseClient deep v2 logger — error event context', () => {
     // 12s since last heartbeat, readyStateLabel=CONNECTING (per user trace)
     expect(errorLine?.extra?.sinceLastEventMs).toBeGreaterThanOrEqual(11_500)
     expect(errorLine?.extra?.lastEventKind).toBe('heartbeat')
-    expect((errorLine?.extra?.heartbeatCount as number)).toBeGreaterThanOrEqual(1)
+    expect(errorLine?.extra?.heartbeatCount as number).toBeGreaterThanOrEqual(1)
   })
 
   it('error event right after a message: sinceLastEventMs ~= 0ms', () => {
@@ -376,6 +376,7 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
       // Disable stall recovery so this test isolates diagnosis
       // classification (stall covered in sseStallRecovery.spec).
       stallRecovery: false,
+      stallThresholdMs: 7_000,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
@@ -528,6 +529,7 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      stallThresholdMs: 7_000,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
@@ -559,6 +561,7 @@ describe('SseClient deep v2 logger — DISCONNECT DIAGNOSIS', () => {
       onEvent: () => {},
       additionalEventTypes: [],
       EventSourceCtor: mock.ctor,
+      stallThresholdMs: 7_000,
     })
     void vi.advanceTimersByTime(0)
     const es = mock.instance()
