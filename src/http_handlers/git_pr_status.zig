@@ -13,6 +13,9 @@ const PrStatusError = error{ NotARepository, CliMissing, NoAssociatedPr, FetchFa
 /// Raw shape of `gh pr view --json ...` output. All fields optional with
 /// defaults so a future `gh` version adding/removing a key does not break
 /// parsing — missing keys surface as empty strings / zeros.
+/// `mergedAt`/`closedAt` are `null` until the PR is merged/closed, so they
+/// must stay optional: parsing JSON null into `[]const u8` fails and every
+/// OPEN PR would 502 (see PR #584).
 const GhPrView = struct {
     number: i64 = 0,
     title: []const u8 = "",
@@ -24,8 +27,8 @@ const GhPrView = struct {
     baseRefName: []const u8 = "",
     createdAt: []const u8 = "",
     updatedAt: []const u8 = "",
-    mergedAt: []const u8 = "",
-    closedAt: []const u8 = "",
+    mergedAt: ?[]const u8 = null,
+    closedAt: ?[]const u8 = null,
     author: struct {
         login: []const u8 = "",
     } = .{},
@@ -191,8 +194,8 @@ fn useCase(
         .author = try allocator.dupe(u8, parsed.author.login),
         .created_at = try allocator.dupe(u8, parsed.createdAt),
         .updated_at = try allocator.dupe(u8, parsed.updatedAt),
-        .merged_at = try allocator.dupe(u8, parsed.mergedAt),
-        .closed_at = try allocator.dupe(u8, parsed.closedAt),
+        .merged_at = try allocator.dupe(u8, parsed.mergedAt orelse ""),
+        .closed_at = try allocator.dupe(u8, parsed.closedAt orelse ""),
         .additions = parsed.additions,
         .deletions = parsed.deletions,
         .changed_files = parsed.changedFiles,
@@ -300,4 +303,20 @@ test "normalizeStatus maps OPEN/CLOSED/MERGED" {
     try testing.expectEqualStrings("open", normalizeStatus("open"));
     try testing.expectEqualStrings("closed", normalizeStatus("CLOSED"));
     try testing.expectEqualStrings("merged", normalizeStatus("MERGED"));
+}
+
+test "GhPrView parses open-PR payload with null mergedAt/closedAt" {
+    // `gh pr view --json ...` emits `"mergedAt":null,"closedAt":null` for
+    // OPEN PRs. Parsing that into non-optional `[]const u8` fails, which
+    // surfaced as HTTP 502 for every open PR (PR #584).
+    const allocator = testing.allocator;
+    const raw =
+        \\{"number":584,"title":"SyncEngine Phase 2","url":"https://github.com/acme/app/pull/584","state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"UNSTABLE","headRefName":"worktree/sync-engine-phase2-cached-delta","baseRefName":"main","createdAt":"2026-09-21T08:51:37Z","updatedAt":"2026-09-21T08:51:37Z","mergedAt":null,"closedAt":null,"author":{"login":"ginwa123"},"additions":286,"deletions":103,"changedFiles":4}
+    ;
+    const parsed = try std.json.parseFromSliceLeaky(GhPrView, allocator, raw, .{ .ignore_unknown_fields = true });
+    try testing.expectEqual(@as(i64, 584), parsed.number);
+    try testing.expectEqualStrings("OPEN", parsed.state);
+    try testing.expect(parsed.mergedAt == null);
+    try testing.expect(parsed.closedAt == null);
+    try testing.expectEqualStrings("open", normalizeStatus(parsed.state));
 }
