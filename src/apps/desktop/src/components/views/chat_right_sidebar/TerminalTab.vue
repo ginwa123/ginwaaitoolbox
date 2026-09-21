@@ -20,8 +20,9 @@ const props = defineProps<{
   sessionKey?: string
 }>()
 
-const POLL_MS = 300
 const MAX_TERMINALS = 20
+const WS_BASE_DELAY_MS = 1000
+const WS_MAX_DELAY_MS = 30000
 
 interface TermSession {
   id: string
@@ -37,15 +38,14 @@ const exitedIds = ref<Set<string>>(new Set())
 
 let term: Terminal | null = null
 let fit: FitAddon | null = null
-let pollTimer: ReturnType<typeof setInterval> | null = null
-let pollInFlight = false
-let cursor = 0
 let lastCols = 0
 let lastRows = 0
 let disposed = false
 let resizeObserver: ResizeObserver | null = null
 let ws: WebSocket | null = null
 let wsOpened = false
+let wsAttempt = 0
+let wsRetryTimer: ReturnType<typeof setTimeout> | null = null
 let sessionCounter = 0
 const mountedAt = Date.now()
 // Mount-time cwd resolution grace: with a git worktree the value
@@ -100,23 +100,16 @@ const wsUrl = (id: string) => {
   return `${proto}://${window.location.host}/api/terminal/ws?id=${encodeURIComponent(id)}`
 }
 
-const stopPoll = () => {
-  if (pollTimer !== null) {
-    clearInterval(pollTimer)
-    pollTimer = null
+const clearWsRetry = () => {
+  if (wsRetryTimer !== null) {
+    clearTimeout(wsRetryTimer)
+    wsRetryTimer = null
   }
 }
 
-const startPollFallback = (reason: string) => {
-  // REST fallback when the socket can't connect or drops: clear and
-  // replay from the buffer start (cursor unknown in WS mode).
-  stopPoll()
-  closeWs()
-  term?.clear()
-  cursor = 0
-  status.value = reason
-  pollTimer = setInterval(pollOnce, POLL_MS)
-  void pollOnce()
+const wsBackoffDelay = (attempt: number): number => {
+  const exp = Math.min(WS_BASE_DELAY_MS * 2 ** (attempt - 1), WS_MAX_DELAY_MS)
+  return exp * (0.5 + 0.5 * Math.random())
 }
 
 const closeWs = () => {
@@ -132,6 +125,20 @@ const closeWs = () => {
   }
 }
 
+const scheduleWsReconnect = (reason: string) => {
+  if (disposed) return
+  const id = activeId.value
+  if (!id || exitedIds.value.has(id)) return
+  if (wsRetryTimer !== null) return
+  wsAttempt += 1
+  const delay = wsBackoffDelay(wsAttempt)
+  status.value = `${reason} — reconnecting… (attempt ${wsAttempt})`
+  wsRetryTimer = setTimeout(() => {
+    wsRetryTimer = null
+    connectWs()
+  }, delay)
+}
+
 const markExited = (id: string, exitCode: number | null | undefined) => {
   exitedIds.value.add(id)
   if (id !== activeId.value) return
@@ -139,7 +146,7 @@ const markExited = (id: string, exitCode: number | null | undefined) => {
     exitCode === null || exitCode === undefined
       ? 'shell exited'
       : `shell exited (code ${exitCode}) — Reconnect for a new one`
-  stopPoll()
+  clearWsRetry()
   closeWs()
 }
 
@@ -173,11 +180,14 @@ const connectWs = () => {
   const id = activeId.value
   if (!id || disposed) return
   closeWs()
+  // Re-attach replays the full server buffer, so clear a reconnected
+  // view to avoid duplicated scrollback. First attach starts empty.
+  if (wsAttempt > 0) term?.clear()
   let socket: WebSocket
   try {
     socket = new WebSocket(wsUrl(id))
   } catch {
-    startPollFallback('socket unavailable — polling')
+    scheduleWsReconnect('socket unavailable')
     return
   }
   socket.binaryType = 'arraybuffer'
@@ -185,7 +195,8 @@ const connectWs = () => {
   socket.onopen = () => {
     if (disposed || ws !== socket) return
     wsOpened = true
-    stopPoll()
+    wsAttempt = 0
+    clearWsRetry()
     status.value = 'connected'
   }
   socket.onmessage = (event) => {
@@ -193,20 +204,55 @@ const connectWs = () => {
     handleWsMessage(event)
   }
   socket.onerror = () => {
-    if (ws !== socket) return
-    if (!wsOpened) startPollFallback('socket failed — polling')
+    if (ws !== socket || disposed) return
+    if (!wsOpened) void validateOrReclaim('socket failed')
   }
   socket.onclose = () => {
     if (ws !== socket || disposed) return
     if (!wsOpened) {
-      startPollFallback('socket failed — polling')
+      void validateOrReclaim('socket failed')
     } else {
       wsOpened = false
       if (activeId.value && !exitedIds.value.has(activeId.value)) {
-        startPollFallback('socket closed — polling')
+        scheduleWsReconnect('socket closed')
       }
     }
   }
+}
+
+const validateOrReclaim = async (reason: string) => {
+  const id = activeId.value
+  if (!id || disposed) return
+  try {
+    await getTerminalOutput(id, 0)
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      reclaimGoneSession('Terminal was reclaimed (idle) — starting a new one…')
+      return
+    }
+  }
+  scheduleWsReconnect(reason)
+}
+
+const reclaimGoneSession = (notice: string) => {
+  const goneId = activeId.value
+  if (!goneId || disposed) return
+  clearWsRetry()
+  closeWs()
+  sessions.value = sessions.value.filter((s) => s.id !== goneId)
+  exitedIds.value.delete(goneId)
+  saveStored()
+  status.value = notice
+  if (sessions.value.length === 0) {
+    void newSession()
+    return
+  }
+  const next = sessions.value[0]!
+  term?.clear()
+  activeId.value = next.id
+  status.value = 'connecting…'
+  wsAttempt = 0
+  connectWs()
 }
 
 const sendInput = (data: string) => {
@@ -220,16 +266,9 @@ const sendInput = (data: string) => {
       // Fall through to REST.
     }
   }
-  sendTerminalInput(id, data)
-    .then(() => {
-      // Immediate poll after input: the echo would otherwise wait up
-      // to POLL_MS for the next tick (the "slow typing" feel on the
-      // REST fallback path). pollInFlight dedupes overlap.
-      void pollOnce()
-    })
-    .catch(() => {
-      status.value = 'input failed — retrying…'
-    })
+  sendTerminalInput(id, data).catch(() => {
+    status.value = 'input failed — retrying…'
+  })
 }
 
 const fitAndResize = async () => {
@@ -259,61 +298,17 @@ const fitAndResize = async () => {
   }
 }
 
-const pollOnce = async () => {
-  const id = activeId.value
-  if (pollInFlight || !id || disposed) return
-  pollInFlight = true
-  try {
-    const out = await getTerminalOutput(id, cursor)
-    if (id !== activeId.value) return // switched mid-poll — drop stale bytes
-    cursor = out.cursor
-    if (out.data) term?.write(out.data.replace(/\n/g, '\r\n'))
-    if (out.exited) markExited(id, out.exit_code)
-  } catch (err) {
-    if (err instanceof ApiError && err.status === 404) {
-      // Session vanished server-side (restart / idle reclaim after
-      // 30min untouched): drop it and start fresh instead of retrying
-      // a dead id forever.
-      const goneId = activeId.value
-      if (goneId && !disposed) {
-        stopPoll()
-        closeWs()
-        sessions.value = sessions.value.filter((s) => s.id !== goneId)
-        exitedIds.value.delete(goneId)
-        saveStored()
-        status.value = 'Terminal was reclaimed (idle) — starting a new one…'
-        if (sessions.value.length === 0) {
-          void newSession()
-          return
-        }
-        const next = sessions.value[0]!
-        term?.clear()
-        cursor = 0
-        activeId.value = next.id
-        status.value = 'connecting…'
-        connectWs()
-        return
-      }
-    }
-    // Transient poll failure (server restart, session reaped): keep the
-    // timer running so a recreated session resumes; surface one line.
-    status.value = 'connection lost — retrying…'
-  } finally {
-    pollInFlight = false
-  }
-}
-
 const switchSession = (id: string) => {
   if (id === activeId.value || disposed) return
-  stopPoll()
+  clearWsRetry()
   closeWs()
   term?.clear()
-  cursor = 0
   activeId.value = id
   // Always (re-)attach: the server flushes the buffered history first,
   // then sends the exit event for dead shells — so switching back to
   // an exited session still shows its history, not an empty view.
   status.value = 'connecting…'
+  wsAttempt = 0
   connectWs()
 }
 
@@ -421,6 +416,7 @@ const restoreOrCreate = async () => {
   }
   activeId.value = alive[0]!.id
   status.value = 'connecting…'
+  wsAttempt = 0
   connectWs()
 }
 
@@ -429,7 +425,7 @@ const closeSession = async (id: string) => {
   if (idx === -1) return
   const wasActive = id === activeId.value
   if (wasActive) {
-    stopPoll()
+    clearWsRetry()
     closeWs()
   }
   sessions.value.splice(idx, 1)
@@ -446,12 +442,12 @@ const closeSession = async (id: string) => {
   if (wasActive) {
     const next = sessions.value[Math.min(idx, sessions.value.length - 1)]!
     term?.clear()
-    cursor = 0
     activeId.value = next.id
     if (exitedIds.value.has(next.id)) {
       status.value = 'shell exited — Reconnect for a new one'
     } else {
       status.value = 'connecting…'
+      wsAttempt = 0
       connectWs()
     }
   }
@@ -464,7 +460,7 @@ const reconnectActive = async () => {
     return
   }
   const idx = sessions.value.findIndex((s) => s.id === id)
-  stopPoll()
+  clearWsRetry()
   closeWs()
   sessions.value.splice(idx, 1)
   exitedIds.value.delete(id)
@@ -520,7 +516,7 @@ watch(
     // settled scope change restarts shells.
     if (Date.now() - mountedAt < 3000) return
     // Cwd scope changed: drop every session and start fresh.
-    stopPoll()
+    clearWsRetry()
     closeWs()
     const ids = sessions.value.map((s) => s.id)
     sessions.value = []
@@ -535,7 +531,7 @@ watch(
 
 onUnmounted(() => {
   disposed = true
-  stopPoll()
+  clearWsRetry()
   closeWs()
   resizeObserver?.disconnect()
   resizeObserver = null
