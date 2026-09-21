@@ -95,10 +95,7 @@ function createMockCtor(): {
         // Build a real MessageEvent if the type is message-like.
         // Using `new MessageEvent` requires a real DOM env; jsdom
         // provides one, so this works.
-        const ev =
-          data !== undefined
-            ? new MessageEvent(type, { data })
-            : new Event(type)
+        const ev = data !== undefined ? new MessageEvent(type, { data }) : new Event(type)
         // Fire addEventListener-style listeners, if any. The
         // native EventSource fires BOTH addEventListener
         // listeners AND the `onerror` property — they are
@@ -131,9 +128,7 @@ function createMockCtor(): {
 
 // ─── Mock visibility / online targets ───────────────────────────────────
 
-function createMockTarget(
-  hidden = false,
-): {
+function createMockTarget(hidden = false): {
   target: Pick<Document, 'addEventListener' | 'removeEventListener' | 'hidden'> & {
     _listeners: Map<string, Set<EventListenerOrEventListenerObject>>
     setHidden(v: boolean): void
@@ -343,9 +338,9 @@ describe('createSseClient', () => {
         },
       })
 
-    // Flush the deferred start() — createSseClient schedules start() on the next
-    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
-    vi.advanceTimersByTime(0)
+      // Flush the deferred start() — createSseClient schedules start() on the next
+      // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+      vi.advanceTimersByTime(0)
       instances[0]!.simulateOpen()
       instances[0]!.emit('error')
       // exp = 1000, jitter = 0.5, delay = 500
@@ -376,9 +371,9 @@ describe('createSseClient', () => {
         },
       })
 
-    // Flush the deferred start() — createSseClient schedules start() on the next
-    // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
-    vi.advanceTimersByTime(0)
+      // Flush the deferred start() — createSseClient schedules start() on the next
+      // macrotask so the SSE setup is fully async (see helpers/sseClient.ts).
+      vi.advanceTimersByTime(0)
       instances[0]!.simulateOpen()
       instances[0]!.emit('error')
       // exp = 1000, jitter = 1.0, delay = 1000
@@ -718,6 +713,8 @@ describe('createSseClient', () => {
       pauseWhenHidden: false,
       onEvent: () => {},
       onStateChange: (s) => states.push(s),
+      stallThresholdMs: 120_000,
+      connectedTimeoutMs: 120_000,
     })
 
     // Flush the deferred start() — createSseClient schedules start() on the next
@@ -731,7 +728,7 @@ describe('createSseClient', () => {
     expect(states[1]).toBe('open')
     instances[0]!.emit('error')
     expect(states[2]).toBe('reconnecting')
-    vi.advanceTimersByTime(60_000)
+    vi.advanceTimersByTime(2_000)
     // A new instance was created → 'connecting' emitted.
     expect(states[3]).toBe('connecting')
     instances[1]!.simulateOpen()
@@ -740,14 +737,7 @@ describe('createSseClient', () => {
     client.close()
     // close adds 'closed' at the end.
     expect(states[5]).toBe('closed')
-    expect(states).toEqual([
-      'connecting',
-      'open',
-      'reconnecting',
-      'connecting',
-      'open',
-      'closed',
-    ])
+    expect(states).toEqual(['connecting', 'open', 'reconnecting', 'connecting', 'open', 'closed'])
   })
 
   // 9b. 'connected' server event fires onConnected
@@ -843,10 +833,7 @@ describe('createSseClient', () => {
     instances[0]!.emit('connected', '{"ok":true}')
     onEvent.mockClear()
     instances[0]!.emit('queue_message', '{"action":"queued","message":"hi"}')
-    expect(onEvent).toHaveBeenCalledWith(
-      '{"action":"queued","message":"hi"}',
-      'queue_message',
-    )
+    expect(onEvent).toHaveBeenCalledWith('{"action":"queued","message":"hi"}', 'queue_message')
 
     // A second declared type also routes through.
     onEvent.mockClear()
@@ -1290,6 +1277,8 @@ describe('createSseClient', () => {
       pauseWhenHidden: false,
       onStateChange: (s) => states.push(s),
       onEvent: () => {},
+      stallThresholdMs: 120_000,
+      connectedTimeoutMs: 120_000,
     })
 
     // Flush the deferred start() — createSseClient schedules start() on the next
@@ -1298,10 +1287,10 @@ describe('createSseClient', () => {
     // Burn through 2 retries so attempt=3.
     instances[0]!.simulateOpen()
     instances[0]!.emit('error')
-    vi.advanceTimersByTime(60_000)
+    vi.advanceTimersByTime(2_000)
     instances[1]!.simulateOpen()
     instances[1]!.emit('error')
-    vi.advanceTimersByTime(60_000)
+    vi.advanceTimersByTime(2_000)
     expect(instances.length).toBe(3)
 
     // Manual reconnect — should close the current instance and
