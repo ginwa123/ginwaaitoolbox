@@ -31,8 +31,6 @@ import {
   type ScrollReason,
 } from '@/helpers'
 import FileInput from '../file/FileInput.vue'
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-import FolderExplorer from '../file/FolderExplorer.vue'
 import { useSseBus } from '../../helpers/sseBus'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {

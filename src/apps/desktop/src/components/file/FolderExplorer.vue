@@ -18,7 +18,9 @@ const emit = defineEmits<{
 }>()
 
 // Compute header info from props or fall back to path
-const headerName = computed(() => props.name || (props.cwd ? props.cwd.split('/').pop() || props.cwd : null))
+const headerName = computed(
+  () => props.name || (props.cwd ? props.cwd.split('/').pop() || props.cwd : null),
+)
 
 // Check if we have valid input
 const hasInput = computed(() => !!props.cwd && props.cwd.trim() !== '')
@@ -52,13 +54,17 @@ const loadRoot = async () => {
 }
 
 // Watch for cwd changes
-watch(() => props.cwd, (newCwd) => {
-  nestedEntriesCache.value = {}
-  rootEntries.value = []
-  if (newCwd) {
-    loadRoot()
-  }
-}, { immediate: true })
+watch(
+  () => props.cwd,
+  (newCwd) => {
+    nestedEntriesCache.value = {}
+    rootEntries.value = []
+    if (newCwd) {
+      loadRoot()
+    }
+  },
+  { immediate: true },
+)
 
 // Toggle folder expansion
 const toggleFolder = async (entry: FolderEntry) => {
@@ -75,7 +81,7 @@ const toggleFolder = async (entry: FolderEntry) => {
       const data = await listFolder(pathKey)
       nestedEntriesCache.value = {
         ...nestedEntriesCache.value,
-        [pathKey]: data.entries || []
+        [pathKey]: data.entries || [],
       }
     } catch {
       // Ignore errors
@@ -135,23 +141,33 @@ const handleClick = (entry: FolderEntry) => {
 
 <template>
   <div
-    class="flex flex-col h-full"
-    style="width: 260px; background-color: var(--semantic-sidebar-bg); border-left: 1px solid var(--color-border);"
+    class="flex flex-col h-full w-full min-h-0"
+    style="background-color: var(--semantic-sidebar-bg)"
+    data-testid="folder-explorer"
   >
     <!-- Header -->
     <div
       class="h-10 flex items-center px-3 shrink-0 text-sm font-medium"
-      style="border-bottom: 1px solid var(--color-border); color: var(--semantic-text);"
+      style="border-bottom: 1px solid var(--color-border); color: var(--semantic-text)"
     >
       <span v-if="headerName">{{ headerName }}</span>
-      <span v-else style="color: var(--semantic-text-dim);">No folder</span>
+      <span v-else style="color: var(--semantic-text-dim)">No folder</span>
     </div>
 
     <!-- Loading -->
     <div v-if="isLoading" class="flex-1 flex items-center justify-center">
-      <svg class="animate-spin w-5 h-5" style="color: var(--color-aqua);" viewBox="0 0 24 24" fill="none">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+      <svg
+        class="animate-spin w-5 h-5"
+        style="color: var(--color-aqua)"
+        viewBox="0 0 24 24"
+        fill="none"
+      >
+        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+        <path
+          class="opacity-75"
+          fill="currentColor"
+          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+        />
       </svg>
     </div>
 
@@ -161,7 +177,7 @@ const handleClick = (entry: FolderEntry) => {
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
       <span class="text-2xl mb-2">⚠️</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim);">
+      <p class="text-xs" style="color: var(--semantic-text-dim)">
         {{ loadError }}
       </p>
     </div>
@@ -172,9 +188,7 @@ const handleClick = (entry: FolderEntry) => {
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
       <span class="text-3xl mb-3">📂</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim);">
-        Pass a cwd to browse files
-      </p>
+      <p class="text-xs" style="color: var(--semantic-text-dim)">Pass a cwd to browse files</p>
     </div>
 
     <!-- Empty folder -->
@@ -183,9 +197,7 @@ const handleClick = (entry: FolderEntry) => {
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
       <span class="text-2xl mb-2">📭</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim);">
-        Empty folder
-      </p>
+      <p class="text-xs" style="color: var(--semantic-text-dim)">Empty folder</p>
     </div>
 
     <!-- File/Folder List -->
@@ -205,7 +217,8 @@ const handleClick = (entry: FolderEntry) => {
           v-if="entry.is_directory"
           class="w-3 text-xs flex justify-center transition-transform duration-150"
           :style="{ transform: isExpanded(path) ? 'rotate(90deg)' : 'rotate(0deg)' }"
-        >▶</span>
+          >▶</span
+        >
         <span v-else class="w-3"></span>
 
         <!-- Name -->
@@ -217,7 +230,7 @@ const handleClick = (entry: FolderEntry) => {
     <div
       v-if="cwd"
       class="h-8 flex items-center px-3 shrink-0 text-xs truncate"
-      style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
+      style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim)"
       :title="cwd"
     >
       {{ cwd }}

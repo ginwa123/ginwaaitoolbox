@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
+import FolderExplorer from '../../file/FolderExplorer.vue'
 import SidebarDiffPanel from './SidebarDiffPanel.vue'
 import TerminalTab from './TerminalTab.vue'
+import { useInjectOpenInCodeEditor } from '../../../composables/useCodeEditor'
+import type { FolderEntry } from '../../../api'
 import type { DiffSelection } from './parseUnifiedDiff'
 
 const props = defineProps<{
@@ -36,23 +40,48 @@ const panelRef = ref<InstanceType<typeof SidebarDiffPanel> | null>(null)
 
 const STORAGE_KEY_PANEL = 'nalar-right-sidebar-panel'
 
-type SidebarPanel = 'changes' | 'terminal'
+type SidebarPanel = 'explorer' | 'changes' | 'terminal'
 
-function loadPanel(): SidebarPanel {
+function readSidebarParam(): SidebarPanel | null {
   try {
     const params = new URLSearchParams(window.location.search)
     const q = params.get('sidebar')
-    if (q === 'terminal' || q === 'changes') return q
+    if (q === 'terminal' || q === 'changes' || q === 'explorer') return q
+  } catch {
+    // Non-browser (tests/SSR) — fall through.
+  }
+  return null
+}
+
+function loadPanel(): SidebarPanel {
+  const q = readSidebarParam()
+  if (q) return q
+  try {
     const saved = localStorage.getItem(STORAGE_KEY_PANEL)
-    if (saved === 'terminal' || saved === 'changes') return saved
+    if (saved === 'terminal' || saved === 'changes' || saved === 'explorer') return saved
   } catch {
     // Non-browser (tests/SSR) — fall through to default.
   }
-  return 'changes'
+  return 'explorer'
 }
 
 const activePanel = ref<SidebarPanel>(loadPanel())
 
+// Router is optional: unit mounts (ChatRightSidebar.spec) have no router.
+// Grab once at setup so setPanel can sync ?sidebar= without calling
+// useRouter inside the click handler.
+let router: ReturnType<typeof useRouter> | null = null
+let route: ReturnType<typeof useRoute> | null = null
+try {
+  router = useRouter()
+  route = useRoute()
+} catch {
+  router = null
+  route = null
+}
+
+// Every view switch lands in the URL (?sidebar=explorer|changes|terminal)
+// so refresh, Back/Forward, and shared links restore the same panel.
 const setPanel = (panel: SidebarPanel) => {
   activePanel.value = panel
   try {
@@ -60,6 +89,20 @@ const setPanel = (panel: SidebarPanel) => {
   } catch {
     // ignore
   }
+  if (router && route) {
+    const query = { ...route.query, sidebar: panel }
+    router.replace({ path: route.path, query }).catch(() => {})
+  }
+}
+
+// Explorer file-click opens in the in-app CodeEditor (same flow as the
+// center diff's Open button). Captured at setup: inject() only resolves
+// during setup — calling it inside the click handler would return null.
+// Null-guarded for mounts outside an AppLayout subtree (unit tests).
+const openInEditor = useInjectOpenInCodeEditor()
+const onExplorerFileClick = (file: FolderEntry) => {
+  if (!openInEditor || !props.cwd) return
+  void openInEditor({ filePath: file.path, fileName: file.name, cwd: props.cwd })
 }
 
 const isResizing = ref(false)
@@ -129,7 +172,13 @@ defineExpose({
       style="border-bottom: 1px solid var(--color-border)"
     >
       <span class="text-xs font-semibold flex-1" style="color: var(--semantic-text)">
-        Changes
+        {{
+          activePanel === 'explorer'
+            ? 'Explorer'
+            : activePanel === 'terminal'
+              ? 'Terminal'
+              : 'Changes'
+        }}
       </span>
       <button
         type="button"
@@ -148,6 +197,21 @@ defineExpose({
       role="tablist"
       aria-label="Right sidebar panel"
     >
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="activePanel === 'explorer'"
+        class="flex-1 text-center text-xs rounded-t px-2 py-1.5"
+        :style="
+          activePanel === 'explorer'
+            ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
+            : 'color: var(--semantic-text-dim)'
+        "
+        data-testid="chat-right-sidebar-tab-explorer"
+        @click="setPanel('explorer')"
+      >
+        Explorer
+      </button>
       <button
         type="button"
         role="tab"
@@ -180,8 +244,15 @@ defineExpose({
       </button>
     </div>
     <div class="flex-1 min-h-0">
-      <!-- Both panels stay mounted (v-show, not v-if) so the PTY
+      <!-- All three panels stay mounted (v-show, not v-if) so the PTY
       session survives tab switches; only the visible one paints. -->
+      <div
+        v-show="activePanel === 'explorer'"
+        class="h-full min-h-0"
+        data-testid="chat-right-sidebar-explorer"
+      >
+        <FolderExplorer :cwd="cwd" @file-click="onExplorerFileClick" />
+      </div>
       <div v-show="activePanel === 'terminal'" class="h-full min-h-0">
         <TerminalTab :cwd="cwd" :session-key="sessionKey" />
       </div>
