@@ -32,6 +32,7 @@ import {
 } from '@/helpers'
 import FileInput from '../file/FileInput.vue'
 import { useSseBus } from '../../helpers/sseBus'
+import { readGitStatusCache } from '../../helpers/gitStatusCache'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {
   isBackgroundCommandOutput,
@@ -1390,10 +1391,15 @@ const handleFallbackJumpToLine = (line: number) => {
 const gitStatus = ref<api.GitStatus | null>(null)
 let gitStatusSeq = 0
 let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null
+// cwd the current `gitStatus` was fetched/painted for — gates the
+// cache-first paint so a 30s poll tick never repaints the localStorage
+// copy over a fresher in-memory value (only init / cwd switches do).
+let gitStatusCwd = ''
 
 const checkGitStatus = async () => {
   if (!effectiveCwd.value) {
     gitStatus.value = null
+    gitStatusCwd = ''
     return
   }
   // Stale-response guard: the worktree binding can flip twice in quick
@@ -1402,6 +1408,16 @@ const checkGitStatus = async () => {
   // shows A's branch while the sidebar already follows B.
   const seq = ++gitStatusSeq
   const cwd = effectiveCwd.value
+  // Cache-first paint: on init or a cwd switch, synchronously show the
+  // last-known status from localStorage so the chip has a branch to
+  // render while the remote fetch below revalidates it in the
+  // background (stale-while-revalidate). Poll ticks for the same cwd
+  // skip this — their in-memory value is newer than the cache.
+  if (gitStatusCwd !== cwd) {
+    gitStatusCwd = cwd
+    const cached = readGitStatusCache(cwd)
+    if (cached) gitStatus.value = cached
+  }
   try {
     const status = await api.getGitStatus(cwd)
     if (seq !== gitStatusSeq) return
@@ -3909,6 +3925,9 @@ watch(
       checkGitStatus()
     } else {
       gitStatus.value = null
+      // Reset the paint gate too — returning to the same cwd later
+      // must re-read the cache instead of waiting out the fetch.
+      gitStatusCwd = ''
     }
   },
 )

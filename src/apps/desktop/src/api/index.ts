@@ -2,6 +2,7 @@
 // All components should use this file instead of making direct fetch calls
 
 import { createSseClient, type SseClient } from '../helpers/sseClient'
+import { readGitStatusCache, writeGitStatusCache } from '../helpers/gitStatusCache'
 
 export const API_BASE = '/api'
 
@@ -3075,19 +3076,27 @@ export interface GitChangesResponse {
 
 export async function getGitStatus(cwd: string): Promise<GitStatus> {
   try {
-    return await apiFetch<GitStatus>(`/git/status?path=${encodeURIComponent(cwd)}`)
+    const status = await apiFetch<GitStatus>(`/git/status?path=${encodeURIComponent(cwd)}`)
+    writeGitStatusCache(cwd, status)
+    return status
   } catch {
-    // Return non-repo status on error (apiFetch also fires a toast
-    // notification on non-2xx; the empty status fallback ensures the
-    // UI doesn't crash while the user sees the error).
-    return {
-      is_git_repo: false,
-      branch: '',
-      has_changes: false,
-      is_clean: true,
-      current: '',
-      status: 'error',
-    }
+    // Stale-while-revalidate: a failed refresh falls back to the
+    // last-known status for this cwd so the branch chip keeps showing
+    // something real instead of blanking on a transient backend error.
+    // Only when there is no cache at all do we return the empty
+    // non-repo status (apiFetch also fires a toast notification on
+    // non-2xx; the empty status fallback ensures the UI doesn't crash
+    // while the user sees the error).
+    return (
+      readGitStatusCache(cwd) ?? {
+        is_git_repo: false,
+        branch: '',
+        has_changes: false,
+        is_clean: true,
+        current: '',
+        status: 'error',
+      }
+    )
   }
 }
 
