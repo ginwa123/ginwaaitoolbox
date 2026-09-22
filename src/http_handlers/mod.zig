@@ -23,6 +23,9 @@ pub const sessionCreateHandler = @import("session_create.zig").sessionCreateHand
 pub const sessionUpdateHandler = @import("session_update.zig").sessionUpdateHandler;
 pub const sessionMarkTouchedHandler = @import("session_mark_touched.zig").sessionMarkTouchedHandler;
 pub const sessionListHandler = @import("session_list.zig").sessionListHandler;
+// GET /api/llm/session/:session_id — single-session detail incl.
+// workspace_id (workspace-scoped sessions plan).
+pub const sessionGetHandler = @import("session_get.zig").sessionGetHandler;
 pub const sessionStopHandler = @import("session_stop.zig").sessionStopHandler;
 // POST /api/llm/session/:session_id/answer — resolve a pending `ask_user`
 // question (Migration 087), rewrite its tool-result row and resume the run.

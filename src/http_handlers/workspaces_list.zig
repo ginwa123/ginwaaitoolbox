@@ -4,7 +4,19 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const sqlite = nalarcore.sqlite;
 
-pub const WorkspaceWithItemsResponse = struct { id: []const u8, name: []const u8, created_at: ?[]const u8 = null, updated_at: ?[]const u8 = null, icon: []const u8 = "📁", items: []const WorkspaceItemWithTasksResponse, expanded: bool = false };
+pub const WorkspaceWithItemsResponse = struct {
+    id: []const u8,
+    name: []const u8,
+    created_at: ?[]const u8 = null,
+    updated_at: ?[]const u8 = null,
+    icon: []const u8 = "📁",
+    items: []const WorkspaceItemWithTasksResponse,
+    expanded: bool = false,
+    /// Number of `workspace_items` rows for this workspace. Populated
+    /// regardless of `is_include_items` (one GROUP BY query, no N+1)
+    /// so a badge can render before/without the lazy items fetch.
+    items_count: usize = 0,
+};
 
 pub const WorkspaceItemWithTasksResponse = struct {
     id: []const u8,
@@ -28,6 +40,10 @@ pub const WorkspacesListError = error{
 /// Query params:
 ///   - is_include_items (default: "true") — when "false", skip the workspace_items
 ///     and workspace_item_tasks queries and return `items: []` for each workspace.
+///
+/// Every workspace row carries `items_count` (its `workspace_items`
+/// row count) either way — computed from one grouped query, so the
+/// badge stays cheap even when the items themselves are lazy-loaded.
 pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
@@ -66,8 +82,10 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
     // DESC is a tiebreaker for any workspaces that share a position
     // (shouldn't happen post-reorder, but defense in depth).
     var rows = try db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY position DESC, created_at DESC", &[_][]const u8{});
+    defer rows.deinit();
 
     var workspace_ids = std.ArrayList([]const u8).empty;
+    defer workspace_ids.deinit(alloc);
 
     var workspaces_data = std.ArrayList(struct {
         id: []const u8,
@@ -75,6 +93,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
         created_at: ?[]const u8,
         updated_at: ?[]const u8,
     }).empty;
+    defer workspaces_data.deinit(alloc);
 
     while (true) {
         const row_opt = try rows.next();
@@ -88,11 +107,36 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
             .created_at = if (row.values[2].len > 0) try alloc.dupe(u8, row.values[2]) else null,
             .updated_at = if (row.values[3].len > 0) try alloc.dupe(u8, row.values[3]) else null,
         });
+        // Values are duped above; row memory is owned by the row.
+        row.deinit(alloc);
     }
 
     // No workspaces? Return empty
     if (workspaces_data.items.len == 0) {
         return WorkspacesListResponse{ .workspaces = &[_]WorkspaceWithItemsResponse{} };
+    }
+
+    // Items count per workspace — ONE grouped query for all rows
+    // (no N+1). Keys are duped because row memory dies with
+    // row.deinit; freed with the map on function exit. Populated
+    // for BOTH branches: the badge must not depend on
+    // is_include_items.
+    var items_count_by_ws: std.StringHashMap(usize) = .init(alloc);
+    defer {
+        var key_it = items_count_by_ws.keyIterator();
+        while (key_it.next()) |k| alloc.free(k.*);
+        items_count_by_ws.deinit();
+    }
+    {
+        var count_rows = try db.query(alloc, "SELECT workspace_id, COUNT(*) FROM workspace_items GROUP BY workspace_id", &.{});
+        defer count_rows.deinit();
+        while (try count_rows.next()) |row| {
+            defer row.deinit(alloc);
+            if (row.values[0].len == 0) continue;
+            const key = try alloc.dupe(u8, row.values[0]);
+            errdefer alloc.free(key);
+            try items_count_by_ws.put(key, std.fmt.parseInt(usize, row.values[1], 10) catch 0);
+        }
     }
 
     // Build final response
@@ -145,6 +189,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
                 .created_at = if (row.values[5].len > 0) try alloc.dupe(u8, row.values[5]) else null,
                 .updated_at = if (row.values[6].len > 0) try alloc.dupe(u8, row.values[6]) else null,
             });
+            row.deinit(alloc);
         }
 
         // Fetch all tasks for these items
@@ -197,6 +242,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
                     // per-request arena; arena reaps it on teardown.
                     .tags = try alloc.dupe(u8, row.values[9]),
                 });
+                row.deinit(alloc);
             }
         }
 
@@ -233,6 +279,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
                 .icon = "📁",
                 .items = try workspace_items.toOwnedSlice(alloc),
                 .expanded = false,
+                .items_count = items_count_by_ws.get(ws.id) orelse 0,
             });
         }
     } else {
@@ -246,6 +293,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
                 .icon = "📁",
                 .items = &[_]WorkspaceItemWithTasksResponse{},
                 .expanded = false,
+                .items_count = items_count_by_ws.get(ws.id) orelse 0,
             });
         }
     }
@@ -253,5 +301,117 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
     return WorkspacesListResponse{
         .workspaces = try workspaces_list.toOwnedSlice(alloc),
     };
+}
+
+// =====================================================================
+// Tests — items_count (workspace-scoped sessions plan)
+// =====================================================================
+//
+// Exercises the is_include_items=false branch directly (that branch
+// is leak-clean under testing.allocator). The include_items=true
+// branch's items_count is guarded over the wire by
+// tests/functional/session_list_workspace_test.py.
+
+const testing = std.testing;
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb() !TestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspaces (
+        \\  id TEXT PRIMARY KEY,
+        \\  name TEXT NOT NULL,
+        \\  created_at DATETIME,
+        \\  updated_at DATETIME,
+        \\  position INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\  id TEXT PRIMARY KEY,
+        \\  workspace_id TEXT,
+        \\  item_type TEXT,
+        \\  name TEXT,
+        \\  path TEXT,
+        \\  position INTEGER,
+        \\  created_at DATETIME,
+        \\  updated_at DATETIME
+        \\)
+    , &.{});
+
+    // ws_1 has 2 items, ws_2 has 1, ws_3 has none (badge = 0).
+    try db.exec(alloc,
+        \\INSERT INTO workspaces (id, name, created_at, updated_at, position) VALUES
+        \\  ('ws_1', 'One', datetime('now'), datetime('now'), 2),
+        \\  ('ws_2', 'Two', datetime('now'), datetime('now'), 1),
+        \\  ('ws_3', 'Three', datetime('now'), datetime('now'), 0)
+    , &.{});
+    try db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES
+        \\  ('i1', 'ws_1', 'kanban', 'K1', '/p/1', 0, datetime('now'), datetime('now')),
+        \\  ('i2', 'ws_1', 'folder', 'F1', '', 1, datetime('now'), datetime('now')),
+        \\  ('i3', 'ws_2', 'kanban', 'K2', '/p/2', 0, datetime('now'), datetime('now'))
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn teardown(ctx: *TestCtx) void {
+    ctx.db.deinit();
+    ctx.threaded.deinit();
+}
+
+/// Free every allocation fetchWorkspacesList hands back for the
+/// is_include_items=false shape (the items slice is a static empty
+/// literal — free() no-ops on zero-length slices).
+fn freeResponse(response: WorkspacesListResponse) void {
+    const alloc = testing.allocator;
+    for (response.workspaces) |ws| {
+        alloc.free(ws.id);
+        alloc.free(ws.name);
+        if (ws.created_at) |v| alloc.free(v);
+        if (ws.updated_at) |v| alloc.free(v);
+        alloc.free(ws.items);
+    }
+    alloc.free(response.workspaces);
+}
+
+test "fetchWorkspacesList: items_count is populated even when items are skipped" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    const response = try fetchWorkspacesList(alloc, &ctx.db, false);
+    defer freeResponse(response);
+
+    try testing.expectEqual(@as(usize, 3), response.workspaces.len);
+
+    var checked: usize = 0;
+    for (response.workspaces) |ws| {
+        // Items were skipped — the badge must still be accurate.
+        try testing.expectEqual(@as(usize, 0), ws.items.len);
+        if (std.mem.eql(u8, ws.id, "ws_1")) {
+            try testing.expectEqual(@as(usize, 2), ws.items_count);
+            checked += 1;
+        } else if (std.mem.eql(u8, ws.id, "ws_2")) {
+            try testing.expectEqual(@as(usize, 1), ws.items_count);
+            checked += 1;
+        } else if (std.mem.eql(u8, ws.id, "ws_3")) {
+            try testing.expectEqual(@as(usize, 0), ws.items_count);
+            checked += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, 3), checked);
 }
 
