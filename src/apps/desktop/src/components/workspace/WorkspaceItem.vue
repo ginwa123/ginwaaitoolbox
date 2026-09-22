@@ -26,9 +26,9 @@ const props = defineProps<{
   isActive: boolean
   workspaceId: string
   // Drag-and-drop visual state, owned by the parent
-  // <WorkspaceList> and passed down so the <li> can dim when
+  // <ProjectsList> and passed down so the <li> can dim when
   // being dragged and show a violet drop indicator on hover. The
-  // handlers themselves live in <WorkspaceList> (event delegation
+  // handlers themselves live in <ProjectsList> (event delegation
   // on the <ul>); we just need the visual signal here. See
   // docs/plans/2026-06-16-workspace-item-position-reorder.md.
   isItemDragging?: boolean
@@ -39,7 +39,7 @@ const props = defineProps<{
   // (false → drop will land BEFORE this row, draw a top-line
   // indicator). Lets the user see WHERE the drop will land so
   // they can fine-tune before releasing the mouse. See
-  // WorkspaceList.handleItemDrop for the index math that
+  // ProjectsList.handleItemDrop for the index math that
   // accompanies this visual.
   isItemDragOverInsertAfter?: boolean
 }>()
@@ -54,8 +54,8 @@ const emit = defineEmits<{
   delete: [item: WorkspaceItem]
   addTask: [item: WorkspaceItem]
   // The three task-level events are emitted by the child
-  // <WorkspaceItemTaskRow> and re-emitted verbatim up to WorkspaceList.
-  // WorkspaceList's contract with Sidebar is unchanged; this is a
+  // <WorkspaceItemTaskRow> and re-emitted verbatim up to ProjectsList.
+  // ProjectsList's contract with Sidebar is unchanged; this is a
   // pure pass-through (see handleSelectTask / handleDeleteTask /
   // handleRenameTask below).
   selectTask: [taskId: string]
@@ -63,7 +63,7 @@ const emit = defineEmits<{
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // The user must click to fetch the next page of tasks for this
-  // item. WorkspaceList forwards the event to Sidebar, which calls
+  // item. ProjectsList forwards the event to Sidebar, which calls
   // workspacesStore.loadMoreTasks. See Design Note 6 in
   // docs/plans/2026-06-10-workspace-item-task-pagination.md — the
   // button lives here (not in WorkspaceItemTaskRow.vue) because it is
@@ -73,13 +73,13 @@ const emit = defineEmits<{
   // NEW (pinned-tasks feature, plan:
   // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md):
   // pin/unpin and drag-reorder of the pinned subset, both forwarded
-  // up to WorkspaceList → Sidebar. See handlePinTask /
+  // up to ProjectsList → Sidebar. See handlePinTask /
   // handleReorderPinnedTasks below.
   pinTask: [workspaceId: string, itemId: string, taskId: string, isPinned: boolean]
   reorderPinnedTasks: [workspaceId: string, itemId: string, orderedIds: string[]]
   // NEW (design-pages-in-workspace-tree plan, 2026-08-06): design
   // page events from <DesignPageRow> (children of expanded design
-  // items). WorkspaceList forwards them to Sidebar which calls the
+  // items). ProjectsList forwards them to Sidebar which calls the
   // store actions.
   selectDesignPage: [workspaceId: string, itemId: string, pageId: string]
   deleteDesignPage: [workspaceId: string, itemId: string, pageId: string]
@@ -157,7 +157,7 @@ const handleClick = (event?: MouseEvent) => {
   // (2026-09-10: no expand on kanban mode). Only `design` + `kanban` skip the toggle
   // (its chevron is a separate click target via handleChevronToggle
   // so expanding doesn't activate the item). The selectItem event
-  // still fires for ALL types (handled in WorkspaceList → Sidebar →
+  // still fires for ALL types (handled in ProjectsList → Sidebar →
   // workspacesStore.setActiveWorkspaceItem), so clicking a kanban
   // still activates it; AppLayout just routes the active item to the
   // kanban board instead of a list.
@@ -210,8 +210,8 @@ const handleAddTask = (event: Event) => {
 
 // Pass-through handlers: <WorkspaceItemTaskRow> emits these three events
 // with the full payload (workspaceId, itemId, taskId, currentName), and
-// we forward them up to <WorkspaceList> verbatim. The signatures match
-// the existing WorkspaceList / Sidebar contract — see the pre-split
+// we forward them up to <ProjectsList> verbatim. The signatures match
+// the existing ProjectsList / Sidebar contract — see the pre-split
 // version of this file for the inline handlers that previously lived
 // here. No business logic; pure forwarding.
 const handleSelectTask = (taskId: string) => {
@@ -317,7 +317,7 @@ const handleLoadMoreTasks = (event: Event) => {
 }
 
 // NEW (pinned-tasks feature): pin/unpin forwarded from
-// <WorkspaceItemTaskRow>. WorkspaceList re-emits these to Sidebar.
+// <WorkspaceItemTaskRow>. ProjectsList re-emits these to Sidebar.
 const handlePinTask = (
   workspaceId: string,
   itemId: string,
@@ -351,7 +351,7 @@ const handleSelectDesignPage = (page: DesignPage) => {
   // store's setActiveWorkspaceItem flow doesn't race.
   workspacesStore.setActiveDesignPage(page.id)
   // 2. Activate the design item (which fires the click emit that
-  // WorkspaceList → Sidebar route to the design view). Only do this
+  // ProjectsList → Sidebar route to the design view). Only do this
   // if it's not already active — otherwise we re-emit and trigger
   // an unnecessary watcher in AppLayout.
   if (workspacesStore.activeWorkspaceItemId !== props.item.id) {
@@ -388,7 +388,7 @@ const handleDeleteDesignPage = (page: DesignPage) => {
 }
 
 // NEW (rename-design-pages plan, 2026-08-06): pass-through for the
-// "Rename" item from the <DesignPageRow> ⋮ menu. WorkspaceList /
+// "Rename" item from the <DesignPageRow> ⋮ menu. ProjectsList /
 // Sidebar are responsible for opening the modal; we just bubble
 // the payload up the chain.
 const handleRenameDesignPage = (page: DesignPage) => {
@@ -397,7 +397,7 @@ const handleRenameDesignPage = (page: DesignPage) => {
 
 // "+ Add Page" — emits to Sidebar which calls the store action.
 // The store handles the API call + cache update + setting the new
-// page as active. WorkspaceList / Sidebar manage the actual fetch
+// page as active. ProjectsList / Sidebar manage the actual fetch
 // rather than this component, mirroring how `addTask` is wired
 // (this component never calls the store directly for mutations).
 const handleAddDesignPage = (event: Event) => {
@@ -427,7 +427,7 @@ const handlePinnedDragStart = (event: DragEvent) => {
   if (!taskId) return
   // Use a custom MIME type instead of `text/plain`. The pinned
   // region lives inside a workspace-item `<li>`, and the parent's
-  // <WorkspaceList> attaches its own `@dragstart` handler on the
+  // <ProjectsList> attaches its own `@dragstart` handler on the
   // outer `<ul>` for item reorder. Both handlers fire on the same
   // dragstart (this one first, then the parent after bubbling),
   // and `setData('text/plain', ...)` is destructive — whichever
@@ -516,7 +516,7 @@ const handlePinnedDrop = (event: DragEvent) => {
   if (!dataTransfer) return
   // Read from the custom MIME type written by handlePinnedDragStart.
   // Using `text/plain` here would also work in isolation, but
-  // colliding with the parent <WorkspaceList>'s `text/plain`
+  // colliding with the parent <ProjectsList>'s `text/plain`
   // payload (item id) means whichever handler ran last on the
   // dragstart wins. See the long comment in handlePinnedDragStart.
   const draggedId = dataTransfer.getData('application/x-pinned-task-id')
@@ -609,7 +609,7 @@ const handlePinnedDrop = (event: DragEvent) => {
                kanban mode) so every other row shows
                the same ▶/▼ affordance. Unicode right-pointing
                caret rotated 90° when expanded, matching the
-               WorkspaceList chevron style for visual consistency.
+               ProjectsList chevron style for visual consistency.
                data-testid="item-row-chevron" so tests can verify
                DOM-order position relative to the spinner (was an
                SVG path before the minimalist-rewrite).
@@ -869,7 +869,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           @delete-page="handleDeleteDesignPage"
         />
         <!-- "+ Add Page" button (bare text + hover, matching the
-             kanban column "+ Add column" pattern in WorkspaceList's
+             kanban column "+ Add column" pattern in ProjectsList's
              "+ Add Item" button). The new page becomes active so the
              user immediately sees the empty canvas. -->
         <button

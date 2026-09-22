@@ -2,7 +2,7 @@
  * Unit tests for the workspaces store's reorderWorkspaceItems action.
  *
  * reorderWorkspaceItems is the optimistic-update action called by
- * the WorkspaceList drag-and-drop handler when the user reorders
+ * the ProjectsList drag-and-drop handler when the user reorders
  * items inside an expanded workspace. It reorders the workspace's
  * `items` array immediately (so the UI snaps on drop), then POSTs
  * the new order to the backend, rolling back on error.

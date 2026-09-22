@@ -26,7 +26,7 @@
 // the item row (chevron / name / hover buttons) and the expansion
 // state stay in WorkspaceItem. Event payload is identical to the
 // pre-split contract; WorkspaceItem re-emits these events up to
-// WorkspaceList unchanged.
+// ProjectsList unchanged.
 //
 // 2026-07-02: split the card variant out into
 // WorkspaceItemTaskCard.vue. The shared logic (event handlers +

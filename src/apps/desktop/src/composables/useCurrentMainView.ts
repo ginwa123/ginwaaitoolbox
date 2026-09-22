@@ -40,7 +40,11 @@ export type CurrentMainView =
   | {
       kind: 'workspace'
       workspaceId?: string
-      itemId: string
+      /** Optional: absent for a standalone `?workspaceId=X` selection
+       *  with no item open (header dropdown switch — revamp plan
+       *  2026-09-22). Row-highlight consumers compare against it, so
+       *  `undefined` simply means "no row active". */
+      itemId?: string
       pageId?: string
       chatTaskId?: string
     }
@@ -81,6 +85,12 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
           chatTaskId: parsed.chatTaskId ?? undefined,
         }
       }
+      // Standalone workspace selection: `?view=workspace&workspaceId=X`
+      // with no item open (header dropdown switch — revamp plan
+      // 2026-09-22). itemId stays undefined → no sidebar row active.
+      if (typeof q.workspaceId === 'string' && q.workspaceId.length > 0) {
+        return { kind: 'workspace', workspaceId: q.workspaceId }
+      }
       return { kind: 'none' }
     }
     // kanban-settings page (path route /app/kanban/:itemId/settings).
@@ -98,16 +108,12 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
     // — the kanban board itself stays at the existing ?view=workspace
     // URL, so a future migration to /app/kanban/:itemId would be a
     // separate plan.
-    const kanbanSettingsMatch = /^\/app\/kanban\/([^/]*)\/settings\/?$/.exec(
-      route?.path ?? '',
-    )
+    const kanbanSettingsMatch = /^\/app\/kanban\/([^/]*)\/settings\/?$/.exec(route?.path ?? '')
     if (kanbanSettingsMatch) {
       return {
         kind: 'kanban-settings',
         workspaceId:
-          typeof q.workspaceId === 'string' && q.workspaceId.length > 0
-            ? q.workspaceId
-            : undefined,
+          typeof q.workspaceId === 'string' && q.workspaceId.length > 0 ? q.workspaceId : undefined,
         itemId: kanbanSettingsMatch[1] ?? '',
       }
     }

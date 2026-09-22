@@ -218,6 +218,9 @@ export interface Task {
 const STORAGE_KEY_WORKSPACE_EXPANDED = 'nalar-workspace-expanded'
 const STORAGE_KEY_WORKSPACE_ITEM_EXPANDED = 'nalar-workspace-item-expanded'
 const STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED = 'nalar-workspace-item-tasks-expanded'
+// Persisted header-dropdown selection (plan:
+// docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
+const STORAGE_KEY_ACTIVE_WORKSPACE = 'nalar-active-workspace'
 
 // Kanban task tags normalization (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md).
@@ -509,6 +512,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Current active workspace item (for main content/FolderExplorer)
   const activeWorkspaceItemId = ref<string | null>(null)
 
+  // Explicitly selected workspace (header dropdown + Projects
+  // section). Set by URL restore (?workspaceId=…) and
+  // setActiveWorkspace; null falls back to the persisted choice →
+  // item-derived workspace → first workspace inside the
+  // `activeWorkspace` getter (plan:
+  // docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
+  const activeWorkspaceId = ref<string | null>(null)
+
   // Set of expanded workspace item IDs (for showing tasks list - allows multiple)
   const expandedItemIds = ref<Record<string, boolean>>({})
 
@@ -694,6 +705,37 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       STORAGE_KEY_WORKSPACE_ITEM_TASKS_EXPANDED,
       JSON.stringify(Object.keys(expandedIds)),
     )
+  }
+
+  // jsdom 29 dropped localStorage from the default globals — specs
+  // that don't install the stub must not crash the getter.
+  function readActiveWorkspaceKey(): string | null {
+    try {
+      return localStorage.getItem(STORAGE_KEY_ACTIVE_WORKSPACE)
+    } catch {
+      return null
+    }
+  }
+
+  function writeActiveWorkspaceKey(value: string | null) {
+    try {
+      if (value === null) {
+        localStorage.removeItem(STORAGE_KEY_ACTIVE_WORKSPACE)
+      } else {
+        localStorage.setItem(STORAGE_KEY_ACTIVE_WORKSPACE, value)
+      }
+    } catch {
+      // Storage unavailable — the selection just isn't persisted.
+    }
+  }
+
+  // The persisted dropdown selection, validated against the loaded
+  // list — a stale id (workspace deleted in another tab / by API)
+  // falls through to the item-derived / first-workspace fallbacks.
+  function storedActiveWorkspace(): Workspace | undefined {
+    const saved = readActiveWorkspaceKey()
+    if (!saved) return undefined
+    return workspaces.value.find((ws) => ws.id === saved)
   }
 
   // Initialize store by loading data from API
@@ -942,10 +984,19 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return allWorkspaceItems.value.find((item) => item.id === activeWorkspaceItemId.value)
   })
 
-  // Get active workspace (parent)
+  // Get active workspace. Precedence (plan decision log):
+  // explicit selection (dropdown / URL restore) → persisted choice
+  // → workspace owning the active item (legacy fallback) → first
+  // workspace, so the dropdown and Projects section always have a
+  // target once any workspace exists.
   const activeWorkspace = computed(() => {
-    return workspaces.value.find((ws) =>
-      ws.items.some((item) => item.id === activeWorkspaceItemId.value),
+    return (
+      workspaces.value.find((ws) => ws.id === activeWorkspaceId.value) ||
+      storedActiveWorkspace() ||
+      workspaces.value.find((ws) =>
+        ws.items.some((item) => item.id === activeWorkspaceItemId.value),
+      ) ||
+      workspaces.value[0]
     )
   })
 
@@ -1033,21 +1084,6 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
-  function toggleWorkspace(workspaceId: string) {
-    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
-    if (workspace) {
-      workspace.expanded = !workspace.expanded
-      // Persist to localStorage
-      const expandedWorkspaces = loadExpandedWorkspaces()
-      if (workspace.expanded) {
-        expandedWorkspaces.add(workspaceId)
-      } else {
-        expandedWorkspaces.delete(workspaceId)
-      }
-      saveExpandedWorkspaces(expandedWorkspaces)
-    }
-  }
-
   // Toggle workspace item expansion (for nested folder contents)
   function toggleWorkspaceItem(workspaceId: string, itemId: string) {
     const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
@@ -1069,6 +1105,28 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
   function setActiveWorkspaceItem(itemId: string | null) {
     activeWorkspaceItemId.value = itemId
+  }
+
+  // Select a workspace (header dropdown / URL restore). Clears an
+  // active item/task that belongs to a DIFFERENT workspace so the
+  // Projects section and main view never mix two workspace
+  // contexts (plan:
+  // docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
+  function setActiveWorkspace(workspaceId: string) {
+    if (workspaces.value.length > 0 && !workspaces.value.some((ws) => ws.id === workspaceId)) {
+      return
+    }
+    activeWorkspaceId.value = workspaceId
+    writeActiveWorkspaceKey(workspaceId)
+    if (activeWorkspaceItemId.value) {
+      const owner = workspaces.value.find((ws) =>
+        ws.items.some((item) => item.id === activeWorkspaceItemId.value),
+      )
+      if (owner && owner.id !== workspaceId) {
+        activeWorkspaceItemId.value = null
+        activeTaskId.value = null
+      }
+    }
   }
 
   // Toggle expanded state for workspace item (show/hide tasks list)
@@ -3781,6 +3839,13 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         }
       })
     }
+    // Deleting the selected workspace falls back down the
+    // activeWorkspace precedence chain; drop the stale persisted id
+    // so the next load doesn't resurrect it.
+    if (activeWorkspaceId.value === workspaceId) {
+      activeWorkspaceId.value = null
+      writeActiveWorkspaceKey(null)
+    }
 
     // Sync with API
     try {
@@ -4132,7 +4197,6 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeTaskWorkspaceItemId,
     // Actions
     init,
-    toggleWorkspace,
     toggleWorkspaceItem,
     toggleExpandedItem,
     setActiveWorkspaceItem,
@@ -4150,6 +4214,8 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     addDesignPage,
     resetDesignPagesCache,
     addWorkspace,
+    activeWorkspaceId,
+    setActiveWorkspace,
     addWorkspaceItem,
     removeWorkspaceItem,
     removeWorkspace,

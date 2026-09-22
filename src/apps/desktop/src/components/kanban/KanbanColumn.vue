@@ -461,7 +461,7 @@ const handleSortModalKeyDown = (event: KeyboardEvent) => {
 }
 
 // Close the menu when clicking outside. Mirror the pattern in
-// WorkspaceList.vue's `handleClickOutside`.
+// ProjectsList.vue's `handleClickOutside`.
 const handleDocumentClick = (event: MouseEvent) => {
   if (!menuOpen.value) return
   const target = event.target as Node | null
@@ -537,7 +537,7 @@ const handleDrop = (event: DragEvent) => {
 
 // Mirror KanbanCard's dragstart so the source card can dim while
 // dragging (visual cue). We listen on the cards container with
-// event delegation, the same pattern as WorkspaceList's item DnD.
+// event delegation, the same pattern as ProjectsList's item DnD.
 const handleDragStartCapture = () => {
   isDragging.value = true
 }
