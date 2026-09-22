@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 
 const STORAGE_KEY = 'nalar-settings-active-tab'
 
-type TabId = 'general' | 'profiles' | 'mcp'
+type TabId = 'general' | 'profiles' | 'mcp' | 'tools'
 
 const props = defineProps<{
   modelValue: TabId
@@ -26,21 +27,36 @@ const tabs: ReadonlyArray<{ id: TabId; label: string }> = [
   { id: 'general', label: 'General' },
   { id: 'profiles', label: 'Profiles' },
   { id: 'mcp', label: 'MCP Servers' },
+  { id: 'tools', label: 'Tools' },
 ] as const
 
-// localStorage is the source of truth on mount, but the parent's
-// v-model is what drives the actual selection. The watcher writes
-// to localStorage when the parent changes the model.
+// Undefined when mounted without a router (unit tests). The restore
+// emit below must never run under a real router that already carries
+// a `?section=` deep link — it would clobber the linked tab with the
+// localStorage value on mount. The parent (NalarSettings) reads
+// `?section=` first, then falls back to localStorage itself.
+const route = useRoute()
+
 onMounted(() => {
+  const raw = route?.query?.section
+  const section = Array.isArray(raw) ? raw[0] : raw
+  if (typeof section === 'string' && tabs.some((t) => t.id === section)) return
   const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved && tabs.some(t => t.id === saved) && saved !== props.modelValue) {
+  if (saved && tabs.some((t) => t.id === saved) && saved !== props.modelValue) {
     emit('update:modelValue', saved as TabId)
   }
 })
 
-watch(() => props.modelValue, (val) => {
-  try { localStorage.setItem(STORAGE_KEY, val) } catch { /* quota / private mode */ }
-})
+watch(
+  () => props.modelValue,
+  (val) => {
+    try {
+      localStorage.setItem(STORAGE_KEY, val)
+    } catch {
+      /* quota / private mode */
+    }
+  },
+)
 </script>
 
 <template>
@@ -48,7 +64,7 @@ watch(() => props.modelValue, (val) => {
     role="tablist"
     aria-label="Nalar settings sections"
     class="flex items-center gap-1 border-b"
-    style="border-color: var(--color-border);"
+    style="border-color: var(--color-border)"
   >
     <button
       v-for="tab in tabs"
@@ -68,7 +84,7 @@ watch(() => props.modelValue, (val) => {
       <span
         v-if="modelValue === tab.id"
         class="absolute left-2 right-2 bottom-0 h-0.5"
-        style="background-color: var(--color-violet);"
+        style="background-color: var(--color-violet)"
         aria-hidden="true"
       />
     </button>
