@@ -1675,6 +1675,11 @@ export async function getChats(
   direction: 'asc' | 'desc' = 'desc',
   limit: number = 10,
   cursor?: string,
+  // Workspace scope (plan: 2026-09-22-revamp-ui-chats). When set, the
+  // backend returns only that workspace's sessions (task-linked +
+  // cwd-matched); empty/unknown → empty list (fail-closed). Omitted
+  // → global list (back-compat for non-scoped callers).
+  workspaceId?: string,
 ): Promise<{
   sessions: Chat[]
   has_more: boolean
@@ -1689,6 +1694,9 @@ export async function getChats(
     })
     if (cursor) {
       params.set('cursor', cursor)
+    }
+    if (workspaceId) {
+      params.set('workspace_id', workspaceId)
     }
     const data = await apiFetch<{
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.

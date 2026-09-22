@@ -180,14 +180,17 @@ function keepTabParam(query: Record<string, string>): Record<string, string> {
 // its path. Unresolvable → `/app` (fail-closed).
 async function bootLegacyChat(sessionId: string, keep: Record<string, string>): Promise<void> {
   const wsId = await api.getSessionWorkspaceId(sessionId)
+  // The URL points to a chat: clear any workspace-item active state
+  // in BOTH branches (unresolvable sessions fail closed to `/app`,
+  // but the stale item must still go — same as the old boot branch).
+  workspacesStore.setActiveWorkspaceItem(null)
+  navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
+  fetchChatSessionCwd(sessionId)
   if (!wsId) {
     router.replace({ path: '/app', query: keep })
     workspacesStore.initializeFromSystemFolder()
     return
   }
-  workspacesStore.setActiveWorkspaceItem(null)
-  navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
-  fetchChatSessionCwd(sessionId)
   router.replace(buildAppUrl({ workspaceId: wsId, chatSessionId: sessionId, query: keep }))
   await workspacesStore.initializeFromSystemFolder()
 }

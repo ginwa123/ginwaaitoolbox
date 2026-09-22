@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, watch, inject, onMounted, onUnmounted, nextTick, type Ref } from 'vue'
+import { ref, watch, inject, onMounted, onUnmounted, nextTick, computed, type Ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import { buildAppUrl } from '../../helpers/appUrl'
 import { useContextMenu } from '../../composables/useContextMenu'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import { openInNewTab } from '../../helpers/openInNewTab'
@@ -35,6 +36,19 @@ const workspacesStore = useWorkspacesStore()
 // refresh / deep links / browser back / forward — no store flag can
 // drift. See useCurrentMainView for the full contract.
 const currentMainView = useCurrentMainView()
+
+// Workspace scope for the CHATS list (plan: 2026-09-22-revamp-ui-chats).
+// The list shows ONLY this workspace's sessions — the backend filters
+// via `?workspace_id=`. Source: the URL path workspace when present,
+// else the store's active workspace (landing / transition windows).
+// Undefined → global list (back-compat; the boot rewrite scopes it on
+// the next tick).
+const scopedWorkspaceId = computed(() => {
+  const v = currentMainView.value
+  if (v.kind === 'chat' && v.workspaceId) return v.workspaceId
+  if (v.kind === 'workspace' && v.workspaceId) return v.workspaceId
+  return workspacesStore.activeWorkspace?.id
+})
 
 // Reactive active check for a chat row. Called from the template on
 // every render so the row's highlight stays in sync with URL changes
@@ -250,7 +264,15 @@ const loadChats = async () => {
   chatsNextCursor.value = null
   try {
     console.log('[ChatsList] loadChats called, fetching from API...')
-    const data = await api.getChats('updated_at', chatsSortDirection.value, 30)
+    // Workspace-scoped (plan: 2026-09-22-revamp-ui-chats) — the
+    // backend returns only this workspace's sessions.
+    const data = await api.getChats(
+      'updated_at',
+      chatsSortDirection.value,
+      30,
+      undefined,
+      scopedWorkspaceId.value,
+    )
     console.log('[ChatsList] API returned:', data)
     const sessions = data.sessions || []
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
@@ -337,6 +359,7 @@ const loadMoreChats = async () => {
       chatsSortDirection.value,
       20,
       chatsNextCursor.value,
+      scopedWorkspaceId.value,
     )
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
     const newItems = (data.sessions || []).map((session: any) => ({
@@ -369,27 +392,31 @@ const toggleNavSection = () => {
   }
 }
 
-const createChat = () => {
-  const name = 'New Chat'
-  const newChatId = `session-${Date.now()}`
-  // Mutually exclusive active state: a brand-new chat wins, clear workspace item.
-  workspacesStore.setActiveWorkspaceItem(null)
-  // ...and clear any active task (inverse direction: task → chat).
-  workspacesStore.setActiveTask(null)
-  navItems.value.forEach((item) => (item.active = false))
-  navItems.value.unshift({ id: newChatId, name, active: true, processing: false })
-  // Update navigation store
-  navigationStore.setActiveChat(newChatId, name)
-  emit('navigate', `chat-${newChatId}`, name)
-}
+// Workspace switch refetch (plan: 2026-09-22-revamp-ui-chats). The
+// list is scoped per workspace, so a scope change clears the old
+// workspace's rows FIRST (no stale frame) and refetches. Clearing
+// before the async fetch lands is what keeps the wrong workspace's
+// chats from flashing on a fast switch.
+watch(scopedWorkspaceId, () => {
+  navItems.value = []
+  chatsNextCursor.value = null
+  chatsHasMore.value = false
+  loadChats()
+})
 
 /**
  * Ctrl/Cmd+click, middle click and the context menu open a chat in a
  * real browser tab (window.open) instead of navigating — the browser
- * gesture. A plain click keeps the previous behaviour.
+ * gesture. A plain click keeps the previous behaviour. Path-based
+ * (plan: 2026-09-22-revamp-ui-chats): /app/{ws}/chat/{sid}.
  */
 const openChatInNewTab = (item: { id: string }) => {
-  openInNewTab(router, { path: '/app', query: { view: 'chat', session: item.id } })
+  const wsId = scopedWorkspaceId.value
+  if (wsId) {
+    openInNewTab(router, buildAppUrl({ workspaceId: wsId, chatSessionId: item.id }))
+  } else {
+    openInNewTab(router, { path: '/app', query: { view: 'chat', session: item.id } })
+  }
 }
 
 const onChatRowClick = (event: MouseEvent, item: { id: string; name: string }) => {
@@ -417,8 +444,13 @@ const setActive = async (id: string) => {
   workspacesStore.setActiveTask(null)
   navItems.value = navItems.value.map((item) => ({ ...item, active: item.id === id }))
   navigationStore.setActiveChat(id, chatName)
-  // Update URL with session ID
-  router.replace({ path: '/app', query: { view: 'chat', session: id } })
+  // Update URL with session ID (path-based: /app/{ws}/chat/{sid}).
+  const wsId = scopedWorkspaceId.value
+  if (wsId) {
+    router.replace(buildAppUrl({ workspaceId: wsId, chatSessionId: id }))
+  } else {
+    router.replace({ path: '/app', query: { view: 'chat', session: id } })
+  }
   // 2) Optimistic clear: align human time to updated_at so isStale()
   // flips false immediately (no wait for the next list refresh).
   optimisticClearStaleDot(id)
@@ -454,7 +486,12 @@ const removeChat = async (chatId: string) => {
       navItems.value[0].active = true
       const nextChat = navItems.value[0]
       navigationStore.setActiveChat(nextChat.id, nextChat.name)
-      router.replace({ path: '/app', query: { view: 'chat', session: nextChat.id } })
+      const nextWsId = scopedWorkspaceId.value
+      if (nextWsId) {
+        router.replace(buildAppUrl({ workspaceId: nextWsId, chatSessionId: nextChat.id }))
+      } else {
+        router.replace({ path: '/app', query: { view: 'chat', session: nextChat.id } })
+      }
     }
   }
 }
@@ -598,9 +635,12 @@ defineExpose({
          grep-matched: 'class="px-3 py-2.5 flex items-center gap-2
          w-full text-left hover:opacity-70 transition-opacity shrink-0
          border-b border-[--color-border]/40"'. Inside the header:
-         a single chevron + the section title; the trailing sort and
-         "+ new chat" controls use bare text (no SVG, no decoration)
-         for a minimal typographic feel. -->
+         a single chevron + the section title; the trailing sort
+         control uses bare text (no SVG, no decoration) for a minimal
+         typographic feel. There is deliberately NO "+ new chat"
+         button (removed 2026-09-22 revamp) — new chats are created
+         from workspace items (projects), so every chat belongs to a
+         workspace and the list below can stay scoped. -->
     <button
       class="px-3 py-2.5 flex items-center gap-2 w-full text-left hover:opacity-70 transition-opacity shrink-0 border-b border-[--color-border]/40"
       @click="toggleNavSection"
@@ -630,16 +670,6 @@ defineExpose({
           style="color: var(--semantic-text-dim); opacity: 0.7"
         >
           {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
-        </button>
-        <button
-          @click.stop="createChat"
-          class="w-7 h-7 text-xl font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
-          style="color: var(--semantic-text-dim); opacity: 0.7"
-          title="New Chat"
-          aria-label="New Chat"
-          data-testid="chats-new-chat-button"
-        >
-          +
         </button>
       </div>
     </button>
@@ -761,22 +791,11 @@ defineExpose({
     </div>
   </div>
 
-  <!-- Collapsed Chats Button. Bare text "+" with a thin border,
-       matching the collapsed workspace tile style for visual
-       consistency. NO chat-bubble SVG — the user wants minimal,
-       icon-free design. Hover just darkens the text color. -->
-  <div v-else class="mb-2 shrink-0">
-    <button
-      @click="createChat"
-      data-testid="collapsed-new-chat-button"
-      title="New Chat"
-      aria-label="New Chat"
-      class="w-9 h-9 rounded-md flex items-center justify-center text-xl transition-colors duration-150 hover:text-[--semantic-text]"
-      style="color: var(--semantic-text-dim)"
-    >
-      +
-    </button>
-  </div>
+  <!-- Collapsed state: no chats affordance. The "+" new-chat button
+       was removed (2026-09-22 revamp) — new chats come from workspace
+       items, so the collapsed sidebar shows nothing here. The wrapper
+       div stays so the layout spacing is unchanged. -->
+  <div v-else class="mb-2 shrink-0" data-testid="collapsed-chats-placeholder" />
 
   <OpenInNewTabMenu
     v-if="menuPos"
