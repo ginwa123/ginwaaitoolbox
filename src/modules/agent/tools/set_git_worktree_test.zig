@@ -742,24 +742,73 @@ test "set_git_worktree description warns against rm -rf" {
     }
 }
 
-test "success SET xml includes PR hint note with set_pull_request" {
+test "success SET json includes PR hint note with set_pull_request" {
     const allocator = testing.allocator;
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
-    if (std.mem.indexOf(u8, source, "<note>") == null) {
-        std.debug.print("!! successSetToXml does not emit a <note> element !!\n", .{});
+    if (std.mem.indexOf(u8, source, "worktree_pr_note") == null) {
+        std.debug.print("!! set_git_worktree.zig does not define worktree_pr_note !!\n", .{});
         return error.SuccessNoteMissing;
     }
     if (std.mem.indexOf(u8, source, "set_pull_request") == null) {
-        std.debug.print("!! success <note> does not mention set_pull_request !!\n", .{});
+        std.debug.print("!! success note does not mention set_pull_request !!\n", .{});
         return error.SuccessNoteMissingSetPullRequest;
     }
     if (std.mem.indexOf(u8, source, "gh pr create") == null) {
-        std.debug.print("!! success <note> does not mention `gh pr create` !!\n", .{});
+        std.debug.print("!! success note does not mention `gh pr create` !!\n", .{});
         return error.SuccessNoteMissingGhPrCreate;
     }
     if (std.mem.indexOf(u8, source, "agent tool `set_pull_request`") == null) {
-        std.debug.print("!! success <note> must explicitly say agent tool `set_pull_request` !!\n", .{});
+        std.debug.print("!! success note must explicitly say agent tool `set_pull_request` !!\n", .{});
         return error.SuccessNoteMissingAgentToolWording;
     }
+}
+
+test "set_git_worktree emits JSON (no XML envelope)" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+    if (std.mem.indexOf(u8, source, "SetGitWorktreeJSON") == null) {
+        std.debug.print("!! set_git_worktree.zig does not define SetGitWorktreeJSON !!\n", .{});
+        return error.JsonPayloadMissing;
+    }
+    if (std.mem.indexOf(u8, source, "std.json.Stringify.valueAlloc") == null) {
+        std.debug.print("!! set_git_worktree.zig does not serialize via std.json !!\n", .{});
+        return error.JsonSerializeMissing;
+    }
+    if (std.mem.indexOf(u8, source, "<worktree>") != null) {
+        std.debug.print("!! set_git_worktree.zig still emits <worktree> XML envelope !!\n", .{});
+        return error.XmlEnvelopeStillPresent;
+    }
+}
+
+test "jsonError carries message with special chars raw" {
+    const payload = swt.jsonError(testing.allocator, "s1", "bad <tag> & \"quote\"");
+    defer testing.allocator.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("s1", obj.get("session_id").?.string);
+    try testing.expectEqualStrings("bad <tag> & \"quote\"", obj.get("error").?.string);
+    try testing.expect(!obj.get("created").?.bool);
+}
+
+test "jsonSet carries path/branch/note" {
+    const payload = swt.jsonSet(testing.allocator, "s1", "/tmp/wt", "worktree/wt", "");
+    defer testing.allocator.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("created").?.bool);
+    try testing.expectEqualStrings("/tmp/wt", obj.get("path").?.string);
+    try testing.expectEqualStrings("worktree/wt", obj.get("branch").?.string);
+    try testing.expect(obj.get("note").?.string.len > 0);
+}
+
+test "jsonClear sets cleared flag" {
+    const payload = swt.jsonClear(testing.allocator, "s1");
+    defer testing.allocator.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, payload, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("cleared").?.bool);
 }
