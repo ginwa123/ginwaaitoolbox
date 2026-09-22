@@ -83,6 +83,10 @@ export interface Workspace {
   name: string
   icon: string
   items: WorkspaceItem[]
+  // Server-side item count (GET /api/workspaces sends it even with
+  // is_include_items=false), so count badges don't depend on whether
+  // this workspace's items have been lazily loaded yet.
+  items_count?: number
   expanded: boolean
 }
 
@@ -738,24 +742,279 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return workspaces.value.find((ws) => ws.id === saved)
   }
 
-  // Initialize store by loading data from API
-  async function init() {
+  // ─── Lazy per-workspace item loading ────────────────────────────────
+  // (plan: docs/plans/2026-09-22-revamp-ui-chats-workspace-scoped.md)
+  //
+  // init() seeds every workspace row with `items: []` and loads items
+  // only for the ACTIVE workspace; other workspaces fill in on first
+  // visit via ensureWorkspaceItemsLoaded. Once loaded, items stay in
+  // memory — mutations and SSE events update the tree in place and
+  // never invalidate the loaded mark. A re-init wipes the tree, so it
+  // wipes the marks too (see init below).
+
+  // The init() currently in flight (null before the first call and
+  // after it settles). ensureWorkspaceItemsLoaded awaits it when
+  // called before the workspace list has been seeded (URL restore
+  // racing boot) — otherwise its await would resolve without loading
+  // anything.
+  let currentInit: Promise<void> | null = null
+  const workspaceItemsLoaded = new Set<string>()
+  const workspaceItemsInFlight = new Map<string, Promise<void>>()
+
+  /**
+   * Fetch + attach ONE workspace's items: per-item tasks (kanban and
+   * design skip — kanban populates per-column on mount, design has no
+   * task list), eager design pages, and kanban column/task prefetch.
+   * The workspace row must already be seeded into `workspaces.value`
+   * (init seeds with `items: []` first); this mutates it in place.
+   *
+   * Throws only when the top-level items fetch fails. Per-item tasks /
+   * design-pages / kanban fetches are best-effort (logged + skipped),
+   * so one bad item never fails the load — same contract as the
+   * pre-lazy init(). Shared by init() and ensureWorkspaceItemsLoaded
+   * so there is exactly one implementation of these rules.
+   */
+  async function loadWorkspaceItems(ws: Workspace): Promise<void> {
+    // Items for this workspace.
+    const { items } = await api.getWorkspacesItems(ws.id)
+    const expandedItems = loadExpandedItems()
+
+    // Tasks for each item in this workspace (per-item, in parallel).
+    // Kanban + design items skip this — kanban populates
+    // per-column on mount via KanbanView.vue's per-column
+    // fetches; design items don't have a tasks list (the
+    // sidebar template at WorkspaceItem.vue excludes the
+    // tasks region for item_type === 'design', per the
+    // design-pages-in-workspace-tree plan, 2026-08-06).
+    const tasksByItem = new Map<string, Task[]>()
+    await Promise.all(
+      (items || []).map(async (item: WorkspaceItem) => {
+        if (item.item_type === 'kanban' || item.item_type === 'design') {
+          // Kanban: defer to KanbanView onMount — fires
+          // per-column fetches with column_id set (per Option B).
+          // Design: design items have no tasks list; the
+          // sidebar shows design pages instead (see
+          // design-pages-in-workspace-tree plan).
+          return
+        }
+        try {
+          const { tasks } = await api.getTasks(ws.id, item.id)
+          if (tasks && tasks.length > 0) {
+            // Migration 067 — normalize tags from wire string to
+            // in-memory string[]. All fetch sites do this; the
+            // card UI and dialog rely on tags being a string[].
+            tasksByItem.set(item.id, tasks.map(normalizeTaskTags))
+          }
+        } catch (err) {
+          console.error(`Failed to fetch tasks for item ${item.id}:`, err)
+        }
+      }),
+    )
+
+    // NEW (auto-expand-design-pages plan, 2026-08-06): design
+    // pages for each design item. Best-effort — a single bad
+    // fetch logs but doesn't block init (the chevron-toggle
+    // lazy fetch still works as a fallback). Awaiting keeps
+    // init's "loading" semantics consistent: the sidebar is
+    // fully populated when isLoading flips to false.
+    await Promise.all(
+      (items || []).map(async (item: WorkspaceItem) => {
+        if (item.item_type !== 'design') return
+        try {
+          await fetchDesignPages(ws.id, item.id)
+        } catch (err) {
+          console.error(`Failed to fetch design pages for item ${item.id}:`, err)
+        }
+      }),
+    )
+
+    // NEW (kanban-prefetch-on-init plan, 2026-08-06): kanban
+    // columns + per-column task fetches for each kanban item.
+    // Mirrors the design-pages block above: pre-fetch so the
+    // board renders populated when the user clicks the kanban
+    // (matches the "instant open" UX the user reported in
+    // task_1785772308817). Pre-fix, KanbanView onMount fired
+    // the per-column fetches — meaning a click on a kanban
+    // showed columns-with-counts but empty bodies until the
+    // fetches landed. The onMount path is now a no-op for
+    // pre-fetched columns (columnPagination[col.id] is set →
+    // needFetch filter excludes them).
+    //
+    // Wire cost: 1 + N endpoints per kanban (columns + N
+    // per-column task fetches). For a typical 5-7 column
+    // board that's 6-8 endpoints — sub-100ms on a cold boot.
+    // Best-effort (logged + non-blocking) so a single bad
+    // fetch doesn't kill init.
+    await Promise.all(
+      (items || []).map(async (item: WorkspaceItem) => {
+        if (item.item_type !== 'kanban') return
+        try {
+          // Step 1: load columns (id list for per-column fetches).
+          // Inline the fetch here (instead of calling
+          // fetchKanbanColumns) because the public helper uses
+          // `findItem` — and the items are NOT in `workspaces.value`
+          // yet (the tree is assembled only after all three fan-outs
+          // finish), so findItem would return undefined and the
+          // helper would silently no-op. Mutating
+          // `item.kanban_columns` directly is safe: we hold a stable
+          // reference to the item object via the iteration, and
+          // `ws.items` receives the SAME reference in the mapping at
+          // the end of this function.
+          const { columns } = await api.listKanbanColumns(ws.id, item.id)
+          item.kanban_columns = [...columns].sort((a, b) => a.position - b.position)
+          // Step 2: fire per-column task fetches with DEFAULT
+          // sort (page 1). Same inline reason as Step 1 —
+          // fetchKanTasks uses findItem too. The onMount path
+          // will re-fetch URL-sorted columns if the user has a
+          // ?sorts= in their URL — the pre-fetched default-sort
+          // data is overwritten by the URL-sort fetch, so the
+          // brief flash is invisible (the data is replaced in
+          // <100ms after mount, before the user can perceive it).
+          await Promise.all(
+            item.kanban_columns.map(async (col) => {
+              const { tasks, has_more, next_cursor } = await api.getTasks(
+                ws.id,
+                item.id,
+                10, // limit
+                undefined, // cursor — page 1
+                undefined, // sortBy — default sort
+                undefined, // direction — default sort
+                col.id, // column_id — per-column filter
+                undefined, // q — no search
+              )
+              const normalized = (tasks ?? []).map(normalizeTaskTags)
+              // Merge into the in-flight item — drop any prior
+              // tasks for THIS column (idempotent refresh), then
+              // push the new ones.
+              const otherTasks = (item.tasks ?? []).filter((t) => t.kanban_column_id !== col.id)
+              item.tasks = [...otherTasks, ...normalized]
+              // Initialise pagination entry for the column.
+              item.columnPagination ??= {} as Record<string, ColumnPaginationState>
+              item.columnPagination[col.id] = {
+                cursor: next_cursor,
+                hasMore: has_more,
+                isLoading: false,
+              }
+            }),
+          )
+        } catch (err) {
+          console.error(`Failed to fetch kanban tasks for item ${item.id}:`, err)
+        }
+      }),
+    )
+
+    ws.items = (items || []).map((item: WorkspaceItem) => ({
+      ...item,
+      // Restore expanded state from localStorage
+      expanded: expandedItems.has(item.id),
+      // Attach tasks for this item:
+      //   - Non-kanban: from tasksByItem (the api response).
+      //   - Kanban: PRESERVE the input's tasks (test fixtures
+      //     inject tasks directly; per-column fetches via
+      //     KanbanView onMount will eventually replace this).
+      //     Falling back to tasksByItem would clobber test
+      //     fixtures that bypass the API.
+      tasks: item.item_type === 'kanban' ? (item.tasks ?? []) : (tasksByItem.get(item.id) ?? []),
+      // Per-column pagination state — empty for non-kanban /
+      // non-pre-fetched items; PRESERVE the kanban-prefetch
+      // entries for kanban items so the onMount
+      // loadColumnsAndTasks `needFetch` filter excludes them
+      // (no redundant fetch on the user's first click).
+      // Per-column pagination (kanban-prefetch-on-init plan,
+      // 2026-08-06): when the kanban block above populated
+      // `item.columnPagination`, this branch passes it through.
+      // For all other items (and for kanban items that had no
+      // pre-fetch), the empty record is the original behaviour.
+      columnPagination:
+        item.item_type === 'kanban' &&
+        item.columnPagination &&
+        Object.keys(item.columnPagination).length > 0
+          ? item.columnPagination
+          : ({} as Record<string, ColumnPaginationState>),
+    }))
+  }
+
+  /**
+   * Idempotent loader for ONE workspace's items (lazy loading — plan
+   * above). Already loaded → no-op; in flight → shares the same
+   * promise (dedupe); not yet loaded → loadWorkspaceItems + mark.
+   * Failures are logged, never rethrown: fire-and-forget callers
+   * (workspace switch, URL restore) must not see unhandled
+   * rejections, and a failed id stays out of the loaded set so the
+   * NEXT visit retries.
+   */
+  async function ensureWorkspaceItemsLoaded(workspaceId: string): Promise<void> {
+    if (workspaceItemsLoaded.has(workspaceId)) return
+    const pending = workspaceItemsInFlight.get(workspaceId)
+    if (pending) return pending
+
+    let target = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!target && isLoading.value && currentInit) {
+      // Called before init() seeded the list (URL restore racing
+      // boot) — wait for init, then re-check (init's own load may
+      // cover this id meanwhile). Without this, the await below would
+      // resolve while the workspace's items are still unloaded.
+      try {
+        await currentInit
+      } catch {
+        // init reports its own loadingError; nothing to do here.
+      }
+      if (workspaceItemsLoaded.has(workspaceId)) return
+      const raced = workspaceItemsInFlight.get(workspaceId)
+      if (raced) return raced
+      target = workspaces.value.find((ws) => ws.id === workspaceId)
+    }
+    if (!target) return
+
+    // Seeded rows already carry items (spec fixtures that assign
+    // `ws.workspaces` directly, or a row populated before the loaded
+    // set was cleared): treat them as loaded so the fetch below does
+    // not clobber fixture data with a mocked-empty response.
+    if (target.items && target.items.length > 0) {
+      workspaceItemsLoaded.add(workspaceId)
+      return
+    }
+
+    const ws = target
+    const run = (async () => {
+      try {
+        await loadWorkspaceItems(ws)
+        workspaceItemsLoaded.add(workspaceId)
+      } catch (err) {
+        console.error(`Failed to load items for workspace ${workspaceId}:`, err)
+      } finally {
+        workspaceItemsInFlight.delete(workspaceId)
+      }
+    })()
+    workspaceItemsInFlight.set(workspaceId, run)
+    return run
+  }
+
+  // Initialize the store: fetch the workspace list, seed every row
+  // with empty items, then load items for the ACTIVE workspace only.
+  // Active id inside the store: explicit selection → persisted choice
+  // → first workspace (the URL path workspace is restored later via
+  // setActiveWorkspace, which triggers the same loader). Returns the
+  // init promise so callers (initializeFromSystemFolder, specs) can
+  // await the active workspace being fully populated.
+  function init(): Promise<void> {
+    const run = runInit()
+    currentInit = run
+    return run
+  }
+
+  async function runInit(): Promise<void> {
     isLoading.value = true
     loadingError.value = null
 
-    // NEW (design-pages-in-workspace-tree plan, 2026-08-06): wipe the
-    // design-pages cache so re-inits don't show stale pages from the
-    // previous session.
-    //
-    // UPDATED (auto-expand-design-pages plan, 2026-08-06): refetch
-    // happens EAGERLY in init() (parallel to the per-item tasks
-    // fetch below), not lazily on chevron click. The chevron handler
-    // still calls fetchDesignPages as a fallback for items that
-    // weren't in the workspace list at init time (rare, but
-    // defensive). The fetchDesignPages in-flight guard dedupes
-    // concurrent calls so the chevron and the init fetch share the
-    // same promise.
+    // Wipe the design-pages cache so re-inits don't show stale pages
+    // from the previous session (the chevron-click lazy fetch remains
+    // the fallback for anything not eagerly reloaded). Drop the
+    // lazy-load marks alongside the wiped tree — a surviving mark
+    // would report a now-empty workspace as "loaded".
     resetDesignPagesCache()
+    workspaceItemsLoaded.clear()
+    workspaceItemsInFlight.clear()
 
     // Install the bus-backed session-event listeners (idempotent —
     // safe to call on every init, including HMR re-mounts). The bus
@@ -767,203 +1026,27 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Step 1: fetch the workspaces list (no items — those come separately).
       const { workspaces: wsList } = await api.getWorkspaces()
       const expandedWorkspaces = loadExpandedWorkspaces()
-      const expandedItems = loadExpandedItems()
       const expandedIds = loadExpandedItemIds()
       // Load expanded item IDs for tasks list from localStorage
       expandedItemIds.value = expandedIds
 
-      // Step 2 + 3 + 4: fan out per-workspace items + per-item tasks +
-      // per-design-item design pages in parallel. A per-item tasks
-      // fetch failure is best-effort (logged + empty tasks for that
-      // item) so a single bad item doesn't kill the whole init.
-      //
-      // Per-column pagination (Option B, 2026-08-06 amendment): for
-      // KANBAN items, we no longer fire a board-wide task fetch in
-      // init(). The kanban view fires per-column fetches on mount
-      // (one per column), so the initial load is consistent. Folders
-      // / other types still use the board-wide fetch.
-      //
-      // NEW (auto-expand-design-pages plan, 2026-08-06): design pages
-      // are fetched eagerly here for all DESIGN items so the sidebar
-      // tree shows pages immediately after a page refresh — without
-      // this, the sidebar tree's nested <DesignPageRow> children
-      // rendered empty until the user clicked the design item's
-      // chevron (which fired the lazy fetchDesignPages). Awaiting the
-      // fetch inside init() means the sidebar is fully populated when
-      // init() resolves — matching the user's "instant open" mental
-      // model. The fetchDesignPages in-flight guard (line below)
-      // dedupes concurrent calls, so a chevron click racing init()
-      // shares the same promise instead of double-fetching.
-      workspaces.value = await Promise.all(
-        (wsList || []).map(async (ws: Workspace) => {
-          // Items for this workspace.
-          const { items } = await api.getWorkspacesItems(ws.id)
+      // Step 2: seed every workspace row with EMPTY items — the list
+      // (dropdown, sidebar, items_count badges) is complete right
+      // away; the items tree fills in per visit (step 3 here, then
+      // setActiveWorkspace on every switch).
+      workspaces.value = (wsList || []).map((ws: Workspace) => ({
+        ...ws,
+        // Restore expanded state from localStorage
+        expanded: expandedWorkspaces.has(ws.id),
+        items: [],
+      }))
 
-          // Tasks for each item in this workspace (per-item, in parallel).
-          // Kanban + design items skip this — kanban populates
-          // per-column on mount via KanbanView.vue's per-column
-          // fetches; design items don't have a tasks list (the
-          // sidebar template at WorkspaceItem.vue excludes the
-          // tasks region for item_type === 'design', per the
-          // design-pages-in-workspace-tree plan, 2026-08-06).
-          const tasksByItem = new Map<string, Task[]>()
-          await Promise.all(
-            (items || []).map(async (item: WorkspaceItem) => {
-              if (item.item_type === 'kanban' || item.item_type === 'design') {
-                // Kanban: defer to KanbanView onMount — fires
-                // per-column fetches with column_id set (per Option B).
-                // Design: design items have no tasks list; the
-                // sidebar shows design pages instead (see
-                // design-pages-in-workspace-tree plan).
-                return
-              }
-              try {
-                const { tasks } = await api.getTasks(ws.id, item.id)
-                if (tasks && tasks.length > 0) {
-                  // Migration 067 — normalize tags from wire string to
-                  // in-memory string[]. All fetch sites do this; the
-                  // card UI and dialog rely on tags being a string[].
-                  tasksByItem.set(item.id, tasks.map(normalizeTaskTags))
-                }
-              } catch (err) {
-                console.error(`Failed to fetch tasks for item ${item.id}:`, err)
-              }
-            }),
-          )
-
-          // NEW (auto-expand-design-pages plan, 2026-08-06): design
-          // pages for each design item. Best-effort — a single bad
-          // fetch logs but doesn't block init (the chevron-toggle
-          // lazy fetch still works as a fallback). Awaiting keeps
-          // init's "loading" semantics consistent: the sidebar is
-          // fully populated when isLoading flips to false.
-          await Promise.all(
-            (items || []).map(async (item: WorkspaceItem) => {
-              if (item.item_type !== 'design') return
-              try {
-                await fetchDesignPages(ws.id, item.id)
-              } catch (err) {
-                console.error(`Failed to fetch design pages for item ${item.id}:`, err)
-              }
-            }),
-          )
-
-          // NEW (kanban-prefetch-on-init plan, 2026-08-06): kanban
-          // columns + per-column task fetches for each kanban item.
-          // Mirrors the design-pages block above: pre-fetch so the
-          // board renders populated when the user clicks the kanban
-          // (matches the "instant open" UX the user reported in
-          // task_1785772308817). Pre-fix, KanbanView onMount fired
-          // the per-column fetches — meaning a click on a kanban
-          // showed columns-with-counts but empty bodies until the
-          // fetches landed. The onMount path is now a no-op for
-          // pre-fetched columns (columnPagination[col.id] is set →
-          // needFetch filter excludes them).
-          //
-          // Wire cost: 1 + N endpoints per kanban (columns + N
-          // per-column task fetches). For a typical 5-7 column
-          // board that's 6-8 endpoints — sub-100ms on a cold boot.
-          // Best-effort (logged + non-blocking) so a single bad
-          // fetch doesn't kill init.
-          await Promise.all(
-            (items || []).map(async (item: WorkspaceItem) => {
-              if (item.item_type !== 'kanban') return
-              try {
-                // Step 1: load columns (id list for per-column fetches).
-                // Inline the fetch here (instead of calling
-                // fetchKanbanColumns) because the public helper uses
-                // `findItem` which looks at `workspaces.value` — but
-                // at this point in init(), the outer Promise.all is
-                // still building that array, so findItem returns
-                // undefined and the helper silently no-ops. Mutating
-                // `item.kanban_columns` directly is safe here because
-                // (a) we hold a stable reference to the item object
-                // via the iteration, and (b) `workspaces.value` will
-                // receive the SAME item reference when the outer
-                // Promise.all's `.map((item) => ({...item, ...}))`
-                // produces the workspace tree.
-                const { columns } = await api.listKanbanColumns(ws.id, item.id)
-                item.kanban_columns = [...columns].sort((a, b) => a.position - b.position)
-                // Step 2: fire per-column task fetches with DEFAULT
-                // sort (page 1). Same inline reason as Step 1 —
-                // fetchKanTasks uses findItem too. The onMount path
-                // will re-fetch URL-sorted columns if the user has a
-                // ?sorts= in their URL — the pre-fetched default-sort
-                // data is overwritten by the URL-sort fetch, so the
-                // brief flash is invisible (the data is replaced in
-                // <100ms after mount, before the user can perceive it).
-                await Promise.all(
-                  item.kanban_columns.map(async (col) => {
-                    const { tasks, has_more, next_cursor } = await api.getTasks(
-                      ws.id,
-                      item.id,
-                      10, // limit
-                      undefined, // cursor — page 1
-                      undefined, // sortBy — default sort
-                      undefined, // direction — default sort
-                      col.id, // column_id — per-column filter
-                      undefined, // q — no search
-                    )
-                    const normalized = (tasks ?? []).map(normalizeTaskTags)
-                    // Merge into the in-flight item — drop any prior
-                    // tasks for THIS column (idempotent refresh), then
-                    // push the new ones.
-                    const otherTasks = (item.tasks ?? []).filter(
-                      (t) => t.kanban_column_id !== col.id,
-                    )
-                    item.tasks = [...otherTasks, ...normalized]
-                    // Initialise pagination entry for the column.
-                    item.columnPagination ??= {} as Record<string, ColumnPaginationState>
-                    item.columnPagination[col.id] = {
-                      cursor: next_cursor,
-                      hasMore: has_more,
-                      isLoading: false,
-                    }
-                  }),
-                )
-              } catch (err) {
-                console.error(`Failed to fetch kanban tasks for item ${item.id}:`, err)
-              }
-            }),
-          )
-
-          return {
-            ...ws,
-            // Restore expanded state from localStorage
-            expanded: expandedWorkspaces.has(ws.id),
-            items: (items || []).map((item: WorkspaceItem) => ({
-              ...item,
-              // Restore expanded state from localStorage
-              expanded: expandedItems.has(item.id),
-              // Attach tasks for this item:
-              //   - Non-kanban: from tasksByItem (the api response).
-              //   - Kanban: PRESERVE the input's tasks (test fixtures
-              //     inject tasks directly; per-column fetches via
-              //     KanbanView onMount will eventually replace this).
-              //     Falling back to tasksByItem would clobber test
-              //     fixtures that bypass the API.
-              tasks:
-                item.item_type === 'kanban' ? (item.tasks ?? []) : (tasksByItem.get(item.id) ?? []),
-              // Per-column pagination state — empty for non-kanban /
-              // non-pre-fetched items; PRESERVE the kanban-prefetch
-              // entries for kanban items so the onMount
-              // loadColumnsAndTasks `needFetch` filter excludes them
-              // (no redundant fetch on the user's first click).
-              // Per-column pagination (kanban-prefetch-on-init plan,
-              // 2026-08-06): when the kanban block above populated
-              // `item.columnPagination`, this branch passes it through.
-              // For all other items (and for kanban items that had no
-              // pre-fetch), the empty record is the original behaviour.
-              columnPagination:
-                item.item_type === 'kanban' &&
-                item.columnPagination &&
-                Object.keys(item.columnPagination).length > 0
-                  ? item.columnPagination
-                  : ({} as Record<string, ColumnPaginationState>),
-            })),
-          }
-        }),
-      )
+      // Step 3: load items for the ACTIVE workspace only.
+      const activeId =
+        activeWorkspaceId.value ?? storedActiveWorkspace()?.id ?? workspaces.value[0]?.id
+      if (activeId) {
+        await ensureWorkspaceItemsLoaded(activeId)
+      }
     } catch (err) {
       loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
       console.error('Failed to load workspaces:', err)
@@ -1112,7 +1195,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Projects section and main view never mix two workspace
   // contexts (plan:
   // docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
-  function setActiveWorkspace(workspaceId: string) {
+  //
+  // Async: resolves only after the target's items are in memory (lazy
+  // loading). URL restore must await this before
+  // setActiveWorkspaceItem/setActiveTask — otherwise item lookups
+  // miss a not-yet-loaded tree. Fire-and-forget callers are
+  // unaffected: every ref mutation happens in the synchronous prefix
+  // before the final await, and the loader never rejects.
+  async function setActiveWorkspace(workspaceId: string): Promise<void> {
     if (workspaces.value.length > 0 && !workspaces.value.some((ws) => ws.id === workspaceId)) {
       return
     }
@@ -1127,6 +1217,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         activeTaskId.value = null
       }
     }
+    await ensureWorkspaceItemsLoaded(workspaceId)
   }
 
   // Toggle expanded state for workspace item (show/hide tasks list)
@@ -1148,7 +1239,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     saveExpandedItemIds(expandedItemIds.value)
   }
 
-  async function addWorkspace(name: string) {
+  // Returns the new workspace id on BOTH paths (API success and the
+  // local offline fallback) so callers can navigate into it — the
+  // /app landing pushes `/app/<id>` right after creation.
+  async function addWorkspace(name: string): Promise<string> {
     const defaultIcon = '📂'
     try {
       const newWorkspace = await api.createWorkspace(name)
@@ -1158,6 +1252,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         expanded: expandedWorkspaces.has(newWorkspace.id),
         items: newWorkspace.items || [],
       })
+      return newWorkspace.id
     } catch (err) {
       console.error('Failed to create workspace:', err)
       // Fallback to local creation if API fails
@@ -1170,6 +1265,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         expanded: expandedWorkspaces.has(id),
         items: [],
       })
+      return id
     }
   }
 
@@ -3850,6 +3946,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // Sync with API
     try {
       await api.deleteWorkspace(workspaceId)
+      // The row is gone — drop its lazy-load mark. Only on success:
+      // the rollback below restores the in-memory items, which are
+      // still a valid loaded state.
+      workspaceItemsLoaded.delete(workspaceId)
     } catch (err) {
       console.error('Failed to delete workspace:', err)
       // Rollback on error
@@ -4197,6 +4297,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     activeTaskWorkspaceItemId,
     // Actions
     init,
+    // Lazy per-workspace items (plan: 2026-09-22-revamp-ui-chats):
+    // loads one workspace's items/tasks/design pages on demand;
+    // runInit uses it for the active workspace, setActiveWorkspace
+    // for every switch. Idempotent + in-flight deduped.
+    ensureWorkspaceItemsLoaded,
     toggleWorkspaceItem,
     toggleExpandedItem,
     setActiveWorkspaceItem,

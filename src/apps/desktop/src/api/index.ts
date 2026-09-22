@@ -171,6 +171,10 @@ export interface Workspace {
   name: string
   icon: string
   items: WorkspaceItem[]
+  // Server-side item count, present on GET /api/workspaces rows even
+  // when `is_include_items=false` (items stay `[]` until lazily
+  // loaded) — keeps count badges truthful for unvisited workspaces.
+  items_count?: number
   expanded: boolean
 }
 

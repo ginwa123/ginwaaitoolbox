@@ -212,76 +212,78 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
         data-testid="workspace-switcher-panel"
         @click.stop
       >
-      <div class="max-h-[320px] overflow-y-auto py-1">
-        <div
-          v-for="(ws, idx) in workspaces"
-          :key="ws.id"
-          class="group/ws relative flex items-center"
-          :style="{
-            backgroundColor: idx === activeIndex ? 'var(--semantic-sidebar-bg)' : 'transparent',
-          }"
-        >
-          <button
-            type="button"
-            class="flex-1 min-w-0 text-left px-3 py-2 text-sm hover:opacity-90 flex items-center justify-between gap-2"
-            style="color: var(--semantic-text)"
-            :aria-selected="ws.id === activeWorkspaceId"
-            :data-testid="`workspace-switcher-option-${ws.id}`"
-            @click="chooseOption(ws.id)"
+        <div class="max-h-[320px] overflow-y-auto py-1">
+          <div
+            v-for="(ws, idx) in workspaces"
+            :key="ws.id"
+            class="group/ws relative flex items-center"
+            :style="{
+              backgroundColor: idx === activeIndex ? 'var(--semantic-sidebar-bg)' : 'transparent',
+            }"
           >
-            <span class="truncate">{{ ws.name }}</span>
-            <span class="flex items-center gap-2 shrink-0">
-              <span class="text-[11px]" style="color: var(--semantic-text-dim)">{{
-                ws.items?.length ?? 0
-              }}</span>
-              <span v-if="ws.id === activeWorkspaceId" data-testid="workspace-switcher-active-check"
-                >✓</span
-              >
-            </span>
-          </button>
-          <button
-            type="button"
-            class="px-1.5 py-1 text-xs opacity-0 group-hover/ws:opacity-100 focus-visible:opacity-100 transition-opacity"
-            style="color: var(--semantic-text-dim)"
-            title="Rename workspace"
-            :aria-label="`Rename workspace ${ws.name}`"
-            :data-testid="`workspace-switcher-rename-${ws.id}`"
-            @click.stop="startRename(ws)"
+            <button
+              type="button"
+              class="flex-1 min-w-0 text-left px-3 py-2 text-sm hover:opacity-90 flex items-center justify-between gap-2"
+              style="color: var(--semantic-text)"
+              :aria-selected="ws.id === activeWorkspaceId"
+              :data-testid="`workspace-switcher-option-${ws.id}`"
+              @click="chooseOption(ws.id)"
+            >
+              <span class="truncate">{{ ws.name }}</span>
+              <span class="flex items-center gap-2 shrink-0">
+                <span class="text-[11px]" style="color: var(--semantic-text-dim)">{{
+                  ws.items_count ?? ws.items?.length ?? 0
+                }}</span>
+                <span
+                  v-if="ws.id === activeWorkspaceId"
+                  data-testid="workspace-switcher-active-check"
+                  >✓</span
+                >
+              </span>
+            </button>
+            <button
+              type="button"
+              class="px-1.5 py-1 text-xs opacity-0 group-hover/ws:opacity-100 focus-visible:opacity-100 transition-opacity"
+              style="color: var(--semantic-text-dim)"
+              title="Rename workspace"
+              :aria-label="`Rename workspace ${ws.name}`"
+              :data-testid="`workspace-switcher-rename-${ws.id}`"
+              @click.stop="startRename(ws)"
+            >
+              ✎
+            </button>
+            <button
+              type="button"
+              class="px-1.5 py-1 text-xs opacity-0 group-hover/ws:opacity-100 focus-visible:opacity-100 transition-opacity"
+              style="color: var(--semantic-text-dim)"
+              title="Delete workspace"
+              :aria-label="`Delete workspace ${ws.name}`"
+              :data-testid="`workspace-switcher-delete-${ws.id}`"
+              @click.stop="startDelete(ws)"
+            >
+              ×
+            </button>
+          </div>
+
+          <div
+            v-if="workspaces.length === 0"
+            class="px-3 py-2 text-xs"
+            style="color: var(--semantic-text-muted)"
+            data-testid="workspace-switcher-empty"
           >
-            ✎
-          </button>
-          <button
-            type="button"
-            class="px-1.5 py-1 text-xs opacity-0 group-hover/ws:opacity-100 focus-visible:opacity-100 transition-opacity"
-            style="color: var(--semantic-text-dim)"
-            title="Delete workspace"
-            :aria-label="`Delete workspace ${ws.name}`"
-            :data-testid="`workspace-switcher-delete-${ws.id}`"
-            @click.stop="startDelete(ws)"
-          >
-            ×
-          </button>
+            No workspaces yet.
+          </div>
         </div>
 
-        <div
-          v-if="workspaces.length === 0"
-          class="px-3 py-2 text-xs"
-          style="color: var(--semantic-text-muted)"
-          data-testid="workspace-switcher-empty"
+        <button
+          type="button"
+          class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+          style="color: var(--semantic-text-dim); border-top: 1px solid var(--color-border)"
+          data-testid="workspace-switcher-add-workspace"
+          @click="startCreate"
         >
-          No workspaces yet.
-        </div>
-      </div>
-
-      <button
-        type="button"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
-        style="color: var(--semantic-text-dim); border-top: 1px solid var(--color-border)"
-        data-testid="workspace-switcher-add-workspace"
-        @click="startCreate"
-      >
-        + New workspace
-      </button>
+          + New workspace
+        </button>
       </div>
     </Teleport>
   </div>
