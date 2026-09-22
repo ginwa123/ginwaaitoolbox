@@ -3656,35 +3656,114 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     }
   }
 
+  // In-flight media requests, keyed by task id. Concurrent callers
+  // (dialog re-open, batch prefetch racing a dialog open) share one
+  // promise instead of firing duplicate GETs for the same task.
+  const mediaInflight = new Map<string, Promise<void>>()
+
+  function findCachedTask(workspaceId: string, itemId: string, taskId: string): Task | undefined {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return undefined
+    const item = workspace.items.find((i) => i.id === itemId)
+    if (!item || !item.tasks) return undefined
+    return item.tasks.find((t) => t.id === taskId)
+  }
+
+  function taskNeedsMedia(task: Task): boolean {
+    const wantImage =
+      task.is_have_image === true && (!task.imageUrls || task.imageUrls.length === 0)
+    const wantVideo =
+      task.is_have_video === true && (!task.videoUrls || task.videoUrls.length === 0)
+    return wantImage || wantVideo
+  }
+
   // Lazy media fetch (media-flags change). When list/get report
   // `is_have_image` / `is_have_video`, the detail dialog calls this
   // once to populate the cached task's imageUrls/videoUrls in place
   // (shared with the board card thumbnail). No-op when the flags are
-  // false or media is already loaded. Best-effort: failures warn only.
+  // false or media is already loaded. Concurrent calls for the same
+  // task share one in-flight request. Best-effort: failures warn only.
   async function fetchTaskMedia(
     workspaceId: string,
     itemId: string,
     taskId: string,
   ): Promise<void> {
-    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
-    if (!workspace) return
-    const item = workspace.items.find((i) => i.id === itemId)
-    if (!item || !item.tasks) return
-    const task = item.tasks.find((t) => t.id === taskId)
-    if (!task) return
-    const wantImage =
-      task.is_have_image === true && (!task.imageUrls || task.imageUrls.length === 0)
-    const wantVideo =
-      task.is_have_video === true && (!task.videoUrls || task.videoUrls.length === 0)
-    if (!wantImage && !wantVideo) return
-    try {
-      const media = await api.getTaskMedia(workspaceId, itemId, taskId)
-      if (!media) return
-      if (wantImage) task.imageUrls = media.imageUrls
-      if (wantVideo) task.videoUrls = media.videoUrls
-    } catch (err) {
-      console.warn('Failed to fetch task media:', err)
+    const task = findCachedTask(workspaceId, itemId, taskId)
+    if (!task || !taskNeedsMedia(task)) return
+    const inflight = mediaInflight.get(taskId)
+    if (inflight) {
+      await inflight
+      return
     }
+    const run = (async (): Promise<void> => {
+      try {
+        const current = findCachedTask(workspaceId, itemId, taskId)
+        if (!current || !taskNeedsMedia(current)) return
+        const media = await api.getTaskMedia(workspaceId, itemId, taskId)
+        if (!media) return
+        const fresh = findCachedTask(workspaceId, itemId, taskId)
+        if (!fresh) return
+        if (fresh.is_have_image === true && (!fresh.imageUrls || fresh.imageUrls.length === 0))
+          fresh.imageUrls = media.imageUrls
+        if (fresh.is_have_video === true && (!fresh.videoUrls || fresh.videoUrls.length === 0))
+          fresh.videoUrls = media.videoUrls
+      } catch (err) {
+        console.warn('Failed to fetch task media:', err)
+      } finally {
+        mediaInflight.delete(taskId)
+      }
+    })()
+    mediaInflight.set(taskId, run)
+    await run
+  }
+
+  // Parallel batch prefetch (media-flags change). Fetches media for
+  // every flagged-but-unloaded task concurrently via one
+  // `api.getTasksMedia` round (≈ one round-trip, not N sequential).
+  // Shares the per-task in-flight map with `fetchTaskMedia` so a
+  // dialog open racing the batch never doubles the request.
+  // Best-effort per task: failures warn once for the batch.
+  async function fetchTasksMedia(
+    workspaceId: string,
+    itemId: string,
+    taskIds: string[],
+  ): Promise<void> {
+    const pending = taskIds.filter((id) => {
+      const task = findCachedTask(workspaceId, itemId, id)
+      return task !== undefined && taskNeedsMedia(task) && !mediaInflight.has(id)
+    })
+    const alreadyRunning = taskIds
+      .map((id) => mediaInflight.get(id))
+      .filter((p): p is Promise<void> => p !== undefined)
+    if (pending.length === 0) {
+      await Promise.allSettled(alreadyRunning)
+      return
+    }
+    // Note: the `finally` below deletes map entries unconditionally.
+    // Safe: a new request for the same id can only start when the map
+    // holds no entry, and entries are removed only here — no caller
+    // can replace an in-flight entry mid-run (single-threaded).
+    const run = (async (): Promise<void> => {
+      try {
+        const results = await api.getTasksMedia(workspaceId, itemId, pending)
+        for (const [id, media] of results) {
+          if (!media) continue
+          const task = findCachedTask(workspaceId, itemId, id)
+          if (!task) continue
+          if (task.is_have_image === true && (!task.imageUrls || task.imageUrls.length === 0))
+            task.imageUrls = media.imageUrls
+          if (task.is_have_video === true && (!task.videoUrls || task.videoUrls.length === 0))
+            task.videoUrls = media.videoUrls
+        }
+      } catch (err) {
+        console.warn('Failed to fetch tasks media:', err)
+      } finally {
+        for (const id of pending) mediaInflight.delete(id)
+      }
+    })()
+    for (const id of pending) mediaInflight.set(id, run)
+    await run
+    await Promise.allSettled(alreadyRunning)
   }
 
   async function removeWorkspace(workspaceId: string) {
@@ -4100,6 +4179,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // instead of the value cached at workspaces store init().
     refreshTask,
     fetchTaskMedia,
+    fetchTasksMedia,
     runRoutineItem,
     runAgentOnNewTask,
     // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Triggers
