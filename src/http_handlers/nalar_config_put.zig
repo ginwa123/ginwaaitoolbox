@@ -5,6 +5,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
 const parse_thinking_mod = nalarcore.parse_thinking;
+const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const LlmConfig = config.LlmConfig;
 
 /// Parse the PUT body into a `ConfigInput`.
@@ -35,7 +36,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Environment not available" }),
     });
     // Cast const away since getDefaultConfigDir doesn't actually modify environment
-    const environment: *std.process.Environ.Map = @constCast(@ptrCast(environment_ptr));
+    const environment: *std.process.Environ.Map = @ptrCast(@constCast(environment_ptr));
 
     // Get the default config path
     const config_dir = config.getDefaultConfigDir(allocator, environment) catch |err| {
@@ -143,6 +144,25 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // an omit-from-PUT doesn't reset the existing value.
     if (input.retry_delay_ms) |ms| {
         config_json.retry_delay_ms = if (ms > 60_000) 60_000 else ms;
+    }
+    // Handle the `tools` default checklist (plan
+    // 2026-09-22-tools-menu-config-default-tools, D2). Absent key AND
+    // explicit JSON `null` both parse to `null` (the desired collapse) →
+    // no change, so a Settings save from another tab never erases the
+    // on-disk list. A present array — including `[]` — replaces the
+    // whole list, but only after every name is checked against
+    // `UNIFIED_TOOL_REGISTRY` (the load path stays tolerant of
+    // hand-edited names; PUT is the validation gate).
+    if (try applyToolsInput(allocator, &config_json, input.tools)) |bad| {
+        const msg = try std.fmt.allocPrint(
+            allocator,
+            "InvalidToolName: '{s}' is not in the unified tool registry",
+            .{bad},
+        );
+        return res.jsonResponse(.{
+            .status_code = 400,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = msg }),
+        });
     }
 
     // Handle profiles - accept BOTH the on-disk shape (object map) and the
@@ -462,7 +482,7 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     // On any failure we still respond 200 (disk is already authoritative)
     // but log the error and skip the swap so the running config is stable.
     {
-        const env_for_reload: *std.process.Environ.Map = @constCast(@ptrCast(di.environment orelse environment));
+        const env_for_reload: *std.process.Environ.Map = @ptrCast(@constCast(di.environment orelse environment));
 
         var new_cfg = config.LlmConfig.init(di.allocator, io, null, env_for_reload) catch |err| {
             std.log.err("PUT /api/config/nalar: live reload parse failed: {s}", .{@errorName(err)});
@@ -583,6 +603,14 @@ pub const ConfigInput = struct {
     /// from the request body — the handler dupes each entry's strings
     /// before assigning to `config_json.sub_agents`.
     sub_agents: ?[]const LlmConfig.SubAgentJson = null,
+    /// Whole-list replace for the `tools` default checklist (plan
+    /// 2026-09-22-tools-menu-config-default-tools, D2). Absent OR
+    /// explicit JSON `null` → no change (both parse to `null` — the
+    /// desired collapse, so a Settings save that omits `tools` preserves
+    /// the on-disk value). A present array (including `[]`) replaces the
+    /// list after registry validation at apply time. Borrowed slices from
+    /// the request body — the handler dupes them before writing.
+    tools: ?[]const []const u8 = null,
 };
 
 const ProfileChange = struct {
@@ -667,7 +695,57 @@ const ConfigJson = struct {
     /// owned copy (duped from the request body) when the input provides
     /// a new list.
     sub_agents: ?[]LlmConfig.SubAgentJson = null,
+    /// Default tool checklist (Tools tab, plan
+    /// 2026-09-22-tools-menu-config-default-tools). Parsed from the
+    /// on-disk file so an input that omits `tools` round-trips the
+    /// existing value instead of erasing it; replaced wholesale by an
+    /// owned copy when the input provides a new list. `null` emits JSON
+    /// `null`, which every reader treats as "key absent".
+    tools: ?[]const []const u8 = null,
 };
+
+/// Apply the optional `tools` input onto the on-disk write struct.
+/// Returns the first unknown name (the caller turns it into a 400)
+/// WITHOUT touching `config_json`. A `null` input — absent key or
+/// explicit JSON `null`, which std.json collapses to the same thing —
+/// leaves the on-disk list untouched, so a Settings save from another
+/// tab never erases the checklist. A present list (including `[]`)
+/// replaces it wholesale with owned copies (validated first, so a
+/// rejected name can never half-apply).
+fn applyToolsInput(
+    allocator: std.mem.Allocator,
+    config_json: *ConfigJson,
+    tools: ?[]const []const u8,
+) !?[]const u8 {
+    const tool_names = tools orelse return null;
+    if (firstUnknownToolName(tool_names)) |bad| return bad;
+
+    const owned = try allocator.alloc([]const u8, tool_names.len);
+    errdefer allocator.free(owned);
+    for (tool_names, 0..) |name, i| {
+        owned[i] = try allocator.dupe(u8, name);
+    }
+    config_json.tools = owned;
+    return null;
+}
+
+/// First name in `names` that is absent from `UNIFIED_TOOL_REGISTRY()`,
+/// or `null` when every name is known. An empty list (`[]`) is a valid
+/// explicit-zero checklist and returns `null` (no error).
+fn firstUnknownToolName(names: []const []const u8) ?[]const u8 {
+    const registry = tools_equipped.UNIFIED_TOOL_REGISTRY();
+    for (names) |name| {
+        var known = false;
+        for (registry) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) return name;
+    }
+    return null;
+}
 
 /// Serialize a borrowed `[]SubAgentJson` slice into an owned
 /// `json.Value` array for writing onto a profile object (plan
@@ -832,7 +910,7 @@ fn validateModelThinkingOnDiskProfileMap(obj: json.ObjectMap) !void {
 // ===== Tests merged from nalar_config_put_parse_test.zig (2026-09-11 flatten) =====
 // Tests for the `parseConfigInput` helper used by
 // `PUT /api/config/nalar`.
-// 
+//
 // These tests exercise the PARSE step of the PUT handler — the
 // call into `std.json.parseFromSliceLeaky` that historically rejected
 // the on-disk object-map shape and returned 400 "Invalid JSON input"
@@ -841,7 +919,7 @@ fn validateModelThinkingOnDiskProfileMap(obj: json.ObjectMap) !void {
 // changes) to `?json.Value` (accepts BOTH the array and the on-disk
 // object map). This test locks in the new behavior so a future
 // refactor can't regress it.
-// 
+//
 // Convention: handler internals stay scoped under
 // `nalarcore.http_handlers.*` (see `nalar_config_profile_delete_test.zig`'s
 // header comment for the rationale).
@@ -1117,7 +1195,6 @@ test "parseConfigInput: notify_on_complete + notify_on_error in same body parse 
 // `nalar_config_put_thinking_test.zig` — lock in that the PUT handler
 // no longer persists top-level LLM defaults to config.json.
 
-
 const PUT_HANDLER_PATH = "src/http_handlers/nalar_config_put.zig";
 
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
@@ -1249,15 +1326,14 @@ test "PUT handler apply block writes notify_on_error through to ConfigJson" {
 
 // ===== Tests merged from nalar_config_put_test.zig (2026-09-11 flatten) =====
 // Tests for the live-reload `LlmConfigHolder` semantics on `ContextIPCTui`.
-// 
+//
 // These tests verify the swap-and-hold pattern that keeps in-flight
 // workflows (which captured the old `*const LlmConfig` into a local)
 // dereferencing valid memory until the next swap or shutdown.
-// 
+//
 // They do NOT exercise the full HTTP handler — that requires a running
 // GinwaServer. The handler-level "reload from disk" path is covered by
 // manual smoke test against `nalar-dev` (see the plan's §4).
-
 
 const ContextIPCTui = nalarcore.ContextIPCTui;
 const LlmConfigHolder = nalarcore.LlmConfigHolder;
@@ -1531,7 +1607,6 @@ test "nalarcore exposes LlmConfigHolder, getLlmConfig, setLlmConfig, freeAllLlmC
 // statically by reading the handler source and grepping for required
 // substrings.
 
-
 fn readSource_merged(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
     defer file.close(std.testing.io);
@@ -1733,10 +1808,7 @@ test "PUT handler clamps retry_delay_ms to 60_000 ms (range upper bound)" {
 // validation paths via grep + assert that the error variants exist
 // in `LlmConfig.LoadError`.
 
-
 const CONFIG_PATH = "src/modules/config/Config.zig";
-
-
 
 test "PUT handler ProfileChange declares thinking_budget_tokens + reasoning_effort" {
     const allocator = std.testing.allocator;
@@ -1873,5 +1945,207 @@ test "PUT handler validates on-disk object-map shape profiles" {
     if (std.mem.indexOf(u8, source, "validateModelThinkingOnDiskProfileMap") == null) {
         std.debug.print("!! PUT handler missing validateModelThinkingOnDiskProfileMap helper !!\n", .{});
         return error.OnDiskValidationHelperMissing;
+    }
+}
+
+// ===== tools checklist: parse + apply semantics (plan 2026-09-22-tools-menu, D2) =====
+//
+// The PUT body's `tools` field is the Settings Tools tab save. Contract:
+//   - absent key AND explicit JSON `null` both parse to `null` → NO change
+//     (a Settings save from another tab must not erase the on-disk list),
+//   - a present array (including `[]`) → whole-list replace after registry
+//     validation,
+//   - an unknown name → the bad name is returned so the handler can 400.
+
+test "parseConfigInput: tools absent → null (don't touch on-disk)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const input = try parseConfigInput(arena.allocator(), "{\"notify_on_complete\":true}");
+    try testing.expect(input.tools == null);
+}
+
+test "parseConfigInput: tools explicit null → null (collapses with absent, the desired semantics)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const input = try parseConfigInput(arena.allocator(), "{\"tools\":null}");
+    try testing.expect(input.tools == null);
+}
+
+test "parseConfigInput: tools array parses the names in order" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const input = try parseConfigInput(arena.allocator(), "{\"tools\":[\"command\",\"read_file\"]}");
+    const tools = input.tools orelse return error.ToolsFieldMissing;
+    try testing.expectEqual(@as(usize, 2), tools.len);
+    try testing.expectEqualStrings("command", tools[0]);
+    try testing.expectEqualStrings("read_file", tools[1]);
+}
+
+test "parseConfigInput: tools empty array parses to a non-null empty list" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const input = try parseConfigInput(arena.allocator(), "{\"tools\":[]}");
+    const tools = input.tools orelse return error.ToolsFieldMissing;
+    try testing.expectEqual(@as(usize, 0), tools.len);
+}
+
+test "applyToolsInput: null input preserves the on-disk list" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const on_disk = [_][]const u8{"command"};
+    var cj = ConfigJson{ .tools = &on_disk };
+
+    const bad = try applyToolsInput(arena.allocator(), &cj, null);
+    try testing.expect(bad == null);
+    try testing.expect(cj.tools != null);
+    try testing.expectEqual(@as(usize, 1), cj.tools.?.len);
+    try testing.expectEqualStrings("command", cj.tools.?[0]);
+}
+
+test "applyToolsInput: null input with no on-disk value stays null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var cj = ConfigJson{};
+    const bad = try applyToolsInput(arena.allocator(), &cj, null);
+    try testing.expect(bad == null);
+    try testing.expect(cj.tools == null);
+}
+
+test "applyToolsInput: present list replaces wholesale with owned copies" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const on_disk = [_][]const u8{ "command", "glob", "search" };
+    var cj = ConfigJson{ .tools = &on_disk };
+
+    const new_list = [_][]const u8{ "read_file", "write_file" };
+    const bad = try applyToolsInput(arena.allocator(), &cj, &new_list);
+    try testing.expect(bad == null);
+    try testing.expectEqual(@as(usize, 2), cj.tools.?.len);
+    try testing.expectEqualStrings("read_file", cj.tools.?[0]);
+    try testing.expectEqualStrings("write_file", cj.tools.?[1]);
+    // Owned: names were duped off the input slice.
+    try testing.expect(cj.tools.?[0].ptr != new_list[0].ptr);
+}
+
+test "applyToolsInput: [] replaces with an explicit empty (non-null) list" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const on_disk = [_][]const u8{"command"};
+    var cj = ConfigJson{ .tools = &on_disk };
+
+    const empty = [_][]const u8{};
+    const bad = try applyToolsInput(arena.allocator(), &cj, &empty);
+    try testing.expect(bad == null);
+    // D2: `[]` must be distinguishable from "absent" after apply — a
+    // non-null zero-length slice serializes as `[]`, not `null`.
+    try testing.expect(cj.tools != null);
+    try testing.expectEqual(@as(usize, 0), cj.tools.?.len);
+}
+
+test "applyToolsInput: unknown name is returned and the config is untouched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const on_disk = [_][]const u8{"command"};
+    var cj = ConfigJson{ .tools = &on_disk };
+
+    const new_list = [_][]const u8{ "read_file", "definitely_not_a_tool" };
+    const bad = try applyToolsInput(arena.allocator(), &cj, &new_list);
+    try testing.expect(bad != null);
+    try testing.expectEqualStrings("definitely_not_a_tool", bad.?);
+    // Validation runs BEFORE any mutation — the rejected list never
+    // half-applies.
+    try testing.expectEqual(@as(usize, 1), cj.tools.?.len);
+    try testing.expectEqualStrings("command", cj.tools.?[0]);
+}
+
+test "applyToolsInput: serialization — null emits JSON null, list emits the array" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cj_null = ConfigJson{};
+    const null_str = try std.json.Stringify.valueAlloc(arena.allocator(), cj_null, .{});
+    try testing.expect(std.mem.indexOf(u8, null_str, "\"tools\":null") != null);
+
+    var cj_list = ConfigJson{};
+    const names = [_][]const u8{"command"};
+    const bad = try applyToolsInput(arena.allocator(), &cj_list, &names);
+    try testing.expect(bad == null);
+    const list_str = try std.json.Stringify.valueAlloc(arena.allocator(), cj_list, .{});
+    try testing.expect(std.mem.indexOf(u8, list_str, "\"tools\":[\"command\"]") != null);
+}
+
+test "tools field is declared in ALL FOUR wire/disk structs (the PUT-strip footgun)" {
+    // Plan §2.2: PUT re-serializes from its own write-struct, so a
+    // `tools` field missing from ANY of these structs gets erased from
+    // disk on the next Settings save. Lock all four declarations + the
+    // GET pipe + the PUT apply so dropping one fails `zig build test`.
+    const allocator = std.testing.allocator;
+    const decl = "tools: ?[]const []const u8 = null";
+
+    // Scope every grep to the impl section: this very test declares the
+    // same literals, which would self-match below the flatten banner.
+    // Separate consts so the defers still free the FULL buffers.
+    const put_src = try readSource_merged(allocator, PUT_HANDLER_PATH);
+    defer allocator.free(put_src);
+    const get_src = try readSource_merged(allocator, "src/http_handlers/nalar_config_get.zig");
+    defer allocator.free(get_src);
+    const resp_src = try readSource_merged(allocator, "src/http_handlers/http_response.zig");
+    defer allocator.free(resp_src);
+    const cfg_src = try readSource_merged(allocator, CONFIG_PATH);
+    defer allocator.free(cfg_src);
+    const put_impl = put_src[0 .. std.mem.indexOf(u8, put_src, "// ===== Tests merged from") orelse put_src.len];
+    const get_impl = get_src[0 .. std.mem.indexOf(u8, get_src, "// ===== Tests merged from") orelse get_src.len];
+    const resp_impl = resp_src[0 .. std.mem.indexOf(u8, resp_src, "// ===== Tests merged from") orelse resp_src.len];
+    const cfg_impl = cfg_src[0 .. std.mem.indexOf(u8, cfg_src, "// ===== Tests merged from") orelse cfg_src.len];
+
+    // 1. ConfigInput (PUT input parse struct).
+    if (std.mem.indexOf(u8, put_impl, "    tools: ?[]const []const u8 = null,") == null) {
+        std.debug.print("!! ConfigInput missing tools field !!\n", .{});
+        return error.ConfigInputMissingTools;
+    }
+    // 2. ConfigJson (PUT write struct) — second declaration in the file.
+    const first = std.mem.indexOf(u8, put_impl, decl) orelse return error.PutWriteStructMissingTools;
+    if (std.mem.indexOfPos(u8, put_impl, first + decl.len, decl) == null) {
+        std.debug.print("!! PUT ConfigJson write struct missing tools field !!\n", .{});
+        return error.PutWriteStructMissingTools;
+    }
+    // 3. GET read struct + the pipe into the response.
+    if (std.mem.indexOf(u8, get_impl, decl) == null) {
+        std.debug.print("!! GET ConfigJson missing tools field !!\n", .{});
+        return error.GetConfigJsonMissingTools;
+    }
+    if (std.mem.indexOf(u8, get_impl, ".tools = cfg.tools") == null) {
+        std.debug.print("!! GET handler does not pipe cfg.tools into the response !!\n", .{});
+        return error.GetToolsNotWired;
+    }
+    // 4. NalarConfigResponse.
+    if (std.mem.indexOf(u8, resp_impl, decl) == null) {
+        std.debug.print("!! NalarConfigResponse missing tools field !!\n", .{});
+        return error.ResponseMissingTools;
+    }
+    // 5. LlmConfigJson (parse) + the runtime LlmConfig field — two decls.
+    const cfg_first = std.mem.indexOf(u8, cfg_impl, decl) orelse return error.LlmConfigJsonMissingTools;
+    if (std.mem.indexOfPos(u8, cfg_impl, cfg_first + decl.len, decl) == null) {
+        std.debug.print("!! LlmConfig runtime field missing tools !!\n", .{});
+        return error.LlmConfigMissingTools;
+    }
+    // 6. The PUT handler applies input → write struct through the helper,
+    //    and the helper validates against the unified registry.
+    if (std.mem.indexOf(u8, put_impl, "if (try applyToolsInput(allocator, &config_json, input.tools)) |bad|") == null) {
+        std.debug.print("!! PUT handler does not apply input.tools !!\n", .{});
+        return error.PutToolsApplyMissing;
+    }
+    if (std.mem.indexOf(u8, put_impl, "InvalidToolName: '{s}' is not in the unified tool registry") == null) {
+        std.debug.print("!! PUT handler missing InvalidToolName 400 body !!\n", .{});
+        return error.PutInvalidToolNameBodyMissing;
     }
 }

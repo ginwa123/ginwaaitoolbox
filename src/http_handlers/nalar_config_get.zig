@@ -18,7 +18,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Environment not available" }),
     });
     // Cast const away since getDefaultConfigPath doesn't actually modify environment
-    const environment: *std.process.Environ.Map = @constCast(@ptrCast(environment_ptr));
+    const environment: *std.process.Environ.Map = @ptrCast(@constCast(environment_ptr));
 
     // Get the default config path
     const config_path = config.getDefaultConfigPath(allocator, environment) catch |err| {
@@ -95,6 +95,7 @@ pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
             .max_capacity_token_model = cfg.max_capacity_token_model,
             .compaction_threshold_percent = cfg.compaction_threshold_percent,
             .retry_delay_ms = cfg.retry_delay_ms,
+            .tools = cfg.tools,
         }),
     });
 }
@@ -131,6 +132,10 @@ const ConfigJson = struct {
     /// Delay in milliseconds before retrying a failed workflow call.
     /// See `LlmConfig.retry_delay_ms` for semantics.
     retry_delay_ms: u32 = 0,
+    /// Default tool checklist (Tools tab, plan
+    /// 2026-09-22-tools-menu-config-default-tools). Emitted as JSON
+    /// `null` when the on-disk key is absent (mirrors `mcp_servers`).
+    tools: ?[]const []const u8 = null,
 };
 
 // ===== Tests merged from nalar_config_get_test.zig (2026-09-11 flatten) =====
@@ -214,5 +219,37 @@ test "GET /api/config/nalar response includes notify_on_error (task_178767126908
     if (std.mem.indexOf(u8, get_src, ".notify_on_error = cfg.notify_on_error") == null) {
         std.debug.print("!! nalar_config_get.zig does not pipe notify_on_error !!\n", .{});
         return error.NotifyOnErrorNotWiredIntoGet;
+    }
+}
+
+test "NalarConfigResponse serializes tools: null when absent, array when set" {
+    // D2 wire contract: the frontend must be able to tell "key absent"
+    // (`tools: null` → legacy defaults) from an explicit `[]` (zero
+    // tools). Both keys must be PRESENT on the wire in both states —
+    // an omitted key would be indistinguishable from a backend that
+    // never shipped the field.
+    const allocator = testing.allocator;
+
+    const absent = try http_response.makeNalarConfigResponse(allocator, .{});
+    defer allocator.free(absent);
+    if (std.mem.indexOf(u8, absent, "\"tools\":null") == null) {
+        std.debug.print("!! default NalarConfigResponse omits tools or does not emit null !!\n", .{});
+        return error.ToolsNullNotSerialized;
+    }
+
+    const names = [_][]const u8{ "command", "read_file" };
+    const present = try http_response.makeNalarConfigResponse(allocator, .{ .tools = &names });
+    defer allocator.free(present);
+    if (std.mem.indexOf(u8, present, "\"tools\":[\"command\",\"read_file\"]") == null) {
+        std.debug.print("!! NalarConfigResponse does not serialize the tools array !!\n", .{});
+        return error.ToolsArrayNotSerialized;
+    }
+
+    const empty = [_][]const u8{};
+    const empty_resp = try http_response.makeNalarConfigResponse(allocator, .{ .tools = &empty });
+    defer allocator.free(empty_resp);
+    if (std.mem.indexOf(u8, empty_resp, "\"tools\":[]") == null) {
+        std.debug.print("!! explicit [] does not serialize as an empty array !!\n", .{});
+        return error.ToolsEmptyNotSerialized;
     }
 }

@@ -341,18 +341,73 @@ pub const DEFAULT_KANBAN_TOOLS: []const []const u8 = &.{
     kanban_move_task_mod.kanban_move_task_tool.function.name,
 };
 
-/// Seed DEFAULT_AGENT_TOOLS into `agent_tools` for `agent_id`.
+/// True when `name` exists in `UNIFIED_TOOL_REGISTRY()`. The PUT handler
+/// and the seed derivation share this so validation and tolerance can
+/// never disagree about what a "known tool" is.
+pub fn isKnownToolName(name: []const u8) bool {
+    for (UNIFIED_TOOL_REGISTRY()) |entry| {
+        if (std.mem.eql(u8, entry.name, name)) return true;
+    }
+    return false;
+}
+
+/// Filter a config-derived list to registry names, deduplicated,
+/// preserving input order. Hand-edited configs may name tools that no
+/// longer exist — they are skipped here (and ignored downstream by
+/// `allowlistFilter`) rather than failing creation. The returned slice
+/// header is owned by the caller (free it with `allocator.free`); the
+/// element strings BORROW from `names`, which must outlive the seed.
+fn filterToRegistry(allocator: std.mem.Allocator, names: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    defer out.deinit(allocator);
+    for (names) |name| {
+        if (!isKnownToolName(name)) continue;
+        var dup = false;
+        for (out.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) {
+                dup = true;
+                break;
+            }
+        }
+        if (dup) continue;
+        try out.append(allocator, name);
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Seed the `agent_tools` allowlist for `agent_id`.
+///
+/// `config_tools` is config.json's top-level `tools` checklist (plan
+/// 2026-09-22-tools-menu-config-default-tools, D2/D4):
+///   - `null` (key absent) → seed exactly `DEFAULT_AGENT_TOOLS`
+///     (byte-identical legacy path),
+///   - non-empty → seed the registry-filtered list instead,
+///   - `[]` → seed ZERO rows (explicit-empty, D3 feeds the `none`
+///     sentinel at runtime).
+///
 /// Uses `INSERT OR IGNORE` so re-seeding never trips
 /// UNIQUE(agent_id, tool_name). Ids are `at_<nanos>_<index>` (matches the
 /// `at_<nanos>` convention in `agent_tools_create.zig`, index-suffixed so
-/// the 3 rows in one call can't collide on the PK).
+/// the rows in one call can't collide on the PK).
 pub fn seedDefaultAgentTools(
     allocator: std.mem.Allocator,
     db: nalarcore.database.DbOrTx,
     agent_id: []const u8,
+    config_tools: ?[]const []const u8,
 ) !void {
     const ts = helpers.unixTimestampNanos();
-    for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
+
+    var filtered_storage: ?[]const []const u8 = null;
+    defer if (filtered_storage) |list| allocator.free(list);
+
+    const list: []const []const u8 = blk: {
+        const cfg = config_tools orelse break :blk DEFAULT_AGENT_TOOLS;
+        const filtered = try filterToRegistry(allocator, cfg);
+        filtered_storage = filtered;
+        break :blk filtered;
+    };
+
+    for (list, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "at_{d}_{d}", .{ ts, i });
         defer allocator.free(id);
         try db.exec(
@@ -363,15 +418,68 @@ pub fn seedDefaultAgentTools(
     }
 }
 
-/// Seed DEFAULT_AGENT_TOOLS into `agent_kanban_tools` for `kanban_id`.
+/// Seed the `agent_kanban_tools` allowlist for `kanban_id`.
+///
 /// Same contract as `seedDefaultAgentTools` with the kanban table shape
-/// (`akt_<nanos>_<index>`, UNIQUE(kanban_id, tool_name)).
+/// (`akt_<nanos>_<index>`, UNIQUE(kanban_id, tool_name)), plus the D5
+/// mode floor: a non-empty config list is UNIONed with
+/// `DEFAULT_KANBAN_TOOLS` (deduped) so a board can always list and move
+/// its tasks. `[]` still seeds ZERO rows — an explicit-zero checklist
+/// beats the floor (D2/D3), only absent falls back to legacy defaults.
 pub fn seedDefaultKanbanTools(
     allocator: std.mem.Allocator,
     db: nalarcore.database.DbOrTx,
     kanban_id: []const u8,
+    config_tools: ?[]const []const u8,
 ) !void {
     const ts = helpers.unixTimestampNanos();
+
+    if (config_tools) |cfg| {
+        // Explicit `[]` → ZERO rows: an all-unchecked checklist beats the
+        // mode floor (D2/D3). Only a non-empty list gets the floor union.
+        if (cfg.len == 0) return;
+
+        const base = try filterToRegistry(allocator, cfg);
+        defer allocator.free(base);
+
+        var idx: usize = 0;
+        for (base) |tool_name| {
+            const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, idx });
+            defer allocator.free(id);
+            try db.exec(
+                allocator,
+                "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
+                &.{ id, kanban_id, tool_name },
+            );
+            idx += 1;
+        }
+
+        // Mode floor: kanban_list / kanban_move_task always seed on a
+        // configured board (the config list may already contain them —
+        // `base` is deduped, so only genuinely new floor names insert).
+        for (DEFAULT_KANBAN_TOOLS) |tool_name| {
+            var present = false;
+            for (base) |existing| {
+                if (std.mem.eql(u8, existing, tool_name)) {
+                    present = true;
+                    break;
+                }
+            }
+            if (present) continue;
+            const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, idx });
+            defer allocator.free(id);
+            try db.exec(
+                allocator,
+                "INSERT OR IGNORE INTO agent_kanban_tools (id, kanban_id, tool_name, enabled, created_at) VALUES (?, ?, ?, 1, datetime('now'))",
+                &.{ id, kanban_id, tool_name },
+            );
+            idx += 1;
+        }
+        return;
+    }
+
+    // Legacy path (config key absent): agent defaults + kanban floor,
+    // exactly as before the tools checklist existed.
     for (DEFAULT_AGENT_TOOLS, 0..) |tool_name, i| {
         const id = try std.fmt.allocPrint(allocator, "akt_{d}_{d}", .{ ts, i });
         defer allocator.free(id);
@@ -412,4 +520,172 @@ test "DEFAULT_AGENT_TOOLS ships the spawn pair and the progressive meta-tools" {
         }
         try std.testing.expect(found);
     }
+}
+
+// ─── Seed derivation tests (plan 2026-09-22-tools-menu) ────────────────────
+
+const testing = std.testing;
+
+const SeedTestCtx = struct {
+    db: nalarcore.sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupSeedDb() !SeedTestCtx {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(
+        alloc,
+        "CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(agent_id, tool_name))",
+        &.{},
+    );
+    try db.exec(
+        alloc,
+        "CREATE TABLE agent_kanban_tools (id TEXT PRIMARY KEY, kanban_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, UNIQUE(kanban_id, tool_name))",
+        &.{},
+    );
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Sorted tool names seeded for `owner_id` in `table`. Caller owns the
+/// returned strings + header.
+fn seededNames(
+    ctx: *SeedTestCtx,
+    alloc: std.mem.Allocator,
+    table: []const u8,
+    owner_id: []const u8,
+) ![][]const u8 {
+    var sql_buf: [256]u8 = undefined;
+    const sql = try std.fmt.bufPrint(
+        &sql_buf,
+        "SELECT tool_name FROM {s} WHERE {s} = ? ORDER BY tool_name ASC",
+        .{ table, if (std.mem.eql(u8, table, "agent_tools")) "agent_id" else "kanban_id" },
+    );
+    var q = try ctx.db.query(alloc, sql, &.{owner_id});
+    defer q.deinit();
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (out.items) |n| alloc.free(n);
+        out.deinit(alloc);
+    }
+    while ((q.next() catch null)) |row| {
+        defer row.deinit(alloc);
+        try out.append(alloc, try alloc.dupe(u8, row.values[0]));
+    }
+    return try out.toOwnedSlice(alloc);
+}
+
+fn freeNames(alloc: std.mem.Allocator, names: [][]const u8) void {
+    for (names) |n| alloc.free(n);
+    alloc.free(names);
+}
+
+test "seed: config absent (null) → agent gets exactly DEFAULT_AGENT_TOOLS" {
+    const alloc = testing.allocator;
+    var ctx = try setupSeedDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try seedDefaultAgentTools(alloc, .{ .db = &ctx.db }, "ag_legacy", null);
+
+    const names = try seededNames(&ctx, alloc, "agent_tools", "ag_legacy");
+    defer freeNames(alloc, names);
+    try testing.expectEqual(DEFAULT_AGENT_TOOLS.len, names.len);
+    // Sorted-ASC order must equal the sorted defaults (byte-identical set).
+    const expected = try alloc.dupe([]const u8, DEFAULT_AGENT_TOOLS);
+    defer alloc.free(expected);
+    std.mem.sort([]const u8, expected, {}, struct {
+        fn lt(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lt);
+    for (expected, names) |e, n| try testing.expectEqualStrings(e, n);
+}
+
+test "seed: config list replaces defaults (unknown names skipped)" {
+    const alloc = testing.allocator;
+    var ctx = try setupSeedDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const cfg = [_][]const u8{ "command", "read_file", "not_a_real_tool" };
+    try seedDefaultAgentTools(alloc, .{ .db = &ctx.db }, "ag_list", &cfg);
+
+    const names = try seededNames(&ctx, alloc, "agent_tools", "ag_list");
+    defer freeNames(alloc, names);
+    try testing.expectEqual(@as(usize, 2), names.len);
+    try testing.expectEqualStrings("command", names[0]);
+    try testing.expectEqualStrings("read_file", names[1]);
+}
+
+test "seed: config [] → zero agent rows (D2/D3 explicit-empty)" {
+    const alloc = testing.allocator;
+    var ctx = try setupSeedDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const cfg = [_][]const u8{};
+    try seedDefaultAgentTools(alloc, .{ .db = &ctx.db }, "ag_zero", &cfg);
+
+    const names = try seededNames(&ctx, alloc, "agent_tools", "ag_zero");
+    defer freeNames(alloc, names);
+    try testing.expectEqual(@as(usize, 0), names.len);
+}
+
+test "seed: kanban config list keeps the DEFAULT_KANBAN_TOOLS floor (deduped)" {
+    const alloc = testing.allocator;
+    var ctx = try setupSeedDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Includes one floor tool already — must not duplicate.
+    const cfg = [_][]const u8{ "command", "kanban_list" };
+    try seedDefaultKanbanTools(alloc, .{ .db = &ctx.db }, "kb_floor", &cfg);
+
+    const names = try seededNames(&ctx, alloc, "agent_kanban_tools", "kb_floor");
+    defer freeNames(alloc, names);
+    try testing.expectEqual(@as(usize, 3), names.len);
+    try testing.expectEqualStrings("command", names[0]);
+    try testing.expectEqualStrings("kanban_list", names[1]);
+    try testing.expectEqualStrings("kanban_move_task", names[2]);
+}
+
+test "seed: kanban config [] → zero rows (explicit-empty beats the floor)" {
+    const alloc = testing.allocator;
+    var ctx = try setupSeedDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const cfg = [_][]const u8{};
+    try seedDefaultKanbanTools(alloc, .{ .db = &ctx.db }, "kb_zero", &cfg);
+
+    const names = try seededNames(&ctx, alloc, "agent_kanban_tools", "kb_zero");
+    defer freeNames(alloc, names);
+    try testing.expectEqual(@as(usize, 0), names.len);
+}
+
+test "seed: kanban config absent (null) → legacy defaults + floor" {
+    const alloc = testing.allocator;
+    var ctx = try setupSeedDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try seedDefaultKanbanTools(alloc, .{ .db = &ctx.db }, "kb_legacy", null);
+
+    const names = try seededNames(&ctx, alloc, "agent_kanban_tools", "kb_legacy");
+    defer freeNames(alloc, names);
+    try testing.expectEqual(DEFAULT_AGENT_TOOLS.len + DEFAULT_KANBAN_TOOLS.len, names.len);
+    // The floor tools are present in the legacy seed.
+    var saw_list = false;
+    var saw_move = false;
+    for (names) |n| {
+        if (std.mem.eql(u8, n, "kanban_list")) saw_list = true;
+        if (std.mem.eql(u8, n, "kanban_move_task")) saw_move = true;
+    }
+    try testing.expect(saw_list and saw_move);
 }

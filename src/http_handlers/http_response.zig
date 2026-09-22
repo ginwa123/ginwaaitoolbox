@@ -402,6 +402,13 @@ pub const NalarConfigResponse = struct {
     /// `workflow.zig:513` (the `callDynamicAgentNew` retry catch) and
     /// `workflow.zig:595` (the `else` finish_reason branch).
     retry_delay_ms: u32 = 0,
+    /// Default tool checklist (Tools tab, plan
+    /// 2026-09-22-tools-menu-config-default-tools). Serialized as-is —
+    /// `null` when the on-disk key is absent, so the frontend can tell
+    /// "legacy defaults" from an explicit `[]` (zero tools). Borrowed
+    /// slices — the caller keeps the parsed config alive until the
+    /// response is serialized.
+    tools: ?[]const []const u8 = null,
 };
 
 /// Wire format for a single sub-agent entry. Mirrors
@@ -595,7 +602,6 @@ pub const WorkspaceItemTaskListResponse = struct {
 // 2026-09-10-workspace-items-routines).
 
 /// One entry in the kanban tag suggestions dropdown. Returned by
-
 pub fn makeWorkspaceItemTaskResponse(allocator: std.mem.Allocator, response: WorkspaceItemTaskResponse) ![]u8 {
     return std.json.Stringify.valueAlloc(allocator, response, .{});
 }

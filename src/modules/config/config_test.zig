@@ -1176,8 +1176,8 @@ test "resolveSubAgent: per-profile hit returns the matched sub-agent's fields" {
         \\}
     ;
     var pair = try resolveFromProfile(json, "profile1", "reviewer");
-        defer pair.cfg.deinit();
-        const r = pair.resolved;
+    defer pair.cfg.deinit();
+    const r = pair.resolved;
     try std.testing.expectEqualStrings("reviewer", r.name);
     try std.testing.expect(!r.is_random_fallback);
     try std.testing.expectEqualStrings("reviewer", r.requested_name);
@@ -1201,8 +1201,8 @@ test "resolveSubAgent: miss returns random fallback with orchestrator defaults" 
         \\}
     ;
     var pair = try resolveFromTopLevel(json, "unknown");
-        defer pair.cfg.deinit();
-        const r = pair.resolved;
+    defer pair.cfg.deinit();
+    const r = pair.resolved;
     try std.testing.expect(r.is_random_fallback);
     try std.testing.expectEqualStrings("unknown", r.requested_name);
     // Random name format: "agent-" + 16 hex chars.
@@ -1249,8 +1249,8 @@ test "resolveSubAgent: overlay — empty SubAgentConfig field falls through to o
         \\}
     ;
     var pair = try resolveFromProfile(json, "profile1", "minimal");
-        defer pair.cfg.deinit();
-        const r = pair.resolved;
+    defer pair.cfg.deinit();
+    const r = pair.resolved;
     try std.testing.expect(!r.is_random_fallback);
     try std.testing.expectEqualStrings("gpt-4o", r.model); // from SubAgentConfig
     try std.testing.expectEqualStrings("https://default.example.com", r.base_url); // orchestrator
@@ -1299,8 +1299,8 @@ test "resolveSubAgent: temperature \"0.7\" parses to Some(0.7)" {
         \\      "url_style": "openai", "api_key": "k", "system_prompt": "p" }] } } }
     ;
     var pair = try resolveFromProfile(json, "p1", "sa");
-        defer pair.cfg.deinit();
-        const r = pair.resolved;
+    defer pair.cfg.deinit();
+    const r = pair.resolved;
     try std.testing.expect(r.temperature != null);
     try std.testing.expectApproxEqAbs(@as(f32, 0.7), r.temperature.?, 0.0001);
 }
@@ -1313,8 +1313,8 @@ test "resolveSubAgent: temperature garbage -> null (treat as auto)" {
         \\    "url_style": "openai", "api_key": "k", "system_prompt": "p" }] }
     ;
     var pair = try resolveFromTopLevel(json, "sa");
-        defer pair.cfg.deinit();
-        const r = pair.resolved;
+    defer pair.cfg.deinit();
+    const r = pair.resolved;
     try std.testing.expectEqual(@as(?f32, null), r.temperature);
 }
 
@@ -1324,8 +1324,8 @@ test "resolveSubAgent: top-level sub_agents list is empty -> miss fallback" {
         \\  "sub_agents": [] }
     ;
     var pair = try resolveFromTopLevel(json, "anything");
-        defer pair.cfg.deinit();
-        const r = pair.resolved;
+    defer pair.cfg.deinit();
+    const r = pair.resolved;
     try std.testing.expect(r.is_random_fallback);
     try std.testing.expectEqualStrings("anything", r.requested_name);
     try std.testing.expectEqualStrings("m", r.model);
@@ -2243,7 +2243,6 @@ test "profiles_models: missing key → cfg.profiles_models.count is 0 (back-comp
     try std.testing.expectEqual(@as(u32, 0), cfg.profiles_models.count());
 }
 
-
 // ---------------------------------------------------------------------------
 // Top-level defaults backfill (plan 2026-08-24-config-simplify-remove-defaults)
 //
@@ -2542,4 +2541,93 @@ test "rebuildMcpServersParsed: enabled server omits enabled key" {
     const mcp_val = cfg.mcpServers().?;
     try std.testing.expect(mcp_val.object.get("hello").?.object.get("enabled") == null);
     try std.testing.expect(mcp_val.object.get("second").?.object.get("enabled") == null);
+}
+
+// ---------------------------------------------------------------------------
+// tools: top-level default tool checklist (Tools tab, plan
+// 2026-09-22-tools-menu-config-default-tools). D2: null (key absent or
+// explicit JSON null) = legacy per-mode defaults; `[]` = explicit zero;
+// non-empty = the default list. All three states must survive `init`.
+// ---------------------------------------------------------------------------
+
+test "tools: missing key → null (legacy defaults, D2 absent)" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b" }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.tools == null);
+}
+
+test "tools: explicit null → null (same as absent after parse)" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b", "tools": null }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    try std.testing.expect(cfg.tools == null);
+}
+
+test "tools: present list parses into an owned slice and survives clone" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b",
+        \\  "tools": ["command", "read_file", "glob"] }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    var cloned = try cfg.clone();
+    defer {
+        cfg.deinit();
+        cloned.deinit();
+    }
+
+    try std.testing.expect(cfg.tools != null);
+    try std.testing.expectEqual(@as(usize, 3), cfg.tools.?.len);
+    try std.testing.expectEqualStrings("command", cfg.tools.?[0]);
+    try std.testing.expectEqualStrings("read_file", cfg.tools.?[1]);
+    try std.testing.expectEqualStrings("glob", cfg.tools.?[2]);
+
+    // Clone deep-copies (owned by the clone's allocator, independent
+    // pointers) — `parsed.deinit()` in init must not have left aliases.
+    try std.testing.expect(cloned.tools != null);
+    try std.testing.expectEqual(@as(usize, 3), cloned.tools.?.len);
+    try std.testing.expect(cfg.tools.?[0].ptr != cloned.tools.?[0].ptr);
+}
+
+test "tools: empty array stays non-null with len 0 (D2 [] ≠ absent)" {
+    const allocator = std.testing.allocator;
+
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b", "tools": [] }
+    ;
+
+    var cfg = try writeAndRead(allocator, std.testing.io, json);
+    defer cfg.deinit();
+
+    // The D2 distinction: `[]` must NOT collapse to null, or an
+    // all-unchecked checklist would silently snap back to legacy defaults.
+    try std.testing.expect(cfg.tools != null);
+    try std.testing.expectEqual(@as(usize, 0), cfg.tools.?.len);
+}
+
+test "tools: wrong type (string) fails whole-config parse with InvalidJson" {
+    const allocator = std.testing.allocator;
+
+    // Typed field: a hand-edited non-array value is a hard parse error
+    // (same failure mode as the other typed fields — plan §8).
+    const json =
+        \\{ "api_key": "k", "model": "m", "base_url": "b", "tools": "bash" }
+    ;
+
+    try std.testing.expectError(error.InvalidJson, writeAndRead(allocator, std.testing.io, json));
 }

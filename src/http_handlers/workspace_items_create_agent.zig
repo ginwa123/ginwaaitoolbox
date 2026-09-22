@@ -88,6 +88,10 @@ pub const WorkspaceItemsCreateAgentError = error{
 pub const WorkspaceItemsCreateAgentInput = struct {
     workspace_id: []const u8,
     body: CreateAgentBody,
+    /// Live config.json `tools` checklist (null = legacy defaults).
+    /// Read from the singleton by the HTTP handler and threaded into
+    /// the seed so D2's absent/list/[] semantics reach `agent_tools`.
+    config_tools: ?[]const []const u8 = null,
 };
 
 pub const WorkspaceItemsCreateAgentResult = []const u8; // pre-serialized JSON
@@ -127,7 +131,8 @@ fn useCase(
     // 1. INSERT INTO workspace_items with item_type='agent' and a
     //    fresh position. NULLIF(?, '') stores NULL when the caller
     //    didn't pass a path (matching the kanban convention).
-    tx.exec(allocator,
+    tx.exec(
+        allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'agent', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
         &.{ item_id, input.workspace_id, trimmed_name, input.body.path, input.workspace_id },
     ) catch return error.DatabaseError;
@@ -135,17 +140,19 @@ fn useCase(
     // 2. INSERT INTO agents with the SAME id (spec D3 — agents.id
     //    shares the workspace_item_id space; UNIQUE(workspace_item_id)
     //    enforces 1-1 at the DB layer).
-    tx.exec(allocator,
+    tx.exec(
+        allocator,
         "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, item_id },
     ) catch return error.DatabaseError;
 
-    // 3. Seed default tools (command, read_file, write_file) so a fresh
-    //    agent is immediately usable. Inside the same tx — takes `tx`
-    //    (not `db`): the tx holds the backend mutex, so a `db.exec`
-    //    here would deadlock on the non-reentrant lock.
-    //    agent_tools.agent_id references agents.id (= item_id).
-    tools_equipped.seedDefaultAgentTools(allocator, .{ .tx = &tx }, item_id) catch return error.DatabaseError;
+    // 3. Seed the tool allowlist so a fresh agent is immediately usable:
+    //    config.json's `tools` checklist when set, otherwise the
+    //    built-in DEFAULT_AGENT_TOOLS (see tools_equipped). Inside the
+    //    same tx — takes `tx` (not `db`): the tx holds the backend
+    //    mutex, so a `db.exec` here would deadlock on the non-reentrant
+    //    lock. agent_tools.agent_id references agents.id (= item_id).
+    tools_equipped.seedDefaultAgentTools(allocator, .{ .tx = &tx }, item_id, input.config_tools) catch return error.DatabaseError;
 
     // COMMIT.
     tx.commit() catch return error.DatabaseError;
@@ -192,7 +199,8 @@ fn readInsertedPosition(
     db: *nalarcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         "SELECT position FROM workspace_items WHERE id = ?",
         &.{item_id},
     ) catch return 0;
@@ -217,6 +225,12 @@ pub fn workspaceItemsCreateAgentHandler(
 
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
+    // Live config.json `tools` checklist — seeds the fresh agent's
+    // allowlist instead of the defaults when set (plan
+    // 2026-09-22-tools-menu). `getLlmConfig` is the established
+    // hot-path accessor; the slice stays valid for the synchronous
+    // useCase below (only swapped on the next config PUT).
+    const config_tools = nalarcore.getLlmConfig(di).tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
@@ -264,10 +278,10 @@ pub fn workspaceItemsCreateAgentHandler(
     const data = useCase(allocator, sqlite_db, .{
         .workspace_id = workspace_id,
         .body = parsed,
+        .config_tools = config_tools,
     }) catch |err| {
         const status: u16 = switch (err) {
-            error.WorkspaceIdRequired, error.MissingBody, error.InvalidJson,
-            error.NameRequired, error.PathRequired, error.EmptyName => 400,
+            error.WorkspaceIdRequired, error.MissingBody, error.InvalidJson, error.NameRequired, error.PathRequired, error.EmptyName => 400,
             error.DatabaseError, error.OutOfMemory => 500,
         };
         const message: []const u8 = switch (err) {
@@ -320,15 +334,18 @@ fn setupDb() !TestCtx {
     // needs the full shape (per spec D6) — re-create here matching the
     // post-migration-018 schema. `agents` needs the full shape too so
     // the 1-1 invariant INSERT succeeds.
-    try db.exec(testing.allocator,
+    try db.exec(
+        testing.allocator,
         "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT NOT NULL, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         &[_][]const u8{},
     );
-    try db.exec(testing.allocator,
+    try db.exec(
+        testing.allocator,
         "CREATE TABLE agents (id TEXT PRIMARY KEY, workspace_item_id TEXT NOT NULL UNIQUE, description TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         &[_][]const u8{},
     );
-    try db.exec(testing.allocator,
+    try db.exec(
+        testing.allocator,
         "CREATE TABLE agent_tools (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, tool_name TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
         &[_][]const u8{},
     );
@@ -446,4 +463,3 @@ test "useCase: position increments per workspace" {
     try testing.expectEqual(@as(i64, 0), p2_pos.item.position);
     try testing.expectEqualStrings("ws_2", p2_pos.item.workspace_id);
 }
-
