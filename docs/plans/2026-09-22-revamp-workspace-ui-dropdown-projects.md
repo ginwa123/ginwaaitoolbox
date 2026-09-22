@@ -3,11 +3,12 @@
 ## Goal
 One-sentence: replace the sidebar's stacked multi-workspace list with (a) a workspace selector **dropdown in the sidebar header** and (b) a single **"Projects" section that shows only the selected workspace's items** — so the sidebar stops being a cluttered tree of every workspace at once.
 
-Non-goals (v1): no backend/schema changes; CHATS list stays **global** (not scoped per workspace); no new Project domain entity; no workspace SSE events; no workspace reorder UI in the dropdown (see Risks); the "Add Project" (folder) menu option stays disabled as today.
+Non-goals (v1): no backend/schema changes; CHATS list stays **global** (not scoped per workspace); no new Project domain entity; no workspace SSE events; no workspace drag-reorder UI in the dropdown (user-confirmed — API/store kept); the "Add Project" (folder) menu option stays disabled as today.
 
 ## Decision log
 - 2026-09-22 (user): "dropdown to select a workspace … remove the sidebar list workspaces, change with Projects." Screenshot arrow points at the header word (`AnakMagang`) as the dropdown's home.
 - 2026-09-22 (plan): "Projects" = the selected workspace's existing `workspace_items` (folder/kanban/design/agent/routine) rendered flat — NOT a new entity. Workspace create/rename/delete move into the dropdown.
+- 2026-09-22 (user, review answers): "Projects" = **ALL** workspace items (confirmed); **no** workspace drag-reorder UI in v1; CHATS stay **global** for now; workspace switch **must create a browser-history entry** → `router.push` (deliberate exception to the tab-switch `replace` precedent: switching workspace is a context change, like task navigation).
 
 ## Background (what exists today)
 
@@ -64,7 +65,7 @@ Dropdown panel (trigger = active workspace name):
 
 Behaviors:
 1. Trigger renders `activeWorkspace.name` + `▾` — this **fixes the hard-coded `AnakMagang` header** as a side effect. No workspace yet → "Select workspace".
-2. Selecting a workspace → sets `activeWorkspaceId`, clears item/task selection that belonged to the previous workspace, `router.replace({ query: { view: 'workspace', workspaceId: id } })` (drops `itemId`/`pageId`/`session` from the old context), Projects section re-renders. CHATS intentionally unchanged.
+2. Selecting a workspace → sets `activeWorkspaceId`, clears item/task selection that belonged to the previous workspace, `router.push({ query: { view: 'workspace', workspaceId: id } })` (drops `itemId`/`pageId`/`session` from the old context; **push, not replace** — Back/Forward must cross workspace switches), Projects section re-renders. CHATS intentionally unchanged.
 3. Per-row hover actions reuse existing flows: rename → `RenameWorkspaceModal`; delete → `ConfirmDialog` → `removeWorkspace`.
 4. `+ New workspace` → existing `WorkspaceModal`.
 5. A11y/keyboard per `GitBaseBranchSelect`: Enter/Space open, ↑/↓ move, Enter select, Esc close, click-outside close, `role="listbox"` + option rows.
@@ -80,6 +81,7 @@ Behaviors:
 - Re-point the `activeWorkspace` getter to id-first with item-derived fallback so existing consumers (e.g. `AppLayout.vue:2735 :project-name="activeWorkspace?.name"`) keep working — and get better behavior.
 - Deleting the active workspace → fall back down the precedence chain and `router.replace` the stale id out of the URL.
 - `stores/sidebar.ts`: rename `workspacesExpanded` → `projectsExpanded` under key `nalar-sidebar-projects-expanded`, seeding once from the old key so users don't get a silently re-collapsed section.
+- **History:** workspace switches use `router.push` (user decision — Back/Forward must cross switches); other tab/selector switches keep `replace`. Cleanup of a stale id after workspace *deletion* still uses `router.replace` (that's not a navigation).
 
 ### Component-by-component changes
 | Change | File |
@@ -96,7 +98,7 @@ Removals: workspace-row DnD handlers in `WorkspaceList` (item DnD stays), sideba
 ## Implementation steps (each step leaves the tree green)
 
 1. **State + URL groundwork (no visual change).** Add `activeWorkspaceId` / `setActiveWorkspace` + precedence + localStorage; extend `pendingUrlRestore`, the URL watcher, `useCurrentMainView`, `buildTaskUrlQuery` for standalone `workspaceId`. New spec: `__tests__/stores.activeWorkspace.spec.ts` (precedence, clearing rules, delete-fallback). Existing UI untouched → all current specs stay green.
-2. **WorkspaceSwitcher (header swap).** Build off the `GitBaseBranchSelect` skeleton; mount in the `Sidebar` header replacing the `AnakMagang` word; forward events to existing Sidebar handlers (`handleAddWorkspace` L766, `handleRenameWorkspace` L741, `handleDeleteWorkspace` L513). New specs: `WorkspaceSwitcher.spec.ts` (open, select, rename, delete-confirm, create, empty list) and `workspaceSwitcher.url.spec.ts` — the mandated pair: *click writes* `?view=workspace&workspaceId=…` (no `itemId`) / *mount-with-query restores* the active trigger + workspace.
+2. **WorkspaceSwitcher (header swap).** Build off the `GitBaseBranchSelect` skeleton; mount in the `Sidebar` header replacing the `AnakMagang` word; forward events to existing Sidebar handlers (`handleAddWorkspace` L766, `handleRenameWorkspace` L741, `handleDeleteWorkspace` L513). New specs: `WorkspaceSwitcher.spec.ts` (open, select, rename, delete-confirm, create, empty list) and `workspaceSwitcher.url.spec.ts` — the mandated pair: *click writes* `?view=workspace&workspaceId=…` (no `itemId`) / *mount-with-query restores* the active trigger + workspace — plus assert the switch **pushed** a history entry (Back returns to the pre-switch URL).
 3. **Projects section swap.** Refactor `WorkspaceList.vue` → `ProjectsList.vue` per table; Sidebar passes `workspacesStore.activeWorkspace`; rename `workspacesExpanded` → `projectsExpanded`. Repoint specs: `WorkspaceList.expandedNoActiveBg.spec.ts` → `ProjectsList.*`, delete workspace-DnD cases from `workspaceListDragDrop.spec.ts`, repoint `workspaceListItemDragDrop.spec.ts` + `workspaceListProcessingSpinner.spec.ts`; `workspacesStoreReorder.spec.ts` stays (action/API kept).
 4. **Collapsed mode + dead-code sweep.** Active-workspace monogram opens the Teleported switcher; remove the tile grid. Grep contract per repo deletion rule: `rg 'WorkspaceList|workspacesExpanded|collapsed-workspace-button|workspaces-add-workspace-button|AnakMagang' src/apps/desktop/src` must return nothing outside this plan doc (the `AnakMagang` brand remains only in `LoginView.vue` — out of scope, noted). Update every spec referencing the removed testids (`sidebarSingleActive.spec.ts`, `Sidebar.*.spec.ts`, …).
 5. **Docs + verification.** Update any live docs/screenshots that describe the sidebar WORKSPACES section. Comment style: plain why-comments only — no `// NEW (plan: …)` tags (repo rule).
@@ -108,10 +110,10 @@ Removals: workspace-row DnD handlers in `WorkspaceList` (item DnD stays), sideba
 - **No live-server curl.** v1 ships **no wire changes**, so no new python functional test is required; a follow-up that scopes CHATS per workspace MUST ship with a `tests/functional/*_test.py` harness test (free port 8080–8199, never 8081) covering the real wire payload — not just vitest.
 
 ## Risks / open questions
-1. **"Projects" scope** — default: ALL `workspace_items` of the selected workspace (exactly what the nested tree showed). If "Projects" was meant as folder-type items only, kanban/design/agent/routine items would have nowhere to live — confirm before step 3.
-2. **Workspace reorder** — no natural home in a dropdown; v1 drops the UI while keeping the API + store action. Follow-ups: drag inside the dropdown panel, or a "Manage workspaces" dialog.
-3. **CHATS stay global** — switching workspace does NOT change the chat list (`sessions.workspace_id` is still always NULL; scoping already specced in `docs/plans/2026-09-15-workspace-scoped-chat-history.md`). Users may expect the switch to filter chats; call this out in the PR.
-4. **`workspace.expanded` / `nalar-workspace-expanded` become vestigial** (no per-workspace tree rows anymore). v1 keeps the wire field but stops reading it for the sidebar; full removal is a cleanup PR.
-5. **Switch uses `router.replace`** (repo rule for view switches) → crossing workspaces creates no history entry; Back returns to the pre-switch page. Confirm that's acceptable.
-6. **No workspace SSE** — create/delete/rename from another tab won't live-update the dropdown (pre-existing gap, unchanged by this work).
-7. **Spec blast radius** — ~10 sidebar/workspace specs need repointing or deletion (steps 2–4); budget test time accordingly.
+Resolved by user 2026-09-22: (1) "Projects" = ALL workspace items; (2) no workspace drag-reorder UI in v1 — the `reorderWorkspaces` API, store action and `workspacesStoreReorder.spec.ts` are kept, only the sidebar UI goes away; (3) CHATS stay global for now; (5) workspace switch uses `router.push`, so Back/Forward crosses switches — a deliberate exception to the tab-switch `replace` precedent, because a workspace switch is a context change like task navigation.
+
+Remaining risks:
+1. **CHATS stay global** — switching workspace does NOT change the chat list (`sessions.workspace_id` is still always NULL; scoping already specced in `docs/plans/2026-09-15-workspace-scoped-chat-history.md`). Confirmed "for now"; when revisited, that follow-up ships with a python functional harness test, not vitest.
+2. **`workspace.expanded` / `nalar-workspace-expanded` become vestigial** (no per-workspace tree rows anymore). v1 keeps the wire field but stops reading it for the sidebar; full removal is a cleanup PR.
+3. **No workspace SSE** — create/delete/rename from another tab won't live-update the dropdown (pre-existing gap, unchanged by this work).
+4. **Spec blast radius** — ~10 sidebar/workspace specs need repointing or deletion (steps 2–4); budget test time accordingly.
