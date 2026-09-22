@@ -48,7 +48,9 @@ describe('ChatEngineDb mapping', () => {
     expect(first.session_id).toBe('sess-1')
     expect(first.created_at).toBe(1700000000)
     expect(res.delta?.nextCursor).toBe('cur-9')
-    expect(await eng.getCursor('sess-1')).toBe('cur-9')
+    // Sync cursor tracks the newest row, not the pagination cursor, so the
+    // next mount fetches the tail instead of re-fetching the same page.
+    expect(await eng.getCursor('sess-1')).toBe(String(1700000000 * 1e9))
   })
 
   it('stores the full server row in raw (tool calls / images / reasoning survive)', async () => {
@@ -97,6 +99,54 @@ describe('ChatEngineDb mapping', () => {
     expect(fetchFn.mock.calls[0]).toEqual(['sess-warm', 60, 'stored-cur', 'asc'])
     expect(delta?.cursorToSave).toBe('cur-next')
     expect(await eng.getCursor('sess-warm')).toBe('cur-next')
+  })
+
+  it('small delta (has_more=false, next_cursor=null) advances cursor to newest row', async () => {
+    const fetchFn = vi.fn(
+      async (_sid: string, _limit: number, _cursor?: string, _dir?: string) => ({
+        messages: [rawRow({ id: 'n1', created_at: 100 }), rawRow({ id: 'n2', created_at: 200 })],
+        has_more: false,
+        next_cursor: null,
+      }),
+    )
+    const eng = new ChatEngineDb(fetchFn as never)
+    await eng.setCursor('sess-small', '1700000000')
+    const delta = await eng.loadDelta('sess-small', 1000)
+    // Tail-only fetch with the stored cursor…
+    expect(fetchFn.mock.calls[0]).toEqual(['sess-small', 1000, '1700000000', 'asc'])
+    // …and the cursor advances to the newest row instead of being wiped to null.
+    expect(delta?.cursorToSave).toBe(String(200 * 1e9))
+    expect(await eng.getCursor('sess-small')).toBe(String(200 * 1e9))
+  })
+
+  it('empty delta keeps the previous cursor instead of wiping it to null', async () => {
+    const fetchFn = vi.fn(
+      async (_sid: string, _limit: number, _cursor?: string, _dir?: string) => ({
+        messages: [],
+        has_more: false,
+        next_cursor: null,
+      }),
+    )
+    const eng = new ChatEngineDb(fetchFn as never)
+    await eng.setCursor('sess-empty', '999')
+    const delta = await eng.loadDelta('sess-empty', 1000)
+    expect(delta?.cursorToSave).toBe('999')
+    expect(await eng.getCursor('sess-empty')).toBe('999')
+  })
+
+  it('cold full load derives cursor from newest row when next_cursor is null', async () => {
+    const fetchFn = vi.fn(
+      async (_sid: string, _limit: number, _cursor?: string, _dir?: string) => ({
+        messages: [rawRow({ id: 'a', created_at: 10 }), rawRow({ id: 'b', created_at: 30 })],
+        has_more: false,
+        next_cursor: null,
+      }),
+    )
+    const eng = new ChatEngineDb(fetchFn as never)
+    const delta = await eng.loadDelta('sess-fresh', 1000)
+    expect(fetchFn.mock.calls[0]![2]).toBeUndefined()
+    expect(delta?.cursorToSave).toBe(String(30 * 1e9))
+    expect(await eng.getCursor('sess-fresh')).toBe(String(30 * 1e9))
   })
 
   it('older-from-cache hit serves rows with zero network calls', async () => {

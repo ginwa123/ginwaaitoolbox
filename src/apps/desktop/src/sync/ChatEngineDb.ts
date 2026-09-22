@@ -28,6 +28,31 @@ export interface ChatMessage {
 
 export type ChatCtx = string
 
+/**
+ * Sync cursor for the next delta: the newest row seen so far.
+ *
+ * The backend only returns `next_cursor` when `has_more` is true, so it
+ * cannot serve as the sync cursor — persisting it wipes a good cursor to
+ * null after every small delta (and points at the oldest row on a full
+ * page), forcing a full desc reload on the next mount. Advance to the
+ * newest received row instead and never regress past the incoming cursor;
+ * an empty delta keeps the previous cursor.
+ */
+export function newestCursor(
+  items: ChatMessage[],
+  nextCursor: string | null,
+  prevCursor: string | null,
+): string | null {
+  let best: number | null = null
+  const prev = prevCursor !== null ? Number(prevCursor) : NaN
+  if (Number.isFinite(prev)) best = prev as number
+  for (const m of items) {
+    if (Number.isFinite(m.sortKey) && (best === null || m.sortKey > best)) best = m.sortKey
+  }
+  if (best !== null) return String(best)
+  return nextCursor ?? prevCursor
+}
+
 /** Session metadata piggybacked on the messages endpoint (not cached). */
 export interface ChatDeltaExtra {
   cwd?: string
@@ -116,7 +141,7 @@ export class ChatEngineDb extends BaseSyncEngine<ChatMessage, ChatCtx> {
       items,
       nextCursor: data.next_cursor ?? null,
       hasMore: data.has_more ?? false,
-      cursorToSave: data.next_cursor ?? null,
+      cursorToSave: newestCursor(items, data.next_cursor ?? null, cursor),
       extra: {
         cwd: data.cwd,
         git_worktree_cwd: data.git_worktree_cwd,

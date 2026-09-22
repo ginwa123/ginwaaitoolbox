@@ -2,7 +2,7 @@
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
 import { marked } from 'marked'
 import * as api from '../../api'
-import { chatEngineDb, toChatMessage } from '../../sync/ChatEngineDb'
+import { chatEngineDb, newestCursor, toChatMessage } from '../../sync/ChatEngineDb'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
 import {
   stripThinkingTags,
@@ -2663,11 +2663,14 @@ const loadChatHistory = async () => {
       // from cache. Best-effort — IDB failure keeps in-memory behavior.
       try {
         const sid = sessionId.value
-        await chatEngineDb.putLocal(
-          sid,
-          (data.messages ?? []).map((m) => toChatMessage(sid, m)),
-        )
-        await chatEngineDb.setCursor(sid, data.next_cursor)
+        const rows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
+        await chatEngineDb.putLocal(sid, rows)
+        // Sync cursor must be the newest row, not the pagination cursor:
+        // the backend omits next_cursor when has_more is false (wiping the
+        // cursor to null), and on a full page it points at the oldest row
+        // (re-fetching the same page next mount). Either way the next mount
+        // degrades to a full desc limit=1000 load.
+        await chatEngineDb.setCursor(sid, newestCursor(rows, data.next_cursor ?? null, null))
       } catch {
         // Ignore — cache is advisory on write.
       }
@@ -3623,11 +3626,37 @@ const connectSse = () => {
   })
   // Stale-on-wake (cross-tab sharing): if this window just took over the shared
   // connection, or slept through a long hidden period, llm/queue events may have
-  // been missed entirely — re-read the history so the visible chat is correct.
+  // been missed entirely — fetch just the tail (cursor+asc) and merge it. A
+  // full loadChatHistory here repainted the whole list, yanked the scroll
+  // position, and (before the newestCursor fix) re-fetched up to PAGE_SIZE
+  // rows on every tab return. Empty view (nothing painted yet) still takes
+  // the full path so the first paint, cursor, and scroll state initialize.
   offResync =
     bus.onResync?.(() => {
       if (sessionId.value !== sid) return
-      void loadChatHistory()
+      void (async () => {
+        try {
+          if (messages.value.length === 0) {
+            await loadChatHistory()
+            return
+          }
+          const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE)
+          if (!delta || sessionId.value !== sid) return
+          applyDeltaExtra(delta.extra)
+          if (delta.items.length > 0) {
+            const seen = new Set(messages.value.map((m) => m.id))
+            const fresh = toChatMessages(delta.items.map((i) => i.raw)).filter(
+              (m) => !seen.has(m.id),
+            )
+            if (fresh.length > 0) {
+              messages.value = [...messages.value, ...fresh]
+              if (isAtBottom.value) scrollToBottom(false, 'sse-resync-delta')
+            }
+          }
+        } catch {
+          // Painted messages stand; the next mount retries the tail.
+        }
+      })()
     }) ?? null
   // Set isStreaming LAST so external observers (tests, UI) can poll
   // it as a "listeners are wired up" signal — flipping it before
