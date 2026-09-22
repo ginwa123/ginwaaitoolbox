@@ -27,11 +27,16 @@ import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import AddTaskPickerDialog from '../dialogs/AddTaskPickerDialog.vue'
 import type { WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
-import { buildTaskUrlQuery } from '../../helpers/buildTaskUrlQuery'
+import { buildAppUrl, buildTaskAppUrl, parseAppPath } from '../../helpers/appUrl'
+import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
+import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import { openInNewTab } from '../../helpers/openInNewTab'
 
 const router = useRouter()
 const route = useRoute()
+// URL-derived main view (path-based contract) — chat navigations
+// resolve their workspace from it before falling back to the store.
+const currentMainView = useCurrentMainView()
 const navigationStore = useNavigationStore()
 
 const props = defineProps<{
@@ -347,12 +352,24 @@ const handleChatsNavigate = (id: string, chatName?: string) => {
       })
     }
   } else if (id.startsWith('chat-')) {
-    // Navigate to chat
+    // Navigate to chat (path-based: /app/{ws}/chat/{sid}). The
+    // workspace is the current main view's when present, else the
+    // store's active workspace (ChatsList is scoped to it).
     const sessionId = id.replace('chat-', '')
     navigationStore.setActiveChat(sessionId, chatName || '')
     workspacesStore.setActiveWorkspaceItem(null)
     workspacesStore.setActiveTask(null)
-    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+    const mainView = currentMainView.value
+    const wsForChat =
+      (mainView.kind === 'chat' && mainView.workspaceId) ||
+      (mainView.kind === 'workspace' && mainView.workspaceId) ||
+      workspacesStore.activeWorkspaceId ||
+      ''
+    if (wsForChat) {
+      router.replace(buildAppUrl({ workspaceId: wsForChat, chatSessionId: sessionId }))
+    } else {
+      router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
+    }
   } else {
     // Direct navigation
     emit('navigate', id, chatName)
@@ -407,10 +424,7 @@ const handleGoToSettings = (payload: {
     openInNewTab(router, { path: `/app/kanban/${payload.itemId}/settings`, query: {} })
     return
   }
-  openInNewTab(router, {
-    path: '/app',
-    query: { view: 'workspace', workspaceId: payload.workspaceId, itemId: payload.itemId },
-  })
+  openInNewTab(router, buildAppUrl({ workspaceId: payload.workspaceId, projectId: payload.itemId }))
 }
 
 /**
@@ -424,10 +438,7 @@ const handleOpenItemInBackground = (payload: {
   name: string
   itemType?: string
 }) => {
-  openInNewTab(router, {
-    path: '/app',
-    query: { view: 'workspace', workspaceId: payload.workspaceId, itemId: payload.itemId },
-  })
+  openInNewTab(router, buildAppUrl({ workspaceId: payload.workspaceId, projectId: payload.itemId }))
 }
 
 /**
@@ -442,15 +453,17 @@ const handleOpenTaskInBackground = (payload: {
   itemType?: string
   taskId: string
 }) => {
-  const query = buildTaskUrlQuery({
-    taskId: payload.taskId,
-    activeWorkspaceId: payload.workspaceId || null,
-    activeWorkspaceItemId: payload.itemId || null,
-    activeDesignPageId: null,
-    activeItemType: payload.itemType ?? null,
-    currentQuery: route.query,
-  })
-  openInNewTab(router, { path: '/app', query })
+  openInNewTab(
+    router,
+    buildTaskAppUrl({
+      taskId: payload.taskId,
+      activeWorkspaceId: payload.workspaceId || null,
+      activeWorkspaceItemId: payload.itemId || null,
+      activeDesignPageId: null,
+      activeItemType: payload.itemType ?? null,
+      currentQuery: route.query,
+    }),
+  )
 }
 
 const handleSelectItem = async (workspaceId: string, itemId: string) => {
@@ -494,8 +507,14 @@ const handleSelectItem = async (workspaceId: string, itemId: string) => {
     // to building the default if there's no existing sorts — this
     // is the FIRST visit to this kanban (URL has no sorts at all,
     // or the current itemId doesn't match the kanban in the URL).
+    // The item id is read from the path first (path-based URLs),
+    // then the legacy query (transition window).
     const existingSorts = route.query.sorts as string | undefined
-    const urlItemId = route.query.itemId as string | undefined
+    const pathParsed = parseAppPath(route.path)
+    const urlItemId =
+      pathParsed.kind === 'project' || pathParsed.kind === 'projectChat'
+        ? pathParsed.projectId
+        : parseItemIdWithChat((route.query.itemId as string | undefined) ?? '').itemId
     if (existingSorts && urlItemId === itemId) {
       // Re-navigation to the SAME kanban — preserve the user's
       // existing sort picks so we don't clobber them with the
@@ -867,17 +886,16 @@ const createAndOpenStandardChat = async (workspaceId: string, itemId: string) =>
     // URL was just `?view=task&task=X` — sharing / refreshing lost
     // the workspace context. The helper reads from the active store
     // state set by `handleSelectItem` (which fired before the
-    // picker opened).
-    router.replace({
-      path: '/app',
-      query: buildTaskUrlQuery({
+    // picker opened). Path-based (2026-09-22 revamp).
+    router.replace(
+      buildTaskAppUrl({
         taskId,
         activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
         activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
         activeDesignPageId: workspacesStore.activeDesignPageId,
         activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
       }),
-    })
+    )
   }
 }
 
@@ -1059,7 +1077,7 @@ const handleSelectTask = async (taskId: string) => {
     // the time any subsequent watcher fires. Even with the flag
     // guard, awaiting is the cleanest close — the flag's `finally`
     // clears only after the navigation is committed.
-    const query = buildTaskUrlQuery({
+    const target = buildTaskAppUrl({
       taskId,
       activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
       activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
@@ -1073,7 +1091,7 @@ const handleSelectTask = async (taskId: string) => {
     // `itemId` derived from `activeWorkspaceItemId` is included via the
     // helper's store-derived value (NOT the `parentItemId` we computed
     // above — they should be equal but the store is authoritative).
-    await router.push({ path: '/app', query })
+    await router.push(target)
   } finally {
     workspacesStore.isNavigatingToTask = false
   }
