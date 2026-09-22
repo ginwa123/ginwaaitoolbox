@@ -899,7 +899,7 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("Failed to register cleanup_stale_background_process cron: {s}\n", .{@errorName(err)});
     };
 
-    try gs.listenEventLoop(.{});
+    try gs.listenEventLoop(.{.dispatch_mode = .worker_pool});
 
     // Clean shutdown after listen() returns (shutdown endpoint, SIGINT
     // Ctrl+C, or SIGTERM). The signal path sets `shutdown_requested`
