@@ -219,16 +219,56 @@ const renderTool = (content: string, tool_name: string | undefined): string => {
   }
 
   if (tool_name === 'set_git_worktree') {
-    // SET success: <created>true</created><path>...</path>
+    // JSON envelope first (canonical): {"tool":...,"success":bool,"data":{path,branch,cleared,created},"error":...}
+    // Falls back to legacy <worktree> XML for old chat history.
+    try {
+      const parsed: unknown = JSON.parse(content)
+      const record =
+        typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+          ? (parsed as Record<string, unknown>)
+          : null
+      const envelope =
+        record !== null && (typeof record.tool === 'string' || typeof record.success === 'boolean')
+          ? record
+          : null
+      const dataRaw = envelope !== null ? envelope.data : parsed
+      const data =
+        typeof dataRaw === 'object' && dataRaw !== null && !Array.isArray(dataRaw)
+          ? (dataRaw as Record<string, unknown>)
+          : null
+      if (envelope !== null && envelope.success === false) {
+        const msg =
+          typeof envelope.error === 'string' && envelope.error.trim().length > 0
+            ? envelope.error.trim()
+            : 'error'
+        return `<span class="tool-inline">${tool_name} → ${escapeHtml(msg)}</span>`
+      }
+      if (data !== null) {
+        if (typeof data.path === 'string' && data.path.trim().length > 0) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(data.path.trim())}</span>`
+        }
+        if (data.cleared === true || data.cleared === 'true' || data.cleared === 1) {
+          return `<span class="tool-inline">${tool_name} → cleared</span>`
+        }
+        if (typeof data.error === 'string' && data.error.trim().length > 0) {
+          return `<span class="tool-inline">${tool_name} → ${escapeHtml(data.error.trim())}</span>`
+        }
+      }
+      // Bare JSON object without envelope (inner data passed directly).
+      if (envelope === null && data !== null) {
+        return `<span class="tool-inline">${tool_name} → ${escapeHtml('error')}</span>`
+      }
+    } catch {
+      // Not JSON — fall through to legacy XML below.
+    }
+    // Legacy XML fallback: SET success <path>, CLEAR <cleared>, else <error>.
     const pathMatch = content.match(/<path>([\s\S]*?)<\/path>/)
     if (pathMatch) {
       return `<span class="tool-inline">${tool_name} → ${escapeHtml(pathMatch[1]?.trim() || '')}</span>`
     }
-    // CLEAR success: <cleared>true</cleared>
     if (/<cleared>\s*true\s*<\/cleared>/.test(content)) {
       return `<span class="tool-inline">${tool_name} → cleared</span>`
     }
-    // Error: <created>false</created><error>...</error>
     const errMatch = content.match(/<error>([\s\S]*?)<\/error>/)
     return `<span class="tool-inline">${tool_name} → ${escapeHtml(errMatch?.[1]?.trim() || 'error')}</span>`
   }

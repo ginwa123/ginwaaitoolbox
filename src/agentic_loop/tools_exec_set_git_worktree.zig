@@ -22,8 +22,8 @@ pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     };
     defer parsed.deinit();
 
-    // executeSetGitWorktreeToString returns ![]const u8 — errors are
-    // also encoded as <error>...</error> in the XML on success paths.
+    // executeSetGitWorktreeToString returns JSON (![]const u8) — errors are
+    // also encoded as {"created":false,"error":"..."} on success paths.
     // We must catch the error union separately.
     const inner = set_git_worktree_mod.executeSetGitWorktreeToString(
         ctx.allocator,
@@ -38,10 +38,8 @@ pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
 
-    if (std.mem.indexOf(u8, inner, "<error>") != null) {
-        const err_start = (std.mem.indexOf(u8, inner, "<error>") orelse 0) + "<error>".len;
-        const err_end = std.mem.indexOf(u8, inner[err_start..], "</error>") orelse (inner.len - err_start);
-        const err_msg = inner[err_start .. err_start + err_end];
+    if (extractJsonError(ctx.allocator, inner)) |err_msg| {
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, false, err_msg, inner);
         return ToolExecResult{ .output = output, .output_allocated = true };
     }
@@ -49,23 +47,54 @@ pub fn execSetGitWorktree(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecRes
     // SUCCESS: persist the new git_worktree_cwd to the DB so the
     // session remembers it across tool calls. For CLEAR, pass null
     // (the function treats null and "" identically as "clear the
-    // binding"). For SET, extract the <path>...</path> from the
-    // inner XML and persist it.
-    const effective: ?[]const u8 = if (parsed.value.clear) null else blk: {
-        const path_start = (std.mem.indexOf(u8, inner, "<path>") orelse 0) + "<path>".len;
-        const path_end = std.mem.indexOf(u8, inner[path_start..], "</path>") orelse (inner.len - path_start);
-        const worktree_path = inner[path_start .. path_start + path_end];
-        if (worktree_path.len == 0) break :blk null;
-        // Borrow the slice from `inner` (still alive for the duration
-        // of this call). `updateSessionGitWorktreeCwd` only reads it
-        // and never frees it, so this is safe.
-        break :blk worktree_path;
-    };
-
-    llm_history.updateSessionGitWorktreeCwd(ctx.allocator, ctx.db, ctx.session_id, effective) catch |err| {
-        ctx.logger.errFmt("set_git_worktree: failed to persist git_worktree_cwd: {s}", .{@errorName(err)});
-    };
+    // binding"). For SET, extract the "path" from the inner JSON
+    // and persist it.
+    if (parsed.value.clear) {
+        llm_history.updateSessionGitWorktreeCwd(ctx.allocator, ctx.db, ctx.session_id, null) catch |err| {
+            ctx.logger.errFmt("set_git_worktree: failed to persist git_worktree_cwd: {s}", .{@errorName(err)});
+        };
+    } else if (extractJsonPath(ctx.allocator, inner)) |worktree_path| {
+        defer ctx.allocator.free(worktree_path);
+        if (worktree_path.len > 0) {
+            llm_history.updateSessionGitWorktreeCwd(ctx.allocator, ctx.db, ctx.session_id, worktree_path) catch |err| {
+                ctx.logger.errFmt("set_git_worktree: failed to persist git_worktree_cwd: {s}", .{@errorName(err)});
+            };
+        }
+    }
 
     const output = try wrapToolOutput(ctx.allocator, "set_git_worktree", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
+}
+
+/// Extract the "error" string from the inner JSON payload.
+/// Returns null when the payload has no error (success case) or when
+/// the payload is not valid JSON (treat as success and let the wrapper
+/// surface it via _raw). Caller owns the returned slice.
+fn extractJsonError(allocator: std.mem.Allocator, inner: []const u8) ?[]u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, inner, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const err_val = parsed.value.object.get("error") orelse return null;
+    switch (err_val) {
+        .null => return null,
+        .string => |s| {
+            if (s.len == 0) return null;
+            return allocator.dupe(u8, s) catch null;
+        },
+        else => return null,
+    }
+}
+
+/// Extract the "path" string from the inner JSON payload.
+/// Returns null when absent or unparseable. Caller owns the slice.
+fn extractJsonPath(allocator: std.mem.Allocator, inner: []const u8) ?[]u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, inner, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const path_val = parsed.value.object.get("path") orelse return null;
+    switch (path_val) {
+        .string => |s| return allocator.dupe(u8, s) catch null,
+        .null => return null,
+        else => return null,
+    }
 }

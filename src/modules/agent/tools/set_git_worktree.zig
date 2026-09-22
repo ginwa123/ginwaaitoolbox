@@ -885,82 +885,67 @@ pub fn freePathState(allocator: std.mem.Allocator, state: PathState) void {
     }
 }
 
-/// Generate success XML response for the SET path case. `<base>` is
-/// emitted only when a base ref was requested, so the element's absence
-/// keeps meaning "branched from HEAD". Always emits a `<note>` hint so
-/// the agent knows how to open a PR for this branch (create via
-/// `gh pr create`, then bind via the agent tool `set_pull_request`).
+/// JSON payload for set_git_worktree results. Matches the frontend's
+/// `parseSetGitWorktree` expectations (`path`/`branch`/`cleared`/`created`/
+/// `error`) plus `session_id`/`base`/`note` context. `std.json` handles all
+/// escaping — no manual XML layer.
+pub const SetGitWorktreeJSON = struct {
+    session_id: []const u8,
+    created: bool = false,
+    cleared: bool = false,
+    path: ?[]const u8 = null,
+    branch: ?[]const u8 = null,
+    base: ?[]const u8 = null,
+    note: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
+pub const worktree_pr_note =
+    "If the user asks to open a pull request, or you want to initialize one for this branch, create it with `gh pr create` (or the Create-PR dialog), then call the agent tool `set_pull_request` with the PR URL to bind it to this session.";
+
+pub fn jsonSet(allocator: std.mem.Allocator, session_id: []const u8, path: []const u8, branch: []const u8, base: []const u8) []const u8 {
+    return std.json.Stringify.valueAlloc(allocator, SetGitWorktreeJSON{
+        .session_id = session_id,
+        .created = true,
+        .path = path,
+        .branch = branch,
+        .base = if (base.len > 0) base else null,
+        .note = worktree_pr_note,
+    }, .{}) catch "";
+}
+
+pub fn jsonClear(allocator: std.mem.Allocator, session_id: []const u8) []const u8 {
+    return std.json.Stringify.valueAlloc(allocator, SetGitWorktreeJSON{
+        .session_id = session_id,
+        .cleared = true,
+    }, .{}) catch "";
+}
+
+/// Generate error JSON response (session_id is present).
+pub fn jsonError(allocator: std.mem.Allocator, session_id: []const u8, error_msg: []const u8) []const u8 {
+    return std.json.Stringify.valueAlloc(allocator, SetGitWorktreeJSON{
+        .session_id = session_id,
+        .created = false,
+        .@"error" = error_msg,
+    }, .{}) catch "";
+}
+
+/// Generate error JSON response when session_id is unavailable.
+pub fn jsonErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
+    return std.json.Stringify.valueAlloc(allocator, SetGitWorktreeJSON{
+        .session_id = "",
+        .created = false,
+        .@"error" = error_msg,
+    }, .{}) catch "{\"created\":false,\"error\":\"UnknownError\"}";
+}
+
+// Legacy aliases kept so old grep-based tests and any external callers
+// keep resolving; all emit JSON now.
+pub const xmlError = jsonError;
+pub const xmlErrorEmpty = jsonErrorEmpty;
 fn successSetToXml(allocator: std.mem.Allocator, session_id: []const u8, path: []const u8, branch: []const u8, base: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<worktree>\n<session_id>") catch return "";
-    appendXmlContent(allocator, &result, session_id) catch return "";
-    result.appendSlice(allocator, "</session_id>\n<created>true</created>\n<path>") catch return "";
-    appendXmlContent(allocator, &result, path) catch return "";
-    result.appendSlice(allocator, "</path>\n<branch>") catch return "";
-    appendXmlContent(allocator, &result, branch) catch return "";
-    result.appendSlice(allocator, "</branch>\n") catch return "";
-    if (base.len > 0) {
-        result.appendSlice(allocator, "<base>") catch return "";
-        appendXmlContent(allocator, &result, base) catch return "";
-        result.appendSlice(allocator, "</base>\n") catch return "";
-    }
-    result.appendSlice(allocator, "<note>If the user asks to open a pull request, or you want to initialize one for this branch, create it with `gh pr create` (or the Create-PR dialog), then call the agent tool `set_pull_request` with the PR URL to bind it to this session.</note>\n") catch return "";
-    result.appendSlice(allocator, "</worktree>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
+    return jsonSet(allocator, session_id, path, branch, base);
 }
-
-/// Generate success XML response for the CLEAR case.
 fn successClearToXml(allocator: std.mem.Allocator, session_id: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<worktree>\n<session_id>") catch return "";
-    appendXmlContent(allocator, &result, session_id) catch return "";
-    result.appendSlice(allocator, "</session_id>\n<cleared>true</cleared>\n</worktree>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
-}
-
-/// Append XML-safe content to an ArrayList. Mirrors the helper in
-/// add_skill.zig: escapes <, >, &, ", '.
-fn appendXmlContent(allocator: std.mem.Allocator, result: *std.ArrayList(u8), s: []const u8) !void {
-    for (s) |c| {
-        switch (c) {
-            '<' => try result.appendSlice(allocator, "&lt;"),
-            '>' => try result.appendSlice(allocator, "&gt;"),
-            '&' => try result.appendSlice(allocator, "&amp;"),
-            '"' => try result.appendSlice(allocator, "&quot;"),
-            '\'' => try result.appendSlice(allocator, "&apos;"),
-            else => try result.append(allocator, c),
-        }
-    }
-}
-
-/// Generate error XML response (session_id is present).
-pub fn xmlError(allocator: std.mem.Allocator, session_id: []const u8, error_msg: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<worktree>\n<session_id>") catch return "";
-    appendXmlContent(allocator, &result, session_id) catch return "";
-    result.appendSlice(allocator, "</session_id>\n<created>false</created>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>\n</worktree>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "";
-}
-
-/// Generate error XML response when session_id is unavailable.
-pub fn xmlErrorEmpty(allocator: std.mem.Allocator, error_msg: []const u8) []const u8 {
-    var result = std.ArrayList(u8).empty;
-    errdefer result.deinit(allocator);
-
-    result.appendSlice(allocator, "<worktree>\n<session_id></session_id>\n<created>false</created>\n<error>") catch return "";
-    appendXmlContent(allocator, &result, error_msg) catch return "";
-    result.appendSlice(allocator, "</error>\n</worktree>") catch return "";
-
-    return result.toOwnedSlice(allocator) catch "<worktree><session_id></session_id><created>false</created><error>UnknownError</error></worktree>";
+    return jsonClear(allocator, session_id);
 }
