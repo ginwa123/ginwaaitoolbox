@@ -1,13 +1,13 @@
 /**
  * Unit tests for the drag-and-drop handlers on workspace ITEMS in
- * WorkspaceList.vue. The handlers convert the HTML5 drag events
+ * ProjectsList.vue. The handlers convert the HTML5 drag events
  * (dragstart, dragover, drop, dragend) on a per-workspace `<ul>`
  * (event delegation) into a `reorder-workspace-items` emit with
  * the new top-to-bottom ID order, scoped to the workspace the
  * drop target belongs to.
  *
- * Mirrors workspaceListDragDrop.spec.ts (the workspace-level test)
- * but scoped to a single workspace's items.
+ * Scoped to a single workspace's items — the 2026-09-22 revamp
+ * plan removed workspace-level reorder from the UI.
  *
  * Plan: docs/superpowers/plans/2026-06-16-workspace-item-position-reorder.md
  */
@@ -16,7 +16,7 @@ import { setActivePinia, createPinia } from 'pinia'
 import { defineComponent, h, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 
-import WorkspaceList from '../components/workspace/WorkspaceList.vue'
+import ProjectsList from '../components/workspace/ProjectsList.vue'
 import {
   type Workspace,
   type WorkspaceItem,
@@ -86,7 +86,7 @@ function makeWorkspace(
   return { id, name, icon: '📁', expanded: true, items }
 }
 
-describe('WorkspaceList item drag-and-drop', () => {
+describe('ProjectsList item drag-and-drop', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -146,8 +146,8 @@ describe('WorkspaceList item drag-and-drop', () => {
         makeItem('item3', '3'),
       ]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -202,8 +202,8 @@ describe('WorkspaceList item drag-and-drop', () => {
     const workspaces = [
       makeWorkspace('ws_a', 'A', [makeItem('item1', '1'), makeItem('item2', '2')]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -230,20 +230,26 @@ describe('WorkspaceList item drag-and-drop', () => {
       makeWorkspace('ws_a', 'A', [makeItem('item1', '1'), makeItem('item2', '2')]),
       makeWorkspace('ws_b', 'B', [makeItem('item3', '3'), makeItem('item4', '4')]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
     await nextTick()
 
     const items = findDraggableItems(wrapper)
-    expect(items.length).toBe(4)
+    // ProjectsList renders only the SELECTED workspace now, so only
+    // ws_a's items are in the DOM.
+    expect(items.length).toBe(2)
 
-    // Drag item1 (workspace A) onto item3 (workspace B).
+    // Drag item1 (workspace A) onto item2 with a FORGED foreign
+    // workspace id — ProjectsList can't render ws_b, but the guard
+    // only reads `data-workspace-id` off the target <li>, so this
+    // still exercises the cross-workspace no-op.
     const dt = makeDragStore()
+    items[1]!.element.setAttribute('data-workspace-id', 'ws_b')
     items[0]!.element.dispatchEvent(makeDragEvent('dragstart', dt))
-    items[2]!.element.dispatchEvent(makeDragEvent('drop', dt))
+    items[1]!.element.dispatchEvent(makeDragEvent('drop', dt))
 
     expect(wrapper.emitted('reorderWorkspaceItems')).toBeUndefined()
 
@@ -280,8 +286,8 @@ describe('WorkspaceList item drag-and-drop', () => {
         makeItem('item5', '5'),
       ]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -321,8 +327,8 @@ describe('WorkspaceList item drag-and-drop', () => {
         makeItem('item5', '5'),
       ]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -363,8 +369,8 @@ describe('WorkspaceList item drag-and-drop', () => {
         makeItem('item5', '5'),
       ]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -400,8 +406,8 @@ describe('WorkspaceList item drag-and-drop', () => {
         makeItem('item5', '5'),
       ]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -440,8 +446,8 @@ describe('WorkspaceList item drag-and-drop', () => {
         makeItem('item3', 'C'),
       ]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -473,8 +479,8 @@ describe('WorkspaceList item drag-and-drop', () => {
     const workspaces = [
       makeWorkspace('ws_a', 'A', [makeItem('item1', '1'), makeItem('item2', '2')]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -499,8 +505,8 @@ describe('WorkspaceList item drag-and-drop', () => {
     const workspaces = [
       makeWorkspace('ws_a', 'A', [makeItem('item1', '1'), makeItem('item2', '2')]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })
@@ -527,8 +533,8 @@ describe('WorkspaceList item drag-and-drop', () => {
     const workspaces = [
       makeWorkspace('ws_a', 'A', [makeItem('item1', '1'), makeItem('item2', '2')]),
     ]
-    const wrapper = mount(WorkspaceList, {
-      props: { workspaces, activeWorkspaceItemId: null },
+    const wrapper = mount(ProjectsList, {
+      props: { workspace: workspaces[0]!, activeWorkspaceItemId: null },
       attachTo: document.body,
       global: { stubs: { WorkspaceItem: WorkspaceItemStub } },
     })

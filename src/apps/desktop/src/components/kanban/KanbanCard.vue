@@ -9,7 +9,7 @@
   payload doesn't collide with the sidebar's other drag handlers
   (item-reorder uses `application/x-item-id`, pinned-task-reorder
   uses `application/x-pinned-task-id`). See WorkspaceItem.vue:204
-  and WorkspaceList.vue:336 for the same pattern.
+  and ProjectsList.vue:336 for the same pattern.
 
   Why wrap rather than re-render: <WorkspaceItemTaskCard> already
   owns the per-task card UI (icon, name, action buttons, routine vs.

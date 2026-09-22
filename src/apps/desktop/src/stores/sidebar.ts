@@ -3,7 +3,11 @@ import { ref } from 'vue'
 
 const STORAGE_KEY_CHATS_HEIGHT = 'nalar-sidebar-chats-height'
 const STORAGE_KEY_NAV_EXPANDED = 'nalar-sidebar-nav-expanded'
-const STORAGE_KEY_WORKSPACES_EXPANDED = 'nalar-sidebar-workspaces-expanded'
+// Legacy key kept ONLY to seed the renamed projects key once, so
+// existing users don't get a silently re-collapsed section (revamp
+// plan: docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
+const STORAGE_KEY_LEGACY_WORKSPACES_EXPANDED = 'nalar-sidebar-workspaces-expanded'
+const STORAGE_KEY_PROJECTS_EXPANDED = 'nalar-sidebar-projects-expanded'
 const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'nalar-right-sidebar-width'
 const STORAGE_KEY_SKILLS_GLOBAL = 'nalar-sidebar-skills-global-expanded'
 const STORAGE_KEY_SKILLS_LOCAL = 'nalar-sidebar-skills-local-expanded'
@@ -70,24 +74,29 @@ export const useSidebarStore = defineStore('sidebar', () => {
     return true // Default to expanded
   }
 
-  // Load workspaces section expanded state from localStorage
-  const loadWorkspacesExpanded = (): boolean => {
-    const saved = localStorage.getItem(STORAGE_KEY_WORKSPACES_EXPANDED)
+  // Load projects section expanded state — the renamed key first,
+  // then the legacy workspaces key as a one-time seed source.
+  const loadProjectsExpanded = (): boolean => {
+    const saved = localStorage.getItem(STORAGE_KEY_PROJECTS_EXPANDED)
     if (saved !== null) {
       return saved === 'true'
+    }
+    const legacy = localStorage.getItem(STORAGE_KEY_LEGACY_WORKSPACES_EXPANDED)
+    if (legacy !== null) {
+      return legacy === 'true'
     }
     return true // Default to expanded
   }
 
   const navExpanded = ref(loadNavExpanded())
-  const workspacesExpanded = ref(loadWorkspacesExpanded())
+  const projectsExpanded = ref(loadProjectsExpanded())
 
   const saveNavExpanded = () => {
     localStorage.setItem(STORAGE_KEY_NAV_EXPANDED, String(navExpanded.value))
   }
 
-  const saveWorkspacesExpanded = () => {
-    localStorage.setItem(STORAGE_KEY_WORKSPACES_EXPANDED, String(workspacesExpanded.value))
+  const saveProjectsExpanded = () => {
+    localStorage.setItem(STORAGE_KEY_PROJECTS_EXPANDED, String(projectsExpanded.value))
   }
 
   const toggleNavExpanded = () => {
@@ -95,9 +104,9 @@ export const useSidebarStore = defineStore('sidebar', () => {
     saveNavExpanded()
   }
 
-  const toggleWorkspacesExpanded = () => {
-    workspacesExpanded.value = !workspacesExpanded.value
-    saveWorkspacesExpanded()
+  const toggleProjectsExpanded = () => {
+    projectsExpanded.value = !projectsExpanded.value
+    saveProjectsExpanded()
   }
 
   // Load skills section expanded state from localStorage
@@ -143,9 +152,9 @@ export const useSidebarStore = defineStore('sidebar', () => {
     chatsHeight,
     setChatsHeight,
     navExpanded,
-    workspacesExpanded,
+    projectsExpanded,
     toggleNavExpanded,
-    toggleWorkspacesExpanded,
+    toggleProjectsExpanded,
     rightSidebarWidth,
     setRightSidebarWidth,
     skillsGlobalExpanded,

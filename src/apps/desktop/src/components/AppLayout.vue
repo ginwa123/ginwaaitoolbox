@@ -226,12 +226,17 @@ const pendingUrlRestore = ref<{
     const wsId = route.query.workspaceId as string | undefined
     const rawItemId = route.query.itemId as string | undefined
     const pageId = route.query.pageId as string | undefined
-    if (view === 'workspace' && wsId && rawItemId) {
+    if (view === 'workspace' && wsId) {
       // SIMPLIFY-URL-BROWSER (2026-08-15): parse the wire-shape
       // itemId (may carry /chat/<taskId> suffix). pendingUrlRestore
       // only needs the bare id; the chat task id is restored
       // separately in onMounted above.
-      const parsed = parseItemIdWithChat(rawItemId)
+      //
+      // Standalone workspace selection (revamp plan, 2026-09-22):
+      // `?view=workspace&workspaceId=X` WITHOUT an itemId is valid —
+      // the dropdown restores the selection and the Projects section
+      // renders with no row active.
+      const parsed = rawItemId ? parseItemIdWithChat(rawItemId) : { itemId: '' }
       return { workspaceId: wsId, itemId: parsed.itemId, pageId: pageId ?? '' }
     }
     return null
@@ -244,8 +249,18 @@ watch(
     if (!pending) return
     if (!wsList || wsList.length === 0) return
     const wsExists = wsList.some((ws) => ws.id === pending.workspaceId)
+    if (!wsExists) {
+      // Stale URL — clear it so we don't try again on every workspace
+      // update. User will see the empty kanban-state placeholder and
+      // can pick a workspace item manually.
+      pendingUrlRestore.value = null
+      return
+    }
+    // Restore the workspace SELECTION first — valid even with no
+    // itemId (standalone ?workspaceId=X, revamp plan 2026-09-22).
+    workspacesStore.setActiveWorkspace(pending.workspaceId)
     const itemExists = wsList.some((ws) => ws.items.some((item) => item.id === pending.itemId))
-    if (wsExists && itemExists) {
+    if (pending.itemId && itemExists) {
       workspacesStore.setActiveWorkspaceItem(pending.itemId)
       // Restore the active design page (if any) so DesignView picks
       // it up after its pages-load watcher fires. Empty pageId means
@@ -253,13 +268,8 @@ watch(
       if (pending.pageId) {
         workspacesStore.setActiveDesignPage(pending.pageId)
       }
-      pendingUrlRestore.value = null
-    } else {
-      // Stale URL — clear it so we don't try again on every workspace
-      // update. User will see the empty kanban-state placeholder and
-      // can pick a workspace item manually.
-      pendingUrlRestore.value = null
     }
+    pendingUrlRestore.value = null
   },
   { immediate: true },
 )
@@ -439,6 +449,11 @@ watch(
           query.detail = urlDetail
         }
       }
+    } else if (workspacesStore.activeWorkspaceId) {
+      // Standalone workspace selection (no active item): keep the
+      // dropdown's workspaceId in the URL instead of clobbering it
+      // with a bare ?view=workspace (revamp plan, 2026-09-22).
+      query.workspaceId = workspacesStore.activeWorkspaceId
     }
     // No-op when the URL already matches the store state (including
     // sorts/detail/pageId) — avoids redundant replaces that would
@@ -608,6 +623,26 @@ const handleNavigate = (
   } else if (view === 'settings') {
     router.push({ path: '/app/settings' })
   }
+}
+
+// Header dropdown workspace switch (plan:
+// docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
+// A switch is a context change: clear the open item/task, then PUSH
+// a fresh `?view=workspace&workspaceId=X` entry — user decision-log
+// requirement: Back/Forward must cross workspace switches (this is
+// deliberately NOT the tab-switch `replace` precedent). Re-selecting
+// the workspace already shown is a no-op.
+const handleSelectWorkspace = (workspaceId: string) => {
+  const alreadyThere =
+    route.query.view === 'workspace' &&
+    (route.query.workspaceId as string | undefined) === workspaceId
+  if (alreadyThere) return
+  navigationStore.clearAll()
+  workspacesStore.setActiveTask(null)
+  workspacesStore.setActiveWorkspaceItem(null)
+  chatSessionCwd.value = ''
+  workspacesStore.setActiveWorkspace(workspaceId)
+  router.push({ path: '/app', query: { view: 'workspace', workspaceId } })
 }
 
 const closeGitViewer = () => {
@@ -2501,6 +2536,7 @@ defineExpose({
     <Sidebar
       ref="sidebarRef"
       @navigate="handleNavigate"
+      @select-workspace="handleSelectWorkspace"
       :collapsed="sidebarCollapsed"
       :width="sidebarWidth"
       @toggle-collapse="toggleSidebar"

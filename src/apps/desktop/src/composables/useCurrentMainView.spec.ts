@@ -19,10 +19,7 @@ function mockRoute(
 ) {
   // `reactive` so post-mount mutations trigger the computed.
   const fullPath =
-    path +
-    (Object.keys(query).length
-      ? '?' + new URLSearchParams(query).toString()
-      : '')
+    path + (Object.keys(query).length ? '?' + new URLSearchParams(query).toString() : '')
   const obj = reactive({ query, path, params, fullPath })
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -31,12 +28,16 @@ function mockRoute(
 }
 
 describe('useCurrentMainView', () => {
-  beforeEach(() => { useRouteMock.mockReset() })
+  beforeEach(() => {
+    useRouteMock.mockReset()
+  })
 
   it('returns chat view when URL is ?view=chat&session=X', () => {
     mockRoute({ view: 'chat', session: 'session_abc' })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({ kind: 'chat', sessionId: 'session_abc' })
   })
@@ -48,7 +49,9 @@ describe('useCurrentMainView', () => {
       itemId: 'item_kanban/chat/task_xyz',
     })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({
       kind: 'workspace',
@@ -66,7 +69,9 @@ describe('useCurrentMainView', () => {
       itemId: 'item_kanban',
     })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({
       kind: 'workspace',
@@ -85,7 +90,9 @@ describe('useCurrentMainView', () => {
       pageId: 'page_42',
     })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({
       kind: 'workspace',
@@ -96,10 +103,35 @@ describe('useCurrentMainView', () => {
     })
   })
 
+  it('returns workspace view (no itemId) for standalone ?view=workspace&workspaceId=X', () => {
+    // Header-dropdown workspace switch with no item open — the
+    // selection-only URL shape (revamp plan 2026-09-22). itemId is
+    // absent so no sidebar row is active.
+    mockRoute({ view: 'workspace', workspaceId: 'ws_7' })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'workspace', workspaceId: 'ws_7' })
+  })
+
+  it('returns none for a legacy bare ?view=workspace (no workspaceId, no itemId)', () => {
+    mockRoute({ view: 'workspace' })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'none' })
+  })
+
   it('returns none when URL is empty', () => {
     mockRoute({})
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({ kind: 'none' })
   })
@@ -107,7 +139,9 @@ describe('useCurrentMainView', () => {
   it('returns none when URL is a non-content view (settings)', () => {
     mockRoute({ view: 'settings' })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({ kind: 'none' })
   })
@@ -115,7 +149,9 @@ describe('useCurrentMainView', () => {
   it('reacts to URL changes (computed re-runs when route.query mutates)', async () => {
     const route = mockRoute({})
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({ kind: 'none' })
     route.query = { view: 'chat', session: 'session_now' }
@@ -130,7 +166,9 @@ describe('useCurrentMainView', () => {
     // test pins the contract.
     mockRoute({ view: 'task', task: 'task_old' })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value.kind).toBe('none')
   })
@@ -145,7 +183,9 @@ describe('useCurrentMainView', () => {
   it('returns kanban-settings view when URL is /app/kanban/:itemId/settings', () => {
     mockRoute({}, '/app/kanban/item_kanban/settings', { itemId: 'item_kanban' })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({
       kind: 'kanban-settings',
@@ -155,13 +195,13 @@ describe('useCurrentMainView', () => {
   })
 
   it('returns kanban-settings view with workspaceId when ?workspaceId=X is on the path', () => {
-    mockRoute(
-      { workspaceId: 'ws_1' },
-      '/app/kanban/item_kanban/settings',
-      { itemId: 'item_kanban' },
-    )
+    mockRoute({ workspaceId: 'ws_1' }, '/app/kanban/item_kanban/settings', {
+      itemId: 'item_kanban',
+    })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({
       kind: 'kanban-settings',
@@ -176,7 +216,9 @@ describe('useCurrentMainView', () => {
     // gracefully so the sidebar can still react.
     mockRoute({}, '/app/kanban//settings', { itemId: '' })
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value.kind).toBe('kanban-settings')
     expect(v.value).toEqual({
@@ -189,7 +231,9 @@ describe('useCurrentMainView', () => {
   it('reacts to URL changes for kanban-settings (computed re-runs when route.path mutates)', async () => {
     const route = mockRoute({}, '/app', {})
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     expect(v.value).toEqual({ kind: 'none' })
     // Simulate vue-router's navigation — both path and params update.
@@ -206,7 +250,9 @@ describe('useCurrentMainView', () => {
   it('does NOT match kanban-settings for unrelated paths like /app/settings', () => {
     mockRoute({}, '/app/settings', {})
     let v!: ReturnType<typeof useCurrentMainView>
-    function setup() { v = useCurrentMainView() }
+    function setup() {
+      v = useCurrentMainView()
+    }
     setup()
     // /app/settings is its own view — the composable's chat/workspace
     // branches don't match it either, so it falls through to 'none'.

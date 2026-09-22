@@ -6,7 +6,8 @@ import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useNotificationStore } from '../../stores/notifications'
-import WorkspaceList from '../workspace/WorkspaceList.vue'
+import ProjectsList from '../workspace/ProjectsList.vue'
+import WorkspaceSwitcher from '../workspace/WorkspaceSwitcher.vue'
 import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
 import RenameWorkspaceModal from '../dialogs/RenameWorkspaceModal.vue'
@@ -16,7 +17,7 @@ import AddItemDialog from '../dialogs/AddItemDialog.vue'
 import AddKanbanDialog from '../dialogs/AddKanbanDialog.vue'
 // NEW (design-mode feature): the modal that creates a design
 // workspace item (DesignView's container). Opened via the
-// "+ Add Item → Add Design" dropdown option in WorkspaceList.
+// "+ Add Item → Add Design" dropdown option in ProjectsList.
 // Plan: docs/superpowers/plans/2026-06-13-design-mode.md.
 import AddDesignDialog from '../design/AddDesignDialog.vue'
 import AddAgentDialog from '../dialogs/AddAgentDialog.vue'
@@ -60,6 +61,10 @@ const emit = defineEmits<{
   ]
   'toggle-collapse': []
   resize: [width: number]
+  // Header dropdown switch (plan: docs/plans/2026-09-22-revamp-
+  // workspace-ui-dropdown-projects.md) — AppLayout pushes
+  // ?view=workspace&workspaceId=X (history entry, not replace).
+  selectWorkspace: [workspaceId: string]
 }>()
 
 // Default task name for the auto-created standard chat. The user
@@ -85,36 +90,6 @@ const updateChatId = (oldId: string, newId: string) => {
   if (chatItem) {
     chatItem.id = newId
   }
-}
-
-// Compute a 1–2 letter monogram for a workspace, used by the
-// collapsed-state tile (no icons). Algorithm:
-//   1. Strip non-alphanumeric chars
-//   2. Take the first letter; if a word boundary appears within the
-//      first 5 letters, use that second letter as well (e.g.
-//      "agentic_coding_zig" → "A", "my project" → "M" + "P" → "MP",
-//      "wonderful" → "W").
-//   3. Uppercase and clamp to ≤ 2 chars.
-//
-// Falls back to `?` if the name is empty/whitespace-only (defensive —
-// the workspace store validates names server-side, but a future
-// client-only flow could produce an empty name).
-const workspaceMonogram = (name: string): string => {
-  const cleaned = name.replace(/[^a-zA-Z0-9]/g, '')
-  if (cleaned.length === 0) return '?'
-  const head = cleaned[0]?.toUpperCase() ?? '?'
-  if (cleaned.length < 2) return head
-  // Look for the next word-boundary character within the first 6 chars
-  // of the *original* name (not the cleaned one — we want to detect
-  // space/underscore/hyphen transitions, not stripped chars).
-  for (let i = 1; i < Math.min(name.length, 6); i++) {
-    const ch = name[i]
-    const prev = name[i - 1]
-    if (ch && /[a-zA-Z0-9]/.test(ch) && prev && /[^a-zA-Z0-9]/.test(prev)) {
-      return head + ch.toUpperCase()
-    }
-  }
-  return head
 }
 
 // Expose method to open the Add Task picker dialog. Called by
@@ -406,10 +381,15 @@ const handleDeleteConfirm = () => {
   showDeleteConfirm.value = false
   deleteConfirmConfig.value = null
 }
+// Dismiss path for ConfirmDialog — separate method so the template
+// binding stays a single identifier (multi-statement inline handlers
+// get mangled by the semi:false formatter into invalid Vue).
+const handleDeleteConfirmClose = () => {
+  showDeleteConfirm.value = false
+  deleteConfirmConfig.value = null
+}
 
 // Workspace handlers
-const handleToggleWorkspace = (workspaceId: string) => workspacesStore.toggleWorkspace(workspaceId)
-
 /**
  * Right-click "Go to settings" from a workspace item row. Opens
  * the item's own settings surface in a NEW browser tab (never navigates the current tab, NOT the global /app/settings page):
@@ -569,7 +549,7 @@ const handleAddItem = (workspaceId: string, itemType: string) => {
   // NEW (design-mode feature): routes the 'design' itemType to
   // AddDesignDialog. Mirrors the kanban routing above — both
   // dialogs share the (workspaceId, itemType) routing pattern
-  // emitted by WorkspaceList. Plan:
+  // emitted by ProjectsList. Plan:
   // docs/superpowers/plans/2026-06-13-design-mode.md.
   if (itemType === 'design') showAddDesignDialog.value = true
   // Agent Mode (plan 2026-08-15-agent-mode, task_1786962724740_0):
@@ -731,6 +711,8 @@ const handleCreateMemory = async (name: string, _content: string, path: string) 
 }
 
 const handleAddWorkspace = () => (showAddWorkspaceModal.value = true)
+// WorkspaceSwitcher.select → AppLayout.handleSelectWorkspace (push).
+const handleSwitcherSelect = (workspaceId: string) => emit('selectWorkspace', workspaceId)
 const handleCreateWorkspace = (name: string) => workspacesStore.addWorkspace(name)
 const handleCloseModal = () => (showAddWorkspaceModal.value = false)
 const handleCloseAddItemDialog = () => {
@@ -1126,19 +1108,11 @@ const handleLoadMoreTasks = (workspaceId: string, itemId: string) => {
   }
 }
 
-// Forward drag-and-drop reorder events from <WorkspaceList> to the
-// store. The store action does the optimistic update + API call +
-// silent rollback on error. Plan:
-// docs/plans/2026-06-12-workspace-drag-and-drop.md
-const handleReorderWorkspaces = (orderedIds: string[]) => {
-  workspacesStore.reorderWorkspaces(orderedIds)
-}
-
-// Mirrors handleReorderWorkspaces but scoped to a single
-// workspace's items. <WorkspaceList> emits the workspaceId +
-// orderedItemIds payload on a successful drop; the store action
-// does the optimistic update + API call + silent rollback on
-// error. Plan:
+// Item-level reorder (the revamp plan removed workspace-level reorder
+// from the UI; the store action + API remain). <ProjectsList> emits
+// the workspaceId + orderedItemIds payload on a successful drop; the
+// store action does the optimistic update + API call + silent rollback
+// on error. Plan:
 // docs/superpowers/plans/2026-06-16-workspace-item-position-reorder.md
 const handleReorderWorkspaceItems = (workspaceId: string, orderedItemIds: string[]) => {
   workspacesStore.reorderWorkspaceItems(workspaceId, orderedItemIds)
@@ -1147,7 +1121,7 @@ const handleReorderWorkspaceItems = (workspaceId: string, orderedItemIds: string
 // NEW (pinned-tasks feature, plan:
 // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md):
 // pin/unpin and drag-reorder of the pinned subset, both forwarded
-// from <WorkspaceItem> via <WorkspaceList>. The store actions
+// from <WorkspaceItem> via <ProjectsList>. The store actions
 // perform the optimistic update + API call + silent rollback.
 const handlePinTask = (workspaceId: string, itemId: string, taskId: string, isPinned: boolean) => {
   workspacesStore.pinTask(workspaceId, itemId, taskId, isPinned)
@@ -1282,7 +1256,7 @@ const handleReorderPinnedTasks = (workspaceId: string, itemId: string, orderedId
 // ─── Routines (Chunk 7 of task-routines plan) ────────────────────────────
 // These two handlers close the wiring loop from the routine-task
 // row in WorkspaceItemTask.vue (which emits `runRoutine` and
-// `editRoutine`) up through WorkspaceItem → WorkspaceList → here.
+// `editRoutine`) up through WorkspaceItem → ProjectsList → here.
 // Sidebar is the only component that touches the store, so it
 // owns the user-visible side effects (route to chat).
 //
@@ -1392,9 +1366,11 @@ defineExpose({
 
     <!-- Header. Minimal text-driven header — no logo gradient
          pill, no decorative sub-label. Two layouts: collapsed shows
-         a thin monogram "A" character; expanded shows "AnakMagang" word
-         + a small settings chevron. The thin border-bottom keeps
-         the section boundary visible without any visual heaviness. -->
+         a thin monogram of the active workspace; expanded shows the
+         WorkspaceSwitcher dropdown (current workspace name + chevron)
+         + a small settings/logout pair. The thin border-bottom keeps
+         the section boundary visible without any visual heaviness.
+         Plan: docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md -->
     <div
       class="h-12 flex items-center shrink-0"
       :class="isCollapsed ? 'justify-center px-0' : 'px-4 justify-between'"
@@ -1402,22 +1378,29 @@ defineExpose({
     >
       <div
         v-if="!isCollapsed"
-        class="flex items-center gap-2"
+        class="flex items-center gap-2 min-w-0"
         data-testid="sidebar-header-expanded"
       >
-        <span class="text-sm font-semibold tracking-tight" style="color: var(--semantic-text)"
-          >AnakMagang</span
-        >
+        <WorkspaceSwitcher
+          :workspaces="workspacesStore.workspaces"
+          :active-workspace-id="workspacesStore.activeWorkspace?.id ?? null"
+          @select="handleSwitcherSelect"
+          @add-workspace="handleAddWorkspace"
+          @rename-workspace="handleRenameWorkspace"
+          @delete-workspace="handleDeleteWorkspace"
+        />
       </div>
-      <span
+      <WorkspaceSwitcher
         v-else
-        class="text-sm font-semibold tracking-tight"
-        style="color: var(--semantic-text)"
-        title="AnakMagang"
-        aria-label="AnakMagang"
+        collapsed
+        :workspaces="workspacesStore.workspaces"
+        :active-workspace-id="workspacesStore.activeWorkspace?.id ?? null"
+        @select="handleSwitcherSelect"
+        @add-workspace="handleAddWorkspace"
+        @rename-workspace="handleRenameWorkspace"
+        @delete-workspace="handleDeleteWorkspace"
         data-testid="sidebar-header-collapsed"
-        >A</span
-      >
+      />
       <div v-if="!isCollapsed" class="flex items-center gap-3">
         <button
           @click="goToSettings"
@@ -1451,25 +1434,20 @@ defineExpose({
 
       <!-- Workspaces -->
       <div class="flex-1 min-h-0 overflow-hidden">
-        <WorkspaceList
+        <ProjectsList
           v-if="!isCollapsed"
-          :workspaces="workspacesStore.workspaces"
+          :workspace="workspacesStore.activeWorkspace ?? null"
           :active-workspace-item-id="workspacesStore.activeWorkspaceItemId"
-          @toggle-workspace="handleToggleWorkspace"
           @select-item="handleSelectItem"
           @open-item-in-background="handleOpenItemInBackground"
-          @delete-workspace="handleDeleteWorkspace"
-          @rename-workspace="handleRenameWorkspace"
           @delete-item="handleDeleteItem"
           @request-add-item="handleAddItem"
-          @add-workspace="handleAddWorkspace"
           @add-task="handleAddTask"
           @select-task="handleSelectTask"
           @open-task-in-background="handleOpenTaskInBackground"
           @delete-task="handleDeleteTask"
           @rename-task="handleRenameTask"
           @load-more-tasks="handleLoadMoreTasks"
-          @reorder-workspaces="handleReorderWorkspaces"
           @reorder-workspace-items="handleReorderWorkspaceItems"
           @pin-task="handlePinTask"
           @reorder-pinned-tasks="handleReorderPinnedTasks"
@@ -1479,45 +1457,6 @@ defineExpose({
           @rename-design-page="handleRenameDesignPage"
           @go-to-settings="handleGoToSettings"
         />
-        <!-- Collapsed workspaces: minimal text-driven monograms.
-             Each workspace is rendered as a 1-2 letter monogram
-             (first letters of the workspace name) in a thin-bordered
-             rounded square. NO folder/emoji icons — the monogram is
-             pure typography on a neutral background. The ACTIVE
-             workspace (workspace.expanded === true) gets a 2px
-             violet left accent bar (matching the active row
-             treatment used elsewhere in the sidebar) so the user
-             can glance to find which workspace is open without
-             needing labels. Tooltips show the full workspace name
-             on hover so labels aren't lost. -->
-        <div v-else class="flex flex-col items-center gap-1 py-1">
-          <button
-            v-for="workspace in workspacesStore.workspaces"
-            :key="workspace.id"
-            @click="handleToggleWorkspace(workspace.id)"
-            data-testid="collapsed-workspace-button"
-            class="relative w-9 h-9 rounded-md flex items-center justify-center text-xs font-semibold tracking-tight transition-colors duration-150"
-            :style="
-              workspace.expanded
-                ? 'background: transparent; color: var(--semantic-active-text); border: 1px solid var(--color-border); box-shadow: inset 2px 0 0 0 var(--semantic-active-text);'
-                : 'background: transparent; color: var(--semantic-text-dim); border: 1px solid var(--color-border);'
-            "
-            :title="workspace.name"
-            :aria-label="`Open workspace ${workspace.name}`"
-          >
-            {{ workspaceMonogram(workspace.name) }}
-          </button>
-          <button
-            @click="handleAddWorkspace"
-            data-testid="collapsed-add-workspace-button"
-            class="w-9 h-9 rounded-md flex items-center justify-center text-sm transition-colors duration-150 hover:text-[--semantic-text]"
-            style="color: var(--semantic-text-dim)"
-            title="Add Workspace"
-            aria-label="Add Workspace"
-          >
-            +
-          </button>
-        </div>
       </div>
     </nav>
 
@@ -1610,7 +1549,7 @@ defineExpose({
       :title="deleteConfirmConfig?.title || 'Confirm'"
       :message="deleteConfirmConfig?.message || ''"
       confirm-text="Delete"
-      @close="showDeleteConfirm = false; deleteConfirmConfig = null"
+      @close="handleDeleteConfirmClose"
       @confirm="handleDeleteConfirm"
     />
   </aside>

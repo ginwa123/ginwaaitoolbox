@@ -138,7 +138,7 @@ describe('Sidebar.handleDeleteDesignPage — confirmation dialog (2026-08-06)', 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sidebar = wrapper.vm as any
     // simulate the @delete-design-page emit chain from DesignPageRow →
-    // WorkspaceItem → WorkspaceList → Sidebar's `handleDeleteDesignPage`.
+    // WorkspaceItem → ProjectsList → Sidebar's `handleDeleteDesignPage`.
     sidebar.handleDeleteDesignPage(WS_ID, ITEM_ID, PAGE_ID)
     await nextTick()
 
