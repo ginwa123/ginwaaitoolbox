@@ -260,6 +260,19 @@ pub fn setMaxSessionsForTest(n: u32) u32 {
     return prev;
 }
 
+/// Test-only hook invoked by `sweepIdleExcluding` right after the
+/// victims are detached from the registry (g_mutex already released)
+/// and before teardown begins. Tests park the sweeper here to make
+/// the sweep-vs-destroy ownership race deterministic; production code
+/// never installs it (stays null).
+var g_sweep_detached_hook: ?*const fn () void = null;
+
+pub fn setSweepDetachedHookForTest(h: ?*const fn () void) void {
+    mutexLock(&g_mutex);
+    defer g_mutex.unlock();
+    g_sweep_detached_hook = h;
+}
+
 /// Pure busy predicate over stamps (unit-tested, no locks): a session
 /// is busy when its shell is alive and it produced output within the
 /// busy window. Long runners (`bun run dev`, servers, installs) keep
@@ -326,10 +339,23 @@ fn sweepIdleExcluding(exclude: ?*Session) void {
             victims.append(g_alloc, s) catch break;
         }
     }
-    g_mutex.unlock();
+    // Detach every victim from the registry BEFORE dropping the lock.
+    // Ownership of the `*Session` transfers to us here: after this
+    // point destroySession (DELETE / another sweep) can only observe
+    // SessionNotFound, never free a victim we still point at. The old
+    // code re-locked per victim via destroySession(v.id), so a
+    // concurrent destroy could free the session (and its id string)
+    // first — then `v.id` was a dangling slice and fetchRemove's
+    // Wyhash walk segfaulted on a wild pointer (crash: SEGV in
+    // hashString via destroySession <- sweepIdleExcluding).
     for (victims.items) |v| {
-        // SessionNotFound means a concurrent destroy won the race.
-        destroySession(v.id) catch continue;
+        const removed = reg.fetchRemove(v.id);
+        std.debug.assert(removed != null);
+    }
+    g_mutex.unlock();
+    if (g_sweep_detached_hook) |h| h();
+    for (victims.items) |v| {
+        reapSession(v);
     }
 }
 
@@ -771,6 +797,10 @@ pub fn resizeSession(s: *Session, cols: u16, rows: u16) SessionError!void {
 }
 
 /// Kill the child (if running), close the master, drop the session.
+/// `id` must NOT alias `s.id` of a session another thread could be
+/// reaping — callers that own a `*Session` (the sweep) remove it from
+/// the registry under g_mutex themselves and go straight to
+/// `reapSession`, so the id slice is never read after free.
 pub fn destroySession(id: []const u8) SessionError!void {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
     const reg = registry();
@@ -780,8 +810,13 @@ pub fn destroySession(id: []const u8) SessionError!void {
         return error.SessionNotFound;
     };
     g_mutex.unlock();
-    const s = entry.value;
+    reapSession(entry.value);
+}
 
+/// Tear down a session that is NO LONGER in the registry — the caller
+/// must have removed it under g_mutex (exclusive ownership) and must
+/// not touch `s` afterwards. Frees `s.id` and `s` itself.
+fn reapSession(s: *Session) void {
     mutexLock(&s.mutex);
     s.last_active_s = nowSeconds();
     const already_exited = s.exited;
@@ -1067,4 +1102,105 @@ test "readOutputAlloc returns an owned copy independent of the ring (posix only)
         sleepMillis(100);
     }
     try testing.expect(found);
+}
+
+// ---------------------------------------------------------------------
+// Crash-fix regression: sweep vs concurrent destroy race (SEGV in
+// destroySession's fetchRemove hashing a freed id slice)
+// ---------------------------------------------------------------------
+
+/// Thread entry points for the sweep/destroy race test (file scope:
+/// thread fns cannot capture test locals).
+const SweepRace = struct {
+    var parked: std.atomic.Value(bool) = .init(false);
+
+    fn sweepAll() void {
+        sweepIdle();
+    }
+    fn parkAfterDetach() void {
+        parked.store(true, .release);
+        sleepMillis(200);
+    }
+};
+
+test "concurrent sweep and destroy never double-free a victim (posix only)" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_kill = setIdleKillForTest(1);
+    defer _ = setIdleKillForTest(prev_kill);
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+    defer setSweepDetachedHookForTest(null);
+
+    // The old sweep collected `*Session` pointers, dropped g_mutex,
+    // then called destroySession(v.id) per victim. A concurrent
+    // DELETE-style destroy could win a victim in that window, freeing
+    // both the Session struct and its id string — the sweep then read
+    // a dangling `v.id` and fetchRemove's hash walk segfaulted on a
+    // wild pointer (production SEGV: handleCrashSignalSiginfo <-
+    // ... <- destroySession <- sweepIdleExcluding <- readOutputAlloc).
+    // The test parks the sweeper at the handoff point (victims
+    // detached from the registry, teardown not yet started) and runs
+    // destroys against those victims: with the fix every destroy sees
+    // SessionNotFound; under the old code the same interleaving read
+    // the freed Session and crashed.
+    const rounds: usize = 3;
+    const per_round: usize = 3;
+    var owned_ids = std.ArrayList([]u8).empty;
+    defer {
+        for (owned_ids.items) |id| testing.allocator.free(id);
+        owned_ids.deinit(testing.allocator);
+    }
+
+    var r: usize = 0;
+    while (r < rounds) : (r += 1) {
+        var victims: [per_round]*Session = undefined;
+        var i: usize = 0;
+        while (i < per_round) : (i += 1) {
+            const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+            // Test-owned id copies: the session's own id buffer is
+            // freed by whoever reaps it, so the destroy side must hash
+            // its own stable slice (mirrors DELETE, whose id comes from
+            // the request, not the session struct).
+            const owned = try testing.allocator.dupe(u8, info.id);
+            errdefer testing.allocator.free(owned);
+            try owned_ids.append(testing.allocator, owned);
+            victims[i] = getSession(owned) orelse return error.SessionNotFound;
+        }
+        // Make every session a sweep victim (idle past kill, never busy).
+        for (victims) |s| {
+            mutexLock(&s.mutex);
+            s.last_active_s = nowSeconds() - 7200;
+            s.last_user_active_s = s.last_active_s;
+            s.last_output_at_s = 0;
+            s.mutex.unlock();
+        }
+
+        SweepRace.parked.store(false, .release);
+        setSweepDetachedHookForTest(SweepRace.parkAfterDetach);
+        const sweeper = try std.Thread.spawn(.{}, SweepRace.sweepAll, .{});
+        var spins: usize = 0;
+        while (!SweepRace.parked.load(.acquire)) {
+            sleepMillis(1);
+            spins += 1;
+            if (spins > 5000) break;
+        }
+        try testing.expect(SweepRace.parked.load(.acquire));
+        setSweepDetachedHookForTest(null);
+
+        // Destroy side of the race: after the handoff the victims
+        // belong to the sweeper, so every destroy must observe
+        // SessionNotFound — never free memory the sweeper still points
+        // at. (Old code freed them here; the sweep's subsequent
+        // `v.id` read then saw tcache-poisoned garbage — the UAF that
+        // segfaulted in production.)
+        const base = owned_ids.items.len - per_round;
+        for (owned_ids.items[base..]) |id| {
+            try testing.expectError(error.SessionNotFound, destroySession(id));
+        }
+
+        sweeper.join();
+        // Exactly one side owns each victim; nothing leaks or
+        // double-frees.
+        try testing.expectEqual(@as(usize, 0), sessionCount());
+    }
 }
