@@ -219,12 +219,22 @@ pub fn getSessionList(
 
 /// Get a list of sessions with cursor-based pagination
 /// Queries from sessions table with LEFT JOIN to llm_history
+///
+/// `workspace_ids` scopes the list to a workspace's sessions (as
+/// resolved by `workspace_scope.workspaceSessionIds`):
+///   - null   → no scope filter (global list, unchanged SQL/binds).
+///   - empty  → fail-closed: `1 = 0` in both queries, zero binds
+///     (never `IN ()` — a SQL syntax error — and never bind "").
+///   - non-empty → `s.id IN (?, ...)` with the ids passed as BIND
+///     params (never interpolated into SQL text). The count query
+///     carries the same predicate so `total` stays truthful.
 pub fn getSessionListWithCursor(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     status: ?[]const u8,
     agent_type: ?[]const u8,
     cwd: ?[]const u8,
+    workspace_ids: ?[]const []const u8,
     limit: u32,
     cursor: ?[]const u8,
     sort_field: SessionSortField,
@@ -237,10 +247,47 @@ pub fn getSessionListWithCursor(
     var where_parts = std.ArrayList([]const u8).empty;
     defer where_parts.deinit(allocator);
 
+    // Fragments this function heap-allocates (freed on the way out).
+    // Tracked separately from where_parts so static literals are not
+    // freed; keeps the tests' testing.allocator leak-clean.
+    var owned_where_fragments = std.ArrayList([]u8).empty;
+    defer {
+        for (owned_where_fragments.items) |f| allocator.free(f);
+        owned_where_fragments.deinit(allocator);
+    }
+
+    // Bound ids for the `s.id IN (...)` predicate — passed to BOTH
+    // the main query and the count query (they share where_clause).
+    var id_binds = std.ArrayList([]const u8).empty;
+    defer id_binds.deinit(allocator);
+
     try where_parts.append(allocator, "s.id NOT LIKE '%subagent%'");
 
     if (cwd) |dir| {
-        try where_parts.append(allocator, try std.fmt.allocPrint(allocator, "s.cwd = '{s}'", .{dir}));
+        const frag = try std.fmt.allocPrint(allocator, "s.cwd = '{s}'", .{dir});
+        try owned_where_fragments.append(allocator, frag);
+        try where_parts.append(allocator, frag);
+    }
+
+    if (workspace_ids) |ids| {
+        if (ids.len == 0) {
+            // Empty scope fails closed. `1 = 0` keeps the SQL valid
+            // without emitting `IN ()` or binding an empty string.
+            try where_parts.append(allocator, "1 = 0");
+        } else {
+            var frag_list = std.ArrayList(u8).empty;
+            defer frag_list.deinit(allocator);
+            try frag_list.appendSlice(allocator, "s.id IN (");
+            for (ids, 0..) |_, i| {
+                if (i > 0) try frag_list.append(allocator, ',');
+                try frag_list.append(allocator, '?');
+            }
+            try frag_list.append(allocator, ')');
+            const frag = try frag_list.toOwnedSlice(allocator);
+            try owned_where_fragments.append(allocator, frag);
+            try where_parts.append(allocator, frag);
+            for (ids) |id| try id_binds.append(allocator, id);
+        }
     }
 
     if (cursor) |c| {
@@ -289,7 +336,7 @@ pub fn getSessionListWithCursor(
     , .{ where_with_cursor, order_by, limit });
     defer allocator.free(sql_final);
 
-    var rows = try db.query(allocator, sql_final, &.{});
+    var rows = try db.query(allocator, sql_final, id_binds.items);
     defer rows.deinit();
 
     var sessions = std.ArrayList(SessionInfo).empty;
@@ -322,14 +369,16 @@ pub fn getSessionListWithCursor(
         row.deinit(allocator);
     }
 
-    // Build count query with cwd filter
-    const count_sql: []u8 = if (cwd) |dir|
-        try std.fmt.allocPrint(allocator, "SELECT COUNT(*) FROM sessions WHERE id NOT LIKE '%subagent%' AND cwd = '{s}'", .{dir})
-    else
-        try allocator.dupe(u8, "SELECT COUNT(*) FROM sessions WHERE id NOT LIKE '%subagent%'");
+    // Count query: the SAME filter as the main query (shared
+    // where_clause), aliased `s` so the `s.`-prefixed fragments apply
+    // verbatim, and WITHOUT the cursor — `total` is the full filtered
+    // size that the cursor paginates over. Binds mirror the main
+    // query (the bound ids appear only inside where_clause).
+    const count_sql: []u8 = try std.fmt.allocPrint(allocator,
+        "SELECT COUNT(*) FROM sessions s WHERE {s}", .{where_clause});
     defer allocator.free(count_sql);
 
-    var count_rows = try db.query(allocator, count_sql, &.{});
+    var count_rows = try db.query(allocator, count_sql, id_binds.items);
     defer count_rows.deinit();
 
     var total: u32 = 0;
@@ -8438,7 +8487,7 @@ test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on th
 
     // Run the SELECT.
     const result = getSessionListWithCursor(
-        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+        alloc, &db, null, null, null, null, 10, null, .created_at, .desc,
     ) catch return error.QueryFailed;
     defer {
         for (result.sessions) |s| s.deinit(alloc);
@@ -8487,7 +8536,7 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
     , &.{});
 
     const result = getSessionListWithCursor(
-        alloc, &db, null, null, null, 10, null, .created_at, .desc,
+        alloc, &db, null, null, null, null, 10, null, .created_at, .desc,
     ) catch return error.QueryFailed;
     defer {
         for (result.sessions) |s| s.deinit(alloc);
@@ -8496,6 +8545,88 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
 
 try testing.expectEqual(@as(usize, 1), result.sessions.len);
     try testing.expectEqualStrings("", result.sessions[0].last_human_touched_at);
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Workspace-scoped list (plan: workspace-scoped chat sessions) — the
+// count query must honor the same `s.id IN (...)` predicate as the
+// main query, otherwise `total` (and therefore pagination) lies.
+// ───────────────────────────────────────────────────────────────────────
+
+test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count honors the filter)" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd) VALUES
+        \\  ('s_keep_a', 'Keep A', '/proj/a'),
+        \\  ('s_keep_b', 'Keep B', '/proj/a'),
+        \\  ('s_drop_1', 'Drop 1', '/proj/b'),
+        \\  ('s_drop_2', 'Drop 2', '/proj/c')
+    , &.{});
+
+    // Non-null + non-empty: only the listed ids — sessions AND total
+    // are both bounded (total must NOT stay at the global 4).
+    const scoped = try alloc.alloc([]const u8, 2);
+    defer alloc.free(scoped);
+    scoped[0] = "s_keep_a";
+    scoped[1] = "s_keep_b";
+    const scoped_result = try getSessionListWithCursor(
+        alloc, &db, null, null, null, scoped, 50, null, .created_at, .desc,
+    );
+    defer {
+        for (scoped_result.sessions) |s| s.deinit(alloc);
+        alloc.free(scoped_result.sessions);
+    }
+    try testing.expectEqual(@as(usize, 2), scoped_result.sessions.len);
+    try testing.expectEqual(@as(u32, 2), scoped_result.total);
+
+    // Non-null + EMPTY: fail closed with zero sessions and zero
+    // total. Also proves we never emit `IN ()` (a syntax error that
+    // would make this db.query throw instead of returning 0 rows).
+    const empty_result = try getSessionListWithCursor(
+        alloc, &db, null, null, null, &.{}, 50, null, .created_at, .desc,
+    );
+    defer {
+        for (empty_result.sessions) |s| s.deinit(alloc);
+        alloc.free(empty_result.sessions);
+    }
+    try testing.expectEqual(@as(usize, 0), empty_result.sessions.len);
+    try testing.expectEqual(@as(u32, 0), empty_result.total);
+
+    // null: global list unchanged (back-compat with pre-scoping
+    // callers — SQL and binds are identical to before the param).
+    const global_result = try getSessionListWithCursor(
+        alloc, &db, null, null, null, null, 50, null, .created_at, .desc,
+    );
+    defer {
+        for (global_result.sessions) |s| s.deinit(alloc);
+        alloc.free(global_result.sessions);
+    }
+    try testing.expectEqual(@as(usize, 4), global_result.sessions.len);
+    try testing.expectEqual(@as(u32, 4), global_result.total);
 }
 
 // ───────────────────────────────────────────────────────────────────────

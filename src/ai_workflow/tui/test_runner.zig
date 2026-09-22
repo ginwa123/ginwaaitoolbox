@@ -179,6 +179,13 @@ _ = @import("../../http_handlers/kanban_tasks_create.zig");
     // resolveNameFromTask helper + the useCase call site. Importing
     // the file surfaces them to zig build test (mirrors start_agent.zig).
     _ = @import("../../http_handlers/session_create.zig");
+    // Workspace-scoped sessions: workspace_id query param on the
+    // session list (in-memory SQLite useCase tests), the new session
+    // detail handler (workspace_id resolution + route contract), and
+    // items_count on GET /api/workspaces.
+    _ = @import("../../http_handlers/session_list.zig");
+    _ = @import("../../http_handlers/session_get.zig");
+    _ = @import("../../http_handlers/workspaces_list.zig");
     // NEW (2026-08-29-chat-sidebar-last-human-touched, Task 4):
     // session_update.zig stamps sessions.last_human_touched_at_nano when
     // the user edits a field. The static-contract test guards the call site.
