@@ -258,4 +258,99 @@ describe('useCurrentMainView', () => {
     // branches don't match it either, so it falls through to 'none'.
     expect(v.value).toEqual({ kind: 'none' })
   })
+
+  // Path-based contract (2026-09-22 revamp). A project is a workspace
+  // item, so path projects map onto the `workspace` kind.
+
+  it('returns none for the /app landing', () => {
+    mockRoute({}, '/app', {})
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'none' })
+  })
+
+  it('returns workspace for /app/{ws}', () => {
+    mockRoute({}, '/app/ws_1', { workspaceId: 'ws_1' })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'workspace', workspaceId: 'ws_1' })
+  })
+
+  it('returns chat with workspaceId for /app/{ws}/chat/{sid}', () => {
+    mockRoute({}, '/app/ws_1/chat/sess_9', { workspaceId: 'ws_1', sessionId: 'sess_9' })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'chat', sessionId: 'sess_9', workspaceId: 'ws_1' })
+  })
+
+  it('returns workspace with itemId for /app/{ws}/projects/{pid}', () => {
+    mockRoute({ pageId: 'page_1' }, '/app/ws_1/projects/item_7', {
+      workspaceId: 'ws_1',
+      projectId: 'item_7',
+    })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({
+      kind: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_7',
+      pageId: 'page_1',
+      chatTaskId: undefined,
+    })
+  })
+
+  it('returns workspace with chatTaskId for /app/{ws}/projects/{pid}/chat/{tid}', () => {
+    mockRoute({}, '/app/ws_1/projects/item_7/chat/task_3', {
+      workspaceId: 'ws_1',
+      projectId: 'item_7',
+      taskId: 'task_3',
+    })
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({
+      kind: 'workspace',
+      workspaceId: 'ws_1',
+      itemId: 'item_7',
+      pageId: undefined,
+      chatTaskId: 'task_3',
+    })
+  })
+
+  it('legacy ?view=chat on /app still parses (boot rewrite converts it)', () => {
+    mockRoute({ view: 'chat', session: 'session_abc' }, '/app', {})
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'chat', sessionId: 'session_abc' })
+  })
+
+  it('reacts to path navigation (computed re-runs when route.path mutates)', async () => {
+    const route = mockRoute({}, '/app', {})
+    let v!: ReturnType<typeof useCurrentMainView>
+    function setup() {
+      v = useCurrentMainView()
+    }
+    setup()
+    expect(v.value).toEqual({ kind: 'none' })
+    route.path = '/app/ws_1/chat/sess_9'
+    await nextTick()
+    expect(v.value).toEqual({ kind: 'chat', sessionId: 'sess_9', workspaceId: 'ws_1' })
+  })
 })

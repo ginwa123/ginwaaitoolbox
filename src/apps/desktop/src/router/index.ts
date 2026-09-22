@@ -48,6 +48,33 @@ const router = createRouter({
       name: 'kanban-settings',
       component: AppLayout,
     },
+    // Path-based URL contract (plan: 2026-09-22-revamp-ui-chats).
+    // Most-specific first — vue-router matches in registration order.
+    // These come AFTER the reserved single-segment routes above
+    // (`settings`, legacy `chat`/`task`) and the kanban-settings path,
+    // otherwise `/app/chat/X` would match with workspaceId='chat'.
+    // See `helpers/appUrl.ts` (single builder / parser) and
+    // `parseAppPath`'s RESERVED_FIRST_SEGMENTS guard.
+    {
+      path: '/app/:workspaceId/projects/:projectId/chat/:taskId',
+      name: 'project-chat',
+      component: AppLayout,
+    },
+    {
+      path: '/app/:workspaceId/projects/:projectId',
+      name: 'project',
+      component: AppLayout,
+    },
+    {
+      path: '/app/:workspaceId/chat/:sessionId',
+      name: 'workspace-chat',
+      component: AppLayout,
+    },
+    {
+      path: '/app/:workspaceId',
+      name: 'workspace',
+      component: AppLayout,
+    },
     // Global catch-all: any path the backend's SPA fallback serves
     // index.html for but no route above matches (stale deep link,
     // refresh at a removed URL) lands on /app instead of rendering
