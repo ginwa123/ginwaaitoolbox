@@ -4781,6 +4781,40 @@ const compactSession = async () => {
 
                     <!-- ── Assistant ── -->
                     <template v-else-if="group.role === 'assistant'">
+                      <!-- 2026-08-23 hidden-messages fix — collapsible
+                           reasoning section for thinking models. Previously
+                           reasoning_content was console.log-only, so a
+                           thinking-only turn (empty final text) looked like
+                           the agent said nothing. Default-collapsed so long
+                           chains-of-thought don't push content off-screen;
+                           click to expand. Rendered ABOVE the answer: the
+                           reasoning is the context the reply follows from,
+                           so it reads first, not as a footnote. -->
+                      <div
+                        v-for="(msg, rIdx) in group.messages.filter(
+                          (m) => m.reasoning_content && m.reasoning_content.trim() !== '',
+                        )"
+                        :key="`reasoning-${rIdx}`"
+                        class="mt-3 mb-3"
+                      >
+                        <details class="assistant-reasoning">
+                          <summary
+                            class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
+                            :style="{ color: 'var(--semantic-text-dim)' }"
+                          >
+                            Thought
+                          </summary>
+                          <div
+                            class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"
+                            :style="{
+                              color: 'var(--semantic-text-dim)',
+                              'border-color': 'var(--color-border)',
+                            }"
+                          >
+                            {{ msg.reasoning_content }}
+                          </div>
+                        </details>
+                      </div>
                       <!-- Hide the messages block when every message in the group
                            is empty after stripping thinking tags — this happens
                            on tool_calls-only assistant turns. The tool header
@@ -4827,38 +4861,6 @@ const compactSession = async () => {
                             "
                           ></span>
                         </div>
-                      </div>
-                      <!-- 2026-08-23 hidden-messages fix — collapsible
-                           reasoning section for thinking models. Previously
-                           reasoning_content was console.log-only, so a
-                           thinking-only turn (empty final text) looked like
-                           the agent said nothing. Default-collapsed so long
-                           chains-of-thought don't push content off-screen;
-                           click to expand. -->
-                      <div
-                        v-for="(msg, rIdx) in group.messages.filter(
-                          (m) => m.reasoning_content && m.reasoning_content.trim() !== '',
-                        )"
-                        :key="`reasoning-${rIdx}`"
-                        class="mt-3"
-                      >
-                        <details class="assistant-reasoning">
-                          <summary
-                            class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
-                            :style="{ color: 'var(--semantic-text-dim)' }"
-                          >
-                            Thought
-                          </summary>
-                          <div
-                            class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"
-                            :style="{
-                              color: 'var(--semantic-text-dim)',
-                              'border-color': 'var(--color-border)',
-                            }"
-                          >
-                            {{ msg.reasoning_content }}
-                          </div>
-                        </details>
                       </div>
                     </template>
                   </div>

@@ -139,10 +139,24 @@ describe('B4(frontend) — reasoning_content rendering (source contract)', () =>
     expect(source).toMatch(/Thought/)
   })
 
+  // task_1790090788150_2: the Thought block must read FIRST, above the
+  // assistant's answer — reasoning is the context the reply follows
+  // from, not a footnote under it.
+  it('renders the Thought block ABOVE the assistant message text', async () => {
+    const source = await readChatViewSource()
+    const thoughtIdx = source.indexOf('class="assistant-reasoning"')
+    const messagesIdx = source.indexOf('class="assistant-messages"')
+    expect(thoughtIdx).toBeGreaterThan(-1)
+    expect(messagesIdx).toBeGreaterThan(-1)
+    expect(thoughtIdx).toBeLessThan(messagesIdx)
+  })
+
   it('accumulates reasoning chunks onto the streaming message', async () => {
     const source = await readChatViewSource()
+    // `=\s*` — prettier wraps the assignment after `=`, so the accumulate
+    // statement spans two lines (the old one-line regex went red on main).
     expect(source).toMatch(
-      /existingMsg\.reasoning_content = \(existingMsg\.reasoning_content \|\| ''\) \+ event\.reasoning_content/,
+      /existingMsg\.reasoning_content =\s*\(existingMsg\.reasoning_content \|\| ''\) \+ event\.reasoning_content/,
     )
   })
 })
