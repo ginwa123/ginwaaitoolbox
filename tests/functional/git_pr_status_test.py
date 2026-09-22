@@ -146,3 +146,58 @@ def test_happy_path_via_fake_gh(
     assert body["title"] == "Fix login"
     assert body["head_ref"] == "feature"
     assert body["base_ref"] == "main"
+
+
+def test_open_pr_with_null_dates_is_200(
+    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+) -> None:
+    """An OPEN PR's `gh` payload carries `"mergedAt":null,"closedAt":null`.
+
+    The backend struct used to declare those as non-optional strings, so
+    JSON parsing failed and every open PR (e.g. #584) returned HTTP 502
+    "failed to fetch PR status". Nulls must surface as empty strings.
+    """
+    bindir = tmp_path / "fakebin-open"
+    bindir.mkdir(parents=True)
+    fake_gh = bindir / "gh"
+    payload = {
+        "number": 584,
+        "title": "SyncEngine Phase 2",
+        "url": "https://github.com/acme/app/pull/584",
+        "state": "OPEN",
+        "mergeable": "MERGEABLE",
+        "mergeStateStatus": "UNSTABLE",
+        "headRefName": "worktree/sync-engine-phase2-cached-delta",
+        "baseRefName": "main",
+        "createdAt": "2026-09-21T08:51:37Z",
+        "updatedAt": "2026-09-21T08:51:37Z",
+        "mergedAt": None,
+        "closedAt": None,
+        "author": {"login": "ginwa123"},
+        "additions": 286,
+        "deletions": 103,
+        "changedFiles": 4,
+    }
+    fake_gh.write_text(
+        "#!/bin/sh\ncat <<'EOF'\n" + json.dumps(payload) + "\nEOF\n"
+    )
+    fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+
+    h2 = FunctionalHarness.boot(default_nalar_bin)
+    try:
+        body = h2.http(
+            "GET",
+            "/api/git/pr/status",
+            params={"path": str(repo), "pr": "worktree/sync-engine-phase2-cached-delta"},
+            expect=200,
+            timeout_s=15.0,
+        ).json()
+    finally:
+        h2.teardown()
+    assert body["number"] == 584
+    assert body["state"] == "OPEN"
+    assert body["status"] == "open"
+    assert body["head_ref"] == "worktree/sync-engine-phase2-cached-delta"
+    assert body["merged_at"] == ""
+    assert body["closed_at"] == ""
