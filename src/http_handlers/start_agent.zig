@@ -137,13 +137,33 @@ pub fn startAgentUseCase(
     );
     defer session_row.deinit();
 
+    // `row.deinit` frees every `row.values[i]` at the end of the row
+    // scope below, but `emit_run_agent` reads these slices afterwards —
+    // borrow-then-free copies freed memory into the worker params, and
+    // `workflow.zig`'s non-empty write-back then persists the garbage
+    // as the session's profile (observed on the wire as
+    // `selected_profile_model: [170, 170, ...]` — Zig's 0xAA freed/
+    // byte pattern, serialized as a JSON array because it is not valid
+    // UTF-8). Dupe first, mirroring `wakeSessionForCompletion` in
+    // cleanup_stale_background_process.zig; the frees below are paired
+    // with the dupes (harmless on the request arena, required if the
+    // handler ever runs on a non-arena allocator).
+    var session_profile_owned: ?[]u8 = null;
+    var session_auto_retry_owned: ?[]u8 = null;
+    defer {
+        if (session_profile_owned) |b| allocator.free(b);
+        if (session_auto_retry_owned) |b| allocator.free(b);
+    }
+
     var session_profile: []const u8 = "";
     var session_auto_retry: []const u8 = "0";
     if (try session_row.next()) |row| {
         defer row.deinit(allocator);
         if (row.values.len >= 2) {
-            session_profile = row.values[0];
-            session_auto_retry = row.values[1];
+            session_profile_owned = try allocator.dupe(u8, row.values[0]);
+            session_auto_retry_owned = try allocator.dupe(u8, row.values[1]);
+            session_profile = session_profile_owned.?;
+            session_auto_retry = session_auto_retry_owned.?;
         }
     }
 
@@ -580,5 +600,61 @@ test "startAgentUseCase is re-exported from http_handlers/mod.zig" {
             .{MOD_PATH},
         );
         return error.StartAgentUseCaseReExportMissing;
+    }
+}
+
+// ─── Contract 12: session row values are duped before row.deinit ───────────
+//
+// `Row.deinit(allocator)` (ruangsql) frees every `row.values[i]` when the
+// row scope exits, but `emit_run_agent` reads the slices AFTER that scope.
+// Borrowing `row.values[0]` directly therefore hands freed memory to the
+// worker: the synchronous dupe inside `emit_run_agent` faithfully copies
+// garbage, and `workflow.zig`'s non-empty write-back then PERSISTS it as
+// `sessions.selected_profile_model`. Wire symptom (2026-09): the GET
+// response serialized the field as a byte array — `[170, 170, ...]` —
+// because the freed 0xAA fill is not valid UTF-8 and Zig 0.16's
+// `std.json.Stringify` falls back to emitting byte arrays for invalid
+// UTF-8 slices. The values must be heap-duped while the row is still
+// alive — the same pattern `wakeSessionForCompletion` documents.
+//
+// Needles are built by concatenation so they do NOT appear verbatim in
+// this file's source body (the source is what the grep scans — see the
+// same trap called out in session_update.zig).
+test "start_agent use-case dupes session row values before row.deinit" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+
+    const dupe_needle = "dupe(u8, row.values" ++ "[0])";
+    if (std.mem.indexOf(u8, source, dupe_needle) == null) {
+        std.debug.print(
+            "\\n!! {s} does not dupe row.values[0] before row.deinit !!\\n" ++
+                "   Borrowing the slice directly is a use-after-free: emit_run_agent\\n" ++
+                "   dupes it AFTER the row scope freed it, and workflow.zig persists\\n" ++
+                "   the garbage profile to the sessions row. Dupe inside the row\\n" ++
+                "   scope (see the session_profile_owned block).\\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionRowValuesNotDuped;
+    }
+
+    const borrow_needle = "session_profile = row.values" ++ "[0];";
+    if (std.mem.indexOf(u8, source, borrow_needle) != null) {
+        std.debug.print(
+            "\\n!! {s} still borrows row.values[0] after row.deinit !!\\n" ++
+                "   Assign the dupe (session_profile_owned) instead — see Contract 12.\\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionProfileBorrowedFromFreedRow;
+    }
+
+    const retry_borrow_needle = "session_auto_retry = row.values" ++ "[1];";
+    if (std.mem.indexOf(u8, source, retry_borrow_needle) != null) {
+        std.debug.print(
+            "\\n!! {s} still borrows row.values[1] after row.deinit !!\\n" ++
+                "   Same use-after-free as Contract 12, on is_auto_retry_until_stop.\\n",
+            .{HANDLER_PATH},
+        );
+        return error.SessionAutoRetryBorrowedFromFreedRow;
     }
 }
