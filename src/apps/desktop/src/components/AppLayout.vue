@@ -41,15 +41,26 @@ import {
   type OpenInCodeEditorOptions,
 } from '../composables/useCodeEditor'
 import { useDesignHandlers } from '../composables/useDesignHandlers'
-import { buildTaskUrlQuery } from '../helpers/buildTaskUrlQuery'
+import { useCurrentMainView } from '../composables/useCurrentMainView'
+import {
+  buildAppUrl,
+  buildTaskAppUrl,
+  isAppPath,
+  normalizeAppPath,
+  parseAppPath,
+  type AppUrlLocation,
+} from '../helpers/appUrl'
 import { openInNewTab } from '../helpers/openInNewTab'
-import { buildItemIdWithChat, parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
+import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 
 const router = useRouter()
 const route = useRoute()
 const navigationStore = useNavigationStore()
 const tabsStore = useTabsStore()
 const workspacesStore = useWorkspacesStore()
+// URL-derived main view (path-based contract) — used by navigations
+// that need the current workspace without reading store flags.
+const currentMainView = useCurrentMainView()
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const sidebarStore = useSidebarStore()
 
@@ -71,65 +82,179 @@ onUnmounted(() => {
 // Settings overlay state (now driven by route)
 
 onMounted(() => {
-  const urlSessionId = route.query.session as string
-  const urlTaskId = route.query.task as string
-  const urlView = route.query.view as string
-  const rawItemId = (route.query.itemId as string | undefined) ?? ''
+  void handleBootUrl()
+})
 
-  // SIMPLIFY-URL-BROWSER (2026-08-15): stale URL rewrite — if the
-  // URL is in the legacy `?view=task&task=X` shape, silently
-  // rewrite to `?view=workspace&itemId=Y/chat/task_X` via
-  // router.replace. Bookmarks / shared links from before this
-  // refactor land here exactly once. We do this BEFORE the normal
-  // mount branches so `pendingUrlRestore` (below) sees the new
-  // shape on its initial sync.
-  if (urlView === 'task' && urlTaskId && rawItemId) {
-    const newItemId = buildItemIdWithChat(rawItemId, urlTaskId)
-    router.replace({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: (route.query.workspaceId as string | undefined) ?? '',
-        itemId: newItemId,
-      },
-    })
-    workspacesStore.setActiveTask(urlTaskId)
-    workspacesStore.initializeFromSystemFolder()
+// Boot URL handling (plan: 2026-09-22-revamp-ui-chats).
+//
+// Canonical paths boot directly from the path (workspace/chat/project
+// restore below). Legacy URLs are rewritten once via router.replace to
+// the path contract — bookmarks / shared links from before the
+// migration land here exactly once:
+//
+//   /app/chat/:sid            → /app/{ws}/chat/:sid  (ws via session detail)
+//   /app/task/:tid            → /app/{ws}/projects/{item}/chat/:tid
+//   ?view=chat&session=X      → /app/{ws}/chat/X     (ws via session detail)
+//   ?view=task&task=X&…       → /app/{ws}/projects/{item}/chat/X (sync)
+//   ?view=workspace&…         → /app/{ws}[/projects/{item}[/chat/T]] (sync)
+//
+// Unresolvable sessions/tasks fail closed to `/app` (never render a
+// chat under the wrong workspace path). The `tab` param is preserved
+// across every rewrite; project sub-state (pageId/sorts/detail) is
+// preserved across workspace rewrites.
+async function handleBootUrl(): Promise<void> {
+  const rawQuery = route.query as Record<string, string | undefined>
+  const cleanQuery = (): Record<string, string> => {
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(rawQuery)) {
+      if (typeof v === 'string' && v.length > 0) out[k] = v
+    }
+    return out
+  }
+
+  // 1. Trailing slash → normalize, continue boot on the normalized path.
+  let path = route.path
+  let query = cleanQuery()
+  if (path !== normalizeAppPath(path) && isAppPath(path)) {
+    path = normalizeAppPath(path)
+    router.replace({ path, query })
+  }
+
+  // 2. Legacy path routes (registered so AppLayout mounts for the rewrite).
+  const legacyChat = /^\/app\/chat\/([^/]+)\/?$/.exec(path)?.[1]
+  const legacyTask = /^\/app\/task\/([^/]+)\/?$/.exec(path)?.[1]
+  if (legacyChat) {
+    await bootLegacyChat(legacyChat, keepTabParam(query))
+    return
+  }
+  if (legacyTask) {
+    await bootLegacyTask(legacyTask, keepTabParam(query))
     return
   }
 
-  if (urlSessionId && urlView === 'chat') {
-    // Clear any workspace-item active state from a prior session — the URL
-    // is the source of truth, and it points to a chat.
-    workspacesStore.setActiveWorkspaceItem(null)
-    navigationStore.setActiveChat(urlSessionId, navigationStore.activeChatName)
-    fetchChatSessionCwd(urlSessionId)
-  } else {
-    navigationStore.initFromUrl(urlSessionId || undefined, urlTaskId || undefined, urlView)
+  // 3. Legacy ?view= query URLs on /app → sync rewrite, then fall
+  // through to the canonical boot below with the new values (the
+  // replace does not remount us, so we continue manually).
+  if (normalizeAppPath(path) === '/app' && query.view) {
+    const rewritten = rewriteLegacyQuery(query)
+    if (rewritten) {
+      path = rewritten.path
+      query = rewritten.query
+      router.replace({ path, query })
+    } else if (query.view === 'chat' && query.session) {
+      await bootLegacyChat(query.session, keepTabParam(query))
+      return
+    }
+    // Unknown ?view= values (gitfile/skill/code-editor overlays):
+    // leave the URL alone, boot normally below.
   }
 
-  // SIMPLIFY-URL-BROWSER (2026-08-15): if the URL carries the
-  // /chat/<taskId> suffix on itemId, also set the active task so
-  // the chat dialog opens. The pendingUrlRestore watcher (below)
-  // already restores the bare item id; this branch restores the
-  // chat task id. Without this, refreshing a URL like
-  // `?view=workspace&itemId=Y/chat/task_X` lands on the workspace
-  // view without the dialog open.
-  if (urlView === 'workspace' && rawItemId) {
-    const parsed = parseItemIdWithChat(rawItemId)
-    if (parsed.chatTaskId) {
-      workspacesStore.setActiveTask(parsed.chatTaskId)
-    }
+  // 4. Canonical boot from the (possibly rewritten) path.
+  const parsed = parseAppPath(path)
+  if (parsed.kind === 'chat') {
+    workspacesStore.setActiveWorkspaceItem(null)
+    navigationStore.setActiveChat(parsed.sessionId, navigationStore.activeChatName)
+    fetchChatSessionCwd(parsed.sessionId)
+  } else if (parsed.kind === 'projectChat') {
+    workspacesStore.setActiveTask(parsed.chatTaskId)
+  } else {
+    const q = route.query as Record<string, string | undefined>
+    navigationStore.initFromUrl(
+      (q.session as string | undefined) || undefined,
+      undefined,
+      (q.view as string | undefined) || undefined,
+    )
   }
 
   workspacesStore.initializeFromSystemFolder()
-  // Session events (renames / deletes) now flow through the sseBus,
-  // which is opened once by App.vue. The workspaces store installs
-  // its bus.on('session', ...) handler in its own `init()` (called
-  // transitively by initializeFromSystemFolder above), so no
-  // explicit subscribe call is needed here. See Chunk 6 of
-  // unify-frontend-sse.
-})
+}
+
+// The `tab` param is client-only (names the browser tab) — carry it
+// across boot rewrites so a background tab doesn't lose its name.
+function keepTabParam(query: Record<string, string>): Record<string, string> {
+  return query.tab ? { tab: query.tab } : {}
+}
+
+// Legacy standalone chat (path or ?view=chat): resolve the owning
+// workspace via the session-detail endpoint, then boot the chat under
+// its path. Unresolvable → `/app` (fail-closed).
+async function bootLegacyChat(sessionId: string, keep: Record<string, string>): Promise<void> {
+  const wsId = await api.getSessionWorkspaceId(sessionId)
+  if (!wsId) {
+    router.replace({ path: '/app', query: keep })
+    workspacesStore.initializeFromSystemFolder()
+    return
+  }
+  workspacesStore.setActiveWorkspaceItem(null)
+  navigationStore.setActiveChat(sessionId, navigationStore.activeChatName)
+  fetchChatSessionCwd(sessionId)
+  router.replace(buildAppUrl({ workspaceId: wsId, chatSessionId: sessionId, query: keep }))
+  await workspacesStore.initializeFromSystemFolder()
+}
+
+// Legacy task link (/app/task/:tid): resolve the workspace via the
+// session detail (task id == session id), then locate the parent item
+// in the loaded tree. Parent found → full project-chat path; parent
+// unknown (deleted task) → workspace path (fail-closed, no dialog).
+async function bootLegacyTask(taskId: string, keep: Record<string, string>): Promise<void> {
+  const wsId = await api.getSessionWorkspaceId(taskId)
+  if (!wsId) {
+    router.replace({ path: '/app', query: keep })
+    workspacesStore.initializeFromSystemFolder()
+    return
+  }
+  await workspacesStore.setActiveWorkspace(wsId)
+  await workspacesStore.initializeFromSystemFolder()
+  // Parent discovery runs inside setActiveTask against the loaded tree.
+  workspacesStore.setActiveTask(taskId)
+  const parentItemId = workspacesStore.activeWorkspaceItemId
+  if (parentItemId) {
+    router.replace(
+      buildAppUrl({ workspaceId: wsId, projectId: parentItemId, chatTaskId: taskId, query: keep }),
+    )
+  } else {
+    router.replace(buildAppUrl({ workspaceId: wsId, query: keep }))
+  }
+}
+
+// Sync rewrite for legacy query URLs whose target is fully described
+// by the query itself (no server lookup needed). Returns null when the
+// query needs async resolution (?view=chat) or is not legacy at all.
+function rewriteLegacyQuery(query: Record<string, string>): AppUrlLocation | null {
+  const keepTab = keepTabParam(query)
+  if (query.view === 'task' && query.task) {
+    const rawItemId = query.itemId ?? ''
+    const wsId = query.workspaceId ?? ''
+    if (wsId && rawItemId) {
+      const parsed = parseItemIdWithChat(rawItemId)
+      return buildAppUrl({
+        workspaceId: wsId,
+        projectId: parsed.itemId,
+        chatTaskId: query.task,
+        query: keepTab,
+      })
+    }
+    return null
+  }
+  if (query.view === 'workspace' && query.workspaceId) {
+    const rawItemId = query.itemId ?? ''
+    const parsed = rawItemId ? parseItemIdWithChat(rawItemId) : { itemId: '', chatTaskId: null }
+    const sub: Record<string, string> = { ...keepTab }
+    if (query.pageId) sub.pageId = query.pageId
+    if (query.sorts) sub.sorts = query.sorts
+    if (query.detail) sub.detail = query.detail
+    if (parsed.itemId) {
+      return buildAppUrl({
+        workspaceId: query.workspaceId,
+        projectId: parsed.itemId,
+        chatTaskId: parsed.chatTaskId ?? undefined,
+        query: sub,
+      })
+    }
+    return buildAppUrl({ workspaceId: query.workspaceId, query: sub })
+  }
+  return null
+}
 
 const toggleSidebar = () => {
   navigationStore.toggleSidebar()
@@ -137,6 +262,23 @@ const toggleSidebar = () => {
 
 const handleSidebarResize = (newWidth: number) => {
   navigationStore.setSidebarWidth(newWidth)
+}
+
+// Standalone-chat URL target (plan: 2026-09-22-revamp-ui-chats).
+// Chats live under their workspace path. The workspace is the current
+// main view's workspace when present, else the store's active
+// workspace; without either we stay on the legacy query shape and the
+// boot rewrite places it once the session resolves. (ChatsList passes
+// its scoped workspace explicitly — this is the fallback for callers
+// that only know the session id.)
+function chatTarget(sessionId: string): AppUrlLocation {
+  const wsForChat =
+    (currentMainView.value.kind === 'chat' && currentMainView.value.workspaceId) ||
+    (currentMainView.value.kind === 'workspace' && currentMainView.value.workspaceId) ||
+    workspacesStore.activeWorkspaceId ||
+    ''
+  if (wsForChat) return buildAppUrl({ workspaceId: wsForChat, chatSessionId: sessionId })
+  return { path: '/app', query: { view: 'chat', session: sessionId } }
 }
 
 const activeWorkspaceItem = computed(() => workspacesStore.activeWorkspaceItem)
@@ -222,6 +364,21 @@ const pendingUrlRestore = ref<{
   pageId: string
 } | null>(
   (() => {
+    // Path-based URLs first (plan: 2026-09-22-revamp-ui-chats). A
+    // project is a workspace item, so the project path restores
+    // exactly like the old `?view=workspace&itemId=` shape.
+    const parsedPath = parseAppPath(route.path)
+    if (parsedPath.kind === 'project' || parsedPath.kind === 'projectChat') {
+      const pageId = route.query.pageId as string | undefined
+      return {
+        workspaceId: parsedPath.workspaceId,
+        itemId: parsedPath.projectId,
+        pageId: pageId ?? '',
+      }
+    }
+    if (parsedPath.kind === 'workspace') {
+      return { workspaceId: parsedPath.workspaceId, itemId: '', pageId: '' }
+    }
     const view = route.query.view as string | undefined
     const wsId = route.query.workspaceId as string | undefined
     const rawItemId = route.query.itemId as string | undefined
@@ -372,108 +529,109 @@ watch(
     // own URL contract and should be preserved.
     if (currentView !== 'workspace' && currentView !== undefined) return
 
-    // SIMPLIFY-URL-BROWSER (2026-08-15): preserve the
-    // /chat/<taskId> suffix when mirroring activeWorkspaceItemId
-    // back to the URL. Pre-fix the watcher overwrote the URL with
-    // the bare item id, dropping the chat task id and effectively
-    // closing the chat dialog on every reactive update. The
-    // diff-comparison rewrites itemId with the existing chatTaskId
-    // (if any), so the watcher's no-op check passes when only the
-    // active item id changed (e.g. setActiveTask's parent-discovery
-    // mutation) but the chat task id is preserved.
-    const existingItemIdRaw = (route.query.itemId as string) ?? ''
-    const parsedExisting = parseItemIdWithChat(existingItemIdRaw)
+    // Path-based mirror (plan: 2026-09-22-revamp-ui-chats). Store
+    // state maps onto buildAppUrl targets; the task-chat suffix is
+    // preserved from the current URL when the suffixed task is still
+    // the store's live task. Pre-fix the watcher overwrote the URL
+    // with the bare item id, dropping the chat task id and closing
+    // the chat dialog on every reactive update; navigating to a
+    // DIFFERENT item still drops the suffix (Sidebar clears
+    // activeTask first, so re-appending would resurrect the old chat
+    // on top of the new item). Reads both the path suffix
+    // (`.../projects/P/chat/T`) and the legacy query suffix
+    // (`itemId=Y/chat/T`) so the transition window keeps working.
+    //
     // `itemId` comes from `activeWorkspaceItemId` which is `string | null`.
-    // The no-op comparison below treats `null` as equivalent to `''` —
-    // it just means "the active item is unset, don't write the URL".
     const safeItemId = itemId ?? ''
-    // Only preserve the /chat/<taskId> suffix when the suffixed task
-    // is still the store's active task. When navigating to a
-    // DIFFERENT item (e.g. clicking a kanban row while an agent task
-    // chat is open), Sidebar clears activeTask first — re-appending
-    // the stale suffix would resurrect the old chat on top of the new
-    // item, so the kanban board never opens (the chat branch shadows
-    // it in the main-view chain).
     const liveTaskId = workspacesStore.activeTask?.id ?? null
-    const rewrittenItemId =
-      parsedExisting.chatTaskId && parsedExisting.chatTaskId === liveTaskId
-        ? buildItemIdWithChat(safeItemId, parsedExisting.chatTaskId)
-        : safeItemId
+    const pathParsed = parseAppPath(route.path)
+    const urlChatTask =
+      pathParsed.kind === 'projectChat'
+        ? pathParsed.chatTaskId
+        : parseItemIdWithChat((route.query.itemId as string) ?? '').chatTaskId
+    const chatTaskId = urlChatTask && urlChatTask === liveTaskId ? urlChatTask : undefined
 
-    const query: Record<string, string> = { view: 'workspace' }
+    const sub: Record<string, string> = {}
+    // pageId is design-item-scoped — only include it when the active
+    // item is a design. Empty pageId means "default to first page"
+    // and is omitted from the URL to keep the URL clean. FIX
+    // (chatview-bug, task_1785726648589): pre-fix, the watcher wrote
+    // `pageId` to the URL based purely on `activeDesignPageId` being
+    // truthy — without checking the active item's type. When the
+    // user switched from a design to a kanban (or folder), the
+    // store's `activeDesignPageId` stayed stale (carried over from
+    // the design), and the URL ended up with a stale page for the
+    // kanban. The fix: look up the active item and only include
+    // pageId when it's a design.
+    if (pageId) {
+      const activeItem = workspacesStore.workspaces
+        .flatMap((ws) => ws.items)
+        .find((it) => it.id === itemId)
+      if (activeItem?.item_type === 'design') {
+        sub.pageId = pageId
+      }
+    }
+    // FIX (kanban-sort-independence, task_1785730557641,
+    // 2026-08-06): preserve the per-column `sorts` query param so
+    // the URL survives navigation. Without this, this watcher
+    // (which fires on every workspaceItemId change) would clobber
+    // the URL and drop the `sorts=col_X:...` KanbanView wrote.
+    const urlSorts = route.query.sorts as string | undefined
+    if (urlSorts) {
+      sub.sorts = urlSorts
+    }
+    // Preserve the kanban task-detail deep-link (?detail=<taskId>)
+    // when staying on the SAME project, so reactive store updates
+    // (e.g. setActiveTask parent-discovery, design page switches)
+    // don't drop the open panel. Dropped when navigating to a
+    // different item.
+    const urlDetail = route.query.detail as string | undefined
+    if (urlDetail) {
+      const urlProject =
+        pathParsed.kind === 'project' || pathParsed.kind === 'projectChat'
+          ? pathParsed.projectId
+          : parseItemIdWithChat((route.query.itemId as string) ?? '').itemId
+      if (urlProject === safeItemId) {
+        sub.detail = urlDetail
+      }
+    }
+
+    let target: AppUrlLocation | null = null
     if (wsId && safeItemId) {
-      query.workspaceId = wsId
-      query.itemId = rewrittenItemId
-      // pageId is design-item-scoped — only include it when the active
-      // item is a design. Empty pageId means "default to first page"
-      // and is omitted from the URL to keep the URL clean. FIX
-      // (chatview-bug, task_1785726648589): pre-fix, the watcher wrote
-      // `pageId` to the URL based purely on `activeDesignPageId` being
-      // truthy — without checking the active item's type. When the
-      // user switched from a design to a kanban (or folder), the
-      // store's `activeDesignPageId` stayed stale (carried over from
-      // the design), and the URL ended up as
-      // `?view=workspace&itemId=KANBAN_ID&pageId=DESIGN_PAGE_ID`. On
-      // reload, the URL restoration would try to honor the stale page
-      // for the kanban (which doesn't have pages). The fix: look up
-      // the active item and only include pageId when it's a design.
-      if (pageId) {
-        const activeItem = workspacesStore.workspaces
-          .flatMap((ws) => ws.items)
-          .find((it) => it.id === itemId)
-        if (activeItem?.item_type === 'design') {
-          query.pageId = pageId
-        }
-      }
-      // FIX (kanban-sort-independence, task_1785730557641,
-      // 2026-08-06): preserve the per-column `sorts` query param so
-      // the URL survives navigation. Without this, this watcher
-      // (which fires on every workspaceItemId change) would clobber
-      // the URL with `{view, workspaceId, itemId}` and drop the
-      // `sorts=col_X:...` KanbanView wrote — making the per-column
-      // sort non-persistent across navigation + refresh.
-      const urlSorts = route.query.sorts as string | undefined
-      if (urlSorts) {
-        query.sorts = urlSorts
-      }
-      // Preserve the kanban task-detail deep-link (?detail=<taskId>)
-      // when staying on the SAME board, so reactive store updates
-      // (e.g. setActiveTask parent-discovery, design page switches)
-      // don't drop the open panel. Dropped when navigating to a
-      // different item — the detail id belongs to the previous board
-      // and openDetailFromRoute would ignore it anyway.
-      const urlDetail = route.query.detail as string | undefined
-      if (urlDetail) {
-        const urlBare = parsedExisting.itemId
-        if (urlBare === safeItemId) {
-          query.detail = urlDetail
-        }
-      }
+      target = buildAppUrl({
+        workspaceId: wsId,
+        projectId: safeItemId,
+        chatTaskId,
+        query: sub,
+      })
     } else if (workspacesStore.activeWorkspaceId) {
       // Standalone workspace selection (no active item): keep the
-      // dropdown's workspaceId in the URL instead of clobbering it
-      // with a bare ?view=workspace (revamp plan, 2026-09-22).
-      query.workspaceId = workspacesStore.activeWorkspaceId
+      // dropdown's workspaceId in the URL (revamp plan, 2026-09-22).
+      target = buildAppUrl({ workspaceId: workspacesStore.activeWorkspaceId, query: sub })
     }
-    // No-op when the URL already matches the store state (including
+    if (!target) return
+    // No-op when the URL already matches the store state (path +
     // sorts/detail/pageId) — avoids redundant replaces that would
-    // churn history and re-trigger the route watcher.
+    // churn history and re-trigger the route watcher. `tab` is
+    // client-only (names the browser tab) and excluded from identity.
     {
       const urlQ = route.query as Record<string, unknown>
-      const keys = new Set([...Object.keys(urlQ), ...Object.keys(query)])
-      let same = true
-      for (const k of keys) {
-        if (k === 'tab') continue
-        const a = typeof urlQ[k] === 'string' ? (urlQ[k] as string) : undefined
-        const b = query[k]
-        if ((a ?? undefined) !== (b ?? undefined)) {
-          same = false
-          break
+      const keys = new Set([...Object.keys(urlQ), ...Object.keys(target.query)])
+      let same = route.path === target.path
+      if (same) {
+        for (const k of keys) {
+          if (k === 'tab') continue
+          const a = typeof urlQ[k] === 'string' ? (urlQ[k] as string) : undefined
+          const b = target.query[k]
+          if ((a ?? undefined) !== (b ?? undefined)) {
+            same = false
+            break
+          }
         }
       }
-      if (same && route.path === '/app') return
+      if (same) return
     }
-    router.replace({ path: '/app', query })
+    router.replace(target)
   },
 )
 
@@ -533,11 +691,22 @@ const handleUpdateChatId = (oldId: string, newId: string) => {
   tabsStore.renameChatTab(oldId, newId)
   sidebarRef.value?.updateChatId(oldId, newId)
   // Keep the browser URL truthful: a brand-new chat mounts at
-  // ?view=chat&session=<synthetic-id> and gets its real id on the first
+  // /app/{ws}/chat/<synthetic-id> and gets its real id on the first
   // message. Without this the address bar keeps the dead synthetic id, so
   // refresh/share lands on a missing session while the view shows the real
   // one (URL desync reported as "fix url browser").
   try {
+    const chatParsed = parseAppPath(route.path)
+    if (chatParsed.kind === 'chat' && chatParsed.sessionId === oldId) {
+      router.replace(
+        buildAppUrl({
+          workspaceId: chatParsed.workspaceId,
+          chatSessionId: newId,
+          query: { ...(route.query as Record<string, string>) },
+        }),
+      )
+      return
+    }
     const urlSession = route.query.session as string | undefined
     const urlView = route.query.view as string | undefined
     if (urlView === 'chat' && urlSession === oldId) {
@@ -583,14 +752,20 @@ const handleNavigate = (
     navigationStore.setActiveChat(chatSessionId, chatName)
     // Fetch cwd for folder explorer and git
     fetchChatSessionCwd(chatSessionId)
-    router.push({ path: '/app', query: { view: 'chat', session: chatSessionId } })
+    router.push(chatTarget(chatSessionId))
   } else if (view === 'chat') {
     // Clear any workspace-item active state — the URL is asserting
-    // "no chat selected, no workspace item selected".
+    // "no chat selected, no workspace item selected". Path-based:
+    // land on the workspace path (chat list scoped to it) when a
+    // workspace is active, else the landing.
     workspacesStore.setActiveWorkspaceItem(null)
     navigationStore.clearActiveChat()
     chatSessionCwd.value = ''
-    router.push({ path: '/app', query: { view: 'chat' } })
+    if (workspacesStore.activeWorkspaceId) {
+      router.push(buildAppUrl({ workspaceId: workspacesStore.activeWorkspaceId }))
+    } else {
+      router.push({ path: '/app', query: {} })
+    }
   } else if (view === 'workspace') {
     navigationStore.clearAll()
     // Navigating to the board wins over any open task chat — clear the
@@ -603,23 +778,20 @@ const handleNavigate = (
     chatSessionCwd.value = ''
     // When the caller passes (workspaceId, itemId), mirror them into the
     // URL so the kanban/folder/design item survives a page reload.
-    // Without this, `?view=workspace` alone loses the active item on
+    // Without this, the workspace path alone loses the active item on
     // refresh because `activeWorkspaceItemId` is in-memory only.
-    const query: Record<string, string> = { view: 'workspace' }
+    // Path-based (plan: 2026-09-22-revamp-ui-chats): projects live at
+    // /app/{ws}/projects/{item}; pageId/sorts ride in the query.
+    const sub: Record<string, string> = {}
+    if (pageId) sub.pageId = pageId
+    if (sortsParam) sub.sorts = sortsParam
     if (workspaceId && itemId) {
-      query.workspaceId = workspaceId
-      query.itemId = itemId
-      // NEW (design-pages-in-workspace-tree plan, 2026-08-06):
-      // also mirror pageId when present so a reload of the
-      // design view restores the same page (URL is source of
-      // truth, matching the activeDesignPageId mirror on line 188).
-      if (pageId) query.pageId = pageId
-      // NEW (kanban default-URL, 2026-08-06): also mirror sortsParam
-      // when present so a kanban reload restores the per-column
-      // sort defaults the user committed to on click.
-      if (sortsParam) query.sorts = sortsParam
+      router.push(buildAppUrl({ workspaceId, projectId: itemId, query: sub }))
+    } else if (workspaceId) {
+      router.push(buildAppUrl({ workspaceId, query: sub }))
+    } else {
+      router.push({ path: '/app', query: sub })
     }
-    router.push({ path: '/app', query })
   } else if (view === 'settings') {
     router.push({ path: '/app/settings' })
   }
@@ -628,21 +800,73 @@ const handleNavigate = (
 // Header dropdown workspace switch (plan:
 // docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
 // A switch is a context change: clear the open item/task, then PUSH
-// a fresh `?view=workspace&workspaceId=X` entry — user decision-log
+// a fresh `/app/{workspaceId}` entry — user decision-log
 // requirement: Back/Forward must cross workspace switches (this is
 // deliberately NOT the tab-switch `replace` precedent). Re-selecting
 // the workspace already shown is a no-op.
 const handleSelectWorkspace = (workspaceId: string) => {
+  const parsed = parseAppPath(route.path)
   const alreadyThere =
-    route.query.view === 'workspace' &&
-    (route.query.workspaceId as string | undefined) === workspaceId
+    (parsed.kind === 'workspace' && parsed.workspaceId === workspaceId) ||
+    (route.query.view === 'workspace' &&
+      (route.query.workspaceId as string | undefined) === workspaceId)
   if (alreadyThere) return
   navigationStore.clearAll()
   workspacesStore.setActiveTask(null)
   workspacesStore.setActiveWorkspaceItem(null)
   chatSessionCwd.value = ''
   workspacesStore.setActiveWorkspace(workspaceId)
-  router.push({ path: '/app', query: { view: 'workspace', workspaceId } })
+  router.push(buildAppUrl({ workspaceId }))
+}
+
+// Shared "return to the underlying view" navigation for overlay
+// closes (git viewer, skill viewer, code editor). Path-based (plan:
+// 2026-09-22-revamp-ui-chats): active item → its project path (with
+// pageId for designs); active task → the project-chat path; active
+// chat → its chat path; otherwise the landing.
+function replaceWithCurrentContext(): void {
+  if (workspacesStore.activeWorkspaceItemId) {
+    // Returning to the board wins over any open task chat — clear the
+    // task so the kanban/design/folder renders instead of the chat.
+    // Without this, the URL is bare (no /chat/ suffix) while the chat
+    // is still active: board URL + chat content.
+    workspacesStore.setActiveTask(null)
+    const sub: Record<string, string> = {}
+    if (workspacesStore.activeDesignPageId) {
+      const item = workspacesStore.workspaces
+        .flatMap((ws) => ws.items)
+        .find((it) => it.id === workspacesStore.activeWorkspaceItemId)
+      if (item?.item_type === 'design') sub.pageId = workspacesStore.activeDesignPageId
+    }
+    router.replace(
+      buildAppUrl({
+        workspaceId: activeWorkspaceId.value,
+        projectId: workspacesStore.activeWorkspaceItemId,
+        query: sub,
+      }),
+    )
+  } else if (activeTask.value) {
+    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
+    // itemId + pageId when the task is attached to a workspace item.
+    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
+    // the kanban / design breadcrumb — the user reported this
+    // (task_1785774094183).
+    router.replace(
+      buildTaskAppUrl({
+        taskId: activeTask.value.id,
+        activeWorkspaceId: activeWorkspaceId.value,
+        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeDesignPageId: workspacesStore.activeDesignPageId,
+        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        currentQuery: route.query,
+      }),
+    )
+  } else if (activeChatId.value.startsWith('chat-')) {
+    const sessionId = activeChatId.value.replace(/^chat-/, '')
+    router.replace(chatTarget(sessionId))
+  } else {
+    router.replace({ path: '/app', query: {} })
+  }
 }
 
 const closeGitViewer = () => {
@@ -655,45 +879,7 @@ const closeGitViewer = () => {
   // URL was being stripped to ?view=task or ?view=chat, losing the
   // workspace context. For design items, also preserve pageId so
   // the active design page survives a reload.
-  if (workspacesStore.activeWorkspaceItemId) {
-    // Returning to the board wins over any open task chat — clear the
-    // task so the kanban/design/folder renders instead of the chat.
-    // Without this, the URL is bare (no /chat/ suffix) while the chat
-    // is still active: board URL + chat content.
-    workspacesStore.setActiveTask(null)
-    const wsId = activeWorkspaceId.value
-    const itemId = workspacesStore.activeWorkspaceItemId
-    const pageId = workspacesStore.activeDesignPageId
-    const query: Record<string, string> = {
-      view: 'workspace',
-      workspaceId: wsId,
-      itemId,
-    }
-    if (pageId) query.pageId = pageId
-    router.replace({ path: '/app', query })
-  } else if (activeTask.value) {
-    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
-    // itemId + pageId when the task is attached to a workspace item.
-    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
-    // the kanban / design breadcrumb — the user reported this
-    // (task_1785774094183).
-    router.replace({
-      path: '/app',
-      query: buildTaskUrlQuery({
-        taskId: activeTask.value.id,
-        activeWorkspaceId: activeWorkspaceId.value,
-        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
-        activeDesignPageId: workspacesStore.activeDesignPageId,
-        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-        currentQuery: route.query,
-      }),
-    })
-  } else if (activeChatId.value.startsWith('chat-')) {
-    const sessionId = activeChatId.value.replace(/^chat-/, '')
-    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
-  } else {
-    router.replace({ path: '/app', query: { view: 'chat' } })
-  }
+  replaceWithCurrentContext()
 }
 
 // Skill viewer state
@@ -706,41 +892,7 @@ const closeSkillViewer = () => {
   // opened the skill view while on a workspace item — see
   // closeGitViewer for the same pattern. For design items, also
   // preserve pageId so the active design page survives a reload.
-  if (workspacesStore.activeWorkspaceItemId) {
-    workspacesStore.setActiveTask(null)
-    const wsId = activeWorkspaceId.value
-    const itemId = workspacesStore.activeWorkspaceItemId
-    const pageId = workspacesStore.activeDesignPageId
-    const query: Record<string, string> = {
-      view: 'workspace',
-      workspaceId: wsId,
-      itemId,
-    }
-    if (pageId) query.pageId = pageId
-    router.replace({ path: '/app', query })
-  } else if (activeTask.value) {
-    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
-    // itemId + pageId when the task is attached to a workspace item.
-    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
-    // the kanban / design breadcrumb — the user reported this
-    // (task_1785774094183).
-    router.replace({
-      path: '/app',
-      query: buildTaskUrlQuery({
-        taskId: activeTask.value.id,
-        activeWorkspaceId: activeWorkspaceId.value,
-        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
-        activeDesignPageId: workspacesStore.activeDesignPageId,
-        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-        currentQuery: route.query,
-      }),
-    })
-  } else if (activeChatId.value.startsWith('chat-')) {
-    const sessionId = activeChatId.value.replace(/^chat-/, '')
-    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
-  } else {
-    router.replace({ path: '/app', query: { view: 'chat' } })
-  }
+  replaceWithCurrentContext()
 }
 
 // Code editor state
@@ -827,41 +979,7 @@ const closeCodeEditor = () => {
   // editor while on a workspace item — see closeGitViewer for the
   // same pattern. For design items, also preserve pageId so the
   // active design page survives a reload.
-  if (workspacesStore.activeWorkspaceItemId) {
-    workspacesStore.setActiveTask(null)
-    const wsId = activeWorkspaceId.value
-    const itemId = workspacesStore.activeWorkspaceItemId
-    const pageId = workspacesStore.activeDesignPageId
-    const query: Record<string, string> = {
-      view: 'workspace',
-      workspaceId: wsId,
-      itemId,
-    }
-    if (pageId) query.pageId = pageId
-    router.replace({ path: '/app', query })
-  } else if (activeTask.value) {
-    // NEW (add-workspace-id-params, 2026-08-06): include workspaceId +
-    // itemId + pageId when the task is attached to a workspace item.
-    // Pre-fix this branch wrote only `?view=task&task=X`, dropping
-    // the kanban / design breadcrumb — the user reported this
-    // (task_1785774094183).
-    router.replace({
-      path: '/app',
-      query: buildTaskUrlQuery({
-        taskId: activeTask.value.id,
-        activeWorkspaceId: activeWorkspaceId.value,
-        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
-        activeDesignPageId: workspacesStore.activeDesignPageId,
-        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
-        currentQuery: route.query,
-      }),
-    })
-  } else if (activeChatId.value.startsWith('chat-')) {
-    const sessionId = activeChatId.value.replace(/^chat-/, '')
-    router.replace({ path: '/app', query: { view: 'chat', session: sessionId } })
-  } else {
-    router.replace({ path: '/app', query: { view: 'chat' } })
-  }
+  replaceWithCurrentContext()
 }
 
 const loadCodeEditorContent = async () => {
@@ -971,6 +1089,25 @@ const currentView = computed(() => {
   console.log('[currentView] skillViewerSkill is null, checking route')
   // code-editor view - check only the ref
   if (codeEditorFile.value) return 'code-editor'
+
+  // Path-based contract (plan: 2026-09-22-revamp-ui-chats). Projects
+  // are workspace items, so every project path is the 'workspace'
+  // view. The landing renders <Chats> (which now hosts workspace
+  // creation), so it reports 'chat' — same as a bare /app with no
+  // query. Legacy /app/chat/:sid + /app/task/:tid fall through to
+  // the query default below ('chat'); the boot rewrite converts them
+  // to paths on the next tick.
+  const parsedPath = parseAppPath(path)
+  if (
+    parsedPath.kind === 'workspace' ||
+    parsedPath.kind === 'project' ||
+    parsedPath.kind === 'projectChat'
+  ) {
+    return 'workspace'
+  }
+  if (parsedPath.kind === 'chat' || parsedPath.kind === 'landing') {
+    return 'chat'
+  }
 
   // SIMPLIFY-URL-BROWSER (2026-08-15): the URL never says
   // `view=task` anymore (legacy URLs are auto-rewritten on mount).
@@ -1584,12 +1721,8 @@ const handleCloseTaskView = () => {
   const wsId = activeWorkspaceId.value
   const itemId = workspacesStore.activeWorkspaceItemId
   const pageId = workspacesStore.activeDesignPageId
-  const query: Record<string, string> = { view: 'workspace' }
-  if (wsId && itemId) {
-    query.workspaceId = wsId
-    query.itemId = itemId
-    if (pageId) query.pageId = pageId
-  }
+  const sub: Record<string, string> = {}
+  if (pageId) sub.pageId = pageId
   // Restore the kanban per-column sort state (kanban-sort-by plan,
   // 2026-08-06 — `?sorts=col_x:name:asc,...`). Sidebar's
   // handleSelectTask snapshots the user's sort choice before
@@ -1601,10 +1734,16 @@ const handleCloseTaskView = () => {
   // close-without-a-task-open doesn't accidentally restore a stale
   // sort.
   if (workspacesStore.savedSortsParam) {
-    query.sorts = workspacesStore.savedSortsParam
+    sub.sorts = workspacesStore.savedSortsParam
     workspacesStore.savedSortsParam = ''
   }
-  router.replace({ path: '/app', query })
+  if (wsId && itemId) {
+    router.replace(buildAppUrl({ workspaceId: wsId, projectId: itemId, query: sub }))
+  } else if (wsId) {
+    router.replace(buildAppUrl({ workspaceId: wsId, query: sub }))
+  } else {
+    router.replace({ path: '/app', query: sub })
+  }
 }
 
 // ─── Design 3-column resize (separate from kanban) ─────────────────────
@@ -1913,15 +2052,17 @@ const handleKanbanOpenTaskInBackground = (payload: {
   itemId: string
   taskId: string
 }) => {
-  const query = buildTaskUrlQuery({
-    taskId: payload.taskId,
-    activeWorkspaceId: payload.workspaceId || activeWorkspace?.value?.id || null,
-    activeWorkspaceItemId: payload.itemId || null,
-    activeDesignPageId: null,
-    activeItemType: 'kanban',
-    currentQuery: route.query,
-  })
-  openInNewTab(router, { path: '/app', query })
+  openInNewTab(
+    router,
+    buildTaskAppUrl({
+      taskId: payload.taskId,
+      activeWorkspaceId: payload.workspaceId || activeWorkspace?.value?.id || null,
+      activeWorkspaceItemId: payload.itemId || null,
+      activeDesignPageId: null,
+      activeItemType: 'kanban',
+      currentQuery: route.query,
+    }),
+  )
 }
 
 // Right-click "Open details in new tab" on a kanban card. Builds
@@ -1933,22 +2074,30 @@ const handleKanbanOpenTaskDetailInBackground = (payload: {
   itemId: string
   taskId: string
 }) => {
+  const pathParsed = parseAppPath(route.path)
   const wsId =
-    payload.workspaceId || activeWorkspace?.value?.id || (route.query.workspaceId as string) || ''
+    payload.workspaceId ||
+    activeWorkspace?.value?.id ||
+    (pathParsed.kind === 'project' || pathParsed.kind === 'projectChat'
+      ? pathParsed.workspaceId
+      : '') ||
+    (route.query.workspaceId as string) ||
+    ''
+  const pathProject =
+    pathParsed.kind === 'project' || pathParsed.kind === 'projectChat' ? pathParsed.projectId : ''
   const bareItemId =
-    payload.itemId || (route.query.itemId as string) || activeWorkspaceItem?.value?.id || ''
-  const query: Record<string, string> = { view: 'workspace' }
-  if (wsId) query.workspaceId = wsId
-  if (bareItemId) {
-    // Strip any existing /chat/ suffix — the detail tab is the
-    // board, not the chat.
-    const bare = bareItemId.split('/chat/')[0] ?? bareItemId
-    query.itemId = bare
-  }
+    payload.itemId ||
+    pathProject ||
+    parseItemIdWithChat((route.query.itemId as string) ?? '').itemId ||
+    activeWorkspaceItem?.value?.id ||
+    ''
+  // Strip any existing /chat/ suffix — the detail tab is the
+  // board, not the chat.
+  const bare = bareItemId.split('/chat/')[0] ?? bareItemId
+  const sub: Record<string, string> = { detail: payload.taskId }
   const sorts = route.query.sorts
-  if (typeof sorts === 'string' && sorts !== '') query.sorts = sorts
-  query.detail = payload.taskId
-  openInNewTab(router, { path: '/app', query })
+  if (typeof sorts === 'string' && sorts !== '') sub.sorts = sorts
+  openInNewTab(router, buildAppUrl({ workspaceId: wsId, projectId: bare, query: sub }))
 }
 
 const handleKanbanDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {

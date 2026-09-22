@@ -33,6 +33,9 @@
  * Pure functions — no Vue / Pinia / vue-router imports. Trivially testable.
  */
 
+import { parseItemIdWithChat } from './buildItemIdWithChat'
+import { buildTaskUrlQuery, type TaskUrlContext } from './buildTaskUrlQuery'
+
 export interface AppUrlTarget {
   /** Workspace id. Absent → landing (`/app`). */
   workspaceId?: string | null | undefined
@@ -142,6 +145,34 @@ export function normalizeAppPath(rawPath: string): string {
 /** True when the path is one of the five app shapes (landing included). */
 export function isAppPath(rawPath: string): boolean {
   return parseAppPath(rawPath).kind !== 'other'
+}
+
+/**
+ * Path-shaped twin of `buildTaskUrlQuery` (same `TaskUrlContext`
+ * input, same workspace/item/pageId/sorts resolution incl. URL
+ * breadcrumb fallback). Emits `/app/{ws}/projects/{item}/chat/{task}`
+ * instead of the `?view=workspace&itemId=Y/chat/T` query object, so
+ * overlay-close handlers and task navigations don't duplicate the
+ * resolution rules. The `view` key `buildTaskUrlQuery` always emits
+ * is dropped — the path carries it.
+ */
+export function buildTaskAppUrl(input: TaskUrlContext): AppUrlLocation {
+  const q = buildTaskUrlQuery(input)
+  const wsId = q.workspaceId ?? ''
+  const { itemId, chatTaskId } = parseItemIdWithChat(q.itemId ?? '')
+  const sub: Record<string, string> = {}
+  if (q.pageId) sub.pageId = q.pageId
+  if (q.sorts) sub.sorts = q.sorts
+  if (wsId && itemId) {
+    return buildAppUrl({
+      workspaceId: wsId,
+      projectId: itemId,
+      chatTaskId: chatTaskId ?? undefined,
+      query: sub,
+    })
+  }
+  if (wsId) return buildAppUrl({ workspaceId: wsId, query: sub })
+  return { path: '/app', query: sub }
 }
 
 export interface LegacyAppUrl {

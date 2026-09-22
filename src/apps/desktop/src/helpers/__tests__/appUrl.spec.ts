@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildAppUrl,
+  buildTaskAppUrl,
   detectLegacyAppUrl,
   isAppPath,
   normalizeAppPath,
@@ -95,6 +96,41 @@ describe('appUrl — path-based URL contract (2026-09-22 revamp)', () => {
       expect(isAppPath('/app/ws_1/chat/s')).toBe(true)
       expect(isAppPath('/app/settings')).toBe(false)
       expect(isAppPath('/app/chat/s')).toBe(false)
+    })
+  })
+
+  describe('buildTaskAppUrl', () => {
+    it('emits the project-chat path from store state', () => {
+      expect(
+        buildTaskAppUrl({
+          taskId: 'task_3',
+          activeWorkspaceId: 'ws_1',
+          activeWorkspaceItemId: 'item_7',
+        }),
+      ).toEqual({ path: '/app/ws_1/projects/item_7/chat/task_3', query: {} })
+    })
+    it('carries pageId/sorts sub-state, drops the view key', () => {
+      expect(
+        buildTaskAppUrl({
+          taskId: 'task_3',
+          activeWorkspaceId: 'ws_1',
+          activeWorkspaceItemId: 'item_7',
+          activeDesignPageId: 'page_1',
+          activeItemType: 'design',
+          currentQuery: { sorts: 'c:x:asc' },
+        }),
+      ).toEqual({
+        path: '/app/ws_1/projects/item_7/chat/task_3',
+        query: { pageId: 'page_1', sorts: 'c:x:asc' },
+      })
+    })
+    it('falls back to the URL breadcrumb without store state', () => {
+      expect(
+        buildTaskAppUrl({
+          taskId: 'task_3',
+          currentQuery: { workspaceId: 'ws_9', itemId: 'item_8' },
+        }),
+      ).toEqual({ path: '/app/ws_9/projects/item_8/chat/task_3', query: {} })
     })
   })
 

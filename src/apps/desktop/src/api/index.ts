@@ -1832,6 +1832,27 @@ export async function getSession(sessionId: string): Promise<Session | null> {
   }
 }
 
+// Owning workspace of a session (plan: 2026-09-22-revamp-ui-chats).
+// `GET /api/llm/session/:session_id` resolves via the task link first,
+// then the cwd heuristic, and returns `workspace_id` (string) or null
+// when the session belongs to no workspace. Used by the AppLayout boot
+// rewrite to place legacy chat URLs (`/app/chat/:sid`,
+// `?view=chat&session=X`) under their workspace path. Null on 404 /
+// network failure — callers fail closed to `/app`.
+export async function getSessionWorkspaceId(sessionId: string): Promise<string | null> {
+  if (!sessionId) return null
+  try {
+    const data = await apiFetch<{ workspace_id?: string | null }>(`/llm/session/${sessionId}`, {
+      silent: true,
+    })
+    return typeof data.workspace_id === 'string' && data.workspace_id.length > 0
+      ? data.workspace_id
+      : null
+  } catch {
+    return null
+  }
+}
+
 // Compact chat session history
 export async function compactSession(
   sessionId: string,
