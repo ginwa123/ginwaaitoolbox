@@ -73,12 +73,13 @@ fn nameInAny(name: []const u8, names: []const []const u8) bool {
 
 /// Apply the agent/kanban allowlist + the sub-agent anti-recursion strip.
 ///
-/// `allowed_tools` semantics are preserved exactly as the original inline
-/// code had them:
-///   - `""` (empty) → NO filtering (every tool kept). Note this is the
-///     opposite of what `maybeOverrideAllowedToolsForAgent` implies when it
-///     returns `""`; the wart is pre-existing and deliberately preserved
-///     here so this extraction is behaviour-neutral.
+/// `allowed_tools` semantics:
+///   - `""` (empty) → NO filtering (every tool kept). Pre-existing wart,
+///     deliberately preserved so this extraction stayed behaviour-neutral.
+///     Producers that used to emit `""` meaning "zero tools" now emit the
+///     exact `none` sentinel instead (see `maybeOverrideAllowedToolsForAgent`).
+///   - `"none"` → ZERO tools (explicit-empty sentinel: config.json
+///     `tools: []` and agent sessions with zero enabled rows).
 ///   - `"all"` → no filtering.
 ///   - anything else → comma-separated name allowlist.
 ///
@@ -90,6 +91,15 @@ pub fn allowlistFilter(
     allowed_tools: []const u8,
     is_sub_agent: bool,
 ) ![]AgentTool {
+    // WHY: exact `none` is the explicit-empty sentinel and must mean ZERO
+    // tools — distinct from the pre-existing `""` wart above ("no filtering
+    // → keep everything"). Short-circuit BEFORE name matching and the
+    // sub-agent strip so the meaning can never drift (e.g. a future tool
+    // literally named "none", or a non-empty intersection with the strip).
+    if (std.mem.eql(u8, allowed_tools, "none")) {
+        return try allocator.alloc(AgentTool, 0);
+    }
+
     var kept = try dupeToolList(allocator, tools);
 
     if (allowed_tools.len > 0 and !std.mem.eql(u8, allowed_tools, "all")) {
@@ -227,6 +237,23 @@ test "allowlistFilter: empty string keeps every tool (pre-existing semantics)" {
     const tools = try makeTools(a, &.{ "read_file", "glob", "search" });
     const kept = try allowlistFilter(a, tools, "", false);
     try expectNames(&.{ "read_file", "glob", "search" }, kept);
+}
+
+test "allowlistFilter: exact \"none\" yields an empty tool set (D3 sentinel)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Empty even for a main agent, where no sub-agent strip applies —
+    // the sentinel short-circuits before name matching.
+    const tools = try makeTools(a, &.{ "read_file", "glob", "search" });
+    const kept = try allowlistFilter(a, tools, "none", false);
+    try expectNames(&.{}, kept);
+
+    // …and a CSV that merely CONTAINS the word "none" is an ordinary
+    // allowlist (unknown names are ignored, the rest match).
+    const kept2 = try allowlistFilter(a, tools, "none,read_file", false);
+    try expectNames(&.{"read_file"}, kept2);
 }
 
 test "allowlistFilter: \"all\" keeps every tool" {
@@ -398,4 +425,3 @@ test "eligibleNames: both policies compose" {
     const names = try eligibleNames(a, tools, "read_file,glob,kanban_list,spawn_sub_agent", true, "kanban");
     try expectNames(&.{ "read_file", "glob", "kanban_list" }, names);
 }
-
