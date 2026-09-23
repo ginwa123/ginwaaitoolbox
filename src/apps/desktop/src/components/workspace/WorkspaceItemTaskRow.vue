@@ -153,12 +153,9 @@ const errorRetryLabel = computed(() =>
     <!-- (Processing spinner removed — replaced by SessionSlider at
            the bottom of the button.) -->
     <!-- Row variant: bullet renders as before for the sidebar's
-           compact list. Hidden while the LLM slider is visible so
+           compact list. Hidden while the LLM spinner is visible so
            the row shows a SINGLE visual marker (either the bullet
-           when idle, or the slider when processing) — same
-           mutually-exclusive contract the old spinner/bullet pair
-           had, just with the indicator relocated to the bottom of
-           the row. -->
+           when idle, or the circle spinner when processing). -->
     <span
       v-if="!processingState[task.id]"
       class="w-1 h-1 rounded-full shrink-0"
@@ -293,13 +290,10 @@ const errorRetryLabel = computed(() =>
       </svg>
     </button>
 
-    <!-- Per-session LLM slider at the bottom edge of this row.
-         Self-positions absolutely (the button has `relative`).
+    <!-- Per-session LLM circle spinner for this row.
          Visible iff processingState[task.id] === true; hidden
-         otherwise. Replaces the per-row yellow spinner circle that
-         used to live in the leftmost slot (was lines 116-126 and
-         214-223 in this file). Same signal as the workspace-item
-         level slider in <WorkspaceItem> — the workspace-item
+         otherwise. Same signal as the workspace-item
+         level spinner in <WorkspaceItem> — the workspace-item
          level covers "any task on this item is busy"; this covers
          "this specific task is busy". Both can render at once. -->
     <SessionSlider :session-id="task.id" test-id="task-spinner" />

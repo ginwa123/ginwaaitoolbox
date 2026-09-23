@@ -1,7 +1,7 @@
 <!--
   SessionSlider.vue — per-session LLM "still working" indicator.
 
-  Renders a thin yellow bar at the bottom edge of its parent
+  Renders a small yellow circle spinner inline in its parent
   whenever `processingState[sessionId]` is true. Owned by `App.vue`
   via Vue's provide/inject (a `Ref<Record<string, boolean>>`); the
   SSE worker event handler in App.vue flips entries true/false so
@@ -9,27 +9,26 @@
 
   Where it mounts
   ───────────────
-  - ChatsList rows (sidebar): one slider per row, just below the
-    chat name — replaces the existing yellow spinner circle.
+  - ChatsList rows (sidebar): one spinner per row, at the end of
+    the chat row — replaces the previous bottom-edge sliding bar.
     The ChatView and SubAgentPeekPanel deliberately do NOT mount
     this component: the sidebar row already signals "this session
-    is busy" for the same session, and adding a duplicate slider
+    is busy" for the same session, and adding a duplicate spinner
     elsewhere would be redundant (see design memory
     `design-no-redundant-loading-indicators`).
+  - WorkspaceItem / WorkspaceItemTaskRow / ProjectsList /
+    AgentChatView: same circle, same API.
 
-  Why a slider, not a spinner
-  ──────────────────────────
-  The existing yellow spinner is a single point — the eye has to
-  FIND it on every glance to confirm "the agent is still working".
-  A horizontal sliding bar is a continuous motion across the full
-  width of the chat row: even when looking at the chat body, the
-  peripheral vision catches the slider at the row's edge. Same
-  idle/processing signal, lower cognitive cost.
+  Why a circle, not a bottom bar
+  ──────────────────────────────
+  The bottom sliding bar spans the full row width and draws the eye
+  even when the user is reading elsewhere. A compact circle spinner
+  marks exactly the busy row without the full-width motion.
 
   Reduced motion
   ──────────────
-  Under `@media (prefers-reduced-motion: reduce)` the slide animation
-  is suppressed and the bar renders as a static muted strip —
+  Under `@media (prefers-reduced-motion: reduce)` the spin animation
+  is suppressed and the circle renders as a static muted ring —
   matches the pattern established in `SseStatusBadge.vue:152-156`.
 
   NOT a network loading indicator
@@ -70,72 +69,52 @@ const isVisible = computed(() => !!processingState.value[props.sessionId])
 </script>
 
 <template>
-  <div
-    class="session-slider"
-    :class="{ 'session-slider--visible': isVisible }"
+  <span
+    v-if="isVisible"
+    class="session-spinner"
     :data-testid="testId"
-    role="progressbar"
-    :aria-busy="isVisible"
+    role="status"
+    :aria-busy="true"
     aria-live="polite"
+    aria-label="Agent is working"
   >
-    <div
-      class="session-slider__track"
-      data-testid="session-slider-track"
-    />
-  </div>
+    <span class="session-spinner__circle" data-testid="session-slider-track" />
+  </span>
 </template>
 
 <style scoped>
-.session-slider {
-  /* Self-positioning: pins itself to the bottom edge of whatever
-     `position: relative` parent it's dropped into, inset to match
-     the parent's left/right padding (`--row-px`) so the bar starts
-     and ends at the same x-position as the row's text content. The
-     consumer doesn't need to set any positioning classes — just put
-     it as the LAST child of the parent (any subsequent siblings
-     would render on top of the slider because z-index defaults to
-     auto and the slider is taken out of the flex flow). */
-  position: absolute;
-  /* `--row-px` mirrors the parent's `px-3` (Tailwind = 0.75rem = 12px)
-     so the bar's left/right edge aligns with the row's text content.
-     Override per-mount via style="--row-px: 1.5rem" if the consumer
-     uses different horizontal padding. */
-  left: var(--row-px, 0.75rem);
-  right: var(--row-px, 0.75rem);
-  bottom: 0;
-  height: 2px;
-  overflow: hidden;
-  background: rgb(0 0 0 / 0.06);
-  border-radius: 1px;
-  opacity: 0;
-  transition: opacity 200ms ease-out;
+.session-spinner {
+  /* Inline circle: sits in the flex row where it's mounted, takes
+     no space at all while idle (v-if removes it from the DOM). */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
   pointer-events: none;
 }
 
-.session-slider--visible {
-  opacity: 1;
+.session-spinner__circle {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  border: 2px solid var(--color-yellow);
+  border-top-color: transparent;
+  animation: session-spinner-spin 0.8s linear infinite;
 }
 
-.session-slider__track {
-  position: absolute;
-  inset: 0;
-  background: var(--color-yellow);
-  box-shadow: 0 0 4px rgb(196 178 138 / 0.5);
-  animation: session-slider-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  transform: translateX(-100%);
-  width: 100%;
-}
-
-@keyframes session-slider-slide {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+@keyframes session-spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-slider__track {
+  .session-spinner__circle {
     animation: none;
-    transform: none;
-    opacity: 0.55;
+    border-top-color: var(--color-yellow);
+    opacity: 0.7;
   }
 }
 </style>

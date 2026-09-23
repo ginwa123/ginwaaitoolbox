@@ -54,15 +54,11 @@ function handleClose() {
         ✕ Close
       </button>
       <!-- Same per-session worker indicator the sidebar/task rows show:
-           a yellow sliding bar pinned to the header's bottom edge while
+           a yellow circle spinner while
            processingState[task.id] is true. The key matches the inner
            ChatView's session id (it strips a leading `chat-`, and we
            pass the raw task id, so both resolve to task.id). -->
-      <SessionSlider
-        :session-id="props.task.id"
-        test-id="agent-chat-slider"
-        style="--row-px: 1.25rem"
-      />
+      <SessionSlider :session-id="props.task.id" test-id="agent-chat-slider" />
     </div>
     <div class="flex-1 min-h-0">
       <ChatView

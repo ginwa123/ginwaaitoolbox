@@ -5,11 +5,10 @@
  * row.
  *
  * Updated 2026-08-29: the per-task yellow spinner circle was replaced
- * by a SessionSlider that always renders the DOM element but toggles
- * `aria-busy="true"` + the `session-slider--visible` class when the
- * task is processing. These tests assert on the VISIBLE state — the
- * hidden state renders but is `opacity: 0`, so the user can't see it
- * and tests should count the visible ones.
+ * by a SessionSlider that only renders while the task is processing
+ * (`aria-busy="true"` when present, no DOM element when idle). These
+ * tests assert on the VISIBLE state — the hidden state renders
+ * nothing, so tests count the visible ones.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -30,9 +29,7 @@ const itemWithTasks = {
   ],
 }
 
-function mountWorkspaceItem(
-  tasks: Array<{ id: string; name: string }> = itemWithTasks.tasks,
-) {
+function mountWorkspaceItem(tasks: Array<{ id: string; name: string }> = itemWithTasks.tasks) {
   const processingState: Ref<Record<string, boolean>> = ref({})
   const wrapper = mount(WorkspaceItem, {
     props: {

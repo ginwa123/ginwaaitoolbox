@@ -10,15 +10,14 @@ describe('SessionSlider', () => {
     processingState = ref({})
   })
 
-  it('renders nothing visible when processingState[sessionId] is falsy', () => {
+  it('renders nothing when processingState[sessionId] is falsy', () => {
     const wrapper = mount(SessionSlider, {
       props: { sessionId: 's_1' },
       global: { provide: { processingState } },
       attachTo: document.body,
     })
-    const bar = document.querySelector('[data-testid="session-slider"]') as HTMLElement | null
-    expect(bar).not.toBeNull()
-    expect(bar!.classList.contains('session-slider--visible')).toBe(false)
+    const spinner = document.querySelector('[data-testid="session-slider"]')
+    expect(spinner).toBeNull()
     wrapper.unmount()
   })
 
@@ -30,8 +29,9 @@ describe('SessionSlider', () => {
     })
     processingState.value = { ...processingState.value, s_1: true }
     await wrapper.vm.$nextTick()
-    const bar = document.querySelector('[data-testid="session-slider"]') as HTMLElement | null
-    expect(bar!.classList.contains('session-slider--visible')).toBe(true)
+    const spinner = document.querySelector('[data-testid="session-slider"]') as HTMLElement | null
+    expect(spinner).not.toBeNull()
+    expect(spinner!.getAttribute('aria-busy')).toBe('true')
     wrapper.unmount()
   })
 
@@ -45,8 +45,8 @@ describe('SessionSlider', () => {
     await wrapper.vm.$nextTick()
     processingState.value = {}
     await wrapper.vm.$nextTick()
-    const bar = document.querySelector('[data-testid="session-slider"]') as HTMLElement | null
-    expect(bar!.classList.contains('session-slider--visible')).toBe(false)
+    const spinner = document.querySelector('[data-testid="session-slider"]')
+    expect(spinner).toBeNull()
     wrapper.unmount()
   })
 
@@ -64,15 +64,14 @@ describe('SessionSlider', () => {
     processingState.value = { s_1: true } // s_2 stays idle
     await wrapper1.vm.$nextTick()
     await wrapper2.vm.$nextTick()
-    const bars = document.querySelectorAll('[data-testid="session-slider"]')
-    expect(bars.length).toBe(2)
-    expect((bars[0] as HTMLElement).classList.contains('session-slider--visible')).toBe(true)
-    expect((bars[1] as HTMLElement).classList.contains('session-slider--visible')).toBe(false)
+    // Only the processing session renders a spinner.
+    expect(wrapper1.find('[data-testid="session-slider"]').exists()).toBe(true)
+    expect(wrapper2.find('[data-testid="session-slider"]').exists()).toBe(false)
     wrapper1.unmount()
     wrapper2.unmount()
   })
 
-  it('the inner track carries the slide animation class', async () => {
+  it('the inner circle carries the spinner animation class', async () => {
     const wrapper = mount(SessionSlider, {
       props: { sessionId: 's_1' },
       global: { provide: { processingState } },
@@ -80,34 +79,37 @@ describe('SessionSlider', () => {
     })
     processingState.value = { s_1: true }
     await wrapper.vm.$nextTick()
-    const track = document.querySelector('[data-testid="session-slider-track"]') as HTMLElement | null
-    expect(track).not.toBeNull()
-    expect(track!.classList.contains('session-slider__track')).toBe(true)
+    const circle = wrapper.find('[data-testid="session-slider-track"]')
+    expect(circle.exists()).toBe(true)
+    expect(circle.classes()).toContain('session-spinner__circle')
     wrapper.unmount()
   })
 
-  it('the wrapper carries the session-slider root class', () => {
+  it('the wrapper carries the session-spinner root class', async () => {
     const wrapper = mount(SessionSlider, {
       props: { sessionId: 's_1' },
       global: { provide: { processingState } },
       attachTo: document.body,
     })
-    const bar = document.querySelector('[data-testid="session-slider"]') as HTMLElement
-    expect(bar.classList.contains('session-slider')).toBe(true)
-    wrapper.unmount()
-  })
-
-  it('aria-busy reflects the visible state (true when processing, false otherwise)', async () => {
-    const wrapper = mount(SessionSlider, {
-      props: { sessionId: 's_1' },
-      global: { provide: { processingState } },
-      attachTo: document.body,
-    })
-    const bar = document.querySelector('[data-testid="session-slider"]') as HTMLElement
-    expect(bar.getAttribute('aria-busy')).toBe('false')
     processingState.value = { s_1: true }
     await wrapper.vm.$nextTick()
-    expect(bar.getAttribute('aria-busy')).toBe('true')
+    const spinner = wrapper.find('[data-testid="session-slider"]')
+    expect(spinner.classes()).toContain('session-spinner')
+    wrapper.unmount()
+  })
+
+  it('exposes role=status with aria-busy=true while processing', async () => {
+    const wrapper = mount(SessionSlider, {
+      props: { sessionId: 's_1' },
+      global: { provide: { processingState } },
+      attachTo: document.body,
+    })
+    expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(false)
+    processingState.value = { s_1: true }
+    await wrapper.vm.$nextTick()
+    const spinner = wrapper.find('[data-testid="session-slider"]')
+    expect(spinner.attributes('role')).toBe('status')
+    expect(spinner.attributes('aria-busy')).toBe('true')
     wrapper.unmount()
   })
 })

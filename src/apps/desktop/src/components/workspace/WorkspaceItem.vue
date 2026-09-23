@@ -670,13 +670,9 @@ const handlePinnedDrop = (event: DragEvent) => {
             style="background-color: var(--color-aqua)"
             data-testid="item-active-dot"
           />
-          <!-- Per-session LLM slider at the bottom edge of this row.
-               Self-positions (absolute bottom-0); the parent button
-               already has `position: relative` (added in the same
-               edit as the slider). Visible iff firstProcessingTaskId
-               is truthy AND processingState[that id] === true.
-               Replaces the 9-line yellow spinner circle that used to
-               occupy the leftmost slot (was lines 545-554). -->
+          <!-- Per-session LLM circle spinner for this row.
+               Visible iff firstProcessingTaskId
+               is truthy AND processingState[that id] === true. -->
           <SessionSlider
             v-if="firstProcessingTaskId"
             :session-id="firstProcessingTaskId"
