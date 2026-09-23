@@ -2389,10 +2389,12 @@ const effectiveChatCwd = computed(() => {
 })
 
 // Watch route changes (Back/Forward/deep-link drift) to sync app state.
-// Watches fullPath so path-only navigations (no query change) reconcile
-// too — watching query alone would miss /app/ws → /app/ws/chat/s hops.
+// Watches path + query so both path-only navigations (no query change)
+// and query-only mutations (tests, legacy query URLs) reconcile —
+// watching query alone would miss /app/ws → /app/ws/chat/s hops,
+// watching fullPath alone would miss direct query mutations.
 watch(
-  () => route.fullPath,
+  () => [route.path, route.query],
   async () => {
     const query = route.query as Record<string, string | undefined>
     const sessionId = query.session as string
