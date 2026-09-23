@@ -1,39 +1,36 @@
 /**
  * Regression test for the sidebar-right open-file doubled path
  * (task fix-open-file). The explorer passes an ABSOLUTE file.path
- * (backend listDirectory joins dir_path + name), and CodeEditor's
- * footer used to render `${cwd}/${filePath}` unconditionally:
- *   /home/u/work//home/u/work/migration/README.md
- * The footer must show the absolute path as-is and only join when
- * filePath is relative. Mounting CodeEditor pulls Monaco, so this
- * spec asserts the structural contract on source instead.
+ * (backend listDirectory joins dir_path + name); the footer must
+ * show it as-is and only join relative paths. The logic lives in
+ * the shared displayPathFor helper (unit-tested here); this spec
+ * additionally asserts the template binds to it.
  */
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { describe, it, expect } from 'vitest'
+import { describe, expect, it } from 'vitest'
+
+import { displayPathFor } from '../../../composables/useCodeEditorSession'
 
 const codeEditorPath = resolve(__dirname, '..', '..', 'views', 'CodeEditor.vue')
 
-function loadSource(): string {
-  return readFileSync(codeEditorPath, 'utf-8')
-}
-
 describe('CodeEditor.vue — footer displayPath', () => {
-  it('does not unconditionally join cwd + filePath', () => {
-    const src = loadSource()
-    expect(src).not.toMatch(/cwd \? `\$\{cwd\}\/\$\{filePath\}`/)
+  it('shows absolute filePath as-is (no cwd doubling)', () => {
+    expect(displayPathFor('/home/u/work', '/home/u/work/migration/README.md')).toBe(
+      '/home/u/work/migration/README.md',
+    )
   })
 
-  it('defines displayPath that guards absolute paths', () => {
-    const src = loadSource()
-    expect(src).toMatch(/displayPath/)
-    expect(src).toMatch(/isAbsolutePath/)
-    expect(src).toMatch(/startsWith\('\/'\)/)
+  it('joins relative filePath with cwd', () => {
+    expect(displayPathFor('/home/u/work', 'migration/README.md')).toBe(
+      '/home/u/work/migration/README.md',
+    )
   })
 
   it('footer binds title and text to displayPath', () => {
-    const src = loadSource()
+    const src = readFileSync(codeEditorPath, 'utf-8')
     expect(src).toMatch(/:title="displayPath"/)
     expect(src).toMatch(/\{\{\s*displayPath\s*\}\}/)
+    expect(src).not.toMatch(/cwd \? `\$\{cwd\}\/\$\{filePath\}`/)
   })
 })
