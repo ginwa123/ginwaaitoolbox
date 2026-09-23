@@ -143,7 +143,12 @@ describe('PresentFiles', () => {
       status: 'presented',
       count: 1,
       files: [
-      { path: '/tmp/test-page.html', bytes: 655, mime: 'text/html; charset=utf-8', label: 'test-page.html' },
+        {
+          path: '/tmp/test-page.html',
+          bytes: 655,
+          mime: 'text/html; charset=utf-8',
+          label: 'test-page.html',
+        },
       ],
     }
     const wrapper = mountCard(content)
@@ -170,7 +175,12 @@ describe('PresentFiles', () => {
       status: 'presented',
       count: 1,
       files: [
-      { path: '/tmp/big.html', bytes: 2097152, mime: 'text/html; charset=utf-8', label: 'big.html' },
+        {
+          path: '/tmp/big.html',
+          bytes: 2097152,
+          mime: 'text/html; charset=utf-8',
+          label: 'big.html',
+        },
       ],
     }
     const wrapper = mountCard(content)
@@ -188,7 +198,7 @@ describe('PresentFiles', () => {
       status: 'presented',
       count: 1,
       files: [
-      { path: '/tmp/gone.html', bytes: 10, mime: 'text/html; charset=utf-8', label: 'gone.html' },
+        { path: '/tmp/gone.html', bytes: 10, mime: 'text/html; charset=utf-8', label: 'gone.html' },
       ],
     }
     const wrapper = mountCard(content)
@@ -204,9 +214,7 @@ describe('PresentFiles', () => {
     const content = {
       status: 'presented',
       count: 1,
-      files: [
-      { path: '/tmp/doc.pdf', bytes: 100, mime: 'application/pdf', label: 'doc.pdf' },
-      ],
+      files: [{ path: '/tmp/doc.pdf', bytes: 100, mime: 'application/pdf', label: 'doc.pdf' }],
     }
     const wrapper = mountCard(content)
     await flushPromises()
@@ -224,8 +232,8 @@ describe('PresentFiles', () => {
       status: 'presented',
       count: 2,
       files: [
-      { path: '/tmp/clip.mp4', bytes: 200, mime: 'video/mp4', label: 'clip.mp4' },
-      { path: '/tmp/song.mp3', bytes: 300, mime: 'audio/mpeg', label: 'song.mp3' },
+        { path: '/tmp/clip.mp4', bytes: 200, mime: 'video/mp4', label: 'clip.mp4' },
+        { path: '/tmp/song.mp3', bytes: 300, mime: 'audio/mpeg', label: 'song.mp3' },
       ],
     }
     const wrapper = mountCard(content)
@@ -242,7 +250,12 @@ describe('PresentFiles', () => {
       status: 'presented',
       count: 1,
       files: [
-      { path: '/tmp/readme.md', bytes: 7, mime: 'text/markdown; charset=utf-8', label: 'readme.md' },
+        {
+          path: '/tmp/readme.md',
+          bytes: 7,
+          mime: 'text/markdown; charset=utf-8',
+          label: 'readme.md',
+        },
       ],
     }
     const wrapper = mountCard(content)
@@ -250,5 +263,85 @@ describe('PresentFiles', () => {
     expect(wrapper.find('[data-testid="present-files-inline-text-0"]').exists()).toBe(true)
     // The stubbed fetch returns '<h1>Hello</h1>' → <h1> via marked().
     expect(wrapper.find('[data-testid="present-files-inline-text-0"]').html()).toContain('<h1')
+  })
+})
+
+/**
+ * Loading-space reserves (scroll pop-in fix).
+ *
+ * Text/html/pdf/image previews resolve asynchronously AFTER the card
+ * mounts. Without reserved space the card mounts small and pops taller
+ * when the fetch/decode lands — mid-scroll, that reads as "content
+ * suddenly shows up". Each loading state therefore reserves
+ * approximately its ready size so the pop-in becomes a same-size
+ * content swap instead of a layout jump.
+ */
+describe('PresentFiles loading reserves', () => {
+  const pendingFetch = () => new Promise<Response>(() => {})
+
+  it('text loading shows a reserved skeleton block', async () => {
+    fetchMock.mockImplementation(pendingFetch)
+    const wrapper = mountCard({
+      status: 'presented',
+      count: 1,
+      files: [
+        { path: '/tmp/notes.txt', bytes: 11, mime: 'text/plain; charset=utf-8', label: 'notes' },
+      ],
+    })
+    await flushPromises()
+    const inline = wrapper.find('[data-testid="present-files-inline-text-0"]')
+    expect(inline.exists()).toBe(true)
+    expect(inline.text()).toContain('Loading preview')
+    const skeleton = inline.find('[aria-hidden="true"]')
+    expect(skeleton.exists()).toBe(true)
+    expect(skeleton.classes()).toContain('min-h-32')
+  })
+
+  it('html loading reserves the ready iframe minimum height', async () => {
+    fetchMock.mockImplementation(pendingFetch)
+    const wrapper = mountCard({
+      status: 'presented',
+      count: 1,
+      files: [
+        {
+          path: '/tmp/test-page.html',
+          bytes: 655,
+          mime: 'text/html; charset=utf-8',
+          label: 'test-page.html',
+        },
+      ],
+    })
+    await flushPromises()
+    const box = wrapper.find(
+      '[data-testid="present-files-inline-html-0"] > div:not([class*="border-t"])',
+    )
+    expect(box.exists()).toBe(true)
+    expect(box.classes()).toContain('min-h-[200px]')
+  })
+
+  it('pdf loading reserves the ready iframe height', async () => {
+    fetchMock.mockImplementation(pendingFetch)
+    const wrapper = mountCard({
+      status: 'presented',
+      count: 1,
+      files: [{ path: '/tmp/doc.pdf', bytes: 100, mime: 'application/pdf', label: 'doc.pdf' }],
+    })
+    await flushPromises()
+    const box = wrapper.find(
+      '[data-testid="present-files-inline-pdf-0"] > div:not([class*="border-t"])',
+    )
+    expect(box.exists()).toBe(true)
+    expect(box.classes()).toContain('min-h-[480px]')
+  })
+
+  it('inline image wrapper reserves space until decode, then releases it', async () => {
+    const wrapper = mountCard(makeSuccessContent())
+    await flushPromises()
+    const inline = wrapper.find('[data-testid="present-files-inline-image-1"]')
+    expect(inline.exists()).toBe(true)
+    const box = inline.element.parentElement
+    expect(box?.className ?? '').toContain('min-h-40')
+    await inline.trigger('load')
+    expect(box?.className ?? '').not.toContain('min-h-40')
   })
 })

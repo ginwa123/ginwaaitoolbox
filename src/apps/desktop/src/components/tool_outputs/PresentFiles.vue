@@ -354,6 +354,15 @@ onUnmounted(() => {
   }
 })
 
+/** Inline full-width images decode with no intrinsic size until load,
+ * popping the card taller mid-scroll. Track per-file load so the
+ * wrapper reserves space until the image arrives (error counts as
+ * arrived — the img hides itself and the reserve must drop too). */
+const inlineImageLoaded = ref<Record<string, boolean>>({})
+const markInlineImageLoaded = (path: string): void => {
+  inlineImageLoaded.value[path] = true
+}
+
 function maybeFetchVisibleTexts(): void {
   if (!isExpanded.value) return
   for (const f of files.value) {
@@ -465,8 +474,14 @@ const openInNewTab = (f: ParsedPresentFile) => {
             >
           </div>
 
-          <!-- Inline preview: image (full-width, click → fullscreen). -->
-          <div v-if="isImage(f)" class="flex justify-center rounded bg-black/[0.04] p-1.5">
+          <!-- Inline preview: image (full-width, click → fullscreen).
+            The wrapper reserves space until decode: an unloaded img has
+            no intrinsic size and would pop the card taller mid-scroll. -->
+          <div
+            v-if="isImage(f)"
+            class="flex justify-center rounded bg-black/[0.04] p-1.5"
+            :class="{ 'min-h-40 items-center animate-pulse': !inlineImageLoaded[f.path] }"
+          >
             <img
               :src="previewUrl(f)"
               :alt="displayName(f)"
@@ -474,7 +489,13 @@ const openInNewTab = (f: ParsedPresentFile) => {
               class="max-h-80 w-full cursor-zoom-in rounded object-contain"
               :data-testid="`present-files-inline-image-${idx}`"
               @click="openFullscreen(f)"
-              @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')"
+              @load="markInlineImageLoaded(f.path)"
+              @error="
+                (e) => {
+                  ;(e.target as HTMLImageElement).style.display = 'none'
+                  markInlineImageLoaded(f.path)
+                }
+              "
             />
           </div>
 
@@ -505,6 +526,10 @@ const openInNewTab = (f: ParsedPresentFile) => {
             <div
               v-else
               class="flex items-center justify-center px-2 py-8 text-[var(--semantic-text-dim)]"
+              :class="{
+                'min-h-[200px] animate-pulse':
+                  !htmlByPath[f.path] || htmlByPath[f.path]!.status === 'loading',
+              }"
             >
               <span v-if="!htmlByPath[f.path] || htmlByPath[f.path]!.status === 'loading'"
                 >Loading preview…</span
@@ -553,6 +578,10 @@ const openInNewTab = (f: ParsedPresentFile) => {
             <div
               v-else
               class="flex items-center justify-center px-2 py-8 text-[var(--semantic-text-dim)]"
+              :class="{
+                'min-h-[480px] animate-pulse':
+                  !pdfByPath[f.path] || pdfByPath[f.path]!.status === 'loading',
+              }"
             >
               <span v-if="!pdfByPath[f.path] || pdfByPath[f.path]!.status === 'loading'"
                 >Loading preview…</span
@@ -600,7 +629,8 @@ const openInNewTab = (f: ParsedPresentFile) => {
               v-if="!textByPath[f.path] || textByPath[f.path]!.status === 'loading'"
               class="px-1 py-2 text-[var(--semantic-text-dim)]"
             >
-              Loading preview…
+              <div>Loading preview…</div>
+              <div class="mt-2 min-h-32 animate-pulse rounded bg-black/[0.06]" aria-hidden="true" />
             </div>
             <div
               v-else-if="textByPath[f.path]!.status === 'skipped'"
