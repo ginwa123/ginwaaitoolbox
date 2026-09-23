@@ -598,7 +598,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       <span class="flex-1 min-w-0 text-sm font-medium leading-snug truncate">{{ task.name }}</span>
       <button
         @click="handlePinToggle($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg]"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg]"
         :class="
           task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'
         "
@@ -621,7 +621,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       </button>
       <button
         @click="handleRenameTask($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-blue-400"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-blue-400"
         style="color: var(--semantic-text-dim)"
         title="Rename Task"
       >
@@ -634,11 +634,11 @@ watch([gitBranchBadge, effectiveCwd], () => {
           />
         </svg>
       </button>
-      <!-- Info / view detail button (hover-revealed). Opens the
+      <!-- Info / view detail button (always visible). Opens the
              KanbanTaskDetailDialog via the host (KanbanView). -->
       <button
         @click="handleViewTaskDetail($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
         style="color: var(--semantic-text-dim)"
         title="View task details"
         data-testid="view-task-detail-btn"
@@ -654,7 +654,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       </button>
       <button
         @click="handleDeleteTask($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
+        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
         style="color: var(--semantic-text-dim)"
       >
         <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

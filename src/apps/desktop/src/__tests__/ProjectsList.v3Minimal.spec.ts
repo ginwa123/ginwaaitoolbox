@@ -1,6 +1,6 @@
 /**
- * v3 minimal-flat sidebar: header shows a quiet count + search filter.
- * Typing filters projects by item name or nested task name.
+ * V2 sidebar: header shows a quiet count, no search filter.
+ * Every project is listed; actions are always visible; indent is compact.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -60,7 +60,7 @@ function mountList() {
   })
 }
 
-describe('ProjectsList v3 — count + search filter', () => {
+describe('ProjectsList v2 — count, no search, compact indent', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
@@ -80,25 +80,22 @@ describe('ProjectsList v3 — count + search filter', () => {
     wrapper.unmount()
   })
 
-  it('filters projects by name via search', async () => {
+  it('has no search input — every project is listed', async () => {
     const wrapper = mountList()
     await nextTick()
-    const input = wrapper.find('[data-testid="projects-search"]')
-    expect(input.exists()).toBe(true)
-    await input.setValue('kabel')
-    await nextTick()
-    // Only kabelweb survives the filter (stubbed rows carry item id).
+    expect(wrapper.find('[data-testid="projects-search"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="projects-no-results"]').exists()).toBe(false)
+    // Both items render without filtering (stubbed rows carry item id).
+    expect(wrapper.html()).toContain('item_a')
     expect(wrapper.html()).toContain('item_b')
-    expect(wrapper.html()).not.toContain('item_a')
     wrapper.unmount()
   })
 
-  it('shows no-results hint on empty filter', async () => {
+  it('uses the compact v2 indent (ml-1 pl-2)', async () => {
     const wrapper = mountList()
     await nextTick()
-    await wrapper.find('[data-testid="projects-search"]').setValue('zzz-nope')
-    await nextTick()
-    expect(wrapper.find('[data-testid="projects-no-results"]').exists()).toBe(true)
+    const ul = wrapper.find('ul.ml-1.pl-2')
+    expect(ul.exists()).toBe(true)
     wrapper.unmount()
   })
 })

@@ -239,7 +239,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
     <div ref="menuRef" class="relative shrink-0">
       <button
         type="button"
-        class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/page:opacity-100 transition-opacity hover:opacity-80"
+        class="w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:opacity-80"
         style="color: var(--semantic-text-dim)"
         :data-testid="`design-page-menu-${page.id}`"
         aria-label="Design page actions"
@@ -293,7 +293,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
     -->
     <button
       type="button"
-      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/page:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
+      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
       style="color: var(--semantic-text-dim)"
       title="Delete page"
       aria-label="Delete page"

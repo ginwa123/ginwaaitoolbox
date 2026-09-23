@@ -87,18 +87,17 @@ describe('WorkspaceItem task rename button', () => {
     expect(wrapper.emitted('selectTask')).toBeUndefined()
   })
 
-  it('hides the pencil by default and reveals it on row hover (opacity-0 class present initially)', async () => {
+  it('keeps the pencil always visible (no hover needed, opacity-60 quiet state)', async () => {
     const { wrapper } = mountWorkspaceItem()
     expandItem()
     await nextTick()
 
     const renameBtn = wrapper.find('button[title="Rename Task"]')
     expect(renameBtn.exists()).toBe(true)
-    // Hover-reveal pattern: the button carries opacity-0 until the
-    // parent .group/task is hovered. The actual class set comes from
-    // the Tailwind template; assert the unhovered class is present
-    // so a future refactor that removes the hidden state fails this test.
-    expect(renameBtn.classes()).toContain('opacity-0')
+    // V2 sidebar UX: actions are always visible (quiet opacity-60
+    // until hover). They must never carry opacity-0 again.
+    expect(renameBtn.classes()).toContain('opacity-60')
+    expect(renameBtn.classes()).not.toContain('opacity-0')
   })
 
   it('still renders a delete button alongside the rename button', async () => {

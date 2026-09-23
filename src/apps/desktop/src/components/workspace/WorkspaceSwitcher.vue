@@ -283,7 +283,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
             </button>
             <button
               type="button"
-              class="px-1.5 py-1 text-xs opacity-0 group-hover/ws:opacity-100 focus-visible:opacity-100 transition-opacity"
+              class="px-1.5 py-1 text-xs opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity"
               style="color: var(--semantic-text-dim)"
               title="Rename workspace"
               :aria-label="`Rename workspace ${ws.name}`"
@@ -294,7 +294,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
             </button>
             <button
               type="button"
-              class="px-1.5 py-1 text-xs opacity-0 group-hover/ws:opacity-100 focus-visible:opacity-100 transition-opacity"
+              class="px-1.5 py-1 text-xs opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity"
               style="color: var(--semantic-text-dim)"
               title="Delete workspace"
               :aria-label="`Delete workspace ${ws.name}`"
