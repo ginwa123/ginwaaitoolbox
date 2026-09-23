@@ -1,6 +1,7 @@
 // src/apps/desktop/src/composables/useCurrentMainView.ts
 import { computed, type ComputedRef } from 'vue'
 import { useRoute } from 'vue-router'
+import { parseAppPath } from '../helpers/appUrl'
 import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 
 /**
@@ -12,14 +13,27 @@ import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
  * is "active". Exactly one row in the sidebar should be active at
  * any time, and that row must match the kind + id below.
  *
- * ## URL contract (simplify-url-browser, 2026-08-15)
+ * ## URL contract (path-based, 2026-09-22 revamp)
  *
- * The legacy `kind: 'task'` variant is gone. The chat-open state
- * is now encoded as a `/chat/<taskId>` suffix on the `itemId` query
- * value when `view=workspace`. Legacy `?view=task&task=X` URLs are
- * silently rewritten to the new shape in `AppLayout.onMounted`
- * before this composable is consulted — the composable itself
- * doesn't handle the legacy shape.
+ * Path shapes (see `helpers/appUrl.ts`) map onto the existing kinds —
+ * a project IS a workspace item, so no new kind was needed:
+ *
+ *   /app                                        → none (landing)
+ *   /app/{ws}                                   → workspace {workspaceId}
+ *   /app/{ws}/chat/{sid}                        → chat {sessionId, workspaceId}
+ *   /app/{ws}/projects/{pid}[?pageId=…]         → workspace {workspaceId, itemId, pageId}
+ *   /app/{ws}/projects/{pid}/chat/{tid}         → workspace {… + chatTaskId}
+ *
+ * Legacy `?view=chat|task|workspace` query URLs on `/app` still parse
+ * to the old shapes until the AppLayout boot rewrite converts them.
+ *
+ * The legacy `kind: 'task'` variant is gone (simplify-url-browser,
+ * 2026-08-15). The chat-open state is now encoded as a
+ * `/chat/<taskId>` suffix on the `itemId` query value when
+ * `view=workspace`. Legacy `?view=task&task=X` URLs are silently
+ * rewritten to the new shape in `AppLayout.onMounted` before this
+ * composable is consulted — the composable itself doesn't handle the
+ * legacy shape.
  *
  * ## kanban-settings variant (plan: 2026-09-02-kanban-settings-as-page)
  *
@@ -36,7 +50,7 @@ import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
  *   - docs/superpowers/plans/2026-09-02-kanban-settings-as-page.md
  */
 export type CurrentMainView =
-  | { kind: 'chat'; sessionId: string }
+  | { kind: 'chat'; sessionId: string; workspaceId?: string }
   | {
       kind: 'workspace'
       workspaceId?: string
@@ -62,6 +76,36 @@ export function useCurrentMainView(): ComputedRef<CurrentMainView> {
     // router context (some tests mount the component without mocking
     // vue-router). Treat that as an empty query → `kind: 'none'`.
     const q = (route?.query ?? {}) as Record<string, string>
+
+    // Path-based contract first (plan: 2026-09-22-revamp-ui-chats).
+    // A project is a workspace item, so path projects map onto the
+    // existing `workspace` kind (itemId = projectId) — every
+    // row-highlight consumer keeps working unchanged. Legacy `?view=`
+    // URLs are handled below until the boot rewrite removes them.
+    const parsed = parseAppPath(route?.path ?? '')
+    // Landing with a legacy `?view=` query is not the landing — fall
+    // through to the query handling below (the boot rewrite converts
+    // it to a path URL on the next tick).
+    const landingWithLegacyQuery =
+      parsed.kind === 'landing' &&
+      (q.view === 'chat' || q.view === 'task' || q.view === 'workspace')
+    if (parsed.kind === 'landing' && !landingWithLegacyQuery) return { kind: 'none' }
+    if (parsed.kind === 'workspace') return { kind: 'workspace', workspaceId: parsed.workspaceId }
+    if (parsed.kind === 'chat') {
+      return { kind: 'chat', sessionId: parsed.sessionId, workspaceId: parsed.workspaceId }
+    }
+    if (parsed.kind === 'project' || parsed.kind === 'projectChat') {
+      return {
+        kind: 'workspace',
+        workspaceId: parsed.workspaceId,
+        itemId: parsed.projectId,
+        pageId: typeof q.pageId === 'string' && q.pageId.length > 0 ? q.pageId : undefined,
+        chatTaskId: parsed.kind === 'projectChat' ? parsed.chatTaskId : undefined,
+      }
+    }
+    // `other` (settings, kanban-settings, legacy routes, unknown):
+    // fall through to the query + path-param handling below.
+
     const view = q.view
     if (view === 'chat') {
       if (typeof q.session === 'string' && q.session.length > 0) {

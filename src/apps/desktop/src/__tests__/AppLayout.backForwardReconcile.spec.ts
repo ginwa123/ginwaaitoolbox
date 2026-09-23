@@ -113,12 +113,28 @@ function fullPathOf(query: Record<string, string>): string {
   return '/app' + (qs ? `?${qs}` : '')
 }
 
+/** Seed the fixture tree AND rewire the API mocks to serve it, so
+ * init() populates instead of wiping (lazy init reads the mocks
+ * after replacing the tree — a live read would see the wipe). */
+function seedFixtureTree() {
+  const ws = useWorkspacesStore()
+  ws.workspaces = [makeWorkspace()]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const snapshot = JSON.parse(JSON.stringify(ws.workspaces)) as any[]
+  vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: snapshot } as never)
+  vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({
+    items: snapshot[0].items,
+    count: snapshot[0].items.length,
+  } as never)
+  return ws
+}
+
 /** Mount with a REACTIVE route so tests can simulate popstate (URL-only change). */
-function mountWithRoute(initialQuery: Record<string, string>) {
+function mountWithRoute(initialQuery: Record<string, string>, initialPath = '/app') {
   const routeState = reactive({
     query: { ...initialQuery },
-    path: '/app',
-    fullPath: fullPathOf(initialQuery),
+    path: initialPath,
+    fullPath: initialPath + fullPathOf(initialQuery).slice('/app'.length),
     params: {},
   })
   useRouteMock.mockReturnValue(routeState)
@@ -130,11 +146,14 @@ function mountWithRoute(initialQuery: Record<string, string>) {
 
 /** Simulate browser Back/Forward: ONLY the URL changes, stores stay stale. */
 function navigateTo(
-  routeState: { query: Record<string, string>; fullPath: string },
+  routeState: { query: Record<string, string>; path: string; fullPath: string },
   query: Record<string, string>,
+  path = '/app',
 ) {
   routeState.query = { ...query }
-  routeState.fullPath = fullPathOf(query)
+  routeState.path = path
+  const qs = new URLSearchParams(query).toString()
+  routeState.fullPath = path + (qs ? `?${qs}` : '')
 }
 
 describe('AppLayout — Back/Forward reconciles stores from the URL', () => {
@@ -171,6 +190,7 @@ describe('AppLayout — Back/Forward reconciles stores from the URL', () => {
       home: '/',
       entries: [],
     } as never)
+    vi.spyOn(api, 'getSessionWorkspaceId').mockResolvedValue(WS_ID)
     vi.spyOn(api, 'getSession').mockResolvedValue({ id: SESSION_X, cwd: '/' } as never)
     vi.spyOn(api, 'getChatHistory').mockResolvedValue({ cwd: '/' } as never)
   })
@@ -181,24 +201,25 @@ describe('AppLayout — Back/Forward reconciles stores from the URL', () => {
   })
 
   it('Back from a standalone chat to a board URL renders the board, not the chat', async () => {
+    // Seed BEFORE mount so init() populates from the mocks.
+    const ws = seedFixtureTree()
     // Boot on the chat URL (mount restore sets the chat, like a refresh).
-    const { wrapper, routeState } = mountWithRoute({ view: 'chat', session: SESSION_X })
+    const { wrapper, routeState } = mountWithRoute({}, `/app/${WS_ID}/chat/${SESSION_X}`)
     await nextTick()
     await nextTick()
-    const ws = useWorkspacesStore()
     const nav = useNavigationStore()
-    ws.workspaces = [makeWorkspace()]
     expect(nav.activeChatId).toBe(`chat-${SESSION_X}`)
     expect(wrapper.find('[data-chat-view]').exists()).toBe(true)
 
     // Browser Back: URL pops to the board URL. No sidebar handler runs —
     // only the URL changes (stores stay stale, exactly like popstate).
-    navigateTo(routeState, { view: 'workspace', workspaceId: WS_ID, itemId: BOARD_ID })
-    await nextTick()
-    await nextTick()
-    await nextTick()
+    navigateTo(routeState, {}, `/app/${WS_ID}/projects/${BOARD_ID}`)
 
-    expect(wrapper.find('[data-kanban-view]').exists()).toBe(true)
+    // init() + the Back reconcile are async — wait for the board to
+    // actually render instead of counting ticks.
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-kanban-view]').exists()).toBe(true)
+    })
     expect(wrapper.find('[data-chat-view]').exists()).toBe(false)
     expect(nav.activeChatId).toBe('')
     expect(ws.activeWorkspaceItemId).toBe(BOARD_ID)
@@ -206,11 +227,7 @@ describe('AppLayout — Back/Forward reconciles stores from the URL', () => {
   })
 
   it('Forward from a board to a chat URL renders the chat, not the chats list', async () => {
-    const { wrapper, routeState } = mountWithRoute({
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: BOARD_ID,
-    })
+    const { wrapper, routeState } = mountWithRoute({}, `/app/${WS_ID}/projects/${BOARD_ID}`)
     await nextTick()
     await nextTick()
     const ws = useWorkspacesStore()
@@ -222,7 +239,7 @@ describe('AppLayout — Back/Forward reconciles stores from the URL', () => {
     expect(wrapper.find('[data-kanban-view]').exists()).toBe(true)
 
     // Browser Forward: URL goes to a standalone chat. Stores stay stale.
-    navigateTo(routeState, { view: 'chat', session: SESSION_Y })
+    navigateTo(routeState, {}, `/app/${WS_ID}/chat/${SESSION_Y}`)
     await nextTick()
     await nextTick()
     await nextTick()
@@ -236,20 +253,18 @@ describe('AppLayout — Back/Forward reconciles stores from the URL', () => {
 
   it('tab mode: Back from a chat to a board URL renders the board', async () => {
     useTabsStore().setEnabled(true)
-    const { wrapper, routeState } = mountWithRoute({ view: 'chat', session: SESSION_X })
+    seedFixtureTree()
+    const { wrapper, routeState } = mountWithRoute({}, `/app/${WS_ID}/chat/${SESSION_X}`)
     await nextTick()
     await nextTick()
-    const ws = useWorkspacesStore()
     const nav = useNavigationStore()
-    ws.workspaces = [makeWorkspace()]
     expect(nav.activeChatId).toBe(`chat-${SESSION_X}`)
 
-    navigateTo(routeState, { view: 'workspace', workspaceId: WS_ID, itemId: BOARD_ID })
-    await nextTick()
-    await nextTick()
-    await nextTick()
+    navigateTo(routeState, {}, `/app/${WS_ID}/projects/${BOARD_ID}`)
 
-    expect(wrapper.find('[data-kanban-view]').exists()).toBe(true)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-kanban-view]').exists()).toBe(true)
+    })
     expect(wrapper.find('[data-chat-view]').exists()).toBe(false)
     wrapper.unmount()
   })

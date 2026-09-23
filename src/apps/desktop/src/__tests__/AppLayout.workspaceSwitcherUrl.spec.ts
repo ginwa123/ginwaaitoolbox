@@ -64,12 +64,12 @@ const SidebarStub = {
   emits: ['navigate', 'select-workspace', 'toggle-collapse', 'resize'],
 }
 
-function mountAppLayout(routeQuery: Record<string, string>) {
+function mountAppLayout(routeQuery: Record<string, string>, routePath = '/app') {
   useRouteMock.mockReturnValue({
     query: routeQuery,
-    path: '/app',
+    path: routePath,
     fullPath:
-      '/app' +
+      routePath +
       (Object.keys(routeQuery).length ? `?${new URLSearchParams(routeQuery).toString()}` : ''),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
@@ -128,8 +128,8 @@ describe('AppLayout — workspace switcher URL contract', () => {
     vi.restoreAllMocks()
   })
 
-  it('click-writes: select-workspace PUSHES ?view=workspace&workspaceId=X (history entry)', async () => {
-    const wrapper = mountAppLayout({ view: 'workspace', workspaceId: 'ws_1' })
+  it('click-writes: select-workspace PUSHES /app/{ws} (history entry)', async () => {
+    const wrapper = mountAppLayout({}, '/app/ws_1')
     await nextTick()
     await nextTick()
     const ws = useWorkspacesStore()
@@ -141,8 +141,8 @@ describe('AppLayout — workspace switcher URL contract', () => {
     await nextTick()
 
     expect(pushMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: 'ws_2' },
+      path: '/app/ws_2',
+      query: {},
     })
     // User decision log: switches must create history entries — a
     // replace here would erase the previous workspace from Back.

@@ -10,15 +10,10 @@ import { createApp, type App as VueApp } from 'vue'
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -137,25 +132,32 @@ describe('useWorkspacesStore.init()', () => {
     vi.restoreAllMocks()
   })
 
-  it('fetches workspaces, then items + tasks per workspace in parallel', async () => {
+  it('fetches the workspace list, then items + tasks for the ACTIVE workspace only', async () => {
     getWorkspacesMock.mockResolvedValueOnce({
       workspaces: [
         { id: 'ws_1', name: 'Workspace 1', icon: '📁' },
         { id: 'ws_2', name: 'Workspace 2', icon: '📁' },
       ],
     })
-    getWorkspacesItemsMock.mockResolvedValueOnce({ items: [{ id: 'item_1a', name: 'A' }], count: 1 })
-    getWorkspacesItemsMock.mockResolvedValueOnce({ items: [], count: 0 })
+    getWorkspacesItemsMock.mockResolvedValueOnce({
+      items: [{ id: 'item_1a', name: 'A' }],
+      count: 1,
+    })
     getTasksMock.mockResolvedValueOnce({ tasks: [], has_more: false, next_cursor: null })
 
     const store = useWorkspacesStore()
     await store.init()
 
     expect(getWorkspacesMock).toHaveBeenCalledTimes(1)
-    expect(getWorkspacesItemsMock).toHaveBeenCalledTimes(2)
+    // Lazy loading (2026-09-22 revamp plan): only the active
+    // workspace (first row — no explicit/persisted choice here) is
+    // fetched; the other row stays seeded-empty until visited via
+    // ensureWorkspaceItemsLoaded.
+    expect(getWorkspacesItemsMock).toHaveBeenCalledTimes(1)
     expect(getWorkspacesItemsMock).toHaveBeenNthCalledWith(1, 'ws_1')
-    expect(getWorkspacesItemsMock).toHaveBeenNthCalledWith(2, 'ws_2')
-    // item_1a triggers one getTasks call; ws_2 has no items
+    expect(store.workspaces.find((ws) => ws.id === 'ws_2')!.items).toEqual([])
+    // item_1a triggers one getTasks call — per-item tasks follow the
+    // same active-only gate.
     expect(getTasksMock).toHaveBeenCalledTimes(1)
     expect(getTasksMock).toHaveBeenCalledWith('ws_1', 'item_1a')
   })
@@ -207,7 +209,10 @@ describe('useWorkspacesStore.init()', () => {
     getWorkspacesMock.mockResolvedValueOnce({
       workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
     })
-    getWorkspacesItemsMock.mockResolvedValueOnce({ items: [{ id: 'item_1a', name: 'A' }], count: 1 })
+    getWorkspacesItemsMock.mockResolvedValueOnce({
+      items: [{ id: 'item_1a', name: 'A' }],
+      count: 1,
+    })
     getTasksMock.mockResolvedValueOnce({ tasks: [], has_more: false, next_cursor: null })
 
     const store = useWorkspacesStore()
@@ -332,10 +337,7 @@ describe('useWorkspacesStore.init()', () => {
       workspaces: [{ id: 'ws_1', name: 'W1', icon: '📁' }],
     })
     getWorkspacesItemsMock.mockResolvedValueOnce({
-      items: [
-        makeDesignItem({ id: 'item_design_a' }),
-        makeDesignItem({ id: 'item_design_b' }),
-      ],
+      items: [makeDesignItem({ id: 'item_design_a' }), makeDesignItem({ id: 'item_design_b' })],
       count: 2,
     })
     // First design item succeeds, second rejects.
@@ -374,7 +376,9 @@ describe('useWorkspacesStore.init()', () => {
       count: 1,
     })
     listDesignPagesMock.mockResolvedValueOnce({
-      pages: [{ id: 'page_1', workspace_item_id: 'item_design', name: 'AI Chat View', position: 0 }],
+      pages: [
+        { id: 'page_1', workspace_item_id: 'item_design', name: 'AI Chat View', position: 0 },
+      ],
       count: 1,
     })
 
@@ -430,15 +434,30 @@ describe('useWorkspacesStore.init()', () => {
     getTasksMock
       .mockResolvedValueOnce({
         tasks: [
-          { id: 'task_a1', name: 'A1', workspace_item_id: 'item_kanban_a', kanban_column_id: 'col_a' },
+          {
+            id: 'task_a1',
+            name: 'A1',
+            workspace_item_id: 'item_kanban_a',
+            kanban_column_id: 'col_a',
+          },
         ],
         has_more: false,
         next_cursor: null,
       })
       .mockResolvedValueOnce({
         tasks: [
-          { id: 'task_b1', name: 'B1', workspace_item_id: 'item_kanban_a', kanban_column_id: 'col_b' },
-          { id: 'task_b2', name: 'B2', workspace_item_id: 'item_kanban_a', kanban_column_id: 'col_b' },
+          {
+            id: 'task_b1',
+            name: 'B1',
+            workspace_item_id: 'item_kanban_a',
+            kanban_column_id: 'col_b',
+          },
+          {
+            id: 'task_b2',
+            name: 'B2',
+            workspace_item_id: 'item_kanban_a',
+            kanban_column_id: 'col_b',
+          },
         ],
         has_more: false,
         next_cursor: null,
@@ -462,7 +481,8 @@ describe('useWorkspacesStore.init()', () => {
     )
     expect(kanbanCalls).toHaveLength(2)
     expect(kanbanCalls[0]).toEqual([
-      'ws_1', 'item_kanban_a',
+      'ws_1',
+      'item_kanban_a',
       10, // limit
       undefined, // cursor — page 1
       undefined, // sortBy — default sort
@@ -471,8 +491,14 @@ describe('useWorkspacesStore.init()', () => {
       undefined, // q — no search
     ])
     expect(kanbanCalls[1]).toEqual([
-      'ws_1', 'item_kanban_a',
-      10, undefined, undefined, undefined, 'col_b', undefined,
+      'ws_1',
+      'item_kanban_a',
+      10,
+      undefined,
+      undefined,
+      undefined,
+      'col_b',
+      undefined,
     ])
     // Cache populated — kanban_columns has the loaded columns,
     // item.tasks has the merged tasks from both columns.
@@ -554,7 +580,9 @@ describe('useWorkspacesStore.init()', () => {
     // init()'s kanban block logs the error but doesn't fail init.
     getTasksMock
       .mockResolvedValueOnce({
-        tasks: [{ id: 'task_a', name: 'A', workspace_item_id: 'item_kanban', kanban_column_id: 'col_a' }],
+        tasks: [
+          { id: 'task_a', name: 'A', workspace_item_id: 'item_kanban', kanban_column_id: 'col_a' },
+        ],
         has_more: false,
         next_cursor: null,
       })
@@ -588,13 +616,13 @@ describe('useWorkspacesStore.init()', () => {
       count: 1,
     })
     listKanbanColumnsMock.mockResolvedValueOnce({
-      columns: [
-        { id: 'col_a', workspace_item_id: 'item_kanban', name: 'A', position: 0 },
-      ],
+      columns: [{ id: 'col_a', workspace_item_id: 'item_kanban', name: 'A', position: 0 }],
       count: 1,
     })
     getTasksMock.mockResolvedValueOnce({
-      tasks: [{ id: 'task_a', name: 'A', workspace_item_id: 'item_kanban', kanban_column_id: 'col_a' }],
+      tasks: [
+        { id: 'task_a', name: 'A', workspace_item_id: 'item_kanban', kanban_column_id: 'col_a' },
+      ],
       has_more: false,
       next_cursor: null,
     })

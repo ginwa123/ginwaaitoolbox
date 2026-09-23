@@ -171,6 +171,10 @@ export interface Workspace {
   name: string
   icon: string
   items: WorkspaceItem[]
+  // Server-side item count, present on GET /api/workspaces rows even
+  // when `is_include_items=false` (items stay `[]` until lazily
+  // loaded) — keeps count badges truthful for unvisited workspaces.
+  items_count?: number
   expanded: boolean
 }
 
@@ -1478,7 +1482,7 @@ export async function getChatHistory(
 // "1" opts into unattended mode (the workflow re-reads this column
 // on entry and soft-bails past retry_count > 10). Default undefined
 // = today's behavior.
-// Default tools for a new chat session (the "+" New Chat button).
+// Default tools for a new chat session (created from a workspace item).
 // Minimal progressive-disclosure set: the agent discovers everything else
 // via search_tool / view_tool / use_tool. `command` for shell,
 // `load_memory` / `save_memory` for recall, `list_skills` + `use_skill` for skills.
@@ -1675,6 +1679,11 @@ export async function getChats(
   direction: 'asc' | 'desc' = 'desc',
   limit: number = 10,
   cursor?: string,
+  // Workspace scope (plan: 2026-09-22-revamp-ui-chats). When set, the
+  // backend returns only that workspace's sessions (task-linked +
+  // cwd-matched); empty/unknown → empty list (fail-closed). Omitted
+  // → global list (back-compat for non-scoped callers).
+  workspaceId?: string,
 ): Promise<{
   sessions: Chat[]
   has_more: boolean
@@ -1689,6 +1698,9 @@ export async function getChats(
     })
     if (cursor) {
       params.set('cursor', cursor)
+    }
+    if (workspaceId) {
+      params.set('workspace_id', workspaceId)
     }
     const data = await apiFetch<{
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
@@ -1828,6 +1840,27 @@ export async function getSession(sessionId: string): Promise<Session | null> {
     }
   } catch (error) {
     console.error('Failed to get session:', error)
+    return null
+  }
+}
+
+// Owning workspace of a session (plan: 2026-09-22-revamp-ui-chats).
+// `GET /api/llm/session/:session_id` resolves via the task link first,
+// then the cwd heuristic, and returns `workspace_id` (string) or null
+// when the session belongs to no workspace. Used by the AppLayout boot
+// rewrite to place legacy chat URLs (`/app/chat/:sid`,
+// `?view=chat&session=X`) under their workspace path. Null on 404 /
+// network failure — callers fail closed to `/app`.
+export async function getSessionWorkspaceId(sessionId: string): Promise<string | null> {
+  if (!sessionId) return null
+  try {
+    const data = await apiFetch<{ workspace_id?: string | null }>(`/llm/session/${sessionId}`, {
+      silent: true,
+    })
+    return typeof data.workspace_id === 'string' && data.workspace_id.length > 0
+      ? data.workspace_id
+      : null
+  } catch {
     return null
   }
 }

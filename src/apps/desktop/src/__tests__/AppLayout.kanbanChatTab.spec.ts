@@ -179,19 +179,24 @@ describe('AppLayout — kanban task chat as its own view', () => {
   // init() overwrites workspaces.value with the API response, so the mocks must
   // echo the per-test fixture set immediately before mount.
   function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
+    // Snapshot the fixture tree NOW (JSON): lazy init() replaces
+    // `workspaces.value` with empty-items rows BEFORE calling
+    // getWorkspacesItems, so a live read would see the wiped tree.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = JSON.parse(JSON.stringify(store.workspaces)) as any[]
     vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return { workspaces: store.workspaces as any }
+      return { workspaces: snapshot as any }
     })
     vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ws = store.workspaces.find((w: any) => w.id === wsId)
+      const ws = snapshot.find((w: any) => w.id === wsId)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
     })
     vi.spyOn(api, 'getTasks').mockImplementation(async (wsId: string, itemId: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ws = store.workspaces.find((w: any) => w.id === wsId)
+      const ws = snapshot.find((w: any) => w.id === wsId)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const item = ws?.items?.find((i: any) => i.id === itemId)
       return {

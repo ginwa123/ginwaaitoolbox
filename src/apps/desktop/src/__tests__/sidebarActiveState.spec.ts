@@ -14,15 +14,10 @@ import ChatsList from '../components/views/ChatsList.vue'
 import AppLayout from '../components/AppLayout.vue'
 import { flushPromises, mount } from '@vue/test-utils'
 import { makeLocalStorageStub } from './helpers'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -109,25 +104,23 @@ describe('sidebar active-state exclusivity', () => {
     const wrapper = mountChatsList()
     await nextTick()
     // @ts-expect-error: push fake item into the local navItems ref
-    wrapper.vm.navItems = [
-      { id: 'chat_abc', name: 'My Chat', active: false, processing: false },
-    ]
+    wrapper.vm.navItems = [{ id: 'chat_abc', name: 'My Chat', active: false, processing: false }]
     // @ts-expect-error: invoke internal method
     await wrapper.vm.setActive('chat_abc')
 
     expect(ws.activeWorkspaceItemId).toBeNull()
   })
 
-  it('createChat clears activeWorkspaceItemId', async () => {
-    const ws = useWorkspacesStore()
-    ws.setActiveWorkspaceItem('item_99')
-
+  it('createChat is gone (removed 2026-09-22) — no method, no "+" button', async () => {
+    // New chats are created from workspace items (projects), not from
+    // a "+" button — every chat belongs to a workspace so the list
+    // can stay scoped. This pins the removal.
     const wrapper = mountChatsList()
     await nextTick()
-    // @ts-expect-error: invoke internal method
-    wrapper.vm.createChat()
-
-    expect(ws.activeWorkspaceItemId).toBeNull()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expect((wrapper.vm as any).createChat).toBeUndefined()
+    expect(wrapper.find('[data-testid="chats-new-chat-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="collapsed-new-chat-button"]').exists()).toBe(false)
   })
 
   it('removing the active chat clears activeWorkspaceItemId', async () => {
@@ -139,9 +132,7 @@ describe('sidebar active-state exclusivity', () => {
     const wrapper = mountChatsList()
     await nextTick()
     // @ts-expect-error: push a fake active chat
-    wrapper.vm.navItems = [
-      { id: 'chat_del', name: 'Doomed Chat', active: true, processing: false },
-    ]
+    wrapper.vm.navItems = [{ id: 'chat_del', name: 'Doomed Chat', active: true, processing: false }]
     vi.spyOn(api, 'deleteChat').mockResolvedValue({ success: true })
     await wrapper.vm.removeChat('chat_del')
 
@@ -180,24 +171,28 @@ describe('sidebar active-state exclusivity', () => {
     const wrapper = mountChatsList()
     await nextTick()
     // @ts-expect-error: push fake item
-    wrapper.vm.navItems = [
-      { id: 'chat_abc', name: 'My Chat', active: false, processing: false },
-    ]
+    wrapper.vm.navItems = [{ id: 'chat_abc', name: 'My Chat', active: false, processing: false }]
     // @ts-expect-error: invoke internal method
     await wrapper.vm.setActive('chat_abc')
 
     expect(ws.activeTaskId).toBeNull()
   })
 
-  it('createChat clears activeTaskId (inverse direction)', async () => {
+  it('clicking a chat row clears both item and task (inverse direction)', async () => {
+    // Combined coverage for the removed createChat clearing: a chat
+    // activation clears the workspace item AND the active task.
     const ws = useWorkspacesStore()
+    ws.setActiveWorkspaceItem('item_99')
     ws.setActiveTask('task_old')
 
     const wrapper = mountChatsList()
     await nextTick()
+    // @ts-expect-error: push fake item
+    wrapper.vm.navItems = [{ id: 'chat_abc', name: 'My Chat', active: false, processing: false }]
     // @ts-expect-error: invoke internal method
-    wrapper.vm.createChat()
+    await wrapper.vm.setActive('chat_abc')
 
+    expect(ws.activeWorkspaceItemId).toBeNull()
     expect(ws.activeTaskId).toBeNull()
   })
 })
@@ -258,9 +253,9 @@ describe('AppLayout URL-driven chat navigation', () => {
     useRouteMock.mockReturnValue({
       query: {} as Record<string, string>,
       path: '/app',
-       
+
       fullPath: '/app',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
   })
 
@@ -278,10 +273,10 @@ describe('AppLayout URL-driven chat navigation', () => {
     // page was reloaded with a chat-session URL.
     useRouteMock.mockReturnValue({
       query: { view: 'chat', session: 'chat_url' },
-       
+
       path: '/app',
       fullPath: '/app?view=chat&session=chat_url',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mount(AppLayout, {
@@ -327,7 +322,7 @@ describe('AppLayout URL-driven chat navigation', () => {
     // (non-reactive) mock return value.
     const routeObj = reactive({
       query: { view: 'workspace' } as Record<string, string>,
-       
+
       path: '/app',
       fullPath: '/app?view=workspace',
     })

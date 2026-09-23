@@ -471,11 +471,12 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
     await nextTick()
     await nextTick()
 
-    const replaceCallsWithViewWorkspace = replaceMock.mock.calls.filter(
+    const replaceCallsWithWorkspacePath = replaceMock.mock.calls.filter(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (call: any[]) => call[0]?.query?.view === 'workspace',
+      (call: any[]) =>
+        typeof call[0]?.path === 'string' && call[0].path.startsWith('/app/'),
     )
-    expect(replaceCallsWithViewWorkspace.length).toBeGreaterThan(0)
+    expect(replaceCallsWithWorkspacePath.length).toBeGreaterThan(0)
 
     wrapper.unmount()
   })

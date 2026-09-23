@@ -511,6 +511,13 @@ pub fn main(init: std.process.Init) !void {
     // try authed.post("/api/llm/session", ai_mod.http_handlers.sessionCreateHandler);
 
     try authed.get("/api/llm/session", ai_mod.http_handlers.sessionListHandler);
+    // Session detail incl. `workspace_id` (workspace-scoped sessions).
+    // `:session_id` matches exactly ONE path segment, so this route can
+    // neither shadow nor be shadowed by the sibling `/messages`,
+    // `/queue_messages`, `/background_processes`, `/stream` routes —
+    // matchPathWithParams requires the path to be exhausted after the
+    // pattern, regardless of registration order.
+    try authed.get("/api/llm/session/:session_id", ai_mod.http_handlers.sessionGetHandler);
     try authed.get("/api/llm/session/:session_id/messages", ai_mod.http_handlers.sessionMessagesHandler);
     try authed.get("/api/llm/session/:session_id/queue_messages", ai_mod.http_handlers.queueMessagesGetHandler);
     // Session background-process endpoints (bg-completion): list + log
