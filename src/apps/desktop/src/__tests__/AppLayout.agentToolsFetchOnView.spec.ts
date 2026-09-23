@@ -81,11 +81,11 @@ function makeStubClient(): any {
   }
 }
 
-function setRoute(q: Record<string, string>) {
+function setRoute(q: Record<string, string>, path = '/app') {
   useRouteMock.mockReturnValue({
     query: q,
-    path: '/app',
-    fullPath: '/app?' + new URLSearchParams(q).toString(),
+    path,
+    fullPath: path + '?' + new URLSearchParams(q).toString(),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
 }
@@ -96,14 +96,22 @@ function setRoute(q: Record<string, string>) {
  * the props passed to the AgentView stub.
  */
 function mountAgentView(): VueWrapper {
-  setRoute({
-    view: 'workspace',
-    workspaceId: WS_ID,
-    itemId: AGENT_ITEM_ID,
-  })
   const ws = useWorkspacesStore()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeAgentItem()] }] as any
+  // Serve the fixtures from the API mocks so init() populates
+  // instead of wiping (lazy-init safe snapshot).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const snapshot = JSON.parse(JSON.stringify(ws.workspaces)) as any[]
+  vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: snapshot })
+  vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({
+    items: snapshot[0].items,
+    count: snapshot[0].items.length,
+  })
+  setRoute(
+    {},
+    `/app/${WS_ID}/projects/${AGENT_ITEM_ID}`,
+  )
   return mount(AppLayout, {
     global: {
       mocks: { $router: { replace: vi.fn() } },
@@ -179,10 +187,19 @@ describe('AppLayout — agent tools fetch on agent view mount (no chat task)', (
       },
     }
 
-    setRoute({ view: 'workspace', workspaceId: WS_ID, itemId: AGENT_ITEM_ID })
+    setRoute({}, `/app/${WS_ID}/projects/${AGENT_ITEM_ID}`)
     const ws = useWorkspacesStore()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ws.workspaces = [{ id: WS_ID, name: 'WS', items: [makeAgentItem()] }] as any
+    // Serve the fixtures from the API mocks so init() populates
+    // instead of wiping (lazy-init safe snapshot).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = JSON.parse(JSON.stringify(ws.workspaces)) as any[]
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: snapshot })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({
+      items: snapshot[0].items,
+      count: snapshot[0].items.length,
+    })
 
     const wrapper = mount(AppLayout, {
       global: {

@@ -190,15 +190,18 @@ describe('AppLayout.handleDesignCreateElement wire (bug: add element manual not 
   })
 
   function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
+    // Snapshot NOW (JSON): lazy init() wipes the tree before reading mocks.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const snapshot = JSON.parse(JSON.stringify(store.workspaces)) as any[]
      
     vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => {
        
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return { workspaces: store.workspaces as any }
+      return { workspaces: snapshot as any }
     })
     vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const ws = store.workspaces.find((w: any) => w.id === wsId)
+      const ws = snapshot.find((w: any) => w.id === wsId)
        
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
