@@ -171,6 +171,13 @@ pub fn buildMessages(
     // Static, cache-friendly: encourages reading sibling project paths for context.
     try final_system.appendSlice(allocator, prompts_const.CrossProjectCwdRule);
 
+    // Dynamic sibling-cwd loop (workspace_items only, excludes self, skips empty paths).
+    const crossProjectCwd = try agentic_loop.prompts_mod.makeCrossProjectCwdContext(allocator, db, session_id);
+    defer allocator.free(crossProjectCwd);
+    if (crossProjectCwd.len > 0) {
+        try final_system.appendSlice(allocator, crossProjectCwd);
+    }
+
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
     defer allocator.free(agentSystemPromptContent);
     if (agentSystemPromptContent.len > 0) {
@@ -1844,17 +1851,17 @@ test "fetchToolsFromServerStdio: missing command field returns MCPServerCommandN
 }
 
 // ─── Cross-project cwd prompt ───────────────────────────────────────────
-// Static section encouraging the agent to read sibling project paths for
-// context. Rendered in both buildMessages and build_agent_prompt right
-// after the workspace listing.
+// Static intro + dynamic sibling-cwd loop (workspace_items only).
+// Rendered in buildMessages right after the workspace listing;
+// build_agent_prompt keeps the static intro (no db to loop).
 
-test "CrossProjectCwdRule content encourages sibling reads with guardrails" {
+test "CrossProjectCwdRule content encourages sibling reads without guardrails" {
     const rule = prompts_const.CrossProjectCwdRule;
     try testing.expect(std.mem.indexOf(u8, rule, "## Cross-Project Context") != null);
-    try testing.expect(std.mem.indexOf(u8, rule, "Workspace Context") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "workspace_items only") != null);
     try testing.expect(std.mem.indexOf(u8, rule, "read_file") != null);
-    try testing.expect(std.mem.indexOf(u8, rule, "do NOT modify files outside your own cwd") != null);
-    try testing.expect(std.mem.indexOf(u8, rule, "(none)") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "Guardrails") == null);
+    try testing.expect(std.mem.indexOf(u8, rule, "do NOT modify") == null);
 }
 
 test "buildMessages wires CrossProjectCwdRule after workspace" {
@@ -1868,6 +1875,20 @@ test "buildMessages wires CrossProjectCwdRule after workspace" {
     const cross_pos = std.mem.indexOf(u8, source, "prompts_const.CrossProjectCwdRule") orelse
         return error.CrossProjectMissing;
     try testing.expect(ws_pos < cross_pos);
+}
+
+test "buildMessages loops sibling cwds from workspace_items only" {
+    const source = @embedFile("prompts_make_cross_project_context.zig");
+    try testing.expect(std.mem.indexOf(u8, source, "FROM workspace_items") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "workspace_item_tasks") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "sessions") == null);
+    try testing.expect(std.mem.indexOf(u8, source, "worker") == null);
+    const build_source = @embedFile("prompts_build_messages_for_agent_prompt.zig");
+    const static_pos = std.mem.indexOf(u8, build_source, "prompts_const.CrossProjectCwdRule") orelse
+        return error.StaticMissing;
+    const loop_pos = std.mem.indexOf(u8, build_source, "makeCrossProjectCwdContext(allocator, db, session_id)") orelse
+        return error.LoopMissing;
+    try testing.expect(static_pos < loop_pos);
 }
 
 test "build_agent_prompt renders CrossProject section after workspace" {
