@@ -19,6 +19,9 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Workspace } from '../../stores/workspaces'
+import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu'
+import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 
 const props = withDefaults(
   defineProps<{
@@ -34,6 +37,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   select: [workspaceId: string]
+  openWorkspaceInBackground: [workspaceId: string]
   addWorkspace: []
   renameWorkspace: [workspaceId: string, currentName: string]
   deleteWorkspace: [workspaceId: string]
@@ -87,8 +91,42 @@ const toggleOpen = () => {
   else openPanel()
 }
 
-const chooseOption = (workspaceId: string) => {
+const chooseOption = (workspaceId: string, event?: MouseEvent) => {
+  // Ctrl/Cmd+click or middle-click opens the workspace in a new
+  // browser tab and leaves the dropdown open state to close without
+  // navigating the current tab.
+  if (event && isBackgroundOpenEvent(event)) {
+    emit('openWorkspaceInBackground', workspaceId)
+    close()
+    return
+  }
   emit('select', workspaceId)
+  close()
+}
+
+// Right-click "Open in new tab" on a workspace option. The payload
+// is just the workspace id — Sidebar builds the workspace URL.
+const { menuPos, openAt, close: closeWorkspaceMenu } = useContextMenu()
+const contextMenuWorkspaceId = ref<string | null>(null)
+
+const onWorkspaceOptionContextMenu = (event: MouseEvent, workspaceId: string) => {
+  contextMenuWorkspaceId.value = workspaceId
+  openAt(event)
+}
+
+const onWorkspaceOptionAuxClick = (event: MouseEvent, workspaceId: string) => {
+  if (event.button !== 1) return
+  event.preventDefault()
+  emit('openWorkspaceInBackground', workspaceId)
+  close()
+}
+
+const openWorkspaceMenuInBackground = () => {
+  const id = contextMenuWorkspaceId.value
+  contextMenuWorkspaceId.value = null
+  closeWorkspaceMenu()
+  if (!id) return
+  emit('openWorkspaceInBackground', id)
   close()
 }
 
@@ -227,7 +265,9 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
               style="color: var(--semantic-text)"
               :aria-selected="ws.id === activeWorkspaceId"
               :data-testid="`workspace-switcher-option-${ws.id}`"
-              @click="chooseOption(ws.id)"
+              @click="chooseOption(ws.id, $event)"
+              @auxclick="onWorkspaceOptionAuxClick($event, ws.id)"
+              @contextmenu.prevent="onWorkspaceOptionContextMenu($event, ws.id)"
             >
               <span class="truncate">{{ ws.name }}</span>
               <span class="flex items-center gap-2 shrink-0">
@@ -286,5 +326,12 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
         </button>
       </div>
     </Teleport>
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      open-label="Open in new tab"
+      @open="openWorkspaceMenuInBackground"
+    />
   </div>
 </template>

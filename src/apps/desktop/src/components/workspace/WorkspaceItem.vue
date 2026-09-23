@@ -50,7 +50,9 @@ const emit = defineEmits<{
    * Ctrl/Cmd+click / middle click on the row: the parent opens (or focuses) a
    * background tab for this item instead of navigating.
    */
-  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string; itemType?: string }]
+  openItemInBackground: [
+    payload: { workspaceId: string; itemId: string; name: string; itemType?: string },
+  ]
   delete: [item: WorkspaceItem]
   addTask: [item: WorkspaceItem]
   // The three task-level events are emitted by the child
@@ -59,7 +61,9 @@ const emit = defineEmits<{
   // pure pass-through (see handleSelectTask / handleDeleteTask /
   // handleRenameTask below).
   selectTask: [taskId: string]
-  openTaskInBackground: [payload: { workspaceId: string; itemId: string; itemType?: string; taskId: string }]
+  openTaskInBackground: [
+    payload: { workspaceId: string; itemId: string; itemType?: string; taskId: string },
+  ]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // The user must click to fetch the next page of tasks for this
@@ -89,6 +93,7 @@ const emit = defineEmits<{
   // RenameDesignPageModal. Pure pass-through — same pattern as
   // selectDesignPage / deleteDesignPage.
   renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
+  openDesignPageInBackground: [payload: { workspaceId: string; itemId: string; pageId: string }]
   // Right-click "Go to settings" on the item row. Carries the
   // item payload so Sidebar can route per item_type: kanban items
   // open /app/kanban/:itemId/settings, agent items open their
@@ -254,7 +259,10 @@ const openItemMenuSettings = () => {
 // agent items (AgentView: Tools / System Prompt / Knowledge) and
 // routine items (RoutineView: description / instruction / schedule).
 const showItemSettings = computed(
-  () => props.item.item_type === 'kanban' || props.item.item_type === 'agent' || props.item.item_type === 'routine',
+  () =>
+    props.item.item_type === 'kanban' ||
+    props.item.item_type === 'agent' ||
+    props.item.item_type === 'routine',
 )
 
 // Right-click "Open in new tab" on a task row. The row only knows
@@ -268,11 +276,7 @@ const handleOpenTaskInBackground = (payload: {
   emit('openTaskInBackground', { ...payload, itemType: props.item.item_type })
 }
 
-const handleDeleteTask = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-) => {
+const handleDeleteTask = (workspaceId: string, itemId: string, taskId: string) => {
   emit('deleteTask', workspaceId, itemId, taskId)
 }
 
@@ -318,12 +322,7 @@ const handleLoadMoreTasks = (event: Event) => {
 
 // NEW (pinned-tasks feature): pin/unpin forwarded from
 // <WorkspaceItemTaskRow>. ProjectsList re-emits these to Sidebar.
-const handlePinTask = (
-  workspaceId: string,
-  itemId: string,
-  taskId: string,
-  isPinned: boolean,
-) => {
+const handlePinTask = (workspaceId: string, itemId: string, taskId: string, isPinned: boolean) => {
   emit('pinTask', workspaceId, itemId, taskId, isPinned)
 }
 
@@ -393,6 +392,16 @@ const handleDeleteDesignPage = (page: DesignPage) => {
 // the payload up the chain.
 const handleRenameDesignPage = (page: DesignPage) => {
   emit('renameDesignPage', props.workspaceId, props.item.id, page.id, page.name)
+}
+
+// Right-click "Open in new tab" on a design page row. Fills in the
+// workspace/item ids so Sidebar can build the page URL directly.
+const handleOpenDesignPageInBackground = (page: DesignPage) => {
+  emit('openDesignPageInBackground', {
+    workspaceId: props.workspaceId,
+    itemId: props.item.id,
+    pageId: page.id,
+  })
 }
 
 // "+ Add Page" — emits to Sidebar which calls the store action.
@@ -593,9 +602,11 @@ const handlePinnedDrop = (event: DragEvent) => {
           @auxclick="onItemRowAuxClick"
           @contextmenu.prevent="onItemRowContextMenu"
           class="relative flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
-          :style="isCurrentMainView
-            ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`
-            : `color: var(--semantic-text-muted);`"
+          :style="
+            isCurrentMainView
+              ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`
+              : `color: var(--semantic-text-muted);`
+          "
         >
           <!-- Processing slider (LLM worker is running on one of this
                item's tasks). Mounted at the bottom edge of the row,
@@ -627,7 +638,8 @@ const handlePinnedDrop = (event: DragEvent) => {
             :style="{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
             aria-hidden="true"
             @click="item.item_type === 'design' ? handleChevronToggle($event) : null"
-          >▶</span>
+            >▶</span
+          >
           <!-- Item Name. Fall back to "Untitled project" when the
                DB row has an empty name (legacy data that predates
                the empty-name server-side validation added in
@@ -643,8 +655,19 @@ const handlePinnedDrop = (event: DragEvent) => {
                directory listing. -->
           <span v-if="item.isLoading" class="ml-auto" data-testid="item-loading-spinner">
             <svg class="animate-spin w-3 h-3" viewBox="0 0 24 24" fill="none">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+              <circle
+                class="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                stroke-width="4"
+              />
+              <path
+                class="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
             </svg>
           </span>
           <!-- Active Indicator (for FolderExplorer selection). Right-side
@@ -654,7 +677,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           <span
             v-else-if="isActive"
             class="ml-auto w-1.5 h-1.5 rounded-full"
-            style="background-color: var(--color-aqua);"
+            style="background-color: var(--color-aqua)"
             data-testid="item-active-dot"
           />
           <!-- Per-session LLM slider at the bottom edge of this row.
@@ -709,7 +732,7 @@ const handlePinnedDrop = (event: DragEvent) => {
             v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
             @click="handleAddTask"
             class="w-7 h-7 text-xl leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-green-400"
-            style="color: var(--semantic-text-dim);"
+            style="color: var(--semantic-text-dim)"
             title="Add Task"
             aria-label="Add Task"
             data-testid="add-task-button"
@@ -721,7 +744,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           <button
             @click="handleDelete"
             class="w-7 h-7 text-xl leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-red-400"
-            style="color: var(--semantic-text-dim);"
+            style="color: var(--semantic-text-dim)"
             title="Delete Item"
             aria-label="Delete Item"
           >
@@ -742,7 +765,16 @@ const handlePinnedDrop = (event: DragEvent) => {
            routes to the SAME page (per the per-page chat scoping plan).
            Hide the tasks section entirely for design items so the
            sidebar shows ONLY the design pages. -->
-      <div v-if="isExpanded && item.item_type !== 'design' && item.item_type !== 'kanban' && item.tasks && item.tasks.length > 0" class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30">
+      <div
+        v-if="
+          isExpanded &&
+          item.item_type !== 'design' &&
+          item.item_type !== 'kanban' &&
+          item.tasks &&
+          item.tasks.length > 0
+        "
+        class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30"
+      >
         <!-- Pinned region: drag-and-drop reorders only within this
              list. The drop handler calls handleReorderPinnedTasks.
              Only rendered when at least one task is pinned (so the
@@ -806,7 +838,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           :disabled="isLoadingMoreTasksForSidebar"
           @click="handleLoadMoreTasks"
           class="w-full flex items-center justify-center gap-1.5 px-3 py-1 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
-          style="color: var(--semantic-text-dim);"
+          style="color: var(--semantic-text-dim)"
         >
           <span v-if="isLoadingMoreTasksForSidebar" class="w-3 h-3">
             <div
@@ -867,6 +899,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           @select-page="handleSelectDesignPage"
           @rename-page="handleRenameDesignPage"
           @delete-page="handleDeleteDesignPage"
+          @open-design-page-in-background="handleOpenDesignPageInBackground"
         />
         <!-- "+ Add Page" button (bare text + hover, matching the
              kanban column "+ Add column" pattern in ProjectsList's
@@ -876,7 +909,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           type="button"
           @click="handleAddDesignPage"
           class="w-full text-left px-3 py-1 rounded text-xs transition-colors hover:bg-[--semantic-active-bg]"
-          style="color: var(--semantic-text-dim); opacity: 0.7;"
+          style="color: var(--semantic-text-dim); opacity: 0.7"
           data-testid="design-sidebar-add-page-button"
           :title="`Add a new page to ${item.name}`"
         >

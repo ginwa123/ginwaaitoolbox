@@ -18,6 +18,8 @@ withDefaults(
     showStop?: boolean
     /** Show the "Open chat in new tab" item (default true; file-only hosts hide it). */
     showChat?: boolean
+    /** Override the chat item label (e.g. workspaces say "Open in new tab"). */
+    openLabel?: string
     /** Show the "Open file in new tab" item for file-row hosts. */
     showFile?: boolean
     /** Show the "Go to settings" item for workspace item rows. */
@@ -58,7 +60,8 @@ const emit = defineEmits<{
         class="block w-full text-left px-3 py-1.5 hover:opacity-80"
         @click="emit('open')"
       >
-        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open chat in new tab
+        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span
+        >{{ openLabel ?? 'Open chat in new tab' }}
       </button>
       <button
         v-if="showFile"
@@ -86,7 +89,7 @@ const emit = defineEmits<{
         role="menuitem"
         data-testid="stop-agent-item"
         class="block w-full text-left px-3 py-1.5 hover:opacity-80"
-        style="color: var(--color-red);"
+        style="color: var(--color-red)"
         @click="emit('stop')"
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#9632;</span>Stop agent
