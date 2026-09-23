@@ -296,7 +296,7 @@ describe("AppLayout — Sidebar chat click does NOT get its URL overwritten by t
 
     const mirrorCall = replaceMock.mock.calls.find(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (call: any[]) => call[0]?.query?.itemId === FOLDER_ID,
+      (call: any[]) => call[0]?.path === `/app/${WS_ID}/projects/${FOLDER_ID}`,
     )
     expect(mirrorCall).toBeDefined()
 
