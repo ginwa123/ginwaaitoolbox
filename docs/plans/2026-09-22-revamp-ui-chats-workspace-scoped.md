@@ -121,15 +121,36 @@ Implementation:
 7. Removing `+` removes the last way to mint a *plain* (non-task) chat — new chats come only from workspace items. Confirm intended (decision log says yes).
 
 ## Steps (execution order)
-- [ ] 1. Backend: `workspace_id` param on `GET /api/llm/session` (+ session-detail `workspace_id`) + in-file Zig tests
-- [ ] 2. Functional `session_list_workspace_test.py` (leak test) + back-compat re-run — wire green before frontend
-- [ ] 3. Frontend CHATS: `getChats` workspaceId, ChatsList scoped fetch + switch refetch, delete `+`/`createChat`, fix specs
-- [ ] 4. URL helper `appUrl.ts` + `useCurrentMainView` path kinds + AppLayout sync/rewrite + call-site migration (components → helpers → tabs)
-- [ ] 5. Lazy items: `init` active-only + `ensureWorkspaceItemsLoaded` + `items_count` badge + consumer/SSE audit + specs
-- [ ] 6. `/app` landing create-workspace + `ChatsLanding.spec.ts` amendment
-- [ ] 7. Docs: this plan ticks, `docs/SPEC.md` URL/session-list rows, superseded mentions in `2026-09-22-revamp-workspace-ui-dropdown-projects.md` ("CHATS stay global" non-goal now done)
+- [x] 1. Backend: `workspace_id` param on `GET /api/llm/session` (+ session-detail `workspace_id`) + in-file Zig tests
+- [x] 2. Functional `session_list_workspace_test.py` (leak test) + back-compat re-run — wire green before frontend
+- [x] 3. Frontend CHATS: `getChats` workspaceId, ChatsList scoped fetch + switch refetch, delete `+`/`createChat`, fix specs
+- [x] 4. URL helper `appUrl.ts` + `useCurrentMainView` path kinds + AppLayout sync/rewrite + call-site migration (components → helpers → tabs)
+- [x] 5. Lazy items: `init` active-only + `ensureWorkspaceItemsLoaded` + `items_count` badge + consumer/SSE audit + specs
+- [x] 6. `/app` landing create-workspace + `ChatsLanding.spec.ts` amendment
+- [x] 7. Docs: superseded note in `2026-09-22-revamp-workspace-ui-dropdown-projects.md` (SPEC.md historical rows left intact)
 - [ ] 8. Full verification (`zig build test`, `pnpm test`, lint, type-check, functional suite)
 - [ ] 9. Commit + PR from this worktree → human review (`in_review_task`)
+
+## Completion notes (2026-09-23)
+- Human answers applied: task-chat uses `/projects/{pid}/chat/{tid}` path suffix;
+  legacy plain chats hidden (fail-closed); new chats only from projects;
+  canonical URLs have no trailing slash.
+- `buildTaskAppUrl` added as the path twin of `buildTaskUrlQuery`
+  (same resolution, path output); `getSessionWorkspaceId` added for
+  legacy chat → workspace resolution at boot.
+- Mirror watcher reads the live task id from `activeTaskId` (raw id),
+  not the `activeTask` computed — the computed is null when the parent
+  isn't loaded yet (lazy), which dropped the chat suffix on boot.
+  This fixed a pre-existing urlPersist failure.
+- Spec mocks that live-read `store.workspaces` inside `getWorkspaces*`
+  mock implementations break under lazy init (init replaces the tree
+  before reading the mocks) — migrated to JSON snapshots taken at
+  rewire time. `structuredClone` throws on Vue reactive proxies here;
+  use `JSON.parse(JSON.stringify(...))`.
+- Pre-existing failures (unchanged at baseline 61161695, not ours):
+  30 vitest failures (ChatView/renderResponse/FilePicker/WorkspaceItem/
+  workspacesStore normalize+runAgent) + 1 functional flake
+  (`sessions_and_llm_test.py::test_test_shutdown_stops_server`).
 
 ## Files to touch (expected)
 - EDIT backend: `src/http_handlers/session_list.zig`, `src/agentic_loop/llm_history.zig` (`getSessionListWithCursor` + count), session-detail handler (add `workspace_id`), `src/http_handlers/workspaces_list.zig` (`items_count`), `tests/functional/session_list_workspace_test.py` (NEW)

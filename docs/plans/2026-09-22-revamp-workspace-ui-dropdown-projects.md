@@ -1,5 +1,14 @@
 # Plan: revamp workspace UI — workspace selector dropdown + sidebar "Projects" section
 
+> **Superseded in part (2026-09-23):** the "CHATS stay **global**" non-goal
+> below is DONE — see `docs/plans/2026-09-22-revamp-ui-chats-workspace-scoped.md`.
+> CHATS are now workspace-scoped end-to-end (`?workspace_id=` on
+> `GET /api/llm/session`), the `+` new-chat button is removed, URLs are
+> path-based (`/app/{ws}/chat/{sid}`, `/app/{ws}/projects/{pid}`), items
+> load lazily per workspace, and `/app` is a landing with workspace
+> creation. The rest of this doc (dropdown, Projects section, push on
+> switch) stands as written.
+
 ## Goal
 One-sentence: replace the sidebar's stacked multi-workspace list with (a) a workspace selector **dropdown in the sidebar header** and (b) a single **"Projects" section that shows only the selected workspace's items** — so the sidebar stops being a cluttered tree of every workspace at once.
 
