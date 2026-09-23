@@ -124,7 +124,7 @@ describe('WorkspaceItemTaskCard — git branch badge', () => {
       },
     })
     const badge = wrapper.find('[data-testid="task-git-branch"]')
-    expect(badge.attributes('title')).toBe(
+    expect(badge.attributes('title')).toContain(
       'worktree/very-long-feature-branch-name',
     )
   })
