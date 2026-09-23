@@ -1793,6 +1793,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         activeSortBy.delete(itemId)
         activeSortDirection.delete(itemId)
       }
+
+      // Card-first async media: cards already rendered from the
+      // flag-only payload above; queue thumbnail loads behind it.
+      queueCardMediaLoad(workspaceId, itemId)
     } catch (err) {
       console.error(
         `[workspacesStore.fetchKanbanTasks] API call failed for column ${columnId}:`,
@@ -1866,6 +1870,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         ),
       ),
     )
+    // Card-first async media: every column's cards rendered from the
+    // flag-only payload; queue thumbnail loads behind them in one batch.
+    queueCardMediaLoad(workspaceId, itemId)
   }
 
   // Add a column to a kanban and append it to the local item's
@@ -3455,6 +3462,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // hasMore. The backend tells us if THIS column has more pages.
       colState.cursor = next_cursor
       colState.hasMore = has_more
+      // Card-first async media: appended cards rendered from the
+      // flag-only payload; queue their thumbnail loads behind them.
+      queueCardMediaLoad(workspaceId, itemId)
     } catch (err) {
       console.error(`Failed to load more tasks for item ${itemId} column ${columnId}:`, err)
       // Leave hasMore/cursor as-is so the user can retry by
@@ -3829,6 +3839,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const wantVideo =
       task.is_have_video === true && (!task.videoUrls || task.videoUrls.length === 0)
     return wantImage || wantVideo
+  }
+
+  // Card-first async media. The flag-only list payload lets cards render
+  // immediately (badge state); this queues the thumbnail fetch behind
+  // it via GET .../tasks/:id/media. Fire-and-forget so list callers
+  // return fast — the card flips badge -> thumb when the store patches
+  // imageUrls/videoUrls in place. Shares the mediaInflight dedupe map
+  // with fetchTaskMedia so a dialog open racing the batch never doubles.
+  function queueCardMediaLoad(workspaceId: string, itemId: string): void {
+    const item = findItem(workspaceId, itemId)
+    if (!item?.tasks || item.tasks.length === 0) return
+    const ids = item.tasks.filter(taskNeedsMedia).map((t) => t.id)
+    if (ids.length === 0) return
+    void fetchTasksMedia(workspaceId, itemId, ids)
   }
 
   // Lazy media fetch (media-flags change). When list/get report
