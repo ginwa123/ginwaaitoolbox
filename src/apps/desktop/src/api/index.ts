@@ -1482,7 +1482,7 @@ export async function getChatHistory(
 // "1" opts into unattended mode (the workflow re-reads this column
 // on entry and soft-bails past retry_count > 10). Default undefined
 // = today's behavior.
-// Default tools for a new chat session (the "+" New Chat button).
+// Default tools for a new chat session (created from a workspace item).
 // Minimal progressive-disclosure set: the agent discovers everything else
 // via search_tool / view_tool / use_tool. `command` for shell,
 // `load_memory` / `save_memory` for recall, `list_skills` + `use_skill` for skills.

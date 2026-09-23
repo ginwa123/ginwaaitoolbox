@@ -26,7 +26,6 @@ import AddMemoryDialog from '../dialogs/AddMemoryDialog.vue'
 import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import AddTaskPickerDialog from '../dialogs/AddTaskPickerDialog.vue'
 import type { WorkspaceItem } from '../../stores/workspaces'
-import * as api from '../../api'
 import { buildAppUrl, buildTaskAppUrl, parseAppPath } from '../../helpers/appUrl'
 import { parseItemIdWithChat } from '../../helpers/buildItemIdWithChat'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
@@ -80,21 +79,12 @@ const emit = defineEmits<{
 // the user sends a message.
 const DEFAULT_NEW_CHAT_NAME = 'New Chat'
 
-// ─── Chats State (moved from ChatsList) ──────────────────────────────────────
-const navItems = ref<
-  Array<{ id: string; name: string; icon: string; active?: boolean; processing?: boolean }>
->([])
-const chatsLoading = ref(false)
-const chatsHasMore = ref(false)
-const chatsNextCursor = ref<string | null>(null)
-const chatsSortDirection = ref<'asc' | 'desc'>('desc')
-
-// Expose method to update chat ID
+// Chat-id updates forward to ChatsList, which owns the live navItems
+// mirror (plan: 2026-09-22-revamp-ui-chats). Sidebar kept no list of
+// its own — the pre-refactor navItems/chatsLoading mirror below was
+// dead state (never rendered, never refreshed).
 const updateChatId = (oldId: string, newId: string) => {
-  const chatItem = navItems.value.find((item) => item.id === oldId)
-  if (chatItem) {
-    chatItem.id = newId
-  }
+  chatsListRef.value?.updateChatId(oldId, newId)
 }
 
 // Expose method to open the Add Task picker dialog. Called by
@@ -232,65 +222,6 @@ const stopResize = () => {
 onUnmounted(() => {
   stopResize()
 })
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- legacy pagination path retained for diff readability; not wired up after the chatsListRef refactor.
-const _loadChats = async () => {
-  chatsLoading.value = true
-  chatsNextCursor.value = null
-  try {
-    const data = await api.getChats('created_at', chatsSortDirection.value, 20)
-    const savedSessionId = navigationStore.sessionId
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    navItems.value = (data.sessions || []).map((session: any) => ({
-      id: session.session_id,
-      name: session.session_name || 'New Chat',
-      icon: '💬',
-      active: savedSessionId === session.session_id,
-    }))
-    chatsHasMore.value = data.has_more
-    chatsNextCursor.value = data.next_cursor
-
-    // If we found and activated a saved chat, restore it in AppLayout
-    const activeItem = navItems.value.find((item) => item.active)
-    if (activeItem) {
-      navigationStore.setActiveChatName(activeItem.name)
-      emit('navigate', `chat-${activeItem.id}`, activeItem.name)
-    }
-  } catch (err) {
-    console.error('Failed to load chats:', err)
-    navItems.value = []
-  } finally {
-    chatsLoading.value = false
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const _loadMoreChats = async () => {
-  if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) return
-  chatsLoading.value = true
-  try {
-    const data = await api.getChats(
-      'created_at',
-      chatsSortDirection.value,
-      20,
-      chatsNextCursor.value,
-    )
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const newItems = (data.sessions || []).map((session: any) => ({
-      id: session.session_id,
-      name: session.session_name || 'New Chat',
-      icon: '💬',
-      active: false,
-    }))
-    navItems.value.push(...newItems)
-    chatsHasMore.value = data.has_more
-    chatsNextCursor.value = data.next_cursor
-  } catch (err) {
-    console.error('Failed to load more chats:', err)
-  } finally {
-    chatsLoading.value = false
-  }
-}
 
 // ─── Session Events SSE ────────────────────────────────────────────────────────
 //
