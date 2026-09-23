@@ -1064,8 +1064,9 @@ pub fn renderViewToolNotFound(
 /// `use_tool` result. `inserted` must come from the caller's real DB
 /// outcome (a `saveProgressiveTool` that returned true) — never guessed.
 ///
-/// Deliberately minimal: the agent already saw the full spec via `view_tool`,
-/// so this only reports the equip outcome — no repeated description/schema.
+/// Deliberately minimal: no repeated description/schema here. The `hint`
+/// still points at `view_tool` because the agent may have skipped it
+/// (search -> use directly) and need the full spec to call correctly.
 pub fn renderUseTool(
     allocator: std.mem.Allocator,
     entry: Entry,
@@ -1085,6 +1086,7 @@ pub fn renderUseTool(
         .wait_next_turn = wait_next_turn,
         .source = source,
         .note = note,
+        .hint = "If you need help with the spec, call view_tool with this name for the full parameter schema.",
     }, .{});
 }
 
@@ -1402,6 +1404,10 @@ test "renderUseTool: inserted=true is just the equip signal, no repeated schema"
         // The agent already saw the full spec via view_tool — no repeat here.
         try testing.expect(obj.get("parameters") == null);
         try testing.expect(obj.get("description") == null);
+        // The equip signal still points at view_tool for spec help: the
+        // agent may have skipped view (search -> use directly).
+        try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "view_tool") != null);
+        try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "spec") != null);
     }
 
     const already = try renderUseTool(a, entry, false);
@@ -1412,5 +1418,6 @@ test "renderUseTool: inserted=true is just the equip signal, no repeated schema"
         try testing.expectEqual(false, obj.get("inserted").?.bool);
         try testing.expect(obj.get("wait_next_turn").? == .null);
         try testing.expect(std.mem.indexOf(u8, obj.get("note").?.string, "Already enabled") != null);
+        try testing.expect(std.mem.indexOf(u8, obj.get("hint").?.string, "view_tool") != null);
     }
 }
