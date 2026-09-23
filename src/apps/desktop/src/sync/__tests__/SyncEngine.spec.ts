@@ -19,6 +19,12 @@ class FakeStore implements SyncStore<Item> {
     const seen = new Set(cur.map((m) => m.id))
     this.items.set(key, [...cur, ...items.filter((m) => !seen.has(m.id))])
   }
+  async remove(key: string, id: string) {
+    this.items.set(
+      key,
+      (this.items.get(key) ?? []).filter((m) => m.id !== id),
+    )
+  }
   async getOlder(key: string, before: string | number, limit: number) {
     return (this.items.get(key) ?? []).filter((m) => m.sortKey < (before as number)).slice(-limit)
   }

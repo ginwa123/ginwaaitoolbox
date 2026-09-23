@@ -36,6 +36,7 @@ export interface SyncFetcher<T, C> {
 export interface SyncStore<T extends Syncable> {
   getAll(key: string, limit: number): Promise<T[]>
   putAll(key: string, items: T[]): Promise<void>
+  remove(key: string, id: string): Promise<void>
   getOlder(key: string, beforeSortKey: string | number, limit: number): Promise<T[]>
   getCursor(key: string): Promise<string | null>
   setCursor(key: string, cursor: string | null): Promise<void>
@@ -150,6 +151,22 @@ export abstract class BaseSyncEngine<T extends Syncable, C = string> {
       this.memItems.set(key, await store.getAll(key, Math.max(merged.length, items.length)))
     } catch {
       // Memory copy already updated; IDB failure must not break the UI.
+    }
+  }
+
+  /** Best-effort single-row eviction (e.g. SSE `deleted`). Never throws. */
+  async removeLocal(ctx: C, id: string): Promise<void> {
+    const key = this.memKey(ctx)
+    this.memItems.set(
+      key,
+      this.memGet(key).filter((m) => m.id !== id),
+    )
+    const store = this.storeOrNull()
+    if (!store) return
+    try {
+      await store.remove(key, id)
+    } catch {
+      // Memory copy already updated.
     }
   }
 

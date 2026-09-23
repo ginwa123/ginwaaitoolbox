@@ -8,7 +8,17 @@
 import type { Syncable, SyncStore } from './SyncEngine'
 
 const DB_NAME = 'nalar-sync'
-const DB_VERSION = 1
+// v2 adds the `sessions` store (sidebar local-first). v1 only had
+// `messages` + `sync_state` — the upgrade path creates any missing
+// store so existing v1 users keep their message cache.
+const DB_VERSION = 2
+
+// Every store the app owns. The upgrade callback creates ALL of them
+// (not just the opener's own storeName): two engine instances open
+// the same DB, and whichever opens first must leave a complete schema
+// behind — otherwise the second opener sees its version already
+// current, gets no upgrade, and silently falls back to memory.
+const KNOWN_STORES = ['messages', 'sessions']
 
 type IdbModule = typeof import('idb')
 
@@ -37,13 +47,14 @@ export class IndexedDbStore<T extends Syncable> implements SyncStore<T> {
     if (!this.dbPromise) {
       const mod = await this.idb()
       if (!mod) return null
-      const storeName = this.storeName
       const sortKeyPath = this.sortKeyPath
       this.dbPromise = mod.openDB(DB_NAME, DB_VERSION, {
         upgrade(db) {
-          if (!db.objectStoreNames.contains(storeName)) {
-            const s = db.createObjectStore(storeName, { keyPath: 'id' })
-            s.createIndex('by_ctx_sort', ['ctx', sortKeyPath])
+          for (const name of KNOWN_STORES) {
+            if (!db.objectStoreNames.contains(name)) {
+              const s = db.createObjectStore(name, { keyPath: 'id' })
+              s.createIndex('by_ctx_sort', ['ctx', sortKeyPath])
+            }
           }
           if (!db.objectStoreNames.contains('sync_state')) {
             db.createObjectStore('sync_state', { keyPath: 'key' })
@@ -96,6 +107,21 @@ export class IndexedDbStore<T extends Syncable> implements SyncStore<T> {
       await tx.store.put(item)
     }
     await tx.done
+  }
+
+  async remove(storeKey: string, id: string): Promise<void> {
+    const cur = this.mem.get(storeKey) ?? []
+    this.mem.set(
+      storeKey,
+      cur.filter((m) => m.id !== id),
+    )
+    const db = await this.db()
+    if (!db) return
+    try {
+      await db.delete(this.storeName, id)
+    } catch {
+      // Memory copy already updated.
+    }
   }
 
   async getOlder(storeKey: string, beforeSortKey: string | number, limit: number): Promise<T[]> {
