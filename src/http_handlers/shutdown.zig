@@ -37,8 +37,11 @@ pub const ShutdownResponse = struct {
 // =====================================================================
 
 fn useCase() ShutdownError!ShutdownResponse {
-    const di = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
-    di.server.shutdown();
+    _ = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
+    // Deferred shutdown: do NOT call di.server.shutdown() synchronously.
+    // Closing the listener before the 200 body flushes races the
+    // worker_pool dispatcher (main.zig listenEventLoop) and surfaces
+    // as curl (52) Empty reply from server in the CI smoke test.
     // Spawn a detached thread that exits the process after a brief
     // delay (so the HTTP response has time to flush over the wire).
     // If the thread can't be spawned (resource exhaustion), fall back
@@ -56,13 +59,19 @@ fn useCase() ShutdownError!ShutdownResponse {
     const helpers = @import("helpers");
     const spawn_fn = struct {
         fn run() void {
+            helpers.sleepMillis(250);
+            if (nalarcore.getSingleton()) |di| {
+                di.server.shutdown();
+            } else |_| {}
             helpers.sleepMillis(50);
             std.process.exit(0);
         }
     }.run;
-    if (std.Thread.spawn(.{}, spawn_fn, .{})) |_| {
-        // ok — exit will happen ~50ms after the response flushes
+    if (std.Thread.spawn(.{}, spawn_fn, .{})) |t| {
+        t.detach();
     } else |_| {
+        const di = nalarcore.getSingleton() catch return error.GlobalContextNotInitialized;
+        di.server.shutdown();
         std.process.exit(0);
     }
     return .{ .message = "Server shutdown initiated" };
