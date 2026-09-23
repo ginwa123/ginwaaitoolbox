@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import AppLayout from '../components/AppLayout.vue'
 import LoginView from '../views/LoginView.vue'
+import { getAuthMeCached } from '../helpers/authMe'
 import { useLoadingStore } from '../stores/loading'
 
 const router = createRouter({
@@ -113,14 +114,12 @@ router.beforeEach(async (to) => {
     // Leaving /login while authed? Bounce to the redirect target.
     if (to.name === 'login') {
       try {
-        const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
-        if (res.ok) {
-          const data = await res.json().catch(() => null)
-          if (data && data.authenticated === true) {
-            const r = to.query.redirect
-            const target = typeof r === 'string' && r.startsWith('/') ? r : '/app'
-            return { path: target, replace: true }
-          }
+        // Cached: a slow /me must not block leaving /login (see helpers/authMe).
+        const { data } = await getAuthMeCached()
+        if (data && data.authenticated === true) {
+          const r = to.query.redirect
+          const target = typeof r === 'string' && r.startsWith('/') ? r : '/app'
+          return { path: target, replace: true }
         }
       } catch {
         /* offline — show login */
@@ -129,14 +128,15 @@ router.beforeEach(async (to) => {
     return true
   }
   try {
-    const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
-    if (res.ok) {
-      const data = await res.json().catch(() => null)
+    // Cached + 4s timeout: the async auth check was the slowest part of
+    // a redirect (~20s on a busy boot) — see helpers/authMe.
+    const { status, data } = await getAuthMeCached()
+    if (data) {
       // Auth disabled on server → open access, no redirect.
-      if (data && data.auth_enabled === false) return true
-      if (data && data.authenticated === true) return true
+      if (data.auth_enabled === false) return true
+      if (data.authenticated === true) return true
     }
-    if (res.status === 401) {
+    if (status === 401) {
       return { path: '/login', query: { redirect: to.fullPath }, replace: true }
     }
     // Non-401 error (offline/500): let the view render; apiFetch

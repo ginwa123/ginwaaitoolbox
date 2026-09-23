@@ -55,6 +55,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { getAuthMeCached, invalidateAuthMe } from '../helpers/authMe'
 import { useSseBus } from '../helpers/sseBus'
 
 const route = useRoute()
@@ -94,16 +95,14 @@ function kickSseAfterLogin(): void {
 
 onMounted(async () => {
   // Already logged in? Skip the form (deep-linkable ?redirect= is honored).
+  // Cached: mount must not stall on a slow /me (see helpers/authMe).
   try {
-    const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
-    if (res.ok) {
-      const data = await res.json().catch(() => null)
-      if (data && (data.authenticated === true || data.auth_enabled === false)) {
-        if (data.auth_enabled === false) authDisabled.value = true
-        else {
-          await router.replace(redirectTarget())
-          return
-        }
+    const { data } = await getAuthMeCached()
+    if (data && (data.authenticated === true || data.auth_enabled === false)) {
+      if (data.auth_enabled === false) authDisabled.value = true
+      else {
+        await router.replace(redirectTarget())
+        return
       }
     }
   } catch {
@@ -126,6 +125,9 @@ async function onSubmit() {
       error.value = 'Invalid email or password'
       return
     }
+    // New session cookie: drop any pre-login cached /me (401) so the
+    // guard sees the fresh authenticated state on the redirect.
+    invalidateAuthMe()
     await router.replace(redirectTarget())
     kickSseAfterLogin()
   } catch {
