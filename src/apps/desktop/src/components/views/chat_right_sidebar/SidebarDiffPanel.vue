@@ -113,6 +113,21 @@ const prError = ref<string | null>(null)
 // Empty = unknown (fetch failed or not yet loaded) — badge hidden.
 const prStatus = ref('')
 const prStatusTitle = ref('')
+// Conflict flag from the same payload (`mergeable`/`merge_state`).
+// Quiet-when-clean: only CONFLICTING/DIRTY surfaces UI; every other
+// value behaves exactly as before (no banner, no badge).
+const prMergeable = ref('')
+const prMergeState = ref('')
+const hasPrConflict = computed(() => {
+  if ((prMergeable.value || '').toUpperCase() === 'CONFLICTING') return true
+  if ((prMergeState.value || '').toUpperCase() === 'DIRTY') return true
+  return false
+})
+// GitHub renders conflict resolution at <pr-url>/conflicts.
+const prConflictsUrl = computed(() => {
+  const url = (props.prUrl ?? '').replace(/\/$/, '')
+  return url ? `${url}/conflicts` : ''
+})
 let prSeq = 0
 let prPollTimer: number | undefined
 
@@ -246,6 +261,8 @@ const loadPrStatus = async () => {
   if (!props.cwd || !isPrMode.value) {
     prStatus.value = ''
     prStatusTitle.value = ''
+    prMergeable.value = ''
+    prMergeState.value = ''
     return
   }
   const seq = ++prSeq
@@ -256,10 +273,14 @@ const loadPrStatus = async () => {
     if (seq !== prSeq) return
     prStatus.value = (data.status || data.state || '').toLowerCase()
     prStatusTitle.value = data.title || ''
+    prMergeable.value = data.mergeable || ''
+    prMergeState.value = data.merge_state || ''
   } catch {
     if (seq !== prSeq) return
     prStatus.value = ''
     prStatusTitle.value = ''
+    prMergeable.value = ''
+    prMergeState.value = ''
   }
 }
 
@@ -695,6 +716,15 @@ defineExpose({
         {{ prStatusLabel }}
       </span>
       <span
+        v-if="hasPrConflict"
+        class="px-1.5 py-0.5 rounded text-xs font-medium shrink-0"
+        style="background-color: var(--semantic-error); color: var(--color-bg)"
+        title="This pull request has merge conflicts that must be resolved"
+        data-testid="sidebar-pr-conflict-badge"
+      >
+        ⚠ Merge conflicts
+      </span>
+      <span
         v-if="prBase || prHead"
         class="text-xs truncate"
         style="color: var(--semantic-text-dim)"
@@ -812,6 +842,26 @@ defineExpose({
           <p class="text-xs" style="color: var(--semantic-text-dim)">No PR changes found</p>
         </div>
         <template v-else>
+          <div
+            v-if="hasPrConflict"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"
+            style="
+              background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+              color: var(--semantic-text);
+            "
+            data-testid="sidebar-pr-conflict-notice"
+          >
+            ⚠ This branch has conflicts that must be resolved. Use the
+            <a
+              v-if="prConflictsUrl"
+              :href="prConflictsUrl"
+              target="_blank"
+              rel="noopener"
+              class="hover:underline"
+              >web editor</a
+            ><span v-else>web editor</span>
+            or the command line to resolve conflicts before continuing.
+          </div>
           <div
             v-if="prStatus === 'merged'"
             class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"

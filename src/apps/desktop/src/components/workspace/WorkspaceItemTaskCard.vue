@@ -37,7 +37,7 @@ import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 import { stopSession } from '../../api'
-import { fetchPrStatusCached } from '../../helpers/prStatusCache'
+import { fetchPrStatusCached, fetchPrConflictCached } from '../../helpers/prStatusCache'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -382,6 +382,9 @@ const gitBranchBadge = computed<string | null>(() => {
 // card and the PR tab agree. Bold by design: semibold text +
 // thicker icon stroke so the badge pops against the dim meta row.
 const prStatus = ref('')
+// Conflict-only hint: true when the PR reports CONFLICTING/DIRTY.
+// Quiet-when-clean — false for mergeable, unknown, or failed fetches.
+const prHasConflict = ref(false)
 
 const effectiveCwd = computed<string>(() => props.cwd || props.task.cwd || '')
 
@@ -394,10 +397,18 @@ const gitBranchStyle = computed<Record<string, string>>(() => {
 
 const gitBranchTitle = computed<string>(() => {
   const branch = gitBranchBadge.value ?? ''
+  const conflictSuffix = prHasConflict.value ? ' — merge conflicts' : ''
   if (prStatus.value === 'merged') return `PR merged — ${branch}`
   if (prStatus.value === 'closed') return `PR closed — ${branch}`
-  if (prStatus.value === 'open') return `PR open — ${branch}`
-  return branch
+  if (prStatus.value === 'open') return `PR open${conflictSuffix} — ${branch}`
+  return prHasConflict.value ? `${branch} — merge conflicts` : branch
+})
+
+// Label shown in the badge: branch name plus a conflict suffix only
+// when conflicting (quiet-when-clean — clean PRs look as before).
+const gitBranchLabel = computed<string>(() => {
+  const branch = gitBranchBadge.value ?? ''
+  return prHasConflict.value ? `${branch} · ⚠ conflicts` : branch
 })
 
 let prSeq = 0
@@ -406,14 +417,19 @@ const loadPrStatus = async () => {
   const cwd = effectiveCwd.value
   if (!branch || !cwd) {
     prStatus.value = ''
+    prHasConflict.value = false
     return
   }
   const seq = ++prSeq
   // Shared cache: dedupes the board-load burst across cards, retries
   // transient failures, resolves '' (fail-silent) when unknown.
-  const status = await fetchPrStatusCached(cwd, branch)
+  const [status, hasConflict] = await Promise.all([
+    fetchPrStatusCached(cwd, branch),
+    fetchPrConflictCached(cwd, branch),
+  ])
   if (seq !== prSeq) return
   prStatus.value = status
+  prHasConflict.value = hasConflict
 }
 
 onMounted(() => {
@@ -817,6 +833,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
         :style="gitBranchStyle"
         :title="gitBranchTitle"
         :data-pr-status="prStatus || undefined"
+        :data-pr-conflict="prHasConflict || undefined"
         data-testid="task-git-branch"
       >
         <svg
@@ -833,7 +850,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
             d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
           />
         </svg>
-        <span class="truncate">{{ gitBranchBadge }}</span>
+        <span class="truncate" :title="gitBranchTitle">{{ gitBranchLabel }}</span>
       </span>
       <!-- 2026-08-29 agent-error-meta-pill (task_1787985074550_0) —
            same data as the icon, in the meta row where users
