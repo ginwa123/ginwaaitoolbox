@@ -401,6 +401,23 @@ const handleOpenTaskInBackground = (payload: {
   )
 }
 
+// Right-click / Ctrl+click / middle-click on a design page row:
+// open the page in a real browser tab, never navigating here.
+const handleOpenDesignPageInBackground = (payload: {
+  workspaceId: string
+  itemId: string
+  pageId: string
+}) => {
+  openInNewTab(
+    router,
+    buildAppUrl({
+      workspaceId: payload.workspaceId,
+      projectId: payload.itemId,
+      query: { pageId: payload.pageId },
+    }),
+  )
+}
+
 const handleSelectItem = async (workspaceId: string, itemId: string) => {
   workspacesStore.setActiveTask(null)
   const workspace = workspacesStore.workspaces.find((ws) => ws.id === workspaceId)
@@ -667,6 +684,11 @@ const handleCreateMemory = async (name: string, _content: string, path: string) 
 const handleAddWorkspace = () => (showAddWorkspaceModal.value = true)
 // WorkspaceSwitcher.select → AppLayout.handleSelectWorkspace (push).
 const handleSwitcherSelect = (workspaceId: string) => emit('selectWorkspace', workspaceId)
+// Right-click / Ctrl+click / middle-click on a switcher option:
+// open the workspace in a real browser tab, never navigating here.
+const handleOpenWorkspaceInBackground = (workspaceId: string) => {
+  openInNewTab(router, buildAppUrl({ workspaceId }))
+}
 const handleCreateWorkspace = (name: string) => workspacesStore.addWorkspace(name)
 const handleCloseModal = () => (showAddWorkspaceModal.value = false)
 const handleCloseAddItemDialog = () => {
@@ -1338,6 +1360,7 @@ defineExpose({
           :workspaces="workspacesStore.workspaces"
           :active-workspace-id="workspacesStore.activeWorkspace?.id ?? null"
           @select="handleSwitcherSelect"
+          @open-workspace-in-background="handleOpenWorkspaceInBackground"
           @add-workspace="handleAddWorkspace"
           @rename-workspace="handleRenameWorkspace"
           @delete-workspace="handleDeleteWorkspace"
@@ -1349,6 +1372,7 @@ defineExpose({
         :workspaces="workspacesStore.workspaces"
         :active-workspace-id="workspacesStore.activeWorkspace?.id ?? null"
         @select="handleSwitcherSelect"
+        @open-workspace-in-background="handleOpenWorkspaceInBackground"
         @add-workspace="handleAddWorkspace"
         @rename-workspace="handleRenameWorkspace"
         @delete-workspace="handleDeleteWorkspace"
@@ -1408,6 +1432,7 @@ defineExpose({
           @delete-design-page="handleDeleteDesignPage"
           @add-design-page="handleAddDesignPage"
           @rename-design-page="handleRenameDesignPage"
+          @open-design-page-in-background="handleOpenDesignPageInBackground"
           @go-to-settings="handleGoToSettings"
         />
       </div>

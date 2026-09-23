@@ -4,7 +4,7 @@ import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import type { Workspace, WorkspaceItem } from '../../stores/workspaces'
- 
+
 import WorkspaceItemComponent from './WorkspaceItem.vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import * as api from '../../api'
@@ -32,12 +32,16 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 const emit = defineEmits<{
   selectItem: [workspaceId: string, itemId: string]
   /** Ctrl/Cmd+click / middle click on an item row — re-emitted verbatim by Sidebar. */
-  openItemInBackground: [payload: { workspaceId: string; itemId: string; name: string; itemType?: string }]
+  openItemInBackground: [
+    payload: { workspaceId: string; itemId: string; name: string; itemType?: string },
+  ]
   deleteItem: [workspaceId: string, itemId: string]
   requestAddItem: [workspaceId: string, itemType: string]
   addTask: [workspaceId: string, item: WorkspaceItem]
   selectTask: [taskId: string]
-  openTaskInBackground: [payload: { workspaceId: string; itemId: string; itemType?: string; taskId: string }]
+  openTaskInBackground: [
+    payload: { workspaceId: string; itemId: string; itemType?: string; taskId: string },
+  ]
   deleteTask: [workspaceId: string, itemId: string, taskId: string]
   renameTask: [workspaceId: string, itemId: string, taskId: string, currentName: string]
   // NEW (design-pages-in-workspace-tree plan, 2026-08-06): design
@@ -50,6 +54,7 @@ const emit = defineEmits<{
   // item forwards the page from WorkspaceItem → ProjectsList → Sidebar.
   // Sidebar opens RenameDesignPageModal + calls the store action.
   renameDesignPage: [workspaceId: string, itemId: string, pageId: string, currentName: string]
+  openDesignPageInBackground: [payload: { workspaceId: string; itemId: string; pageId: string }]
   loadMoreTasks: [workspaceId: string, itemId: string]
   // Drag-and-drop reordering for items of a single workspace.
   // Emitted on a successful drop with the workspace id and the new
@@ -78,7 +83,6 @@ const activeAddMenu = ref<string | null>(null)
 // Scroll container ref
 const workspacesScrollRef = ref<HTMLElement | null>(null)
 
- 
 // Loading state
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const workspacesLoading = ref(false)
@@ -151,9 +155,7 @@ const toggleAddMenu = (workspaceId: string) => {
 // at the workspace-row level when ANY task is busy — replaces the
 // old yellow spinner circle that used to float on the leftmost slot.
 // Mirrors `firstProcessingTaskId` in <WorkspaceItem>.
-const firstProcessingTaskIdInWorkspace = (
-  workspace: Workspace,
-): string | null => {
+const firstProcessingTaskIdInWorkspace = (workspace: Workspace): string | null => {
   const state = processingState.value
   for (const item of workspace.items) {
     const tasks = item.tasks
@@ -340,7 +342,11 @@ const handleItemDrop = (event: DragEvent) => {
   const targetIdxInModified = toIdx > fromIdx ? toIdx - 1 : toIdx
   const insertAt = targetIdxInModified + (insertAfter ? 1 : 0)
   items.splice(insertAt, 0, moved)
-  emit('reorderWorkspaceItems', targetWorkspaceId, items.map((i) => i.id))
+  emit(
+    'reorderWorkspaceItems',
+    targetWorkspaceId,
+    items.map((i) => i.id),
+  )
 }
 
 const handleItemDragEnd = () => {
@@ -370,11 +376,13 @@ const handleItemDragEnd = () => {
             transform: sidebarStore.projectsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
           }"
           style="color: var(--semantic-text-dim)"
-        >▶</span>
+          >▶</span
+        >
         <span
           class="text-xs font-semibold uppercase tracking-wider"
           style="color: var(--semantic-text-dim)"
-        >Projects</span>
+          >Projects</span
+        >
         <SessionSlider
           v-if="workspace && firstProcessingTaskIdInWorkspace(workspace)"
           :session-id="firstProcessingTaskIdInWorkspace(workspace)!"
@@ -397,144 +405,147 @@ const handleItemDragEnd = () => {
       <ul
         v-if="workspace && activeAddMenu === workspace.id"
         class="absolute right-0 top-full mt-1 py-1 rounded-md shadow-lg z-50 min-w-[160px]"
-        style="
-          background-color: var(--semantic-card-bg);
-          border: 1px solid var(--color-border);
-        "
+        style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       >
         <li>
-                <button
-                  disabled
-                  class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
-                  style="color: var(--semantic-text);"
-                  title="Coming soon"
-                  aria-disabled="true"
-                  data-testid="workspace-add-project-option"
-                >
-                  Add Project
-                </button>
-              </li>
-              <li>
-                <button
-                  @click="handleAddItem(workspace.id, 'kanban')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
-                  style="color: var(--semantic-text);"
-                >
-                  Add Kanban
-                </button>
-              </li>
-              <!-- NEW (design-mode feature, plan:
+          <button
+            disabled
+            class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
+            style="color: var(--semantic-text)"
+            title="Coming soon"
+            aria-disabled="true"
+            data-testid="workspace-add-project-option"
+          >
+            Add Project
+          </button>
+        </li>
+        <li>
+          <button
+            @click="handleAddItem(workspace.id, 'kanban')"
+            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            style="color: var(--semantic-text)"
+          >
+            Add Kanban
+          </button>
+        </li>
+        <!-- NEW (design-mode feature, plan:
                    docs/superpowers/plans/2026-06-13-design-mode.md):
                    Third dropdown option for creating a design-mode
                    workspace item. Sidebar.handleAddItem routes the
                    'design' itemType to the new AddDesignDialog. -->
-              <li>
-                <button
-                  @click="handleAddItem(workspace.id, 'design')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
-                  style="color: var(--semantic-text);"
-                  data-testid="workspace-add-design-option"
-                >
-                  Add Design (alpha)
-                </button>
-              </li>
-              <!-- Agent Mode (plan 2026-08-15-agent-mode,
+        <li>
+          <button
+            @click="handleAddItem(workspace.id, 'design')"
+            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            style="color: var(--semantic-text)"
+            data-testid="workspace-add-design-option"
+          >
+            Add Design (alpha)
+          </button>
+        </li>
+        <!-- Agent Mode (plan 2026-08-15-agent-mode,
                    task_1786962724740_0): fourth dropdown option for
                    creating an Agent workspace item. Sidebar.handleAddItem
                    routes the 'agent' itemType to the new AddAgentDialog. -->
-              <li>
-                <button
-                  @click="handleAddItem(workspace.id, 'agent')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
-                  style="color: var(--semantic-text);"
-                  data-testid="workspace-add-agent-option"
-                >
-                  Add Agent
-                </button>
-              </li>
-              <!-- Workspace routines (Migration 084, plan
+        <li>
+          <button
+            @click="handleAddItem(workspace.id, 'agent')"
+            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            style="color: var(--semantic-text)"
+            data-testid="workspace-add-agent-option"
+          >
+            Add Agent
+          </button>
+        </li>
+        <!-- Workspace routines (Migration 084, plan
                    2026-09-10-workspace-items-routines): fifth dropdown
                    option for creating a Routine workspace item.
                    Sidebar.handleAddItem routes the 'routine' itemType
                    to the new AddRoutineItemDialog. -->
-              <li>
-                <button
-                  @click="handleAddItem(workspace.id, 'routine')"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
-                  style="color: var(--semantic-text);"
-                  data-testid="workspace-add-routine-option"
-                >
-                  Add Routine
-                </button>
-              </li>
+        <li>
+          <button
+            @click="handleAddItem(workspace.id, 'routine')"
+            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            style="color: var(--semantic-text)"
+            data-testid="workspace-add-routine-option"
+          >
+            Add Routine
+          </button>
+        </li>
       </ul>
     </div>
 
     <!-- Scrollable Projects Container -->
-    <div 
+    <div
       ref="workspacesScrollRef"
       @scroll="handleWorkspacesScroll"
       class="flex-1 min-h-0 overflow-y-auto"
     >
       <Transition name="collapse">
         <div v-show="sidebarStore.projectsExpanded" class="space-y-0.5 pb-2">
-      <!-- Selected workspace items (single workspace — revamp plan) -->
-        <ul
-          v-if="workspace"
-          class="ml-4 pl-3 space-y-0.5 border-l"
-          style="border-color: var(--color-border)"
-          @dragstart="handleItemDragStart"
-          @dragover="handleItemDragOver"
-          @dragleave="handleItemDragLeave"
-          @drop="handleItemDrop"
-          @dragend="handleItemDragEnd"
-        >
-          <WorkspaceItemComponent
-            v-for="item in workspace.items"
-            :key="item.id"
-            :item="item"
-            :is-active="activeWorkspaceItemId === item.id"
-            :workspace-id="workspace.id"
-            :is-item-dragging="draggingItemId === item.id"
-            :is-item-drag-over="dragOverItemId === item.id && draggingItemId !== item.id"
-            :is-item-drag-over-insert-after="dragOverItemInsertAfter"
-            class="first:mt-1.5"
-            @click="handleItemClick(workspace.id, $event.id)"
-            @open-item-in-background="emit('openItemInBackground', $event)"
-            @go-to-settings="emit('goToSettings', $event)"
-            @delete="handleDeleteItem(workspace.id, $event.id)"
-            @add-task="handleAddTask(workspace.id, $event)"
-            @select-task="handleSelectTask"
-            @open-task-in-background="handleOpenTaskInBackground"
-            @delete-task="handleDeleteTask"
-            @rename-task="handleRenameTask"
-            @load-more-tasks="handleLoadMoreTasks"
-            @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
-            @reorder-pinned-tasks="(ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)"
-            @select-design-page="(ws, item, pageId) => emit('selectDesignPage', ws, item, pageId)"
-            @delete-design-page="(ws, item, pageId) => emit('deleteDesignPage', ws, item, pageId)"
-            @add-design-page="(ws, item) => emit('addDesignPage', ws, item)"
-            @rename-design-page="(ws, item, pageId, currentName) => emit('renameDesignPage', ws, item, pageId, currentName)"
-          />
-          <li
-            v-if="workspace.items.length === 0"
+          <!-- Selected workspace items (single workspace — revamp plan) -->
+          <ul
+            v-if="workspace"
+            class="ml-4 pl-3 space-y-0.5 border-l"
+            style="border-color: var(--color-border)"
+            @dragstart="handleItemDragStart"
+            @dragover="handleItemDragOver"
+            @dragleave="handleItemDragLeave"
+            @drop="handleItemDrop"
+            @dragend="handleItemDragEnd"
+          >
+            <WorkspaceItemComponent
+              v-for="item in workspace.items"
+              :key="item.id"
+              :item="item"
+              :is-active="activeWorkspaceItemId === item.id"
+              :workspace-id="workspace.id"
+              :is-item-dragging="draggingItemId === item.id"
+              :is-item-drag-over="dragOverItemId === item.id && draggingItemId !== item.id"
+              :is-item-drag-over-insert-after="dragOverItemInsertAfter"
+              class="first:mt-1.5"
+              @click="handleItemClick(workspace.id, $event.id)"
+              @open-item-in-background="emit('openItemInBackground', $event)"
+              @go-to-settings="emit('goToSettings', $event)"
+              @delete="handleDeleteItem(workspace.id, $event.id)"
+              @add-task="handleAddTask(workspace.id, $event)"
+              @select-task="handleSelectTask"
+              @open-task-in-background="handleOpenTaskInBackground"
+              @delete-task="handleDeleteTask"
+              @rename-task="handleRenameTask"
+              @load-more-tasks="handleLoadMoreTasks"
+              @pin-task="(ws, item, task, isPinned) => emit('pinTask', ws, item, task, isPinned)"
+              @reorder-pinned-tasks="
+                (ws, item, orderedIds) => emit('reorderPinnedTasks', ws, item, orderedIds)
+              "
+              @select-design-page="(ws, item, pageId) => emit('selectDesignPage', ws, item, pageId)"
+              @delete-design-page="(ws, item, pageId) => emit('deleteDesignPage', ws, item, pageId)"
+              @add-design-page="(ws, item) => emit('addDesignPage', ws, item)"
+              @rename-design-page="
+                (ws, item, pageId, currentName) =>
+                  emit('renameDesignPage', ws, item, pageId, currentName)
+              "
+              @open-design-page-in-background="emit('openDesignPageInBackground', $event)"
+            />
+            <li
+              v-if="workspace.items.length === 0"
+              class="px-3 py-2 text-xs"
+              style="color: var(--semantic-text-dim)"
+              data-testid="projects-empty"
+            >
+              No projects yet — use + above to add one.
+            </li>
+          </ul>
+          <div
+            v-else
             class="px-3 py-2 text-xs"
             style="color: var(--semantic-text-dim)"
-            data-testid="projects-empty"
+            data-testid="projects-no-workspace"
           >
-            No projects yet — use + above to add one.
-          </li>
-        </ul>
-        <div
-          v-else
-          class="px-3 py-2 text-xs"
-          style="color: var(--semantic-text-dim)"
-          data-testid="projects-no-workspace"
-        >
-          No workspace selected.
+            No workspace selected.
+          </div>
         </div>
-      </div>
-    </Transition>
+      </Transition>
     </div>
   </div>
 </template>

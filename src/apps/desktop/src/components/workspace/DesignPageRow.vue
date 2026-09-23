@@ -60,6 +60,9 @@
 import { computed, ref } from 'vue'
 import type { DesignPage } from '../../api'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
+import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import { useContextMenu } from '../../composables/useContextMenu'
+import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 
 const props = defineProps<{
   page: DesignPage
@@ -72,6 +75,7 @@ const emit = defineEmits<{
   selectPage: [page: DesignPage]
   renamePage: [page: DesignPage]
   deletePage: [page: DesignPage]
+  openDesignPageInBackground: [page: DesignPage]
 }>()
 
 // URL-driven "what is the main content area showing?". The active
@@ -81,9 +85,9 @@ const emit = defineEmits<{
 // computed re-runs and the row styling updates — no watcher needed, the
 // template binding is enough.
 const currentMainView = useCurrentMainView()
-const isCurrentMainView = computed(() =>
-  currentMainView.value.kind === 'workspace'
-    && currentMainView.value.pageId === props.page.id,
+const isCurrentMainView = computed(
+  () =>
+    currentMainView.value.kind === 'workspace' && currentMainView.value.pageId === props.page.id,
 )
 
 // ⋮ menu state — mirrors the kanban-column ⋮ menu pattern
@@ -123,6 +127,34 @@ const handleClickOutside = (event: MouseEvent) => {
 
 const handleSelect = (): void => {
   emit('selectPage', props.page)
+}
+
+// Right-click "Open in new tab" on a design page row. The row only
+// knows the page — WorkspaceItem fills in workspaceId/itemId so
+// Sidebar can build the page URL without touching store state.
+const { menuPos, openAt, close: closePageMenu } = useContextMenu()
+
+const onPageRowContextMenu = (event: MouseEvent): void => {
+  openAt(event)
+}
+
+const onPageRowAuxClick = (event: MouseEvent): void => {
+  if (event.button !== 1) return
+  event.preventDefault()
+  emit('openDesignPageInBackground', props.page)
+}
+
+const onPageRowClick = (event: MouseEvent): void => {
+  if (isBackgroundOpenEvent(event)) {
+    emit('openDesignPageInBackground', props.page)
+    return
+  }
+  handleSelect()
+}
+
+const openPageMenuInBackground = (): void => {
+  closePageMenu()
+  emit('openDesignPageInBackground', props.page)
 }
 
 // "Rename" item in the ⋮ menu. Closes the menu and emits the
@@ -175,7 +207,9 @@ const handleKeydown = (event: KeyboardEvent): void => {
     :data-testid="`design-page-row-${page.id}`"
     :data-active-page="isCurrentMainView ? 'true' : undefined"
     :data-page-id="page.id"
-    @click="handleSelect"
+    @click="onPageRowClick"
+    @auxclick="onPageRowAuxClick"
+    @contextmenu.prevent="onPageRowContextMenu"
     @keydown="handleKeydown"
   >
     <!--
@@ -187,7 +221,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
     -->
     <span
       class="w-1.5 h-1.5 rounded-full shrink-0"
-      style="background-color: currentColor; opacity: 0.5;"
+      style="background-color: currentColor; opacity: 0.5"
       aria-hidden="true"
     />
     <span class="flex-1 truncate">{{ page.name }}</span>
@@ -206,7 +240,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
       <button
         type="button"
         class="w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/page:opacity-100 transition-opacity hover:opacity-80"
-        style="color: var(--semantic-text-dim);"
+        style="color: var(--semantic-text-dim)"
         :data-testid="`design-page-menu-${page.id}`"
         aria-label="Design page actions"
         @click.stop="toggleMenu"
@@ -221,17 +255,14 @@ const handleKeydown = (event: KeyboardEvent): void => {
       <ul
         v-if="menuOpen"
         class="absolute right-0 top-full mt-1 py-1 rounded-md shadow-lg z-10 min-w-[120px]"
-        style="
-          background-color: var(--semantic-card-bg);
-          border: 1px solid var(--color-border);
-        "
+        style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
         :data-testid="`design-page-menu-list-${page.id}`"
       >
         <li>
           <button
             type="button"
             class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
-            style="color: var(--semantic-text);"
+            style="color: var(--semantic-text)"
             :data-testid="`design-page-menu-rename-${page.id}`"
             @click="handleMenuRename"
           >
@@ -242,7 +273,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
           <button
             type="button"
             class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
-            style="color: #ef4444;"
+            style="color: #ef4444"
             :data-testid="`design-page-menu-delete-${page.id}`"
             @click="handleMenuDelete"
           >
@@ -263,7 +294,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
     <button
       type="button"
       class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/page:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
-      style="color: var(--semantic-text-dim);"
+      style="color: var(--semantic-text-dim)"
       title="Delete page"
       aria-label="Delete page"
       :data-testid="`design-page-delete-${page.id}`"
@@ -271,5 +302,12 @@ const handleKeydown = (event: KeyboardEvent): void => {
     >
       ×
     </button>
+    <OpenInNewTabMenu
+      v-if="menuPos"
+      :x="menuPos.x"
+      :y="menuPos.y"
+      open-label="Open in new tab"
+      @open="openPageMenuInBackground"
+    />
   </div>
 </template>
