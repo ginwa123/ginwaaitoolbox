@@ -2388,13 +2388,68 @@ const effectiveChatCwd = computed(() => {
   return chatSessionCwd.value || activeWorkspaceItem.value?.path || ''
 })
 
-// Watch route query changes to sync with app state
+// Watch route changes (Back/Forward/deep-link drift) to sync app state.
+// Watches fullPath so path-only navigations (no query change) reconcile
+// too — watching query alone would miss /app/ws → /app/ws/chat/s hops.
 watch(
-  () => route.query,
-  async (query) => {
+  () => route.fullPath,
+  async () => {
+    const query = route.query as Record<string, string | undefined>
     const sessionId = query.session as string
     const taskId = query.task as string
     const view = query.view as string
+    const parsed = parseAppPath(route.path)
+
+    // Path chat URL: adopt the chat when drifting (Back/Forward into
+    // a chat from a board, or across chats). Mirrors the legacy
+    // `?view=chat` branch below.
+    if (parsed.kind === 'chat') {
+      if (activeChatId.value !== `chat-${parsed.sessionId}`) {
+        workspacesStore.setActiveWorkspaceItem(null)
+        navigationStore.setActiveChat(parsed.sessionId, navigationStore.activeChatName)
+      }
+      await fetchChatSessionCwd(parsed.sessionId)
+      return
+    }
+
+    // Path project URLs: adopt workspace + item, sync the task chat
+    // suffix, drop any standalone chat. All writes are
+    // equality-guarded: in-app navigations set the same values
+    // before pushing, so this only ever acts on Back/Forward drift
+    // (same contract as the legacy board branch below).
+    if (parsed.kind === 'project' || parsed.kind === 'projectChat') {
+      if (workspacesStore.activeWorkspaceId !== parsed.workspaceId) {
+        await workspacesStore.setActiveWorkspace(parsed.workspaceId)
+      }
+      if (workspacesStore.activeWorkspaceItemId !== parsed.projectId) {
+        workspacesStore.setActiveWorkspaceItem(parsed.projectId)
+      }
+      const wantTaskId = parsed.kind === 'projectChat' ? parsed.chatTaskId : null
+      if ((workspacesStore.activeTaskId ?? null) !== wantTaskId) {
+        workspacesStore.setActiveTask(wantTaskId)
+      }
+      if (navigationStore.activeChatId !== '') {
+        navigationStore.clearActiveChat()
+      }
+      chatSessionCwd.value = ''
+      return
+    }
+
+    // Landing: Back to /app drops any stale chat/task/item so the
+    // landing renders (same as the legacy bare-/app branch below).
+    if (parsed.kind === 'landing' && !view) {
+      if (workspacesStore.activeWorkspaceItemId !== null) {
+        workspacesStore.setActiveWorkspaceItem(null)
+      }
+      if (workspacesStore.activeTaskId !== null) {
+        workspacesStore.setActiveTask(null)
+      }
+      if (navigationStore.activeChatId !== '') {
+        navigationStore.clearActiveChat()
+      }
+      chatSessionCwd.value = ''
+      return
+    }
 
     if (view === 'gitfile') {
       // Restore git file viewer state from URL
