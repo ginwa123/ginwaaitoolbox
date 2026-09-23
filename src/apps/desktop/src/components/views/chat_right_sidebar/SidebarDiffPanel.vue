@@ -149,12 +149,13 @@ const contextMenuPath = ref<string | null>(null)
 
 const codeEditorQuery = (path: string): Record<string, string> => ({
   view: 'code-editor',
-  file: btoa(path),
-  cwd: props.cwd,
+  file: path,
 })
 
 const openFileInNewTab = (path: string) => {
-  openInNewTab(router, { path: '/app', query: codeEditorQuery(path) })
+  // New tabs boot cold, so they resolve the cwd from the workspace
+  // path context — keep the current path instead of dropping to /app.
+  openInNewTab(router, { path: route.path, query: codeEditorQuery(path) })
 }
 
 const onFileRowContextMenu = (event: MouseEvent, path: string) => {

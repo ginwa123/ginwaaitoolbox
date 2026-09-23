@@ -90,6 +90,37 @@ export function decodeFilePath(encoded: string): string {
   }
 }
 
+// New editor links carry the plain path (`?file=src/foo.ts`) so URLs
+// stay readable and hand-editable. Links written before the readable
+// migration carry base64/base64url instead. The two are told apart by
+// a strict round-trip check: a legacy value decodes and re-encodes to
+// itself, while a plain path either contains characters outside the
+// base64 alphabet (`.` never appears in base64 output) or fails the
+// re-encode comparison. A bare name like `TWFu` that happens to
+// round-trip is misread as legacy — vanishingly rare, and the failure
+// surfaces as an explicit read error, never a silent blank.
+function isLegacyFileLink(value: string): boolean {
+  if (!/^[A-Za-z0-9+/_-]+={0,2}$/.test(value)) return false
+  let decoded: string
+  try {
+    decoded = decodeFilePath(value)
+  } catch {
+    return false
+  }
+  const norm = (s: string): string => s.replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '')
+  return norm(encodeFilePath(decoded)) === norm(value)
+}
+
+// Resolve the `file` query value to a real path: legacy links decode,
+// everything else passes through verbatim. Throws
+// Error('invalid file link') on empty input, matching decodeFilePath.
+export function resolveFileParam(raw: string): string {
+  const value = (raw || '').trim()
+  if (!value) throw new Error('invalid file link')
+  if (isLegacyFileLink(value)) return decodeFilePath(value)
+  return value
+}
+
 export type CodeEditorSessionDeps = {
   readFile: (cwd: string, path: string) => Promise<{ content: string }>
   writeFile: (cwd: string, path: string, content: string) => Promise<unknown>
@@ -97,7 +128,7 @@ export type CodeEditorSessionDeps = {
 }
 
 export type RestoreArgs = {
-  encodedFile: string
+  fileParam: string
   queryCwd: string
   fallbackCwd: string
   lineParam?: unknown
@@ -188,7 +219,7 @@ export function useCodeEditorSession(deps: CodeEditorSessionDeps) {
     const line = parseRequestedLine(args.lineParam)
     let path: string
     try {
-      path = decodeFilePath(args.encodedFile)
+      path = resolveFileParam(args.fileParam)
     } catch {
       clear()
       error.value = 'Invalid file link'

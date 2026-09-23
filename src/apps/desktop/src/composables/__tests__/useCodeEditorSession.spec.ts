@@ -18,6 +18,7 @@ import {
   fileNameOf,
   isAbsolutePath,
   parseRequestedLine,
+  resolveFileParam,
   useCodeEditorSession,
 } from '../useCodeEditorSession'
 
@@ -82,6 +83,35 @@ describe('file link encoding', () => {
     expect(() => decodeFilePath('')).toThrow('invalid file link')
     expect(() => decodeFilePath('!!!')).toThrow('invalid file link')
     expect(() => decodeFilePath('a')).toThrow('invalid file link')
+  })
+})
+
+describe('resolveFileParam', () => {
+  it('passes plain readable paths through verbatim', () => {
+    expect(resolveFileParam('src/foo.ts')).toBe('src/foo.ts')
+    expect(resolveFileParam('/w/migration/README.md')).toBe('/w/migration/README.md')
+    expect(resolveFileParam('a b/c+d/e.md')).toBe('a b/c+d/e.md')
+  })
+
+  it('passes extensionless bare names through (no silent mis-decode)', () => {
+    expect(resolveFileParam('Makefile')).toBe('Makefile')
+    expect(resolveFileParam('README')).toBe('README')
+    expect(resolveFileParam('!!!')).toBe('!!!')
+  })
+
+  it('decodes legacy base64url links', () => {
+    const legacy = encodeFilePath('/w/migration/README.md')
+    expect(resolveFileParam(legacy)).toBe('/w/migration/README.md')
+  })
+
+  it('decodes legacy raw-btoa links with padding', () => {
+    const legacy = btoa('/w/migration/README.md')
+    expect(resolveFileParam(legacy)).toBe('/w/migration/README.md')
+  })
+
+  it('throws on empty input', () => {
+    expect(() => resolveFileParam('')).toThrow('invalid file link')
+    expect(() => resolveFileParam('   ')).toThrow('invalid file link')
   })
 })
 
@@ -160,10 +190,24 @@ describe('openFile', () => {
 })
 
 describe('restoreFromUrl', () => {
-  it('restores the session from an encoded link', async () => {
+  it('restores the session from a plain readable link', async () => {
+    const { session, readFile } = makeSession()
+    await session.restoreFromUrl({
+      fileParam: 'migration/README.md',
+      queryCwd: '/w',
+      fallbackCwd: '',
+    })
+
+    expect(session.file.value?.path).toBe('migration/README.md')
+    expect(session.content.value).toBe('hello')
+    expect(session.error.value).toBeNull()
+    expect(readFile).toHaveBeenCalledWith('/w', 'migration/README.md')
+  })
+
+  it('restores the session from a legacy encoded link', async () => {
     const { session, readFile } = makeSession()
     const encoded = encodeFilePath('/w/migration/README.md')
-    await session.restoreFromUrl({ encodedFile: encoded, queryCwd: '/w', fallbackCwd: '' })
+    await session.restoreFromUrl({ fileParam: encoded, queryCwd: '/w', fallbackCwd: '' })
 
     expect(session.file.value?.path).toBe('/w/migration/README.md')
     expect(session.content.value).toBe('hello')
@@ -177,7 +221,7 @@ describe('restoreFromUrl', () => {
     expect(readFile).toHaveBeenCalledTimes(1)
 
     const encoded = encodeFilePath('/w/a.md')
-    await session.restoreFromUrl({ encodedFile: encoded, queryCwd: '/w', fallbackCwd: '/w' })
+    await session.restoreFromUrl({ fileParam: encoded, queryCwd: '/w', fallbackCwd: '/w' })
     expect(readFile).toHaveBeenCalledTimes(1)
   })
 
@@ -185,7 +229,7 @@ describe('restoreFromUrl', () => {
     const { session, readFile } = makeSession()
     const encoded = encodeFilePath('/w/a.md')
     await session.restoreFromUrl({
-      encodedFile: encoded,
+      fileParam: encoded,
       queryCwd: '/w-explicit',
       fallbackCwd: '/w-fb',
     })
@@ -194,19 +238,27 @@ describe('restoreFromUrl', () => {
     expect(readFile).toHaveBeenCalledWith('/w-explicit', '/w/a.md')
   })
 
-  it('sets an explicit error for corrupt links', async () => {
+  it('sets an explicit error for empty links', async () => {
     const { session, readFile } = makeSession()
-    await session.restoreFromUrl({ encodedFile: '!!!', queryCwd: '/w', fallbackCwd: '' })
+    await session.restoreFromUrl({ fileParam: '', queryCwd: '/w', fallbackCwd: '' })
 
     expect(readFile).not.toHaveBeenCalled()
     expect(session.file.value).toBeNull()
     expect(session.error.value).toBe('Invalid file link')
   })
 
+  it('treats undecodable values as plain names and attempts the read', async () => {
+    const { session, readFile } = makeSession()
+    await session.restoreFromUrl({ fileParam: '!!!', queryCwd: '/w', fallbackCwd: '' })
+
+    expect(readFile).toHaveBeenCalledWith('/w', '!!!')
+    expect(session.file.value?.path).toBe('!!!')
+  })
+
   it('keeps the header but errors visibly when no cwd resolves', async () => {
     const { session, readFile } = makeSession()
     const encoded = encodeFilePath('/w/a.md')
-    await session.restoreFromUrl({ encodedFile: encoded, queryCwd: '', fallbackCwd: '' })
+    await session.restoreFromUrl({ fileParam: encoded, queryCwd: '', fallbackCwd: '' })
 
     expect(readFile).not.toHaveBeenCalled()
     expect(session.file.value?.path).toBe('/w/a.md')
