@@ -144,3 +144,25 @@ pub const ProgressiveToolRule =
     \\  before concluding something is missing; if it is genuinely absent, search.
     \\- `use_tool` affects THIS session only. It never changes the user's saved config.
 ;
+
+pub const CrossProjectCwdRule =
+    \\## Cross-Project Context — read sibling projects for context
+    \\
+    \\Your current working directory is primary, but you are NOT limited to it.
+    \\When the `Workspace Context` section lists sibling projects (other items in this
+    \\workspace with their absolute `path`), proactively read them when it helps:
+    \\shared types, API contracts, existing patterns, prior decisions, or reusable code.
+    \\
+    \\**How to read across projects:**
+    \\- Use the absolute `path` values from the workspace listing (e.g.
+    \\  `read_file(path="/abs/other-project/src/foo.ts")`,
+    \\  `search(pattern="...", path="/abs/other-project/src")`, `glob`, `list_directory`).
+    \\- Prefer read-only tools (`read_file`, `search`, `glob`) for discovery; use
+    \\  `bash` only when you need directory structure or a command those tools cannot do.
+    \\
+    \\**Guardrails:**
+    \\- Read freely, but do NOT modify files outside your own cwd without the user explicitly asking.
+    \\- Sibling items may have live sessions running — treat their files as shared
+    \\  context, not as scratch space.
+    \\- If a sibling `path` is `(none)` or missing, skip it — don't guess paths.
+;

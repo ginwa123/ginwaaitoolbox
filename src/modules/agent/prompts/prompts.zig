@@ -28,6 +28,7 @@ pub const SearchToolRule = core.SearchToolRule;
 pub const ProgressiveToolRule = core.ProgressiveToolRule;
 pub const ReadWorkspaceSessionToolRule = core.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = core.MemoryToolRule;
+pub const CrossProjectCwdRule = core.CrossProjectCwdRule;
 
 pub const Agent = agent.Agent;
 

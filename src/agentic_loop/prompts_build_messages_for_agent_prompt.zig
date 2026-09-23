@@ -161,12 +161,15 @@ pub fn buildMessages(
         \\before running system commands or shell scripts.
     );
 
-    // 5. workspaceContext → agentSystemPrompt → agentKnowledge → agentKanbanSystemPrompt → agentKanbanKnowledge
+    // 5. workspaceContext → cross-project cwd → agentSystemPrompt → agentKnowledge → agentKanbanSystemPrompt → agentKanbanKnowledge
     const workspaceContext = try agentic_loop.prompts_mod.makeWorkspaceContext(allocator, db, session_id);
     defer allocator.free(workspaceContext);
     if (workspaceContext.len > 0) {
         try final_system.appendSlice(allocator, workspaceContext);
     }
+
+    // Static, cache-friendly: encourages reading sibling project paths for context.
+    try final_system.appendSlice(allocator, prompts_const.CrossProjectCwdRule);
 
     const agentSystemPromptContent = try agentic_loop.prompts_mod.makeAgentSystemPrompt(allocator, io, db, session_id);
     defer allocator.free(agentSystemPromptContent);
@@ -1444,6 +1447,10 @@ pub fn build_agent_prompt(
         try result.appendSlice(allocator, workspaceContext);
     }
 
+    // Static, cache-friendly: encourages reading sibling project paths for context.
+    // Parity with buildMessages — same constant, same position (right after workspace).
+    try result.appendSlice(allocator, prompts_const.CrossProjectCwdRule);
+
     if (kanbanStatusContent.len > 0) {
         try result.appendSlice(allocator, kanbanStatusContent);
     }
@@ -1834,4 +1841,66 @@ test "fetchToolsFromServerStdio: missing command field returns MCPServerCommandN
     // command/args, so empty argv → CommandNotFound
     const err = fetchToolsFromServerStdio(testing.allocator, "srv", obj, 1_000_000_000, null);
     try testing.expectError(error.MCPServerCommandNotFound, err);
+}
+
+// ─── Cross-project cwd prompt ───────────────────────────────────────────
+// Static section encouraging the agent to read sibling project paths for
+// context. Rendered in both buildMessages and build_agent_prompt right
+// after the workspace listing.
+
+test "CrossProjectCwdRule content encourages sibling reads with guardrails" {
+    const rule = prompts_const.CrossProjectCwdRule;
+    try testing.expect(std.mem.indexOf(u8, rule, "## Cross-Project Context") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "Workspace Context") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "read_file") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "do NOT modify files outside your own cwd") != null);
+    try testing.expect(std.mem.indexOf(u8, rule, "(none)") != null);
+}
+
+test "buildMessages wires CrossProjectCwdRule after workspace" {
+    const source = @embedFile("prompts_build_messages_for_agent_prompt.zig");
+    if (std.mem.indexOf(u8, source, "prompts_const.CrossProjectCwdRule") == null) {
+        std.debug.print("\n!! buildMessages does not reference CrossProjectCwdRule !!\n", .{});
+        return error.MissingCrossProjectPrompt;
+    }
+    const ws_pos = std.mem.indexOf(u8, source, "makeWorkspaceContext(allocator, db, session_id)") orelse
+        return error.WorkspaceLookupMissing;
+    const cross_pos = std.mem.indexOf(u8, source, "prompts_const.CrossProjectCwdRule") orelse
+        return error.CrossProjectMissing;
+    try testing.expect(ws_pos < cross_pos);
+}
+
+test "build_agent_prompt renders CrossProject section after workspace" {
+    const alloc = testing.allocator;
+    const io = testing.io;
+    const tools = [_]tool_models.AgentTool{};
+    const workspaceContext =
+        \\## Workspace Context
+        \\
+        \\This task is part of workspace `ws_x`.
+        \\
+    ;
+    const prompt = try build_agent_prompt(
+        alloc,
+        io,
+        "/tmp",
+        "",
+        "",
+        "",
+        "",
+        &tools,
+        "",
+        null,
+        "",
+        workspaceContext,
+        "",
+        "",
+    );
+    defer alloc.free(prompt);
+    try testing.expect(std.mem.indexOf(u8, prompt, "## Cross-Project Context") != null);
+    const ws_pos = std.mem.indexOf(u8, prompt, "## Workspace Context") orelse
+        return error.WorkspaceMissing;
+    const cross_pos = std.mem.indexOf(u8, prompt, "## Cross-Project Context") orelse
+        return error.CrossProjectMissing;
+    try testing.expect(ws_pos < cross_pos);
 }
