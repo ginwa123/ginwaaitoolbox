@@ -538,7 +538,16 @@ export async function searchFiles(
 export async function getWorkspaces(): Promise<{ workspaces: Workspace[] }> {
   // Items are loaded separately via getWorkspacesItems(workspace_id) —
   // this keeps the workspaces list small and lets us fetch items lazily.
-  return await apiFetch<{ workspaces: Workspace[] }>('/workspaces?is_include_items=false')
+  // Persists the list to the workspacesCache (fail-silent) so the next
+  // init can paint instantly and revalidate in the background.
+  const res = await apiFetch<{ workspaces: Workspace[] }>('/workspaces?is_include_items=false')
+  try {
+    const { writeWorkspacesCache } = await import('../helpers/workspacesCache')
+    writeWorkspacesCache(res?.workspaces ?? [])
+  } catch {
+    // cache write is best-effort — the live response still wins.
+  }
+  return res
 }
 
 export async function getWorkspacesItems(

@@ -4,6 +4,7 @@ import { useNavigationStore } from './navigation'
 import { useNotificationStore } from './notifications'
 import { useSseBus } from '../helpers/sseBus'
 import { designLogger } from '../helpers/designLogger'
+import { readWorkspacesCache } from '../helpers/workspacesCache'
 import type { DesignElement, DesignPage } from '../api'
 
 export interface KanbanColumn {
@@ -1022,24 +1023,60 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // here anymore (Chunk 6 of unify-frontend-sse).
     installSessionEventHandlers()
 
-    try {
-      // Step 1: fetch the workspaces list (no items — those come separately).
-      const { workspaces: wsList } = await api.getWorkspaces()
+    // Seed helper: every row starts with EMPTY items — the list
+    // (dropdown, sidebar, items_count badges) is complete right away;
+    // the items tree fills in per visit.
+    const seedList = (wsList: Workspace[]) => {
       const expandedWorkspaces = loadExpandedWorkspaces()
       const expandedIds = loadExpandedItemIds()
       // Load expanded item IDs for tasks list from localStorage
       expandedItemIds.value = expandedIds
-
-      // Step 2: seed every workspace row with EMPTY items — the list
-      // (dropdown, sidebar, items_count badges) is complete right
-      // away; the items tree fills in per visit (step 3 here, then
-      // setActiveWorkspace on every switch).
       workspaces.value = (wsList || []).map((ws: Workspace) => ({
         ...ws,
         // Restore expanded state from localStorage
         expanded: expandedWorkspaces.has(ws.id),
         items: [],
       }))
+    }
+
+    // Merge helper for the background revalidate: refresh rows in
+    // place without clobbering items already loaded for the active
+    // workspace (or expanded UI state) while the fetch was in flight.
+    const mergeList = (wsList: Workspace[]) => {
+      const expandedWorkspaces = loadExpandedWorkspaces()
+      const prevById = new Map(workspaces.value.map((w) => [w.id, w]))
+      workspaces.value = (wsList || []).map((ws: Workspace) => {
+        const prev = prevById.get(ws.id)
+        return {
+          ...ws,
+          expanded: prev?.expanded ?? expandedWorkspaces.has(ws.id),
+          items: prev?.items ?? [],
+        }
+      })
+    }
+
+    // Stale-while-revalidate: paint the last-known list synchronously
+    // so the dropdown/sidebar shows rows instantly on boot, then the
+    // live fetch below refreshes it in the same init. api.getWorkspaces
+    // persists every success to the cache (fail-silent).
+    const cached = readWorkspacesCache()
+    const hasCache = !!cached && cached.length > 0
+    if (hasCache) {
+      seedList(cached as Workspace[])
+      // Drop the list spinner now — rows are already visible. The
+      // active workspace items still load below.
+      isLoading.value = false
+    }
+
+    try {
+      // Step 1: fetch the workspaces list (no items — those come separately).
+      const { workspaces: wsList } = await api.getWorkspaces()
+      if (hasCache) {
+        mergeList(wsList || [])
+      } else {
+        // Step 2 (cold boot): seed every workspace row with EMPTY items.
+        seedList(wsList || [])
+      }
 
       // Step 3: load items for the ACTIVE workspace only.
       const activeId =
@@ -1048,10 +1085,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         await ensureWorkspaceItemsLoaded(activeId)
       }
     } catch (err) {
-      loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
-      console.error('Failed to load workspaces:', err)
-      // Initialize with empty array on error
-      workspaces.value = []
+      // With a cached paint on screen, a failed revalidate keeps the
+      // stale rows (and surfaces the error) instead of wiping to [].
+      if (!hasCache) {
+        loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
+        console.error('Failed to load workspaces:', err)
+        // Initialize with empty array on error
+        workspaces.value = []
+      } else {
+        loadingError.value = err instanceof Error ? err.message : 'Failed to refresh workspaces'
+        console.error('Failed to refresh workspaces (keeping cached list):', err)
+      }
     } finally {
       isLoading.value = false
     }
