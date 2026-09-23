@@ -66,7 +66,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
     const buttons = wrapper.findAll('button')
     const itemButton = buttons.find((b) => b.text().includes('Design'))
     expect(itemButton).toBeDefined()
-    expect(itemButton!.attributes('style')).toContain('--semantic-active-bg')
+    expect(itemButton!.attributes('style')).toContain('38, 37, 34')
   })
 
   it('item row is NOT active when URL is ?view=chat&session=X', async () => {
@@ -82,7 +82,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
     const buttons = wrapper.findAll('button')
     const itemButton = buttons.find((b) => b.text().includes('Design'))
     expect(itemButton).toBeDefined()
-    expect(itemButton!.attributes('style') ?? '').not.toContain('--semantic-active-bg')
+    expect(itemButton!.attributes('style') ?? '').not.toContain('38, 37, 34')
   })
 
   it('item row is NOT active when URL is ?view=workspace&itemId=OTHER', async () => {
@@ -98,7 +98,7 @@ describe('WorkspaceItem — item row active state from URL', () => {
     const buttons = wrapper.findAll('button')
     const itemButton = buttons.find((b) => b.text().includes('Design'))
     expect(itemButton).toBeDefined()
-    expect(itemButton!.attributes('style') ?? '').not.toContain('--semantic-active-bg')
+    expect(itemButton!.attributes('style') ?? '').not.toContain('38, 37, 34')
   })
 
   it('item row active state reacts to URL changes mid-mount', async () => {
@@ -114,12 +114,12 @@ describe('WorkspaceItem — item row active state from URL', () => {
     await nextTick()
     let buttons = wrapper.findAll('button')
     let itemButton = buttons.find((b) => b.text().includes('Design'))
-    expect(itemButton!.attributes('style') ?? '').not.toContain('--semantic-active-bg')
+    expect(itemButton!.attributes('style') ?? '').not.toContain('38, 37, 34')
 
     route.query = { view: 'workspace', itemId: 'item_design' }
     await nextTick()
     buttons = wrapper.findAll('button')
     itemButton = buttons.find((b) => b.text().includes('Design'))
-    expect(itemButton!.attributes('style')).toContain('--semantic-active-bg')
+    expect(itemButton!.attributes('style')).toContain('38, 37, 34')
   })
 })
