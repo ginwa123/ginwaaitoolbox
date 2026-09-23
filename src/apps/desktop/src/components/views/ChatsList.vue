@@ -10,10 +10,15 @@ import { useContextMenu } from '../../composables/useContextMenu'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import { openInNewTab } from '../../helpers/openInNewTab'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
-import { fetchPrStatusCached } from '../../helpers/prStatusCache'
+import {
+  fetchPrInfoCached,
+  fetchPrStatusCached,
+  branchUrlFromPrUrl,
+} from '../../helpers/prStatusCache'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import GitBranchMenu from '../shell/GitBranchMenu.vue'
 
 const router = useRouter()
 
@@ -199,6 +204,52 @@ const openContextMenuInBackground = () => {
   closeContextMenu()
   if (!id) return
   openChatInNewTab({ id })
+}
+
+// Right-click menu on the git icon: open GitHub branch / PR URLs in
+// a new tab. Separate position state from the row menu so a git-icon
+// right-click never opens the chat menu. URLs resolve via the shared
+// PR-info cache (GET /api/git/pr/status already returns pr_url);
+// the branch URL derives from the PR repo base + /tree/<branch>.
+const { menuPos: gitMenuPos, openAt: openGitMenuAt, close: closeGitMenu } = useContextMenu()
+const gitMenuBranch = ref('')
+const gitMenuBranchUrl = ref('')
+const gitMenuPrUrl = ref('')
+
+const onGitIconContextMenu = async (event: MouseEvent, item: ChatRow) => {
+  event.preventDefault()
+  event.stopPropagation()
+  const branch = item.git_branch || ''
+  const cwd = effectiveChatCwd(item)
+  gitMenuBranch.value = branch
+  gitMenuBranchUrl.value = ''
+  gitMenuPrUrl.value = ''
+  openGitMenuAt(event)
+  if (!branch || !cwd) return
+  try {
+    const info = await fetchPrInfoCached(cwd, branch)
+    // Stale guard: user may have right-clicked another icon while
+    // this fetch was in flight.
+    if (gitMenuBranch.value !== branch) return
+    gitMenuPrUrl.value = info.prUrl || ''
+    gitMenuBranchUrl.value = branchUrlFromPrUrl(info.prUrl || '', branch)
+  } catch {
+    // Fail-silent: menu stays open with disabled items.
+  }
+}
+
+const openGitBranchInBackground = () => {
+  const url = gitMenuBranchUrl.value
+  closeGitMenu()
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
+}
+
+const openGitPrInBackground = () => {
+  const url = gitMenuPrUrl.value
+  closeGitMenu()
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
 }
 
 // Sort toggle extracted to a method so the template stays a single
@@ -791,11 +842,12 @@ defineExpose({
                    worktree path. -->
               <span
                 v-if="item.git_branch"
-                class="mr-1 inline-flex items-center align-middle"
+                class="mr-1 inline-flex items-center align-middle cursor-context-menu"
                 :style="chatBranchStyle(item.id)"
-                :title="chatBranchTitle(item)"
+                :title="chatBranchTitle(item) + ' — right-click to open GitHub'"
                 :data-pr-status="prStatuses[item.id] || undefined"
                 data-testid="chat-git-branch"
+                @contextmenu.prevent.stop="onGitIconContextMenu($event, item)"
               >
                 <svg
                   class="w-4 h-4 shrink-0"
@@ -926,5 +978,15 @@ defineExpose({
     :x="menuPos.x"
     :y="menuPos.y"
     @open="openContextMenuInBackground"
+  />
+  <GitBranchMenu
+    v-if="gitMenuPos"
+    :x="gitMenuPos.x"
+    :y="gitMenuPos.y"
+    :branch="gitMenuBranch"
+    :branch-url="gitMenuBranchUrl"
+    :pr-url="gitMenuPrUrl"
+    @open-branch="openGitBranchInBackground"
+    @open-pr="openGitPrInBackground"
   />
 </template>

@@ -63,7 +63,7 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     expect(badge.exists()).toBe(true)
     expect(badge.attributes('data-pr-status')).toBe('open')
     expect(badge.attributes('style') ?? '').toContain('var(--color-green)')
-    expect(badge.attributes('title')).toBe('PR open — feature/x')
+    expect(badge.attributes('title')).toContain('PR open — feature/x')
   })
 
   it('colors the badge purple when the PR is merged', async () => {
@@ -73,7 +73,7 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     const badge = wrapper.find('[data-testid="task-git-branch"]')
     expect(badge.attributes('data-pr-status')).toBe('merged')
     expect(badge.attributes('style') ?? '').toContain('var(--color-violet)')
-    expect(badge.attributes('title')).toBe('PR merged — feature/x')
+    expect(badge.attributes('title')).toContain('PR merged — feature/x')
   })
 
   it('colors the badge red when the PR is closed', async () => {
@@ -83,7 +83,7 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     const badge = wrapper.find('[data-testid="task-git-branch"]')
     expect(badge.attributes('data-pr-status')).toBe('closed')
     expect(badge.attributes('style') ?? '').toContain('var(--semantic-error)')
-    expect(badge.attributes('title')).toBe('PR closed — feature/x')
+    expect(badge.attributes('title')).toContain('PR closed — feature/x')
   })
 
   it('falls back to bold orange when the fetch fails', async () => {
@@ -94,7 +94,7 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     expect(badge.exists()).toBe(true)
     expect(badge.attributes('data-pr-status')).toBeUndefined()
     expect(badge.attributes('style') ?? '').toContain('var(--color-orange)')
-    expect(badge.attributes('title')).toBe('feature/x')
+    expect(badge.attributes('title')).toContain('feature/x')
   })
 
   it('skips the fetch and keeps the fallback when no cwd is available', async () => {
@@ -103,6 +103,6 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     expect(getPrStatusMock).not.toHaveBeenCalled()
     const badge = wrapper.find('[data-testid="task-git-branch"]')
     expect(badge.attributes('data-pr-status')).toBeUndefined()
-    expect(badge.attributes('title')).toBe('feature/x')
+    expect(badge.attributes('title')).toContain('feature/x')
   })
 })

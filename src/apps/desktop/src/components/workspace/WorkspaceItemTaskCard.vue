@@ -36,8 +36,13 @@ import { useTaskActions, type TaskComponentProps } from '../../composables/useTa
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import GitBranchMenu from '../shell/GitBranchMenu.vue'
 import { stopSession } from '../../api'
-import { fetchPrStatusCached } from '../../helpers/prStatusCache'
+import {
+  fetchPrInfoCached,
+  fetchPrStatusCached,
+  branchUrlFromPrUrl,
+} from '../../helpers/prStatusCache'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -143,6 +148,47 @@ const openTaskDetailMenuInBackground = () => {
     itemId: props.itemId,
     taskId: props.task.id,
   })
+}
+
+// Right-click menu on the git-branch badge: open GitHub branch / PR
+// URLs in a new tab. Separate position state from the card menu so a
+// badge right-click never opens the chat menu. URLs resolve via the
+// shared PR-info cache; the branch URL derives from the PR repo base.
+const { menuPos: gitMenuPos, openAt: openGitMenuAt, close: closeGitMenu } = useContextMenu()
+const gitMenuBranchUrl = ref('')
+const gitMenuPrUrl = ref('')
+
+const onGitBadgeContextMenu = async (event: MouseEvent) => {
+  event.preventDefault()
+  event.stopPropagation()
+  const branch = gitBranchBadge.value ?? ''
+  const cwd = effectiveCwd.value
+  gitMenuBranchUrl.value = ''
+  gitMenuPrUrl.value = ''
+  openGitMenuAt(event)
+  if (!branch || !cwd) return
+  try {
+    const info = await fetchPrInfoCached(cwd, branch)
+    if (gitMenuPos.value == null) return
+    gitMenuPrUrl.value = info.prUrl || ''
+    gitMenuBranchUrl.value = branchUrlFromPrUrl(info.prUrl || '', branch)
+  } catch {
+    // Fail-silent: menu stays open with disabled items.
+  }
+}
+
+const openGitBranchInBackground = () => {
+  const url = gitMenuBranchUrl.value
+  closeGitMenu()
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
+}
+
+const openGitPrInBackground = () => {
+  const url = gitMenuPrUrl.value
+  closeGitMenu()
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
 }
 
 // Right-click "Stop agent" — visible only while a worker runs on
@@ -811,11 +857,12 @@ watch([gitBranchBadge, effectiveCwd], () => {
            full branch name on hover. -->
       <span
         v-if="gitBranchBadge"
-        class="inline-flex items-center gap-1 max-w-[8rem] truncate font-semibold"
+        class="inline-flex items-center gap-1 max-w-[8rem] truncate font-semibold cursor-context-menu"
         :style="gitBranchStyle"
-        :title="gitBranchTitle"
+        :title="`${gitBranchTitle} — right-click to open GitHub`"
         :data-pr-status="prStatus || undefined"
         data-testid="task-git-branch"
+        @contextmenu.prevent.stop="onGitBadgeContextMenu"
       >
         <svg
           class="w-4 h-4 shrink-0"
@@ -857,6 +904,16 @@ watch([gitBranchBadge, effectiveCwd], () => {
       @open="openTaskMenuInBackground"
       @open-details="openTaskDetailMenuInBackground"
       @stop="stopAgentFromMenu"
+    />
+    <GitBranchMenu
+      v-if="gitMenuPos"
+      :x="gitMenuPos.x"
+      :y="gitMenuPos.y"
+      :branch="gitBranchBadge ?? ''"
+      :branch-url="gitMenuBranchUrl"
+      :pr-url="gitMenuPrUrl"
+      @open-branch="openGitBranchInBackground"
+      @open-pr="openGitPrInBackground"
     />
   </button>
 </template>
