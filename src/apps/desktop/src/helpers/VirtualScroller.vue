@@ -907,6 +907,9 @@ let measureDebounce: ReturnType<typeof setTimeout> | null = null
 
 const onScroll = (e: Event) => {
   const target = e.target as HTMLElement
+  // Timestamp for the idle content-size observer below: it stays quiet
+  // shortly after a scroll because the scroll path already measures.
+  lastScrollEventAt = Date.now()
   // Keep `containerHeight.value` in sync with the live DOM reading.
   // The `ResizeObserver` only fires when the container's *size* changes —
   // it does NOT fire for scroll-only events. Between the first `loadMore`
@@ -1158,6 +1161,32 @@ const remeasure = () => {
 }
 
 let ro: ResizeObserver | null = null
+// ── Idle content-size observer ─────────────────────────────────────────────
+// measureItems runs on scroll, remeasure(), and rendered-range change —
+// but NOT when an already-rendered item grows on its own: async image
+// decode, a PresentFiles source fetch resolving, sub-agent progress
+// filling in, copy-button injection. The model then lags reality until
+// the user's NEXT scroll, which applies all pending corrections at
+// once: the "small scroll suddenly shows content / jumps" symptom.
+// A ResizeObserver on the CONTENT box closes that gap: real growth
+// schedules a debounced measure within ~150ms, so corrections land
+// promptly instead of accumulating.
+//
+// Loop safety (a naive observer on the container once froze the
+// browser: observe → measure → sizer write → re-observe): this observes
+// ONLY the content div's own box. Nothing in the measure path alters
+// that box — measureItems reads children; its writes move
+// topSpacer/transform (position, not size) and the sizer (a SIBLING
+// element). The callback additionally ignores sub-2px noise, skips
+// while preserving or pre-paint measuring, and stays quiet shortly
+// after a scroll event (the scroll path already measures — measuring
+// twice would just force extra layouts).
+let contentRO: ResizeObserver | null = null
+let contentROTimer: ReturnType<typeof setTimeout> | null = null
+let lastContentH = -1
+let lastScrollEventAt = 0
+const CONTENT_RO_DEBOUNCE_MS = 150
+const CONTENT_RO_MIN_DELTA_PX = 2
 onMounted(() => {
   if (containerRef.value) {
     containerHeight.value = containerRef.value.clientHeight
@@ -1166,11 +1195,38 @@ onMounted(() => {
       nextTick(() => setTimeout(measureItems, 50))
     })
     ro.observe(containerRef.value)
+    const contentEl = containerRef.value.querySelector(
+      '.virtual-scroller-content',
+    ) as HTMLElement | null
+    if (contentEl && typeof ResizeObserver !== 'undefined') {
+      lastContentH = contentEl.offsetHeight
+      contentRO = new ResizeObserver(() => {
+        const content = containerRef.value?.querySelector(
+          '.virtual-scroller-content',
+        ) as HTMLElement | null
+        if (!content) return
+        const h = content.offsetHeight
+        if (Math.abs(h - lastContentH) < CONTENT_RO_MIN_DELTA_PX) {
+          lastContentH = h
+          return
+        }
+        lastContentH = h
+        if (isPreservingScroll.value || _inPrePaintMeasure) return
+        if (Date.now() - lastScrollEventAt < CONTENT_RO_DEBOUNCE_MS) return
+        if (contentROTimer) clearTimeout(contentROTimer)
+        contentROTimer = setTimeout(() => {
+          if (!isPreservingScroll.value && !_inPrePaintMeasure) measureItems()
+        }, CONTENT_RO_DEBOUNCE_MS)
+      })
+      contentRO.observe(contentEl)
+    }
   }
   nextTick(() => setTimeout(measureItems, 100))
 })
 onUnmounted(() => {
   ro?.disconnect()
+  contentRO?.disconnect()
+  if (contentROTimer) clearTimeout(contentROTimer)
   if (loadMoreDebounce) clearTimeout(loadMoreDebounce)
   if (measureDebounce) clearTimeout(measureDebounce)
   if (heightDebounce) clearTimeout(heightDebounce)
