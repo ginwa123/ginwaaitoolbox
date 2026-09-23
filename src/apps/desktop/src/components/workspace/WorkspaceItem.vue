@@ -42,6 +42,9 @@ const props = defineProps<{
   // ProjectsList.handleItemDrop for the index math that
   // accompanies this visual.
   isItemDragOverInsertAfter?: boolean
+  // v3 minimal-flat: search string from ProjectsList. Used to filter
+  // the nested task list when the user types in the header filter.
+  searchQuery?: string
 }>()
 
 const emit = defineEmits<{
@@ -595,59 +598,49 @@ const handlePinnedDrop = (event: DragEvent) => {
     :data-workspace-id="workspaceId"
   >
     <div class="flex flex-col">
-      <!-- Main Item Row -->
+      <!-- Main Item Row — v3 minimal-flat: one surface, 32px row,
+           24px chevron hit-area, quiet count, hover-reveal actions,
+           active = flat #262522 fill (no violet bar, no shadow). -->
       <div class="flex items-center group/item">
         <button
           @click="handleClick($event)"
           @auxclick="onItemRowAuxClick"
           @contextmenu.prevent="onItemRowContextMenu"
-          class="relative flex-1 flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-all duration-200"
+          class="relative flex-1 flex items-center gap-0.5 px-2 py-2 rounded-lg text-[13px] min-h-[32px] transition-colors duration-150"
           :style="
             isCurrentMainView
-              ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text); box-shadow: inset 2px 0 0 0 var(--color-violet);`
+              ? `background-color: #262522; color: var(--semantic-text);`
               : `color: var(--semantic-text-muted);`
           "
         >
           <!-- Processing slider (LLM worker is running on one of this
                item's tasks). Mounted at the bottom edge of the row,
-               self-positioning (absolute bottom-0). Replaces the old
-               yellow spinner circle that used to float on the left.
-               The slider reads processingState via the same Vue inject
-               the spinner used; visible iff firstProcessingTaskId is
-               truthy AND processingState[that id] === true. -->
-          <!-- Chevron glyph (expand/collapse) — rendered for all
-               item types EXCEPT kanban (2026-09-10: no expand on
-               kanban mode) so every other row shows
-               the same ▶/▼ affordance. Unicode right-pointing
-               caret rotated 90° when expanded, matching the
-               ProjectsList chevron style for visual consistency.
-               data-testid="item-row-chevron" so tests can verify
-               DOM-order position relative to the spinner (was an
-               SVG path before the minimalist-rewrite).
-               NEW (design-pages-in-workspace-tree plan, 2026-08-06):
-               for `design` items the chevron is its own click target
-               (calls handleChevronToggle) — toggles expand WITHOUT
-               activating the item. Row body click is still activation.
-               Other item types (agent/folder/memory) use the click-handler
-               toggle (handleClick above) since they don't have nested
-               content to navigate to. -->
+               self-positioning (absolute bottom-0). -->
+          <!-- Chevron — 24px hit-area (v3), rotates when expanded. -->
           <span
-            class="text-xs shrink-0 transition-transform duration-200 cursor-pointer"
-            :class="item.item_type === 'design' ? 'hover:opacity-100 opacity-80' : ''"
+            class="w-6 h-6 shrink-0 flex items-center justify-center text-[9px] transition-transform duration-200 cursor-pointer rounded-md hover:bg-[#2e2d2a]"
             data-testid="item-row-chevron"
-            :style="{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
+            :style="{
+              transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
+              color: 'var(--semantic-text-dim)',
+            }"
             aria-hidden="true"
             @click="item.item_type === 'design' ? handleChevronToggle($event) : null"
             >▶</span
           >
-          <!-- Item Name. Fall back to "Untitled project" when the
-               DB row has an empty name (legacy data that predates
-               the empty-name server-side validation added in
-               2026-07-10; the active-dot + bg styling still applies
-               so the row is legible rather than a focus-only
-               "empty with a border" rectangle).
-               Plan: docs/superpowers/plans/2026-07-10-empty-workspace-item-bug.md -->
+          <!-- Item Name. Fall back to "Untitled project" for legacy
+               empty-name rows (plan 2026-07-10). -->
           <span class="truncate">{{ item.name || 'Untitled project' }}</span>
+          <!-- v3 quiet count — plain grey text, hidden on row hover
+               (CSS below swaps it for the +/x actions). -->
+          <span
+            v-if="!item.isLoading && (item.tasks?.length || 0) > 0"
+            class="ml-auto text-[11px] item-count"
+            style="color: var(--semantic-text-dim); opacity: 0.7"
+            data-testid="item-task-count"
+          >
+            {{ item.tasks?.length }}
+          </span>
           <!-- Loading spinner (folder contents fetching — independent
                of LLM worker state). Right-side slot. Priority 1 over
                the active dot: takes the slot when the user just
@@ -693,45 +686,13 @@ const handlePinnedDrop = (event: DragEvent) => {
             test-id="item-processing-spinner"
           />
         </button>
-        <!-- Add Task + Delete Item buttons. The `+` (Add Task) is
-             hidden for kanban + routine items: kanban tasks are
-             created from inside the kanban view (column "+ Add" →
-             KanbanTaskDetailDialog), so the sidebar picker would
-             bypass the board context; routine items are single-run
-             configs (RoutineView: description / instruction /
-             schedule) with no task list to append to, so the
-             picker (Standard Chat / Memory) would create orphan
-             chats under a scheduler-owned parent.
-             Agent/folder/design/memory items keep the `+`. The `×`
-             (Delete Item) stays visible for all
-             item_types (see cascade note below).
-             Previously
-             the kanban and design item_types were excluded from the
-             sidebar delete, on the (false) assumption that they had
-             their own delete UIs. Neither KanbanView nor DesignView
-             expose a "Delete this kanban" or "Delete this design"
-             button; the only "delete" affordances inside those views
-             are deleteColumn / deleteElement for children. Restored
-             the sidebar delete for all item_types:
-
-             - kanban: backend's deleteWorkspaceItem cascades to
-               kanban_columns (FK ON DELETE CASCADE) which then cascades
-               to workspace_item_tasks.kanban_column_id (FK ON DELETE
-               SET NULL — moot since the task rows are deleted by the
-               parent cascade anyway). No on-disk state to clean up.
-             - design: backend's deleteWorkspaceItem cascades to
-               design_pages, and the handler rmdirs the
-               .nalar/design/ folder from disk.
-             - chat/folder: no children, no on-disk state — plain
-               row delete.
-
-             See workspace_items_delete.zig for the disk-cleanup logic
-             (only runs for item_type='design'). -->
+        <!-- v3: hover-reveal actions (quiet until hover/focus). + hidden
+             for kanban + routine (board/scheduler own creation). -->
         <template v-if="true">
           <button
             v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
             @click="handleAddTask"
-            class="w-7 h-7 text-xl leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-green-400"
+            class="item-action w-[26px] h-[26px] text-[15px] leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-100 focus-visible:opacity-100 focus-within:opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim)"
             title="Add Task"
             aria-label="Add Task"
@@ -739,11 +700,10 @@ const handlePinnedDrop = (event: DragEvent) => {
           >
             +
           </button>
-          <!-- Delete Item Button (always visible). Unicode × glyph
-               instead of SVG. -->
+          <!-- Delete Item Button (hover-reveal). Unicode × glyph. -->
           <button
             @click="handleDelete"
-            class="w-7 h-7 text-xl leading-none flex items-center justify-center rounded opacity-100 transition-opacity duration-150 hover:text-red-400"
+            class="item-action w-[26px] h-[26px] text-[15px] leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-100 focus-visible:opacity-100 focus-within:opacity-100 transition-opacity duration-150 hover:text-red-400"
             style="color: var(--semantic-text-dim)"
             title="Delete Item"
             aria-label="Delete Item"
@@ -908,7 +868,7 @@ const handlePinnedDrop = (event: DragEvent) => {
         <button
           type="button"
           @click="handleAddDesignPage"
-          class="w-full text-left px-3 py-1 rounded text-xs transition-colors hover:bg-[--semantic-active-bg]"
+          class="w-full text-left px-3 py-1 rounded text-xs transition-colors hover:bg-[#2e2d2a]"
           style="color: var(--semantic-text-dim); opacity: 0.7"
           data-testid="design-sidebar-add-page-button"
           :title="`Add a new page to ${item.name}`"
@@ -927,3 +887,13 @@ const handlePinnedDrop = (event: DragEvent) => {
     />
   </li>
 </template>
+
+<style scoped>
+/* v3 minimal-flat: quiet count swaps for actions on row hover/focus.
+   The count lives inside the main button; the +/- actions live beside
+   it. Hiding the count on hover removes visual duplication. */
+.group\/item:hover .item-count,
+.group\/item:focus-within .item-count {
+  display: none;
+}
+</style>
