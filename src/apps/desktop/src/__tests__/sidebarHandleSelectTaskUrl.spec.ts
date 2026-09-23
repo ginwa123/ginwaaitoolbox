@@ -203,15 +203,9 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    expect(pushArg.path).toBe('/app')
-    // SIMPLIFY-URL-BROWSER (2026-08-15): the chat task id is
-    // encoded as /chat/<taskId> on itemId; view is 'workspace' (not
-    // 'task') and the legacy `task=` param is dropped.
-    expect(pushArg.query.view).toBe('workspace')
-    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
-    // The new URL must PRESERVE the workspace context (the kanban
-    // URL is "appended" to the task URL, not replaced).
-    expect(pushArg.query.workspaceId).toBe(WS_ID)
+    // PATH-BASED (2026-09-22 revamp): the task chat lives at
+    // /app/{ws}/projects/{item}/chat/{task}; sorts ride in the query.
+    expect(pushArg.path).toBe(`/app/${WS_ID}/projects/${ITEM_ID}/chat/${TASK_ID}`)
     expect(pushArg.query.sorts).toBe(
       'col_a:updated_at:desc,col_b:updated_at:desc',
     )
@@ -283,11 +277,8 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    // SIMPLIFY-URL-BROWSER (2026-08-15)
-    expect(pushArg.query.view).toBe('workspace')
-    expect(pushArg.query.itemId).toBe(`item_design/chat/${TASK_ID}`)
-     
-    expect(pushArg.query.workspaceId).toBe(WS_ID)
+    // PATH-BASED (2026-09-22 revamp)
+    expect(pushArg.path).toBe(`/app/${WS_ID}/projects/item_design/chat/${TASK_ID}`)
     expect(pushArg.query.pageId).toBe('page_first')
 
     wrapper.unmount()
@@ -321,13 +312,8 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    // SIMPLIFY-URL-BROWSER (2026-08-15)
-    expect(pushArg.query.view).toBe('workspace')
-    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
-    // workspaceId IS included (from the active store state
-     
-    // auto-discovered by setActiveTask's parent-item lookup).
-    expect(pushArg.query.workspaceId).toBe(WS_ID)
+    // PATH-BASED (2026-09-22 revamp)
+    expect(pushArg.path).toBe(`/app/${WS_ID}/projects/${ITEM_ID}/chat/${TASK_ID}`)
     // No sorts was in the URL before — must not be appended.
     expect(pushArg.query.sorts).toBeUndefined()
 
@@ -399,12 +385,8 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
  
 
     const pushArg = lastPushCall()
-    // SIMPLIFY-URL-BROWSER (2026-08-15)
-    expect(pushArg.query.view).toBe('workspace')
-    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
-    // workspaceId IS included (from the active store state set by
-    // `setActiveWorkspaceItem(ITEM_ID)` above).
-    expect(pushArg.query.workspaceId).toBe(WS_ID)
+    // PATH-BASED (2026-09-22 revamp)
+    expect(pushArg.path).toBe(`/app/${WS_ID}/projects/${ITEM_ID}/chat/${TASK_ID}`)
 
     wrapper.unmount()
    
@@ -432,12 +414,9 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
 
     const pushArg = lastPushCall()
     // The URL should include the kanban-mode breadcrumb:
-    //   ?view=workspace&workspaceId=W&itemId=K/chat/task_X&sorts=S
-    // SIMPLIFY-URL-BROWSER (2026-08-15)
-     
-    expect(pushArg.query.view).toBe('workspace')
-    expect(pushArg.query.workspaceId).toBe(WS_ID)
-    expect(pushArg.query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
+    //   /app/W/projects/K/chat/task_X?sorts=S
+    // PATH-BASED (2026-09-22 revamp)
+    expect(pushArg.path).toBe(`/app/${WS_ID}/projects/${ITEM_ID}/chat/${TASK_ID}`)
     expect(pushArg.query.sorts).toBe('col_a:updated_at:desc')
 
     wrapper.unmount()
@@ -472,10 +451,8 @@ describe('Sidebar.handleSelectTask — APPEND URL, not REPLACE (better-url-brows
     await nextTick()
 
     const pushArg = lastPushCall()
-    // SIMPLIFY-URL-BROWSER (2026-08-15)
-    expect(pushArg.query.view).toBe('workspace')
-    expect(pushArg.query.workspaceId).toBe(WS_ID)
-    expect(pushArg.query.itemId).toBe(`item_design/chat/${TASK_ID}`)
+    // PATH-BASED (2026-09-22 revamp)
+    expect(pushArg.path).toBe(`/app/${WS_ID}/projects/item_design/chat/${TASK_ID}`)
     // pageId preserved from URL (the URL is the source of truth for
     // design page state, mirrored from the store's activeDesignPageId
     // via DesignView's onMount + tab switch watcher).
