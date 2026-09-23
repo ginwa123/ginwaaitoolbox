@@ -546,7 +546,16 @@ watch(
     //
     // `itemId` comes from `activeWorkspaceItemId` which is `string | null`.
     const safeItemId = itemId ?? ''
-    const liveTaskId = workspacesStore.activeTask?.id ?? null
+    // The live task id is read from `activeTaskId` (the raw id), NOT
+    // the `activeTask` computed: the computed resolves the parent
+    // item from the loaded tree, which is null when the parent's
+    // workspace hasn't loaded its items yet (lazy loading) or in
+    // tests that seed the task id without the full tree. The suffix
+    // represents "chat dialog open for task T" — as long as T is the
+    // active task id, the dialog stays, loaded parent or not.
+    // Navigating to a DIFFERENT item still drops the suffix because
+    // Sidebar clears the active task first (setActiveTask(null)).
+    const liveTaskId = workspacesStore.activeTaskId ?? workspacesStore.activeTask?.id ?? null
     const pathParsed = parseAppPath(route.path)
     const urlChatTask =
       pathParsed.kind === 'projectChat'

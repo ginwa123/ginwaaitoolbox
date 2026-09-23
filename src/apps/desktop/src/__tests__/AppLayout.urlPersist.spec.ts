@@ -26,15 +26,10 @@ import { useWorkspacesStore } from '../stores/workspaces'
 import type { Workspace, WorkspaceItem, KanbanColumn } from '../stores/workspaces'
 import AppLayout from '../components/AppLayout.vue'
 import { makeLocalStorageStub } from './helpers'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState = 'open'): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -114,13 +109,19 @@ const makeDesignItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem =
   ...overrides,
 })
 
-function mountAppLayout(workspaces: Workspace[] = [], routeQuery: Record<string, string> = {}) {
+function mountAppLayout(
+  workspaces: Workspace[] = [],
+  routeQuery: Record<string, string> = {},
+  routePath = '/app',
+) {
   useRouteMock.mockReturnValue({
     query: routeQuery,
-    path: '/app',
-     
-    fullPath: '/app' + (Object.keys(routeQuery).length ? `?${new URLSearchParams(routeQuery).toString()}` : ''),
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    path: routePath,
+
+    fullPath:
+      routePath +
+      (Object.keys(routeQuery).length ? `?${new URLSearchParams(routeQuery).toString()}` : ''),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   const ws = useWorkspacesStore()
   ws.workspaces = workspaces
@@ -136,14 +137,20 @@ function mountAppLayout(workspaces: Workspace[] = [], routeQuery: Record<string,
         SettingsView: true,
         ChatView: true,
         CodeEditor: true,
-        KanbanView: { template: '<div data-kanban-view="stub" :data-item-id="item.id" />', props: ['item', 'workspaceId', 'itemId'] },
-        DesignView: { template: '<div data-design-view="stub" :data-item-id="item.id" />', props: ['item', 'workspaceId', 'itemId'] },
+        KanbanView: {
+          template: '<div data-kanban-view="stub" :data-item-id="item.id" />',
+          props: ['item', 'workspaceId', 'itemId'],
+        },
+        DesignView: {
+          template: '<div data-design-view="stub" :data-item-id="item.id" />',
+          props: ['item', 'workspaceId', 'itemId'],
+        },
       },
     },
   })
 }
 
-describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y restores the active item', () => {
+describe('AppLayout — page reload of /app/{ws}/projects/{item} restores the active item', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     installBusForTests()
@@ -168,23 +175,28 @@ describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y re
     vi.restoreAllMocks()
   })
 
-  it('mounting with ?view=workspace&workspaceId=X&itemId=Y in the URL restores activeWorkspaceItemId', async () => {
+  it('mounting with /app/{ws}/projects/{item} in the URL restores activeWorkspaceItemId', async () => {
     const ws = useWorkspacesStore()
     const kanban = makeKanbanItem()
+    // The API mocks return the workspace + its items so init()
+    // populates the tree instead of wiping the seeded fixtures.
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({
+      workspaces: [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] }],
+    })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [kanban], count: 1 })
     const wrapper = mountAppLayout(
       [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace],
-      { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
+      {},
+      `/app/${WS_ID}/projects/${KANBAN_ID}`,
     )
-    // The watcher in AppLayout that picks the URL-stashed params
-    // fires on the workspaces ref update. `mountAppLayout` already
-    // populated `ws.workspaces` synchronously, so the watcher's
-    // immediate run should restore activeWorkspaceItemId within a
-    // tick.
-    await nextTick()
-    await nextTick()
-    expect(ws.activeWorkspaceItemId).toBe(KANBAN_ID)
-    const view = wrapper.find('[data-kanban-view="stub"]')
-    expect(view.exists()).toBe(true)
+    // The restore watcher fires on mount (seeded fixtures) and again
+    // after init() loads the items from the API mocks. init() is
+    // async (workspace list → items → columns), so wait for the
+    // kanban view to actually render instead of counting ticks.
+    await vi.waitFor(() => {
+      expect(ws.activeWorkspaceItemId).toBe(KANBAN_ID)
+      expect(wrapper.find('[data-kanban-view="stub"]').exists()).toBe(true)
+    })
     wrapper.unmount()
   })
 
@@ -192,7 +204,15 @@ describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y re
     const ws = useWorkspacesStore()
     const otherKanban = makeKanbanItem({ id: 'item_other_kanban' })
     const wrapper = mountAppLayout(
-      [{ id: OTHER_WS_ID, name: 'WS', icon: '📁', expanded: true, items: [otherKanban] } as Workspace],
+      [
+        {
+          id: OTHER_WS_ID,
+          name: 'WS',
+          icon: '📁',
+          expanded: true,
+          items: [otherKanban],
+        } as Workspace,
+      ],
       // URL refers to an item that's NOT in the workspaces list:
       { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
     )
@@ -210,7 +230,15 @@ describe('AppLayout — page reload of ?view=workspace&workspaceId=X&itemId=Y re
   it('mounting with no URL params does NOT auto-select any workspace item', async () => {
     const ws = useWorkspacesStore()
     const wrapper = mountAppLayout(
-      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeKanbanItem()] } as Workspace],
+      [
+        {
+          id: WS_ID,
+          name: 'WS',
+          icon: '📁',
+          expanded: true,
+          items: [makeKanbanItem()],
+        } as Workspace,
+      ],
       {},
     )
     await nextTick()
@@ -247,20 +275,22 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     vi.restoreAllMocks()
   })
 
-  
-
-  it('mounting with ?view=workspace&workspaceId=X&itemId=designId restores the design view', async () => {
+  it('mounting with /app/{ws}/projects/{designId} restores the design view', async () => {
     const ws = useWorkspacesStore()
     const design = makeDesignItem()
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({
+      workspaces: [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] }],
+    })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [design], count: 1 })
     const wrapper = mountAppLayout(
       [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace],
-      { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      {},
+      `/app/${WS_ID}/projects/${DESIGN_ID}`,
     )
-    await nextTick()
-    await nextTick()
-    expect(ws.activeWorkspaceItemId).toBe(DESIGN_ID)
-    const view = wrapper.find('[data-design-view="stub"]')
-    expect(view.exists()).toBe(true)
+    await vi.waitFor(() => {
+      expect(ws.activeWorkspaceItemId).toBe(DESIGN_ID)
+      expect(wrapper.find('[data-design-view="stub"]').exists()).toBe(true)
+    })
     wrapper.unmount()
   })
 
@@ -268,11 +298,11 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     const replaceMock = vi.fn()
     useRouteMock.mockReturnValue({
       query: { view: 'workspace' },
-       
+
       path: '/app',
-       
+
       fullPath: '/app?view=workspace',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -280,7 +310,7 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
-    const wrapper = mountAppLayout(ws.workspaces, { view: 'workspace' })
+    const wrapper = mountAppLayout(ws.workspaces, {}, `/app/${WS_ID}`)
     await nextTick()
     await nextTick()
     // AppLayout.onMounted calls initializeFromSystemFolder() which
@@ -298,15 +328,15 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     await nextTick()
     await nextTick()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: {},
     })
     wrapper.unmount()
   })
 
   it('activeWorkspaceItem → URL watcher does NOT overwrite the URL when the chat suffix is present', async () => {
     // SIMPLIFY-URL-BROWSER (2026-08-15): the legacy view=task shape
-     
+
     // is gone. The chat-open state is encoded as /chat/<taskId> on
     // itemId while view=workspace. The watcher's chat-suffix guard
     // MUST preserve the suffix on every write.
@@ -320,11 +350,11 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     // URL carries view=workspace + the chat suffix on itemId. The
     // watcher must NOT clobber the suffix when activeWorkspaceItem
     // changes underneath it.
-    const wrapper = mountAppLayout(ws.workspaces, {
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: `${DESIGN_ID}/chat/task_xyz`,
-    })
+    const wrapper = mountAppLayout(
+      ws.workspaces,
+      {},
+      `/app/${WS_ID}/projects/${DESIGN_ID}/chat/task_xyz`,
+    )
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
@@ -349,14 +379,13 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
   // against a kanban that doesn't have pages. The fix: only
   // include `pageId` in the URL when the active item is a design.
   it('activeWorkspaceItem → URL watcher does NOT leak stale pageId when switching from design to kanban', async () => {
-     
     const replaceMock = vi.fn()
-     
+
     useRouteMock.mockReturnValue({
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID, pageId: PAGE_ID_1 },
-      path: '/app',
-      fullPath: '/app?view=workspace&workspaceId=ws_test&itemId=item_design_url&pageId=page_first',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      query: { pageId: PAGE_ID_1 },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      fullPath: `/app/${WS_ID}/projects/${DESIGN_ID}?pageId=page_first`,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -416,12 +445,8 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     // across expressions).
     const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
     expect(lastArg).toMatchObject({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: KANBAN_ID,
-      },
+      path: `/app/${WS_ID}/projects/${KANBAN_ID}`,
+      query: {},
     })
     expect(lastArg.query.pageId).toBeUndefined()
     wrapper.unmount()
@@ -439,16 +464,15 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
       item_type: 'folder',
       path: '/tmp/folder',
       tasks: [],
-       
+
       ...overrides,
-     
     })
     const replaceMock = vi.fn()
     useRouteMock.mockReturnValue({
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID, pageId: PAGE_ID_1 },
-      path: '/app',
-      fullPath: '/app?view=workspace&workspaceId=ws_test&itemId=item_design_url&pageId=page_first',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      query: { pageId: PAGE_ID_1 },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      fullPath: `/app/${WS_ID}/projects/${DESIGN_ID}?pageId=page_first`,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -490,19 +514,13 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     expect(lastCall).toBeDefined()
     const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
     expect(lastArg).toMatchObject({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-         
-        itemId: FOLDER_ID,
-      },
+      path: `/app/${WS_ID}/projects/${FOLDER_ID}`,
+      query: {},
     })
     expect(lastArg.query.pageId).toBeUndefined()
     wrapper.unmount()
   })
 
-   
   it('handleCloseTaskView preserves workspaceId + itemId when the active task belongs to a design', async () => {
     const replaceMock = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -532,16 +550,10 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     replaceMock.mockClear()
     layout.handleCloseTaskView()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-         
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: DESIGN_ID,
-        pageId: PAGE_ID_2,
-      },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2 },
     })
-     
+
     wrapper.unmount()
   })
 
@@ -565,14 +577,14 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     ws.setActiveTask('task_kanban_chat')
     await nextTick()
     await nextTick()
-     
+
     replaceMock.mockClear()
     layout.handleCloseTaskView()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: KANBAN_ID },
+      path: `/app/${WS_ID}/projects/${KANBAN_ID}`,
+      query: {},
     })
-     
+
     const lastQuery = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]![0].query
     expect(lastQuery.pageId).toBeUndefined()
     wrapper.unmount()
@@ -600,17 +612,11 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
-     
+
     layout.closeGitViewer()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-         
-        itemId: DESIGN_ID,
-        pageId: PAGE_ID_2,
-      },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2 },
     })
     wrapper.unmount()
   })
@@ -635,19 +641,13 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     ws.setActiveWorkspaceItem(DESIGN_ID)
     ws.setActiveDesignPage(PAGE_ID_2)
     await nextTick()
-     
+
     await nextTick()
     replaceMock.mockClear()
     layout.closeSkillViewer()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-         
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: DESIGN_ID,
-        pageId: PAGE_ID_2,
-      },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2 },
     })
     wrapper.unmount()
   })
@@ -676,22 +676,16 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     replaceMock.mockClear()
     layout.closeCodeEditor()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-         
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: DESIGN_ID,
-        pageId: PAGE_ID_2,
-      },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2 },
     })
-     
+
     wrapper.unmount()
   })
 
   // ─── add-workspace-id-params plan (2026-08-06) ──────────────────
   //
-   
+
   // When the user closes a git/skill/code-editor viewer while a
   // task is active (e.g. they opened a viewer from the chat
   // panel of a kanban task), the new URL must include workspaceId
@@ -721,7 +715,7 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
     ]
     ws.setActiveWorkspaceItem(KANBAN_ID)
-     
+
     ws.setActiveTask('task_active')
     await nextTick()
     await nextTick()
@@ -729,17 +723,14 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     layout.closeGitViewer()
     const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
     expect(lastCall).toBeDefined()
-     
-    const query = lastCall![0].query as Record<string, string>
+
+    const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
     // The close-viewer priority is: activeWorkspaceItem > activeTask
     // > chat. The user has both a kanban active AND a task active,
-    // so the URL returns to the kanban view. workspaceId + itemId
-    // are now required so the URL stays in the workspace context.
-    expect(query.view).toBe('workspace')
-    expect(query.workspaceId).toBe(WS_ID)
-    expect(query.itemId).toBe(KANBAN_ID)
+    // so the URL returns to the kanban project path.
+    expect(lastArg.path).toBe(`/app/${WS_ID}/projects/${KANBAN_ID}`)
     // pageId must NOT leak into a kanban URL.
-    expect(query.pageId).toBeUndefined()
+    expect(lastArg.query.pageId).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -749,36 +740,33 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
     // No workspace item active — only a chat task (chat-only).
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
-    ]
+    ws.workspaces = [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace]
     const wrapper = mountAppLayout(ws.workspaces, {})
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
     await nextTick()
     await nextTick()
-     
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
-    ]
-     
+
+    ws.workspaces = [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace]
+
     // activeTask.value is null because no item owns the task —
     // activeTask computed walks the tree. The branch falls through
     // to chat since neither activeWorkspaceItem nor activeTask
     // computed is truthy. Defensive: workspaceId absent.
     ws.setActiveTask('task_chat_only')
-     
+
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
     layout.closeGitViewer()
     const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
     expect(lastCall).toBeDefined()
-    const query = lastCall![0].query as Record<string, string>
-    // Falls through to chat branch (no workspace item, no resolvable task).
-    expect(query.workspaceId).toBeUndefined()
-    expect(query.itemId).toBeUndefined()
-    expect(query.view).toBe('chat')
+    const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
+    // Falls through to the landing (no workspace item, no resolvable
+    // task, no active chat to return to).
+    expect(lastArg.path).toBe('/app')
+    expect(lastArg.query.workspaceId).toBeUndefined()
+    expect(lastArg.query.itemId).toBeUndefined()
     wrapper.unmount()
   })
 
@@ -797,7 +785,7 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
     await nextTick()
-     
+
     await nextTick()
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [design] } as Workspace,
@@ -805,22 +793,19 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     ws.setActiveWorkspaceItem(DESIGN_ID)
     ws.setActiveDesignPage(PAGE_ID_2)
     ws.setActiveTask('task_design_active')
-     
+
     await nextTick()
     await nextTick()
     replaceMock.mockClear()
     layout.closeSkillViewer()
     const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
     expect(lastCall).toBeDefined()
-    const query = lastCall![0].query as Record<string, string>
+    const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
     // The close-viewer priority is: activeWorkspaceItem > activeTask
     // > chat. Both the design item AND the task are active, so the
-    // URL returns to the workspace view (carrying the design
-    // breadcrumb + active page).
-    expect(query.view).toBe('workspace')
-    expect(query.workspaceId).toBe(WS_ID)
-    expect(query.itemId).toBe(DESIGN_ID)
-    expect(query.pageId).toBe(PAGE_ID_2)
+    // URL returns to the design project path (carrying the active page).
+    expect(lastArg.path).toBe(`/app/${WS_ID}/projects/${DESIGN_ID}`)
+    expect(lastArg.query.pageId).toBe(PAGE_ID_2)
     wrapper.unmount()
   })
 
@@ -830,17 +815,13 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
     const ws = useWorkspacesStore()
     // No workspace item active — chat-only task.
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
-    ]
+    ws.workspaces = [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace]
     const wrapper = mountAppLayout(ws.workspaces, {})
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const layout = wrapper.vm as any
     await nextTick()
     await nextTick()
-    ws.workspaces = [
-      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace,
-    ]
+    ws.workspaces = [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace]
     ws.setActiveTask('task_chat_only')
     await nextTick()
     await nextTick()
@@ -848,22 +829,21 @@ describe('AppLayout — design item URL persistence (Chunk 3 of design-url-persi
     layout.closeCodeEditor()
     const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]
     expect(lastCall).toBeDefined()
-    const query = lastCall![0].query as Record<string, string>
-    // The branch falls through to chat (no active workspace item,
-    // and `activeTask` computed returns null because no item owns
-    // the task).
-    expect(query.view).toBe('chat')
-    expect(query.workspaceId).toBeUndefined()
-    expect(query.itemId).toBeUndefined()
+    const lastArg = lastCall![0] as { path: string; query: Record<string, string> }
+    // The branch falls through to the landing (no active workspace
+    // item, and `activeTask` computed returns null because no item
+    // owns the task).
+    expect(lastArg.path).toBe('/app')
+    expect(lastArg.query.workspaceId).toBeUndefined()
+    expect(lastArg.query.itemId).toBeUndefined()
     wrapper.unmount()
   })
 })
 
 describe('AppLayout — design page URL persistence (pageId in URL)', () => {
   beforeEach(() => {
-     
     setActivePinia(createPinia())
-     
+
     installBusForTests()
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
@@ -889,10 +869,10 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
   it('activeDesignPage → URL watcher fires when activeDesignPageId changes externally', async () => {
     const replaceMock = vi.fn()
     useRouteMock.mockReturnValue({
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
-      path: '/app',
-      fullPath: '/app?view=workspace',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      query: {},
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      fullPath: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -900,14 +880,10 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
-    const wrapper = mountAppLayout(ws.workspaces, {
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: DESIGN_ID,
-    })
-     
+    const wrapper = mountAppLayout(ws.workspaces, {}, `/app/${WS_ID}/projects/${DESIGN_ID}`)
+
     await nextTick()
-     
+
     await nextTick()
     // Re-set workspaces after init() overwrites them.
     ws.workspaces = [
@@ -921,13 +897,8 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     await nextTick()
     await nextTick()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: {
-        view: 'workspace',
-        workspaceId: WS_ID,
-        itemId: DESIGN_ID,
-        pageId: PAGE_ID_2,
-      },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2 },
     })
     wrapper.unmount()
   })
@@ -938,7 +909,7 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
       query: { view: 'workspace' },
       path: '/app',
       fullPath: '/app?view=workspace',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -946,14 +917,13 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
-    const wrapper = mountAppLayout(ws.workspaces, { view: 'workspace' })
+    const wrapper = mountAppLayout(ws.workspaces, {}, `/app/${WS_ID}`)
     await nextTick()
     await nextTick()
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
-     
     ]
-     
+
     await nextTick()
     replaceMock.mockClear()
     // Set the active workspace item (with no pageId).
@@ -961,8 +931,8 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     await nextTick()
     await nextTick()
     expect(replaceMock).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: {},
     })
     // Ensure pageId is NOT in the query.
     const calls = replaceMock.mock.calls
@@ -986,7 +956,7 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
       },
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=${WS_ID}&itemId=${DESIGN_ID}/chat/task_xyz`,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -994,11 +964,11 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     ws.workspaces = [
       { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
     ]
-    const wrapper = mountAppLayout(ws.workspaces, {
-      view: 'workspace',
-      workspaceId: WS_ID,
-      itemId: `${DESIGN_ID}/chat/task_xyz`,
-    })
+    const wrapper = mountAppLayout(
+      ws.workspaces,
+      {},
+      `/app/${WS_ID}/projects/${DESIGN_ID}/chat/task_xyz`,
+    )
     await nextTick()
     await nextTick()
     // AppLayout.onMounted calls initializeFromSystemFolder() which
@@ -1013,13 +983,13 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     ws.setActiveDesignPage(PAGE_ID_1)
     await nextTick()
     await nextTick()
-    // If the watcher DID fire, every write's itemId must still carry
+    // If the watcher DID fire, every write's path must still carry
     // the chat suffix. The pre-fix watcher overwrote itemId with
     // `DESIGN_ID` (bare) on every setActiveDesignPage call, which
     // closed the chat dialog. Post-fix it preserves the suffix.
     for (const call of replaceMock.mock.calls) {
-      const q = call[0].query as Record<string, string>
-      expect(q.itemId).toBe(`${DESIGN_ID}/chat/task_xyz`)
+      const target = call[0] as { path: string; query: Record<string, string> }
+      expect(target.path).toBe(`/app/${WS_ID}/projects/${DESIGN_ID}/chat/task_xyz`)
     }
     wrapper.unmount()
   })
@@ -1041,7 +1011,15 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
   it('mounting without pageId does NOT auto-select any design page', async () => {
     const ws = useWorkspacesStore()
     const wrapper = mountAppLayout(
-      [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace],
+      [
+        {
+          id: WS_ID,
+          name: 'WS',
+          icon: '📁',
+          expanded: true,
+          items: [makeDesignItem()],
+        } as Workspace,
+      ],
       { view: 'workspace', workspaceId: WS_ID, itemId: DESIGN_ID },
     )
     await nextTick()
