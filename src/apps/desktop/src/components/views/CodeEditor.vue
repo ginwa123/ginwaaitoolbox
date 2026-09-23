@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, watch, shallowRef } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, shallowRef } from 'vue'
 import { detectLanguage } from '@/helpers/codeHighlight'
 
 // LAZY LOADED — DO NOT statically `import 'monaco-editor'`.
@@ -132,6 +132,24 @@ const editor = shallowRef<EditorInstance | null>(null)
 const monacoNs = shallowRef<MonacoNs | null>(null)
 const isModified = ref(false)
 const originalContent = ref(props.content || '')
+
+// Footer shows the full path. filePath from the sidebar explorer is
+// already absolute (backend listDirectory joins dir_path + name), so
+// prefixing cwd would double it:
+// /home/u/work//home/u/work/migration/README.md. Only join when
+// filePath is relative.
+const isAbsolutePath = (p: string): boolean => {
+  if (!p) return false
+  if (p.startsWith('/')) return true
+  if (p.length >= 2 && /[A-Za-z]/.test(p[0] || '') && p[1] === ':') return true
+  if (p.startsWith('\\\\')) return true
+  return false
+}
+
+const displayPath = computed(() => {
+  if (props.cwd && !isAbsolutePath(props.filePath)) return `${props.cwd}/${props.filePath}`
+  return props.filePath
+})
 
 // detectLanguage lives in @/helpers/codeHighlight (shared with DiffView).
 // Get file icon for display
@@ -452,9 +470,9 @@ const handleReadOnlyToggle = () => {
         border-top: 1px solid var(--color-border);
         color: var(--semantic-text-dim);
       "
-      :title="cwd ? `${cwd}/${filePath}` : filePath"
+      :title="displayPath"
     >
-      {{ cwd ? `${cwd}/${filePath}` : filePath }}
+      {{ displayPath }}
     </div>
   </div>
 </template>

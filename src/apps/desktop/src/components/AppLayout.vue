@@ -995,13 +995,19 @@ const closeCodeEditor = () => {
 }
 
 const loadCodeEditorContent = async () => {
-  if (!codeEditorFile.value || !rightSidebarCwd.value) return
+  if (!codeEditorFile.value) return
+  // URL restore (?view=code-editor&file=..&cwd=..) can run before the
+  // sidebar cwd resolves — fall back to the query cwd so reloads don't
+  // leave the editor empty.
+  const queryCwd = typeof route.query.cwd === 'string' ? route.query.cwd : ''
+  const cwd = rightSidebarCwd.value || queryCwd
+  if (!cwd) return
 
   codeEditorLoading.value = true
   codeEditorError.value = null
 
   try {
-    const response = await api.readFileContent(rightSidebarCwd.value, codeEditorFile.value.path)
+    const response = await api.readFileContent(cwd, codeEditorFile.value.path)
     codeEditorContent.value = response.content
   } catch (err) {
     console.error('Failed to read file:', err)
@@ -1013,10 +1019,13 @@ const loadCodeEditorContent = async () => {
 }
 
 const handleCodeEditorSave = async (content: string) => {
-  if (!rightSidebarCwd.value || !codeEditorFile.value) return
+  if (!codeEditorFile.value) return
+  const queryCwd = typeof route.query.cwd === 'string' ? route.query.cwd : ''
+  const cwd = rightSidebarCwd.value || queryCwd
+  if (!cwd) return
 
   try {
-    await api.writeFileContent(rightSidebarCwd.value, codeEditorFile.value.path, content)
+    await api.writeFileContent(cwd, codeEditorFile.value.path, content)
     codeEditorContent.value = content
     console.log('File saved successfully')
   } catch (err) {
