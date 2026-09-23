@@ -671,7 +671,7 @@ const sendMessage = () => {
 </script>
 
 <template>
-  <div class="file-input-wrapper" :class="{ 'review-mode': reviewMode }">
+  <div class="file-input-wrapper composer-card" :class="{ 'review-mode': reviewMode }">
     <!-- Hidden native file input -->
     <input
       ref="nativeFileInput"
@@ -749,7 +749,7 @@ const sendMessage = () => {
     <FilePreview v-model="previewFiles" max-height="120px" />
 
     <!-- Input form -->
-    <form @submit.prevent="sendMessage" class="flex gap-3 items-end">
+    <form @submit.prevent="sendMessage" class="flex gap-2 items-end">
       <!-- Queue indicator button -->
       <div v-if="hasQueuedMessages" class="relative">
         <button
@@ -843,9 +843,9 @@ const sendMessage = () => {
         class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
         :class="isInitializing ? 'opacity-60 cursor-not-allowed' : ''"
         style="
-          background-color: var(--semantic-card-bg);
+          background-color: transparent;
           color: var(--semantic-text);
-          border: 1px solid var(--color-border);
+          border: 1px solid transparent;
           height: 48px;
           max-height: 200px;
           overflow-y: auto;
@@ -859,11 +859,11 @@ const sendMessage = () => {
       <button
         type="button"
         @click="triggerFilePicker"
-        class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1"
+        class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1 composer-ghost-btn"
         style="
-          background-color: var(--semantic-card-bg);
-          border-color: var(--color-border);
-          color: var(--semantic-text);
+          background-color: transparent;
+          border-color: transparent;
+          color: var(--semantic-text-dim);
         "
         title="Select a file (docs, images, etc.)"
       >
@@ -898,12 +898,13 @@ const sendMessage = () => {
         @click="handleStopClick"
         :disabled="isStopping"
         data-testid="stop-session-button"
-        class="px-3 py-3 rounded-xl text-sm font-medium transition-all duration-200 border flex items-center gap-2"
-        :class="isStopping ? 'cursor-not-allowed opacity-70' : 'hover:opacity-90 active:scale-95'"
+        class="px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 border flex items-center justify-center gap-2 composer-stop-btn"
+        :class="isStopping ? 'cursor-not-allowed opacity-70' : ''"
         style="
-          background-color: var(--color-red);
-          color: var(--color-bg);
+          background-color: transparent;
+          color: var(--color-red);
           border-color: var(--color-border);
+          min-width: 96px;
         "
         title="Stop the running agent"
         aria-label="Stop session"
@@ -911,7 +912,7 @@ const sendMessage = () => {
         <div
           v-if="isStopping"
           class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-          style="border-color: var(--color-bg); border-top-color: transparent"
+          style="border-color: var(--color-red); border-top-color: transparent"
         ></div>
         <svg
           v-else
@@ -929,14 +930,14 @@ const sendMessage = () => {
         type="submit"
         :disabled="isLoading || isInitializing"
         data-testid="send-message-button"
-        class="px-5 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center gap-2"
+        class="px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center justify-center gap-2"
         :class="
           isLoading || isInitializing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'
         "
         :style="
           isLoading
-            ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border);'
-            : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border);'
+            ? 'background-color: var(--color-orange); color: var(--color-bg); border-color: var(--color-border); min-width: 96px;'
+            : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border-color: var(--color-border); min-width: 96px;'
         "
       >
         <div
@@ -947,12 +948,51 @@ const sendMessage = () => {
         <span>{{ isLoading ? 'Queue' : 'Send' }}</span>
       </button>
     </form>
+    <!-- Composer toolbar strip (V1 single-card): the parent (ChatView)
+         projects its status row here so input + status read as one card.
+         Rendered only when the slot is provided — other hosts that mount
+         FileInput without a toolbar see no extra chrome. -->
+    <div v-if="$slots.toolbar" class="composer-toolbar" data-testid="composer-toolbar">
+      <slot name="toolbar" />
+    </div>
   </div>
 </template>
 
 <style scoped>
 .file-input-wrapper {
   max-width: 100%;
+}
+
+/* V1 single composer card: the wrapper owns the card surface so the
+   textarea, action buttons and the projected toolbar strip read as one
+   unit. Previously each control carried its own card bg + border, which
+   rendered as disconnected floating rows. */
+.composer-card {
+  background-color: var(--semantic-card-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0.75rem;
+  padding: 0.75rem 0.75rem 0.375rem;
+  transition: border-color 0.2s ease;
+}
+
+.composer-card:focus-within {
+  border-color: var(--color-violet);
+}
+
+.composer-ghost-btn:hover {
+  background-color: var(--hover-bg, rgba(255, 255, 255, 0.04));
+  color: var(--semantic-text);
+}
+
+.composer-stop-btn:hover {
+  background-color: rgba(224, 122, 110, 0.12);
+}
+
+/* Hairline-separated toolbar strip pinned to the card's bottom edge. */
+.composer-toolbar {
+  border-top: 1px solid var(--color-border);
+  margin-top: 0.5rem;
+  padding: 0.375rem 0.25rem 0.25rem;
 }
 
 .file-picker-list {

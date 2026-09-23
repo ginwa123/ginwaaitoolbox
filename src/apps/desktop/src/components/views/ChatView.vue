@@ -15,6 +15,7 @@ import {
   FRAME_NO_SCROLLBAR_STYLE,
   findSenderFrame,
   readAutoResizeHeight,
+  formatCompactTokens,
 } from '@/helpers'
 import {
   buildScrollContext,
@@ -4966,208 +4967,201 @@ const compactSession = async () => {
             @files-selected="handleFileInputSubmit"
             @stop-session="handleStopSession"
             :draft-key="sessionId ? `chat:${sessionId}` : undefined"
-          />
-          <!-- Status bar -->
-          <div class="flex items-center gap-2 mt-3">
-            <!-- Compact button -->
-            <button
-              @click="compactSession"
-              :disabled="
-                isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId
-              "
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-              :class="
-                isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId
-                  ? 'opacity-50 cursor-not-allowed'
-                  : 'hover:scale-105'
-              "
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-                color: var(--semantic-text);
-              "
-              :title="isCompacting ? 'Compacting...' : 'Compact conversation history'"
-            >
-              <span
-                v-if="isCompacting"
-                class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
-                style="border-color: var(--color-violet); border-top-color: transparent"
-              ></span>
-              <span v-else>🗜️</span>
-              <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
-            </button>
+          >
+            <!-- Composer toolbar (V1 single-card): projected into FileInput's
+                 toolbar strip so input + status read as one card. Three zones:
+                 left actions · middle muted status · right context. -->
+            <template #toolbar>
+              <div class="flex items-center gap-1 min-w-0 flex-1 flex-wrap">
+                <!-- Left zone: session actions -->
+                <div class="flex items-center gap-1 shrink-0">
+                  <!-- Compact button -->
+                  <button
+                    @click="compactSession"
+                    :disabled="
+                      isCompacting || isLoading || isInitializing || isLLMProcessing || !sessionId
+                    "
+                    class="composer-tool-btn"
+                    :title="isCompacting ? 'Compacting...' : 'Compact conversation history'"
+                  >
+                    <span
+                      v-if="isCompacting"
+                      class="w-3.5 h-3.5 border-2 rounded-full animate-spin"
+                      style="border-color: var(--color-violet); border-top-color: transparent"
+                    ></span>
+                    <svg
+                      v-else
+                      class="w-3.5 h-3.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <polyline points="4 14 10 14 10 20" />
+                      <polyline points="20 10 14 10 14 4" />
+                      <line x1="10" y1="14" x2="21" y2="3" />
+                      <line x1="21" y1="21" x2="14" y2="14" />
+                    </svg>
+                    <span>{{ isCompacting ? 'Compacting...' : 'Compact' }}</span>
+                  </button>
 
-            <!-- Model/Profile selector -->
-            <div ref="profilePickerRef" class="relative">
-              <button
-                @click.stop="showProfilePicker = !showProfilePicker"
-                :disabled="isUpdatingProfile || isInitializing || !sessionId"
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-                :class="
-                  isUpdatingProfile || isInitializing || !sessionId
-                    ? 'opacity-50 cursor-not-allowed'
-                    : 'hover:scale-105'
-                "
-                style="
-                  background-color: var(--semantic-card-bg);
-                  border: 1px solid var(--color-border);
-                  color: var(--semantic-text);
-                "
-                :title="profileChipTooltip"
-              >
-                <span>🤖</span>
-                <span>{{ effectiveProfile ?? 'Default' }}</span>
-                <span class="text-[10px]">▾</span>
-              </button>
-              <div
-                v-if="showProfilePicker"
-                class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
-                style="
-                  background-color: var(--semantic-card-bg);
-                  border: 1px solid var(--color-border);
-                "
-              >
-                <button
-                  @click="selectProfile(null)"
-                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
-                  style="color: var(--semantic-text)"
-                  data-testid="profile-picker-default"
-                >
-                  <span>Default (top-level config)</span>
-                  <span v-if="!selectedProfile && !activeProfile">✓</span>
-                </button>
-                <button
-                  v-for="p in availableProfiles"
-                  :key="p.name"
-                  @click="selectProfile(p.name)"
-                  class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
-                  style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
-                  :data-testid="`profile-picker-${p.name}`"
-                >
-                  <div class="flex items-center justify-between">
-                    <span class="font-medium">
-                      {{ p.name }}
-                      <span
-                        v-if="activeProfile === p.name"
-                        class="text-[10px] ml-1 px-1 py-0.5 rounded"
-                        :style="{ backgroundColor: 'var(--color-violet)', color: '#181616' }"
-                        data-testid="profile-picker-active-badge"
-                        >(active)</span
+                  <!-- Model/Profile selector -->
+                  <div ref="profilePickerRef" class="relative">
+                    <button
+                      @click.stop="showProfilePicker = !showProfilePicker"
+                      :disabled="isUpdatingProfile || isInitializing || !sessionId"
+                      class="composer-tool-btn"
+                      data-testid="profile-picker-button"
+                      :title="profileChipTooltip"
+                    >
+                      <span>{{ effectiveProfile ?? 'Default' }}</span>
+                      <span class="text-[10px]">▾</span>
+                    </button>
+                    <div
+                      v-if="showProfilePicker"
+                      class="absolute bottom-full mb-2 left-0 min-w-[240px] rounded-lg shadow-lg z-20 overflow-hidden"
+                      style="
+                        background-color: var(--semantic-card-bg);
+                        border: 1px solid var(--color-border);
+                      "
+                    >
+                      <button
+                        @click="selectProfile(null)"
+                        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                        style="color: var(--semantic-text)"
+                        data-testid="profile-picker-default"
                       >
-                    </span>
-                    <span v-if="effectiveProfile === p.name">✓</span>
+                        <span>Default (top-level config)</span>
+                        <span v-if="!selectedProfile && !activeProfile">✓</span>
+                      </button>
+                      <button
+                        v-for="p in availableProfiles"
+                        :key="p.name"
+                        @click="selectProfile(p.name)"
+                        class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                        style="
+                          color: var(--semantic-text);
+                          border-top: 1px solid var(--color-border);
+                        "
+                        :data-testid="`profile-picker-${p.name}`"
+                      >
+                        <div class="flex items-center justify-between">
+                          <span class="font-medium">
+                            {{ p.name }}
+                            <span
+                              v-if="activeProfile === p.name"
+                              class="text-[10px] ml-1 px-1 py-0.5 rounded"
+                              :style="{ backgroundColor: 'var(--color-violet)', color: '#181616' }"
+                              data-testid="profile-picker-active-badge"
+                              >(active)</span
+                            >
+                          </span>
+                          <span v-if="effectiveProfile === p.name">✓</span>
+                        </div>
+                        <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
+                          {{ p.model }} · {{ p.base_url }}
+                        </div>
+                      </button>
+                      <div
+                        v-if="availableProfiles.length === 0"
+                        class="px-3 py-2 text-xs"
+                        style="color: var(--semantic-text-muted)"
+                      >
+                        No profiles configured. Add one in Settings.
+                      </div>
+                    </div>
                   </div>
-                  <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
-                    {{ p.model }} · {{ p.base_url }}
-                  </div>
-                </button>
+                </div>
+                <span class="composer-toolbar-divider" aria-hidden="true" />
+                <!-- Middle zone: token status (display-only, muted) -->
                 <div
-                  v-if="availableProfiles.length === 0"
-                  class="px-3 py-2 text-xs"
-                  style="color: var(--semantic-text-muted)"
+                  v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
+                  class="composer-tokens-status"
+                  data-testid="tokens-status"
+                  :title="`Tokens: ${maxTotalTokens.toLocaleString()} / ${maxCapacityTotalTokens.toLocaleString()}`"
                 >
-                  No profiles configured. Add one in Settings.
+                  <span>{{ formatCompactTokens(maxTotalTokens) }}</span>
+                  <span v-if="maxCapacityTotalTokens > 0"
+                    >/ {{ formatCompactTokens(maxCapacityTotalTokens) }}</span
+                  >
+                  <div
+                    v-if="maxCapacityTotalTokens > 0"
+                    class="w-12 h-1 rounded-full overflow-hidden"
+                    style="background-color: var(--color-border)"
+                  >
+                    <div
+                      class="h-full rounded-full transition-all duration-300"
+                      :style="{
+                        width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
+                        backgroundColor:
+                          maxTotalTokens / maxCapacityTotalTokens > 0.8
+                            ? 'var(--color-red)'
+                            : maxTotalTokens / maxCapacityTotalTokens > 0.6
+                              ? 'var(--color-orange)'
+                              : 'var(--color-violet)',
+                      }"
+                    ></div>
+                  </div>
+                </div>
+                <!-- Right zone: context (pushed right, truncates first) -->
+                <div class="flex items-center gap-1 ml-auto pl-1 shrink-0">
+                  <!-- Git status indicator — always clickable; opens a dropdown
+                       menu with context-appropriate actions (worktree-bound vs.
+                       no-worktree). -->
+                  <div ref="worktreeMenuRef" class="relative min-w-0">
+                    <button
+                      v-if="gitStatus && gitStatus.is_git_repo"
+                      @click.stop="showWorktreeMenu = !showWorktreeMenu"
+                      data-testid="worktree-status-button"
+                      class="composer-tool-btn"
+                      :title="
+                        gitWorktreeCwd
+                          ? `Worktree: ${gitWorktreeCwd}\n${gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'}`
+                          : gitStatus.status === 'clean'
+                            ? 'Working tree clean'
+                            : 'Working tree has changes'
+                      "
+                    >
+                      <span class="composer-branch-label">{{
+                        gitStatus.branch || 'detached'
+                      }}</span>
+                      <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
+                      <span v-else style="color: var(--color-green)">✓</span>
+                      <span class="text-[10px]">▾</span>
+                    </button>
+                    <WorktreeMenu
+                      v-if="showWorktreeMenu"
+                      :has-worktree="!!gitWorktreeCwd"
+                      :branch="gitStatus?.branch || 'detached'"
+                      :status="gitStatus?.status"
+                      @create-pr="onWorktreeMenuCreatePr"
+                      @create-worktree="onWorktreeMenuCreateWorktree"
+                      @view-folder="onWorktreeMenuViewFolder"
+                      @clear="onWorktreeMenuClear"
+                      @refresh="onWorktreeMenuRefresh"
+                      @close="showWorktreeMenu = false"
+                    />
+                  </div>
+                  <!-- Session skills display -->
+                  <button
+                    v-if="sessionSkills && sessionSkills.length > 0"
+                    @click="showSkillsPopup = true"
+                    class="composer-tool-btn"
+                    :title="'Loaded skills: ' + sessionSkills.map((s) => s.skill_name).join(', ')"
+                  >
+                    <span>{{ sessionSkills.length }}</span>
+                    <span>skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span>
+                  </button>
+                  <!-- Background commands pill — self-contained: SSE push via
+                       `background_process_created/completed` + queue fallback +
+                       resync refetch; hidden when nothing is running. -->
+                  <BackgroundCommandsPopup v-if="sessionId" :session-id="sessionId" />
                 </div>
               </div>
-            </div>
-            <!-- Token usage display -->
-            <div
-              v-if="maxTotalTokens > 0 || maxCapacityTotalTokens > 0"
-              class="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs"
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-              "
-            >
-              <span style="color: var(--semantic-text-dim)">Tokens:</span>
-              <span style="color: var(--semantic-text)">{{ maxTotalTokens.toLocaleString() }}</span>
-              <span v-if="maxCapacityTotalTokens > 0" style="color: var(--semantic-text-dim)"
-                >/ {{ maxCapacityTotalTokens.toLocaleString() }}</span
-              >
-              <div
-                v-if="maxCapacityTotalTokens > 0"
-                class="w-16 h-2 rounded-full overflow-hidden"
-                style="background-color: var(--color-border)"
-              >
-                <div
-                  class="h-full rounded-full transition-all duration-300"
-                  :style="{
-                    width: Math.min(100, (maxTotalTokens / maxCapacityTotalTokens) * 100) + '%',
-                    backgroundColor:
-                      maxTotalTokens / maxCapacityTotalTokens > 0.8
-                        ? 'var(--color-red)'
-                        : maxTotalTokens / maxCapacityTotalTokens > 0.6
-                          ? 'var(--color-orange)'
-                          : 'var(--color-violet)',
-                  }"
-                ></div>
-              </div>
-            </div>
-            <!-- Git status indicator — always clickable; opens a dropdown
-                 menu with context-appropriate actions (worktree-bound vs.
-                 no-worktree). -->
-            <div ref="worktreeMenuRef" class="relative">
-              <button
-                v-if="gitStatus && gitStatus.is_git_repo"
-                @click.stop="showWorktreeMenu = !showWorktreeMenu"
-                data-testid="worktree-status-button"
-                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200 cursor-pointer hover:scale-105"
-                style="
-                  background-color: var(--semantic-card-bg);
-                  border: 1px solid var(--color-border);
-                "
-                :title="
-                  gitWorktreeCwd
-                    ? `Worktree: ${gitWorktreeCwd}\n${gitStatus.status === 'clean' ? 'Working tree clean' : 'Working tree has changes'}`
-                    : gitStatus.status === 'clean'
-                      ? 'Working tree clean'
-                      : 'Working tree has changes'
-                "
-              >
-                <span>🌿</span>
-                <span style="color: var(--semantic-text)">{{
-                  gitStatus.branch || 'detached'
-                }}</span>
-                <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
-                <span v-else style="color: var(--color-green)">✓</span>
-                <span class="text-[10px]">▾</span>
-              </button>
-              <WorktreeMenu
-                v-if="showWorktreeMenu"
-                :has-worktree="!!gitWorktreeCwd"
-                :branch="gitStatus?.branch || 'detached'"
-                :status="gitStatus?.status"
-                @create-pr="onWorktreeMenuCreatePr"
-                @create-worktree="onWorktreeMenuCreateWorktree"
-                @view-folder="onWorktreeMenuViewFolder"
-                @clear="onWorktreeMenuClear"
-                @refresh="onWorktreeMenuRefresh"
-                @close="showWorktreeMenu = false"
-              />
-            </div>
-            <!-- Session skills display -->
-            <button
-              v-if="sessionSkills && sessionSkills.length > 0"
-              @click="showSkillsPopup = true"
-              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200 hover:scale-105"
-              style="
-                background-color: var(--semantic-card-bg);
-                border: 1px solid var(--color-border);
-                cursor: pointer;
-              "
-              :title="'Loaded skills: ' + sessionSkills.map((s) => s.skill_name).join(', ')"
-            >
-              <span>🧠</span>
-              <span style="color: var(--semantic-text)">{{ sessionSkills.length }}</span>
-              <span style="color: var(--semantic-text-dim)"
-                >skill{{ sessionSkills.length !== 1 ? 's' : '' }}</span
-              >
-            </button>
-            <!-- Background commands pill — self-contained: SSE push via
-                 `background_process_created/completed` + queue fallback +
-                 resync refetch; hidden when nothing is running. -->
-            <BackgroundCommandsPopup v-if="sessionId" :session-id="sessionId" />
-          </div>
+            </template>
+          </FileInput>
         </div>
       </div>
       <!-- Stacked center diff: every changed file renders as its own
@@ -5695,5 +5689,79 @@ const compactSession = async () => {
 /* Make room for the slider track at the extreme right edge. */
 .messages-scroll-hide-native :deep(.user-pill-rail) {
   right: 18px;
+}
+
+/* V1 composer toolbar (single-card): quiet ghost actions + muted status.
+   The strip itself lives in FileInput's toolbar slot; these classes style
+   the projected content. Display-only status (tokens) deliberately has no
+   button affordance — no border, no hover — so actions read as actions. */
+.composer-tool-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--semantic-text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+
+.composer-tool-btn:hover {
+  background-color: var(--hover-bg, rgba(255, 255, 255, 0.04));
+  color: var(--semantic-text);
+}
+
+.composer-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.composer-tool-btn:disabled:hover {
+  background: transparent;
+  color: var(--semantic-text-dim);
+}
+
+.composer-toolbar-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--color-border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.composer-tokens-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 4px;
+  font-size: 12px;
+  color: var(--semantic-text-dim);
+  white-space: nowrap;
+}
+
+.composer-branch-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+@media (max-width: 720px) {
+  .composer-branch-label {
+    max-width: 120px;
+  }
+}
+
+@media (max-width: 560px) {
+  .composer-tokens-status {
+    display: none;
+  }
 }
 </style>
