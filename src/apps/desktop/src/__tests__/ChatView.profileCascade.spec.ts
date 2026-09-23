@@ -50,7 +50,6 @@ if (
 }
 
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -69,9 +68,8 @@ function makeStubClient(initial: SseState): SseClient {
 // Per-test overrides via setup() so each test can change
 // getNalarConfig / getSession responses without re-mounting the global
 // vi.mock() harness.
- 
+
 function installChatViewMocks(opts: {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config?: any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,12 +80,12 @@ function installChatViewMocks(opts: {
     has_more: false,
     next_cursor: null,
     cwd: '/tmp',
-     
+
     git_worktree_cwd: '',
-     
+
     max_total_tokens: 0,
     max_capacity_total_tokens: 0,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [] } as any)
@@ -95,7 +93,7 @@ function installChatViewMocks(opts: {
     opts.session ?? {
       session_id: 'placeholder',
       session_name: '',
-       
+
       selectedProfile: null,
       cwd: '',
       git_worktree_cwd: '',
@@ -103,9 +101,7 @@ function installChatViewMocks(opts: {
   )
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   vi.spyOn(api, 'getGitStatus').mockResolvedValue({ is_git_repo: false } as any)
-  vi.spyOn(api, 'getNalarConfig').mockResolvedValue(
-    opts.config ?? { profiles: {} },
-  )
+  vi.spyOn(api, 'getNalarConfig').mockResolvedValue(opts.config ?? { profiles: {} })
 }
 
 // ─── mount helper ────────────────────────────────────────────────────────
@@ -168,20 +164,12 @@ function readChip(wrapper: VueWrapper): {
   text: string
   title: string
 } {
-  // The chip is the only <button> with `data-testid="profile-chip"` (set
-  // by this test spec) — but we don't want to mutate the production
-  // component for testability. Instead, find by structural selectors.
-  // The picker button has the 🤖 emoji + the text + ▾ chevron.
-  const buttons = wrapper.findAll('button')
-  // The chip is the one whose inner HTML contains the ▾ chevron character.
-  let chipBtn: DOMWrapper<HTMLButtonElement> | undefined
-  for (const b of buttons) {
-    if (b.text().includes('▾') && b.text().includes('🤖')) {
-      chipBtn = b as unknown as DOMWrapper<HTMLButtonElement>
-      break
-    }
-  }
-  if (!chipBtn) throw new Error('profile chip button not found')
+  // The picker trigger carries `data-testid="profile-picker-button"` (added
+  // with the V1 composer toolbar — previously located via the 🤖 emoji,
+  // which the toolbar restyle removed).
+  const found = wrapper.find('[data-testid="profile-picker-button"]')
+  if (!found.exists()) throw new Error('profile chip button not found')
+  const chipBtn = found as unknown as DOMWrapper<HTMLButtonElement>
   return {
     text: chipBtn.text().trim(),
     title: chipBtn.attributes('title') ?? '',
@@ -294,10 +282,8 @@ describe('ChatView profile chip — cascade display', () => {
     const wrapper = await mountChatViewWithSession('sess_active_badge')
 
     // Open the picker
-    const chip = wrapper.findAll('button').find(
-      (b) => b.text().includes('🤖') && b.text().includes('▾'),
-    )
-    if (!chip) throw new Error('chip not found')
+    const chip = wrapper.find('[data-testid="profile-picker-button"]')
+    if (!chip.exists()) throw new Error('chip not found')
     await chip.trigger('click.stop')
     await nextTick()
 
@@ -322,10 +308,8 @@ describe('ChatView profile chip — cascade display', () => {
 
     const wrapper = await mountChatViewWithSession('sess_checkmark')
 
-    const chip = wrapper.findAll('button').find(
-      (b) => b.text().includes('🤖') && b.text().includes('▾'),
-    )
-    if (!chip) throw new Error('chip not found')
+    const chip = wrapper.find('[data-testid="profile-picker-button"]')
+    if (!chip.exists()) throw new Error('chip not found')
     await chip.trigger('click.stop')
     await nextTick()
 
