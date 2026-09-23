@@ -788,31 +788,13 @@ defineExpose({
             "
           >
             <span class="flex-1 text-left truncate">
-              {{ item.name }}
-              <span
-                v-if="item.selected_profile_model"
-                class="ml-1 text-[10px]"
-                style="color: var(--color-violet)"
-                >🤖 {{ item.selected_profile_model }}</span
-              >
-              <span
-                v-if="item.sub_agent_name"
-                class="ml-1 text-[10px] font-mono"
-                style="color: var(--color-violet)"
-                :title="
-                  item.parent_session_id ? 'Sub-agent of ' + item.parent_session_id : 'Sub-agent'
-                "
-                >🔧 {{ item.sub_agent_name }}</span
-              >
-              <!-- Kanban-style git branch badge (same fork/branch SVG +
-                   PR-status colors as WorkspaceItemTaskCard: green =
-                   open, violet = merged, red = closed). Shows the
-                   session's current branch (worktree branch when bound,
-                   else the session cwd's branch). Tooltip carries the
-                   PR state + full worktree path. -->
+              <!-- Git icon first (kanban parity): icon-only branch badge
+                   with PR-status colors (green = open, violet = merged,
+                   red = closed). Tooltip carries the branch + full
+                   worktree path. -->
               <span
                 v-if="item.git_branch"
-                class="ml-1 inline-flex items-center gap-1 max-w-[8rem] truncate align-middle text-[10px] font-mono"
+                class="mr-1 inline-flex items-center align-middle"
                 :style="chatBranchStyle(item.id)"
                 :title="chatBranchTitle(item)"
                 :data-pr-status="prStatuses[item.id] || undefined"
@@ -832,17 +814,40 @@ defineExpose({
                     d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
                   />
                 </svg>
-                <span class="truncate">{{ item.git_branch }}</span>
               </span>
               <!-- Fallback for bound worktrees whose cwd is not a git
-                   repo (no branch to show): keeps the legacy worktree
-                   chip so the binding stays visible. -->
+                   repo (no branch to show): same icon, dim, tooltip
+                   with the path so the binding stays visible. -->
               <span
                 v-else-if="item.git_worktree_cwd"
-                class="ml-1 text-xs text-emerald-600 dark:text-emerald-400 font-mono"
+                class="mr-1 inline-flex items-center align-middle"
                 :title="item.git_worktree_cwd"
                 data-testid="worktree-badge"
-                >🌳 worktree</span
+              >
+                <svg
+                  class="w-3 h-3 shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
+                  />
+                </svg>
+              </span>
+              {{ item.name }}
+              <span
+                v-if="item.sub_agent_name"
+                class="ml-1 text-[10px] font-mono"
+                style="color: var(--color-violet)"
+                :title="
+                  item.parent_session_id ? 'Sub-agent of ' + item.parent_session_id : 'Sub-agent'
+                "
+                >🔧 {{ item.sub_agent_name }}</span
               >
             </span>
             <!-- Migration 082 - replace AI-tainted updated_at with the human
