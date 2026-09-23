@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
@@ -80,20 +80,8 @@ const emit = defineEmits<{
 const sidebarStore = useSidebarStore()
 const activeAddMenu = ref<string | null>(null)
 
-// v3 minimal-flat sidebar: quiet search filter for projects + chats.
-// Filters items by item name, or by any nested task name (so a chat
-// name match keeps its parent project visible). Empty query = all.
-const projectSearch = ref('')
-const filteredItems = computed(() => {
-  const items = props.workspace?.items ?? []
-  const q = projectSearch.value.trim().toLowerCase()
-  if (!q) return items
-  return items.filter(
-    (i) =>
-      i.name.toLowerCase().includes(q) ||
-      (i.tasks ?? []).some((t) => t.name.toLowerCase().includes(q)),
-  )
-})
+// Sidebar shows every project — the header search filter was removed
+// (v2 sidebar UX: no search, always-visible actions, tighter indent).
 
 // Scroll container ref
 const workspacesScrollRef = ref<HTMLElement | null>(null)
@@ -422,19 +410,7 @@ const handleItemDragEnd = () => {
           +
         </button>
       </button>
-      <!-- v3 minimal-flat: quiet single-line filter (no card, just a
-           bottom hairline). Filters projects + chats via filteredItems. -->
-      <div v-if="sidebarStore.projectsExpanded && workspace" class="px-3 pb-1">
-        <input
-          v-model="projectSearch"
-          type="text"
-          placeholder="Search…"
-          aria-label="Search projects and chats"
-          data-testid="projects-search"
-          class="w-full bg-transparent text-xs py-1.5 outline-none placeholder:opacity-60"
-          style="color: var(--semantic-text); border-bottom: 1px solid var(--color-border)"
-        />
-      </div>
+      <!-- Search removed (v2 sidebar UX) — every project is listed. -->
       <!-- Add-item menu — promoted from the old bottom "+ Add Item"
            row into the section header (revamp plan). -->
       <ul
@@ -518,10 +494,12 @@ const handleItemDragEnd = () => {
     >
       <Transition name="collapse">
         <div v-show="sidebarStore.projectsExpanded" class="space-y-0.5 pb-2">
-          <!-- Selected workspace items (single workspace — revamp plan) -->
+          <!-- Selected workspace items (single workspace — revamp plan).
+               V2 compact indent: ml-1 pl-2 keeps the guide without
+               eating horizontal space for long names. -->
           <ul
             v-if="workspace"
-            class="ml-4 pl-3 space-y-0.5 border-l"
+            class="ml-1 pl-2 space-y-0.5 border-l"
             style="border-color: var(--color-border)"
             @dragstart="handleItemDragStart"
             @dragover="handleItemDragOver"
@@ -530,7 +508,7 @@ const handleItemDragEnd = () => {
             @dragend="handleItemDragEnd"
           >
             <WorkspaceItemComponent
-              v-for="item in filteredItems"
+              v-for="item in workspace.items"
               :key="item.id"
               :item="item"
               :is-active="activeWorkspaceItemId === item.id"
@@ -538,7 +516,6 @@ const handleItemDragEnd = () => {
               :is-item-dragging="draggingItemId === item.id"
               :is-item-drag-over="dragOverItemId === item.id && draggingItemId !== item.id"
               :is-item-drag-over-insert-after="dragOverItemInsertAfter"
-              :search-query="projectSearch"
               class="first:mt-1.5"
               @click="handleItemClick(workspace.id, $event.id)"
               @open-item-in-background="emit('openItemInBackground', $event)"
@@ -570,14 +547,6 @@ const handleItemDragEnd = () => {
               data-testid="projects-empty"
             >
               No projects yet — use + above to add one.
-            </li>
-            <li
-              v-else-if="filteredItems.length === 0"
-              class="px-3 py-2 text-xs"
-              style="color: var(--semantic-text-dim)"
-              data-testid="projects-no-results"
-            >
-              No matches for “{{ projectSearch }}”.
             </li>
           </ul>
           <div

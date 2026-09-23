@@ -42,9 +42,6 @@ const props = defineProps<{
   // ProjectsList.handleItemDrop for the index math that
   // accompanies this visual.
   isItemDragOverInsertAfter?: boolean
-  // v3 minimal-flat: search string from ProjectsList. Used to filter
-  // the nested task list when the user types in the header filter.
-  searchQuery?: string
 }>()
 
 const emit = defineEmits<{
@@ -631,11 +628,11 @@ const handlePinnedDrop = (event: DragEvent) => {
           <!-- Item Name. Fall back to "Untitled project" for legacy
                empty-name rows (plan 2026-07-10). -->
           <span class="truncate">{{ item.name || 'Untitled project' }}</span>
-          <!-- v3 quiet count — plain grey text, hidden on row hover
-               (CSS below swaps it for the +/x actions). -->
+          <!-- V2: count pill always stays — no layout shift when
+               actions appear (actions live in their own fixed slot). -->
           <span
             v-if="!item.isLoading && (item.tasks?.length || 0) > 0"
-            class="ml-auto text-[11px] item-count"
+            class="ml-auto text-[11px] item-count shrink-0"
             style="color: var(--semantic-text-dim); opacity: 0.7"
             data-testid="item-task-count"
           >
@@ -686,13 +683,13 @@ const handlePinnedDrop = (event: DragEvent) => {
             test-id="item-processing-spinner"
           />
         </button>
-        <!-- v3: hover-reveal actions (quiet until hover/focus). + hidden
+        <!-- V2: always-visible actions (quiet until hover). + hidden
              for kanban + routine (board/scheduler own creation). -->
         <template v-if="true">
           <button
             v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
             @click="handleAddTask"
-            class="item-action w-[26px] h-[26px] text-[15px] leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-100 focus-visible:opacity-100 focus-within:opacity-100 transition-opacity duration-150 hover:text-green-400"
+            class="item-action w-[26px] h-[26px] text-[15px] leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim)"
             title="Add Task"
             aria-label="Add Task"
@@ -700,10 +697,10 @@ const handlePinnedDrop = (event: DragEvent) => {
           >
             +
           </button>
-          <!-- Delete Item Button (hover-reveal). Unicode × glyph. -->
+          <!-- Delete Item Button (always visible). Unicode × glyph. -->
           <button
             @click="handleDelete"
-            class="item-action w-[26px] h-[26px] text-[15px] leading-none flex items-center justify-center rounded-md opacity-0 group-hover/item:opacity-100 focus-visible:opacity-100 focus-within:opacity-100 transition-opacity duration-150 hover:text-red-400"
+            class="item-action w-[26px] h-[26px] text-[15px] leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
             style="color: var(--semantic-text-dim)"
             title="Delete Item"
             aria-label="Delete Item"
@@ -733,7 +730,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           item.tasks &&
           item.tasks.length > 0
         "
-        class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30"
+        class="ml-4 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30"
       >
         <!-- Pinned region: drag-and-drop reorders only within this
              list. The drop handler calls handleReorderPinnedTasks.
@@ -845,7 +842,7 @@ const handlePinnedDrop = (event: DragEvent) => {
       -->
       <div
         v-if="isExpanded && item.item_type === 'design'"
-        class="ml-8 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30"
+        class="ml-4 mt-1.5 space-y-0.5 pl-2 border-l border-[--color-border]/30"
         data-testid="design-pages-section"
       >
         <!-- Per-page rows -->
@@ -889,11 +886,6 @@ const handlePinnedDrop = (event: DragEvent) => {
 </template>
 
 <style scoped>
-/* v3 minimal-flat: quiet count swaps for actions on row hover/focus.
-   The count lives inside the main button; the +/- actions live beside
-   it. Hiding the count on hover removes visual duplication. */
-.group\/item:hover .item-count,
-.group\/item:focus-within .item-count {
-  display: none;
-}
+/* V2 sidebar UX: count pill always stays visible (no hover swap,
+   no layout shift). Actions live in their own fixed slot. */
 </style>

@@ -162,7 +162,10 @@ const errorRetryLabel = computed(() =>
     <span
       v-if="!processingState[task.id]"
       class="w-1 h-1 rounded-full shrink-0"
-      :style="{ backgroundColor: isActive || task.is_pinned ? '#e8c87a' : 'var(--semantic-text-dim)', opacity: isActive || task.is_pinned ? 1 : 0.6 }"
+      :style="{
+        backgroundColor: isActive || task.is_pinned ? '#e8c87a' : 'var(--semantic-text-dim)',
+        opacity: isActive || task.is_pinned ? 1 : 0.6,
+      }"
     />
     <!-- 2026-08-29 agent-error-row (task_1787985074550_0) — sidebar
            variant of the kanban-card indicator. No border ring (no
@@ -236,10 +239,10 @@ const errorRetryLabel = computed(() =>
       </svg>
     </span>
     <span class="flex-1 truncate">{{ task.name }}</span>
-    <!-- Pin/unpin toggle (hover-revealed). -->
+    <!-- Pin/unpin toggle (always visible). -->
     <button
       @click="handlePinToggle($event)"
-      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[#2e2d2a]"
+      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[#2e2d2a]"
       :class="
         task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'
       "
@@ -262,7 +265,7 @@ const errorRetryLabel = computed(() =>
     </button>
     <button
       @click="handleRenameTask($event)"
-      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[#2e2d2a] hover:text-blue-400"
+      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[#2e2d2a] hover:text-blue-400"
       style="color: var(--semantic-text-dim)"
       title="Rename Task"
     >
@@ -277,7 +280,7 @@ const errorRetryLabel = computed(() =>
     </button>
     <button
       @click="handleDeleteTask($event)"
-      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-0 group-hover/task:opacity-100 transition-opacity hover:bg-[#2e2d2a] hover:text-red-400"
+      class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[#2e2d2a] hover:text-red-400"
       style="color: var(--semantic-text-dim)"
     >
       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
