@@ -83,11 +83,8 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 
 // Kanban-style git branch badge with PR-status colors (same palette
 // as WorkspaceItemTaskCard: green = open, violet = merged, red =
-// closed). The backend resolves `git_branch` per session
-// (`session_list.zig` via `git -C <effective-cwd>`); the effective
-// cwd prefers the bound worktree path and falls back to the session
-// cwd. Fail-silent: '' keeps the dim look for non-git sessions,
-// branches without a PR, or when `gh` is missing.
+// closed, orange = plain branch). Bold by design so the icon pops
+// against the muted chat row.
 const prStatuses = ref<Record<string, string>>({})
 const prSeqByChat = new Map<string, number>()
 
@@ -102,10 +99,10 @@ const effectiveChatCwd = (item: ChatRow): string => item.git_worktree_cwd || ite
 
 const chatBranchStyle = (id: string): Record<string, string> => {
   const s = prStatuses.value[id] || ''
-  if (s === 'merged') return { color: 'var(--color-violet)' }
-  if (s === 'closed') return { color: 'var(--semantic-error)' }
-  if (s === 'open') return { color: 'var(--color-green)' }
-  return {}
+  if (s === 'merged') return { color: 'var(--color-violet)', fontWeight: '600' }
+  if (s === 'closed') return { color: 'var(--semantic-error)', fontWeight: '600' }
+  if (s === 'open') return { color: 'var(--color-green)', fontWeight: '600' }
+  return { color: 'var(--color-orange)', fontWeight: '600' }
 }
 
 const chatBranchTitle = (item: ChatRow): string => {
@@ -801,11 +798,11 @@ defineExpose({
                 data-testid="chat-git-branch"
               >
                 <svg
-                  class="w-3 h-3 shrink-0"
+                  class="w-4 h-4 shrink-0"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
-                  stroke-width="2"
+                  stroke-width="2.5"
                   aria-hidden="true"
                 >
                   <path
@@ -816,20 +813,21 @@ defineExpose({
                 </svg>
               </span>
               <!-- Fallback for bound worktrees whose cwd is not a git
-                   repo (no branch to show): same icon, dim, tooltip
-                   with the path so the binding stays visible. -->
+                   repo (no branch to show): same icon in bold orange so
+                   the binding stays visible. -->
               <span
                 v-else-if="item.git_worktree_cwd"
                 class="mr-1 inline-flex items-center align-middle"
+                style="color: var(--color-orange)"
                 :title="item.git_worktree_cwd"
                 data-testid="worktree-badge"
               >
                 <svg
-                  class="w-3 h-3 shrink-0"
+                  class="w-4 h-4 shrink-0"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
-                  stroke-width="2"
+                  stroke-width="2.5"
                   aria-hidden="true"
                 >
                   <path

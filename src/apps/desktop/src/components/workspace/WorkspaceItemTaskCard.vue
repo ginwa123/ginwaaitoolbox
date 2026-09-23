@@ -376,20 +376,20 @@ const gitBranchBadge = computed<string | null>(() => {
   return b
 })
 
-// Git-branch PR state coloring: green = open, purple = merged,
-// red = closed. Same palette as SidebarDiffPanel's prStatusStyle
-// so the kanban card and the PR tab agree. Fail-silent: '' keeps
-// the current dim look for non-git workspaces, branches without a
-// PR, or when `gh` is missing / the fetch fails.
+// Git-branch PR state coloring: green = open, violet = merged,
+// red = closed, orange = plain branch (no PR / fetch failed).
+// Same palette as SidebarDiffPanel's prStatusStyle so the kanban
+// card and the PR tab agree. Bold by design: semibold text +
+// thicker icon stroke so the badge pops against the dim meta row.
 const prStatus = ref('')
 
 const effectiveCwd = computed<string>(() => props.cwd || props.task.cwd || '')
 
 const gitBranchStyle = computed<Record<string, string>>(() => {
-  if (prStatus.value === 'merged') return { color: 'var(--color-violet)' }
-  if (prStatus.value === 'closed') return { color: 'var(--semantic-error)' }
-  if (prStatus.value === 'open') return { color: 'var(--color-green)' }
-  return {} as Record<string, string>
+  if (prStatus.value === 'merged') return { color: 'var(--color-violet)', fontWeight: '600' }
+  if (prStatus.value === 'closed') return { color: 'var(--semantic-error)', fontWeight: '600' }
+  if (prStatus.value === 'open') return { color: 'var(--color-green)', fontWeight: '600' }
+  return { color: 'var(--color-orange)', fontWeight: '600' } as Record<string, string>
 })
 
 const gitBranchTitle = computed<string>(() => {
@@ -811,18 +811,18 @@ watch([gitBranchBadge, effectiveCwd], () => {
            full branch name on hover. -->
       <span
         v-if="gitBranchBadge"
-        class="inline-flex items-center gap-1 max-w-[8rem] truncate"
+        class="inline-flex items-center gap-1 max-w-[8rem] truncate font-semibold"
         :style="gitBranchStyle"
         :title="gitBranchTitle"
         :data-pr-status="prStatus || undefined"
         data-testid="task-git-branch"
       >
         <svg
-          class="w-3 h-3 shrink-0"
+          class="w-4 h-4 shrink-0"
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
-          stroke-width="2"
+          stroke-width="2.5"
           aria-hidden="true"
         >
           <path

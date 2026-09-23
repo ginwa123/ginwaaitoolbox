@@ -2,10 +2,10 @@
  * Behavioural tests for PR-state coloring of the git-branch badge in
  * WorkspaceItemTaskCard.
  *
- * Contract: green = open, purple = merged, red = closed — same palette
- * as SidebarDiffPanel's prStatusStyle. Fail-silent fallback keeps the
- * current dim look (no color, plain branch title) when there is no cwd,
- * no PR, or the fetch fails.
+ * Contract: green = open, purple = merged, red = closed, orange =
+ * plain branch — same palette as SidebarDiffPanel's prStatusStyle.
+ * Bold fallback keeps the orange color (semibold) when there is no
+ * cwd, no PR, or the fetch fails.
  */
 import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -86,14 +86,14 @@ describe('WorkspaceItemTaskCard — git branch PR status color', () => {
     expect(badge.attributes('title')).toBe('PR closed — feature/x')
   })
 
-  it('falls back to the dim look when the fetch fails', async () => {
+  it('falls back to bold orange when the fetch fails', async () => {
     getPrStatusMock.mockRejectedValue(new Error('no pr'))
     const wrapper = mountCard(makeTask({ git_branch: 'feature/x', cwd: '/repo' }), '/repo')
     await flushPromises()
     const badge = wrapper.find('[data-testid="task-git-branch"]')
     expect(badge.exists()).toBe(true)
     expect(badge.attributes('data-pr-status')).toBeUndefined()
-    expect(badge.attributes('style') ?? '').not.toContain('var(--color-')
+    expect(badge.attributes('style') ?? '').toContain('var(--color-orange)')
     expect(badge.attributes('title')).toBe('feature/x')
   })
 

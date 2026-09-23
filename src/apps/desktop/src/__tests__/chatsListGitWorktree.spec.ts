@@ -5,7 +5,7 @@
  *   - `chat-git-branch`: kanban fork/branch SVG with PR-status colors
  *     when the session has a `git_branch` value (tooltip carries the
  *     branch + worktree path).
- *   - `worktree-badge`: same SVG icon (dim fallback) when only
+ *   - `worktree-badge`: same SVG icon (bold orange fallback) when only
  *     `git_worktree_cwd` is set (bound worktree, non-git cwd).
  * Both are absent when the values are empty.
  *
