@@ -3,30 +3,42 @@
  *
  * Why this file exists:
  *   The user reported "when chatview have long chat messages, the view
- *   its kind of jumping". Scroll-log evidence (task_1786540903899):
- *   adjacent samples showed scrollHeight swinging ±5000px while scrollTop
- *   advanced independently — e.g. sample #1863 sh=31443 → #1864 sh=36416
- *   (+4973px) with top advancing only +2548px. The content under the
- *   viewport teleported by the difference.
+ *   its kind of jumping" — and again, years of commits later, as
+ *   "virtual scroller not smooth, feels like jumping … when data is
+ *   many with many different height".
  *
- *   Root cause: `measureItems()` writes REAL heights over the 64px
- *   ESTIMATES for every rendered child — including up to `buffer=30`
- *   items ABOVE the viewport. Each write mutates `accumulatedHeights`
- *   and therefore the top/bottom spacers. CSS scroll anchoring is off
- *   (`overflow-anchor: none`, needed to fix the older ratcheting bug),
- *   so nothing adjusted scrollTop — content below the measured items
- *   shifted by Σ(real − estimate) while the viewport stayed put.
+ *   The scroller positions its rendered window at MODEL coordinates
+ *   (`topSpacer = accumulatedHeights[start]`, estimates + measurements)
+ *   while the content inside lays out with REAL heights. CSS scroll
+ *   anchoring is disabled (`overflow-anchor: none`, needed for the
+ *   older ratcheting bug), so whenever the model changes above the
+ *   viewport the scroller must adjust scrollTop itself or the content
+ *   under the viewport teleports.
  *
- *   Fix: anchor-compensated measurement. When stored heights change for
- *   indices strictly ABOVE the current viewport start, adjust scrollTop
- *   by the same signed total so the pixels under the viewport stay put.
- *   Growth in the VISIBLE window is real content (streaming text) and
- *   must NOT be compensated.
+ *   v1 of the compensation summed per-measurement deltas with
+ *   `baseline = oldHeight ?? defaultItemHeight`. Two failure modes
+ *   survived review until 2026-09-23:
  *
- *   The math lives in a pure helper (`virtualScrollerScrollAnchor.ts`)
- *   so every branch is unit-testable without DOM; two integration tests
- *   drive the mounted component end-to-end (mocked offsetHeight, real
- *   debounce timing) to pin the wiring.
+ *     A. WRONG BASELINE — the model does not estimate unmeasured items
+ *        with the static prop (64px) but with the adaptive running
+ *        MEDIAN (200-600px in real chats). Every first measurement
+ *        above the viewport over-compensated by (median − 64) px;
+ *        with buffer=30 those errors stacked into thousands of px of
+ *        wrong scrollTop while scrolling up through history.
+ *
+ *     B. UNCOMPENSATED ESTIMATE DRIFT — `observe()` feeds the
+ *        estimator INSIDE a pass, so the median can move between
+ *        rebuilds; every UNMEASURED item's contribution above the
+ *        viewport shifts with it and v1 had no measurement entry for
+ *        it (a pure teleport — e.g. the first SSE-driven remeasure).
+ *
+ *   v2 compensates the ANCHOR's prefix-sum delta
+ *   (`newAnchorTop − oldAnchorTop`), which by construction covers
+ *   exactly the items strictly above the viewport top — measured or
+ *   not — and never the anchor itself. The pure helper
+ *   (`virtualScrollerScrollAnchor.ts`) carries the math; integration
+ *   tests drive the mounted component end-to-end (mocked offsetHeight,
+ *   fake timers) to pin the wiring and the measure cadence.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
@@ -39,83 +51,77 @@ import { computeAnchorCompensation } from '../virtualScrollerScrollAnchor'
 describe('computeAnchorCompensation', () => {
   const base = {
     anchorIndex: 50,
-    prevScrollTop: 3200, // 50 items × 64px estimate
-    defaultItemHeight: 64,
+    prevScrollTop: 3200, // model prefix at the anchor before the pass
   }
 
-  it('sums positive deltas for items above the anchor (content grew)', () => {
-    // Three items above the viewport grew 64 → 300.
+  it('shifts scrollTop by the anchor prefix delta (content above grew)', () => {
+    // Everything strictly above index 50 grew 640px in the model —
+    // real-height writes and estimate refreshes alike.
     const result = computeAnchorCompensation({
       ...base,
-      measurements: [
-        { index: 40, newHeight: 300, oldHeight: 64 },
-        { index: 41, newHeight: 300, oldHeight: 64 },
-        { index: 42, newHeight: 300, oldHeight: 64 },
-      ],
+      oldAnchorTop: 3200,
+      newAnchorTop: 3200 + 640,
     })
-    expect(result.shiftPx).toBe(3 * 236)
-    expect(result.newScrollTop).toBe(3200 + 3 * 236)
+    expect(result.shiftPx).toBe(640)
+    expect(result.newScrollTop).toBe(3840)
     expect(result.clamped).toBe(false)
   })
 
-  it('sums negative deltas for items above the anchor (content shrank)', () => {
+  it('shifts scrollTop down when content above shrank', () => {
     const result = computeAnchorCompensation({
       ...base,
-      measurements: [
-        { index: 10, newHeight: 40, oldHeight: 200 },
-        { index: 11, newHeight: 40, oldHeight: 200 },
-      ],
+      oldAnchorTop: 3200,
+      newAnchorTop: 2880,
     })
     expect(result.shiftPx).toBe(-320)
-    expect(result.newScrollTop).toBe(3200 - 320)
+    expect(result.newScrollTop).toBe(2880)
     expect(result.clamped).toBe(false)
   })
 
-  it('compares never-measured items against defaultItemHeight (their estimate backed the old layout)', () => {
+  it('is a no-op when the prefix is unchanged (writes at/below the anchor)', () => {
+    // Height changes AT or AFTER the anchor never appear in
+    // prefix(anchor) — visible-window growth must flow through
+    // uncompensated. Exercised by passing identical tops.
     const result = computeAnchorCompensation({
       ...base,
-      measurements: [{ index: 30, newHeight: 264, oldHeight: undefined }],
-    })
-    expect(result.shiftPx).toBe(264 - 64)
-    expect(result.newScrollTop).toBe(3200 + 200)
-  })
-
-  it('ignores measurements at or after the anchor (visible-window growth is real content)', () => {
-    const result = computeAnchorCompensation({
-      ...base,
-      measurements: [
-        { index: 50, newHeight: 900, oldHeight: 64 }, // exactly at anchor
-        { index: 51, newHeight: 900, oldHeight: 64 }, // below anchor
-        { index: 99, newHeight: 1200, oldHeight: undefined },
-      ],
+      oldAnchorTop: 3200,
+      newAnchorTop: 3200,
     })
     expect(result.shiftPx).toBe(0)
     expect(result.newScrollTop).toBe(3200)
+    expect(result.clamped).toBe(false)
   })
 
   it('clamps at zero when the correction would go negative', () => {
     const result = computeAnchorCompensation({
       ...base,
+      anchorIndex: 5,
       prevScrollTop: 100,
-      measurements: [{ index: 5, newHeight: 10, oldHeight: 500 }],
+      oldAnchorTop: 6400,
+      newAnchorTop: 5910, // −490
     })
     expect(result.shiftPx).toBe(-490)
     expect(result.clamped).toBe(true)
     expect(result.newScrollTop).toBe(0)
   })
 
-  it('returns a no-op for empty measurements', () => {
-    const result = computeAnchorCompensation({ ...base, measurements: [] })
+  it('handles negative anchorIndex (empty/unmounted list) as no-op', () => {
+    const result = computeAnchorCompensation({
+      ...base,
+      anchorIndex: -1,
+      oldAnchorTop: 0,
+      newAnchorTop: 900,
+    })
     expect(result.shiftPx).toBe(0)
     expect(result.newScrollTop).toBe(base.prevScrollTop)
     expect(result.clamped).toBe(false)
   })
 
-  it('handles negative anchorIndex (empty/unmounted list) as no-op', () => {
+  it('treats non-finite tops as a no-op (defensive)', () => {
     const result = computeAnchorCompensation({
       ...base,
-      anchorIndex: -1,
-      measurements: [{ index: 0, newHeight: 300, oldHeight: 64 }],
+      oldAnchorTop: Number.NaN,
+      newAnchorTop: 4000,
     })
     expect(result.shiftPx).toBe(0)
     expect(result.newScrollTop).toBe(base.prevScrollTop)
@@ -152,6 +158,17 @@ function scroll(el: HTMLElement, top: number) {
 }
 
 /**
+ * Dispatch a scroll event WITHOUT moving the viewport — for "the user
+ * keeps scrolling and the position genuinely didn't change" (a real
+ * repeated event reports the current, already-compensated position;
+ * writing `el.scrollTop` here would manually undo the compensation the
+ * test is trying to observe).
+ */
+function dispatchScroll(el: HTMLElement) {
+  el.dispatchEvent(new Event('scroll'))
+}
+
+/**
  * Give the rendered children fake offsetHeights: `tallPx` for items
  * above `anchorIndex`, `estimatePx` for the rest. Returns the expected
  * compensation total for the above-anchor set. Pass `onlyIndex` to
@@ -176,6 +193,15 @@ function mockChildHeights(
     if (isAbove && h !== estimatePx) expectedShift += h - estimatePx
   }
   return expectedShift
+}
+
+/** Mock EVERY rendered child to one height. */
+function mockAllChildren(el: HTMLElement, h: number) {
+  const content = el.querySelector('.virtual-scroller-content')
+  if (!content) throw new Error('.virtual-scroller-content not found')
+  for (const child of Array.from(content.children)) {
+    Object.defineProperty(child, 'offsetHeight', { value: h, configurable: true })
+  }
 }
 
 describe('VirtualScroller measurement anchor compensation', () => {
@@ -208,9 +234,58 @@ describe('VirtualScroller measurement anchor compensation', () => {
     vi.advanceTimersByTime(60)
     await nextTick()
 
-    // scrollTop must have been advanced by exactly Σ(300−64) so the same
-    // content remains under the viewport top edge.
+    // scrollTop must have advanced by exactly Σ(300−64) so the same
+    // content remains under the viewport top edge. (The estimator
+    // median stays 64 here — the mock heights straddle it — so the
+    // prefix delta equals the per-item sum.)
     expect(el.scrollTop).toBe(before + expectedShift)
+    wrapper.unmount()
+  })
+
+  it('baselines first measurements on the MODEL estimate (median), not defaultItemHeight', async () => {
+    // Regression for failure mode A: the model estimates unmeasured
+    // items with the adaptive median — once the median has learned
+    // 400px, the static 64px prop no longer describes anything. First
+    // measurements above the anchor must be compensated against the
+    // 400px model contribution (plus the in-pass estimator drift),
+    // NOT against 64px.
+    const { wrapper, el } = mountScroller(255)
+    await nextTick()
+
+    // Phase 1 — teach the estimator a 400px profile. Measure the first
+    // window (indices 0..31) at 400px: anchor is 0 so no compensation
+    // runs (prefix(0) = 0), stored heights land, median becomes 400,
+    // and every unmeasured item now contributes 400px to the model.
+    scroll(el, 0)
+    await nextTick()
+    vi.advanceTimersByTime(60) // flush pre-debounce measure (offsetHeight 0 → no-op)
+    mockAllChildren(el, 400)
+    scroll(el, 0)
+    vi.advanceTimersByTime(60) // phase-1 measure pass
+    await nextTick()
+    expect(el.scrollTop).toBe(0)
+
+    // Phase 2 — jump into virgin history: scrollTop 40000 → anchor 100
+    // (uniform 400px model), buffer window 70..131. Render first, then
+    // mock the fresh children to 700px, then arm the measure pass.
+    scroll(el, 40000)
+    await nextTick() // render + pre-paint measure (fresh children: h=0 → no-op)
+    vi.advanceTimersByTime(60) // trailing debounce (still h=0 → no-op)
+    mockAllChildren(el, 700)
+    scroll(el, 40000)
+    vi.advanceTimersByTime(60)
+    await nextTick()
+
+    // Ground truth for prefix(100) AFTER the pass:
+    //   0..42   stored 400 (phase 1 measured the full pre-measure
+    //           window — at that point estimates were still the 64px
+    //           seed, so the 800px viewport rendered 43 items)  = 17200
+    //   43..69  unmeasured, median is now 700                = 18900
+    //   70..99  first-measured at 700                         = 21000
+    //   total   = 57100, old prefix = 400 × 100 = 40000 → shift 17100.
+    // v1 would have computed Σ(700−64) over 70..99 = 19080 — wrong
+    // baseline AND blind to the unmeasured drift (43..69).
+    expect(el.scrollTop).toBe(57100)
     wrapper.unmount()
   })
 
@@ -271,8 +346,8 @@ describe('VirtualScroller measurement anchor compensation', () => {
     // The tall item MUST sit strictly above the anchor (97 < 98): the
     // anchor rule compensates only indices strictly above the viewport
     // start — growth at/below the anchor is real content and flows
-    // through uncompensated (see 'ignores measurements at or after the
-    // anchor' above).
+    // through uncompensated (see 'is a no-op when the prefix is
+    // unchanged' above).
     mockChildHeights(el, 100, 3000, 64, 97)
     el.scrollTop = 6400 - 128
     el.dispatchEvent(new Event('scroll'))
@@ -281,8 +356,40 @@ describe('VirtualScroller measurement anchor compensation', () => {
     // NO vi.advanceTimersByTime here — the correction must already be
     // applied synchronously within the pre-paint tick. Final position =
     // user's own −128px scroll (preserved) + item 97's growth (+2936)
-    // (compensated) = 6272 + 2936.
+    // (compensated) = 6272 + 2936. The estimator median stays 64
+    // (one 3000px sample among ~70×64), so prefix delta = 3000 − 64.
     expect(el.scrollTop).toBe(6400 - 128 + (3000 - 64))
+    wrapper.unmount()
+  })
+
+  it('keeps measuring during sustained scrolling (trailing timer must not starve)', async () => {
+    // Failure mode D: the 50ms measure debounce used to CLEAR+REARM on
+    // every scroll event, so while scroll events kept arriving faster
+    // than 50ms apart it never fired — all pending corrections then
+    // landed in one lump when the gesture stopped (the "scroll, then
+    // it jumps" feel). The scheduler must be max-wait: armed once,
+    // fired at the deadline regardless of later events.
+    const { wrapper, el } = mountScroller(255)
+    await nextTick()
+
+    scroll(el, 6400)
+    await nextTick()
+    vi.advanceTimersByTime(60) // flush pre-paint + debounce passes (h=0 → no-op)
+    vi.advanceTimersByTime(50) // consume the mount-time measure timer (unmocked → no-op)
+
+    const expectedShift = mockChildHeights(el, 100, 300, 64) // 30 × 236
+
+    // Sustained scrolling: events every 40ms — always inside the 50ms
+    // window, so a reset-per-event scheduler would never fire. Dispatch
+    // WITHOUT rewriting scrollTop (see dispatchScroll): the position
+    // genuinely did not change, and writing it would manually undo the
+    // compensation this test observes.
+    dispatchScroll(el)
+    vi.advanceTimersByTime(40)
+    dispatchScroll(el)
+    vi.advanceTimersByTime(40) // past firstEvent+50: the measure must have run
+
+    expect(el.scrollTop).toBe(6400 + expectedShift)
     wrapper.unmount()
   })
 })

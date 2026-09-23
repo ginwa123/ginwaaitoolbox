@@ -698,20 +698,34 @@ const measureItems = () => {
   const content = containerRef.value.querySelector('.virtual-scroller-content')
   if (!content) return
   let changed = false
-  // ── Scroll-anchor compensation (2026-08-23, chatview-scroll-jump-fix) ──
+  // ── Scroll-anchor compensation (2026-08-23; v2 prefix-delta 2026-09-23) ──
   //
-  // Writing real heights over estimates for items ABOVE the viewport
-  // mutates the spacers without moving scrollTop — content under the
-  // viewport teleports by Σ(real − estimate). That is the "long chats
-  // jump while scrolling" bug (task_1787496087806_6; log evidence:
-  // adjacent samples sh=31443 → sh=36416 with top advancing only half
-  // as much). Capture the pre-measure anchor + scrollTop so the writes
-  // below can be compensated after `updateAccumulatedHeights()`.
+  // Writing heights/estimates for items ABOVE the viewport mutates the
+  // transform origin (topSpacer) without moving scrollTop — content
+  // under the viewport teleports. That is the "long chats jump while
+  // scrolling" bug (task_1787496087806_6).
+  //
+  // v2 (2026-09-23): compensation is the ANCHOR's prefix-sum delta,
+  // not a sum of per-measurement deltas against `defaultItemHeight`.
+  // The old per-item baseline was wrong twice: (a) first measurements
+  // were compared against the static prop (64px) while the model
+  // actually used the adaptive MEDIAN (200-600px) — every first
+  // measurement above the viewport over-compensated by (median − 64)
+  // px, stacking into huge wrong scrollTop writes while scrolling up
+  // through history; (b) the estimator median moving INSIDE this pass
+  // changes every UNMEASURED item's contribution above the viewport
+  // with no measurement entry at all — uncompensated, a pure teleport
+  // (the "jump when the first SSE remeasure lands" case).
+  // `prefix(anchor)` is exactly the model contribution of items
+  // strictly above the viewport top, so its before/after delta covers
+  // both. Capture the pre-pass values now; the post-rebuild values are
+  // read after `updateAccumulatedHeights()`.
   //
   // The anchor is the first VISIBLE index (not a DOM node): stable even
   // if the anchor item unmounts between frames, and jsdom-testable.
   const anchorIndex = findStartIndex()
   const prevScrollTop = containerRef.value.scrollTop
+  const oldAnchorTop = accumulatedHeights.value[anchorIndex] ?? 0
   const pendingMeasurements: AnchorMeasurement[] = []
   const children = content.children
   // ── P1 perf: batched height writes (task_1787551495337_9) ──────────────
@@ -791,6 +805,10 @@ const measureItems = () => {
     if (realIndex > maxMeasuredIndex) maxMeasuredIndex = realIndex
   }
   updateAccumulatedHeights()
+  // Post-pass prefix at the same anchor index: the delta vs
+  // `oldAnchorTop` is the compensation (v2 prefix-delta — covers
+  // measured writes AND estimator drift for unmeasured items above).
+  const newAnchorTop = accumulatedHeights.value[anchorIndex] ?? 0
 
   // NOTE (2026-08-25): a "tail-exact clamp" (force-write rendered tail
   // heights + shrink the sizer to the real content bottom when the
@@ -805,11 +823,13 @@ const measureItems = () => {
 
   // ── Apply the anchor compensation ────────────────────────────────────
   //
-  // Only writes for indices strictly ABOVE the anchor shift content
-  // under the viewport (the anchor item's own top edge sits at the
-  // topSpacer boundary — its height change moves its bottom edge, not
-  // its top). Visible-window growth is real content (streaming text,
-  // image load) and must flow through uncompensated.
+  // v2 prefix-delta: the anchor's prefix sum moved by
+  // `newAnchorTop − oldAnchorTop`, i.e. everything strictly above the
+  // viewport top shifted by that amount in the model. Add the same
+  // signed total to scrollTop so the rendered window stays put on
+  // screen. Writes AT/AFTER the anchor never appear in the prefix —
+  // visible-window growth (streaming text, image load) flows through
+  // uncompensated by construction.
   //
   // Skipped while `isPreservingScroll`: `endPreserve` owns scroll
   // restoration during prepends and sets scrollTop from its own anchor
@@ -817,8 +837,8 @@ const measureItems = () => {
   const result = computeAnchorCompensation({
     anchorIndex,
     prevScrollTop,
-    defaultItemHeight: props.defaultItemHeight,
-    measurements: pendingMeasurements,
+    oldAnchorTop,
+    newAnchorTop,
   })
   if (result.shiftPx !== 0 && !isPreservingScroll.value) {
     // Mark BEFORE the write: assigning .scrollTop fires a native scroll
@@ -993,8 +1013,20 @@ const onScroll = (e: Event) => {
     }
   }, 200)
 
-  if (measureDebounce) clearTimeout(measureDebounce)
-  measureDebounce = setTimeout(measureItems, 50)
+  // Max-wait, NOT reset-per-event: the previous clearTimeout+reschedule
+  // pushed the deadline out another 50ms on EVERY scroll event, so the
+  // trailing measure never fired while the user kept scrolling — all
+  // pending height corrections then landed in one lump the moment the
+  // gesture stopped (the "scroll, then it jumps" feel). Arm once; the
+  // fired timer clears itself, and the next scroll event arms the
+  // following pass — guaranteeing a measure at most ~50ms after the
+  // first un-flushed scroll during sustained scrolling.
+  if (!measureDebounce) {
+    measureDebounce = setTimeout(() => {
+      measureDebounce = null
+      measureItems()
+    }, 50)
+  }
 }
 
 /**
