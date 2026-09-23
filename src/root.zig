@@ -809,6 +809,11 @@ pub const present_files = @import("modules/agent/tools/present_files.zig");
 
 pub const config = @import("modules/config/Config.zig");
 pub const parse_thinking = @import("modules/config/parse_thinking.zig");
+// Per-user LLM config store for opt-in `--auth` mode
+// (users.config_json, Migration 092). Re-exported so HTTP handlers
+// reach it via `nalarcore.user_config_store` without a direct
+// cross-module @import duplicating the file.
+pub const user_config_store = @import("modules/config/UserConfigStore.zig");
 // Plan 2026-09-10-web-launch-toggle: random loopback port picker for
 // browser mode (`--port 0` resolution). Re-exported here so the exe
 // module (src/main.zig) reaches it via `nalarcore.web_port` instead of
@@ -969,6 +974,9 @@ test {
     // discovers them — the `pub const config` re-export above alone
     // doesn't trigger discovery.
     _ = @import("modules/config/Config.zig");
+    // Per-user config store unit tests (Migration 092, users.config_json).
+    // Same discovery workaround as Config.zig above.
+    _ = @import("modules/config/UserConfigStore.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
     _ = @import("service/signal_handlers_test.zig"); // SIGINT+SIGTERM graceful-shutdown contracts
 }

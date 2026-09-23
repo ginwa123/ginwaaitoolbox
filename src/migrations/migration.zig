@@ -1995,6 +1995,10 @@ pub const allMigrations: []const Migration = &.{
     // Migration 091 — sessions.sub_agent_name + parent_session_id so a
     // sub-agent row shows its own identity alongside the parent profile.
     .{ .version = Migration091AddSubAgentNameToSessions.version, .name = Migration091AddSubAgentNameToSessions.name, .up = Migration091AddSubAgentNameToSessions.up },
+    // Migration 092 — users.config_json for opt-in `--auth` mode.
+    // When auth is on, per-user LLM config lives in this column and
+    // config.json is ignored. NULL/empty = defaults.
+    .{ .version = Migration092AddUserConfigJson.version, .name = Migration092AddUserConfigJson.name, .up = Migration092AddUserConfigJson.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4902,6 +4906,28 @@ pub const Migration091AddSubAgentNameToSessions = struct {
             "sessions",
             "parent_session_id",
             "parent_session_id TEXT",
+        );
+    }
+};
+
+// Migration 092 — users.config_json for opt-in `--auth` mode.
+// When `--auth` is on, per-user LLM config (profiles, MCP servers,
+// sub-agents, operational flags — the same JSON shape as
+// config.json / LlmConfigJson) lives in this column and config.json
+// is ignored. NULL or empty = defaults (same as a missing file).
+// Nullable TEXT (not NOT NULL) so empty-string binds (which
+// SqliteBackend collapses to NULL) never violate the schema.
+pub const Migration092AddUserConfigJson = struct {
+    pub const version: u32 = 92;
+    pub const name = "add_user_config_json";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(
+            .{ .db = db },
+            allocator,
+            "users",
+            "config_json",
+            "config_json TEXT",
         );
     }
 };

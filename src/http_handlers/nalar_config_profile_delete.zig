@@ -40,9 +40,11 @@
 const std = @import("std");
 const json = std.json;
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
+const user_config_store = nalarcore.user_config_store;
 
 // =====================================================================
 // Domain types
@@ -329,6 +331,55 @@ pub fn nalarConfigProfileDeleteHandler(
         return makeErrorResponse(allocator, res, 400, "", "Missing :name path parameter");
     if (name.len == 0)
         return makeErrorResponse(allocator, res, 400, "", "Profile name cannot be empty");
+
+    // 1b. Auth mode: per-user config from users.config_json
+    // (Migration 092). config.json is ignored and the global
+    // LlmConfig is NOT reloaded (config is per-user).
+    {
+        const di = nalarcore.getSingleton() catch {
+            return makeErrorResponse(allocator, res, 500, name, "Failed to resolve session");
+        };
+        if (di.auth_enabled) {
+            const tok = auth_common.parseSessionToken(req.headers) orelse {
+                return makeErrorResponse(allocator, res, 401, name, "Unauthenticated");
+            };
+            const sess = auth_common.lookupSession(allocator, di.db, tok) orelse {
+                return makeErrorResponse(allocator, res, 401, name, "Unauthenticated");
+            };
+            defer auth_common.freeSessionLookup(allocator, sess);
+            const stored = user_config_store.loadRaw(allocator, di.db, sess.user_id) catch {
+                return makeErrorResponse(allocator, res, 500, name, "Failed to load user config");
+            };
+            if (stored == null) {
+                return makeErrorResponse(allocator, res, 404, name, "No user config exists");
+            }
+            const content = stored.?;
+            var config_json = parseConfigJson(allocator, content) catch
+                return makeErrorResponse(allocator, res, 500, name, "Invalid JSON in user config");
+            const was_active = isActiveProfile(&config_json, name);
+            const removed = removeProfileFromConfig(allocator, &config_json, name) catch {
+                config_json.deinit(allocator);
+                return makeErrorResponse(allocator, res, 500, name, "Failed to remove profile");
+            };
+            if (!removed) {
+                config_json.deinit(allocator);
+                return makeErrorResponse(allocator, res, 404, name, "Profile not found");
+            }
+            const config_str = std.json.Stringify.valueAlloc(allocator, config_json, .{
+                .whitespace = .indent_tab,
+            }) catch {
+                config_json.deinit(allocator);
+                return makeErrorResponse(allocator, res, 500, name, "Failed to serialize user config");
+            };
+            user_config_store.saveRaw(allocator, di.db, sess.user_id, config_str) catch {
+                config_json.deinit(allocator);
+                return makeErrorResponse(allocator, res, 500, name, "Failed to save user config");
+            };
+            config_json.deinit(allocator);
+            di.clearMcpToolsCache();
+            return makeSuccessResponse(allocator, res, name, was_active, null);
+        }
+    }
 
     // 2. Resolve on-disk config paths (dir + file). The PUT handler
     //    (nalar_config_put.zig) uses the same pattern.

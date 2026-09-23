@@ -1,9 +1,11 @@
 const std = @import("std");
 const json = std.json;
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
+const user_config_store = nalarcore.user_config_store;
 const parse_thinking_mod = nalarcore.parse_thinking;
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
 const LlmConfig = config.LlmConfig;
@@ -31,6 +33,28 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const io = ctx.io;
 
     const di = try nalarcore.getSingleton();
+    // Auth mode: resolve the session user up front. The existing-config
+    // source below loads from users.config_json and the save below
+    // writes back there; config.json is never read or written.
+    var auth_user_id: ?[]const u8 = null;
+    var auth_sess: ?auth_common.SessionLookup = null;
+    defer if (auth_sess) |s| auth_common.freeSessionLookup(allocator, s);
+    if (di.auth_enabled) {
+        const tok = auth_common.parseSessionToken(req.headers) orelse {
+            return res.jsonResponse(.{
+                .status_code = 401,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Unauthenticated" }),
+            });
+        };
+        const sess = auth_common.lookupSession(allocator, di.db, tok) orelse {
+            return res.jsonResponse(.{
+                .status_code = 401,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Unauthenticated" }),
+            });
+        };
+        auth_sess = sess;
+        auth_user_id = sess.user_id;
+    }
     const environment_ptr = di.environment orelse return res.jsonResponse(.{
         .status_code = 500,
         .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Environment not available" }),
@@ -81,15 +105,27 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
         });
     };
 
-    // Read existing config if it exists
+    // Read existing config if it exists (file mode) or from
+    // users.config_json (auth mode). The merge logic below is
+    // source-agnostic.
     var existing_content: ?[]u8 = null;
 
-    const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch null;
-    if (file) |f| {
-        defer f.close(io);
-        var read_buffer: [4096]u8 = undefined;
-        var reader = f.reader(io, &read_buffer);
-        existing_content = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    if (auth_user_id) |uid| {
+        existing_content = user_config_store.loadRaw(allocator, di.db, uid) catch |err| {
+            std.log.err("Failed to load user config: {s}", .{@errorName(err)});
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to load user config" }),
+            });
+        };
+    } else {
+        const file = std.Io.Dir.openFileAbsolute(io, config_path, .{}) catch null;
+        if (file) |f| {
+            defer f.close(io);
+            var read_buffer: [4096]u8 = undefined;
+            var reader = f.reader(io, &read_buffer);
+            existing_content = try reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+        }
     }
 
     // Build new config
@@ -465,6 +501,25 @@ pub fn nalarConfigPutHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const config_str = try std.json.Stringify.valueAlloc(allocator, config_json, .{
         .whitespace = .indent_tab,
     });
+
+    // Auth mode: persist to users.config_json and return early.
+    // config.json is untouched and the global singleton is NOT swapped
+    // (config is per-user). Still invalidate the MCP tools cache so the
+    // next workflow run refetches.
+    if (auth_user_id) |uid| {
+        user_config_store.saveRaw(allocator, di.db, uid, config_str) catch |err| {
+            std.log.err("Failed to save user config: {s}", .{@errorName(err)});
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to save user config" }),
+            });
+        };
+        di.clearMcpToolsCache();
+        return res.jsonResponse(.{
+            .status_code = 200,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Config saved successfully" }),
+        });
+    }
 
     var write_file = try std.Io.Dir.createFileAbsolute(io, config_path, .{
         .truncate = true,

@@ -229,6 +229,12 @@ fn substitutePersistedStatus(
 /// it contains `"false: <reason>"` (allocated via `allocPrint`).
 fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
     const di = nalarcore.getSingleton() catch return ctx.allocator.dupe(u8, "false: getSingleton failed") catch return ctx.allocator.dupe(u8, "false") catch unreachable;
+    // Auth mode: persist into the session owner's users.config_json
+    // (Migration 092) instead of config.json, and skip the global
+    // live-reload (config is per-user). config.json is never touched.
+    if (di.auth_enabled) {
+        return persistAuthModeStatus(ctx, di);
+    }
     const env_ptr = di.environment orelse return std.fmt.allocPrint(ctx.allocator, "false: environment unavailable", .{}) catch ctx.allocator.dupe(u8, "false") catch unreachable;
     // getDefaultConfigDir takes a non-const pointer but doesn't mutate.
     const environment: *std.process.Environ.Map = @ptrCast(@constCast(env_ptr));
@@ -314,12 +320,63 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
     return ctx.allocator.dupe(u8, "true") catch ctx.allocator.dupe(u8, "false") catch unreachable;
 }
 
+/// Auth-mode persist for `add_mcp_server`: merge the live `mcp_servers`
+/// into the session owner's `users.config_json` (Migration 092).
+/// The owner resolves via `sessions.user_id`; ownerless/unknown
+/// sessions fail the persist (the in-memory mutation from step 2 still
+/// applies to the current run). Skips the global live-reload — config
+/// is per-user in auth mode — but invalidates the MCP tools cache.
+/// Returns an owned status slice on `ctx.allocator` (`"true"` or
+/// `"false: <reason>"`), same contract as `persistAndReloadStatus`.
+fn persistAuthModeStatus(ctx: ToolExecContext, di: *nalarcore.ContextIPCTui) ![]u8 {
+    const user_config_store = nalarcore.user_config_store;
+    // 1. Resolve the session owner.
+    var owner: ?[]u8 = null;
+    defer if (owner) |o| ctx.allocator.free(o);
+    {
+        var q = ctx.db.query(
+            ctx.allocator,
+            "SELECT COALESCE(user_id, '') FROM sessions WHERE id = ?",
+            &[_][]const u8{ctx.session_id},
+        ) catch |err| {
+            return failStatus(ctx.allocator, "session lookup", @errorName(err));
+        };
+        defer q.deinit();
+        const row = q.next() catch |err| {
+            return failStatus(ctx.allocator, "session lookup", @errorName(err));
+        };
+        const r = row orelse return failStatus(ctx.allocator, "session lookup", "unknown session");
+        defer r.deinit(ctx.allocator);
+        if (r.values.len < 1 or r.values[0].len == 0) {
+            return failStatus(ctx.allocator, "session lookup", "session has no owner");
+        }
+        owner = ctx.allocator.dupe(u8, r.values[0]) catch {
+            return failStatus(ctx.allocator, "OOM", "dupe owner");
+        };
+    }
+    // 2. Load the owner's existing config (null = defaults).
+    const existing = user_config_store.loadRaw(ctx.allocator, ctx.db, owner.?) catch |err| {
+        return failStatus(ctx.allocator, "load user config", @errorName(err));
+    };
+    defer if (existing) |e| ctx.allocator.free(e);
+    // 3. Merge the live mcp_servers over it (same merge as file mode).
+    const new_body = buildUpdatedConfigJson(ctx, existing) catch |err| {
+        return failStatus(ctx.allocator, "merge user config", @errorName(err));
+    };
+    defer ctx.allocator.free(new_body);
+    // 4. Save back to the owner's column.
+    user_config_store.saveRaw(ctx.allocator, ctx.db, owner.?, new_body) catch |err| {
+        return failStatus(ctx.allocator, "save user config", @errorName(err));
+    };
+    di.clearMcpToolsCache();
+    return ctx.allocator.dupe(u8, "true") catch ctx.allocator.dupe(u8, "false") catch unreachable;
+}
+
 /// Build a `<persisted>false: <op> <reason></persisted>`-shaped
 /// failure status. The result is owned by `allocator` — caller frees.
 /// Falls back to a literal "false" copy on OOM (allocPrint failure) so
 /// the caller doesn't have to handle the inner failure.
-fn failStatus(allocator: std.mem.Allocator, op: []const u8, reason: []const u8) []u8 {
-    return std.fmt.allocPrint(
+fn failStatus(allocator: std.mem.Allocator, op: []const u8, reason: []const u8) []u8 {    return std.fmt.allocPrint(
         allocator,
         "false: {s} {s}",
         .{ op, reason },

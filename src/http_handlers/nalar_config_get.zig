@@ -1,18 +1,77 @@
 const std = @import("std");
 const json = std.json;
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const config = nalarcore.config;
+const user_config_store = nalarcore.user_config_store;
 const LlmConfig = config.LlmConfig;
 
 /// GET /api/config/nalar - Get nalar.json configuration
 pub fn nalarConfigGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
-    _ = req;
     const allocator = ctx.allocator;
     const io = ctx.io;
 
     const di = try nalarcore.getSingleton();
+    // Auth mode: per-user config from users.config_json (Migration 092).
+    // config.json is ignored. NULL/empty = defaults (same as missing file).
+    if (di.auth_enabled) {
+        const tok = auth_common.parseSessionToken(req.headers) orelse {
+            return res.jsonResponse(.{
+                .status_code = 401,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Unauthenticated" }),
+            });
+        };
+        const sess = auth_common.lookupSession(allocator, di.db, tok) orelse {
+            return res.jsonResponse(.{
+                .status_code = 401,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Unauthenticated" }),
+            });
+        };
+        defer auth_common.freeSessionLookup(allocator, sess);
+        const stored = user_config_store.loadRaw(allocator, di.db, sess.user_id) catch {
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to load user config" }),
+            });
+        };
+        defer if (stored) |s| allocator.free(s);
+        const content = stored orelse {
+            return res.jsonResponse(.{
+                .status_code = 200,
+                .data = try http_response.makeNalarConfigResponse(allocator, .{}),
+            });
+        };
+        const parsed = std.json.parseFromSliceLeaky(ConfigJson, allocator, content, .{
+            .ignore_unknown_fields = true,
+        }) catch |err| {
+            std.log.err("Failed to parse user config: {s}", .{@errorName(err)});
+            return res.jsonResponse(.{
+                .status_code = 500,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON in user config" }),
+            });
+        };
+        const cfg = parsed;
+        _ = cfg.sub_agents;
+        return res.jsonResponse(.{
+            .status_code = 200,
+            .data = try http_response.makeNalarConfigResponse(allocator, .{
+                .profiles = cfg.profiles_models,
+                .active_profile = cfg.active_profile,
+                .mcp_servers = cfg.mcp_servers,
+                .sub_agents = null,
+                .notify_on_complete = cfg.notify_on_complete,
+                .notify_on_error = cfg.notify_on_error,
+                .web_launch_enabled = cfg.web_launch_enabled,
+                .model_compaction_size_kb = cfg.model_compaction_size_kb,
+                .max_capacity_token_model = cfg.max_capacity_token_model,
+                .compaction_threshold_percent = cfg.compaction_threshold_percent,
+                .retry_delay_ms = cfg.retry_delay_ms,
+                .tools = cfg.tools,
+            }),
+        });
+    }
     const environment_ptr = di.environment orelse return res.jsonResponse(.{
         .status_code = 500,
         .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Environment not available" }),
