@@ -1304,6 +1304,17 @@ export interface Chat {
   session_name?: string
   status?: string
   selected_profile_model?: string
+  sub_agent_name?: string
+  parent_session_id?: string
+  cwd?: string
+  /// Bound git worktree path ("" = none). The sidebar shows the
+  /// kanban-style branch badge when `git_branch` is non-empty and
+  /// uses this path as the tooltip + PR-status lookup cwd.
+  git_worktree_cwd?: string
+  /// Current git branch for the effective cwd ("" / absent = no
+  /// badge). Computed per request by the backend (`session_list.zig`
+  /// via `git -C <cwd>`, same helper as the kanban task badge).
+  git_branch?: string
   /// Backend wall-clock timestamp of the last `sessions.UPDATE` —
   /// bumped by everything (agent loop, profile change, error, etc).
   /// `ChatsList.vue` renders this as the time pill's fallback when
@@ -1738,6 +1749,15 @@ export async function getChats(
           created_at: session.created_at || null,
           updated_at: session.updated_at || null,
           cwd: session.cwd || '',
+          selected_profile_model: session.selected_profile_model || '',
+          sub_agent_name: session.sub_agent_name || '',
+          parent_session_id: session.parent_session_id || '',
+          // Sidebar git badge — forward the bound worktree path and
+          // the per-request resolved branch ("" = no badge). Empty
+          // string when absent so the ChatsList `v-if` is a defined
+          // check (NOT undefined).
+          git_worktree_cwd: session.git_worktree_cwd || '',
+          git_branch: session.git_branch || '',
           // Migration 063 — default to "0" (off) when omitted so the
           // ChatsList badge condition `=== '1'` is a defined check.
           // Matches the SQL COALESCE default in llm_history.zig.

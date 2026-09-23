@@ -24,15 +24,10 @@ import * as api from '../api'
 import ChatsList from '../components/views/ChatsList.vue'
 import { mount } from '@vue/test-utils'
 import { makeLocalStorageStub } from './helpers'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
 function makeStubClient(initial: SseState): SseClient {
-   
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stub: any = {
     close: vi.fn(),
@@ -114,9 +109,9 @@ describe('ChatsList worktree badge', () => {
       ],
       has_more: false,
       next_cursor: null,
-       
+
       total: 1,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     // ChatsList no longer opens a session-events SSE stream of its
     // own — that subscription moved to workspacesStore (Chunk 5).
@@ -152,10 +147,10 @@ describe('ChatsList worktree badge', () => {
         },
       ],
       has_more: false,
-       
+
       next_cursor: null,
       total: 1,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mountChatsList()
@@ -182,11 +177,11 @@ describe('ChatsList worktree badge', () => {
           // no git_worktree_cwd key at all
         },
       ],
-       
+
       has_more: false,
       next_cursor: null,
       total: 1,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mountChatsList()
@@ -210,12 +205,11 @@ describe('ChatsList worktree badge', () => {
           selected_profile_model: 'gpt-4o',
           git_worktree_cwd: '/worktrees/feature-x',
         },
-       
       ],
       has_more: false,
       next_cursor: null,
       total: 1,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
 
     const wrapper = mountChatsList()
@@ -227,5 +221,72 @@ describe('ChatsList worktree badge', () => {
     expect(wrapper.text()).toContain('🤖')
     expect(wrapper.text()).toContain('gpt-4o')
     expect(wrapper.text()).toContain('🌳')
+  })
+
+  it('renders the kanban-style branch badge when git_branch is present', async () => {
+    // Sidebar parity with WorkspaceItemTaskCard: the branch name with
+    // the fork/branch SVG icon (same path data as the kanban card).
+    // The legacy 🌳 chip hides in favor of the branch badge.
+    vi.spyOn(api, 'getChats').mockResolvedValue({
+      sessions: [
+        {
+          session_id: 'session_branch',
+          session_name: 'Branched Chat',
+          updated_at: '2026-06-18T10:00:00Z',
+          selected_profile_model: '',
+          cwd: '/repo',
+          git_worktree_cwd: '/repo/.worktrees/feature-x',
+          git_branch: 'worktree/feature-x',
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+      total: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+
+    const wrapper = mountChatsList()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await nextTick()
+
+    const badge = wrapper.find('[data-testid="chat-git-branch"]')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toContain('worktree/feature-x')
+    // Same SVG icon as the kanban card (fork/branch path).
+    expect(badge.html()).toContain('M6 3v12')
+    // Legacy chip yields to the branch badge.
+    expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
+    // Tooltip surfaces the branch + full worktree path.
+    expect(badge.attributes('title')).toContain('worktree/feature-x')
+    expect(badge.attributes('title')).toContain('/repo/.worktrees/feature-x')
+  })
+
+  it('renders no git badge when both git_branch and git_worktree_cwd are empty', async () => {
+    vi.spyOn(api, 'getChats').mockResolvedValue({
+      sessions: [
+        {
+          session_id: 'session_plain2',
+          session_name: 'Plain Chat',
+          updated_at: '2026-06-18T10:00:00Z',
+          selected_profile_model: '',
+          cwd: '',
+          git_worktree_cwd: '',
+          git_branch: '',
+        },
+      ],
+      has_more: false,
+      next_cursor: null,
+      total: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
+
+    const wrapper = mountChatsList()
+    await new Promise((r) => setTimeout(r, 0))
+    await nextTick()
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="chat-git-branch"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
   })
 })

@@ -38,6 +38,18 @@ pub const SessionInfo = struct {
     /// (user edits a field), workflow.zig::saveRetryAttemptMessage
     /// (agent emits an error - "also when error too").
     last_human_touched_at: []const u8,
+    /// Bound git worktree path ("" = none). Mirrors
+    /// `sessions.git_worktree_cwd`; COALESCE'd to "" at the SELECT
+    /// boundary. The sidebar uses this as the effective cwd for the
+    /// PR-status lookup and as the tooltip for the branch badge.
+    git_worktree_cwd: []const u8,
+    /// Current git branch for the session's effective cwd
+    /// (worktree cwd when bound, else the session cwd). Computed
+    /// on-demand per request in `session_list.zig` via
+    /// `git -C <cwd> symbolic-ref --short HEAD` (same helper as the
+    /// kanban `tasks_list.zig` badge). "" = not a git repo /
+    /// detached HEAD — the sidebar omits the badge in that case.
+    git_branch: []const u8,
 
     pub fn deinit(self: *const SessionInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.session_id);
@@ -51,6 +63,8 @@ pub const SessionInfo = struct {
         allocator.free(self.is_auto_retry_until_stop);
         allocator.free(self.last_finish_reason);
         allocator.free(self.last_human_touched_at);
+        allocator.free(self.git_worktree_cwd);
+        allocator.free(self.git_branch);
     }
 };
 
@@ -195,6 +209,13 @@ pub fn getSessionList(
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, row.values[3]),
             .session_name = try allocator.dupe(u8, row.values[4]),
+            .status = try allocator.dupe(u8, ""),
+            .selected_profile_model = try allocator.dupe(u8, ""),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, "0"),
+            .last_finish_reason = try allocator.dupe(u8, ""),
+            .last_human_touched_at = try allocator.dupe(u8, ""),
+            .git_worktree_cwd = try allocator.dupe(u8, ""),
+            .git_branch = try allocator.dupe(u8, ""),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -328,7 +349,8 @@ pub fn getSessionListWithCursor(
         \\COALESCE(s.selected_profile_model, ''),
         \\COALESCE(s.is_auto_retry_until_stop, '0'),
         \\COALESCE(s.last_finish_reason, ''),
-        \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END
+        \\CASE WHEN s.last_human_touched_at_nano IS NULL OR s.last_human_touched_at_nano = '' THEN '' ELSE strftime('%Y-%m-%d %H:%M:%S', s.last_human_touched_at_nano / 1000, 'unixepoch') END,
+        \\COALESCE(s.git_worktree_cwd, '')
         \\FROM sessions s
         \\LEFT JOIN llm_history h ON s.id = h.session_id
         \\WHERE {s}
@@ -364,6 +386,11 @@ pub fn getSessionListWithCursor(
             // Aliased to last_human_touched_at on the wire (D3 - SQL
             // column keeps the _nano suffix, the wire field is bare).
             .last_human_touched_at = try allocator.dupe(u8, row.values[10]),
+            // Sidebar git badge - row.values[11] = git_worktree_cwd.
+            // git_branch is resolved per request in session_list.zig
+            // (git -C <effective-cwd>), so the DB layer leaves it empty.
+            .git_worktree_cwd = try allocator.dupe(u8, row.values[11]),
+            .git_branch = try allocator.dupe(u8, ""),
         };
         try sessions.append(allocator, session);
         row.deinit(allocator);
@@ -419,6 +446,14 @@ pub const SessionInfoJson = struct {
     /// the SQL column `last_human_touched_at_nano` at the SELECT layer
     /// so the wire field is bare per Migration 075 project convention.
     last_human_touched_at: []const u8 = "",
+    /// Bound git worktree path ("" = none). The sidebar shows the
+    /// kanban-style branch badge when `git_branch` is non-empty and
+    /// uses this path as the tooltip + PR-status cwd.
+    git_worktree_cwd: []const u8 = "",
+    /// Current git branch for the effective cwd ("" = no badge).
+    /// Computed per request in `session_list.zig` (same `git -C`
+    /// helper as the kanban task badge).
+    git_branch: []const u8 = "",
 };
 
 /// Build JSON response for a list of sessions with cursor pagination
@@ -452,6 +487,10 @@ pub fn buildSessionListJson(
             // wire. Empty string for legacy rows means the frontend
             // falls back to updated_at (per ChatsList.vue display logic).
             .last_human_touched_at = sess.last_human_touched_at,
+            // Sidebar git badge - forward the worktree path and the
+            // per-request resolved branch ("" = no badge).
+            .git_worktree_cwd = sess.git_worktree_cwd,
+            .git_branch = sess.git_branch,
         });
     }
 
@@ -2749,6 +2788,13 @@ pub fn get_sessions_by_dir(
             .created_at = try allocator.dupe(u8, row.values[2]),
             .agent = try allocator.dupe(u8, ""),
             .session_name = try allocator.dupe(u8, ""),
+            .status = try allocator.dupe(u8, ""),
+            .selected_profile_model = try allocator.dupe(u8, ""),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, "0"),
+            .last_finish_reason = try allocator.dupe(u8, ""),
+            .last_human_touched_at = try allocator.dupe(u8, ""),
+            .git_worktree_cwd = try allocator.dupe(u8, ""),
+            .git_branch = try allocator.dupe(u8, ""),
         };
         try results.append(allocator, session);
         row.deinit(allocator);
@@ -2777,6 +2823,12 @@ pub fn getLatestSessionByDir(
             .created_at = try allocator.dupe(u8, row.values[4]),
             .updated_at = try allocator.dupe(u8, row.values[5]),
             .agent = try allocator.dupe(u8, row.values[6]),
+            .selected_profile_model = try allocator.dupe(u8, ""),
+            .is_auto_retry_until_stop = try allocator.dupe(u8, "0"),
+            .last_finish_reason = try allocator.dupe(u8, ""),
+            .last_human_touched_at = try allocator.dupe(u8, ""),
+            .git_worktree_cwd = try allocator.dupe(u8, ""),
+            .git_branch = try allocator.dupe(u8, ""),
         };
         row.deinit(allocator);
         return session;
@@ -8392,6 +8444,8 @@ test "buildSessionListJson emits last_human_touched_at when the row has a value 
             // so SessionInfo.last_human_touched_at arrives here as a
             // SQLite datetime string ('YYYY-MM-DD HH:MM:SS' UTC).
             .last_human_touched_at = try alloc.dupe(u8, "2026-08-29 10:00:00"),
+            .git_worktree_cwd = try alloc.dupe(u8, ""),
+            .git_branch = try alloc.dupe(u8, ""),
     };
     defer sess.deinit(alloc);
 
@@ -8437,6 +8491,8 @@ test "buildSessionListJson emits last_human_touched_at as empty string for legac
         .is_auto_retry_until_stop = try alloc.dupe(u8, "0"),
         .last_finish_reason = try alloc.dupe(u8, ""),
         .last_human_touched_at = try alloc.dupe(u8, ""),
+        .git_worktree_cwd = try alloc.dupe(u8, ""),
+        .git_branch = try alloc.dupe(u8, ""),
     };
     defer sess.deinit(alloc);
 
@@ -8470,7 +8526,8 @@ test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on th
         \\    selected_profile_model TEXT,
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
-        \\    last_human_touched_at_nano INTEGER
+        \\    last_human_touched_at_nano INTEGER,
+        \\    git_worktree_cwd TEXT
         \\)
     , &.{});
     // Minimal llm_history (the SELECT LEFT JOINs to it).
@@ -8522,7 +8579,8 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
         \\    selected_profile_model TEXT,
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
-        \\    last_human_touched_at_nano INTEGER
+        \\    last_human_touched_at_nano INTEGER,
+        \\    git_worktree_cwd TEXT
         \\)
     , &.{});
     // Minimal llm_history (the SELECT LEFT JOINs to it).
@@ -8573,7 +8631,8 @@ test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count h
         \\    selected_profile_model TEXT,
         \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\    last_finish_reason TEXT,
-        \\    last_human_touched_at_nano INTEGER
+        \\    last_human_touched_at_nano INTEGER,
+        \\    git_worktree_cwd TEXT
         \\)
     , &.{});
     try db.exec(alloc,

@@ -10,6 +10,7 @@ import { useContextMenu } from '../../composables/useContextMenu'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import { openInNewTab } from '../../helpers/openInNewTab'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
+import { fetchPrStatusCached } from '../../helpers/prStatusCache'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
@@ -80,6 +81,71 @@ const isStale = (human: string | undefined, updated: string | undefined): boolea
 // Inject processingState from App.vue
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
 
+// Kanban-style git branch badge with PR-status colors (same palette
+// as WorkspaceItemTaskCard: green = open, violet = merged, red =
+// closed). The backend resolves `git_branch` per session
+// (`session_list.zig` via `git -C <effective-cwd>`); the effective
+// cwd prefers the bound worktree path and falls back to the session
+// cwd. Fail-silent: '' keeps the dim look for non-git sessions,
+// branches without a PR, or when `gh` is missing.
+const prStatuses = ref<Record<string, string>>({})
+const prSeqByChat = new Map<string, number>()
+
+type ChatRow = {
+  id: string
+  cwd?: string
+  git_worktree_cwd?: string
+  git_branch?: string
+}
+
+const effectiveChatCwd = (item: ChatRow): string => item.git_worktree_cwd || item.cwd || ''
+
+const chatBranchStyle = (id: string): Record<string, string> => {
+  const s = prStatuses.value[id] || ''
+  if (s === 'merged') return { color: 'var(--color-violet)' }
+  if (s === 'closed') return { color: 'var(--semantic-error)' }
+  if (s === 'open') return { color: 'var(--color-green)' }
+  return {}
+}
+
+const chatBranchTitle = (item: ChatRow): string => {
+  const branch = item.git_branch || ''
+  const s = prStatuses.value[item.id] || ''
+  const base =
+    s === 'merged'
+      ? `PR merged — ${branch}`
+      : s === 'closed'
+        ? `PR closed — ${branch}`
+        : s === 'open'
+          ? `PR open — ${branch}`
+          : branch
+  // Surface the worktree path alongside the branch so the full
+  // checkout location stays discoverable on hover.
+  if (item.git_worktree_cwd) return `${base} — ${item.git_worktree_cwd}`
+  return base
+}
+
+const refreshChatPrStatus = async (item: ChatRow) => {
+  const branch = item.git_branch || ''
+  const cwd = effectiveChatCwd(item)
+  if (!branch || !cwd) {
+    if (prStatuses.value[item.id]) delete prStatuses.value[item.id]
+    return
+  }
+  const seq = (prSeqByChat.get(item.id) || 0) + 1
+  prSeqByChat.set(item.id, seq)
+  // Shared cache: dedupes the list-load burst across rows, retries
+  // transient failures, resolves '' (fail-silent) when unknown.
+  const status = await fetchPrStatusCached(cwd, branch)
+  if (prSeqByChat.get(item.id) !== seq) return
+  if (status) prStatuses.value[item.id] = status
+  else if (prStatuses.value[item.id]) delete prStatuses.value[item.id]
+}
+
+// Note: the navItems watcher that triggers refreshChatPrStatus lives
+// below, right after the navItems declaration (TDZ: watch() evaluates
+// its source eagerly, so it must run after `const navItems`).
+
 // Helper to check if a session is processing
 
 // State
@@ -94,7 +160,9 @@ const navItems = ref<
     selected_profile_model?: string
     sub_agent_name?: string
     parent_session_id?: string
+    cwd?: string
     git_worktree_cwd?: string
+    git_branch?: string
     is_auto_retry_until_stop?: string
     last_human_touched_at?: string
     updated_at?: string
@@ -104,6 +172,18 @@ const chatsHasMore = ref(false)
 const chatsNextCursor = ref<string | null>(null)
 const chatsSortDirection = ref<'asc' | 'desc'>(navigationStore.chatsSortDirection)
 const chatsTotal = ref(0)
+
+// Resolve PR colors whenever the row list (re)populates — same burst
+// pattern as the kanban board mount.
+watch(
+  navItems,
+  (items) => {
+    for (const item of items || []) {
+      if (item.git_branch) void refreshChatPrStatus(item)
+    }
+  },
+  { deep: false },
+)
 
 // Right-click "Open in new tab" for a chat row. Position state +
 // dismiss wiring live in useContextMenu; the row payload (chat id)
@@ -290,7 +370,9 @@ const loadChats = async () => {
       selected_profile_model: session.selected_profile_model || '',
       sub_agent_name: session.sub_agent_name || '',
       parent_session_id: session.parent_session_id || '',
+      cwd: session.cwd || '',
       git_worktree_cwd: session.git_worktree_cwd || '',
+      git_branch: session.git_branch || '',
       // Migration 063 — defaulted to "0" in getChats mapping so the
       // `=== '1'` badge check below is well-defined.
       is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
@@ -369,6 +451,12 @@ const loadMoreChats = async () => {
       processing: false,
       // Migration 082 — prefer human-touched timestamp when present.
       relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
+      selected_profile_model: session.selected_profile_model || '',
+      sub_agent_name: session.sub_agent_name || '',
+      parent_session_id: session.parent_session_id || '',
+      cwd: session.cwd || '',
+      git_worktree_cwd: session.git_worktree_cwd || '',
+      git_branch: session.git_branch || '',
       // Migration 082 — captured for the stale-dot check (same as loadChats).
       last_human_touched_at: session.last_human_touched_at || '',
       updated_at: session.updated_at || '',
@@ -716,8 +804,41 @@ defineExpose({
                 "
                 >🔧 {{ item.sub_agent_name }}</span
               >
+              <!-- Kanban-style git branch badge (same fork/branch SVG +
+                   PR-status colors as WorkspaceItemTaskCard: green =
+                   open, violet = merged, red = closed). Shows the
+                   session's current branch (worktree branch when bound,
+                   else the session cwd's branch). Tooltip carries the
+                   PR state + full worktree path. -->
               <span
-                v-if="item.git_worktree_cwd"
+                v-if="item.git_branch"
+                class="ml-1 inline-flex items-center gap-1 max-w-[8rem] truncate align-middle text-[10px] font-mono"
+                :style="chatBranchStyle(item.id)"
+                :title="chatBranchTitle(item)"
+                :data-pr-status="prStatuses[item.id] || undefined"
+                data-testid="chat-git-branch"
+              >
+                <svg
+                  class="w-3 h-3 shrink-0"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  aria-hidden="true"
+                >
+                  <path
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
+                  />
+                </svg>
+                <span class="truncate">{{ item.git_branch }}</span>
+              </span>
+              <!-- Fallback for bound worktrees whose cwd is not a git
+                   repo (no branch to show): keeps the legacy worktree
+                   chip so the binding stays visible. -->
+              <span
+                v-else-if="item.git_worktree_cwd"
                 class="ml-1 text-xs text-emerald-600 dark:text-emerald-400 font-mono"
                 :title="item.git_worktree_cwd"
                 data-testid="worktree-badge"
