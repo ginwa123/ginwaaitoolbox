@@ -66,6 +66,7 @@ fn parseInput(query: anytype) !SessionListInput {
 fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
+    io: std.Io,
     input: SessionListInput,
 ) SessionListError!SessionListResult {
     // Workspace scope: resolve `workspace_id` into the concrete
@@ -107,6 +108,22 @@ fn useCase(
         allocator.free(result.sessions);
     }
 
+    // Sidebar git badge (mirrors the kanban tasks_list.zig badge).
+    // Resolve the current branch per session via `git -C <cwd>` where
+    // cwd prefers the bound worktree path and falls back to the
+    // session cwd. Best-effort: non-repo / detached / no git yields
+    // "" and the frontend omits the badge. resolveGitBranch returns
+    // an owned dupe (or static "" when empty); freed after assigning
+    // into the session so testing.allocator stays leak-clean
+    // (production uses the per-request arena either way).
+    for (result.sessions) |*s| {
+        const effective_cwd = if (s.git_worktree_cwd.len > 0) s.git_worktree_cwd else s.cwd;
+        const branch = if (effective_cwd.len == 0) "" else resolveGitBranch(allocator, io, effective_cwd);
+        defer if (branch.len > 0) allocator.free(branch);
+        allocator.free(s.git_branch);
+        s.git_branch = try allocator.dupe(u8, branch);
+    }
+
     // has_more is true iff we got the full page back.
     const has_more = result.sessions.len == @as(usize, input.limit);
 
@@ -139,6 +156,7 @@ pub fn sessionListHandler(
     res: gserverz.HttpResponse,
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
+    const io = ctx.io;
 
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
@@ -154,7 +172,7 @@ pub fn sessionListHandler(
         });
     };
 
-    const response = useCase(allocator, sqlite_db, input) catch |err| {
+    const response = useCase(allocator, sqlite_db, io, input) catch |err| {
         const status: u16 = switch (err) {
             error.QueryFailed => 500,
             error.OutOfMemory => 500,
@@ -211,7 +229,8 @@ fn setupDb() !TestCtx {
         \\  selected_profile_model TEXT,
         \\  is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
         \\  last_finish_reason TEXT,
-        \\  last_human_touched_at_nano INTEGER
+        \\  last_human_touched_at_nano INTEGER,
+        \\  git_worktree_cwd TEXT
         \\)
     , &.{});
     try db.exec(alloc,
@@ -265,8 +284,8 @@ fn teardown(ctx: *TestCtx) void {
     ctx.threaded.deinit();
 }
 
-fn runUseCase(db: *nalarcore.sqlite.SqliteBackend, workspace_id: ?[]const u8) !SessionListResult {
-    return useCase(testing.allocator, db, .{
+fn runUseCase(ctx: *TestCtx, workspace_id: ?[]const u8) !SessionListResult {
+    return useCase(testing.allocator, &ctx.db, ctx.threaded.io(), .{
         .limit = 50,
         .cursor = null,
         .cwd = null,
@@ -280,7 +299,7 @@ test "useCase: workspace_id=A returns exactly task-linked + cwd-matched sessions
     var ctx = try setupDb();
     defer teardown(&ctx);
 
-    const json = try runUseCase(&ctx.db, "A");
+    const json = try runUseCase(&ctx, "A");
     defer testing.allocator.free(json);
 
     try testing.expect(std.mem.indexOf(u8, json, "\"session_id\":\"task_a1\"") != null);
@@ -299,7 +318,7 @@ test "useCase: workspace scoping is fail-closed and param-absent stays global" {
 
     // B → only its own task session, total 1.
     {
-        const json = try runUseCase(&ctx.db, "B");
+        const json = try runUseCase(&ctx, "B");
         defer testing.allocator.free(json);
         try testing.expect(std.mem.indexOf(u8, json, "task_b1") != null);
         try testing.expect(std.mem.indexOf(u8, json, "task_a1") == null);
@@ -309,7 +328,7 @@ test "useCase: workspace scoping is fail-closed and param-absent stays global" {
 
     // Unknown workspace → empty list + total 0 (fail closed).
     {
-        const json = try runUseCase(&ctx.db, "nope");
+        const json = try runUseCase(&ctx, "nope");
         defer testing.allocator.free(json);
         try testing.expect(std.mem.indexOf(u8, json, "\"sessions\":[]") != null);
         try testing.expect(std.mem.indexOf(u8, json, "\"total\":0") != null);
@@ -319,7 +338,7 @@ test "useCase: workspace scoping is fail-closed and param-absent stays global" {
     // Guards the `IN ()` / empty-bind bug classes: the resolver
     // returns an empty set, the SQL must stay valid with 0 rows.
     {
-        const json = try runUseCase(&ctx.db, "");
+        const json = try runUseCase(&ctx, "");
         defer testing.allocator.free(json);
         try testing.expect(std.mem.indexOf(u8, json, "\"sessions\":[]") != null);
         try testing.expect(std.mem.indexOf(u8, json, "\"total\":0") != null);
@@ -327,7 +346,7 @@ test "useCase: workspace scoping is fail-closed and param-absent stays global" {
 
     // Param absent (null) → global list unchanged (back-compat).
     {
-        const json = try runUseCase(&ctx.db, null);
+        const json = try runUseCase(&ctx, null);
         defer testing.allocator.free(json);
         try testing.expect(std.mem.indexOf(u8, json, "\"session_id\":\"task_a1\"") != null);
         try testing.expect(std.mem.indexOf(u8, json, "\"session_id\":\"task_a2\"") != null);
@@ -335,4 +354,65 @@ test "useCase: workspace scoping is fail-closed and param-absent stays global" {
         try testing.expect(std.mem.indexOf(u8, json, "\"session_id\":\"task_b1\"") != null);
         try testing.expect(std.mem.indexOf(u8, json, "\"total\":4") != null);
     }
+}
+
+// =====================================================================
+// Git branch resolution (sidebar git badge, mirrors tasks_list.zig)
+// =====================================================================
+
+/// Run `git -C <path> symbolic-ref --short HEAD` and fall back to
+/// `git -C <path> rev-parse --abbrev-ref HEAD` for detached HEAD.
+/// Returns an OWNED dupe of the trimmed branch name, or static ""
+/// for non-repo / detached ("HEAD" literal) / spawn failure. The
+/// caller frees the result when `len > 0` (static "" must not be
+/// freed). Never surfaces a 500 — the sidebar badge is best-effort
+/// decoration.
+///
+/// Leak-cleanliness: `std.process.run` allocates stdout/stderr via
+/// the given allocator, so every spawn path frees both buffers
+/// before returning (the kanban tasks_list.zig twin leaks stderr
+/// into the per-request arena instead — fine in production, but
+/// this handler's tests run under testing.allocator).
+fn resolveGitBranch(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) []const u8 {
+    const sym_argv = [_][]const u8{ "git", "-C", path, "symbolic-ref", "--short", "HEAD" };
+    if (std.process.run(allocator, io, .{ .argv = &sym_argv })) |sym_result| {
+        defer allocator.free(sym_result.stdout);
+        defer allocator.free(sym_result.stderr);
+        if (sym_result.term.exited == 0) {
+            const branch = std.mem.trim(u8, sym_result.stdout, " \n\r\t");
+            if (branch.len == 0) return "";
+            return allocator.dupe(u8, branch) catch return "";
+        }
+    } else |_| {
+        return "";
+    }
+    const rev_argv = [_][]const u8{ "git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD" };
+    const rev_result = std.process.run(allocator, io, .{ .argv = &rev_argv }) catch return "";
+    defer allocator.free(rev_result.stdout);
+    defer allocator.free(rev_result.stderr);
+    if (rev_result.term.exited != 0) return "";
+    const branch = std.mem.trim(u8, rev_result.stdout, " \n\r\t");
+    if (branch.len == 0) return "";
+    if (std.mem.eql(u8, branch, "HEAD")) return "";
+    return allocator.dupe(u8, branch) catch return "";
+}
+
+test "useCase: session list wire carries git_worktree_cwd + git_branch (sidebar badge)" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+
+    // Bind a worktree path to one session; the wire must carry it
+    // through even though /proj/a is not a git repo (branch "").
+    try ctx.db.exec(testing.allocator, "UPDATE sessions SET git_worktree_cwd = '/tmp/wt-1' WHERE id = 'task_a1'", &.{});
+
+    const json = try runUseCase(&ctx, "A");
+    defer testing.allocator.free(json);
+
+    try testing.expect(std.mem.indexOf(u8, json, "\"git_worktree_cwd\":\"/tmp/wt-1\"") != null);
+    // Non-git cwd resolves to empty branch; key must still be present.
+    try testing.expect(std.mem.indexOf(u8, json, "\"git_branch\":\"\"") != null);
 }
