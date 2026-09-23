@@ -1,8 +1,13 @@
 /**
- * Regression tests for the "git worktree badge" rendered in the
- * ChatsList sidebar. The 🌳 badge must appear next to a chat row
- * when the session has a `git_worktree_cwd` value, and must be
- * absent when the value is empty.
+ * Regression tests for the git icon rendered in the ChatsList
+ * sidebar. Rows show icon-only badges (no model badge, no text
+ * labels) in front of the chat name:
+ *   - `chat-git-branch`: kanban fork/branch SVG with PR-status colors
+ *     when the session has a `git_branch` value (tooltip carries the
+ *     branch + worktree path).
+ *   - `worktree-badge`: same SVG icon (dim fallback) when only
+ *     `git_worktree_cwd` is set (bound worktree, non-git cwd).
+ * Both are absent when the values are empty.
  *
  * This guards the Chunk 4 wiring:
  *   - `Session` interface declares `git_worktree_cwd` (api/index.ts)
@@ -10,8 +15,8 @@
  *     (SSE updates carry it through)
  *   - `ChatsList.vue` `loadChats` maps `session.git_worktree_cwd`
  *     into the local `navItems[i].git_worktree_cwd`
- *   - The template renders the 🌳 badge gated on
- *     `v-if="item.git_worktree_cwd"`
+ *   - The template renders the icon gated on
+ *     `v-if="item.git_branch"` / `v-else-if="item.git_worktree_cwd"`
  *
  * The component is mounted with `vi.spyOn(api, 'getChats')` (the
  * same pattern as `sidebarActiveState.spec.ts`).
@@ -71,7 +76,7 @@ function mountChatsList() {
   })
 }
 
-describe('ChatsList worktree badge', () => {
+describe('ChatsList git icon', () => {
   let app: VueApp
 
   beforeEach(() => {
@@ -96,7 +101,7 @@ describe('ChatsList worktree badge', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders the 🌳 badge when a session has a non-empty git_worktree_cwd', async () => {
+  it('renders the worktree icon when a session has a non-empty git_worktree_cwd', async () => {
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
@@ -126,16 +131,18 @@ describe('ChatsList worktree badge', () => {
 
     const badge = wrapper.find('[data-testid="worktree-badge"]')
     expect(badge.exists()).toBe(true)
-    expect(badge.text()).toContain('🌳')
-    expect(badge.text()).toContain('worktree')
+    // Icon-only fallback: same kanban fork/branch SVG, no text label.
+    expect(badge.html()).toContain('M6 3v12')
+    expect(badge.text()).not.toContain('🌳')
+    expect(badge.text()).not.toContain('worktree')
     // The badge exposes the worktree path via the title attribute
-    // (the full path is too long to display inline; hovering shows
-    // it as a native tooltip). The browser's attribute name is
-    // lowercase `title`, which jsdom preserves verbatim.
+    // (hovering shows it as a native tooltip). The browser's
+    // attribute name is lowercase `title`, which jsdom preserves
+    // verbatim.
     expect(badge.attributes('title')).toBe('/abs/.worktrees/worktree/session_abc')
   })
 
-  it('does NOT render the 🌳 badge when git_worktree_cwd is empty', async () => {
+  it('does NOT render the worktree icon when git_worktree_cwd is empty', async () => {
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
@@ -161,7 +168,7 @@ describe('ChatsList worktree badge', () => {
     expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
   })
 
-  it('does NOT render the 🌳 badge when git_worktree_cwd is missing from the session', async () => {
+  it('does NOT render the worktree icon when git_worktree_cwd is missing from the session', async () => {
     // Belt-and-suspenders: some old sessions predate the
     // set_git_worktree tool, so the field is absent (undefined) on
     // the wire. The ChatsList loadChats mapper uses
@@ -192,10 +199,11 @@ describe('ChatsList worktree badge', () => {
     expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
   })
 
-  it('renders the 🌳 badge alongside the 🤖 profile-model badge when both are set', async () => {
-    // A session can have BOTH a profile model and a worktree. The
-    // badges are independent indicators (model identity vs. cwd
-    // binding) and must be able to render on the same row.
+  it('does NOT render a model badge even when selected_profile_model is set', async () => {
+    // Chat rows show only the git icon + name + time. The model badge
+    // was removed (icon-only rows) — a session with a profile model
+    // must render no model text, while the worktree icon still shows
+    // for the bound path.
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
@@ -218,15 +226,14 @@ describe('ChatsList worktree badge', () => {
     await nextTick()
 
     expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('🤖')
-    expect(wrapper.text()).toContain('gpt-4o')
-    expect(wrapper.text()).toContain('🌳')
+    expect(wrapper.text()).not.toContain('🤖')
+    expect(wrapper.text()).not.toContain('gpt-4o')
   })
 
-  it('renders the kanban-style branch badge when git_branch is present', async () => {
-    // Sidebar parity with WorkspaceItemTaskCard: the branch name with
-    // the fork/branch SVG icon (same path data as the kanban card).
-    // The legacy 🌳 chip hides in favor of the branch badge.
+  it('renders the icon-only branch badge when git_branch is present', async () => {
+    // Sidebar parity with WorkspaceItemTaskCard's SVG icon, but
+    // icon-only: no branch-name text, no legacy chip. The branch +
+    // worktree path stay discoverable via the tooltip.
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
@@ -252,9 +259,11 @@ describe('ChatsList worktree badge', () => {
 
     const badge = wrapper.find('[data-testid="chat-git-branch"]')
     expect(badge.exists()).toBe(true)
-    expect(badge.text()).toContain('worktree/feature-x')
-    // Same SVG icon as the kanban card (fork/branch path).
+    // Icon-only: the SVG icon with no branch-name text.
     expect(badge.html()).toContain('M6 3v12')
+    expect(badge.text()).not.toContain('worktree/feature-x')
+    // The row still shows the chat name.
+    expect(wrapper.text()).toContain('Branched Chat')
     // Legacy chip yields to the branch badge.
     expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
     // Tooltip surfaces the branch + full worktree path.
