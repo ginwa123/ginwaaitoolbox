@@ -1507,6 +1507,12 @@ export const DEFAULT_CHAT_TOOLS = [
   'save_memory',
   'list_skills',
   'use_skill',
+  // Introspection: list the tools equipped for this session ("what
+  // tools do I have"). Read-only, sub-agent-safe. Seeded here so
+  // plain chat, design mode, and routine sessions (which all use
+  // this request body) get it; agent/kanban modes seed it via
+  // backend DEFAULT_AGENT_TOOLS.
+  'used_tools',
   // Interactive: ask the human a question (ends the turn until they answer).
   // Seeded in every mode by default — without it here the tool would be
   // silently filtered out of plain chat sessions.

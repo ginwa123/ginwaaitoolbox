@@ -59,6 +59,7 @@ pub const execSpawnSubAgent = @import("tools_exec_spawn_sub_agent.zig").execSpaw
 pub const execUpdatePlan = @import("tools_exec_update_plan.zig").execUpdatePlan;
 pub const execGetPlan = @import("tools_exec_get_plan.zig").execGetPlan;
 pub const execListSubAgent = @import("tools_exec_list_sub_agent.zig").execListSubAgent;
+pub const execUsedTools = @import("tools_exec_used_tools.zig").execUsedTools;
 // 2026-09-16 — ask_user: ends the turn so the human can answer in their own
 // time; the answer rewrites this call's tool-result row and resumes a run.
 pub const execAskUser = @import("tools_exec_ask_user.zig").execAskUser;

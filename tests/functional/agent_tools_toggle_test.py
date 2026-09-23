@@ -177,6 +177,7 @@ EXPECTED_DEFAULTS = [
     "update_plan",
     "use_skill",
     "use_tool",
+    "used_tools",
     "view_tool",
     "write_file",
 ]

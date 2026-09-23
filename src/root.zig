@@ -825,6 +825,7 @@ pub const system_folder = @import("modules/system_folder/system_folder.zig");
 pub const update_plan = @import("modules/agent/tools/update_plan.zig");
 pub const get_plan = @import("modules/agent/tools/get_plan.zig");
 pub const list_sub_agent = @import("modules/agent/tools/list_sub_agent.zig");
+pub const used_tools = @import("modules/agent/tools/used_tools.zig");
 // Progressive tool search: search_tool / view_tool / use_tool. The catalog
 // and the result renderers live in src/agentic_loop/progressive_catalog.zig
 // (this module is pure tool data).
