@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 
 import * as api from '../api'
 import NalarSettings from '../components/NalarSettings.vue'
@@ -13,11 +14,23 @@ vi.mock('../api', () => ({
   // Plan 2026-09-10-web-launch-toggle: browser-mode status for the
   // General tab URL pill. Resolves null by default (pill waiting hint).
   getWebStatus: vi.fn(),
+  // Tools tab catalog — consumed by the agentTools store inside
+  // ToolsSection; only fetched when the Tools tab mounts.
+  getAgentToolsRegistry: vi.fn(),
 }))
 
 const mockGet = api.getNalarConfig as unknown as ReturnType<typeof vi.fn>
 const mockSave = api.saveNalarConfig as unknown as ReturnType<typeof vi.fn>
 const mockWebStatus = api.getWebStatus as unknown as ReturnType<typeof vi.fn>
+const mockRegistry = api.getAgentToolsRegistry as unknown as ReturnType<typeof vi.fn>
+
+// Catalog fixture for the Tools tab. `set_git_worktree` is NOT part
+// of the built-in defaults, so checking it is a visible edit.
+const TOOLS_REGISTRY = [
+  { name: 'command', description: 'Run a shell command' },
+  { name: 'glob', description: 'Find files by glob pattern' },
+  { name: 'set_git_worktree', description: 'Create a git worktree and bind it' },
+]
 
 describe('NalarSettings (orchestrator)', () => {
   beforeEach(() => {
@@ -28,6 +41,8 @@ describe('NalarSettings (orchestrator)', () => {
     mockSave.mockReset()
     mockWebStatus.mockReset()
     mockWebStatus.mockResolvedValue(null)
+    mockRegistry.mockReset()
+    mockRegistry.mockResolvedValue({ tools: TOOLS_REGISTRY })
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
       writable: true,
@@ -35,19 +50,21 @@ describe('NalarSettings (orchestrator)', () => {
     })
   })
 
-  it('renders the 3 tab labels in order: General / Profiles / MCP Servers (no global Sub-agents)', async () => {
+  it('renders the 4 tab labels in order: General / Profiles / MCP Servers / Tools (no global Sub-agents)', async () => {
     // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the
     // General tab is the FIRST tab. Tab order matters — operational
     // settings (notification toggles + retry delay) belong at the top.
     // Plan 2026-09-04-subagents-per-profile: the global Sub-agents tab
-    // is removed — sub-agents live inside each profile row.
+    // is removed — sub-agents live inside each profile row. The Tools
+    // tab sits after MCP Servers (plan
+    // 2026-09-22-tools-menu-config-default-tools).
     mockGet.mockResolvedValueOnce({})
     const wrapper = mount(NalarSettings, {
       global: { stubs: { Teleport: true } },
     })
     await flushPromises()
-    const tabs = wrapper.findAll('button[role="tab"]').map(b => b.text().trim())
-    expect(tabs).toEqual(['General', 'Profiles', 'MCP Servers'])
+    const tabs = wrapper.findAll('button[role="tab"]').map((b) => b.text().trim())
+    expect(tabs).toEqual(['General', 'Profiles', 'MCP Servers', 'Tools'])
     expect(wrapper.text()).not.toContain('Defaults')
     expect(wrapper.find('[data-tab-id="sub-agents"]').exists()).toBe(false)
   })
@@ -111,7 +128,15 @@ describe('NalarSettings (orchestrator)', () => {
     await flushPromises()
     expect(mockSave).toHaveBeenCalledTimes(1)
     const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
-    for (const key of ['api_endpoint', 'api_key', 'model', 'url_style', 'temperature', 'max_tokens', 'system_prompt']) {
+    for (const key of [
+      'api_endpoint',
+      'api_key',
+      'model',
+      'url_style',
+      'temperature',
+      'max_tokens',
+      'system_prompt',
+    ]) {
       expect(savedConfig).not.toHaveProperty(key)
     }
     expect(savedConfig.profiles).toBeDefined()
@@ -121,8 +146,22 @@ describe('NalarSettings (orchestrator)', () => {
   it('routes a sub-agent add through a profile scope to the right profile', async () => {
     mockGet.mockResolvedValueOnce({
       profiles: {
-        work: { model: 'm', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' },
-        home: { model: 'm2', base_url: '', thinking: 'auto', temperature: 'auto', url_style: 'openai', api_key: '' },
+        work: {
+          model: 'm',
+          base_url: '',
+          thinking: 'auto',
+          temperature: 'auto',
+          url_style: 'openai',
+          api_key: '',
+        },
+        home: {
+          model: 'm2',
+          base_url: '',
+          thinking: 'auto',
+          temperature: 'auto',
+          url_style: 'openai',
+          api_key: '',
+        },
       },
     })
     const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
@@ -163,7 +202,8 @@ describe('NalarSettings (orchestrator)', () => {
     // sub_agents should be an empty array (or undefined).
     expect((profiles.home!.sub_agents as unknown[] | undefined)?.length ?? 0).toBe(0)
     // No top-level sub_agents list is ever sent (per-profile only).
-    const topLevel = (savedConfig as Record<string, unknown>).sub_agents as Array<{ name: string }> | undefined
+    const topLevel = (savedConfig as Record<string, unknown>).sub_agents as
+      Array<{ name: string }> | undefined
     expect(topLevel ?? []).not.toContainEqual(expect.objectContaining({ name: 'coder' }))
   })
 
@@ -230,7 +270,7 @@ describe('NalarSettings (orchestrator)', () => {
     await flushPromises()
     await wrapper.find('[data-testid="reset-active-btn"]').trigger('click')
     await flushPromises()
-    expect(wrapper.emitted('notification')?.some(e => e[1] === 'success')).toBe(true)
+    expect(wrapper.emitted('notification')?.some((e) => e[1] === 'success')).toBe(true)
   })
 
   it('restores the previous active profile when saveNalarConfig fails (optimistic rollback)', async () => {
@@ -252,7 +292,7 @@ describe('NalarSettings (orchestrator)', () => {
     // reflect the original value (rolled back from the optimistic null).
     expect(wrapper.text()).toContain('work')
     // And an error notification should fire.
-    expect(wrapper.emitted('notification')?.some(e => e[1] === 'error')).toBe(true)
+    expect(wrapper.emitted('notification')?.some((e) => e[1] === 'error')).toBe(true)
   })
 
   // ─── General tab (plan 2026-08-25-notify-on-error-and-retry-ms-in-settings) ──
@@ -286,14 +326,18 @@ describe('NalarSettings (orchestrator)', () => {
     expect(wrapper.find('button[role="tab"][data-active="true"]').text()).toBe('General')
     // Both toggles reflect the loaded values.
     expect(
-      (wrapper.find('[data-testid="toggle-notify-on-complete"]').element as HTMLInputElement).checked,
+      (wrapper.find('[data-testid="toggle-notify-on-complete"]').element as HTMLInputElement)
+        .checked,
     ).toBe(true)
     expect(
       (wrapper.find('[data-testid="toggle-notify-on-error"]').element as HTMLInputElement).checked,
     ).toBe(true)
     // The retry-delay input is in seconds (15000 ms = 15 sec).
     expect(
-      Number((wrapper.find('[data-testid="input-retry-delay-seconds"]').element as HTMLInputElement).value),
+      Number(
+        (wrapper.find('[data-testid="input-retry-delay-seconds"]').element as HTMLInputElement)
+          .value,
+      ),
     ).toBe(15)
     // Plan 2026-09-10-web-launch-toggle: the web-launch toggle reflects
     // the loaded flag and the pill shows the live status URL.
@@ -394,7 +438,8 @@ describe('NalarSettings (orchestrator)', () => {
     expect(msReadout.text()).toContain('0')
   })
 
-  it('the PUT body always includes all four operational settings, even when the user only edits one', async () => {    // The General tab MUST write all four operational settings
+  it('the PUT body always includes all four operational settings, even when the user only edits one', async () => {
+    // The General tab MUST write all four operational settings
     // through (syncToConfig does this unconditionally). This is a
     // regression guard so a future refactor doesn't accidentally
     // drop one of them and silently re-introduce the hidden-field
@@ -524,5 +569,122 @@ describe('NalarSettings (orchestrator)', () => {
     const savedConfig = mockSave.mock.calls[0]![0] as Record<string, Record<string, unknown>>
     const servers = savedConfig.mcp_servers as Record<string, Record<string, unknown>>
     expect(servers.hello).not.toHaveProperty('enabled')
+  })
+
+  // ─── Tools tab (plan 2026-09-22-tools-menu-config-default-tools) ──────
+
+  // Memory-history router scoped to the settings path — same real-
+  // vue-router pattern as SidebarDiffPanel.tabs.spec (no guards, no
+  // window.location, query stays observable via currentRoute).
+  async function makeSettingsRouter(query: Record<string, string> = {}) {
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: '/app/settings', component: { template: '<div/>' } }],
+    })
+    await router.push({ path: '/app/settings', query })
+    await router.isReady()
+    return router
+  }
+
+  it('tab clicks round-trip through ?section= (default tab stripped from the URL)', async () => {
+    const router = await makeSettingsRouter()
+    mockGet.mockResolvedValueOnce({})
+    const wrapper = mount(NalarSettings, {
+      global: { plugins: [router], stubs: { Teleport: true } },
+    })
+    await flushPromises()
+
+    await wrapper.find('[data-tab-id="tools"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.section).toBe('tools')
+    expect(wrapper.find('[data-tab-id="tools"][data-active="true"]').exists()).toBe(true)
+
+    // 'general' is the default — back on it, the query is dropped.
+    await wrapper.find('[data-tab-id="general"]').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.section).toBeUndefined()
+    expect(wrapper.find('[data-tab-id="general"][data-active="true"]').exists()).toBe(true)
+  })
+
+  it('mounts with ?section=tools → Tools tab active and ToolsSection rendered (deep link)', async () => {
+    const router = await makeSettingsRouter({ section: 'tools' })
+    mockGet.mockResolvedValueOnce({})
+    const wrapper = mount(NalarSettings, {
+      global: { plugins: [router], stubs: { Teleport: true } },
+    })
+    await flushPromises()
+    expect(wrapper.find('[data-tab-id="tools"][data-active="true"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="tools-section"]').exists()).toBe(true)
+    // Config has no `tools` key → built-in defaults + dim note.
+    expect(wrapper.find('[data-testid="defaults-note"]').exists()).toBe(true)
+  })
+
+  it('hydrates an explicit tools list from config (no defaults note, checkboxes reflect it)', async () => {
+    mockGet.mockResolvedValueOnce({ tools: ['command'] })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    await wrapper.find('[data-tab-id="tools"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="defaults-note"]').exists()).toBe(false)
+    const isChecked = (name: string) =>
+      (wrapper.find(`[data-testid="row-${name}"] input`).element as HTMLInputElement).checked
+    expect(isChecked('command')).toBe(true)
+    expect(isChecked('glob')).toBe(false)
+    expect(wrapper.find('[data-testid="tools-section"]').text()).toContain('1 of 3 tools selected')
+  })
+
+  it('checking a tool flips dirty and round-trips tools through the PUT body', async () => {
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: false,
+      notify_on_error: false,
+      retry_delay_ms: 0,
+      web_launch_enabled: false,
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    await wrapper.find('[data-tab-id="tools"]').trigger('click')
+    await flushPromises()
+
+    // Untouched checklist (null) → nothing to write, save bar hidden.
+    expect(wrapper.find('[data-testid="save-bar"]').exists()).toBe(false)
+
+    // set_git_worktree is not in the built-in defaults — checking it
+    // writes the full explicit list (defaults ∩ registry + it).
+    await wrapper.find('[data-testid="row-set_git_worktree"] input').setValue(true)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="save-bar"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+    expect(savedConfig.tools).toEqual(['command', 'glob', 'set_git_worktree'])
+  })
+
+  it('omits tools from the PUT body while the checklist is untouched (null = no change)', async () => {
+    mockGet.mockResolvedValueOnce({
+      notify_on_complete: false,
+      notify_on_error: false,
+      retry_delay_ms: 0,
+      web_launch_enabled: false,
+    })
+    mockSave.mockResolvedValueOnce({ success: true })
+    const wrapper = mount(NalarSettings, { global: { stubs: { Teleport: true } } })
+    await flushPromises()
+
+    // Dirty the form via an unrelated field, then save: the body must
+    // not carry a `tools` key at all (backend: null/absent = no change).
+    await wrapper.find('[data-testid="toggle-notify-on-error"]').setValue(true)
+    await flushPromises()
+    await wrapper.find('[data-testid="save-btn"]').trigger('click')
+    await flushPromises()
+    expect(mockSave).toHaveBeenCalledTimes(1)
+    const savedConfig = mockSave.mock.calls[0]![0] as Record<string, unknown>
+    expect(savedConfig).not.toHaveProperty('tools')
+    expect(savedConfig.notify_on_error).toBe(true)
   })
 })

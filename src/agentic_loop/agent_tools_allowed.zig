@@ -5,8 +5,10 @@
 //! takes the returned slice and:
 //!   - if non-empty: joins with `,` and passes as `allowed_tools` to
 //!     `WorkflowArgs.allowed_tools` (which `filterAndMergeTools` reads)
-//!   - if empty: passes `""` (empty string), which `filterAndMergeTools`
-//!     interprets as "register zero tools"
+//!   - if empty: passes the exact `none` sentinel (D3, plan
+//!     2026-09-22-tools-menu-config-default-tools), which
+//!     `tool_eligibility.allowlistFilter` treats as ZERO tools —
+//!     NOT `""`, which would mean "no filtering → all tools"
 //!
 //! Returns empty slice (NOT error) in 3 cases (spec D1 — secure-by-default):
 //!   - `workspace_item_id` doesn't exist in `workspace_items`
@@ -39,7 +41,8 @@ pub fn agentToolsAllowed(
 ) ![]const []const u8 {
     // 1. Resolve agent_id (same as workspace_item_id per spec D3). If the
     //    workspace_item doesn't exist or isn't an agent, return empty.
-    var q1 = db.query(allocator,
+    var q1 = db.query(
+        allocator,
         "SELECT id FROM agents WHERE workspace_item_id = ?",
         &[_][]const u8{workspace_item_id},
     ) catch return &.{};
@@ -95,16 +98,15 @@ fn setupDb() !TestCtx {
     var db: test_sqlite.SqliteBackend = .{};
     errdefer db.deinit();
     try db.init(io, ":memory:");
-    try db.exec(alloc,
-        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)",
-        &[_][]const u8{});
+    try db.exec(alloc, "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)", &[_][]const u8{});
     try Migration076.up(&db, alloc);
     return .{ .db = db, .threaded = threaded };
 }
 
 fn insertWorkspaceItem(ctx: *TestCtx, id: []const u8, item_type: []const u8) !void {
     const alloc = testing.allocator;
-    try ctx.db.exec(alloc,
+    try ctx.db.exec(
+        alloc,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES (?, 'ws_1', ?, 'Test', '/tmp', 0)",
         &[_][]const u8{ id, item_type },
     );
@@ -112,7 +114,8 @@ fn insertWorkspaceItem(ctx: *TestCtx, id: []const u8, item_type: []const u8) !vo
 
 fn insertAgent(ctx: *TestCtx, agent_id: []const u8, workspace_item_id: []const u8) !void {
     const alloc = testing.allocator;
-    try ctx.db.exec(alloc,
+    try ctx.db.exec(
+        alloc,
         "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
         &[_][]const u8{ agent_id, workspace_item_id },
     );

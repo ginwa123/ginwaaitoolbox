@@ -85,6 +85,14 @@ pub const LlmConfig = struct {
     /// (which is always the case in production because `LlmConfig`
     /// lives in the singleton).
     random_names: [][]u8 = &.{},
+    /// Default tool checklist from config.json (plan
+    /// 2026-09-22-tools-menu-config-default-tools). `null` = key absent
+    /// = legacy per-mode defaults; `[]` = explicitly zero tools;
+    /// non-empty = the default list. Owned: each name is duped in
+    /// `init`/`clone` and freed by `freeToolsList` in `deinit`. Read by
+    /// the creation-time seeds (`tools_equipped.seedDefault*`) and the
+    /// workflow's config-default override.
+    tools: ?[]const []const u8 = null,
 
     pub const LoadError = error{
         ConfigFileNotFound,
@@ -336,6 +344,12 @@ pub const LlmConfig = struct {
         /// `LlmConfig.init` auto-migrates empty values by generating a fresh
         /// UUID and rewriting the config file atomically.
         user_identifier: []const u8 = "",
+        /// Default tool checklist (plan 2026-09-22-tools-menu-config-default-tools).
+        /// Absent/null = built-in per-mode defaults (legacy behavior);
+        /// `[]` = explicitly zero tools; non-empty = the default list.
+        /// Typed so a hand-edited non-array value fails whole-config parse
+        /// (same failure mode as the other typed fields).
+        tools: ?[]const []const u8 = null,
     };
 
     /// JSON-side parse struct for a single sub-agent entry. Mirrors
@@ -544,8 +558,15 @@ pub const LlmConfig = struct {
             freeMcpServersMap(&config.mcp_servers, allocator);
             freeProfilesMap(&config.profiles_models, allocator);
             freeSubAgentsList(config.sub_agents, allocator);
+            freeToolsList(config.tools, allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
+
+        // Owned copy of the `tools` checklist — `parsed` deinits at the
+        // end of `init`, so the borrowed slices must be duped here.
+        // Null (key absent) stays null; `[]` stays an empty non-null
+        // slice so D2's absent-vs-empty distinction survives the parse.
+        config.tools = try parseToolsList(allocator, config_json.tools);
 
         if (config_json.mcp_servers) |mcp| {
             const mcp_str_owned = std.json.Stringify.valueAlloc(allocator, mcp, .{}) catch |err| {
@@ -716,6 +737,34 @@ pub const LlmConfig = struct {
             config.allocator.free(config.url_style);
             config.url_style = try config.allocator.dupe(u8, prof.url_style);
         }
+    }
+
+    /// Parse the top-level `tools` checklist into an owned slice of owned
+    /// names. `null` (key absent) passes through as `null`; a present
+    /// array — including `[]` — becomes an owned non-null slice, which is
+    /// what keeps D2's "absent = defaults / [] = zero" distinction intact
+    /// after `parsed.deinit()`. Free with `freeToolsList`.
+    fn parseToolsList(allocator: std.mem.Allocator, src: ?[]const []const u8) LoadError!?[]const []const u8 {
+        const list = src orelse return null;
+        const owned = try allocator.alloc([]const u8, list.len);
+        var filled: usize = 0;
+        errdefer {
+            for (owned[0..filled]) |name| allocator.free(name);
+            allocator.free(owned);
+        }
+        for (list) |name| {
+            owned[filled] = try allocator.dupe(u8, name);
+            filled += 1;
+        }
+        return owned;
+    }
+
+    /// Free the owned `tools` checklist (names + slice header). No-op on
+    /// `null` and on `[]` (a zero-length `free` is a no-op).
+    fn freeToolsList(list: ?[]const []const u8, allocator: std.mem.Allocator) void {
+        const names = list orelse return;
+        for (names) |name| allocator.free(name);
+        allocator.free(names);
     }
 
     /// Free all keys and value strings inside a ProfilesMap, then deinit the map.
@@ -1208,6 +1257,7 @@ pub const LlmConfig = struct {
         freeMcpServersMap(&self.mcp_servers, self.allocator);
         freeProfilesMap(&self.profiles_models, self.allocator);
         freeSubAgentsList(self.sub_agents, self.allocator);
+        freeToolsList(self.tools, self.allocator);
 
         if (self.mcpServers_parsed) |*parsed| {
             parsed.deinit();
@@ -1260,8 +1310,12 @@ pub const LlmConfig = struct {
             freeMcpServersMap(&config.mcp_servers, self.allocator);
             freeProfilesMap(&config.profiles_models, self.allocator);
             freeSubAgentsList(config.sub_agents, self.allocator);
+            freeToolsList(config.tools, self.allocator);
             if (config.mcpServers_parsed) |*p| p.deinit();
         }
+
+        // Owned copy of the tools checklist (null stays null).
+        config.tools = try parseToolsList(self.allocator, self.tools);
 
         if (self.mcpServers_parsed) |existing| {
             const mcp_str_owned = std.json.Stringify.valueAlloc(self.allocator, existing.value, .{}) catch {

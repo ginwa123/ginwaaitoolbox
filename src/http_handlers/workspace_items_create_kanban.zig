@@ -99,6 +99,11 @@ pub const WorkspaceItemsCreateKanbanError = error{
 pub const WorkspaceItemsCreateKanbanInput = struct {
     workspace_id: []const u8,
     body: CreateKanbanBody,
+    /// Live config.json `tools` checklist (null = legacy defaults).
+    /// Read from the singleton by the HTTP handler and threaded into
+    /// the seed so D2's absent/list/[] semantics reach
+    /// `agent_kanban_tools`.
+    config_tools: ?[]const []const u8 = null,
 };
 
 pub const WorkspaceItemsCreateKanbanResult = []const u8; // pre-serialized JSON
@@ -153,7 +158,8 @@ fn useCase(
     // column is included so the kanban can act as a cwd root for
     // its child task sessions; NULL is stored when the caller
     // didn't pass a path.
-    tx.exec(allocator,
+    tx.exec(
+        allocator,
         "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, created_at, updated_at) VALUES (?, ?, 'kanban', ?, NULLIF(?, ''), COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1, datetime('now'), datetime('now'))",
         &.{ item_id, input.workspace_id, trimmed_name, path_for_insert, input.workspace_id },
     ) catch return error.InsertFailed;
@@ -163,15 +169,17 @@ fn useCase(
     // `db.exec` here would deadlock on the non-reentrant lock.
     kanban_model.seedDefaultColumns(allocator, .{ .tx = &tx }, item_id) catch return error.SeedFailed;
 
-    // Seed the agent_kanbans config row + default tools (command,
-    // read_file, write_file) so a fresh board is immediately usable.
+    // Seed the agent_kanban config row + the tool allowlist (config.json
+    // `tools` checklist when set, otherwise DEFAULT_AGENT_TOOLS +
+    // DEFAULT_KANBAN_TOOLS) so a fresh board is immediately usable.
     // INSERT OR IGNORE keeps re-entry safe; tools seed uses OR IGNORE
     // per row so it never trips UNIQUE(kanban_id, tool_name).
-    tx.exec(allocator,
+    tx.exec(
+        allocator,
         "INSERT OR IGNORE INTO agent_kanbans (id, workspace_item_id) VALUES (?, ?)",
         &.{ item_id, item_id },
     ) catch return error.SeedFailed;
-    tools_equipped.seedDefaultKanbanTools(allocator, .{ .tx = &tx }, item_id) catch return error.SeedFailed;
+    tools_equipped.seedDefaultKanbanTools(allocator, .{ .tx = &tx }, item_id, input.config_tools) catch return error.SeedFailed;
 
     tx.commit() catch return error.SeedFailed;
 
@@ -257,6 +265,12 @@ pub fn workspaceItemsCreateKanbanHandler(
 
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
+    // Live config.json `tools` checklist — seeds the fresh board's
+    // allowlist instead of the defaults when set (plan
+    // 2026-09-22-tools-menu). `getLlmConfig` is the established
+    // hot-path accessor; the slice stays valid for the synchronous
+    // useCase below (only swapped on the next config PUT).
+    const config_tools = nalarcore.getLlmConfig(di).tools;
 
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
@@ -301,6 +315,7 @@ pub fn workspaceItemsCreateKanbanHandler(
     const data = useCase(allocator, sqlite_db, .{
         .workspace_id = workspace_id,
         .body = parsed,
+        .config_tools = config_tools,
     }) catch |err| {
         const status: u16 = switch (err) {
             error.WorkspaceIdRequired => 400,
@@ -351,7 +366,8 @@ fn readInsertedPosition(
     db: *nalarcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
-    var q = db.query(allocator,
+    var q = db.query(
+        allocator,
         "SELECT position FROM workspace_items WHERE id = ?",
         &.{item_id},
     ) catch return 0;
@@ -368,7 +384,7 @@ fn readInsertedPosition(
 // ===== Tests merged from workspace_items_create_kanban_test.zig (2026-09-11 flatten) =====
 // Static regression checks for the `POST /workspaces/:wsId/items/kanban`
 // handler (`workspace_items_create_kanban.zig`).
-// 
+//
 // Why this file exists
 // ────────────────────
 // The Workspace Item Kanban feature (plan:
@@ -391,14 +407,14 @@ fn readInsertedPosition(
 //   sidebar rendered the `{{ item.name || 'Untitled project' }}`
 //   fallback until reload. Tests passed because the API mocks
 //   returned the wrapped shape — the real backend never matched it.
-// 
+//
 // These contracts are enforced by static substring checks (matching
 // the project's `routines_run_test.zig` / `task_create_routines_test.zig`
 // pattern), not by spinning up an in-memory DB. The static checks
 // below directly test the bug — they fail if and only if the create
 // plumbing is removed or routed back to the generic `item_type='folder'`
 // path.
-// 
+//
 // Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md
 //   (Chunk 3, Task 3.2)
 

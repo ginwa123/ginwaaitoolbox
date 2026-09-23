@@ -629,6 +629,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
                 "[CHECKPOINT] agent_routines: session_id={s} is bound to a configured routine — allowed_tools overridden to '{s}'",
                 .{ params.session_id, copy_allowed_tools },
             );
+        } else if (try maybeOverrideAllowedToolsForConfigDefault(
+            parent_allocator,
+            config.tools,
+            &copy_allowed_tools,
+        )) {
+            logger.infoFmt(
+                "[CHECKPOINT] config_default: session_id={s} allowed_tools overridden to '{s}' (config.json tools checklist)",
+                .{ params.session_id, copy_allowed_tools },
+            );
         }
     }
 
@@ -2087,9 +2096,12 @@ pub fn stream_callback(ctx: ?*anyopaque, chunk: agent.StreamChunk) void {
 
 /// Filter and merge tools based on allowed_tools setting
 /// - allowed_tools: "" = no filtering (all tools), "all" = all tools,
-///   comma-separated = specific tools. NOTE the pre-existing wart: the doc
-///   line below used to claim "" = no tools while the code did the
-///   opposite; `tool_eligibility.allowlistFilter` preserves the code's
+///   "none" = zero tools (the exact sentinel emitted by the agent
+///   override's zero-enabled case and the config.json `tools: []`
+///   fallback — see tool_eligibility.allowlistFilter), comma-separated
+///   = specific tools. NOTE the pre-existing wart: the doc line below
+///   used to claim "" = no tools while the code did the opposite;
+///   `tool_eligibility.allowlistFilter` preserves the code's
 ///   behaviour, and the discrepancy is called out there.
 /// - mcp_tools: null = no MCP (not configured or fetch failed); non-null
 ///   slice = the catalog. MCP tools are PROGRESSIVE: only the ones named in
@@ -2383,8 +2395,10 @@ test "end-to-end: compaction envelope is queryable via getCompactedMessages" {
 /// Agent Mode helper: if `session_id` is bound to a workspace_item
 /// whose item_type='agent', resolve the agent's allowed_tools from
 /// the `agent_tools` table and overwrite `out_allowed_tools` with
-/// the comma-joined list (or "" for the secure-by-default empty
-/// case — which `filterAndMergeTools` interprets as zero tools).
+/// the comma-joined list — or the exact `none` sentinel when zero
+/// rows are enabled (D3: `""` means "no filtering → all tools" at
+/// runtime, which would contradict the secure-by-default spec; `none`
+/// yields zero tools instead).
 ///
 /// Returns `true` when an override was applied, `false` otherwise
 /// (session not bound to an agent, or DB error — non-fatal; the
@@ -2438,11 +2452,13 @@ fn maybeOverrideAllowedToolsForAgent(
         try names.append(allocator, try allocator.dupe(u8, r.values[0]));
     }
 
-    // Empty allowlist → secure-by-default: zero tools. Pass "" to
-    // filterAndMergeTools, which already interprets "" as "register
-    // zero tools".
+    // Zero enabled rows → secure-by-default zero tools. Emit the exact
+    // `none` sentinel (D3), NOT `""`: `""` means "no filtering → all
+    // tools" in allowlistFilter, which would silently grant everything
+    // the user just disabled (the pre-D3 contradiction of
+    // docs/superpowers/specs/2026-08-15-agent-mode-design.md:22).
     if (names.items.len == 0) {
-        out_allowed_tools.* = "";
+        out_allowed_tools.* = "none";
         return true;
     }
 
@@ -2614,6 +2630,99 @@ fn maybeOverrideAllowedToolsForRoutine(
     // Non-empty: join with ','.
     out_allowed_tools.* = try std.mem.join(allocator, ",", names.items);
     return true;
+}
+
+/// Config-default fallback: apply config.json's top-level `tools`
+/// checklist as `allowed_tools` when NO agent / kanban / routine override
+/// fired (the final else-if in the `runAgenticMultiStepnew` chain, inside
+/// the `!params.is_sub_agent` guard — so existing per-item rows always
+/// win, and sub-agents never see it). Returns `false` when the key is
+/// absent (`null`) so the request body keeps today's behaviour; `[]`
+/// maps to the exact `none` sentinel (explicit zero tools); a non-empty
+/// list is joined into the CSV allowlist. This is what makes design mode,
+/// plain chat, and zero-configured fallthroughs pick up the checklist.
+///
+/// Plan: docs/plans/2026-09-22-tools-menu-config-default-tools.md
+fn maybeOverrideAllowedToolsForConfigDefault(
+    allocator: std.mem.Allocator,
+    config_tools: ?[]const []const u8,
+    out_allowed_tools: *[]const u8,
+) !bool {
+    const names = config_tools orelse return false;
+
+    // Explicit-empty checklist → zero tools. Must be the `none` sentinel:
+    // emitting `""` would mean "no filtering → all tools" in
+    // allowlistFilter — the exact opposite of what the user checked.
+    if (names.len == 0) {
+        out_allowed_tools.* = "none";
+        return true;
+    }
+
+    out_allowed_tools.* = try std.mem.join(allocator, ",", names);
+    return true;
+}
+
+test "config default override: null (key absent) leaves the request body untouched" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var out: []const u8 = "request_body_tools";
+    const fired = try maybeOverrideAllowedToolsForConfigDefault(arena.allocator(), null, &out);
+    try testing.expect(!fired);
+    try testing.expectEqualStrings("request_body_tools", out);
+}
+
+test "config default override: [] maps to the none sentinel (D2/D3)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var out: []const u8 = "request_body_tools";
+    const empty: []const []const u8 = &.{};
+    const fired = try maybeOverrideAllowedToolsForConfigDefault(arena.allocator(), empty, &out);
+    try testing.expect(fired);
+    try testing.expectEqualStrings("none", out);
+}
+
+test "config default override: non-empty list joins into the CSV allowlist" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var out: []const u8 = "request_body_tools";
+    const cfg = [_][]const u8{ "command", "read_file", "glob" };
+    const fired = try maybeOverrideAllowedToolsForConfigDefault(arena.allocator(), &cfg, &out);
+    try testing.expect(fired);
+    try testing.expectEqualStrings("command,read_file,glob", out);
+}
+
+test "config default override: chain position — final else-if, inside the sub-agent guard" {
+    // The override must (a) sit inside `if (!params.is_sub_agent)`, (b)
+    // come AFTER the routine override so per-item rows always win (D4),
+    // and (c) come BEFORE the loop state that follows the chain. Lock the
+    // order statically — a reordering would silently change which source
+    // wins at runtime.
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        "src/agentic_loop/workflow.zig",
+        testing.allocator,
+        .limited(512 * 1024),
+    );
+    defer testing.allocator.free(source);
+
+    const guard = std.mem.indexOf(u8, source, "if (!params.is_sub_agent) {") orelse
+        return error.SubAgentGuardMissing;
+    const agent_ovr = std.mem.indexOf(u8, source, "maybeOverrideAllowedToolsForAgent(") orelse
+        return error.AgentOverrideMissing;
+    const routine_ovr = std.mem.indexOf(u8, source, "maybeOverrideAllowedToolsForRoutine(") orelse
+        return error.RoutineOverrideMissing;
+    const config_ovr = std.mem.indexOf(u8, source, "} else if (try maybeOverrideAllowedToolsForConfigDefault(") orelse
+        return error.ConfigOverrideNotElseIf;
+    const chain_end = std.mem.indexOf(u8, source, "const copy_is_sub_agent") orelse
+        return error.ChainEndMissing;
+
+    try testing.expect(guard < agent_ovr);
+    try testing.expect(agent_ovr < routine_ovr);
+    try testing.expect(routine_ovr < config_ovr);
+    try testing.expect(config_ovr < chain_end);
 }
 
 // ════════════════════════════════════════════════════════════════════════════

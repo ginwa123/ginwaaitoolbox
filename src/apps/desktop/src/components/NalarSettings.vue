@@ -22,6 +22,7 @@ import ProfilesSection, { type ProfileRow } from './nalar/ProfilesSection.vue'
 // Plan 2026-09-04-subagents-per-profile: SubAgentsSection.vue is no longer
 // mounted here (no global list). The file is kept for now — see note below.
 import McpServersSection from './nalar/McpServersSection.vue'
+import ToolsSection from './nalar/ToolsSection.vue'
 import { parseMcpServers, serializeMcpServers } from './nalar/mcpServers'
 // plan 2026-07-07-compaction-inline: CompactionSection.vue is removed
 // (compaction settings live in the Defaults tab + Edit-profile modal now).
@@ -50,8 +51,11 @@ defineExpose({
 // retry delay) are the broadest, most-frequently-touched UI surface.
 // Plan 2026-09-04-subagents-per-profile: 'sub-agents' tab removed —
 // sub-agents live inside each profile row (Profiles tab expand chevron).
-type Tab = 'general' | 'profiles' | 'mcp'
-const activeTab = ref<Tab>('general')
+type Tab = 'general' | 'profiles' | 'mcp' | 'tools'
+const TAB_IDS: readonly string[] = ['general', 'profiles', 'mcp', 'tools']
+// Same key NalarTabStrip persists to — read here so the URL-backed
+// computed below can fall back to it when the URL has no `?section=`.
+const TAB_STORAGE_KEY = 'nalar-settings-active-tab'
 
 // ─── Central config (useNalarConfig composable) ──────────────────────────
 const { config, loaded, dirty, unsavedCount, saving, setConfig, save, reset } = useNalarConfig()
@@ -63,6 +67,50 @@ const { config, loaded, dirty, unsavedCount, saving, setConfig, save, reset } = 
 const tabsStore = useTabsStore()
 const router = useRouter()
 const route = useRoute()
+
+// ─── Active tab: URL (?section=) → localStorage → general ────────────────
+// D5 of plan 2026-09-22-tools-menu-config-default-tools: every tab
+// switch lands in the URL so refresh / Back-Forward / shared links
+// keep the open section. Query key MUST stay `section` — `?tab=` is
+// owned by browser tab-mode (helpers/tabTarget.ts, stores/tabs.ts).
+// `route`/`router` are undefined when this component mounts without a
+// router (unit tests), hence the `activeTabLocal` fallback ref: with
+// no route to invalidate the computed, clicks must mutate a tracked
+// ref to re-render.
+function readStoredTab(): Tab | null {
+  try {
+    const saved = localStorage.getItem(TAB_STORAGE_KEY)
+    return saved && TAB_IDS.includes(saved) ? (saved as Tab) : null
+  } catch {
+    return null // storage unavailable (private mode / no stub)
+  }
+}
+
+const activeTabLocal = ref<Tab>(readStoredTab() ?? 'general')
+
+const activeTab = computed<Tab>({
+  get() {
+    if (route) {
+      const raw = route.query.section
+      const section = Array.isArray(raw) ? raw[0] : raw
+      if (typeof section === 'string' && TAB_IDS.includes(section)) return section as Tab
+      return readStoredTab() ?? 'general'
+    }
+    return activeTabLocal.value
+  },
+  set(next) {
+    activeTabLocal.value = next
+    try { localStorage.setItem(TAB_STORAGE_KEY, next) } catch { /* private mode */ }
+    if (!router || !route) return
+    const rest = { ...route.query }
+    // Default tab is stripped from the URL to keep it clean (mirrors
+    // KanbanSettingsView). Other params (e.g. a browser `?tab=` ID)
+    // are preserved untouched.
+    if (next === 'general') delete rest.section
+    else rest.section = next
+    void router.replace({ query: rest })
+  },
+})
 
 /**
  * Turning tab mode off must leave no trace: the route funnel stops
@@ -98,6 +146,10 @@ const activeProfile = ref<string | null>(null)
 // Plan 2026-09-04-subagents-per-profile: no global list — per-profile
 // `profilesList[].sub_agents` is the only editor.
 const mcpServersList = ref<McpServer[]>([])
+// Default tool checklist (Tools tab). `null` = config.json has no
+// `tools` key → the built-in defaults render and nothing is written
+// back until the user changes a checkbox.
+const toolsList = ref<string[] | null>(null)
 
 // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: the General
 // tab uses a single `defineModel<NalarGeneralSettings>` v-model surface
@@ -142,6 +194,9 @@ function syncFromConfig() {
   // Plan 2026-09-04-subagents-per-profile: top-level `sub_agents` is
   // always null from the backend — intentionally NOT hydrated anywhere.
   mcpServersList.value = parseMcpServers(c.mcp_servers)
+  // Tools checklist — `null`/absent stays null (built-in defaults);
+  // an array hydrates the checklist as an explicit selection.
+  toolsList.value = c.tools ?? null
 
   // Plan 2026-08-25-notify-on-error-and-retry-ms-in-settings: hydrate
   // the General tab from the loaded config. Three top-level fields,
@@ -200,6 +255,11 @@ function syncToConfig() {
     // Plan 2026-09-04-subagents-per-profile: never send top-level
     // `sub_agents` — per-profile lists ride inside `profiles` above.
     ...(mcpServers ? { mcp_servers: mcpServers } : {}),
+    // Tools checklist follows the mcp_servers guard: while nothing
+    // was chosen (`null`) the key is left exactly as loaded so the
+    // backend sees "no change"; a chosen list — including `[]` — is
+    // written through and replaces the whole stored list.
+    ...(toolsList.value !== null ? { tools: toolsList.value } : {}),
   }
 }
 
@@ -222,7 +282,7 @@ watch(
 // Whenever any section ref mutates, push back to the central config
 // (which keeps the composable's dirty counter in sync).
 watch(
-  [profilesList, activeProfile, mcpServersList, generalSettings],
+  [profilesList, activeProfile, mcpServersList, generalSettings, toolsList],
   () => { if (loaded.value) syncToConfig() },
   { deep: true },
 )
@@ -456,6 +516,15 @@ function toggleMcpServer(name: string) {
   )
 }
 
+// ToolsSection always emits the FULL explicit array — write it to
+// the section ref and re-serialize so the save bar sees the change
+// immediately (the deep watch on toolsList would do the same; the
+// explicit call keeps the flow obvious).
+function handleToolsChange(list: string[]) {
+  toolsList.value = list
+  syncToConfig()
+}
+
 // ─── Set active (instant — no dirty pill, immediate save) ───────────────
 const isSettingActive = ref(false)
 async function setActiveProfile(name: string) {
@@ -662,6 +731,11 @@ const isLoading = computed(() => !loaded.value)
           @delete="deleteMcpServer"
           @toggle="toggleMcpServer"
           @add="startAddMcpServer"
+        />
+        <ToolsSection
+          v-else-if="activeTab === 'tools'"
+          :model-value="toolsList"
+          @change="handleToolsChange"
         />
         <!-- Plan 2026-07-07-compaction-inline: the dedicated Compaction
              tab is REMOVED. Compaction settings now live in the Defaults

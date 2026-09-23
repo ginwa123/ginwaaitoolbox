@@ -4193,6 +4193,13 @@ export interface NalarConfig {
     | { command: string; args?: string[]; env?: string[]; cwd?: string; enabled?: boolean }
   >
   /**
+   * Default tool checklist (Tools tab). `null` / absent = the key is
+   * not in config.json — the backend treats those as "no change" on
+   * PUT and the built-in defaults apply. An array (including `[]`)
+   * replaces the whole list.
+   */
+  tools?: string[] | null
+  /**
    * @deprecated Per-profile only (plan 2026-09-04-subagents-per-profile).
    * The backend (`GET /api/config/nalar`) always returns `sub_agents: null`
    * at the top level; each profile owns its list via `NalarProfile.sub_agents`.
