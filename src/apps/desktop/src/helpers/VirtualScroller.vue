@@ -668,8 +668,10 @@ watch(
   { immediate: true },
 )
 
-// Hysteresis dead-band for `measureItems()`: only update a stored
-// height when the new measurement differs by more than this many
+// Hysteresis dead-band for `measureItems()` ABOVE the viewport.
+//
+// Only update a stored height for an item strictly above the visible
+// window when the new measurement differs by more than this many
 // pixels. Smaller deltas are sub-pixel rounding noise from the
 // browser's layout (Chromium rounds sub-pixel offsets). Writing
 // them anyway was the trigger for the scroll-ratcheting bug
@@ -677,9 +679,18 @@ watch(
 // fluctuation cycled through updateAccumulatedHeights → topSpacer
 // mutation → browser scroll-anchoring → scrollTop ratchet, with
 // scrollTop and scrollHeight oscillating in lockstep while
-// distanceFromBottom stayed constant. 4 px is large enough to
-// absorb the noise floor and small enough to admit any real
-// layout change (image load, content expansion, streaming).
+// distanceFromBottom stayed constant. 50 px absorbs that noise floor
+// with margin; any real layout change above the viewport (image load,
+// content expansion) exceeds it.
+//
+// Items AT or BELOW the viewport start use NO dead-band (exact
+// writes) — see the measure loop. Those writes only move the sizer's
+// bottom edge; topSpacer is untouched, so they cannot shift visible
+// content or ratchet scrollTop, and computeAnchorCompensation ignores
+// them by construction. Exact tail writes let the sizer converge to
+// the real content bottom instead of parking up to 50 px per item too
+// tall — the persistent blank gap below the last message at max
+// scroll (sizer 40383 px vs content bottom ~37095 px in the report).
 const HYSTERESIS_PX = 50
 
 const measureItems = () => {
@@ -747,12 +758,22 @@ const measureItems = () => {
       const key = keyOf(realIndex)
       const prev = itemHeights.value.get(key)
       // First measurement (prev === undefined) always writes. On
-      // subsequent measurements, skip unless the delta exceeds the
-      // dead-band. Without this, 1-2 px sub-pixel noise from the
-      // browser's layout causes the spacer to mutate on every
-      // scroll/resize debounce cycle, which is the ratcheting
-      // symptom in docs/plans/2026-06-10-scroll-ratcheting-fix.md.
-      if (prev === undefined || Math.abs(heightPx - prev) > HYSTERESIS_PX) {
+      // subsequent measurements the dead-band is two-tier:
+      // - Strictly ABOVE the viewport start (realIndex < anchorIndex):
+      //   keep the HYSTERESIS_PX dead-band. Those writes mutate
+      //   topSpacer and shift content under the viewport — small
+      //   deltas there are the scroll-ratcheting trigger.
+      // - AT or BELOW the viewport start: write exact. Those writes
+      //   only move the sizer's bottom edge (topSpacer untouched), so
+      //   they cannot shift visible content, and the anchor
+      //   compensation below skips them (index >= anchorIndex). This
+      //   lets the sizer converge to the real content bottom instead
+      //   of parking up to 50 px per item too tall.
+      const aboveAnchor = realIndex < anchorIndex
+      const admitted =
+        prev === undefined ||
+        (aboveAnchor ? Math.abs(heightPx - prev) > HYSTERESIS_PX : heightPx !== prev)
+      if (admitted) {
         pendingMeasurements.push({ index: realIndex, newHeight: heightPx, oldHeight: prev })
         pendingWrites.push([key, heightPx, realIndex])
         changed = true
