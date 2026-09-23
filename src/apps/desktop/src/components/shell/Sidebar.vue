@@ -822,27 +822,37 @@ const handleCloseDesignPageRenameModal = () => {
 // the chat name is "New Chat" until the user renames it or the first user
 // message auto-renames it (ChatView's existing convention).
 const createAndOpenStandardChat = async (workspaceId: string, itemId: string) => {
-  const taskId = await workspacesStore.addTask(workspaceId, itemId, {
-    name: DEFAULT_NEW_CHAT_NAME,
-  })
-  if (taskId) {
+  workspacesStore.isNavigatingToTask = true
+  try {
+    const taskId = await workspacesStore.addTask(workspaceId, itemId, {
+      name: DEFAULT_NEW_CHAT_NAME,
+    })
+    if (!taskId) return
     workspacesStore.setActiveTask(taskId)
-    // NEW (add-workspace-id-params, 2026-08-06): include the
-    // workspaceId + itemId in the URL so the auto-created chat task
-    // carries the kanban / folder / design breadcrumb. Pre-fix the
-    // URL was just `?view=task&task=X` — sharing / refreshing lost
-    // the workspace context. The helper reads from the active store
-    // state set by `handleSelectItem` (which fired before the
-    // picker opened). Path-based (2026-09-22 revamp).
-    router.replace(
+    if (workspacesStore.activeWorkspaceItemId !== itemId) {
+      workspacesStore.setActiveWorkspaceItem(itemId)
+    }
+    // Build the URL from the passed ids, not stale store state. The
+    // store values are correct after setActiveTask in the happy path,
+    // but the passed ids are the source of truth for which item the
+    // + button was clicked on.
+    const parentItem = workspacesStore.workspaces
+      .flatMap((ws) => ws.items)
+      .find((it) => it.id === itemId)
+    const itemType =
+      parentItem?.item_type ?? workspacesStore.activeWorkspaceItem?.item_type ?? null
+    await router.replace(
       buildTaskAppUrl({
         taskId,
-        activeWorkspaceId: workspacesStore.activeWorkspace?.id ?? null,
-        activeWorkspaceItemId: workspacesStore.activeWorkspaceItemId,
+        activeWorkspaceId: workspaceId,
+        activeWorkspaceItemId: itemId,
         activeDesignPageId: workspacesStore.activeDesignPageId,
-        activeItemType: workspacesStore.activeWorkspaceItem?.item_type ?? null,
+        activeItemType: itemType,
+        currentQuery: route.query,
       }),
     )
+  } finally {
+    workspacesStore.isNavigatingToTask = false
   }
 }
 
