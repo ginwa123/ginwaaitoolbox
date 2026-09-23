@@ -134,16 +134,21 @@ function mountAppLayout(): ReturnType<typeof mount> {
 // Mock the workspace-store API calls so init() doesn't wipe the
 // injected fixture (same approach as AppLayout.kanbanChatDialog.spec.ts).
 function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
+  // Snapshot the fixture tree NOW: lazy init() replaces
+  // `workspaces.value` with empty-items rows BEFORE calling
+  // getWorkspacesItems, so a live read would see the wiped tree.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const snapshot = JSON.parse(JSON.stringify(store.workspaces)) as any[]
   vi.spyOn(api, 'getWorkspaces').mockImplementation(async () => ({
      
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    workspaces: store.workspaces as any,
+    workspaces: snapshot as any,
   }))
    
   vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (wsId: string) => {
      
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = store.workspaces.find((w: any) => w.id === wsId)
+    const ws = snapshot.find((w: any) => w.id === wsId)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return { items: (ws?.items ?? []) as any, count: ws?.items?.length ?? 0 }
    
@@ -151,7 +156,7 @@ function rewireApiForFixture(store: ReturnType<typeof useWorkspacesStore>) {
   vi.spyOn(api, 'getTasks').mockImplementation(async (wsId: string, itemId: string) => {
      
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ws = store.workspaces.find((w: any) => w.id === wsId)
+    const ws = snapshot.find((w: any) => w.id === wsId)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const item = ws?.items?.find((i: any) => i.id === itemId)
     return {
@@ -245,6 +250,8 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     // Simulate the active task state (the chat view mounts).
     store.setActiveTask(TASK_ID)
     await nextTick()
+
+
     expect(wrapper.find('[data-testid="chatview-stub"]').exists()).toBe(true)
 
     // Close the chat. handleCloseTaskView must read savedSortsParam, write
@@ -260,7 +267,7 @@ describe('AppLayout — kanban ?sorts= URL round-trip via task view', () => {
     expect(store.savedSortsParam).toBe('')
     const sorted = routerReplaceCalls.find((call) => call.query && 'sorts' in call.query)
     expect(sorted?.query?.sorts).toBe('col_a:name:asc')
-    expect(sorted?.query?.view).toBe('workspace')
+    expect(sorted?.path).toBe(`/app/${WS_ID}/projects/${ITEM_ID}`)
 
     wrapper.unmount()
   })
