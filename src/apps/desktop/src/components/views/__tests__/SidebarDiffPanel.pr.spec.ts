@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SidebarDiffPanel from '../chat_right_sidebar/SidebarDiffPanel.vue'
+import { ApiError } from '../../../api'
 import { createRouter, createMemoryHistory } from 'vue-router'
 
 const testRouter = createRouter({
@@ -164,5 +165,44 @@ describe('SidebarDiffPanel PR mode', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="sidebar-pr-status"]').text()).toBe('Merged')
     expect(wrapper.find('[data-testid="sidebar-pr-merged-notice"]').exists()).toBe(true)
+  })
+
+  it('renders the server error body on PR diff failure instead of a generic string', async () => {
+    getPrDiffMock.mockRejectedValueOnce(
+      new ApiError(
+        502,
+        'Bad Gateway',
+        JSON.stringify({ error: 'failed to fetch PR diff: gh: HTTP 401: Bad credentials' }),
+      ),
+    )
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    const err = wrapper.get('[data-testid="sidebar-pr-error"]')
+    expect(err.text()).toContain('HTTP 401')
+    expect(err.text()).not.toBe('Failed to load PR diff')
+  })
+
+  it('shows the server status error inline when PR status fetch fails', async () => {
+    getPrStatusMock.mockRejectedValueOnce(
+      new ApiError(
+        502,
+        'Bad Gateway',
+        JSON.stringify({
+          error: 'failed to fetch PR status: gh: To authenticate, run: gh auth login',
+        }),
+      ),
+    )
+    const wrapper = mount(SidebarDiffPanel, {
+      global: { plugins: [testRouter] },
+      props: { cwd: '/repo', prUrl: 'https://github.com/acme/app/pull/42' },
+    })
+    await flushPromises()
+    // Badge hidden (unknown state) but the real cause is visible inline.
+    expect(wrapper.find('[data-testid="sidebar-pr-status"]').exists()).toBe(false)
+    const statusErr = wrapper.get('[data-testid="sidebar-pr-status-error"]')
+    expect(statusErr.text()).toContain('gh auth login')
   })
 })

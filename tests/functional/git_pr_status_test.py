@@ -201,3 +201,38 @@ def test_open_pr_with_null_dates_is_200(
     assert body["head_ref"] == "worktree/sync-engine-phase2-cached-delta"
     assert body["merged_at"] == ""
     assert body["closed_at"] == ""
+
+
+def test_fetch_failure_surfaces_gh_stderr(
+    repo: Path, tmp_path: Path, monkeypatch, default_nalar_bin: Path
+) -> None:
+    """A failing `gh` must surface its stderr in the 502 body.
+
+    The handler used to swallow `gh` stderr and return only the generic
+    \"failed to fetch PR status (check PR number/URL, provider, and gh
+    auth)\" hint, so DevTools never showed WHY it failed (expired auth,
+    bad PR number, rate limit). The 502 `error` must now carry the real
+    `gh` stderr after the prefix.
+    """
+    bindir = tmp_path / "fakebin-fail"
+    bindir.mkdir(parents=True)
+    fake_gh = bindir / "gh"
+    fake_gh.write_text(
+        "#!/bin/sh\necho 'gh: To authenticate, run: gh auth login' >&2\nexit 1\n"
+    )
+    fake_gh.chmod(fake_gh.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
+
+    h2 = FunctionalHarness.boot(default_nalar_bin)
+    try:
+        body = h2.http(
+            "GET",
+            "/api/git/pr/status",
+            params={"path": str(repo), "pr": "42"},
+            expect=502,
+            timeout_s=15.0,
+        ).json()
+    finally:
+        h2.teardown()
+    assert "gh auth login" in body["error"], f"got: {body!r}"
+    assert body["error"].startswith("failed to fetch PR status: "), f"got: {body!r}"
