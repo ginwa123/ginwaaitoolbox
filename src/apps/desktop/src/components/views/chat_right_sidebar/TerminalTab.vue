@@ -33,7 +33,9 @@ interface TermSession {
 const container = ref<HTMLElement | null>(null)
 const sessions = ref<TermSession[]>([])
 const activeId = ref<string | null>(null)
-const status = ref('connecting…')
+// Idle until the user explicitly starts a terminal — mounting the tab
+// (ChatRightSidebar keeps it mounted via v-show) must not spawn a PTY.
+const status = ref('No terminal — click + to start a new one')
 const exitedIds = ref<Set<string>>(new Set())
 
 let term: Terminal | null = null
@@ -227,7 +229,7 @@ const validateOrReclaim = async (reason: string) => {
     await getTerminalOutput(id, 0)
   } catch (err) {
     if (err instanceof ApiError && err.status === 404) {
-      reclaimGoneSession('Terminal was reclaimed (idle) — starting a new one…')
+      reclaimGoneSession('Terminal was reclaimed (idle) — switched session…')
       return
     }
   }
@@ -242,11 +244,14 @@ const reclaimGoneSession = (notice: string) => {
   sessions.value = sessions.value.filter((s) => s.id !== goneId)
   exitedIds.value.delete(goneId)
   saveStored()
-  status.value = notice
   if (sessions.value.length === 0) {
-    void newSession()
+    // No auto-spawn: the user must explicitly start a new terminal.
+    activeId.value = null
+    term?.clear()
+    status.value = 'No terminal — click + to start a new one'
     return
   }
+  status.value = notice
   const next = sessions.value[0]!
   term?.clear()
   activeId.value = next.id
@@ -381,15 +386,15 @@ const newSession = async () => {
   }
 }
 
-const restoreOrCreate = async () => {
+const restoreSessions = async () => {
   if (disposed) return
   if (!hasSessionKey()) {
-    await newSession()
+    // No persistence key and no explicit user action — stay empty.
     return
   }
   const stored = loadStored()
   if (stored.length === 0) {
-    await newSession()
+    // First visit: wait for the user to click + instead of spawning.
     return
   }
   // Validate each stored id (server restarts and LRU eviction drop the
@@ -411,7 +416,9 @@ const restoreOrCreate = async () => {
   sessionCounter = Math.max(alive.length, maxLabelNum())
   saveStored()
   if (alive.length === 0) {
-    await newSession()
+    // All stored ids are gone (restart/LRU) — stay empty until explicit action.
+    activeId.value = null
+    status.value = 'No terminal — click + to start a new one'
     return
   }
   activeId.value = alive[0]!.id
@@ -434,9 +441,10 @@ const closeSession = async (id: string) => {
   await deleteTerminalSession(id).catch(() => {})
   if (disposed) return
   if (sessions.value.length === 0) {
-    // Invariant: always keep one session (no empty state to maintain).
+    // Empty state is allowed — the user starts the next shell explicitly.
+    activeId.value = null
     term?.clear()
-    await newSession()
+    status.value = 'No terminal — click + to start a new one'
     return
   }
   if (wasActive) {
@@ -498,7 +506,7 @@ onMounted(() => {
     })
     resizeObserver.observe(container.value)
   }
-  void restoreOrCreate()
+  void restoreSessions()
 })
 
 watch(
@@ -515,16 +523,23 @@ watch(
     // flips): ignore dir → dir changes inside the grace window, only a
     // settled scope change restarts shells.
     if (Date.now() - mountedAt < 3000) return
-    // Cwd scope changed: drop every session and start fresh.
+    // Cwd scope changed: drop every session. Only restart a shell when
+    // the user already had terminals — an empty tab stays empty until
+    // explicit action (no auto-spawn on view open / chat switch).
     clearWsRetry()
     closeWs()
     const ids = sessions.value.map((s) => s.id)
+    const hadSessions = ids.length > 0
     sessions.value = []
     exitedIds.value = new Set()
     activeId.value = null
     await Promise.all(ids.map((id) => deleteTerminalSession(id).catch(() => {})))
     if (disposed) return
     term?.clear()
+    if (!hadSessions) {
+      status.value = 'No terminal — click + to start a new one'
+      return
+    }
     await newSession()
   },
 )
@@ -653,7 +668,28 @@ onUnmounted(() => {
         ✂
       </button>
     </div>
-    <div ref="container" class="flex-1 min-h-0 px-1" data-testid="terminal-xterm" />
+    <div class="relative flex-1 min-h-0 px-1" data-testid="terminal-xterm-wrap">
+      <div ref="container" class="h-full min-h-0" data-testid="terminal-xterm" />
+      <div
+        v-if="sessions.length === 0"
+        class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-4"
+        data-testid="terminal-empty"
+      >
+        <div class="text-xs" style="color: var(--semantic-text)">No terminal yet</div>
+        <div class="text-[11px]" style="color: var(--semantic-text-dim)">
+          Terminals only start when you ask - nothing spawns on open.
+        </div>
+        <button
+          type="button"
+          class="text-xs rounded px-3 py-1.5 hover:opacity-80"
+          style="background: var(--semantic-active-bg); color: var(--semantic-text)"
+          data-testid="terminal-empty-new"
+          @click="newSession"
+        >
+          + New terminal
+        </button>
+      </div>
+    </div>
     <div
       class="px-3 h-6 shrink-0 flex items-center text-[11px] truncate"
       style="color: var(--semantic-text-dim); border-top: 1px solid var(--color-border)"
