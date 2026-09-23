@@ -276,17 +276,7 @@ if (typeof window !== 'undefined') {
 
 // Handle navigation events from ChatsList component
 const handleChatsNavigate = (id: string, chatName?: string) => {
-  if (id === 'delete-chat') {
-    // Handle chat deletion request - chatName is actually the chatId
-    const chatId = chatName
-    if (chatId && chatsListRef.value) {
-      openDeleteConfirm({
-        title: 'Delete Chat',
-        message: 'Delete this chat?',
-        onConfirm: () => chatsListRef.value?.removeChat(chatId),
-      })
-    }
-  } else if (id.startsWith('chat-')) {
+  if (id.startsWith('chat-')) {
     // Navigate to chat (path-based: /app/{ws}/chat/{sid}). The
     // workspace is the current main view's when present, else the
     // store's active workspace (ChatsList is scoped to it).

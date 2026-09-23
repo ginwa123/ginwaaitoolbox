@@ -15,6 +15,7 @@ import {
   fetchPrStatusCached,
   branchUrlFromPrUrl,
 } from '../../helpers/prStatusCache'
+import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
@@ -168,6 +169,10 @@ const navItems = ref<
     is_auto_retry_until_stop?: string
     last_human_touched_at?: string
     updated_at?: string
+    // Raw `updated_at` sort value (matches the backend
+    // `sort_by=updated_at` order). Used for display sorting and for
+    // cache-first scroll-back (`loadOlderFromCache`).
+    sortKey?: string
   }[]
 >([])
 const chatsHasMore = ref(false)
@@ -387,84 +392,85 @@ const fireSessionTouched = (id: string) => {
   })
 }
 
+// Sidebar local-first: the cache partition key. Matches the
+// `scopedWorkspaceId` refetch boundary — each workspace paints its own
+// cached rows, `'all'` when unscoped (back-compat).
+const sessionCacheKey = (): string => scopedWorkspaceId.value ?? 'all'
+
+// Single mapper for server session → row view model, shared by the
+// cache paint and the network paint so both shapes stay identical
+// (same "no shape drift" rule as ChatView's toChatMessages).
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+const toNavItem = (session: any) => ({
+  id: session.session_id,
+  name: session.session_name || 'New Chat',
+  // active state now derives from the URL via isCurrentChat() in
+  // the template (sidebar-single-active fix 2026-08-06). Storing
+  // it here would freeze the highlight at loadChats() time and
+  // leave stale `active: true` after navigation away from chat.
+  active: false,
+  processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
+  // Migration 082 — prefer human-touched timestamp when present.
+  relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
+  selected_profile_model: session.selected_profile_model || '',
+  sub_agent_name: session.sub_agent_name || '',
+  parent_session_id: session.parent_session_id || '',
+  cwd: session.cwd || '',
+  git_worktree_cwd: session.git_worktree_cwd || '',
+  git_branch: session.git_branch || '',
+  // Migration 063 — defaulted to "0" in getChats mapping so the
+  // `=== '1'` badge check below is well-defined.
+  is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
+  // Migration 082 — captured separately for the stale-dot check
+  // (compares updated_at vs last_human_touched_at to render the
+  // amber "AI is ahead of you" indicator).
+  last_human_touched_at: session.last_human_touched_at || '',
+  updated_at: session.updated_at || '',
+  sortKey: session.updated_at || '',
+})
+
+// Display order for cached paints. The engine stores newest-first;
+// the backend serves `direction` order — re-apply it here so a warm
+// mount in asc mode matches the network order exactly.
+const sortNavItemsForDisplay = () => {
+  const asc = chatsSortDirection.value === 'asc'
+  navItems.value.sort((a, b) => {
+    const ak = a.sortKey ?? ''
+    const bk = b.sortKey ?? ''
+    if (ak === bk) return 0
+    return (ak < bk ? -1 : 1) * (asc ? 1 : -1)
+  })
+}
+
 const loadChats = async () => {
   chatsLoading.value = true
   chatsNextCursor.value = null
+  // Local-first mount (mirrors ChatView): paint the workspace cache
+  // instantly, then revalidate page 1 in the background. The ctx guard
+  // drops late paints after a fast workspace switch.
+  const ctx = sessionCacheKey()
+  const isCurrentCtx = () => sessionCacheKey() === ctx
   try {
-    console.log('[ChatsList] loadChats called, fetching from API...')
-    // Workspace-scoped (plan: 2026-09-22-revamp-ui-chats) — the
-    // backend returns only this workspace's sessions.
-    const data = await api.getChats(
-      'updated_at',
-      chatsSortDirection.value,
-      30,
-      undefined,
-      scopedWorkspaceId.value,
-    )
-    console.log('[ChatsList] API returned:', data)
-    const sessions = data.sessions || []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-    navItems.value = sessions.map((session: any) => ({
-      id: session.session_id,
-      name: session.session_name || 'New Chat',
-      // active state now derives from the URL via isCurrentChat() in
-      // the template (sidebar-single-active fix 2026-08-06). Storing
-      // it here would freeze the highlight at loadChats() time and
-      // leave stale `active: true` after navigation away from chat.
-      active: false,
-      processing: !!processingState.value[session.session_id], // Show spinner for any processing chat
-      // Migration 082 — prefer human-touched timestamp when present.
-      relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
-      selected_profile_model: session.selected_profile_model || '',
-      sub_agent_name: session.sub_agent_name || '',
-      parent_session_id: session.parent_session_id || '',
-      cwd: session.cwd || '',
-      git_worktree_cwd: session.git_worktree_cwd || '',
-      git_branch: session.git_branch || '',
-      // Migration 063 — defaulted to "0" in getChats mapping so the
-      // `=== '1'` badge check below is well-defined.
-      is_auto_retry_until_stop: session.is_auto_retry_until_stop || '0',
-      // Migration 082 — captured separately for the stale-dot check
-      // (compares updated_at vs last_human_touched_at to render the
-      // amber "AI is ahead of you" indicator).
-      last_human_touched_at: session.last_human_touched_at || '',
-      updated_at: session.updated_at || '',
-    }))
-    console.log('[ChatsList] navItems set to:', navItems.value)
-    chatsHasMore.value = data.has_more
-    chatsNextCursor.value = data.next_cursor
-    chatsTotal.value = data.total
-
-    // If we found and activated a saved chat, restore it in AppLayout
-    const activeItem = navItems.value.find((item) => item.active)
-    if (activeItem) {
-      navigationStore.setActiveChatName(activeItem.name)
-      emit('navigate', `chat-${activeItem.id}`, activeItem.name)
+    console.log('[ChatsList] loadChats called, cache-first...')
+    const cached = await sessionEngineDb.primeFromCache(ctx, 30)
+    if (cached.length > 0 && isCurrentCtx()) {
+      navItems.value = cached.map((r) => toNavItem(r.raw))
+      sortNavItemsForDisplay()
+      chatsLoading.value = false
+      restoreActiveFromUrl()
     }
-
-    // Deep-link / refresh cover: if the URL already shows a chat,
-    // optimistic-clear its dot + fire the touch so the dot clears
-    // without waiting for the next SSE refresh.
-    const current = currentMainView.value
-    if (current.kind === 'chat' && current.sessionId) {
-      // Fresh-tab title: a deep link never left-clicks, so
-      // activeChatName is empty/stale and the browser tab would read
-      // plain "Nalar". The name is usually already in this list —
-      // fall back to a single-session fetch past page 1.
-      const match = navItems.value.find((i) => i.id === current.sessionId)
-      if (match && match.name && match.name !== 'New Chat') {
-        navigationStore.setActiveChatName(match.name)
-      } else {
-        const sessionId = current.sessionId
-        void api.getSession(sessionId).then((sess) => {
-          const now = currentMainView.value
-          if (now.kind === 'chat' && now.sessionId === sessionId && sess?.sessionName) {
-            navigationStore.setActiveChatName(sess.sessionName)
-          }
-        })
-      }
-      optimisticClearStaleDot(current.sessionId)
-      fireSessionTouched(current.sessionId)
+    const delta = await sessionEngineDb.loadDelta(ctx, 30)
+    if (delta && isCurrentCtx()) {
+      navItems.value = delta.items.map((r) => toNavItem(r.raw))
+      sortNavItemsForDisplay()
+      chatsHasMore.value = delta.hasMore
+      chatsNextCursor.value = delta.nextCursor
+      chatsTotal.value = delta.total
+      restoreActiveFromUrl()
+    } else if (cached.length === 0 && isCurrentCtx()) {
+      // Cold miss + network failure: keep the empty fallback so the
+      // UI doesn't crash while the apiFetch toast shows the error.
+      navItems.value = []
     }
   } catch (err) {
     console.error('Failed to load chats:', err)
@@ -480,8 +486,62 @@ const loadChats = async () => {
   }
 }
 
+// Deep-link / refresh cover, extracted so both the cache paint and
+// the delta paint can run it: if the URL already shows a chat,
+// optimistic-clear its dot + fire the touch so the dot clears
+// without waiting for the next SSE refresh. fireSessionTouched is
+// once-per-lifetime guarded, so the double call is a no-op.
+const restoreActiveFromUrl = () => {
+  // If we found and activated a saved chat, restore it in AppLayout
+  const activeItem = navItems.value.find((item) => item.active)
+  if (activeItem) {
+    navigationStore.setActiveChatName(activeItem.name)
+    emit('navigate', `chat-${activeItem.id}`, activeItem.name)
+  }
+
+  const current = currentMainView.value
+  if (current.kind === 'chat' && current.sessionId) {
+    // Fresh-tab title: a deep link never left-clicks, so
+    // activeChatName is empty/stale and the browser tab would read
+    // plain "Nalar". The name is usually already in this list —
+    // fall back to a single-session fetch past page 1.
+    const match = navItems.value.find((i) => i.id === current.sessionId)
+    if (match && match.name && match.name !== 'New Chat') {
+      navigationStore.setActiveChatName(match.name)
+    } else {
+      const sessionId = current.sessionId
+      void api.getSession(sessionId).then((sess) => {
+        const now = currentMainView.value
+        if (now.kind === 'chat' && now.sessionId === sessionId && sess?.sessionName) {
+          navigationStore.setActiveChatName(sess.sessionName)
+        }
+      })
+    }
+    optimisticClearStaleDot(current.sessionId)
+    fireSessionTouched(current.sessionId)
+  }
+}
+
 const loadMoreChats = async () => {
   if (!chatsHasMore.value || chatsLoading.value || !chatsNextCursor.value) return
+  const ctx = sessionCacheKey()
+  // Cache-first scroll-back in desc mode (mirrors ChatView.fetchOlderPage):
+  // the write-through below accumulates every fetched page, so older rows
+  // are usually already local. Cursor unchanged, id-dedupe covers overlap.
+  // Asc mode stays network-only — "older" has no meaning against a
+  // backend cursor that pages in display order.
+  if (chatsSortDirection.value === 'desc' && navItems.value.length > 0) {
+    const oldest = navItems.value[navItems.value.length - 1]?.sortKey ?? ''
+    const cached = await sessionEngineDb.loadOlderFromCache(ctx, oldest, 20)
+    if (cached.length > 0) {
+      const seen = new Set(navItems.value.map((i) => i.id))
+      const fresh = cached.filter((r) => !seen.has(r.id))
+      if (fresh.length > 0) {
+        navItems.value.push(...fresh.map((r) => toNavItem(r.raw)))
+        return
+      }
+    }
+  }
   chatsLoading.value = true
   try {
     const data = await api.getChats(
@@ -491,25 +551,10 @@ const loadMoreChats = async () => {
       chatsNextCursor.value,
       scopedWorkspaceId.value,
     )
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-    const newItems = (data.sessions || []).map((session: any) => ({
-      id: session.session_id,
-      name: session.session_name || 'New Chat',
-      active: false,
-      processing: false,
-      // Migration 082 — prefer human-touched timestamp when present.
-      relativeTime: formatRelativeTime(session.last_human_touched_at || session.updated_at),
-      selected_profile_model: session.selected_profile_model || '',
-      sub_agent_name: session.sub_agent_name || '',
-      parent_session_id: session.parent_session_id || '',
-      cwd: session.cwd || '',
-      git_worktree_cwd: session.git_worktree_cwd || '',
-      git_branch: session.git_branch || '',
-      // Migration 082 — captured for the stale-dot check (same as loadChats).
-      last_human_touched_at: session.last_human_touched_at || '',
-      updated_at: session.updated_at || '',
-    }))
+    const newItems = (data.sessions || []).map(toNavItem)
     navItems.value.push(...newItems)
+    // Write-through so later mounts and scroll-backs hit the cache.
+    await sessionEngineDb.putLocal(ctx, (data.sessions || []).map(toSessionRow))
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
   } catch (err) {
@@ -594,16 +639,13 @@ const setActive = async (id: string) => {
   fireSessionTouched(id)
 }
 
-const confirmDeleteChat = (chatId: string) => {
-  // Emit event to parent for delete confirmation
-  emit('navigate', 'delete-chat', chatId)
-}
-
 const removeChat = async (chatId: string) => {
   const index = navItems.value.findIndex((item) => item.id === chatId)
   if (index !== -1) {
     const wasActive = navItems.value[index]?.active ?? false
     navItems.value.splice(index, 1)
+    // Keep the cache consistent with the optimistic splice.
+    await sessionEngineDb.removeSession(sessionCacheKey(), chatId)
     // Clear from navigation store if this was the active chat
     if (wasActive) {
       navigationStore.clearActiveChat()
@@ -680,6 +722,14 @@ const scheduleSseReload = () => {
   }, 400)
 }
 const unsubSession = workspacesStore.onSessionEvent((event) => {
+  if (event.action === 'deleted') {
+    // Instant evict: drop the row from the cache and the list now,
+    // then let the debounced reload revalidate totals/cursors.
+    void sessionEngineDb.removeSession(sessionCacheKey(), event.id)
+    navItems.value = navItems.value.filter((i) => i.id !== event.id)
+    scheduleSseReload()
+    return
+  }
   if (event.action === 'updated') {
     const firedAt = touchedAtMs.get(event.id)
     if (firedAt !== undefined && Date.now() - firedAt < TOUCH_ECHO_SUPPRESS_MS) {
@@ -925,15 +975,6 @@ defineExpose({
                 >{{ item.relativeTime || 'now' }}</span
               >
             </span>
-            <button
-              v-if="item.id !== 'chat'"
-              @click.stop="confirmDeleteChat(item.id)"
-              class="w-7 h-7 rounded text-xl leading-none flex items-center justify-center opacity-100 transition-opacity hover:text-red-400 shrink-0"
-              style="color: var(--semantic-text-dim)"
-              title="Delete chat"
-            >
-              ×
-            </button>
             <!-- Per-session LLM slider at the bottom edge of this row.
                  Hidden when this session is idle; slides while
                  processingState[item.id] is true. Replaces the old

@@ -4,6 +4,8 @@ import { useNavigationStore } from './navigation'
 import { useNotificationStore } from './notifications'
 import { useSseBus } from '../helpers/sseBus'
 import { designLogger } from '../helpers/designLogger'
+import { readWorkspacesCache } from '../helpers/workspacesCache'
+import { readTaskMediaCache, writeTaskMediaCache } from '../helpers/taskMediaCache'
 import type { DesignElement, DesignPage } from '../api'
 
 export interface KanbanColumn {
@@ -1022,24 +1024,60 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // here anymore (Chunk 6 of unify-frontend-sse).
     installSessionEventHandlers()
 
-    try {
-      // Step 1: fetch the workspaces list (no items — those come separately).
-      const { workspaces: wsList } = await api.getWorkspaces()
+    // Seed helper: every row starts with EMPTY items — the list
+    // (dropdown, sidebar, items_count badges) is complete right away;
+    // the items tree fills in per visit.
+    const seedList = (wsList: Workspace[]) => {
       const expandedWorkspaces = loadExpandedWorkspaces()
       const expandedIds = loadExpandedItemIds()
       // Load expanded item IDs for tasks list from localStorage
       expandedItemIds.value = expandedIds
-
-      // Step 2: seed every workspace row with EMPTY items — the list
-      // (dropdown, sidebar, items_count badges) is complete right
-      // away; the items tree fills in per visit (step 3 here, then
-      // setActiveWorkspace on every switch).
       workspaces.value = (wsList || []).map((ws: Workspace) => ({
         ...ws,
         // Restore expanded state from localStorage
         expanded: expandedWorkspaces.has(ws.id),
         items: [],
       }))
+    }
+
+    // Merge helper for the background revalidate: refresh rows in
+    // place without clobbering items already loaded for the active
+    // workspace (or expanded UI state) while the fetch was in flight.
+    const mergeList = (wsList: Workspace[]) => {
+      const expandedWorkspaces = loadExpandedWorkspaces()
+      const prevById = new Map(workspaces.value.map((w) => [w.id, w]))
+      workspaces.value = (wsList || []).map((ws: Workspace) => {
+        const prev = prevById.get(ws.id)
+        return {
+          ...ws,
+          expanded: prev?.expanded ?? expandedWorkspaces.has(ws.id),
+          items: prev?.items ?? [],
+        }
+      })
+    }
+
+    // Stale-while-revalidate: paint the last-known list synchronously
+    // so the dropdown/sidebar shows rows instantly on boot, then the
+    // live fetch below refreshes it in the same init. api.getWorkspaces
+    // persists every success to the cache (fail-silent).
+    const cached = readWorkspacesCache()
+    const hasCache = !!cached && cached.length > 0
+    if (hasCache) {
+      seedList(cached as Workspace[])
+      // Drop the list spinner now — rows are already visible. The
+      // active workspace items still load below.
+      isLoading.value = false
+    }
+
+    try {
+      // Step 1: fetch the workspaces list (no items — those come separately).
+      const { workspaces: wsList } = await api.getWorkspaces()
+      if (hasCache) {
+        mergeList(wsList || [])
+      } else {
+        // Step 2 (cold boot): seed every workspace row with EMPTY items.
+        seedList(wsList || [])
+      }
 
       // Step 3: load items for the ACTIVE workspace only.
       const activeId =
@@ -1048,10 +1086,17 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         await ensureWorkspaceItemsLoaded(activeId)
       }
     } catch (err) {
-      loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
-      console.error('Failed to load workspaces:', err)
-      // Initialize with empty array on error
-      workspaces.value = []
+      // With a cached paint on screen, a failed revalidate keeps the
+      // stale rows (and surfaces the error) instead of wiping to [].
+      if (!hasCache) {
+        loadingError.value = err instanceof Error ? err.message : 'Failed to load workspaces'
+        console.error('Failed to load workspaces:', err)
+        // Initialize with empty array on error
+        workspaces.value = []
+      } else {
+        loadingError.value = err instanceof Error ? err.message : 'Failed to refresh workspaces'
+        console.error('Failed to refresh workspaces (keeping cached list):', err)
+      }
     } finally {
       isLoading.value = false
     }
@@ -1793,6 +1838,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         activeSortBy.delete(itemId)
         activeSortDirection.delete(itemId)
       }
+
+      // Card-first async media: cards already rendered from the
+      // flag-only payload above; queue thumbnail loads behind it.
+      queueCardMediaLoad(workspaceId, itemId)
     } catch (err) {
       console.error(
         `[workspacesStore.fetchKanbanTasks] API call failed for column ${columnId}:`,
@@ -1866,6 +1915,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         ),
       ),
     )
+    // Card-first async media: every column's cards rendered from the
+    // flag-only payload; queue thumbnail loads behind them in one batch.
+    queueCardMediaLoad(workspaceId, itemId)
   }
 
   // Add a column to a kanban and append it to the local item's
@@ -3455,6 +3507,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // hasMore. The backend tells us if THIS column has more pages.
       colState.cursor = next_cursor
       colState.hasMore = has_more
+      // Card-first async media: appended cards rendered from the
+      // flag-only payload; queue their thumbnail loads behind them.
+      queueCardMediaLoad(workspaceId, itemId)
     } catch (err) {
       console.error(`Failed to load more tasks for item ${itemId} column ${columnId}:`, err)
       // Leave hasMore/cursor as-is so the user can retry by
@@ -3831,19 +3886,78 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     return wantImage || wantVideo
   }
 
+  // Card-first async media. The flag-only list payload lets cards render
+  // immediately (badge state); this queues the thumbnail fetch behind
+  // it via GET .../tasks/:id/media. Fire-and-forget so list callers
+  // return fast — the card flips badge -> thumb when the store patches
+  // imageUrls/videoUrls in place. Shares the mediaInflight dedupe map
+  // with fetchTaskMedia so a dialog open racing the batch never doubles.
+  //
+  // Local cache first: before the network round, each flagged task paints
+  // its last-known thumbnail from taskMediaCache synchronously (instant
+  // thumbs on cold boot). The background fetch still runs for every
+  // cache-painted task (revalidate) and write-throughs the fresh payload.
+  function queueCardMediaLoad(workspaceId: string, itemId: string): void {
+    const item = findItem(workspaceId, itemId)
+    if (!item?.tasks || item.tasks.length === 0) return
+    const ids = item.tasks.filter(taskNeedsMedia).map((t) => t.id)
+    if (ids.length === 0) return
+    let painted = false
+    for (const id of ids) {
+      const task = findCachedTask(workspaceId, itemId, id)
+      if (task) painted = applyCachedMedia(task) || painted
+    }
+    void fetchTasksMedia(workspaceId, itemId, ids, painted ? { revalidate: true } : undefined)
+  }
+
+  // Paints a task's last-known thumbnail from the local media cache.
+  // Only fills sides whose flag is true and whose arrays are still empty
+  // (never clobbers live data, never paints onto a flag-less task).
+  // Returns true when anything was painted — the caller then revalidates
+  // that task in the background instead of treating it as loaded.
+  function applyCachedMedia(task: Task): boolean {
+    if (!taskNeedsMedia(task)) return false
+    const hit = readTaskMediaCache(task.id)
+    if (!hit) return false
+    let painted = false
+    if (
+      task.is_have_image === true &&
+      (!task.imageUrls || task.imageUrls.length === 0) &&
+      hit.imageUrls.length > 0
+    ) {
+      task.imageUrls = hit.imageUrls
+      painted = true
+    }
+    if (
+      task.is_have_video === true &&
+      (!task.videoUrls || task.videoUrls.length === 0) &&
+      hit.videoUrls.length > 0
+    ) {
+      task.videoUrls = hit.videoUrls
+      painted = true
+    }
+    return painted
+  }
+
   // Lazy media fetch (media-flags change). When list/get report
   // `is_have_image` / `is_have_video`, the detail dialog calls this
   // once to populate the cached task's imageUrls/videoUrls in place
   // (shared with the board card thumbnail). No-op when the flags are
   // false or media is already loaded. Concurrent calls for the same
   // task share one in-flight request. Best-effort: failures warn only.
+  //
+  // Local cache first: paints the last-known thumbnail synchronously,
+  // then still revalidates in the background (write-through) so the
+  // dialog never shows a stale image past the fetch round-trip.
   async function fetchTaskMedia(
     workspaceId: string,
     itemId: string,
     taskId: string,
   ): Promise<void> {
     const task = findCachedTask(workspaceId, itemId, taskId)
-    if (!task || !taskNeedsMedia(task)) return
+    if (!task) return
+    const painted = applyCachedMedia(task)
+    if (!taskNeedsMedia(task) && !painted) return
     const inflight = mediaInflight.get(taskId)
     if (inflight) {
       await inflight
@@ -3852,14 +3966,21 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const run = (async (): Promise<void> => {
       try {
         const current = findCachedTask(workspaceId, itemId, taskId)
-        if (!current || !taskNeedsMedia(current)) return
+        if (!current || (!taskNeedsMedia(current) && !painted)) return
         const media = await api.getTaskMedia(workspaceId, itemId, taskId)
         if (!media) return
+        writeTaskMediaCache(taskId, media)
         const fresh = findCachedTask(workspaceId, itemId, taskId)
         if (!fresh) return
-        if (fresh.is_have_image === true && (!fresh.imageUrls || fresh.imageUrls.length === 0))
+        if (
+          fresh.is_have_image === true &&
+          (!fresh.imageUrls || fresh.imageUrls.length === 0 || painted)
+        )
           fresh.imageUrls = media.imageUrls
-        if (fresh.is_have_video === true && (!fresh.videoUrls || fresh.videoUrls.length === 0))
+        if (
+          fresh.is_have_video === true &&
+          (!fresh.videoUrls || fresh.videoUrls.length === 0 || painted)
+        )
           fresh.videoUrls = media.videoUrls
       } catch (err) {
         console.warn('Failed to fetch task media:', err)
@@ -3877,14 +3998,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Shares the per-task in-flight map with `fetchTaskMedia` so a
   // dialog open racing the batch never doubles the request.
   // Best-effort per task: failures warn once for the batch.
+  //
+  // `opts.revalidate`: also fetch tasks whose arrays were just painted
+  // from the local cache (queueCardMediaLoad's SWR path) and overwrite
+  // them with the fresh payload. Every success write-throughs the cache.
   async function fetchTasksMedia(
     workspaceId: string,
     itemId: string,
     taskIds: string[],
+    opts?: { revalidate?: boolean },
   ): Promise<void> {
+    const revalidate = opts?.revalidate === true
     const pending = taskIds.filter((id) => {
       const task = findCachedTask(workspaceId, itemId, id)
-      return task !== undefined && taskNeedsMedia(task) && !mediaInflight.has(id)
+      return task !== undefined && (taskNeedsMedia(task) || revalidate) && !mediaInflight.has(id)
     })
     const alreadyRunning = taskIds
       .map((id) => mediaInflight.get(id))
@@ -3902,11 +4029,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         const results = await api.getTasksMedia(workspaceId, itemId, pending)
         for (const [id, media] of results) {
           if (!media) continue
+          writeTaskMediaCache(id, media)
           const task = findCachedTask(workspaceId, itemId, id)
           if (!task) continue
-          if (task.is_have_image === true && (!task.imageUrls || task.imageUrls.length === 0))
+          if (
+            task.is_have_image === true &&
+            (!task.imageUrls || task.imageUrls.length === 0 || revalidate)
+          )
             task.imageUrls = media.imageUrls
-          if (task.is_have_video === true && (!task.videoUrls || task.videoUrls.length === 0))
+          if (
+            task.is_have_video === true &&
+            (!task.videoUrls || task.videoUrls.length === 0 || revalidate)
+          )
             task.videoUrls = media.videoUrls
         }
       } catch (err) {

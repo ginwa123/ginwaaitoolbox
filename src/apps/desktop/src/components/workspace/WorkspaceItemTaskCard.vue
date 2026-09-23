@@ -760,7 +760,9 @@ watch([gitBranchBadge, effectiveCwd], () => {
     </div>
     <!-- Media-flags change — flag-only list payload: show a lightweight badge
          when the task has media that hasn't been lazy-loaded yet.
-         No per-card fetch (the detail dialog fetches on open). -->
+         The store prefetches card thumbnails in the background after
+         the list lands (queueCardMediaLoad), so this badge is the
+         card-first placeholder until the thumb arrives. -->
     <div
       v-else-if="hasUnloadedMedia"
       class="flex items-center gap-1 text-[11px] self-start"
