@@ -1197,9 +1197,24 @@ defineExpose({
       the visible window at its exact offset within that height.
     -->
     <div class="virtual-scroller-sizer" :style="{ height: sizerHeight + 'px' }">
+      <!--
+        minHeight keeps the content window at least one viewport tall.
+        The rendered window always covers the viewport in MODEL space
+        (estimates), but the real DOM can be much shorter when estimates
+        overshoot reality — e.g. a tail of short tool-card groups measured
+        against a ~400px running median, plus up to HYSTERESIS_PX of
+        residue per item that never corrects. Without this the content
+        div collapses to half the chat height at the bottom with blank
+        sizer below it. The content is absolutely positioned (out of
+        flow) and measureItems reads child heights, so this never feeds
+        back into the sizer model or the compensation loop.
+      -->
       <div
         class="virtual-scroller-content"
-        :style="{ transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)` }"
+        :style="{
+          transform: `translate3d(0px, ${visibleRange.topSpacer}px, 0px)`,
+          minHeight: containerHeight > 0 ? `${containerHeight}px` : undefined,
+        }"
       >
         <!-- :key is the STABLE itemKey (not the index): Vue reuses the
              correct DOM node per item across index shifts (regrouping,
