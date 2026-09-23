@@ -44,6 +44,7 @@ const generate_image_mod = nalarcore.generate_image;
 const update_plan_mod = nalarcore.update_plan;
 const get_plan_mod = nalarcore.get_plan;
 const list_sub_agent_mod = nalarcore.list_sub_agent;
+const used_tools_mod = nalarcore.used_tools;
 // 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
 // LLM-callable tool that registers a new MCP server in the live config +
 // persists to disk + hot-reloads `di.llm_config`. The new server's tools are
@@ -83,6 +84,9 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         update_plan_mod.update_plan_tool,
         get_plan_mod.get_plan_tool,
         list_sub_agent_mod.list_sub_agent_tool,
+        // used_tools: read-only introspection over this very list ("what
+        // tools do I have"). Sub-agent-safe (NOT main-agent-only).
+        used_tools_mod.used_tools_tool,
         // 2026-08-28 — add_mcp_server agent tool (Task 5).
         add_mcp_server_mod.add_mcp_server_tool,
         list_skills_mod.list_skills_tool,
@@ -168,6 +172,10 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "update_plan", .exec = tools.execUpdatePlan, .tool_def = update_plan_mod.update_plan_tool },
         .{ .name = "get_plan", .exec = tools.execGetPlan, .tool_def = get_plan_mod.get_plan_tool },
         .{ .name = "list_sub_agent", .exec = tools.execListSubAgent, .tool_def = list_sub_agent_mod.list_sub_agent_tool },
+        // used_tools: read-only introspection ("what tools do I have").
+        // Available in every mode; the exec adapter resolves the
+        // session's effective list via the same helpers as the workflow.
+        .{ .name = "used_tools", .exec = tools.execUsedTools, .tool_def = used_tools_mod.used_tools_tool },
 
         // === MCP MANAGEMENT ===
         // 2026-08-28 — add_mcp_server (Task 5 of 2026-08-28-add-mcp-server-agent-tool.md).
@@ -322,6 +330,12 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     // spawn
     spawn_sub_agent_tool.spawn_sub_agent_tool.function.name,
     list_sub_agent_mod.list_sub_agent_tool.function.name,
+
+    // introspection — "what tools do I have" (read-only, sub-agent-safe).
+    // Seeded in agent + kanban modes via this list; design / plain chat /
+    // routine sessions get it through DEFAULT_CHAT_TOOLS (request body) or
+    // the config.json tools checklist.
+    used_tools_mod.used_tools_tool.function.name,
 
     // progressive tool search — part of the default equipped set, seeded at
     // creation. ONLY `workspace_items_create_agent` and
