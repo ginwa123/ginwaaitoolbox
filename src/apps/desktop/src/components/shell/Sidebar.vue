@@ -10,6 +10,7 @@ import ProjectsList from '../workspace/ProjectsList.vue'
 import WorkspaceSwitcher from '../workspace/WorkspaceSwitcher.vue'
 import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
+import { getAuthMeCached, invalidateAuthMe } from '../../helpers/authMe'
 import RenameWorkspaceModal from '../dialogs/RenameWorkspaceModal.vue'
 import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
 import RenameDesignPageModal from '../dialogs/RenameDesignPageModal.vue'
@@ -242,10 +243,11 @@ const loggingOut = ref(false)
 
 async function refreshAuthState() {
   try {
-    const res = await fetch('/api/auth/me', { credentials: 'same-origin' })
-    if (!res.ok) return
-    const data = await res.json().catch(() => null)
-    authEnabled.value = !!data?.auth_enabled
+    // Cached: every window focus fires this — a slow /me must not
+    // hammer the server on each alt-tab (see helpers/authMe).
+    const { data } = await getAuthMeCached()
+    if (!data) return
+    authEnabled.value = !!data.auth_enabled
   } catch {
     /* offline — leave logout hidden */
   }
@@ -259,6 +261,8 @@ async function handleLogout() {
   } catch {
     /* session already dead server-side — still bounce to login */
   } finally {
+    // Drop the cached authed /me so the guard redirects to /login.
+    invalidateAuthMe()
     loggingOut.value = false
     await router.replace('/login')
   }
