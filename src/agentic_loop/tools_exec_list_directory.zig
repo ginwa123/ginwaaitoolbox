@@ -70,14 +70,18 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
 /// Resolve a model-supplied directory path to an absolute path.
 ///
 /// Contract (mirrors the `list_directory` tool description):
-///   - `""` or `"."`    → the session cwd itself
+///   - `""` or `"."`    → the effective session cwd itself
 ///   - already absolute → used as-is
-///   - anything else    → relative to the session cwd
+///   - anything else    → relative to the effective session cwd
 ///
-/// `ctx.cwd` is the effective session cwd (the worktree cwd once
-/// `set_git_worktree` rebinds the session). Caller owns the returned slice.
+/// The base is `ctx.cwd_override orelse ctx.cwd`: `cwd_override` is the worktree
+/// trust anchor when set (forward-compat — nothing assigns it today, so this is
+/// `ctx.cwd` in practice; keep consulting it so a future wiring of that field
+/// does not silently stop affecting path resolution). Caller owns the returned
+/// slice.
 fn resolveAgainstCwd(ctx: ToolExecContext, raw: []const u8) ![]u8 {
-    const base = if (ctx.cwd.len == 0) "." else ctx.cwd;
+    const effective_cwd = ctx.cwd_override orelse ctx.cwd;
+    const base = if (effective_cwd.len == 0) "." else effective_cwd;
     if (raw.len == 0 or std.mem.eql(u8, raw, ".")) return ctx.allocator.dupe(u8, base);
     if (std.fs.path.isAbsolute(raw)) return ctx.allocator.dupe(u8, raw);
     return std.fs.path.join(ctx.allocator, &.{ base, raw });
