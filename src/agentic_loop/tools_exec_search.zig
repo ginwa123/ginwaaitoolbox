@@ -131,8 +131,10 @@ test "search JSON parser treats a zero-valued unused head/tail as omitted" {
     try std.testing.expect(parsed.value.tail == null);
 }
 
-test "search exact model JSON with head set and tail=0 returns real matches" {
-    const allocator = std.testing.allocator;
+test "TDD: execSearch accepts head=100 with tail=0 and returns a successful match envelope" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
     const io = std.testing.io;
 
     var tmpdir = std.testing.tmpDir(.{});
@@ -146,8 +148,8 @@ test "search exact model JSON with head set and tail=0 returns real matches" {
     const path_len = try tmpdir.dir.realPath(io, &path_buf);
     const tmpdir_path: []const u8 = path_buf[0..path_len];
 
-    // This is the normalized model-call shape seen in the UI: the selected
-    // filter is head, while the unused optional tail is emitted as 0.
+    // This is the model-call shape from the failing UI request: head is
+    // selected, while the unused optional tail is emitted as 0.
     const args_json = try std.json.Stringify.valueAlloc(allocator, .{
         .pattern = "Open chat in new tab",
         .path = ".",
@@ -165,23 +167,56 @@ test "search exact model JSON with head set and tail=0 returns real matches" {
         .glob = "*.txt",
         .timeout_ms = 30_000,
     }, .{});
-    defer allocator.free(args_json);
 
-    var parsed = try parseSearchInput(allocator, args_json);
-    defer parsed.deinit();
-    try std.testing.expectEqual(@as(usize, 100), parsed.value.head.?);
-    try std.testing.expect(parsed.value.tail == null);
-
-    var result = search_tool_mod.executeSearch(allocator, io, tmpdir_path, parsed.value) catch |err| switch (err) {
-        error.RgNotFound => return,
-        else => return err,
+    var dummy_temperature: f32 = 0.0;
+    var dummy_thinking: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = allocator,
+        .io = io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test-session",
+        .model = "test-model",
+        .cwd = tmpdir_path,
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &dummy_temperature,
+        .is_thinking = &dummy_thinking,
+        .environment = null,
+        .active_loops = undefined,
     };
-    defer result.deinit(allocator);
+    const tool_call = agent.ToolCall{
+        .id = "call-search-tail-zero",
+        .type = "function",
+        .function = .{ .name = "search", .arguments = args_json },
+    };
 
-    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
-    try std.testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
-    try std.testing.expectEqual(@as(usize, 2), result.matches.items[1].line_number);
-    try std.testing.expect(std.mem.indexOf(u8, result.matches.items[0].snippet, "Open chat in new tab") != null);
+    // Before zero-placeholder normalization, this call reached executeSearch
+    // with both optionals non-null and returned success=false with
+    // HeadAndTailMutuallyExclusive. This assertion is the red/green regression.
+    const exec_result = try execSearch(ctx, tool_call);
+    defer exec_result.deinit(allocator);
+
+    var envelope = try std.json.parseFromSlice(std.json.Value, allocator, exec_result.output, .{});
+    defer envelope.deinit();
+    const root = envelope.value.object;
+    const success = root.get("success").?.bool;
+    if (!success) {
+        const error_value = root.get("error").?;
+        if (error_value == .string and std.mem.indexOf(u8, error_value.string, "ripgrep (rg) is not installed") != null) return;
+    }
+
+    try std.testing.expect(success);
+    try std.testing.expect(root.get("error").? == .null);
+    const data = root.get("data").?.object;
+    try std.testing.expectEqual(@as(i64, 2), data.get("returned").?.integer);
+    const files = data.get("files").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), files.len);
+    const matches = files[0].object.get("matches").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), matches.len);
+    try std.testing.expectEqual(@as(i64, 1), matches[0].object.get("line").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), matches[1].object.get("line").?.integer);
 }
 
 test "search JSON parser lets head with tail=0 reach execution as head-only" {
