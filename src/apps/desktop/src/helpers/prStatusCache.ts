@@ -31,12 +31,23 @@ const RETRY_DELAYS_MS = [300, 900]
 export interface PrInfo {
   status: string
   prUrl: string
+  mergeable: string
+  merge_state: string
 }
 
 interface CacheEntry {
   status: string
   prUrl: string
+  mergeable: string
+  merge_state: string
   at: number
+}
+
+/** CONFLICTING (or DIRTY) means the PR cannot merge until conflicts resolve. */
+export function isPrConflictValue(mergeable: string, merge_state: string): boolean {
+  if ((mergeable || '').toUpperCase() === 'CONFLICTING') return true
+  if ((merge_state || '').toUpperCase() === 'DIRTY') return true
+  return false
 }
 
 const cache = new Map<string, CacheEntry>()
@@ -63,7 +74,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
-const EMPTY_INFO: PrInfo = { status: '', prUrl: '' }
+const EMPTY_INFO: PrInfo = { status: '', prUrl: '', mergeable: '', merge_state: '' }
 
 async function fetchWithRetry(cwd: string, branch: string): Promise<PrInfo> {
   let lastErr: unknown = null
@@ -74,6 +85,8 @@ async function fetchWithRetry(cwd: string, branch: string): Promise<PrInfo> {
       return {
         status: (data.status || data.state || '').toLowerCase(),
         prUrl: data.pr_url || '',
+        mergeable: (data.mergeable || '').toUpperCase(),
+        merge_state: (data.merge_state || '').toUpperCase(),
       }
     } catch (err) {
       lastErr = err
@@ -94,12 +107,23 @@ export function fetchPrInfoCached(cwd: string, branch: string): Promise<PrInfo> 
   const k = cacheKey(cwd, branch)
   const hit = cache.get(k)
   if (hit && Date.now() - hit.at < TTL_MS)
-    return Promise.resolve({ status: hit.status, prUrl: hit.prUrl })
+    return Promise.resolve({
+      status: hit.status,
+      prUrl: hit.prUrl,
+      mergeable: hit.mergeable,
+      merge_state: hit.merge_state,
+    })
   const ongoing = inflight.get(k)
   if (ongoing) return ongoing
   const p = fetchWithRetry(cwd, branch).then(
     (info) => {
-      cache.set(k, { status: info.status, prUrl: info.prUrl, at: Date.now() })
+      cache.set(k, {
+        status: info.status,
+        prUrl: info.prUrl,
+        mergeable: info.mergeable,
+        merge_state: info.merge_state,
+        at: Date.now(),
+      })
       inflight.delete(k)
       return info
     },
@@ -121,6 +145,25 @@ export function fetchPrInfoCached(cwd: string, branch: string): Promise<PrInfo> 
  */
 export function fetchPrStatusCached(cwd: string, branch: string): Promise<string> {
   return fetchPrInfoCached(cwd, branch).then((info) => info.status)
+}
+
+/**
+ * Full cached PR status including the mergeable flag, so card/row badges
+ * can surface a conflict hint without an extra `gh` call. Never rejects.
+ */
+export function fetchPrStatusFullCached(cwd: string, branch: string): Promise<PrInfo> {
+  return fetchPrInfoCached(cwd, branch)
+}
+
+/**
+ * Cached conflict flag for a repo + branch. True only when the PR reports
+ * CONFLICTING (or DIRTY) — quiet (false) for mergeable, unknown, or failed
+ * fetches. Never rejects.
+ */
+export function fetchPrConflictCached(cwd: string, branch: string): Promise<boolean> {
+  return fetchPrInfoCached(cwd, branch).then((info) =>
+    isPrConflictValue(info.mergeable, info.merge_state),
+  )
 }
 
 /**

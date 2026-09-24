@@ -13,6 +13,7 @@ import { VirtualScroller, formatRelativeTime } from '../../helpers'
 import {
   fetchPrInfoCached,
   fetchPrStatusCached,
+  fetchPrConflictCached,
   branchUrlFromPrUrl,
 } from '../../helpers/prStatusCache'
 import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
@@ -92,6 +93,9 @@ const processingState = inject<Ref<Record<string, boolean>>>('processingState', 
 // closed, orange = plain branch). Bold by design so the icon pops
 // against the muted chat row.
 const prStatuses = ref<Record<string, string>>({})
+// Conflict-only hint per chat: true when the PR reports CONFLICTING/DIRTY.
+// Quiet-when-clean — absent/false for mergeable, unknown, or failed fetches.
+const prConflicts = ref<Record<string, boolean>>({})
 const prSeqByChat = new Map<string, number>()
 
 type ChatRow = {
@@ -114,14 +118,17 @@ const chatBranchStyle = (id: string): Record<string, string> => {
 const chatBranchTitle = (item: ChatRow): string => {
   const branch = item.git_branch || ''
   const s = prStatuses.value[item.id] || ''
+  const conflictSuffix = prConflicts.value[item.id] ? ' — merge conflicts' : ''
   const base =
     s === 'merged'
       ? `PR merged — ${branch}`
       : s === 'closed'
         ? `PR closed — ${branch}`
         : s === 'open'
-          ? `PR open — ${branch}`
-          : branch
+          ? `PR open${conflictSuffix} — ${branch}`
+          : prConflicts.value[item.id]
+            ? `${branch} — merge conflicts`
+            : branch
   // Surface the worktree path alongside the branch so the full
   // checkout location stays discoverable on hover.
   if (item.git_worktree_cwd) return `${base} — ${item.git_worktree_cwd}`
@@ -133,16 +140,22 @@ const refreshChatPrStatus = async (item: ChatRow) => {
   const cwd = effectiveChatCwd(item)
   if (!branch || !cwd) {
     if (prStatuses.value[item.id]) delete prStatuses.value[item.id]
+    if (prConflicts.value[item.id]) delete prConflicts.value[item.id]
     return
   }
   const seq = (prSeqByChat.get(item.id) || 0) + 1
   prSeqByChat.set(item.id, seq)
   // Shared cache: dedupes the list-load burst across rows, retries
   // transient failures, resolves '' (fail-silent) when unknown.
-  const status = await fetchPrStatusCached(cwd, branch)
+  const [status, hasConflict] = await Promise.all([
+    fetchPrStatusCached(cwd, branch),
+    fetchPrConflictCached(cwd, branch),
+  ])
   if (prSeqByChat.get(item.id) !== seq) return
   if (status) prStatuses.value[item.id] = status
   else if (prStatuses.value[item.id]) delete prStatuses.value[item.id]
+  if (hasConflict) prConflicts.value[item.id] = true
+  else if (prConflicts.value[item.id]) delete prConflicts.value[item.id]
 }
 
 // Note: the navItems watcher that triggers refreshChatPrStatus lives
@@ -896,6 +909,7 @@ defineExpose({
                 :style="chatBranchStyle(item.id)"
                 :title="chatBranchTitle(item) + ' — right-click to open GitHub'"
                 :data-pr-status="prStatuses[item.id] || undefined"
+                :data-pr-conflict="prConflicts[item.id] || undefined"
                 data-testid="chat-git-branch"
                 @contextmenu.prevent.stop="onGitIconContextMenu($event, item)"
               >
@@ -913,6 +927,7 @@ defineExpose({
                     d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
                   />
                 </svg>
+                <span v-if="prConflicts[item.id]" class="ml-0.5 text-[10px] font-bold">⚠</span>
               </span>
               <!-- Fallback for bound worktrees whose cwd is not a git
                    repo (no branch to show): same icon in bold orange so
