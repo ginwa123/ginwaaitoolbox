@@ -18,6 +18,7 @@ import * as api from '../api'
 import { useWorkspacesStore, type Workspace, type WorkspaceItem } from '../stores/workspaces'
 import WorkspaceSwitcher from '../components/workspace/WorkspaceSwitcher.vue'
 import { makeLocalStorageStub } from './helpers'
+import { workspacesCacheKey } from '../helpers/workspacesCache'
 import {
   installSseBus,
   __resetSseBus,
@@ -135,6 +136,42 @@ describe('workspaces store lazy per-workspace item loading', () => {
     expect(getWorkspacesItemsMock).toHaveBeenCalledWith('ws_2')
     expect(store.workspaces[1]!.items.map((i) => i.id)).toEqual(['item_2'])
     expect(store.workspaces[0]!.items).toEqual([])
+  })
+
+  it('keeps a lazy-loaded workspace populated when revalidation lands mid-request', async () => {
+    localStorageStub.setItem(
+      workspacesCacheKey(),
+      JSON.stringify([{ id: 'ws_1', name: 'Workspace 1', icon: '📁', items_count: 1 }]),
+    )
+
+    let resolveWorkspaces!: (value: { workspaces: typeof WS_LIST }) => void
+    getWorkspacesMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveWorkspaces = resolve
+      }),
+    )
+
+    let resolveItems!: (value: { items: WorkspaceItem[]; count: number }) => void
+    getWorkspacesItemsMock.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveItems = resolve
+      }),
+    )
+
+    const store = useWorkspacesStore()
+    const initPromise = store.init()
+    const selectionPromise = store.setActiveWorkspace('ws_1')
+    expect(getWorkspacesItemsMock).toHaveBeenCalledWith('ws_1')
+
+    // Revalidation finishes first and refreshes the cached workspace row
+    // while its item request is still in flight.
+    resolveWorkspaces({ workspaces: WS_LIST })
+    await Promise.resolve()
+    resolveItems({ items: ITEMS_BY_WS.ws_1!, count: 1 })
+    await Promise.all([initPromise, selectionPromise])
+
+    expect(store.activeWorkspace?.items.map((item) => item.id)).toEqual(['item_1'])
+    expect(getWorkspacesItemsMock).toHaveBeenCalledTimes(1)
   })
 
   it('init prefers an explicit activeWorkspaceId over the persisted choice', async () => {
