@@ -203,7 +203,7 @@ const props = withDefaults(
     loadMoreThresholdRatio: 0.5,
     loadMoreAtTop: false,
     itemKey: undefined,
-    maxTailGap: 500,
+    maxTailGap: 100,
     debugChatId: undefined,
   },
 )
