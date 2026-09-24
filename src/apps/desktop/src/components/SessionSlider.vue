@@ -1,71 +1,57 @@
 <!--
   SessionSlider.vue — per-session LLM "still working" indicator.
 
-  Renders a small yellow circle spinner inline in its parent
-  whenever `processingState[sessionId]` is true. Owned by `App.vue`
-  via Vue's provide/inject (a `Ref<Record<string, boolean>>`); the
-  SSE worker event handler in App.vue flips entries true/false so
-  this component is reactive for free.
+  Renders a small yellow circle spinner inline in its parent whenever
+  `processingState[sessionId]` is true. Owned by `App.vue` via Vue's
+  provide/inject (a `Ref<Record<string, boolean>>`); the SSE worker
+  event handler in App.vue flips entries true/false so this component
+  is reactive for free.
 
-  Where it mounts
-  ───────────────
-  - ChatsList rows (sidebar): one spinner per row, at the end of
-    the chat row — replaces the previous bottom-edge sliding bar.
-    The ChatView and SubAgentPeekPanel deliberately do NOT mount
-    this component: the sidebar row already signals "this session
-    is busy" for the same session, and adding a duplicate spinner
-    elsewhere would be redundant (see design memory
-    `design-no-redundant-loading-indicators`).
-  - WorkspaceItem / WorkspaceItemTaskRow / ProjectsList /
-    AgentChatView: same circle, same API.
-
-  Why a circle, not a bottom bar
-  ──────────────────────────────
-  The bottom sliding bar spans the full row width and draws the eye
-  even when the user is reading elsewhere. A compact circle spinner
-  marks exactly the busy row without the full-width motion.
+  The spinner uses an inline SVG and native SVG rotation rather than a
+  component-scoped CSS border-rotation keyframe. Firefox supports SVG
+  animation natively, so the busy indicator does not depend on a CSS
+  keyframe being applied to the spinner element.
 
   Reduced motion
   ──────────────
-  Under `@media (prefers-reduced-motion: reduce)` the spin animation
-  is suppressed and the circle renders as a static muted ring —
-  matches the pattern established in `SseStatusBadge.vue:152-156`.
-
-  NOT a network loading indicator
-  ───────────────────────────────
-  This component is for the LLM WORKER state (long-running SSE
-  streaming), not transient HTTP fetches. A separate future
-  component would handle "data is fetching" — this one's only job
-  is to visualize an active worker on a specific session.
+  When the user requests reduced motion, the native rotation is not
+  rendered and the SVG becomes a static muted ring instead.
 -->
 <script setup lang="ts">
-import { computed, inject, ref, type Ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 
 const props = withDefaults(
   defineProps<{
     sessionId: string
-    /**
-     * `data-testid` attribute for the root element. Defaults to
-     * `'session-slider'`; consumers mounting the component at different
-     * DOM levels (workspace row vs. workspace-item row vs. task row)
-     * pass distinct ids so existing selector-based tests keep working.
-     */
+    /** A distinct `data-testid` lets each sidebar surface target its own spinner. */
     testId?: string
   }>(),
   { testId: 'session-slider' },
 )
 
-// `App.vue:10-11` provides a `processingState: Ref<Record<string,
-// boolean>>` keyed by sessionId. The injected ref defaults to an
-// empty ref so a unit test that mounts SessionSlider WITHOUT a
-// `provide` (e.g. a transitive render path) doesn't crash — it
-// just renders nothing.
 const processingState = inject<Ref<Record<string, boolean>>>(
   'processingState',
   ref({}) as Ref<Record<string, boolean>>,
 )
 
 const isVisible = computed(() => !!processingState.value[props.sessionId])
+const prefersReducedMotion = ref(false)
+let reducedMotionQuery: MediaQueryList | undefined
+
+const syncReducedMotion = () => {
+  prefersReducedMotion.value = reducedMotionQuery?.matches ?? false
+}
+
+onMounted(() => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+  reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  syncReducedMotion()
+  reducedMotionQuery.addEventListener('change', syncReducedMotion)
+})
+
+onBeforeUnmount(() => {
+  reducedMotionQuery?.removeEventListener('change', syncReducedMotion)
+})
 </script>
 
 <template>
@@ -74,18 +60,36 @@ const isVisible = computed(() => !!processingState.value[props.sessionId])
     class="session-spinner"
     :data-testid="testId"
     role="status"
-    :aria-busy="true"
+    aria-busy="true"
     aria-live="polite"
     aria-label="Agent is working"
   >
-    <span class="session-spinner__circle" data-testid="session-slider-track" />
+    <svg
+      class="session-spinner__svg"
+      data-testid="session-slider-track"
+      viewBox="0 0 20 20"
+      aria-hidden="true"
+    >
+      <circle class="session-spinner__track" cx="10" cy="10" r="8" pathLength="100" />
+      <g data-testid="session-spinner-rotor">
+        <circle class="session-spinner__arc" cx="10" cy="10" r="8" pathLength="100" />
+        <animateTransform
+          v-if="!prefersReducedMotion"
+          data-testid="session-spinner-motion"
+          attributeName="transform"
+          type="rotate"
+          from="0 10 10"
+          to="360 10 10"
+          dur="0.8s"
+          repeatCount="indefinite"
+        />
+      </g>
+    </svg>
   </span>
 </template>
 
 <style scoped>
 .session-spinner {
-  /* Inline circle: sits in the flex row where it's mounted, takes
-     no space at all while idle (v-if removes it from the DOM). */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -95,25 +99,32 @@ const isVisible = computed(() => !!processingState.value[props.sessionId])
   pointer-events: none;
 }
 
-.session-spinner__circle {
-  width: 14px;
-  height: 14px;
-  border-radius: 9999px;
-  border: 2px solid var(--color-yellow);
-  border-top-color: transparent;
-  animation: session-spinner-spin 0.8s linear infinite;
+.session-spinner__svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: visible;
 }
 
-@keyframes session-spinner-spin {
-  to {
-    transform: rotate(360deg);
-  }
+.session-spinner__track,
+.session-spinner__arc {
+  fill: none;
+  stroke: var(--color-yellow);
+  stroke-width: 2.5;
+}
+
+.session-spinner__track {
+  opacity: 0.22;
+}
+
+.session-spinner__arc {
+  stroke-linecap: round;
+  stroke-dasharray: 25 75;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-spinner__circle {
-    animation: none;
-    border-top-color: var(--color-yellow);
+  .session-spinner__arc {
+    stroke-dasharray: 100 0;
     opacity: 0.7;
   }
 }
