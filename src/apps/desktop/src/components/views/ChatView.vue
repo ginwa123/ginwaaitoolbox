@@ -32,7 +32,7 @@ import {
   type ScrollReason,
 } from '@/helpers'
 import FileInput from '../file/FileInput.vue'
-import { useSseBus } from '../../helpers/sseBus'
+import { installSseBus, useSseBus } from '../../helpers/sseBus'
 import { readGitStatusCache } from '../../helpers/gitStatusCache'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {
@@ -781,6 +781,7 @@ function onPeekOpenFull(sessionId: string) {
 // multiple ChatViews share one EventSource.
 const isStreaming = ref(false)
 const streamingContent = ref('')
+let streamContentVersion = 0
 
 // Queue state
 const queuedMessages = ref<api.QueuedMessage[]>([])
@@ -2000,6 +2001,31 @@ const toChatMessages = (
     reasoning_content: msg.reasoning_content || undefined,
   }))
 
+const mergeMessagesById = (current: Message[], incoming: Message[]): Message[] => {
+  const byId = new Map(current.map((message) => [message.id, message]))
+  for (const message of incoming) byId.set(message.id, message)
+  return [...byId.values()]
+}
+
+// SSE is the freshest source for tool rows it has delivered in this view.
+// Retain their ids for the component lifetime so a late REST response
+// cannot roll a completed tool result back to its placeholder.
+let liveMessageSessionId: string | null = null
+const liveMessageIds = new Set<string>()
+
+const rememberLiveMessage = (sid: string, id: string, role: Message['role']): void => {
+  if (liveMessageSessionId !== sid) {
+    liveMessageSessionId = sid
+    liveMessageIds.clear()
+  }
+  if (role === 'tool') liveMessageIds.add(id)
+}
+
+const currentLiveMessages = (): Message[] =>
+  messages.value.filter(
+    (message) => liveMessageIds.has(message.id) || message.id.startsWith('streaming-'),
+  )
+
 /**
  * Fetch ONE older page and measure the round trip.
  *
@@ -2588,9 +2614,13 @@ const loadChatHistory = async () => {
       const storedCursor = await chatEngineDb.getCursor(sid)
       isInitialLoad = true
       try {
-        messages.value = toChatMessages(cached.map((c) => c.raw))
-          .slice()
-          .reverse()
+        const liveMessagesAtPaint = currentLiveMessages()
+        messages.value = mergeMessagesById(
+          toChatMessages(cached.map((c) => c.raw))
+            .slice()
+            .reverse(),
+          liveMessagesAtPaint,
+        )
         messageCursor.value = storedCursor
         hasMoreMessages.value = true
       } finally {
@@ -2600,15 +2630,16 @@ const loadChatHistory = async () => {
       await nextTick()
       scrollToBottom(true, 'cached-mount')
       try {
-        const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE)
+        const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE, liveMessageIds)
         if (delta && sessionId.value === sid) {
           applyDeltaExtra(delta.extra)
           if (delta.items.length > 0) {
-            const seen = new Set(messages.value.map((m) => m.id))
-            const fresh = toChatMessages(delta.items.map((i) => i.raw)).filter(
-              (m) => !seen.has(m.id),
+            const fresh = toChatMessages(delta.items.map((i) => i.raw))
+            const liveMessagesAtMerge = currentLiveMessages()
+            messages.value = mergeMessagesById(
+              mergeMessagesById(messages.value, fresh),
+              liveMessagesAtMerge,
             )
-            messages.value = [...messages.value, ...fresh]
           }
           messageCursor.value = delta.nextCursor
           hasMoreMessages.value = delta.hasMore
@@ -2673,21 +2704,25 @@ const loadChatHistory = async () => {
     // saved position).
     isInitialLoad = true
     try {
-      messages.value = newMessages.slice().reverse()
+      const liveMessagesAtCommit = currentLiveMessages()
+      messages.value = mergeMessagesById(newMessages.slice().reverse(), liveMessagesAtCommit)
       messageCursor.value = data.next_cursor
       hasMoreMessages.value = data.has_more
       // Write-through: persist full server rows so the next mount paints
       // from cache. Best-effort — IDB failure keeps in-memory behavior.
       try {
         const sid = sessionId.value
-        const rows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
+        const allRows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
+        const rows = allRows.filter((row) => !liveMessageIds.has(row.id))
         await chatEngineDb.putLocal(sid, rows)
         // Sync cursor must be the newest row, not the pagination cursor:
         // the backend omits next_cursor when has_more is false (wiping the
         // cursor to null), and on a full page it points at the oldest row
         // (re-fetching the same page next mount). Either way the next mount
         // degrades to a full desc limit=1000 load.
-        await chatEngineDb.setCursor(sid, newestCursor(rows, data.next_cursor ?? null, null))
+        if (rows.length === allRows.length) {
+          await chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null))
+        }
       } catch {
         // Ignore — cache is advisory on write.
       }
@@ -3251,10 +3286,50 @@ let offQueue: (() => void) | null = null
 // chat never shows a stale history. See `helpers/sseTabChannel.ts`.
 let offResync: (() => void) | null = null
 
+const persistSseFullRowLocally = (
+  sid: string,
+  event: api.SseEvent,
+  role: Message['role'],
+  messageId: string,
+  timestamp: Date,
+): void => {
+  try {
+    const evtSec = (event as unknown as { created_at?: number }).created_at
+    const createdAt = Number.isFinite(Number(evtSec))
+      ? Number(evtSec)
+      : Math.floor(timestamp.getTime() / 1000)
+    void chatEngineDb.putLocal(sid, [
+      toChatMessage(sid, {
+        id: messageId,
+        role,
+        content: event.content || '',
+        created_at: createdAt,
+        tool_name: event.tool_name,
+        diffview_before: event.diffview_before,
+        diffview_after: event.diffview_after,
+        image_url: event.image_url,
+        video_url: event.video_url,
+        finish_reason: event.finish_reason,
+        tool_calls_json: event.tool_calls_json,
+        tool_call_id: event.tool_call_id,
+        is_input: event.is_input,
+        is_output: event.is_output,
+        reasoning_content: event.reasoning_content || undefined,
+      }),
+    ])
+  } catch {
+    // Cache writes are advisory; the live message is already updated.
+  }
+}
+
 const connectSse = () => {
   console.log('[connectSse] Connecting SSE via sseBus for session:', sessionId.value)
   const sid = sessionId.value
   if (!sid) return
+  if (liveMessageSessionId !== sid) {
+    liveMessageSessionId = sid
+    liveMessageIds.clear()
+  }
 
   // Defensive: if a previous connectSse didn't clean up (e.g. mid-mount
   // session change), tear down before re-registering. The bus's single
@@ -3264,6 +3339,10 @@ const connectSse = () => {
 
   streamingContent.value = ''
 
+  // App.vue normally installs the bus in its own onMounted, which runs
+  // after a child ChatView mounts. Install lazily here as well so an
+  // early subscription is never silently lost.
+  installSseBus()
   const bus = useSseBus()
   // Subscribe FIRST so we don't miss any bus events that arrive between
   // registration and the next tick. The `event.session_id !== sid` filter
@@ -3327,6 +3406,7 @@ const connectSse = () => {
       // (choices[0].delta.content per provider SSE), so APPEND here —
       // the old `=` replace left only the last fragment visible.
       streamingContent.value += event.content
+      streamContentVersion += 1
       updateStreamingMessage()
       return
     }
@@ -3413,6 +3493,8 @@ const connectSse = () => {
           existingById.video_urls = event.video_url ? event.video_url.split('|') : undefined
           existingById.is_input = event.is_input
           existingById.is_output = event.is_output
+          rememberLiveMessage(sid, event.id, role)
+          persistSseFullRowLocally(sid, event, role, event.id, existingById.timestamp)
           streamingContent.value = ''
           isStreaming.value = false
           scrollLogger.markProgrammatic()
@@ -3480,11 +3562,14 @@ const connectSse = () => {
         return
       }
 
+      const messageId = event.id || `assistant-${Date.now()}`
+      const messageTimestamp = new Date()
+      rememberLiveMessage(sid, messageId, role)
       messages.value.push({
-        id: event.id || `assistant-${Date.now()}`,
+        id: messageId,
         role: role,
         content: event.content || '',
-        timestamp: new Date(),
+        timestamp: messageTimestamp,
         tool_name: event.tool_name,
         diffview_before: event.diffview_before,
         diffview_after: event.diffview_after,
@@ -3512,34 +3597,7 @@ const connectSse = () => {
       })
       // Write-through: persist the SSE `full` row with its full wire shape
       // so cached mounts render it identically. Best-effort.
-      try {
-        const sid2 = sessionId.value
-        const evtSec = (event as unknown as { created_at?: number }).created_at
-        const evtCreatedAt = Number.isFinite(Number(evtSec))
-          ? Number(evtSec)
-          : Math.floor(Date.now() / 1000)
-        void chatEngineDb.putLocal(sid2, [
-          toChatMessage(sid2, {
-            id: event.id || `assistant-${Date.now()}`,
-            role,
-            content: event.content || '',
-            created_at: evtCreatedAt,
-            tool_name: event.tool_name,
-            diffview_before: event.diffview_before,
-            diffview_after: event.diffview_after,
-            image_url: event.image_url,
-            video_url: event.video_url,
-            finish_reason: event.finish_reason,
-            tool_calls_json: event.tool_calls_json,
-            tool_call_id: event.tool_call_id,
-            is_input: event.is_input,
-            is_output: event.is_output,
-            reasoning_content: event.reasoning_content || undefined,
-          }),
-        ])
-      } catch {
-        // Ignore — cache is advisory on write.
-      }
+      persistSseFullRowLocally(sid, event, role, messageId, messageTimestamp)
       // 2026-09-06 virtual-scroller shrink fix: move the streaming
       // group's measured height onto the canonical row's key so the
       // sizer never dips through the 64px estimate for a frame.
@@ -3657,16 +3715,17 @@ const connectSse = () => {
             await loadChatHistory()
             return
           }
-          const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE)
+          const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE, liveMessageIds)
           if (!delta || sessionId.value !== sid) return
           applyDeltaExtra(delta.extra)
           if (delta.items.length > 0) {
-            const seen = new Set(messages.value.map((m) => m.id))
-            const fresh = toChatMessages(delta.items.map((i) => i.raw)).filter(
-              (m) => !seen.has(m.id),
-            )
+            const fresh = toChatMessages(delta.items.map((i) => i.raw))
             if (fresh.length > 0) {
-              messages.value = [...messages.value, ...fresh]
+              const liveMessagesAtMerge = currentLiveMessages()
+              messages.value = mergeMessagesById(
+                mergeMessagesById(messages.value, fresh),
+                liveMessagesAtMerge,
+              )
               if (isAtBottom.value) scrollToBottom(false, 'sse-resync-delta')
             }
           }
@@ -3783,37 +3842,37 @@ onMounted(async () => {
     // so its containerRef is already populated.
     lastObservedScrollHeight = virtualScrollerRef.value?.containerRef?.scrollHeight ?? 0
 
-    await loadChatHistory()
-    // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
-    // BEFORE connectSse(): if a stream is in flight for this session
-    // (user closed/re-selected mid-stream), seed the streaming-*
-    // placeholder with the backend's partial text so subsequent chunk
-    // events APPEND to the recovered content instead of starting from
-    // an empty buffer. Best-effort: a failed snapshot fetch must never
-    // block the chat from loading.
-    try {
-      const snap = await api.getStreamSnapshot(sessionId.value)
-      if (snap.active && snap.content) {
-        streamingContent.value = snap.content
-        updateStreamingMessage()
-      }
-    } catch (err) {
-      console.warn('[ChatView] stream snapshot fetch failed (resume skipped):', err)
-    }
-    // Wrap connectSse + startGitStatusPoll in try/catch so a thrown
-    // error (e.g. useSseBus() throwing if the bus was torn down by
-    // a test's `__resetSseBus()` after the test's assertions ran but
-    // before this async block resumed) doesn't bubble out as an
-    // unhandled rejection. In production the bus is installed by
-    // App.vue's onMounted and only torn down on App unmount, so the
-    // catch is a no-op for real users — but it prevents vitest from
-    // surfacing "caught unhandled error" warnings during teardown of
-    // AppLayout.* tests that mount a child ChatView.
+    // Subscribe before the history request. A tool can finish while the
+    // initial REST load is in flight; waiting until afterward misses that
+    // event permanently because the placeholder's creation-time cursor does
+    // not change when its result is updated in place.
     try {
       connectSse()
       startGitStatusPoll()
     } catch (err) {
       console.warn('[ChatView] SSE init failed (likely torn down by test cleanup):', err)
+    }
+
+    await loadChatHistory()
+    // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
+    // seed the streaming-* placeholder with the backend's partial text so
+    // subsequent chunk events APPEND to the recovered content instead of
+    // starting from an empty buffer. The SSE listener is already active.
+    // Best-effort: a failed snapshot fetch must never block chat loading.
+    const snapshotStartVersion = streamContentVersion
+    try {
+      const snap = await api.getStreamSnapshot(sessionId.value)
+      if (
+        snap.active &&
+        snap.content &&
+        streamContentVersion === snapshotStartVersion &&
+        streamingContent.value.length === 0
+      ) {
+        streamingContent.value = snap.content
+        updateStreamingMessage()
+      }
+    } catch (err) {
+      console.warn('[ChatView] stream snapshot fetch failed (resume skipped):', err)
     }
 
     try {

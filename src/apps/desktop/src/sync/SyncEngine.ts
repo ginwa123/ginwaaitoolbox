@@ -127,7 +127,7 @@ export abstract class BaseSyncEngine<T extends Syncable, C = string> {
     try {
       const cursor = await this.getCursor(ctx)
       delta = await this.fetchDelta(cursor, limit, ctx)
-      const merged = this.merge(cached, delta.items)
+      const merged = this.mergeReplacing(cached, delta.items)
       await this.putLocal(ctx, delta.items)
       if (delta.cursorToSave !== undefined) {
         await this.setCursor(ctx, delta.cursorToSave)
@@ -142,7 +142,7 @@ export abstract class BaseSyncEngine<T extends Syncable, C = string> {
   async putLocal(ctx: C, items: T[]): Promise<void> {
     if (items.length === 0) return
     const key = this.memKey(ctx)
-    const merged = this.merge(this.memGet(key), items)
+    const merged = this.mergeReplacing(this.memGet(key), items)
     this.memItems.set(key, merged)
     const store = this.storeOrNull()
     if (!store) return
@@ -191,10 +191,10 @@ export abstract class BaseSyncEngine<T extends Syncable, C = string> {
     return item.sortKey
   }
 
-  /** Newest-first merge with id dedupe; order via compareFn. */
-  protected merge(cached: T[], incoming: T[]): T[] {
-    const seen = new Set(cached.map((m) => m.id))
-    const fresh = incoming.filter((m) => !seen.has(m.id))
-    return [...cached, ...fresh].sort(this.compareFn.bind(this))
+  /** Write-through merge: a same-id incoming row replaces the cached value. */
+  private mergeReplacing(cached: T[], incoming: T[]): T[] {
+    const byId = new Map(cached.map((item) => [item.id, item]))
+    for (const item of incoming) byId.set(item.id, item)
+    return [...byId.values()].sort(this.compareFn.bind(this))
   }
 }
