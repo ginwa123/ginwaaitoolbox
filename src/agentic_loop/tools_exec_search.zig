@@ -131,6 +131,59 @@ test "search JSON parser treats a zero-valued unused head/tail as omitted" {
     try std.testing.expect(parsed.value.tail == null);
 }
 
+test "search exact model JSON with head set and tail=0 returns real matches" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "open-chat.txt",
+        .data = "Open chat in new tab\nOpen chat in new tab again\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+
+    // This is the normalized model-call shape seen in the UI: the selected
+    // filter is head, while the unused optional tail is emitted as 0.
+    const args_json = try std.json.Stringify.valueAlloc(allocator, .{
+        .pattern = "Open chat in new tab",
+        .path = ".",
+        .max_results = 100,
+        .head = 100,
+        .tail = 0,
+        .max_output = 20_000,
+        .group_by_file = true,
+        .respect_ignore_files = true,
+        .word_boundary = false,
+        .literal = true,
+        .only_matching = false,
+        .snippet_max_chars = 300,
+        .hidden = false,
+        .glob = "*.txt",
+        .timeout_ms = 30_000,
+    }, .{});
+    defer allocator.free(args_json);
+
+    var parsed = try parseSearchInput(allocator, args_json);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 100), parsed.value.head.?);
+    try std.testing.expect(parsed.value.tail == null);
+
+    var result = search_tool_mod.executeSearch(allocator, io, tmpdir_path, parsed.value) catch |err| switch (err) {
+        error.RgNotFound => return,
+        else => return err,
+    };
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.matches.items[0].line_number);
+    try std.testing.expectEqual(@as(usize, 2), result.matches.items[1].line_number);
+    try std.testing.expect(std.mem.indexOf(u8, result.matches.items[0].snippet, "Open chat in new tab") != null);
+}
+
 test "search JSON parser lets head with tail=0 reach execution as head-only" {
     var parsed = try parseSearchInput(std.testing.allocator,
         \\{"pattern":"needle","path":".","head":100,"tail":0,"timeout_ms":0}
