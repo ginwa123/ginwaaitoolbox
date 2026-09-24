@@ -25,29 +25,27 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { createApp, type App as VueApp, nextTick, ref } from 'vue'
+import { createApp, type App as VueApp, nextTick, ref, type Ref } from 'vue'
 import { mount } from '@vue/test-utils'
 
 import ChatsList from '../components/views/ChatsList.vue'
 import type { Chat } from '../api'
 import { makeLocalStorageStub } from './helpers'
-import {
-  installSseBus,
-  __resetSseBus,
-  __setSseBusGlobalClient,
-} from '../helpers/sseBus'
+import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient } from '../helpers/sseClient'
 
-const { useRouteMock, getChatsMock, markSessionTouchedMock, routerReplaceMock } = vi.hoisted(() => ({
-  useRouteMock: vi.fn(() => ({
-    query: {} as Record<string, string>,
-    path: '/app',
-    fullPath: '/app',
-  })),
-  getChatsMock: vi.fn(),
-  markSessionTouchedMock: vi.fn(),
-  routerReplaceMock: vi.fn(),
-}))
+const { useRouteMock, getChatsMock, markSessionTouchedMock, routerReplaceMock } = vi.hoisted(
+  () => ({
+    useRouteMock: vi.fn(() => ({
+      query: {} as Record<string, string>,
+      path: '/app',
+      fullPath: '/app',
+    })),
+    getChatsMock: vi.fn(),
+    markSessionTouchedMock: vi.fn(),
+    routerReplaceMock: vi.fn(),
+  }),
+)
 
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<typeof import('vue-router')>('vue-router')
@@ -143,13 +141,17 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
     app.unmount()
   })
 
-  function mountChatsList() {
+  function mountChatsListWithProcessing(processingState: Ref<Record<string, boolean>>) {
     return mount(ChatsList, {
       global: {
         mocks: { $router: { replace: vi.fn() } },
-        provide: { processingState: ref<Record<string, boolean>>({}) },
+        provide: { processingState },
       },
     })
+  }
+
+  function mountChatsList() {
+    return mountChatsListWithProcessing(ref<Record<string, boolean>>({}))
   }
 
   it('renders the populated last_human_touched_at value (case 1)', async () => {
@@ -203,9 +205,7 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
     const pill = wrapper.find('[data-testid="chat-time-pill"]')
     expect(pill.exists()).toBe(true)
     expect(pill.text()).toBe('2h')
-    expect(pill.attributes('title')).toBe(
-      'Last activity (never touched by you yet)',
-    )
+    expect(pill.attributes('title')).toBe('Last activity (never touched by you yet)')
     expect(wrapper.find('[data-testid="chat-stale-dot"]').exists()).toBe(false)
   })
 
@@ -236,9 +236,7 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
     const dot = wrapper.find('[data-testid="chat-stale-dot"]')
     expect(dot.exists()).toBe(true)
     expect(dot.classes()).toContain('bg-amber-400')
-    expect(dot.attributes('title')).toBe(
-      'AI is still working — your last touch was earlier',
-    )
+    expect(dot.attributes('title')).toBe('AI is still working — your last touch was earlier')
   })
 
   it('hides the stale dot when human and AI touched at the same moment (case 4)', async () => {
@@ -382,5 +380,38 @@ describe('ChatsList - Migration 082 time pill + stale-dot display', () => {
     expect(pill.exists()).toBe(true)
     expect(pill.text()).toBe('now')
     expect(wrapper.find('[data-testid="chat-stale-dot"]').exists()).toBe(false)
+  })
+
+  it('hides the time pill while the session is processing, then restores it when idle', async () => {
+    const ONE_HOUR_AGO = dateToSqliteUtc(60 * 60 * 1000)
+    getChatsMock.mockResolvedValueOnce({
+      sessions: [
+        makeSession({
+          session_id: 'sess_processing',
+          session_name: 'Processing chat',
+          last_human_touched_at: ONE_HOUR_AGO,
+          updated_at: ONE_HOUR_AGO,
+        }),
+      ],
+      has_more: false,
+      next_cursor: null,
+      total: 1,
+    })
+    const processingState = ref<Record<string, boolean>>({})
+    const wrapper = mountChatsListWithProcessing(processingState)
+    await flushLoadChats()
+
+    expect(wrapper.find('[data-testid="chat-time-pill"]').text()).toBe('1h')
+    expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(false)
+
+    processingState.value = { sess_processing: true }
+    await nextTick()
+    expect(wrapper.find('[data-testid="chat-time-pill"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(true)
+
+    processingState.value = {}
+    await nextTick()
+    expect(wrapper.find('[data-testid="chat-time-pill"]').text()).toBe('1h')
+    expect(wrapper.find('[data-testid="session-slider"]').exists()).toBe(false)
   })
 })
