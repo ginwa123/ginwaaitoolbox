@@ -20,7 +20,7 @@ server.
 Use the checked-in Gradle wrapper from this directory:
 
 ```bash
-cd android_mobile
+cd src/apps/android_mobile
 ./gradlew test
 ./gradlew assembleDebug
 ```
@@ -31,8 +31,9 @@ An emulator or device is required for instrumentation tests:
 ./gradlew connectedDebugAndroidTest
 ```
 
-Android Studio can open `android_mobile` as a standalone project. Install an
-Android SDK containing platform 35 and build tools when using a fresh machine.
+Android Studio can open `src/apps/android_mobile` as a standalone project.
+Install an Android SDK containing platform 35 and build tools when using a fresh
+machine.
 
 ## Current behavior
 
