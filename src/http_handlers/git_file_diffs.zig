@@ -136,6 +136,11 @@ fn buildNewFileDiff(allocator: std.mem.Allocator, file_path: []const u8, content
 fn syntheticFallback(allocator: std.mem.Allocator, io: std.Io, repo_path: []const u8, file: []const u8) ![]const u8 {
     const full = try std.fs.path.join(allocator, &.{ repo_path, file });
     defer allocator.free(full);
+    // `openFileAbsolute` ASSERTS the path is absolute and ABORTS the whole
+    // process (Debug/ReleaseSafe) instead of returning an error, so never hand it
+    // a relative path — `repo_path` is validated at the handler boundary, this
+    // keeps the helper safe for any future caller.
+    if (!std.fs.path.isAbsolute(full)) return try allocator.dupe(u8, "");
     const f = std.Io.Dir.openFileAbsolute(io, full, .{}) catch return try allocator.dupe(u8, "");
     defer f.close(io);
     var read_buf: [8192]u8 = undefined;
@@ -160,6 +165,14 @@ pub fn gitFileDiffsHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     };
     if (parsed.path.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Missing path") });
+    }
+    // `parsed.path` is the repo root used as the BASE of every
+    // `std.fs.path.join` below, and the joined values reach
+    // `std.Io.Dir.openFileAbsolute` in `syntheticFallback`. That API asserts
+    // `path.isAbsolute(...)`, and a failed assertion ABORTS the whole process
+    // (Debug/ReleaseSafe) instead of returning an error — reject it here.
+    if (!std.fs.path.isAbsolute(parsed.path)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
     }
     if (parsed.files.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "No files") });

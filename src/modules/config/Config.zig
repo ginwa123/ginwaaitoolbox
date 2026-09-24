@@ -468,6 +468,16 @@ pub const LlmConfig = struct {
             try getDefaultConfigPath(allocator, environment);
         defer allocator.free(config_path);
 
+        // `config_path` is either the validated default path (see
+        // `getDefaultConfigDir`) or an explicit `--config <path>` argument.
+        // `openFileAbsolute` below ASSERTS the path is absolute and ABORTS the
+        // whole process (Debug/ReleaseSafe) instead of returning an error, so
+        // reject a relative explicit path here.
+        if (!std.fs.path.isAbsolute(config_path)) {
+            std.log.warn("Config path is not an absolute path: {s}", .{config_path});
+            return error.ConfigFileNotFound;
+        }
+
         const file = Io.Dir.openFileAbsolute(io, config_path, .{}) catch |err| switch (err) {
             error.FileNotFound => blk: {
                 // First-run auto-init: only for the default path. An explicit
@@ -2438,6 +2448,15 @@ pub const LlmConfig = struct {
 
         // Write the default config. .truncate = true means any stale
         // file at `path` is replaced atomically by the kernel.
+        //
+        // `createFileAbsolute` ASSERTS the path is absolute and ABORTS the whole
+        // process (Debug/ReleaseSafe) instead of returning an error, so never hand
+        // it a relative path (a caller-supplied one, or a $HOME/$XDG_CONFIG_HOME
+        // base that failed validation).
+        if (!std.fs.path.isAbsolute(path)) {
+            std.log.warn("Refusing to write the default config to a relative path: {s}", .{path});
+            return error.ConfigFileReadError;
+        }
         const file = Io.Dir.createFileAbsolute(io, path, .{ .truncate = true }) catch |err| {
             std.log.warn("Failed to create config file {s}: {s}", .{ path, @errorName(err) });
             return error.ConfigFileReadError;
@@ -2505,6 +2524,10 @@ pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.proce
                 std.log.warn("APPDATA environment variable not set", .{});
                 return error.ConfigDirNotFound;
             };
+            if (!std.fs.path.isAbsolute(appdata)) {
+                std.log.warn("APPDATA is not an absolute path: {s}", .{appdata});
+                return error.ConfigDirNotFound;
+            }
             return std.fs.path.join(allocator, &[_][]const u8{ appdata, app_name });
         },
         .macos => {
@@ -2512,18 +2535,30 @@ pub fn getDefaultConfigDir(allocator: std.mem.Allocator, environment: *std.proce
                 std.log.warn("HOME environment variable not set", .{});
                 return error.HomeNotFound;
             };
+            if (!std.fs.path.isAbsolute(home)) {
+                std.log.warn("HOME is not an absolute path: {s}", .{home});
+                return error.HomeNotFound;
+            }
             return std.fs.path.join(allocator, &[_][]const u8{
                 home, "Library", "Application Support", app_name,
             });
         },
         else => {
             if (environment.get("XDG_CONFIG_HOME")) |xdg_config| {
+                if (!std.fs.path.isAbsolute(xdg_config)) {
+                    std.log.warn("XDG_CONFIG_HOME is not an absolute path: {s}", .{xdg_config});
+                    return error.ConfigDirNotFound;
+                }
                 return std.fs.path.join(allocator, &[_][]const u8{ xdg_config, app_name });
             }
             const home = environment.get("HOME") orelse {
                 std.log.warn("HOME environment variable not set", .{});
                 return error.MissingRequiredField;
             };
+            if (!std.fs.path.isAbsolute(home)) {
+                std.log.warn("HOME is not an absolute path: {s}", .{home});
+                return error.MissingRequiredField;
+            }
             return std.fs.path.join(allocator, &[_][]const u8{ home, ".config", app_name });
         },
     }

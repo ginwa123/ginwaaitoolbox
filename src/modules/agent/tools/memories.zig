@@ -491,6 +491,12 @@ pub fn writeMemoryFile(
     const full_path = joinPath(allocator, dir_path, name) catch return false;
     defer allocator.free(full_path);
 
+    // `renameAbsolute` below asserts BOTH paths are absolute and ABORTS the
+    // whole process (Debug/ReleaseSafe) when they are not. The global memories
+    // root is `$XDG_CONFIG_HOME`/`$HOME`-derived and is not validated as
+    // absolute, so check the joined path here instead of risking the worker.
+    if (!std.fs.path.isAbsolute(full_path)) return false;
+
     // Atomic-ish: write to a temp file then rename. The temp path is
     // `<dir>/<name>.md.tmp` — an extra `.tmp` suffix on the final
     // filename. We can't use `path.join(full_path, ".tmp")` because
@@ -686,6 +692,13 @@ pub fn writeLocalMemoryFile(
     if (!isValidMemoryName(name)) return false;
     const full_path = joinPath(allocator, dir_path, name) catch return false;
     defer allocator.free(full_path);
+
+    // `renameAbsolute` below asserts BOTH paths are absolute and ABORTS the
+    // whole process (Debug/ReleaseSafe) when they are not. `dir_path` is a
+    // request-supplied `cwd` (local_memories_create/update) with no
+    // absolute-path validation, so check the joined path here instead of
+    // letting a bad `cwd` kill the worker mid-write.
+    if (!std.fs.path.isAbsolute(full_path)) return false;
 
     // Ensure the local memories directory exists. createDirPath is a
     // no-op if the dir already exists, so it is safe on every call.
@@ -1321,6 +1334,18 @@ test "writeLocalMemoryFile creates the parent dir if missing" {
     try std.testing.expect(read_back != null);
     defer if (read_back) |r| alloc.free(r);
     try std.testing.expectEqualStrings("# Hello\n", read_back.?);
+}
+
+test "writeLocalMemoryFile refuses a relative dir_path instead of aborting" {
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+
+    // `dir_path` is a request-supplied `cwd` (local_memories_create/update) that
+    // nothing validates as absolute. The write ends in
+    // `std.Io.Dir.renameAbsolute`, whose `assert(path.isAbsolute(...))` ABORTS the
+    // whole process (Debug/ReleaseSafe) instead of returning an error, so the
+    // helper must refuse the write instead.
+    try std.testing.expect(!memories.writeLocalMemoryFile(alloc, io, "relative/dir", "m.md", "# Hi\n"));
 }
 
 test "writeLocalMemoryFile overwrites existing file" {

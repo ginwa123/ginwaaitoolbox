@@ -1197,12 +1197,19 @@ test "parseConfigInput: notify_on_complete + notify_on_error in same body parse 
 
 const PUT_HANDLER_PATH = "src/http_handlers/nalar_config_put.zig";
 
+/// Cap for the static-contract source reads below. These helpers slurp a whole
+/// source file just to grep it, so the cap must exceed the largest file they
+/// read: `Config.zig` alone is already >128 KiB, and the previous 128 KiB cap
+/// made 67 contract tests fail with `error.StreamTooLong` the moment a comment
+/// was added there. 1 MiB matches the other source-grep helpers in this repo.
+const MAX_SOURCE_READ_BYTES = 1024 * 1024;
+
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const file = try std.Io.Dir.cwd().openFile(std.testing.io, path, .{});
     defer file.close(std.testing.io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(std.testing.io, &buf);
-    return reader.interface.allocRemaining(allocator, .limited(128 * 1024));
+    return reader.interface.allocRemaining(allocator, .limited(MAX_SOURCE_READ_BYTES));
 }
 
 test "PUT handler ConfigJson write struct has NO top-level LLM default fields" {
@@ -1612,7 +1619,7 @@ fn readSource_merged(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     defer file.close(std.testing.io);
     var buf: [4096]u8 = undefined;
     var reader = file.reader(std.testing.io, &buf);
-    return reader.interface.allocRemaining(allocator, .limited(128 * 1024));
+    return reader.interface.allocRemaining(allocator, .limited(MAX_SOURCE_READ_BYTES));
 }
 
 test "PUT handler writes max_capacity_tokens to per-profile JSON" {

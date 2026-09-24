@@ -691,6 +691,11 @@ pub fn computeChunkHashes(chunks: []const ChunkInfo) []ChunkHash {
 // ============================================================================
 
 pub fn getIndexDir(root_cwd: []const u8) ![]const u8 {
+    // Everything built from this path is handed to `createFileAbsolute` /
+    // `openFileAbsolute`, which ASSERT the path is absolute and ABORT the whole
+    // process (Debug/ReleaseSafe) instead of returning an error. `path.join`
+    // cannot make a relative `root_cwd` absolute, so reject it here.
+    if (!std.fs.path.isAbsolute(root_cwd)) return error.IndexRootNotAbsolute;
     return try std.fs.path.join(std.heap.page_allocator, &.{ root_cwd, ".nalar", "semantic_index" });
 }
 

@@ -62,18 +62,23 @@ fn resolveWorkspaceItemId(
 
 /// Read a single file's full contents. Caller owns the returned slice.
 /// Returns `null` (logged + skipped by caller) on failure.
+///
+/// `file_path` comes from the `agent_routine_knowledges.file_path` DB column.
+/// An empty or RELATIVE value is reachable (the create/update handlers accept
+/// `file_path = ""` and only validate non-empty values, and legacy rows may
+/// predate that validation), so the contract is enforced HERE:
+/// `std.Io.Dir.openFileAbsolute` asserts `path.isAbsolute(...)`, and a failed
+/// assertion ABORTS the whole process (Debug/ReleaseSafe) instead of returning
+/// an error — one bad knowledge row would kill the worker on every turn.
 fn readFileContents(
     io: std.Io,
     allocator: std.mem.Allocator,
     file_path: []const u8,
 ) !?[]u8 {
-    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{
-        .mode = .read_only,
-    }) catch |err| {
-        std.log.warn("makeAgentRoutineKnowledge: failed to open {s}: {}", .{ file_path, err });
+    if (file_path.len == 0 or !std.fs.path.isAbsolute(file_path)) {
+        std.log.warn("makeAgentRoutineKnowledge: skipping knowledge entry with a non-absolute file_path: {s}", .{file_path});
         return null;
-    };
-    defer std.Io.File.close(file, io);
+    }
 
     const contents = std.Io.Dir.cwd().readFileAlloc(
         io,

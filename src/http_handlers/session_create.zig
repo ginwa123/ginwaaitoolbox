@@ -30,6 +30,13 @@ fn createSandbox(allocator: std.mem.Allocator, io: std.Io, environment: ?*const 
     });
     errdefer allocator.free(sandbox_path);
 
+    // `createDirAbsolute` below ASSERTS the path is absolute and ABORTS the whole
+    // process (Debug/ReleaseSafe) instead of returning an error. `data_apps_dir`
+    // is `$HOME`-derived (helpers.dir.getDataAppsDir) and is only checked for
+    // emptiness — a relative HOME would otherwise make every session create kill
+    // the server. Fail the sandbox and let the caller use the TMPDIR fallback.
+    if (!std.fs.path.isAbsolute(sandbox_path)) return error.SandboxPathNotAbsolute;
+
     // Create the sandbox directory (ignore if already exists)
     std.Io.Dir.createDirAbsolute(io, sandbox_path, .default_dir) catch |err| {
         if (err != error.PathAlreadyExists) {
@@ -199,7 +206,18 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
         // param. The frontend's resolution chain already covers
         // per-task cwd → kanban path → '' — so an explicit value
         // here means "the frontend already chose").
-        effective_cwd = try alloc.dupe(u8, cwd_session);
+        effective_cwd = if (std.fs.path.isAbsolute(cwd_session))
+            try alloc.dupe(u8, cwd_session)
+        else blk: {
+            // Nothing validated this field before, and a RELATIVE cwd_session
+            // propagates into `copy_cwd` → every tool's `ctx.cwd` → the
+            // `*Absolute` fs calls, which ASSERT absoluteness and ABORT the whole
+            // process (Debug/ReleaseSafe). Resolve it against the process cwd
+            // (`getcwd` is always absolute) so the session invariant holds.
+            var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const proc_cwd = helpers.getcwd(&cwd_buf) orelse "/";
+            break :blk try std.fs.path.join(alloc, &.{ proc_cwd, cwd_session });
+        };
     } else {
         // Server-side fallback (defense-in-depth). If the frontend
         // sent cwd_session = '' but session_id matches an
@@ -225,7 +243,9 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
                 break :blk createSandbox(alloc, io, environment, session_id) catch
                     sandboxTempFallback(environment);
             };
-            if (effective_cwd.len == 0) {
+            // The DB fallback (`workspace_item_tasks.cwd` / `workspace_items.path`)
+            // is length-checked only, so a relative row must not become ctx.cwd.
+            if (effective_cwd.len == 0 or !std.fs.path.isAbsolute(effective_cwd)) {
                 effective_cwd = createSandbox(alloc, io, environment, session_id) catch
                     sandboxTempFallback(environment);
             }
@@ -233,6 +253,20 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
             effective_cwd = createSandbox(alloc, io, environment, session_id) catch
                 sandboxTempFallback(environment);
         }
+    }
+
+    // Final invariant: `effective_cwd` is copied into `copy_cwd` and then into
+    // every agent tool's `ctx.cwd`, which feeds the `*Absolute` fs calls that
+    // ASSERT absoluteness and ABORT the whole process (Debug/ReleaseSafe) when it
+    // is missing. Guarantee it here even if a fallback (relative TMPDIR, unset
+    // HOME, relative DB row) produced something relative or empty.
+    if (effective_cwd.len == 0 or !std.fs.path.isAbsolute(effective_cwd)) {
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const proc_cwd = helpers.getcwd(&cwd_buf) orelse "/";
+        effective_cwd = if (effective_cwd.len == 0)
+            try alloc.dupe(u8, proc_cwd)
+        else
+            try std.fs.path.join(alloc, &.{ proc_cwd, effective_cwd });
     }
 
     var image_urls: []const u8 = "";

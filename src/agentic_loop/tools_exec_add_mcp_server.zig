@@ -243,6 +243,14 @@ fn persistAndReloadStatus(ctx: ToolExecContext) ![]u8 {
     };
     defer ctx.allocator.free(config_path);
 
+    // `getDefaultConfigDir` validates its environment bases, but the calls below
+    // are the ones that ASSERT: `openFileAbsolute` / `createFileAbsolute` abort
+    // the whole process (Debug/ReleaseSafe) for a relative path. Fail the tool
+    // cleanly instead of taking the worker down.
+    if (!std.fs.path.isAbsolute(config_path)) {
+        return failStatus(ctx.allocator, "config_path", "not an absolute path");
+    }
+
     // Ensure config dir exists.
     std.Io.Dir.cwd().createDirPath(ctx.io, config_dir) catch |err| {
         return failStatus(ctx.allocator, "createDirPath", @errorName(err));

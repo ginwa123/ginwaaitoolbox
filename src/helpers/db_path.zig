@@ -37,6 +37,15 @@ pub fn getDbPath(allocator: std.mem.Allocator, io: std.Io, environment: *std.pro
         return error.FailedToGetHome;
     };
 
+    // `home` is fed to `openDirAbsolute` below, which ASSERTS the path is
+    // absolute and ABORTS the whole process (Debug/ReleaseSafe) instead of
+    // returning an error — a relative HOME/USERPROFILE would make nalar
+    // un-startable with no actionable message.
+    if (!std.fs.path.isAbsolute(home)) {
+        std.log.err("HOME/USERPROFILE is not an absolute path: {s}", .{home});
+        return error.FailedToGetHome;
+    }
+
     const config_dir = try std.fs.path.join(allocator, &[_][]const u8{
         home,
         ".config",

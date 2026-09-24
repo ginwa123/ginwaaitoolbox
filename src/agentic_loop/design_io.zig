@@ -457,6 +457,14 @@ pub fn deleteDirectoryRecursively(
     io: std.Io,
     path: []const u8,
 ) !void {
+    // `path` is the recursive-delete root. The caller feeds it
+    // `<workspace_items.path>/.nalar/design`, and `workspace_items.path` has no
+    // absolute-path validation on write — while `openDirAbsolute` below asserts
+    // `path.isAbsolute(...)`, which ABORTS the whole process (Debug/ReleaseSafe)
+    // instead of returning an error. Refuse a non-absolute root so a malformed
+    // workspace row can never take the worker down.
+    if (path.len == 0 or !std.fs.path.isAbsolute(path)) return error.RmdirFailed;
+
     // 1. Open the directory for iteration.
     var dir = std.Io.Dir.openDirAbsolute(io, path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return, // missing → no-op
@@ -612,6 +620,17 @@ test "atomicWriteFile overwrites an existing file" {
 }
 
 // ─── deleteFileIfExists ──────────────────────────────────────────────────
+
+test "deleteDirectoryRecursively refuses a relative path instead of aborting" {
+    // The first thing the helper does is `openDirAbsolute`, which asserts
+    // `path.isAbsolute(...)`; in Debug/ReleaseSafe that assertion ABORTS the whole
+    // process instead of returning an error. The production caller feeds it
+    // `<workspace_items.path>/.nalar/design`, and `workspace_items.path` has no
+    // absolute-path validation on write — so a malformed row must not be able to
+    // kill the worker.
+    const result = deleteDirectoryRecursively(testing.allocator, testing.io, "relative/design");
+    try testing.expectError(error.RmdirFailed, result);
+}
 
 test "deleteFileIfExists succeeds when the file is missing" {
     var tmp = testing.tmpDir(.{});

@@ -398,10 +398,21 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (ctxParent.static_dir_path) |dir| {
+        // Make the value absolute BEFORE the absolute-only open below:
+        // `openDirAbsolute` asserts `path.isAbsolute(...)`, and a failed
+        // assertion ABORTS the process instead of returning an error. A relative
+        // `--static-dir` (or a relative XDG_DATA_HOME/HOME-derived value that
+        // the desktop launcher passes through) must not be able to do that.
+        const abs_static_dir = if (std.fs.path.isAbsolute(dir))
+            try allocator.dupe(u8, dir)
+        else
+            try std.Io.Dir.cwd().realPathFileAlloc(io, dir, allocator);
+        defer allocator.free(abs_static_dir);
+
         // Open + canonicalize the dir. openDirAbsolute surfaces "not a
         // directory" / "not found" as concrete errors which we forward to
         // the user via std.log + main's error return.
-        const root_dir = std.Io.Dir.openDirAbsolute(io, dir, .{}) catch |err| {
+        const root_dir = std.Io.Dir.openDirAbsolute(io, abs_static_dir, .{}) catch |err| {
             std.log.err("--static-dir '{s}' cannot be opened: {s}", .{ dir, @errorName(err) });
             return err;
         };
