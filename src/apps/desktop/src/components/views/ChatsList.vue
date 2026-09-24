@@ -958,7 +958,11 @@ defineExpose({
                  (never touched by you yet)" so the source of the
                  timestamp is discoverable without a comment.
                  Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md (Task 8) -->
-            <span class="text-xs opacity-60 shrink-0 ml-2 flex items-center gap-1">
+            <!-- Keep the spinner as the only right-side activity marker while processing. -->
+            <span
+              v-if="!processingState[item.id]"
+              class="text-xs opacity-60 shrink-0 ml-2 flex items-center gap-1"
+            >
               <span
                 v-if="isStale(item.last_human_touched_at, item.updated_at)"
                 class="w-1 h-1 rounded-full bg-amber-400"
