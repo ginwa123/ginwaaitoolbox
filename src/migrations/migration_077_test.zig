@@ -90,6 +90,9 @@ test "Migration077 creates users table with all 9 columns" {
     defer ctx.db.deinit();
 
     // Expected columns: (name, type, default value or "" for none).
+    // Migration 092 appends `config_json` (nullable TEXT, per-user LLM
+    // config for `--auth` mode) — the full migration chain runs in
+    // setupDb, so it is present here.
     const expected = [_]struct { name: []const u8, type: []const u8, default: []const u8 }{
         .{ .name = "id", .type = "TEXT", .default = "" },
         .{ .name = "email", .type = "TEXT", .default = "" },
@@ -100,6 +103,7 @@ test "Migration077 creates users table with all 9 columns" {
         .{ .name = "created_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
         .{ .name = "updated_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
         .{ .name = "last_login_at", .type = "DATETIME", .default = "" },
+        .{ .name = "config_json", .type = "TEXT", .default = "" },
     };
 
     var q = try ctx.db.query(alloc,

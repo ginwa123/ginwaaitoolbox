@@ -273,6 +273,9 @@ pub fn main(init: std.process.Init) !void {
     // clobbered by the whole-struct initialisation (the field defaults to null).
     if (static_dir_opt) |dir_arg| ctxParent.static_dir_path = dir_arg;
     ctxParent.auth_enabled = auth_enabled;
+    if (auth_enabled) {
+        std.log.info("--auth on: per-user LLM config comes from users.config_json; config.json is ignored.", .{});
+    }
 
     _ = try nalarcore.setSingleton(ctxParent);
 

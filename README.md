@@ -203,6 +203,9 @@ On first run an empty config is auto-created — the server still starts
   rejected on save with an error body so you can correct it).
 - Fields per profile: `base_url` / `model` / `api_key`, plus `url_style`,
   `notify_on_complete`, `sub_agents`, `retry_delay_ms`, `web_launch_enabled`.
+- With `--auth`: `config.json` is ignored — each user's config lives in
+  the `users.config_json` DB column (per-user, managed via the same
+  Settings UI / API).
 
 ### 4. CLI + tests
 
