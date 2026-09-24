@@ -347,6 +347,31 @@ describe('Search.vue — truncation summary from returned/total/truncated', () =
     expect(badge.text()).toContain('2 of 40 matches (truncated)')
   })
 
+  it('shows the max_output truncation note even when no complete row fits', () => {
+    const wrapper = makeWrapper({
+      content: {
+        pattern: 'foo',
+        path: '/tmp/repo',
+        returned: 0,
+        total: 1,
+        truncated: true,
+        output_truncated: true,
+        output_bytes: 50000,
+        truncated_hint:
+          'Search output exceeded the requested max_output (observed 50000 bytes); only complete records in the retained prefix are shown. Results were truncated.',
+        grouped: true,
+        files: [],
+        warning: null,
+      },
+    })
+
+    const note = wrapper.find('[data-testid="search-truncation-hint"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('max_output')
+    expect(note.text()).toContain('truncated')
+    expect(wrapper.find('[data-testid="search-expandable"]').exists()).toBe(true)
+  })
+
   it('keeps the plain wording when truncated=false', () => {
     const wrapper = makeWrapper({
       content: payloadWithSummary(

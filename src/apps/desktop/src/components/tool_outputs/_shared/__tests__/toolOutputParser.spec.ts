@@ -332,10 +332,24 @@ describe('parseSearch', () => {
     expect(r.fileResults).toEqual([])
   })
   it('reads the truncation summary fields', () => {
-    const r = parseSearch({ returned: 2, total: 40, truncated: true, files: [] })
+    const r = parseSearch({
+      returned: 2,
+      total: 40,
+      truncated: true,
+      output_truncated: true,
+      truncated_hint: 'max_output truncated the raw output',
+      files: [],
+    })
     expect(r.returned).toBe(2)
     expect(r.total).toBe(40)
     expect(r.truncated).toBe(true)
+    expect(r.outputTruncated).toBe(true)
+    expect(r.truncatedHint).toContain('max_output')
+  })
+  it('keeps outputTruncated false for legacy search payloads', () => {
+    const r = parseSearch({ returned: 1, total: 1, truncated: false, files: [] })
+    expect(r.outputTruncated).toBe(false)
+    expect(r.truncatedHint).toBeNull()
   })
 })
 

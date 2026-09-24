@@ -61,14 +61,18 @@ const totalFileCount = computed(() => fileResults.value.length)
 // Status for styling
 const hasWarning = computed(() => !!warningMessage.value)
 const hasError = computed(() => !!errorMessage.value)
+const truncationHint = computed(() => parsed.value.truncatedHint)
+const hasTruncation = computed(
+  () => parsed.value.truncated || parsed.value.outputTruncated || !!truncationHint.value,
+)
 
 /**
  * Collection summary (`returned`/`total`/`truncated`). Null when the payload
  * carries no counts, and the header keeps its plain wording.
  *
- * `truncated` is the operator-visible half of the backend's silent-
- * truncation fix: a capped search (max_results/head/tail) renders
- * "N of M matches (truncated)" instead of looking exhaustive.
+ * `truncated` is the operator-visible half of the backend's truncation
+ * contract: a capped search (max_output/max_results/head/tail) renders a
+ * bounded summary instead of looking exhaustive.
  */
 interface SearchSummary {
   returned: number
@@ -92,7 +96,13 @@ const hasArgs = computed(() => {
 // Expandable unless pure-running-empty (in-flight, no display info yet).
 const isExpandable = computed(() => {
   if (isRunning.value) return false
-  return hasWarning.value || hasError.value || fileResults.value.length > 0 || hasArgs.value
+  return (
+    hasWarning.value ||
+    hasError.value ||
+    hasTruncation.value ||
+    fileResults.value.length > 0 ||
+    hasArgs.value
+  )
 })
 
 // Toggle expansion
@@ -129,7 +139,7 @@ const tokensForSnippet = (snippet: string, filePath: string): Token[] => {
   <div
     class="chat-tool-card font-mono text-xs"
     :class="{
-      'border-orange-500/50 opacity-85': hasWarning,
+      'border-orange-500/50 opacity-85': hasWarning || hasTruncation,
       'border-red-500/50 opacity-85': hasError,
     }"
   >
@@ -175,6 +185,15 @@ const tokensForSnippet = (snippet: string, filePath: string): Token[] => {
         </span>
       </template>
 
+      <span
+        v-if="truncationHint"
+        data-testid="search-truncation-hint"
+        class="w-full text-orange-500 text-[0.65rem]"
+        :title="truncationHint"
+      >
+        {{ truncationHint }}
+      </span>
+
       <!-- Warning or error message -->
       <template v-else-if="hasWarning">
         <span class="ml-auto text-orange-500 text-[0.7rem]">{{ warningMessage }}</span>
@@ -184,7 +203,11 @@ const tokensForSnippet = (snippet: string, filePath: string): Token[] => {
       </template>
 
       <!-- Toggle indicator -->
-      <span v-if="isExpandable" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span
+        v-if="isExpandable"
+        data-testid="search-expandable"
+        class="w-4 text-center text-[var(--semantic-text-muted)] text-sm"
+      >
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>

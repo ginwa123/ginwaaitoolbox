@@ -44,18 +44,22 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 
     const parsed = parseSearchInput(ctx.allocator, args_to_parse) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)});
+        defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
     defer parsed.deinit();
 
     var search_result = search_tool_mod.executeSearch(ctx.allocator, ctx.io, ctx.cwd, parsed.value) catch |err| {
-        // Map the new domain errors to LLM-friendly messages. Each one
-        // names the fix the LLM can try (different pattern, narrower
-        // path, smaller max_output, etc).
+        // Map domain errors to LLM-friendly messages. A normal stdout
+        // max_output overflow no longer appears here: executeSearch returns
+        // a successful SearchResult with output_truncated metadata instead.
+        var owned_err_msg: ?[]const u8 = null;
+        defer if (owned_err_msg) |msg| ctx.allocator.free(msg);
         const err_msg: []const u8 = blk: {
             switch (err) {
-                error.StreamTooLong => break :blk "Search output exceeded max_output limit. Use a larger max_output value (e.g. 5242880 for 5MB), narrow your search path, or use a more specific pattern.",
+                error.OutputReadFailed => break :blk "could not capture the search output stream — retry; if it persists, narrow the path or use a smaller result window",
+                error.StderrTooLong => break :blk "ripgrep diagnostics exceeded the output limit — narrow the path or use a more specific pattern to reduce diagnostics",
                 error.EmptyPattern => break :blk "search pattern was empty — pass a non-empty pattern (this is a caller bug, not 'no match')",
                 error.PatternContainsNulByte => break :blk "search pattern contained a NUL (0x00) byte — patterns must be valid UTF-8 with no embedded NULs",
                 error.InvalidMaxOutput => break :blk "max_output must be > 0 (use 1048576 for the 1MB default)",
@@ -70,32 +74,20 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
                 error.RgNotFound => break :blk "ripgrep (rg) is not installed or not on PATH — install it first, then retry the search",
                 else => {},
             }
-            // Fall-through for unrecognised errors: build the allocPrint
-            // result and break with that (allocated memory leaks here
-            // because the catch returns; we accept the leak for unknown
-            // errors which are rare).
-            const msg = std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)}) catch "search failed with an unknown error";
+            const msg = std.fmt.allocPrint(ctx.allocator, "search failed: {s}", .{@errorName(err)}) catch {
+                break :blk "search failed with an unknown error";
+            };
+            owned_err_msg = msg;
             break :blk msg;
         };
         const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
     };
+    defer search_result.deinit(ctx.allocator);
 
-    if (search_result.matches.items.len == 0) {
-        // No matches — route through the formatter so the JSON object
-        // carries the pattern/path fields alongside the warning string.
-        // The frontend's parser relies on those fields to render
-        // the actual pattern + path in the toast header (without them,
-        // the operator sees "unknown" / "unknown" everywhere — the
-        // bug this branch previously masked). See
-        // docs/superpowers/plans/2026-08-06-search-better-error.md.
-    }
-
-    // Honor group_by_file flag — was previously dead code (always called
-    // the grouped variant). Use the flat variant when the caller asked
-    // for ungrouped output. Both branches handle the empty-matches case
-    // by emitting the pattern/path fields plus the warning string
-    // so the frontend always has the fields to extract.
+    // Honor group_by_file flag — use the flat variant when requested. Both
+    // formatters carry the same truncation metadata, including a successful
+    // partial result when max_output was reached.
     const inner = if (parsed.value.group_by_file)
         try search_tool_mod.search_result_to_json_grouped(
             ctx.allocator,
@@ -110,7 +102,7 @@ pub fn execSearch(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
             parsed.value.pattern,
             parsed.value.path,
         );
-    search_result.deinit(ctx.allocator);
+    defer ctx.allocator.free(inner);
     const output = try wrapToolOutput(ctx.allocator, "search", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -217,6 +209,70 @@ test "TDD: execSearch accepts head=100 with tail=0 and returns a successful matc
     try std.testing.expectEqual(@as(usize, 2), matches.len);
     try std.testing.expectEqual(@as(i64, 1), matches[0].object.get("line").?.integer);
     try std.testing.expectEqual(@as(i64, 2), matches[1].object.get("line").?.integer);
+}
+
+test "execSearch returns success for an oversized stdout search with a truncation hint" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try tmpdir.dir.writeFile(io, .{
+        .sub_path = "large.txt",
+        .data = "FOUND_MARKER line\nFOUND_MARKER again\n",
+    });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(io, &path_buf);
+    const tmpdir_path: []const u8 = path_buf[0..path_len];
+    const args_json = try std.json.Stringify.valueAlloc(allocator, .{
+        .pattern = "FOUND_MARKER",
+        .path = ".",
+        .max_output = 1,
+        .group_by_file = true,
+        .literal = true,
+    }, .{});
+    defer allocator.free(args_json);
+
+    var dummy_temperature: f32 = 0.0;
+    var dummy_thinking: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = allocator,
+        .io = io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test-session",
+        .model = "test-model",
+        .cwd = tmpdir_path,
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &dummy_temperature,
+        .is_thinking = &dummy_thinking,
+        .environment = null,
+        .active_loops = undefined,
+    };
+    const tool_call = agent.ToolCall{
+        .id = "call-search-output-cap",
+        .type = "function",
+        .function = .{ .name = "search", .arguments = args_json },
+    };
+
+    const exec_result = try execSearch(ctx, tool_call);
+    defer exec_result.deinit(allocator);
+    var envelope = try std.json.parseFromSlice(std.json.Value, allocator, exec_result.output, .{});
+    defer envelope.deinit();
+    const root = envelope.value.object;
+    if (!root.get("success").?.bool) {
+        const error_value = root.get("error").?;
+        if (error_value == .string and std.mem.indexOf(u8, error_value.string, "ripgrep (rg) is not installed") != null) return;
+    }
+    try std.testing.expect(root.get("success").?.bool);
+    try std.testing.expect(root.get("error").? == .null);
+    const data = root.get("data").?.object;
+    try std.testing.expect(data.get("truncated").?.bool);
+    try std.testing.expect(data.get("output_truncated").?.bool);
+    try std.testing.expect(std.mem.indexOf(u8, data.get("truncated_hint").?.string, "max_output") != null);
+    try std.testing.expect(std.mem.indexOf(u8, exec_result.output, "Search output exceeded max_output" ++ " limit") == null);
 }
 
 test "search JSON parser lets head with tail=0 reach execution as head-only" {

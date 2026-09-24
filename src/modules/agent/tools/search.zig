@@ -45,6 +45,12 @@ pub const SearchError = error{
     /// cwd probes fine). Distinct from PathError so the LLM installs rg
     /// instead of retrying with a different path.
     RgNotFound,
+    /// The pipe reader could not read or retain the result stream. This is
+    /// distinct from an ordinary stdout byte cap, which is recoverable.
+    OutputReadFailed,
+    /// stderr exceeded the diagnostic byte cap and can no longer be trusted
+    /// to explain a genuine ripgrep failure.
+    StderrTooLong,
 };
 
 /// Default deadline for one ripgrep invocation (30s). Windows Defender +
@@ -97,6 +103,58 @@ fn probeRg(io: std.Io, rg_binary: []const u8) bool {
     return true;
 }
 
+const search_match_event_marker = "\"type\":\"match\"";
+
+/// Count complete ripgrep JSON match events without retaining the discarded
+/// suffix of a capped stream. The carry is bounded to marker.len - 1 bytes,
+/// so a marker split across two pipe reads is still detected.
+const SearchMatchCounter = struct {
+    carry: [search_match_event_marker.len - 1]u8 = undefined,
+    carry_len: usize = 0,
+    line_has_match: bool = false,
+    count: usize = 0,
+
+    fn consume(self: *SearchMatchCounter, bytes: []const u8) void {
+        for (bytes) |byte| {
+            if (self.carry_len < search_match_event_marker.len) {
+                var window: [search_match_event_marker.len]u8 = undefined;
+                @memcpy(window[0..self.carry_len], self.carry[0..self.carry_len]);
+                window[self.carry_len] = byte;
+                if (self.carry_len + 1 == search_match_event_marker.len and
+                    std.mem.eql(u8, window[0..], search_match_event_marker))
+                {
+                    self.line_has_match = true;
+                }
+            }
+
+            if (self.carry_len < search_match_event_marker.len - 1) {
+                self.carry[self.carry_len] = byte;
+                self.carry_len += 1;
+            } else {
+                std.mem.copyForwards(
+                    u8,
+                    self.carry[0 .. search_match_event_marker.len - 2],
+                    self.carry[1 .. search_match_event_marker.len - 1],
+                );
+                self.carry[search_match_event_marker.len - 2] = byte;
+            }
+
+            if (byte == '\n') {
+                if (self.line_has_match) self.count += 1;
+                self.line_has_match = false;
+                self.carry_len = 0;
+            }
+        }
+    }
+};
+
+const SearchPipeReadState = enum {
+    complete,
+    output_truncated,
+    read_failed,
+    allocation_failed,
+};
+
 /// Per-pipe reader context (one per stdout/stderr thread). File scope —
 /// std.Thread.spawn takes a plain function, not a struct namespace.
 const SearchPipeReadContext = struct {
@@ -104,28 +162,48 @@ const SearchPipeReadContext = struct {
     io: std.Io,
     buf: *[4096]u8,
     data: *std.ArrayList(u8),
-    overflow: *bool,
+    state: *SearchPipeReadState,
+    failure_flag: *std.atomic.Value(bool),
     max_output: usize,
     eof_flag: *std.atomic.Value(bool),
     allocator: std.mem.Allocator,
+    bytes_seen: *u64,
+    match_counter: ?*SearchMatchCounter,
 };
 
 fn readSearchPipe(ctx: SearchPipeReadContext) void {
     defer ctx.eof_flag.store(true, .release);
     while (true) {
-        const n = std.Io.File.readStreaming(ctx.stream, ctx.io, &.{ctx.buf}) catch return;
-        if (n == 0) return;
-        // Over cap: keep draining (never block the child on a full
-        // pipe) but discard — overflow is reported after join.
-        if (ctx.overflow.*) continue;
-        if (ctx.data.items.len + n > ctx.max_output) {
-            ctx.overflow.* = true;
-            continue;
-        }
-        ctx.data.appendSlice(ctx.allocator, ctx.buf[0..n]) catch {
-            ctx.overflow.* = true;
+        const n = std.Io.File.readStreaming(ctx.stream, ctx.io, &.{ctx.buf}) catch |err| {
+            if (err == error.EndOfStream) return;
+            ctx.state.* = .read_failed;
+            ctx.failure_flag.store(true, .release);
             return;
         };
+        if (n == 0) return;
+
+        ctx.bytes_seen.* += @intCast(n);
+        if (ctx.match_counter) |counter| counter.consume(ctx.buf[0..n]);
+
+        // Keep draining after the cap (and after an allocation failure) so
+        // the child never blocks on a full pipe. The caller inspects the
+        // state only after both reader threads have joined.
+        if (ctx.state.* == .read_failed) return;
+        if (ctx.state.* == .allocation_failed or ctx.state.* == .output_truncated) continue;
+
+        const remaining = if (ctx.data.items.len < ctx.max_output)
+            ctx.max_output - ctx.data.items.len
+        else
+            0;
+        const keep = @min(n, remaining);
+        if (keep > 0) {
+            ctx.data.appendSlice(ctx.allocator, ctx.buf[0..keep]) catch {
+                ctx.state.* = .allocation_failed;
+                ctx.failure_flag.store(true, .release);
+                continue;
+            };
+        }
+        if (keep < n) ctx.state.* = .output_truncated;
     }
 }
 
@@ -219,9 +297,15 @@ pub const SearchResult = struct {
     /// against `matches.items.len` this exposes silent truncation: the
     /// caller can tell "50 matches" from "50 of 9,000".
     total_matches: usize = 0,
-    /// True when `matches` holds fewer ROWS than `total_matches` because a
-    /// cap stopped collection (max_results / head / tail).
+    /// True when the visible result is incomplete because any output/row cap
+    /// was reached (max_output, max_results, head, or tail).
     truncated: bool = false,
+    /// True when the raw ripgrep stdout stream exceeded max_output. The
+    /// retained prefix can still contain complete match records.
+    output_truncated: bool = false,
+    /// Number of raw stdout bytes observed, including bytes drained after
+    /// max_output was reached.
+    output_bytes: u64 = 0,
 
     pub fn deinit(self: *SearchResult, allocator: std.mem.Allocator) void {
         for (self.matches.items) |m| {
@@ -471,20 +555,29 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // (double-wait on a reaped child aborts). kill on a dead child is safe.
     var child_waited = false;
     errdefer {
-        child.kill(io);
+        if (!child_waited) {
+            // Child.kill both terminates and reaps in Zig 0.16; never call
+            // wait after it because kill clears Child.id.
+            child.kill(io);
+            child_waited = true;
+        }
         if (child.stdout) |p| p.close(io);
         if (child.stderr) |p| p.close(io);
-        if (!child_waited) _ = child.wait(io) catch {};
     }
 
     var stdout_data: std.ArrayList(u8) = .empty;
     defer stdout_data.deinit(allocator);
     var stderr_data: std.ArrayList(u8) = .empty;
     defer stderr_data.deinit(allocator);
-    var stdout_overflow = false;
-    var stderr_overflow = false;
+    var stdout_state: SearchPipeReadState = .complete;
+    var stderr_state: SearchPipeReadState = .complete;
+    var stdout_failure = std.atomic.Value(bool).init(false);
+    var stderr_failure = std.atomic.Value(bool).init(false);
     var stdout_eof = std.atomic.Value(bool).init(false);
     var stderr_eof = std.atomic.Value(bool).init(false);
+    var stdout_bytes: u64 = 0;
+    var stderr_bytes: u64 = 0;
+    var stdout_match_counter = SearchMatchCounter{};
 
     const ReadContext = SearchPipeReadContext;
 
@@ -497,20 +590,26 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         .io = io,
         .buf = &stdout_buf,
         .data = &stdout_data,
-        .overflow = &stdout_overflow,
+        .state = &stdout_state,
+        .failure_flag = &stdout_failure,
         .max_output = max_output,
         .eof_flag = &stdout_eof,
         .allocator = allocator,
+        .bytes_seen = &stdout_bytes,
+        .match_counter = &stdout_match_counter,
     }});
     const stderr_thread = std.Thread.spawn(.{}, readSearchPipe, .{ReadContext{
         .stream = stderr_stream,
         .io = io,
         .buf = &stderr_buf,
         .data = &stderr_data,
-        .overflow = &stderr_overflow,
+        .state = &stderr_state,
+        .failure_flag = &stderr_failure,
         .max_output = max_output,
         .eof_flag = &stderr_eof,
         .allocator = allocator,
+        .bytes_seen = &stderr_bytes,
+        .match_counter = null,
     }}) catch |err| {
         // stderr spawn failed AFTER the stdout reader is already running
         // with a stack-borrowed buf. Close the pipe (unblocks the reader)
@@ -524,10 +623,10 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         return err;
     };
     // Join-gate: the explicit joins below run on the happy path; any
-    // later `return error.X` (Timeout, PathError, StreamTooLong,
-    // RegexParseError, …) fires this errdefer. Joining an already-joined
-    // thread is UB — SIGABRT on macOS (pthread). The flag makes the
-    // errdefer a no-op once the explicit joins have run.
+    // later `return error.X` (Timeout, PathError, RegexParseError, …)
+    // fires this errdefer. Joining an already-joined thread is UB — SIGABRT
+    // on macOS (pthread). The flag makes the errdefer a no-op once the
+    // explicit joins have run.
     var threads_joined = false;
     errdefer {
         if (!threads_joined) {
@@ -541,12 +640,22 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     // 0.16: keep the inferred width, don't narrow to i64.
     const deadline_ns = std.Io.Timestamp.now(io, .real).nanoseconds + @as(i64, @intCast(timeout_ns));
     var timeout_hit = false;
+    var reader_failed = false;
     while (!(stdout_eof.load(.acquire) and stderr_eof.load(.acquire))) {
+        if (stdout_failure.load(.acquire) or stderr_failure.load(.acquire)) {
+            reader_failed = true;
+            break;
+        }
         if (std.Io.Timestamp.now(io, .real).nanoseconds >= deadline_ns) {
             timeout_hit = true;
             break;
         }
         pollSleep10ms();
+    }
+
+    if (reader_failed) {
+        child.kill(io);
+        child_waited = true;
     }
 
     // Close pipes (unblocks readers) BEFORE join — same order as shell.zig.
@@ -563,16 +672,28 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     threads_joined = true;
 
     if (timeout_hit) {
-        child.kill(io);
-        _ = child.wait(io) catch {};
-        child_waited = true;
+        if (!child_waited) {
+            child.kill(io);
+            child_waited = true;
+        }
         return error.Timeout;
+    }
+    if (reader_failed or stdout_state == .read_failed or stdout_state == .allocation_failed or
+        stderr_state == .read_failed or stderr_state == .allocation_failed)
+    {
+        if (!child_waited) {
+            child.kill(io);
+            child_waited = true;
+        }
+        return error.OutputReadFailed;
     }
     const term = child.wait(io) catch return error.PathError;
     child_waited = true;
 
-    // stdout_limit semantics preserved: over-cap output is StreamTooLong.
-    if (stdout_overflow or stderr_overflow) return error.StreamTooLong;
+    // A capped stdout stream is a successful, bounded partial result. A
+    // capped stderr stream is different: it can hide the diagnostic that
+    // explains a genuine rg failure, so keep it an error after the exit
+    // code has been mapped below.
 
     // === Map ripgrep exit code to a domain error or accept stdout ===
     //
@@ -609,6 +730,12 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
             return error.PathError;
         },
     }
+
+    // A capped stdout stream is a successful, bounded partial result. A
+    // capped stderr stream is different: it can hide the diagnostic that
+    // explains a genuine rg failure, so keep it an error after the exit
+    // code has been mapped above.
+    if (stderr_state == .output_truncated) return error.StderrTooLong;
 
     var matches = std.ArrayList(SearchMatch).empty;
     errdefer {
@@ -650,6 +777,17 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
 
         if (line.len > 0) {
             if (!collecting) {
+                // A capped final segment may be partial. Do not count its
+                // marker unless it is newline-terminated; the full-stream
+                // counter already accounts for complete match events.
+                if (stdout_state == .output_truncated and
+                    line_end == stdout_slice.len and
+                    line_end > line_start and
+                    !std.mem.endsWith(u8, stdout_slice, "\n"))
+                {
+                    line_start = line_end;
+                    continue;
+                }
                 // Row cap reached — only the total count matters now, and
                 // rg's raw line tells us a match event cheaply.
                 if (lineIsMatchEvent(line)) seen_total += 1;
@@ -657,7 +795,10 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
                 continue;
             }
 
-            const parsed = std.json.parseFromSlice(std.json.Value, arena_allocator, line, .{}) catch continue;
+            const parsed = std.json.parseFromSlice(std.json.Value, arena_allocator, line, .{}) catch {
+                line_start = line_end + 1;
+                continue;
+            };
 
             if (parsed.value.object.get("type")) |type_val| {
                 if (type_val == .string and std.mem.eql(u8, type_val.string, "begin")) {
@@ -887,16 +1028,17 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
         }
     }
 
-    const truncated = seen_total > matches.items.len;
+    const output_truncated = stdout_state == .output_truncated;
+    const total_matches = @max(seen_total, stdout_match_counter.count);
+    const truncated = output_truncated or total_matches > matches.items.len;
 
-    // No-match warning body. Built ONLY when nothing was collected — the
-    // formatters render `matches` directly on the success path, so there is
-    // no second text dump of every row any more. Values are interpolated
-    // raw: the JSON formatters sanitize control bytes and `std.json`
-    // serialization handles the rest, so no escaping is needed here.
+    // No-match warning body. Built ONLY when nothing was collected and the
+    // raw stream was not capped. A cap can leave zero complete JSON records
+    // even though rg found matches, so it must not be mislabeled as a clean
+    // no-match search.
     var warning: []const u8 = "";
     errdefer if (warning.len > 0) allocator.free(warning);
-    if (matches.items.len == 0) {
+    if (matches.items.len == 0 and !output_truncated) {
         if (stderr_data.items.len > 0) {
             // ripgrep surfaced an error (regex parse error, permission
             // denied, etc). Surface stderr verbatim — it already names the
@@ -918,8 +1060,10 @@ pub fn executeSearch(allocator: std.mem.Allocator, io: std.Io, cwd: []const u8, 
     return SearchResult{
         .matches = matches,
         .warning = warning,
-        .total_matches = seen_total,
+        .total_matches = total_matches,
         .truncated = truncated,
+        .output_truncated = output_truncated,
+        .output_bytes = stdout_bytes,
     };
 }
 
@@ -941,14 +1085,7 @@ pub fn search_result_to_json_grouped(allocator: std.mem.Allocator, result: Searc
     const warning_text = try cleanWarningText(allocator, result.warning);
     defer if (warning_text) |w| allocator.free(w);
 
-    const hint: ?[]const u8 = blk: {
-        if (!result.truncated) break :blk null;
-        break :blk try std.fmt.allocPrint(
-            allocator,
-            "{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.",
-            .{ result.matches.items.len, result.total_matches },
-        );
-    };
+    const hint = try buildTruncationHint(allocator, result);
     defer if (hint) |h| allocator.free(h);
 
     // Group matches by file, PRESERVING rg's output order. A StringHashMap
@@ -1007,6 +1144,8 @@ pub fn search_result_to_json_grouped(allocator: std.mem.Allocator, result: Searc
         returned: usize,
         total: usize,
         truncated: bool,
+        output_truncated: bool,
+        output_bytes: u64,
         truncated_hint: ?[]const u8,
         grouped: bool,
         files: []const JsonFile,
@@ -1027,7 +1166,11 @@ pub fn search_result_to_json_grouped(allocator: std.mem.Allocator, result: Searc
     }
 
     for (groups.items) |group| {
-        const total = file_totals.get(group.path) orelse 0;
+        // An output cap can cut before rg's per-file `end` event. In that
+        // case use the retained row count as an honest lower bound instead
+        // of serializing a misleading zero total.
+        const total = file_totals.get(group.path) orelse
+            (if (result.output_truncated) group.matches.items.len else 0);
         const clean_file = try sanitizeControlChars(allocator, std.mem.trim(u8, group.path, &std.ascii.whitespace));
         try owned_texts.append(allocator, clean_file);
         var jm = std.ArrayList(JsonMatch).empty;
@@ -1052,6 +1195,8 @@ pub fn search_result_to_json_grouped(allocator: std.mem.Allocator, result: Searc
         .returned = result.matches.items.len,
         .total = result.total_matches,
         .truncated = result.truncated,
+        .output_truncated = result.output_truncated,
+        .output_bytes = result.output_bytes,
         .truncated_hint = hint,
         .grouped = true,
         .files = files.items,
@@ -1072,14 +1217,7 @@ pub fn search_result_to_json_flat(allocator: std.mem.Allocator, result: SearchRe
     const warning_text = try cleanWarningText(allocator, result.warning);
     defer if (warning_text) |w| allocator.free(w);
 
-    const hint: ?[]const u8 = blk: {
-        if (!result.truncated) break :blk null;
-        break :blk try std.fmt.allocPrint(
-            allocator,
-            "{d} of {d} matched lines shown — raise max_results, narrow the pattern, or add a glob filter.",
-            .{ result.matches.items.len, result.total_matches },
-        );
-    };
+    const hint = try buildTruncationHint(allocator, result);
     defer if (hint) |h| allocator.free(h);
 
     const JsonMatch = struct {
@@ -1093,6 +1231,8 @@ pub fn search_result_to_json_flat(allocator: std.mem.Allocator, result: SearchRe
         returned: usize,
         total: usize,
         truncated: bool,
+        output_truncated: bool,
+        output_bytes: u64,
         truncated_hint: ?[]const u8,
         grouped: bool,
         matches: []const JsonMatch,
@@ -1121,6 +1261,8 @@ pub fn search_result_to_json_flat(allocator: std.mem.Allocator, result: SearchRe
         .returned = result.matches.items.len,
         .total = result.total_matches,
         .truncated = result.truncated,
+        .output_truncated = result.output_truncated,
+        .output_bytes = result.output_bytes,
         .truncated_hint = hint,
         .grouped = false,
         .matches = jm.items,
@@ -1165,14 +1307,43 @@ fn cleanWarningText(allocator: std.mem.Allocator, warning: []const u8) !?[]u8 {
     return clean;
 }
 
+fn buildTruncationHint(allocator: std.mem.Allocator, result: SearchResult) !?[]const u8 {
+    if (!result.truncated) return null;
+
+    if (result.output_truncated) {
+        if (result.total_matches > result.matches.items.len) {
+            return try std.fmt.allocPrint(
+                allocator,
+                "Search output exceeded the requested max_output (observed {d} bytes); {d} of {d} match events are shown from the retained prefix. Results were truncated — raise max_output, adjust max_results/head/tail, narrow the pattern/path, or add a glob filter.",
+                .{ result.output_bytes, result.matches.items.len, result.total_matches },
+            );
+        }
+        return try std.fmt.allocPrint(
+            allocator,
+            "Search output exceeded the requested max_output (observed {d} bytes); only complete records in the retained prefix are shown. Results were truncated — raise max_output, adjust max_results/head/tail, narrow the pattern/path, or add a glob filter.",
+            .{result.output_bytes},
+        );
+    }
+
+    return try std.fmt.allocPrint(
+        allocator,
+        "{d} of {d} matched lines shown — adjust max_results/head/tail, narrow the pattern, or add a glob filter.",
+        .{ result.matches.items.len, result.total_matches },
+    );
+}
+
 pub const search_tool_system_prompt =
     \\## Search Tool — Behavior
     \\Use `search` for full-text code search. Always prefer this over `bash` with `rg`/`grep`.
     \\- Returns structured JSON with file paths + line numbers, respects `.gitignore`.
     \\- Use `word_boundary`, `literal`, `only_matching` flags as needed.
     \\- Narrow noisy trees with `glob` (e.g. `*.zig`) instead of post-filtering mentally.
-    \\- Check `truncated=true` / `truncated_hint` on the result: it means more matched lines
-    \\  exist than were shown. Raise `max_results`, or narrow `pattern`/`path`/`glob`.
+    \\- Check `truncated=true` / `truncated_hint` on the result: it means the
+    \\  visible result is incomplete. The hint identifies whether max_results
+    \\  or max_output caused the truncation.
+    \\- Exceeding max_output is a successful bounded result with
+    \\  `output_truncated=true`; only complete records before the byte cap
+    \\  are returned. Narrow `pattern`/`path`/`glob` or adjust the cap.
     \\- Snippets are windowed to `snippet_max_chars` (default 240) and control-char sanitized.
     \\- Bound results with `max_results`/`max_output`.
     \\- Use at most one of `head`/`tail`; omit the unused field entirely (never send 0 as a placeholder).
@@ -1221,21 +1392,28 @@ pub const search_tool = AgentTool{
         \\collection summary:
         \\
         \\{"pattern":"regex","path":"path","returned":2,"total":2,
-        \\"truncated":false,"truncated_hint":null,"grouped":true,
+        \\"truncated":false,"output_truncated":false,"output_bytes":1234,
+        \\"truncated_hint":null,"grouped":true,
         \\"files":[{"path":"path/to/file.zig","total":3,"count":2,
         \\"matches":[{"line":10,"text":"snippet at line 10"},
         \\{"line":25,"text":"snippet at line 25"}]}],"warning":null}
         \\
         \\Field meanings:
         \\- `returned` = rows in this response; `total` = matched lines rg
-        \\  found in the WHOLE search; `truncated` = "returned < total".
-        \\  ALWAYS check `truncated`: when it is true your result is a window
-        \\  (max_results / head / tail cut it), NOT the complete answer. The
-        \\  `truncated_hint` string restates it in prose, null otherwise.
+        \\  found in the WHOLE search. `truncated` means the visible rows are
+        \\  incomplete because max_output, max_results, head, or tail cut it.
+        \\- `output_truncated` = the raw rg JSON stream exceeded max_output;
+        \\  this is a successful partial result containing only complete
+        \\  records from the retained prefix. `output_bytes` is the number of
+        \\  stdout bytes observed while draining.
+        \\  ALWAYS check `truncated` and `truncated_hint`: when true, the
+        \\  result is a window, not the complete answer. The hint identifies
+        \\  the active limit and is null otherwise.
         \\- `files[]` entries carry `path`, `total` (matched lines in that
         \\  file for THIS search — not the file's line count; use read_file
-        \\  for the real line count), `count` (rows shown), and `matches[]`
-        \\  with `line` (1-indexed) + `text` (windowed to snippet_max_chars,
+        \\  for the real line count; when output_truncated=true it may be a
+        \\  lower bound because the per-file end record was cut), `count`
+        \\  (rows shown), and `matches[]` with `line` (1-indexed) + `text` (windowed to snippet_max_chars,
         \\  default 240, with "..." markers when the line is longer).
         \\
         \\No matches returns `files: []` (or `matches: []` when
@@ -1248,7 +1426,8 @@ pub const search_tool = AgentTool{
         \\Set `group_by_file: false` for a flat list (`grouped: false` with
         \\a top-level `matches[]` of `{line, text, file}` instead of `files`):
         \\{"pattern":"...","path":"...","returned":1,"total":1,
-        \\"truncated":false,"truncated_hint":null,"grouped":false,
+        \\"truncated":false,"output_truncated":false,"output_bytes":1234,
+        \\"truncated_hint":null,"grouped":false,
         \\"matches":[{"line":10,"text":"snippet","file":"path/to/file.zig"}],
         \\"warning":null}
         \\
@@ -1278,8 +1457,9 @@ pub const search_tool = AgentTool{
         \\- head/tail must be > 0 and are mutually exclusive. Omit the unused
         \\  field entirely; do not send 0 as a placeholder. Both are still
         \\  bounded by max_results (the hard row cap); `tail` scans the whole
-        \\  match stream and keeps the newest rows, so it means "last N of the
-        \\  search", not "last N of the first max_results".
+        \\  match stream when output fits and keeps the newest rows. If
+        \\  max_output truncates the stream, tail applies to the retained
+        \\  prefix and the result is marked output_truncated.
         \\- respect_ignore_files (default true): set false to search
         \\  gitignored paths (build/, node_modules/, target/, vendor/). NOTE:
         \\  rg still skips HIDDEN entries — that flag does NOT reach .git/ or
@@ -1321,7 +1501,7 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "max_output",
                     .type = "number",
-                    .description = "Max output size in bytes. Default: 1048576 (1MB). Hard cap: 100MB. Must be > 0.",
+                    .description = "Max raw output bytes to retain from ripgrep. Default: 1048576 (1MB). Hard cap: 100MB; must be > 0. If the stream exceeds this limit, the call still succeeds with complete records from the retained prefix plus output_truncated=true and a truncated_hint.",
                 },
                 .{
                     .name = "group_by_file",
@@ -1498,7 +1678,7 @@ test "search: respect_ignore_files = false does NOT return a validation error" {
         // rg-spawn error is acceptable. What matters is NO
         // SearchError domain variant fires (those would mean
         // validation rejected the field).
-        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.OutputReadFailed, error.StderrTooLong => {},
         else => return err,
     }
 }
@@ -1520,7 +1700,7 @@ test "search: word_boundary = true does NOT return a validation error" {
         var owned = r;
         defer owned.deinit(allocator);
     } else |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.OutputReadFailed, error.StderrTooLong => {},
         else => return err,
     }
 }
@@ -1542,7 +1722,7 @@ test "search: literal = true does NOT return a validation error" {
         var owned = r;
         defer owned.deinit(allocator);
     } else |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.OutputReadFailed, error.StderrTooLong => {},
         else => return err,
     }
 }
@@ -1564,7 +1744,7 @@ test "search: only_matching = true does NOT return a validation error" {
         var owned = r;
         defer owned.deinit(allocator);
     } else |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.OutputReadFailed, error.StderrTooLong => {},
         else => return err,
     }
 }
@@ -2328,7 +2508,7 @@ test "search: literal = true does NOT fire RegexParseError for invalid regex pat
         defer owned.deinit(allocator);
         // 0 matches is expected — the file content doesn't contain "*invalid".
     } else |err| switch (err) {
-        error.FileNotFound, error.PathError, error.AccessDenied, error.StreamTooLong => {},
+        error.FileNotFound, error.PathError, error.AccessDenied, error.OutputReadFailed, error.StderrTooLong => {},
         error.RegexParseError => return error.RegexParseError,
         else => return err,
     }
@@ -3099,6 +3279,29 @@ test "search: search_result_to_json_flat no-match carries pattern/path/warning f
     try testing.expect(std.mem.indexOf(u8, root.get("warning").?.string, "no matches for pattern") != null);
 }
 
+test "search: output truncation hint is serialized before result arrays" {
+    const allocator = testing.allocator;
+    const result = search.SearchResult{
+        .matches = std.ArrayList(search.SearchMatch).empty,
+        .total_matches = 20,
+        .truncated = true,
+        .output_truncated = true,
+        .output_bytes = 50_000,
+    };
+
+    const grouped = try search.search_result_to_json_grouped(allocator, result, "foo", ".");
+    defer allocator.free(grouped);
+    const grouped_hint = std.mem.indexOf(u8, grouped, "\"truncated_hint\"").?;
+    const grouped_files = std.mem.indexOf(u8, grouped, "\"files\"").?;
+    try testing.expect(grouped_hint < grouped_files);
+
+    const flat = try search.search_result_to_json_flat(allocator, result, "foo", ".");
+    defer allocator.free(flat);
+    const flat_hint = std.mem.indexOf(u8, flat, "\"truncated_hint\"").?;
+    const flat_matches = std.mem.indexOf(u8, flat, "\"matches\"").?;
+    try testing.expect(flat_hint < flat_matches);
+}
+
 test "search: search_result_to_json_flat renders file/line/text per match" {
     const allocator = testing.allocator;
 
@@ -3294,6 +3497,8 @@ test "search.zig defines EmptyPattern in SearchError" {
     try testing.expect(std.mem.indexOf(u8, source, "InvalidMaxResults") != null);
     try testing.expect(std.mem.indexOf(u8, source, "RegexParseError") != null);
     try testing.expect(std.mem.indexOf(u8, source, "PathError") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "OutputReadFailed") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "StderrTooLong") != null);
 }
 
 test "search.zig validates empty pattern BEFORE spawning rg" {
@@ -3365,6 +3570,10 @@ test "agentic_loop/tools_exec_search.zig maps new SearchErrors to LLM-friendly m
     try testing.expect(std.mem.indexOf(u8, source, "error.PathError") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.Timeout") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.RgNotFound") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.OutputReadFailed") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.StderrTooLong") != null);
+    const old_stream_error_text = "Search output exceeded max_output" ++ " limit";
+    try testing.expect(std.mem.indexOf(u8, source, old_stream_error_text) == null);
 }
 
 test "agentic_loop/tools_exec_search.zig honors group_by_file flag (no longer dead code)" {
@@ -3492,6 +3701,101 @@ test "search: tail = 0 returns InvalidHeadTail without spawning rg" {
         .tail = 0,
     });
     try testing.expectError(error.InvalidHeadTail, result);
+}
+
+test "search: bounded match counter detects markers split across reads" {
+    var counter = SearchMatchCounter{};
+    counter.consume("{\"data\":{\"path\":\"x\"},\"type\":\"mat");
+    counter.consume("ch\"}\n{\"type\":\"begin\"}\n{\"type\":\"match\"}\n");
+    try testing.expectEqual(@as(usize, 2), counter.count);
+
+    // A record without its terminating newline may have been cut by the
+    // output cap, so it is not counted as a complete match event.
+    counter.consume("{\"type\":\"match\"}");
+    try testing.expectEqual(@as(usize, 2), counter.count);
+}
+
+test "search: max_output overflow returns a successful partial result" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+
+    const content = try buildMatchingLines(allocator, 80, "FOUND_MARKER");
+    defer allocator.free(content);
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "many.txt", .data = content });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "FOUND_MARKER",
+        .path = ".",
+        .max_results = 100,
+        .max_output = 4096,
+        .literal = true,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expect(result.output_truncated);
+    try testing.expect(result.truncated);
+    try testing.expect(result.output_bytes > 4096);
+    try testing.expectEqual(@as(usize, 80), result.total_matches);
+    try testing.expect(result.matches.items.len > 0);
+    try testing.expectEqualStrings("", result.warning);
+
+    const grouped = try search.search_result_to_json_grouped(allocator, result, "FOUND_MARKER", ".");
+    defer allocator.free(grouped);
+    const flat = try search.search_result_to_json_flat(allocator, result, "FOUND_MARKER", ".");
+    defer allocator.free(flat);
+
+    for ([_][]const u8{ grouped, flat }) |json_text| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_text, .{});
+        defer parsed.deinit();
+        const root = parsed.value.object;
+        try testing.expect(root.get("success") == null);
+        try testing.expect(root.get("truncated").?.bool);
+        try testing.expect(root.get("output_truncated").?.bool);
+        try testing.expect(root.get("output_bytes").?.integer > 4096);
+        const hint = root.get("truncated_hint").?.string;
+        try testing.expect(std.mem.indexOf(u8, hint, "max_output") != null);
+        try testing.expect(std.mem.indexOf(u8, hint, "truncated") != null);
+    }
+}
+
+test "search: max_output cap before the first complete record is not a no-match" {
+    if (!requiresRg()) return;
+
+    const allocator = testing.allocator;
+    const io = testing.io;
+    var tmpdir = testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    try tmpdir.dir.writeFile(io, .{ .sub_path = "one.txt", .data = "NEEDLE\n" });
+
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmpdir_path = try resolveTmpDir(tmpdir.dir, io, &path_buf);
+
+    var result = try search.executeSearch(allocator, io, tmpdir_path, .{
+        .pattern = "NEEDLE",
+        .path = ".",
+        .max_output = 1,
+    });
+    defer result.deinit(allocator);
+
+    try testing.expect(result.output_truncated);
+    try testing.expect(result.truncated);
+    try testing.expectEqual(@as(usize, 0), result.matches.items.len);
+    try testing.expectEqual(@as(usize, 1), result.total_matches);
+    try testing.expectEqualStrings("", result.warning);
+
+    const out = try search.search_result_to_json_grouped(allocator, result, "NEEDLE", ".");
+    defer allocator.free(out);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, out, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value.object.get("warning").? == .null);
+    try testing.expect(parsed.value.object.get("truncated_hint").?.string.len > 0);
 }
 
 test "search: max_results truncation is reported (returned/total/truncated/truncated_hint)" {
@@ -4132,5 +4436,12 @@ test "search: tool schema documents the new params and drops the stale claims" {
     try testing.expect(std.mem.indexOf(u8, desc, "gitignored paths (build/, node_modules/, .git/") == null);
     // New contract is spelled out for the model.
     try testing.expect(std.mem.indexOf(u8, desc, "truncated") != null);
+    try testing.expect(std.mem.indexOf(u8, desc, "output_truncated") != null);
     try testing.expect(std.mem.indexOf(u8, desc, "snippet_max_chars") != null);
+    var max_output_description: ?[]const u8 = null;
+    for (search.search_tool.function.parameters.properties) |prop| {
+        if (std.mem.eql(u8, prop.name, "max_output")) max_output_description = prop.description;
+    }
+    try testing.expect(max_output_description != null);
+    try testing.expect(std.mem.indexOf(u8, max_output_description.?, "truncated_hint") != null);
 }
