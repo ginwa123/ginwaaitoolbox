@@ -167,7 +167,14 @@ async function handleBootUrl(): Promise<void> {
     )
   }
 
-  workspacesStore.initializeFromSystemFolder()
+  // Prefer the workspace encoded by a workspace/project deep link. A
+  // fresh tab may otherwise boot with the persisted/default workspace,
+  // leave the URL-restored item inactive, and render a blank main view.
+  const preferredWorkspaceId =
+    parsed.kind === 'workspace' || parsed.kind === 'project' || parsed.kind === 'projectChat'
+      ? parsed.workspaceId
+      : undefined
+  workspacesStore.initializeFromSystemFolder(preferredWorkspaceId)
 
   // 5. Overlay restore for deep links. The path boot above adopted
   // the workspace/chat context; reopen the editor so a reload or
@@ -422,34 +429,62 @@ const pendingUrlRestore = ref<{
     return null
   })(),
 )
+// Keep one restore in flight while the target workspace lazily loads.
+// A seeded workspace can appear in the list before its items arrive;
+// checking that first snapshot would incorrectly clear the pending URL
+// restore and leave a project deep link on the blank Chats view.
+let urlRestoreInFlight = false
 watch(
   () => workspacesStore.workspaces,
-  (wsList) => {
+  async (wsList) => {
+    if (urlRestoreInFlight) return
     const pending = pendingUrlRestore.value
     if (!pending) return
     if (!wsList || wsList.length === 0) return
-    const wsExists = wsList.some((ws) => ws.id === pending.workspaceId)
-    if (!wsExists) {
+    const targetWorkspace = wsList.find((ws) => ws.id === pending.workspaceId)
+    if (!targetWorkspace) {
       // Stale URL — clear it so we don't try again on every workspace
       // update. User will see the empty kanban-state placeholder and
       // can pick a workspace item manually.
       pendingUrlRestore.value = null
       return
     }
-    // Restore the workspace SELECTION first — valid even with no
-    // itemId (standalone ?workspaceId=X, revamp plan 2026-09-22).
-    workspacesStore.setActiveWorkspace(pending.workspaceId)
-    const itemExists = wsList.some((ws) => ws.items.some((item) => item.id === pending.itemId))
-    if (pending.itemId && itemExists) {
-      workspacesStore.setActiveWorkspaceItem(pending.itemId)
-      // Restore the active design page (if any) so DesignView picks
-      // it up after its pages-load watcher fires. Empty pageId means
-      // "use the first page" — the default behavior.
-      if (pending.pageId) {
-        workspacesStore.setActiveDesignPage(pending.pageId)
+
+    const itemExists = targetWorkspace.items.some((item) => item.id === pending.itemId)
+    if (!pending.itemId || itemExists) {
+      // Fast path for fixtures and already-loaded items. Keep this
+      // synchronous so callers that seed the store before mount do not
+      // need an extra tick before the selected view renders.
+      void workspacesStore.setActiveWorkspace(pending.workspaceId)
+      if (pending.itemId) {
+        workspacesStore.setActiveWorkspaceItem(pending.itemId)
+        if (pending.pageId) {
+          workspacesStore.setActiveDesignPage(pending.pageId)
+        }
       }
+      pendingUrlRestore.value = null
+      return
     }
-    pendingUrlRestore.value = null
+
+    // The target workspace is present but its items are still loading.
+    // Wait for the lazy loader before deciding that the deep link is
+    // stale; otherwise a fresh settings popup briefly shows Chats.
+    urlRestoreInFlight = true
+    try {
+      await workspacesStore.setActiveWorkspace(pending.workspaceId)
+      const loadedWorkspace = workspacesStore.workspaces.find((ws) => ws.id === pending.workspaceId)
+      const loadedItemExists =
+        loadedWorkspace?.items.some((item) => item.id === pending.itemId) ?? false
+      if (loadedItemExists) {
+        workspacesStore.setActiveWorkspaceItem(pending.itemId)
+        if (pending.pageId) {
+          workspacesStore.setActiveDesignPage(pending.pageId)
+        }
+      }
+      pendingUrlRestore.value = null
+    } finally {
+      urlRestoreInFlight = false
+    }
   },
   { immediate: true },
 )

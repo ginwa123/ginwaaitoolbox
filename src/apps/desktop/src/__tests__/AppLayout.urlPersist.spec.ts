@@ -227,6 +227,49 @@ describe('AppLayout — page reload of /app/{ws}/projects/{item} restores the ac
     wrapper.unmount()
   })
 
+  it('loads the workspace selected by a project deep link instead of the persisted workspace', async () => {
+    const ws = useWorkspacesStore()
+    const agent = {
+      id: 'item_agent_url',
+      name: 'Agent settings',
+      item_type: 'agent',
+      path: '/tmp/agent',
+      tasks: [],
+    } as WorkspaceItem
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({
+      workspaces: [
+        { id: OTHER_WS_ID, name: 'Other', icon: '📁', expanded: true, items: [] },
+        { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] },
+      ],
+    })
+    vi.spyOn(api, 'getWorkspacesItems').mockImplementation(async (workspaceId: string) => ({
+      items: workspaceId === WS_ID ? [agent] : [],
+      count: workspaceId === WS_ID ? 1 : 0,
+    }))
+    const localStorageStub = makeLocalStorageStub()
+    localStorageStub.setItem('nalar-active-workspace', OTHER_WS_ID)
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: localStorageStub,
+      writable: true,
+      configurable: true,
+    })
+
+    const wrapper = mountAppLayout(
+      [
+        { id: OTHER_WS_ID, name: 'Other', icon: '📁', expanded: true, items: [] },
+        { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [agent] },
+      ] as Workspace[],
+      {},
+      `/app/${WS_ID}/projects/${agent.id}`,
+    )
+
+    await vi.waitFor(() => {
+      expect(ws.activeWorkspaceId).toBe(WS_ID)
+      expect(ws.activeWorkspaceItemId).toBe(agent.id)
+    })
+    wrapper.unmount()
+  })
+
   it('mounting with no URL params does NOT auto-select any workspace item', async () => {
     const ws = useWorkspacesStore()
     const wrapper = mountAppLayout(

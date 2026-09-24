@@ -9,7 +9,10 @@ and its follow-ups:
    right-click shows "Go to settings"; activating it opens
    ``/app/kanban/:id/settings`` in a NEW browser tab while the current
    tab stays put.
-3. ``test_sidebar_task_then_kanban_opens_board`` — with an agent task
+3. ``test_sidebar_rightclick_agent_go_to_settings_opens_item_settings``
+   — opens the agent's project URL and renders AgentView even when
+   localStorage still selects a different workspace.
+4. ``test_sidebar_task_then_kanban_opens_board`` — with an agent task
    chat active, clicking a kanban row still opens its board (the
    AppLayout URL-sync watcher must not resurrect the stale
    ``/chat/<taskId>`` suffix onto the new item).
@@ -137,6 +140,70 @@ def test_sidebar_rightclick_kanban_go_to_settings_opens_new_tab(
     finally:
         popup.close()
         _print_errors(errors)
+
+
+def test_sidebar_rightclick_agent_go_to_settings_opens_item_settings(
+    ui_harness: UIHarness, page
+) -> None:
+    """Go to settings opens AgentView in a fresh browser tab.
+
+    The persisted workspace deliberately points at another workspace.
+    A new tab must hydrate the workspace encoded in the project URL so
+    the agent configuration surface renders instead of a blank main view.
+    """
+    h = ui_harness
+    persisted_ws_id = _create_workspace(h, name="ui-agent-settings-persisted-ws")
+    target_ws_id = _create_workspace(h, name="ui-agent-settings-target-ws")
+    agent_id = _create_agent(h, target_ws_id, name="UISETTINGS_AGENT")
+
+    errors = _collect_errors(page)
+    page.goto(h.web_url("/app"), wait_until="domcontentloaded", timeout=30000)
+    page.locator('[data-testid="workspace-switcher-trigger"]').wait_for(
+        timeout=20000, state="visible"
+    )
+    page.locator('[data-testid="workspace-switcher-trigger"]').click()
+    page.locator(f'[data-testid="workspace-switcher-option-{target_ws_id}"]').click()
+    _expand_workspace(page, "ui-agent-settings-target-ws", "UISETTINGS_AGENT")
+    # Keep the source page showing the target workspace, but make its
+    # persisted selection stale before the popup boots. This reproduces
+    # a fresh browser tab whose URL and localStorage point at different
+    # workspaces without reloading the source page.
+    page.evaluate(
+        "workspaceId => localStorage.setItem('nalar-active-workspace', workspaceId)",
+        persisted_ws_id,
+    )
+    page.locator("text=UISETTINGS_AGENT").first.click(button="right")
+
+    entry = page.locator('[data-testid="go-to-settings-item"]')
+    entry.wait_for(timeout=10000, state="visible")
+    original_url = page.url
+
+    with page.expect_popup() as popup_info:
+        entry.click()
+    popup = popup_info.value
+    popup_errors = _collect_errors(popup)
+    popup.wait_for_load_state("domcontentloaded", timeout=30000)
+    try:
+        expected_path = f"/app/{target_ws_id}/projects/{agent_id}"
+        popup.wait_for_url(f"**{expected_path}", timeout=30000)
+        popup.locator('[data-testid="agent-view"]').wait_for(timeout=30000, state="visible")
+        assert expected_path in popup.url, (
+            f"Agent settings popup opened at unexpected URL: {popup.url}"
+        )
+        assert page.url == original_url, (
+            f"Current tab navigated while opening agent settings: {original_url} -> {page.url}"
+        )
+        assert local_storage_value(popup, "nalar-active-workspace") == target_ws_id, (
+            "Agent settings popup did not select the workspace encoded in its URL"
+        )
+    finally:
+        popup.close()
+        _print_errors(errors)
+        _print_errors(popup_errors)
+
+
+def local_storage_value(page, key: str) -> str | None:
+    return page.evaluate("key => localStorage.getItem(key)", key)
 
 
 def test_sidebar_task_then_kanban_opens_board(ui_harness: UIHarness, page) -> None:

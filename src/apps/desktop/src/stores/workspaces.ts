@@ -4365,10 +4365,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     })
   }
 
-  // Initialize workspace items from system folder
-  async function initializeFromSystemFolder() {
+  // Initialize workspace items from system folder. A deep link can pass
+  // its workspace id so boot hydration does not prefer the persisted
+  // selection and leave the URL-restored item inactive.
+  async function initializeFromSystemFolder(preferredWorkspaceId?: string) {
     // First, load workspaces from API
     await init()
+    if (preferredWorkspaceId) {
+      await setActiveWorkspace(preferredWorkspaceId)
+    }
 
     // Also fetch system folder info for navigation
     await fetchSystemFolder()
