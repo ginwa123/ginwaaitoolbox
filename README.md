@@ -11,7 +11,7 @@ through a Vue web app, native desktop shell, or native Android client.
 
 Four pillars, one repo:
 
-0. **Android client — native Jetpack Compose** (`android_mobile/`)
+0. **Android client — native Jetpack Compose** (`src/apps/android_mobile/`)
    - A standalone Kotlin client for Nalar.
    - The first milestone is a polished login screen; authentication and the
      rest of the mobile experience are intentionally staged for later iterations.
