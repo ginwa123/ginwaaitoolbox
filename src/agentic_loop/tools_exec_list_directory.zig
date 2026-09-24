@@ -30,11 +30,21 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit();
 
-    // 2. Execute the listing.
+    // 2. Resolve relative paths against the active session/worktree cwd.
+    // The lower-level helper uses openDirAbsolute, which asserts rather
+    // than returning an error for a relative path.
+    const base_path = ctx.cwd_override orelse ctx.cwd;
+    const resolved_path = if (std.fs.path.isAbsolute(parsed.value.path))
+        try ctx.allocator.dupe(u8, parsed.value.path)
+    else
+        try std.fs.path.join(ctx.allocator, &.{ base_path, parsed.value.path });
+    defer ctx.allocator.free(resolved_path);
+
+    // 3. Execute the listing.
     const entries = list_directory_mod.execute_list_directory(
         ctx.allocator,
         ctx.io,
-        parsed.value.path,
+        resolved_path,
         parsed.value.hidden,
         parsed.value.respect_ignore_files,
     ) catch |err| {
@@ -49,8 +59,8 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer list_directory_mod.freeEntries(ctx.allocator, entries);
 
-    // 3. Serialise to JSON and wrap.
-    const inner = try list_directory_mod.toJSON(ctx.allocator, entries, parsed.value.path);
+    // 4. Serialise to JSON and wrap.
+    const inner = try list_directory_mod.toJSON(ctx.allocator, entries, resolved_path);
     const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
@@ -204,4 +214,115 @@ test "execListDirectory: absolute path returns success envelope without validato
     try testing.expect(obj2.get("success").?.bool);
     try testing.expectEqualStrings("/tmp", obj2.get("data").?.object.get("path").?.string);
     try testing.expect(obj2.get("error").? == .null);
+}
+
+test "execListDirectory: relative path resolves against ctx.cwd" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = path_buf[0..root_len];
+
+    try tmp.dir.createDirPath(testing.io, "graph");
+    const file = try tmp.dir.createFile(testing.io, "graph/index.txt", .{});
+    defer file.close(testing.io);
+
+    var agent_temperature: f32 = 0.0;
+    var is_thinking: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = allocator,
+        .io = testing.io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test_session",
+        .model = "test",
+        .cwd = root_abs,
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &agent_temperature,
+        .is_thinking = &is_thinking,
+        .environment = null,
+        .active_loops = undefined,
+    };
+    const tool_call = agent.ToolCall{
+        .id = "call_relative",
+        .type = "function",
+        .function = .{
+            .name = "list_directory",
+            .arguments = "{\"path\":\"graph\",\"respect_ignore_files\":false}",
+        },
+    };
+
+    const result = try execListDirectory(ctx, tool_call);
+    defer result.deinit(allocator);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("success").?.bool);
+
+    const expected_dir = try std.fs.path.join(allocator, &.{ root_abs, "graph" });
+    const data = obj.get("data").?.object;
+    try testing.expectEqualStrings(expected_dir, data.get("path").?.string);
+
+    const entries = data.get("entries").?.array.items;
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqualStrings("index.txt", entries[0].object.get("name").?.string);
+}
+
+test "execListDirectory: omitted path uses ctx.cwd instead of asserting" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_len = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = path_buf[0..root_len];
+
+    var agent_temperature: f32 = 0.0;
+    var is_thinking: bool = false;
+    const ctx = ToolExecContext{
+        .allocator = allocator,
+        .io = testing.io,
+        .db = undefined,
+        .logger = undefined,
+        .session_id = "test_session",
+        .model = "test",
+        .cwd = root_abs,
+        .api_key = "test",
+        .base_url = "test",
+        .config = undefined,
+        .agent_temperature = &agent_temperature,
+        .is_thinking = &is_thinking,
+        .environment = null,
+        .active_loops = undefined,
+    };
+    const tool_call = agent.ToolCall{
+        .id = "call_default_path",
+        .type = "function",
+        .function = .{
+            .name = "list_directory",
+            .arguments = "{}",
+        },
+    };
+
+    const result = try execListDirectory(ctx, tool_call);
+    defer result.deinit(allocator);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("success").?.bool);
+
+    const data = obj.get("data").?.object;
+    const expected_dir = try std.fs.path.join(allocator, &.{ root_abs, "." });
+    try testing.expectEqualStrings(expected_dir, data.get("path").?.string);
+    try testing.expectEqual(@as(i64, 0), data.get("count").?.integer);
 }

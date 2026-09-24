@@ -4,15 +4,10 @@
 //! Companion to `glob` (which finds files by pattern, recursive) —
 //! `list_directory` answers "what's in this folder?" with one level.
 //!
-//! SECURITY: the input `path` MUST be relative (resolved against the
-//! session's cwd by the exec wrapper before reaching here). Absolute
-//! paths are rejected upstream — see path_security.zig. The
-//! `dir_path_abs` parameter to `execute_list_directory` is expected to
-//! be an absolute path (it's the result of the upstream resolver), and
-//! is what we pass to `openDirAbsolute`.
-//!
-//! Spec: docs/superpowers/specs/2026-08-14-ban-absolute-paths-design.md
-//! Plan: docs/superpowers/plans/2026-08-14-ban-absolute-paths.md (Task 5)
+//! PATH HANDLING: the LLM-facing input may be relative or absolute.
+//! The exec wrapper resolves relative paths against the active session
+//! or worktree cwd. The lower-level `execute_list_directory` API only
+//! accepts an absolute path because it passes it to `openDirAbsolute`.
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -39,11 +34,12 @@ pub fn freeEntries(allocator: std.mem.Allocator, entries: []Entry) void {
     allocator.free(entries);
 }
 
-/// `dir_path_abs` MUST be an absolute path (validated by the upstream
-/// exec wrapper). The function will NOT re-validate — that's the
-/// wrapper's job.
+/// `dir_path_abs` MUST be an absolute path. The exec wrapper resolves
+/// relative LLM input before calling this function; this guard keeps a
+/// future direct caller from triggering `openDirAbsolute`'s assertion.
 ///
 /// Behaviour:
+/// - Relative path → returns `error.PathNotAbsolute`
 /// - Non-existent / non-directory path → returns `error.PathNotFound`
 /// - Hidden entries (`.foo`) are skipped unless `hidden == true`
 /// - `respect_ignore_files == true` (default) → entries ignored by
@@ -56,6 +52,8 @@ pub fn execute_list_directory(
     hidden: bool,
     respect_ignore_files: bool,
 ) ![]Entry {
+    if (!std.fs.path.isAbsolute(dir_path_abs)) return error.PathNotAbsolute;
+
     var entries = std.ArrayList(Entry).empty;
     errdefer {
         for (entries.items) |e| {
@@ -317,6 +315,17 @@ test "execute_list_directory: hidden=true includes dotfiles" {
     // alphabetical: .hidden < visible.txt
     try testing.expectEqualStrings(".hidden", entries[0].name);
     try testing.expectEqualStrings("visible.txt", entries[1].name);
+}
+
+test "execute_list_directory: rejects a relative path without panicking" {
+    const result = list_directory.execute_list_directory(
+        testing.allocator,
+        testing.io,
+        ".",
+        false,
+        false,
+    );
+    try testing.expectError(error.PathNotAbsolute, result);
 }
 
 test "execute_list_directory: returns PathNotFound for missing dir" {
