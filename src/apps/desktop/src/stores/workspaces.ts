@@ -1043,16 +1043,25 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // Merge helper for the background revalidate: refresh rows in
     // place without clobbering items already loaded for the active
     // workspace (or expanded UI state) while the fetch was in flight.
+    // Existing row identity must survive so an in-flight lazy item
+    // loader can still attach its result after this metadata refresh.
     const mergeList = (wsList: Workspace[]) => {
       const expandedWorkspaces = loadExpandedWorkspaces()
       const prevById = new Map(workspaces.value.map((w) => [w.id, w]))
       workspaces.value = (wsList || []).map((ws: Workspace) => {
         const prev = prevById.get(ws.id)
-        return {
-          ...ws,
-          expanded: prev?.expanded ?? expandedWorkspaces.has(ws.id),
-          items: prev?.items ?? [],
+        if (!prev) {
+          return {
+            ...ws,
+            expanded: expandedWorkspaces.has(ws.id),
+            items: [],
+          }
         }
+        return Object.assign(prev, ws, {
+          expanded: prev.expanded ?? expandedWorkspaces.has(ws.id),
+          items: prev.items ?? [],
+          items_count: ws.items_count,
+        })
       })
     }
 
