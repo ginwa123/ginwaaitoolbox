@@ -8,11 +8,10 @@
  * the item row when ANY of its tasks is processing.
  *
  * Updated 2026-08-29: the yellow spinner circle was replaced by a
- * SessionSlider that always renders the DOM element but is hidden
- * (`opacity: 0`, `aria-busy="false"`) when no worker is running.
- * Tests below assert on the VISIBLE state — count sliders with
- * `aria-busy="true"`. The slider also moved to the BOTTOM of the row
- * (was the leftmost slot); the DOM-order test was updated accordingly.
+ * SessionSlider circle spinner that only renders while a worker is
+ * running (`aria-busy="true"` when present, no DOM element when
+ * idle). Tests below assert on the VISIBLE state — count spinners
+ * with `aria-busy="true"`.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -173,13 +172,10 @@ describe('WorkspaceItem item-row processing slider', () => {
     expect(wrapper.findAll('[data-testid="item-active-dot"]')).toHaveLength(0)
   })
 
-  it('item-processing slider appears AFTER the chevron in DOM order (bottom edge of row)', async () => {
-    // The visual contract changed in 2026-08-29: the slider was
-    // moved from the leftmost slot (where the yellow circle used
-    // to sit) to the BOTTOM edge of the row (a thin yellow strip).
-    // It now sits AFTER the chevron + content in DOM order, not
+  it('item-processing spinner appears AFTER the chevron in DOM order', async () => {
+    // The spinner sits AFTER the chevron + content in DOM order, not
     // before. Verified by finding the chevron in the row's HTML
-    // BEFORE the slider testid.
+    // BEFORE the spinner testid.
     const { wrapper, processingState } = mountWorkspaceItem()
     processingState.value = { task_alpha: true }
     await nextTick()

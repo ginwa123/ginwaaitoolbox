@@ -75,27 +75,26 @@ describe('AgentChatView', () => {
     expect(root.getAttribute('style')).not.toContain('--semantic-card-bg')
   })
 
-  it('hides the header loading slider while the session is idle', async () => {
+  it('hides the header loading spinner while the session is idle', async () => {
     mountChatView()
     await nextTick()
-    const slider = document.querySelector('[data-testid="agent-chat-slider"]')
-    expect(slider).toBeTruthy()
-    expect(slider?.getAttribute('aria-busy')).toBe('false')
+    const spinner = document.querySelector('[data-testid="agent-chat-slider"]')
+    expect(spinner).toBeNull()
   })
 
-  it('shows the header loading slider while the session is processing', async () => {
+  it('shows the header loading spinner while the session is processing', async () => {
     const { processingState } = mountChatView()
     processingState.value = { task_1: true }
     await nextTick()
-    const slider = document.querySelector('[data-testid="agent-chat-slider"]')
-    expect(slider?.getAttribute('aria-busy')).toBe('true')
+    const spinner = document.querySelector('[data-testid="agent-chat-slider"]')
+    expect(spinner?.getAttribute('aria-busy')).toBe('true')
   })
 
-  it('keeps the slider hidden when a different session is processing', async () => {
+  it('keeps the spinner hidden when a different session is processing', async () => {
     const { processingState } = mountChatView()
     processingState.value = { some_other_task: true }
     await nextTick()
-    const slider = document.querySelector('[data-testid="agent-chat-slider"]')
-    expect(slider?.getAttribute('aria-busy')).toBe('false')
+    const spinner = document.querySelector('[data-testid="agent-chat-slider"]')
+    expect(spinner).toBeNull()
   })
 })
