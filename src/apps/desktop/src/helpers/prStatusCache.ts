@@ -28,17 +28,19 @@ const TTL_MS = 60_000
 const MAX_RETRIES = 2
 const RETRY_DELAYS_MS = [300, 900]
 
+export interface PrInfo {
+  status: string
+  prUrl: string
+  mergeable: string
+  merge_state: string
+}
+
 interface CacheEntry {
   status: string
+  prUrl: string
   mergeable: string
   merge_state: string
   at: number
-}
-
-interface PrStatusFull {
-  status: string
-  mergeable: string
-  merge_state: string
 }
 
 /** CONFLICTING (or DIRTY) means the PR cannot merge until conflicts resolve. */
@@ -49,7 +51,7 @@ export function isPrConflictValue(mergeable: string, merge_state: string): boole
 }
 
 const cache = new Map<string, CacheEntry>()
-const inflight = new Map<string, Promise<PrStatusFull>>()
+const inflight = new Map<string, Promise<PrInfo>>()
 
 /** Test-only escape hatch — clears both the TTL cache and in-flight map. */
 export function clearPrStatusCache(): void {
@@ -72,7 +74,9 @@ function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms))
 }
 
-async function fetchWithRetry(cwd: string, branch: string): Promise<PrStatusFull> {
+const EMPTY_INFO: PrInfo = { status: '', prUrl: '', mergeable: '', merge_state: '' }
+
+async function fetchWithRetry(cwd: string, branch: string): Promise<PrInfo> {
   let lastErr: unknown = null
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 1000)
@@ -80,6 +84,7 @@ async function fetchWithRetry(cwd: string, branch: string): Promise<PrStatusFull
       const data = await getPrStatus(cwd, branch)
       return {
         status: (data.status || data.state || '').toLowerCase(),
+        prUrl: data.pr_url || '',
         mergeable: (data.mergeable || '').toUpperCase(),
         merge_state: (data.merge_state || '').toUpperCase(),
       }
@@ -89,7 +94,48 @@ async function fetchWithRetry(cwd: string, branch: string): Promise<PrStatusFull
     }
   }
   console.warn(`[pr-status] giving up on branch "${branch}":`, lastErr)
-  return { status: '', mergeable: '', merge_state: '' }
+  return { ...EMPTY_INFO }
+}
+
+/**
+ * PR status + URL for a repo + branch. Never rejects — unknown
+ * (no cwd/branch, no PR, `gh` missing, fetch failing) resolves to
+ * `{ status: '', prUrl: '' }`.
+ */
+export function fetchPrInfoCached(cwd: string, branch: string): Promise<PrInfo> {
+  if (!cwd || !branch) return Promise.resolve({ ...EMPTY_INFO })
+  const k = cacheKey(cwd, branch)
+  const hit = cache.get(k)
+  if (hit && Date.now() - hit.at < TTL_MS)
+    return Promise.resolve({
+      status: hit.status,
+      prUrl: hit.prUrl,
+      mergeable: hit.mergeable,
+      merge_state: hit.merge_state,
+    })
+  const ongoing = inflight.get(k)
+  if (ongoing) return ongoing
+  const p = fetchWithRetry(cwd, branch).then(
+    (info) => {
+      cache.set(k, {
+        status: info.status,
+        prUrl: info.prUrl,
+        mergeable: info.mergeable,
+        merge_state: info.merge_state,
+        at: Date.now(),
+      })
+      inflight.delete(k)
+      return info
+    },
+    () => {
+      // Defensive: fetchWithRetry never rejects, but never leak the
+      // in-flight slot if that invariant ever breaks.
+      inflight.delete(k)
+      return { ...EMPTY_INFO }
+    },
+  )
+  inflight.set(k, p)
+  return p
 }
 
 /**
@@ -98,40 +144,15 @@ async function fetchWithRetry(cwd: string, branch: string): Promise<PrStatusFull
  * kept failing). Never rejects.
  */
 export function fetchPrStatusCached(cwd: string, branch: string): Promise<string> {
-  return fetchPrStatusFullCached(cwd, branch).then((full) => full.status)
+  return fetchPrInfoCached(cwd, branch).then((info) => info.status)
 }
 
 /**
  * Full cached PR status including the mergeable flag, so card/row badges
  * can surface a conflict hint without an extra `gh` call. Never rejects.
  */
-export function fetchPrStatusFullCached(cwd: string, branch: string): Promise<PrStatusFull> {
-  if (!cwd || !branch) return Promise.resolve({ status: '', mergeable: '', merge_state: '' })
-  const k = cacheKey(cwd, branch)
-  const hit = cache.get(k)
-  if (hit && Date.now() - hit.at < TTL_MS)
-    return Promise.resolve({
-      status: hit.status,
-      mergeable: hit.mergeable,
-      merge_state: hit.merge_state,
-    })
-  const ongoing = inflight.get(k)
-  if (ongoing) return ongoing
-  const p = fetchWithRetry(cwd, branch).then(
-    (full) => {
-      cache.set(k, { ...full, at: Date.now() })
-      inflight.delete(k)
-      return full
-    },
-    () => {
-      // Defensive: fetchWithRetry never rejects, but never leak the
-      // in-flight slot if that invariant ever breaks.
-      inflight.delete(k)
-      return { status: '', mergeable: '', merge_state: '' } as PrStatusFull
-    },
-  )
-  inflight.set(k, p)
-  return p
+export function fetchPrStatusFullCached(cwd: string, branch: string): Promise<PrInfo> {
+  return fetchPrInfoCached(cwd, branch)
 }
 
 /**
@@ -140,7 +161,29 @@ export function fetchPrStatusFullCached(cwd: string, branch: string): Promise<Pr
  * fetches. Never rejects.
  */
 export function fetchPrConflictCached(cwd: string, branch: string): Promise<boolean> {
-  return fetchPrStatusFullCached(cwd, branch).then((full) =>
-    isPrConflictValue(full.mergeable, full.merge_state),
+  return fetchPrInfoCached(cwd, branch).then((info) =>
+    isPrConflictValue(info.mergeable, info.merge_state),
   )
+}
+
+/**
+ * Repo base (https://github.com/owner/repo) derived from a PR URL
+ * (https://github.com/owner/repo/pull/123). Empty string when the
+ * URL is not a pull-request URL.
+ */
+export function repoBaseFromPrUrl(prUrl: string): string {
+  if (!prUrl) return ''
+  const idx = prUrl.indexOf('/pull/')
+  if (idx < 0) return ''
+  return prUrl.slice(0, idx)
+}
+
+/**
+ * Branch page URL (…/tree/<branch>) derived from the PR URL's repo
+ * base. Empty string when there is no PR URL to derive the repo from.
+ */
+export function branchUrlFromPrUrl(prUrl: string, branch: string): string {
+  const base = repoBaseFromPrUrl(prUrl)
+  if (!base || !branch) return ''
+  return `${base}/tree/${encodeURIComponent(branch)}`
 }

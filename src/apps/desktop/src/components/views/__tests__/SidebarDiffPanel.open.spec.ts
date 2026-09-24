@@ -141,7 +141,9 @@ describe('SidebarDiffPanel file context menu', () => {
       expect(openSpy).toHaveBeenCalledTimes(1)
       const href = String(openSpy.mock.calls[0]?.[0] ?? '')
       expect(href).toContain('view=code-editor')
-      expect(href).toContain(`file=${btoa('dirty.txt')}`)
+      // Readable link: plain relative path, no base64, no cwd leak.
+      expect(href).toContain('file=dirty.txt')
+      expect(href).not.toContain('cwd=')
       // Menu action does not navigate inline (no open-file emit).
       expect(wrapper.emitted('show-diff')).toBeUndefined()
     } finally {

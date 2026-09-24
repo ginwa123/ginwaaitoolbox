@@ -1,141 +1,131 @@
 <!--
   SessionSlider.vue — per-session LLM "still working" indicator.
 
-  Renders a thin yellow bar at the bottom edge of its parent
-  whenever `processingState[sessionId]` is true. Owned by `App.vue`
-  via Vue's provide/inject (a `Ref<Record<string, boolean>>`); the
-  SSE worker event handler in App.vue flips entries true/false so
-  this component is reactive for free.
+  Renders a small yellow circle spinner inline in its parent whenever
+  `processingState[sessionId]` is true. Owned by `App.vue` via Vue's
+  provide/inject (a `Ref<Record<string, boolean>>`); the SSE worker
+  event handler in App.vue flips entries true/false so this component
+  is reactive for free.
 
-  Where it mounts
-  ───────────────
-  - ChatsList rows (sidebar): one slider per row, just below the
-    chat name — replaces the existing yellow spinner circle.
-    The ChatView and SubAgentPeekPanel deliberately do NOT mount
-    this component: the sidebar row already signals "this session
-    is busy" for the same session, and adding a duplicate slider
-    elsewhere would be redundant (see design memory
-    `design-no-redundant-loading-indicators`).
-
-  Why a slider, not a spinner
-  ──────────────────────────
-  The existing yellow spinner is a single point — the eye has to
-  FIND it on every glance to confirm "the agent is still working".
-  A horizontal sliding bar is a continuous motion across the full
-  width of the chat row: even when looking at the chat body, the
-  peripheral vision catches the slider at the row's edge. Same
-  idle/processing signal, lower cognitive cost.
+  The spinner uses an inline SVG and native SVG rotation rather than a
+  component-scoped CSS border-rotation keyframe. Firefox supports SVG
+  animation natively, so the busy indicator does not depend on a CSS
+  keyframe being applied to the spinner element.
 
   Reduced motion
   ──────────────
-  Under `@media (prefers-reduced-motion: reduce)` the slide animation
-  is suppressed and the bar renders as a static muted strip —
-  matches the pattern established in `SseStatusBadge.vue:152-156`.
-
-  NOT a network loading indicator
-  ───────────────────────────────
-  This component is for the LLM WORKER state (long-running SSE
-  streaming), not transient HTTP fetches. A separate future
-  component would handle "data is fetching" — this one's only job
-  is to visualize an active worker on a specific session.
+  When the user requests reduced motion, the native rotation is not
+  rendered and the SVG becomes a static muted ring instead.
 -->
 <script setup lang="ts">
-import { computed, inject, ref, type Ref } from 'vue'
+import { computed, inject, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
 
 const props = withDefaults(
   defineProps<{
     sessionId: string
-    /**
-     * `data-testid` attribute for the root element. Defaults to
-     * `'session-slider'`; consumers mounting the component at different
-     * DOM levels (workspace row vs. workspace-item row vs. task row)
-     * pass distinct ids so existing selector-based tests keep working.
-     */
+    /** A distinct `data-testid` lets each sidebar surface target its own spinner. */
     testId?: string
   }>(),
   { testId: 'session-slider' },
 )
 
-// `App.vue:10-11` provides a `processingState: Ref<Record<string,
-// boolean>>` keyed by sessionId. The injected ref defaults to an
-// empty ref so a unit test that mounts SessionSlider WITHOUT a
-// `provide` (e.g. a transitive render path) doesn't crash — it
-// just renders nothing.
 const processingState = inject<Ref<Record<string, boolean>>>(
   'processingState',
   ref({}) as Ref<Record<string, boolean>>,
 )
 
 const isVisible = computed(() => !!processingState.value[props.sessionId])
+const prefersReducedMotion = ref(false)
+let reducedMotionQuery: MediaQueryList | undefined
+
+const syncReducedMotion = () => {
+  prefersReducedMotion.value = reducedMotionQuery?.matches ?? false
+}
+
+onMounted(() => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
+  reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  syncReducedMotion()
+  reducedMotionQuery.addEventListener('change', syncReducedMotion)
+})
+
+onBeforeUnmount(() => {
+  reducedMotionQuery?.removeEventListener('change', syncReducedMotion)
+})
 </script>
 
 <template>
-  <div
-    class="session-slider"
-    :class="{ 'session-slider--visible': isVisible }"
+  <span
+    v-if="isVisible"
+    class="session-spinner"
     :data-testid="testId"
-    role="progressbar"
-    :aria-busy="isVisible"
+    role="status"
+    aria-busy="true"
     aria-live="polite"
+    aria-label="Agent is working"
   >
-    <div
-      class="session-slider__track"
+    <svg
+      class="session-spinner__svg"
       data-testid="session-slider-track"
-    />
-  </div>
+      viewBox="0 0 20 20"
+      aria-hidden="true"
+    >
+      <circle class="session-spinner__track" cx="10" cy="10" r="8" pathLength="100" />
+      <g data-testid="session-spinner-rotor">
+        <circle class="session-spinner__arc" cx="10" cy="10" r="8" pathLength="100" />
+        <animateTransform
+          v-if="!prefersReducedMotion"
+          data-testid="session-spinner-motion"
+          attributeName="transform"
+          type="rotate"
+          from="0 10 10"
+          to="360 10 10"
+          dur="0.8s"
+          repeatCount="indefinite"
+        />
+      </g>
+    </svg>
+  </span>
 </template>
 
 <style scoped>
-.session-slider {
-  /* Self-positioning: pins itself to the bottom edge of whatever
-     `position: relative` parent it's dropped into, inset to match
-     the parent's left/right padding (`--row-px`) so the bar starts
-     and ends at the same x-position as the row's text content. The
-     consumer doesn't need to set any positioning classes — just put
-     it as the LAST child of the parent (any subsequent siblings
-     would render on top of the slider because z-index defaults to
-     auto and the slider is taken out of the flex flow). */
-  position: absolute;
-  /* `--row-px` mirrors the parent's `px-3` (Tailwind = 0.75rem = 12px)
-     so the bar's left/right edge aligns with the row's text content.
-     Override per-mount via style="--row-px: 1.5rem" if the consumer
-     uses different horizontal padding. */
-  left: var(--row-px, 0.75rem);
-  right: var(--row-px, 0.75rem);
-  bottom: 0;
-  height: 2px;
-  overflow: hidden;
-  background: rgb(0 0 0 / 0.06);
-  border-radius: 1px;
-  opacity: 0;
-  transition: opacity 200ms ease-out;
+.session-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
   pointer-events: none;
 }
 
-.session-slider--visible {
-  opacity: 1;
+.session-spinner__svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+  overflow: visible;
 }
 
-.session-slider__track {
-  position: absolute;
-  inset: 0;
-  background: var(--color-yellow);
-  box-shadow: 0 0 4px rgb(196 178 138 / 0.5);
-  animation: session-slider-slide 1.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  transform: translateX(-100%);
-  width: 100%;
+.session-spinner__track,
+.session-spinner__arc {
+  fill: none;
+  stroke: var(--color-yellow);
+  stroke-width: 2.5;
 }
 
-@keyframes session-slider-slide {
-  0%   { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+.session-spinner__track {
+  opacity: 0.22;
+}
+
+.session-spinner__arc {
+  stroke-linecap: round;
+  stroke-dasharray: 25 75;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .session-slider__track {
-    animation: none;
-    transform: none;
-    opacity: 0.55;
+  .session-spinner__arc {
+    stroke-dasharray: 100 0;
+    opacity: 0.7;
   }
 }
 </style>

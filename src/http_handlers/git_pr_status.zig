@@ -46,14 +46,34 @@ fn normalizeStatus(state: []const u8) []const u8 {
     return state;
 }
 
+/// Max bytes of `gh` stderr (or context) surfaced in the HTTP 502
+/// `error` field. `gh` failures are usually one line (`HTTP 401: ...`,
+/// `could not resolve to a Repository ...`), but auth hints can run a
+/// few lines — 500 bytes keeps the real cause without dumping pages.
+const MAX_FETCH_DETAIL: usize = 500;
+
+/// Store a trimmed + capped copy of `msg` into `slot` (best-effort;
+/// leaves `slot` null on empty input or alloc failure so callers can
+/// fall back to the generic hint). Allocs from the request arena.
+fn setFetchDetail(allocator: std.mem.Allocator, slot: *?[]u8, msg: []const u8) void {
+    const trimmed = std.mem.trim(u8, msg, " \n\r\t");
+    if (trimmed.len == 0) return;
+    const take = @min(trimmed.len, MAX_FETCH_DETAIL);
+    slot.* = allocator.dupe(u8, trimmed[0..take]) catch null;
+}
+
 /// Run `gh pr view` in `path` and return the raw stdout JSON (owned).
 /// `pr_arg` is "" for "current branch's PR", otherwise a number, URL,
 /// or branch name passed straight through to `gh`.
+/// On failure the real cause (`gh` stderr or context) is duped into
+/// `fetch_detail` so the handler can surface it instead of a generic
+/// "check PR number/URL, provider, and gh auth" message.
 fn runGhPrView(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
     pr_arg: []const u8,
+    fetch_detail: *?[]u8,
 ) ![]u8 {
     // Build argv on the stack: `gh pr view [<pr>] --json <fields>`.
     // When pr_arg is empty we omit it so `gh` resolves the PR for the
@@ -112,6 +132,7 @@ fn runGhPrView(
     const term = child.wait(io) catch {
         allocator.free(stdout_buf.items);
         allocator.free(stderr_buf.items);
+        setFetchDetail(allocator, fetch_detail, "failed to wait for gh pr view process");
         return error.FetchFailed;
     };
     switch (term) {
@@ -121,6 +142,19 @@ fn runGhPrView(
                 const is_no_pr = std.ascii.indexOfIgnoreCase(stderr_trimmed, "no pull request") != null or
                     std.ascii.indexOfIgnoreCase(stderr_trimmed, "no pull requests found") != null or
                     std.ascii.indexOfIgnoreCase(stderr_trimmed, "could not find") != null;
+                // Surface the real `gh` stderr (auth failures, bad
+                // PR numbers, rate limits) instead of a generic hint.
+                // `is_no_pr` stays a 404; everything else becomes a
+                // 502 carrying this detail.
+                if (!is_no_pr) {
+                    if (stderr_trimmed.len > 0) {
+                        setFetchDetail(allocator, fetch_detail, stderr_trimmed);
+                    } else {
+                        var code_buf: [64]u8 = undefined;
+                        const code_msg = std.fmt.bufPrint(&code_buf, "gh pr view exited with code {d} (no stderr)", .{code}) catch "gh pr view failed (no stderr)";
+                        setFetchDetail(allocator, fetch_detail, code_msg);
+                    }
+                }
                 allocator.free(stdout_buf.items);
                 allocator.free(stderr_buf.items);
                 if (is_no_pr) return error.NoAssociatedPr;
@@ -130,6 +164,7 @@ fn runGhPrView(
         else => {
             allocator.free(stdout_buf.items);
             allocator.free(stderr_buf.items);
+            setFetchDetail(allocator, fetch_detail, "gh pr view terminated by signal");
             return error.FetchFailed;
         },
     }
@@ -143,6 +178,7 @@ fn useCase(
     path: []const u8,
     pr_arg: []const u8,
     provider_override: ?[]const u8,
+    fetch_detail: *?[]u8,
 ) !http_response.GitPrStatusResponse {
     // 1) Must be a git repo.
     {
@@ -160,22 +196,39 @@ fn useCase(
     // clear message instead of a confusing `gh` stderr.
     if (provider_override) |o| {
         if (o.len > 0) {
-            const p = pr_provider.PrProvider.fromString(o) orelse return error.FetchFailed;
-            if (p != .github) return error.FetchFailed;
+            const p = pr_provider.PrProvider.fromString(o) orelse {
+                setFetchDetail(allocator, fetch_detail, "unknown provider (expected github, gitlab, or generic)");
+                return error.FetchFailed;
+            };
+            if (p != .github) {
+                setFetchDetail(allocator, fetch_detail, "only the github provider is supported for PR status in v1");
+                return error.FetchFailed;
+            }
         }
     } else if (pr_arg.len > 0 and std.mem.indexOf(u8, pr_arg, "://") != null) {
         const normalized = pr_provider.normalizePrUrl(allocator, pr_arg) catch null;
         if (normalized) |n| {
             defer allocator.free(n);
-            if (pr_provider.detectProvider(n) != .github) return error.FetchFailed;
+            if (pr_provider.detectProvider(n) != .github) {
+                setFetchDetail(allocator, fetch_detail, "PR URL is not a GitHub URL (v1 supports github only)");
+                return error.FetchFailed;
+            }
         }
     }
 
-    const raw = try runGhPrView(allocator, io, path, pr_arg);
+    const raw = runGhPrView(allocator, io, path, pr_arg, fetch_detail) catch |err| {
+        // runGhPrView already stored the `gh` stderr in fetch_detail.
+        return err;
+    };
     defer allocator.free(raw);
 
     const trimmed = std.mem.trim(u8, raw, " \n\r");
-    const parsed = std.json.parseFromSliceLeaky(GhPrView, allocator, trimmed, .{ .ignore_unknown_fields = true }) catch return error.FetchFailed;
+    const parsed = std.json.parseFromSliceLeaky(GhPrView, allocator, trimmed, .{ .ignore_unknown_fields = true }) catch {
+        var parse_buf: [256]u8 = undefined;
+        const parse_msg = std.fmt.bufPrint(&parse_buf, "invalid JSON from gh pr view ({d} bytes stdout)", .{raw.len}) catch "invalid JSON from gh pr view";
+        setFetchDetail(allocator, fetch_detail, parse_msg);
+        return error.FetchFailed;
+    };
 
     // parseFromSliceLeaky BORROWS string slices from `raw` (no dupes),
     // so every string must be duped into the request arena before `raw`
@@ -231,7 +284,8 @@ pub fn gitPrStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         }
     }
 
-    const result = useCase(allocator, io, path_param, pr_param, provider_param) catch |err| switch (err) {
+    var fetch_detail: ?[]u8 = null;
+    const result = useCase(allocator, io, path_param, pr_param, provider_param, &fetch_detail) catch |err| switch (err) {
         error.NotARepository => {
             return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeGitStatusErrorResponse(allocator, "not a git repository") });
         },
@@ -246,7 +300,15 @@ pub fn gitPrStatusHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
             return res.jsonResponse(.{ .status_code = 404, .data = try http_response.makeGitStatusErrorResponse(allocator, msg) });
         },
         error.FetchFailed => {
-            return res.jsonResponse(.{ .status_code = 502, .data = try http_response.makeGitStatusErrorResponse(allocator, "failed to fetch PR status (check PR number/URL, provider, and gh auth)") });
+            // Surface the real `gh` stderr (auth, bad PR number, rate
+            // limit) so DevTools shows WHY it failed instead of the
+            // generic hint. Falls back to the hint when no detail was
+            // captured (e.g. empty stderr).
+            const msg = if (fetch_detail) |d|
+                try std.fmt.allocPrint(allocator, "failed to fetch PR status: {s}", .{d})
+            else
+                try allocator.dupe(u8, "failed to fetch PR status (check PR number/URL, provider, and gh auth)");
+            return res.jsonResponse(.{ .status_code = 502, .data = try http_response.makeGitStatusErrorResponse(allocator, msg) });
         },
         else => return err,
     };

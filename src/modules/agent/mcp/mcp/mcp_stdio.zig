@@ -162,6 +162,22 @@ fn readFramed(
     deadline_ns: u64,
     is_cancelled: ?*const fn () bool,
 ) StdioError![]u8 {
+    // Single-message wrapper (tests + one-shot callers). Builds a
+    // throwaway reader; callers doing back-to-back recv() on one child
+    // must use readFramedWithReader with a persistent reader instead,
+    // or coalesced lines are buffered-then-dropped.
+    var reader_buf: [4096]u8 = undefined;
+    var reader = std.Io.File.reader(file, io, &reader_buf);
+    return readFramedWithReader(allocator, io, &reader, deadline_ns, is_cancelled);
+}
+
+fn readFramedWithReader(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    reader: *std.Io.File.Reader,
+    deadline_ns: u64,
+    is_cancelled: ?*const fn () bool,
+) StdioError![]u8 {
     // Compute the absolute deadline ONCE on entry. `deadline_ns` is
     // a relative duration (0 = no timeout) — callers naturally think
     // in "give me 10 seconds", not "absolute nanosecond timestamp".
@@ -195,13 +211,10 @@ fn readFramed(
         }
     }.call;
 
-    // Use the Io.Reader abstraction — it tracks the file position internally,
-    // so we never have to reason about readStreaming's short-read semantics
-    // or off-by-one header detection. The 4 KiB buffer covers any reasonable
-    // MCP header (typically <256 bytes).
-    var reader_buf: [4096]u8 = undefined;
-    var reader = std.Io.File.reader(file, io, &reader_buf);
+    // Persistent reader is owned by the caller (StdioClient keeps it
+    // alive across recv() calls so coalesced lines survive).
     const iface = &reader.interface;
+    const file = reader.file;
 
     // Peek the first byte to detect framing style:
     //   '{' ⇒ newline-delimited JSON (the @modelcontextprotocol/sdk
@@ -434,6 +447,14 @@ pub const StdioClient = struct {
     /// production callers ignore this. Read with non-blocking recv semantics
     /// when used.
     stderr: ?std.Io.File,
+    /// Persistent stdout reader + buffer across recv() calls. readFramed
+    /// used to build a fresh 4KB Io.Reader per call; when a fast server
+    /// coalesces two JSON lines in one pipe write, the first recv()
+    /// buffered the second line then dropped it with the stack buffer,
+    /// so the second recv() hung. Keeping the reader alive preserves
+    /// buffered bytes via bufferedLen() checks.
+    read_buf: [4096]u8 = undefined,
+    reader: ?std.Io.File.Reader = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -508,7 +529,12 @@ pub const StdioClient = struct {
         is_cancelled: ?*const fn () bool,
     ) ![]u8 {
         const stdout = self.stdout orelse return StdioError.BrokenPipe;
-        return try readFramed(self.allocator, self.io, stdout, deadline_ns, is_cancelled);
+        // Lazy-init the persistent reader once; it stays alive across
+        // recv() calls so a fast server's coalesced lines are not lost.
+        if (self.reader == null) {
+            self.reader = std.Io.File.reader(stdout, self.io, &self.read_buf);
+        }
+        return try readFramedWithReader(self.allocator, self.io, &self.reader.?, deadline_ns, is_cancelled);
     }
 
     /// Convenience overload of `recv` with no timeout and no
@@ -534,6 +560,7 @@ pub const StdioClient = struct {
     /// pipes. Don't call `closeStdin` or `wait` after kill — both
     /// trigger assertions or use-after-free.
     pub fn deinit(self: *StdioClient) void {
+        self.reader = null;
         self.child.kill(self.io);
     }
 };
@@ -1413,4 +1440,35 @@ test "recv with deadline still delivers data (happy path)" {
     };
     defer testing.allocator.free(body);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1}", body);
+}
+
+test "recv preserves coalesced back-to-back lines (lightpanda hang)" {
+    // A fast server writes two NDJSON lines in one pipe write; the
+    // first recv() must not drop the second line with its buffer.
+    // Uses a printf child (not cat+stdin) so both lines exist before
+    // the first recv runs — no echo timing race. POSIX-only: printf
+    // via sh; Windows keeps old behavior (waitReadable is a no-op).
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const argv: []const []const u8 = &.{
+        "sh", "-c", "printf '{\"jsonrpc\":\"2.0\",\"id\":1}\\n{\"jsonrpc\":\"2.0\",\"id\":2}\\n'",
+    };
+    var client = StdioClient.init(testing.allocator, testing.io, argv) catch |err| {
+        if (err == error.ChildSpawnFailed) return;
+        return err;
+    };
+    defer client.deinit();
+
+    const first = client.recv(5_000 * std.time.ns_per_ms, null) catch |err| {
+        std.debug.print("!! coalesced first recv failed: {s} !!\n", .{@errorName(err)});
+        return err;
+    };
+    defer testing.allocator.free(first);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1}", first);
+
+    const second = client.recv(5_000 * std.time.ns_per_ms, null) catch |err| {
+        std.debug.print("!! coalesced second recv failed: {s} !!\n", .{@errorName(err)});
+        return err;
+    };
+    defer testing.allocator.free(second);
+    try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":2}", second);
 }

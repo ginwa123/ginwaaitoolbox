@@ -40,6 +40,7 @@ import {
   type OpenInCodeEditorFn,
   type OpenInCodeEditorOptions,
 } from '../composables/useCodeEditor'
+import { useCodeEditorSession } from '../composables/useCodeEditorSession'
 import { useDesignHandlers } from '../composables/useDesignHandlers'
 import { useCurrentMainView } from '../composables/useCurrentMainView'
 import {
@@ -167,6 +168,25 @@ async function handleBootUrl(): Promise<void> {
   }
 
   workspacesStore.initializeFromSystemFolder()
+
+  // 5. Overlay restore for deep links. The path boot above adopted
+  // the workspace/chat context; reopen the editor so a reload or
+  // shared link lands back on the file instead of silently dropping
+  // it. Legacy base64 links resolve through their query cwd; new
+  // readable links resolve through the adopted context (chat cwd is
+  // awaited here; project items resolve when the tree loads — the
+  // rightSidebarCwd watcher retries then).
+  if (query.view === 'code-editor' && query.file) {
+    if (parsed.kind === 'chat') {
+      await fetchChatSessionCwd(parsed.sessionId)
+    }
+    await codeEditorSession.restoreFromUrl({
+      fileParam: query.file,
+      queryCwd: query.cwd ?? '',
+      fallbackCwd: rightSidebarCwd.value,
+      lineParam: query.line,
+    })
+  }
 }
 
 // The `tab` param is client-only (names the browser tab) — carry it
@@ -907,65 +927,57 @@ const closeSkillViewer = () => {
   replaceWithCurrentContext()
 }
 
-// Code editor state
-const codeEditorFile = ref<api.FolderEntry | null>(null)
-const codeEditorContent = ref<string>('')
-const codeEditorLoading = ref(false)
-const codeEditorError = ref<string | null>(null)
-// 1-based line number to scroll to when the editor mounts. Set by
-// openInCodeEditor when the caller (e.g. diff view) wants the editor to
-// land on a specific line; cleared on close and on new file selection.
-const codeEditorRequestedLine = ref<number | null>(null)
+// Code editor session — single source of truth for the open-file
+// flow (file / content / loading / error / requested line / cwd).
+// All openers (sidebar explorer, diff views, tool-output cards)
+// call openInCodeEditor below, which delegates to the session; URL
+// restores go through session.restoreFromUrl. The session stores
+// the cwd explicitly and syncs the URL as a readable `?file=` path
+// appended to the current workspace route, so reloads and shared
+// links resolve without silent blanks.
+const codeEditorSession = useCodeEditorSession({
+  readFile: (cwd, path) => api.readFileContent(cwd, path),
+  writeFile: (cwd, path, content) => api.writeFileContent(cwd, path, content),
+  syncUrl: ({ path, line }) => {
+    // Keep-append: the editor keys merge into the current URL so the
+    // workspace/project/chat context in the path survives a reload.
+    // The file travels as a plain relative path (readable,
+    // hand-editable); the cwd stays out of the URL and resolves from
+    // the active workspace item / chat session on restore, so links
+    // never leak absolute server paths and stay valid across machines.
+    const next: Record<string, string> = {}
+    for (const [k, v] of Object.entries(route.query)) {
+      if (typeof v !== 'string' || v.length === 0) continue
+      if (k === 'view' || k === 'file' || k === 'line' || k === 'cwd') continue
+      next[k] = v
+    }
+    next.view = 'code-editor'
+    next.file = path
+    if (line !== null) {
+      next.line = String(line)
+    }
+    router.replace({
+      path: route.path,
+      query: next,
+    })
+  },
+})
+// Template and view bindings keep their names — they alias the
+// session refs (same objects, no duplicated state).
+const codeEditorFile = codeEditorSession.file
+const codeEditorContent = codeEditorSession.content
+const codeEditorLoading = codeEditorSession.loading
+const codeEditorError = codeEditorSession.error
+const codeEditorRequestedLine = codeEditorSession.requestedLine
 
 const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOptions) => {
   console.log('[openInCodeEditor] filePath:', opts.filePath, 'cwd:', opts.cwd, 'line:', opts.line)
-  if (!opts.cwd) return
-
-  // Build a FolderEntry-shaped object from the lightweight options
-  const file: api.FolderEntry = {
-    path: opts.filePath,
-    name: opts.fileName || opts.filePath.split('/').pop() || opts.filePath,
-    is_directory: false,
-    is_symlink: false,
-  }
-
   // Clear other overlays to prevent priority conflicts
   gitViewerFile.value = null
   gitViewerStaged.value = false
   skillViewerSkill.value = null
-
-  codeEditorFile.value = file
-  codeEditorRequestedLine.value = typeof opts.line === 'number' && opts.line > 0 ? opts.line : null
-  codeEditorLoading.value = true
-  codeEditorError.value = null
-  codeEditorContent.value = ''
-
-  try {
-    const response = await api.readFileContent(opts.cwd, file.path)
-    codeEditorContent.value = response.content
-    console.log('[openInCodeEditor] codeEditorFile.value after set:', codeEditorFile.value?.path)
-    // Navigate to code-editor view
-    // Encode the file path for URL (base64 to handle special chars)
-    const encodedPath = btoa(file.path)
-    const query: Record<string, string> = {
-      view: 'code-editor',
-      file: encodedPath,
-      cwd: opts.cwd,
-    }
-    if (codeEditorRequestedLine.value !== null) {
-      query.line = String(codeEditorRequestedLine.value)
-    }
-    router.replace({
-      path: '/app',
-      query,
-    })
-  } catch (err) {
-    console.error('Failed to read file:', err)
-    codeEditorError.value = 'Failed to read file'
-    codeEditorContent.value = ''
-  } finally {
-    codeEditorLoading.value = false
-  }
+  await codeEditorSession.openFile(opts)
+  console.log('[openInCodeEditor] codeEditorFile.value after set:', codeEditorFile.value?.path)
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
@@ -982,10 +994,22 @@ const _handleCodeEditorFileClick = (file: api.FolderEntry) => {
 provide<OpenInCodeEditorFn>(OPEN_IN_CODE_EDITOR_KEY, openInCodeEditor)
 
 const closeCodeEditor = () => {
-  codeEditorFile.value = null
-  codeEditorContent.value = ''
-  codeEditorError.value = null
-  codeEditorRequestedLine.value = null
+  codeEditorSession.clear()
+  // Strip only the editor keys so the underlying board/chat URL
+  // (path plus pageId/sorts/tab/…) survives the close. A bare /app
+  // editor link (legacy bookmark, fresh reload with no path context)
+  // has nothing to keep — rebuild from the store there.
+  if (parseAppPath(route.path).kind !== 'landing') {
+    const next: Record<string, string> = {}
+    for (const [k, v] of Object.entries(route.query)) {
+      if (typeof v !== 'string' || v.length === 0) continue
+      if (k === 'file' || k === 'line' || k === 'cwd') continue
+      if (k === 'view' && v === 'code-editor') continue
+      next[k] = v
+    }
+    router.replace({ path: route.path, query: next })
+    return
+  }
   // Navigate back to previous view. Preserve the workspace item
   // (folder / kanban / design) IDs when the user opened the code
   // editor while on a workspace item — see closeGitViewer for the
@@ -994,44 +1018,8 @@ const closeCodeEditor = () => {
   replaceWithCurrentContext()
 }
 
-const loadCodeEditorContent = async () => {
-  if (!codeEditorFile.value) return
-  // URL restore (?view=code-editor&file=..&cwd=..) can run before the
-  // sidebar cwd resolves — fall back to the query cwd so reloads don't
-  // leave the editor empty.
-  const queryCwd = typeof route.query.cwd === 'string' ? route.query.cwd : ''
-  const cwd = rightSidebarCwd.value || queryCwd
-  if (!cwd) return
-
-  codeEditorLoading.value = true
-  codeEditorError.value = null
-
-  try {
-    const response = await api.readFileContent(cwd, codeEditorFile.value.path)
-    codeEditorContent.value = response.content
-  } catch (err) {
-    console.error('Failed to read file:', err)
-    codeEditorError.value = 'Failed to read file'
-    codeEditorContent.value = ''
-  } finally {
-    codeEditorLoading.value = false
-  }
-}
-
 const handleCodeEditorSave = async (content: string) => {
-  if (!codeEditorFile.value) return
-  const queryCwd = typeof route.query.cwd === 'string' ? route.query.cwd : ''
-  const cwd = rightSidebarCwd.value || queryCwd
-  if (!cwd) return
-
-  try {
-    await api.writeFileContent(cwd, codeEditorFile.value.path, content)
-    codeEditorContent.value = content
-    console.log('File saved successfully')
-  } catch (err) {
-    console.error('Failed to save file:', err)
-    codeEditorError.value = 'Failed to save file'
-  }
+  await codeEditorSession.save(content)
 }
 
 const handleSubmitReview = async (message: string) => {
@@ -2414,21 +2402,25 @@ watch(
     // Path chat URL: adopt the chat when drifting (Back/Forward into
     // a chat from a board, or across chats). Mirrors the legacy
     // `?view=chat` branch below.
+    const isOverlayView = view === 'gitfile' || view === 'skill' || view === 'code-editor'
     if (parsed.kind === 'chat') {
       if (activeChatId.value !== `chat-${parsed.sessionId}`) {
         workspacesStore.setActiveWorkspaceItem(null)
         navigationStore.setActiveChat(parsed.sessionId, navigationStore.activeChatName)
       }
       await fetchChatSessionCwd(parsed.sessionId)
-      return
-    }
-
-    // Path project URLs: adopt workspace + item, sync the task chat
-    // suffix, drop any standalone chat. All writes are
-    // equality-guarded: in-app navigations set the same values
-    // before pushing, so this only ever acts on Back/Forward drift
-    // (same contract as the legacy board branch below).
-    if (parsed.kind === 'project' || parsed.kind === 'projectChat') {
+      // An overlay on a chat path (readable editor link) still needs
+      // its restore below — the path adoption above only rebuilds the
+      // cwd context the restore reads from.
+      if (!isOverlayView) return
+    } else if (parsed.kind === 'project' || parsed.kind === 'projectChat') {
+      // Path project URLs: adopt workspace + item, sync the task chat
+      // suffix, drop any standalone chat. All writes are
+      // equality-guarded: in-app navigations set the same values
+      // before pushing, so this only ever acts on Back/Forward drift
+      // (same contract as the legacy board branch below). Overlays
+      // fall through to their restore below for the same reason as
+      // the chat branch above.
       if (workspacesStore.activeWorkspaceId !== parsed.workspaceId) {
         await workspacesStore.setActiveWorkspace(parsed.workspaceId)
       }
@@ -2443,12 +2435,8 @@ watch(
         navigationStore.clearActiveChat()
       }
       chatSessionCwd.value = ''
-      return
-    }
-
-    // Landing: Back to /app drops any stale chat/task/item so the
-    // landing renders (same as the legacy bare-/app branch below).
-    if (parsed.kind === 'landing' && !view) {
+      if (!isOverlayView) return
+    } else if (parsed.kind === 'landing' && !view) {
       if (workspacesStore.activeWorkspaceItemId !== null) {
         workspacesStore.setActiveWorkspaceItem(null)
       }
@@ -2497,32 +2485,22 @@ watch(
         }
       }
     } else if (view === 'code-editor') {
-      // Restore code editor state from URL
-      const filePath = query.file as string
-      // Optional 1-based line number to scroll to on mount (set when the user
-      // clicks a line in the diff view). Only valid numbers > 0 are honored.
-      const lineParam = query.line as string | undefined
-      const parsedLine = lineParam ? parseInt(lineParam, 10) : NaN
-      const requestedLine = Number.isFinite(parsedLine) && parsedLine > 0 ? parsedLine : null
-
-      if (filePath) {
-        // Decode the file path
-        try {
-          const decodedPath = atob(filePath)
-          codeEditorFile.value = {
-            path: decodedPath,
-            name: decodedPath.split('/').pop() || decodedPath,
-            is_directory: false,
-            is_symlink: false,
-          }
-          codeEditorContent.value = ''
-          codeEditorError.value = null
-          codeEditorRequestedLine.value = requestedLine
-          // Fetch file content
-          loadCodeEditorContent()
-        } catch {
-          codeEditorFile.value = null
-        }
+      // Restore code editor state from URL (reload, Back/Forward,
+      // shared link). The session takes the plain `?file=` path as-is
+      // and still decodes legacy base64 links, prefers the explicit
+      // query cwd (legacy links) over the sidebar cwd, and skips the
+      // fetch when the URL already matches the open session (open →
+      // syncUrl → watcher echo costs one fetch). Every failure lands
+      // in an explicit error state — never a silent blank.
+      const fileParam = query.file as string | undefined
+      const queryCwd = typeof query.cwd === 'string' ? query.cwd : ''
+      if (fileParam) {
+        void codeEditorSession.restoreFromUrl({
+          fileParam,
+          queryCwd,
+          fallbackCwd: rightSidebarCwd.value,
+          lineParam: query.line as string | undefined,
+        })
       }
     } else {
       // Clear git viewer when not in gitfile view
@@ -2603,6 +2581,25 @@ watch(chatSessionCwd, (newCwd) => {
     const sessionId = activeChatId.value.replace(/^chat-/, '')
     localStorage.setItem(`session_cwd_${sessionId}`, newCwd)
   }
+})
+
+// Retry the editor restore when the cwd context arrives late. A cold
+// boot of a project editor link restores before the workspace tree
+// loads (no cwd yet, so an explicit 'No working directory' state);
+// when the item adoption then flips rightSidebarCwd, this replays the
+// same URL params instead of stranding the error. Only fires for that
+// exact error — successful loads and read failures are left alone.
+watch(rightSidebarCwd, (cwd) => {
+  if (!cwd) return
+  const q = route.query as Record<string, string | undefined>
+  if (q.view !== 'code-editor' || !q.file) return
+  if (codeEditorSession.error.value !== 'No working directory') return
+  void codeEditorSession.restoreFromUrl({
+    fileParam: q.file,
+    queryCwd: typeof q.cwd === 'string' ? q.cwd : '',
+    fallbackCwd: cwd,
+    lineParam: q.line,
+  })
 })
 
 // Expose the design chat open handler so tests can simulate the

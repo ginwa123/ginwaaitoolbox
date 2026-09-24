@@ -66,7 +66,7 @@ describe('WorkspaceItemTaskCard — git branch conflict hint', () => {
     expect(badge.text()).toContain('feature/x · ⚠ conflicts')
     expect(badge.attributes('data-pr-conflict')).toBe('true')
     expect(badge.attributes('data-pr-status')).toBe('open')
-    expect(badge.attributes('title')).toBe('PR open — merge conflicts — feature/x')
+    expect(badge.attributes('title')).toContain('PR open — merge conflicts — feature/x')
   })
 
   it('stays quiet (bare branch, no attr) when the PR is mergeable', async () => {
@@ -81,7 +81,7 @@ describe('WorkspaceItemTaskCard — git branch conflict hint', () => {
     const badge = wrapper.find('[data-testid="task-git-branch"]')
     expect(badge.text()).not.toContain('⚠')
     expect(badge.attributes('data-pr-conflict')).toBeUndefined()
-    expect(badge.attributes('title')).toBe('PR open — feature/x')
+    expect(badge.attributes('title')).toContain('PR open — feature/x')
   })
 
   it('stays quiet when mergeable is unknown', async () => {

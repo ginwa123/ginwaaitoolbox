@@ -10,11 +10,17 @@ import { useContextMenu } from '../../composables/useContextMenu'
 import { isBackgroundOpenEvent } from '../../helpers/tabTarget'
 import { openInNewTab } from '../../helpers/openInNewTab'
 import { VirtualScroller, formatRelativeTime } from '../../helpers'
-import { fetchPrStatusCached, fetchPrConflictCached } from '../../helpers/prStatusCache'
+import {
+  fetchPrInfoCached,
+  fetchPrStatusCached,
+  fetchPrConflictCached,
+  branchUrlFromPrUrl,
+} from '../../helpers/prStatusCache'
 import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import GitBranchMenu from '../shell/GitBranchMenu.vue'
 
 const router = useRouter()
 
@@ -216,6 +222,52 @@ const openContextMenuInBackground = () => {
   closeContextMenu()
   if (!id) return
   openChatInNewTab({ id })
+}
+
+// Right-click menu on the git icon: open GitHub branch / PR URLs in
+// a new tab. Separate position state from the row menu so a git-icon
+// right-click never opens the chat menu. URLs resolve via the shared
+// PR-info cache (GET /api/git/pr/status already returns pr_url);
+// the branch URL derives from the PR repo base + /tree/<branch>.
+const { menuPos: gitMenuPos, openAt: openGitMenuAt, close: closeGitMenu } = useContextMenu()
+const gitMenuBranch = ref('')
+const gitMenuBranchUrl = ref('')
+const gitMenuPrUrl = ref('')
+
+const onGitIconContextMenu = async (event: MouseEvent, item: ChatRow) => {
+  event.preventDefault()
+  event.stopPropagation()
+  const branch = item.git_branch || ''
+  const cwd = effectiveChatCwd(item)
+  gitMenuBranch.value = branch
+  gitMenuBranchUrl.value = ''
+  gitMenuPrUrl.value = ''
+  openGitMenuAt(event)
+  if (!branch || !cwd) return
+  try {
+    const info = await fetchPrInfoCached(cwd, branch)
+    // Stale guard: user may have right-clicked another icon while
+    // this fetch was in flight.
+    if (gitMenuBranch.value !== branch) return
+    gitMenuPrUrl.value = info.prUrl || ''
+    gitMenuBranchUrl.value = branchUrlFromPrUrl(info.prUrl || '', branch)
+  } catch {
+    // Fail-silent: menu stays open with disabled items.
+  }
+}
+
+const openGitBranchInBackground = () => {
+  const url = gitMenuBranchUrl.value
+  closeGitMenu()
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
+}
+
+const openGitPrInBackground = () => {
+  const url = gitMenuPrUrl.value
+  closeGitMenu()
+  if (!url) return
+  window.open(url, '_blank', 'noopener')
 }
 
 // Sort toggle extracted to a method so the template stays a single
@@ -853,12 +905,13 @@ defineExpose({
                    worktree path. -->
               <span
                 v-if="item.git_branch"
-                class="mr-1 inline-flex items-center align-middle"
+                class="mr-1 inline-flex items-center align-middle cursor-context-menu"
                 :style="chatBranchStyle(item.id)"
-                :title="chatBranchTitle(item)"
+                :title="chatBranchTitle(item) + ' — right-click to open GitHub'"
                 :data-pr-status="prStatuses[item.id] || undefined"
                 :data-pr-conflict="prConflicts[item.id] || undefined"
                 data-testid="chat-git-branch"
+                @contextmenu.prevent.stop="onGitIconContextMenu($event, item)"
               >
                 <svg
                   class="w-4 h-4 shrink-0"
@@ -920,7 +973,11 @@ defineExpose({
                  (never touched by you yet)" so the source of the
                  timestamp is discoverable without a comment.
                  Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md (Task 8) -->
-            <span class="text-xs opacity-60 shrink-0 ml-2 flex items-center gap-1">
+            <!-- Keep the spinner as the only right-side activity marker while processing. -->
+            <span
+              v-if="!processingState[item.id]"
+              class="text-xs opacity-60 shrink-0 ml-2 flex items-center gap-1"
+            >
               <span
                 v-if="isStale(item.last_human_touched_at, item.updated_at)"
                 class="w-1 h-1 rounded-full bg-amber-400"
@@ -937,14 +994,11 @@ defineExpose({
                 >{{ item.relativeTime || 'now' }}</span
               >
             </span>
-            <!-- Per-session LLM slider at the bottom edge of this row.
-                 Hidden when this session is idle; slides while
-                 processingState[item.id] is true. Replaces the old
-                 yellow spinner (was: 9-line <span>/<div> animate-spin
-                 block). Reads processingState via Vue inject from
-                 App.vue — no prop drilling needed. The component
-                 self-positions (absolute bottom-0), so this row's
-                 button just needs `position: relative`. -->
+            <!-- Per-session LLM circle spinner at the end of this row.
+                 Hidden when this session is idle; spins while
+                 processingState[item.id] is true. Reads
+                 processingState via Vue inject from App.vue — no
+                 prop drilling needed. -->
             <SessionSlider :session-id="item.id" />
           </button>
         </template>
@@ -981,5 +1035,15 @@ defineExpose({
     :x="menuPos.x"
     :y="menuPos.y"
     @open="openContextMenuInBackground"
+  />
+  <GitBranchMenu
+    v-if="gitMenuPos"
+    :x="gitMenuPos.x"
+    :y="gitMenuPos.y"
+    :branch="gitMenuBranch"
+    :branch-url="gitMenuBranchUrl"
+    :pr-url="gitMenuPrUrl"
+    @open-branch="openGitBranchInBackground"
+    @open-pr="openGitPrInBackground"
   />
 </template>

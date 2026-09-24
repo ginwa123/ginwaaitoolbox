@@ -34,7 +34,11 @@ import { makeLocalStorageStub } from './helpers'
 // can be exercised against any URL. Mirrors the pattern at
 // sidebarHandleSelectTaskUrl.spec.ts:57-77.
 const { useRouteMock } = vi.hoisted(() => ({
-  useRouteMock: vi.fn(() => ({ query: {} as Record<string, string>, path: '/app', fullPath: '/app' })),
+  useRouteMock: vi.fn(() => ({
+    query: {} as Record<string, string>,
+    path: '/app',
+    fullPath: '/app',
+  })),
 }))
 
 vi.mock('vue-router', async () => {
@@ -151,8 +155,8 @@ describe('WorkspaceItemTaskRow per-task row', () => {
       },
       path: '/app',
       fullPath: `/app?view=workspace&workspaceId=ws_test&itemId=${ITEM_ID}/chat/${baseTask.id}`,
-     
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountTask()
     const rowButton = wrapper.find('button.group\\/task')
@@ -219,16 +223,15 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     expect(wrapper.emitted('selectTask')).toBeUndefined()
   })
 
-  it('hides the rename and delete buttons by default (opacity-0 class present initially)', async () => {
+  it('keeps rename and delete buttons always visible (opacity-60 quiet state)', async () => {
     const { wrapper } = mountTask()
-    // Hover-reveal pattern: both buttons carry opacity-0 until the
-    // parent .group/task is hovered. Assert the unhovered class is
-    // present so a future refactor that removes the hidden state
-    // fails this test.
+    // V2 sidebar UX: actions are always visible, quiet until hover.
     const renameBtn = wrapper.find('button[title="Rename Task"]')
     const deleteBtn = wrapper.find('button.hover\\:text-red-400')
-    expect(renameBtn.classes()).toContain('opacity-0')
-    expect(deleteBtn.classes()).toContain('opacity-0')
+    expect(renameBtn.classes()).toContain('opacity-60')
+    expect(deleteBtn.classes()).toContain('opacity-60')
+    expect(renameBtn.classes()).not.toContain('opacity-0')
+    expect(deleteBtn.classes()).not.toContain('opacity-0')
   })
 
   it('renders the row, the pin/rename/delete action buttons (4 buttons total)', async () => {
@@ -260,9 +263,9 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     const renameBtn = wrapper.find('button[title="Rename Task"]')
     await renameBtn.trigger('click')
     const args = wrapper.emitted('renameTask')![0]! as [string, string, string, string]
-    expect(args[0]).toBe('ws_order')          // workspaceId
-    expect(args[1]).toBe('item_order')        // itemId
-    expect(args[2]).toBe('task_alpha')        // taskId
-    expect(args[3]).toBe('Alpha task')        // currentName
+    expect(args[0]).toBe('ws_order') // workspaceId
+    expect(args[1]).toBe('item_order') // itemId
+    expect(args[2]).toBe('task_alpha') // taskId
+    expect(args[3]).toBe('Alpha task') // currentName
   })
 })

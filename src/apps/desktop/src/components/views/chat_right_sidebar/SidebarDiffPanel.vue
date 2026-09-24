@@ -128,10 +128,33 @@ const prConflictsUrl = computed(() => {
   const url = (props.prUrl ?? '').replace(/\/$/, '')
   return url ? `${url}/conflicts` : ''
 })
+// Last GET /api/git/pr/status failure, parsed from the server's
+// `{"error": ...}` body. Empty = unknown yet or last fetch worked.
+// Shown inline (the status fetch is silent:true, so no toast) so a
+// `gh` auth / bad-PR-number failure explains itself instead of just
+// hiding the badge.
+const prStatusError = ref('')
 let prSeq = 0
 let prPollTimer: number | undefined
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
+
+// Extract the server's `{"error": "..."}` message from an ApiError
+// (apiFetch throws ApiError with the raw body). Falls back to the
+// generic Error message when the body isn't JSON — so callers always
+// show WHY the backend failed instead of a canned string.
+const serverErrorMessage = (err: unknown, fallback: string): string => {
+  if (err instanceof api.ApiError && err.body) {
+    try {
+      const obj = JSON.parse(err.body) as { error?: unknown }
+      if (obj && typeof obj.error === 'string' && obj.error.trim()) return obj.error
+    } catch {
+      /* non-JSON body — fall through to fallback */
+    }
+  }
+  if (err instanceof Error && err.message) return err.message
+  return fallback
+}
 
 // Right-click "Open file in new tab" for a file row. Position state +
 // dismiss wiring live in useContextMenu; the row payload (file path)
@@ -141,12 +164,13 @@ const contextMenuPath = ref<string | null>(null)
 
 const codeEditorQuery = (path: string): Record<string, string> => ({
   view: 'code-editor',
-  file: btoa(path),
-  cwd: props.cwd,
+  file: path,
 })
 
 const openFileInNewTab = (path: string) => {
-  openInNewTab(router, { path: '/app', query: codeEditorQuery(path) })
+  // New tabs boot cold, so they resolve the cwd from the workspace
+  // path context — keep the current path instead of dropping to /app.
+  openInNewTab(router, { path: route.path, query: codeEditorQuery(path) })
 }
 
 const onFileRowContextMenu = (event: MouseEvent, path: string) => {
@@ -245,7 +269,7 @@ const loadPrDiff = async () => {
     emit('show-diff-list', list)
   } catch (err) {
     console.error('Failed to load PR diff:', err)
-    prError.value = 'Failed to load PR diff'
+    prError.value = serverErrorMessage(err, 'Failed to load PR diff')
     prFiles.value = []
   } finally {
     isLoadingPr.value = false
@@ -255,14 +279,16 @@ const loadPrDiff = async () => {
 // Merge-state sync: `gh pr view` via GET /api/git/pr/status. Runs
 // alongside loadPrDiff on every PR-tab load and on a 30s poll while
 // the PR tab is visible, so a GitHub merge flips the badge without
-// a manual refresh. Failures are silent — the diff is still useful
-// and the badge simply stays hidden (unknown state).
+// a manual refresh. Status failures no longer vanish silently: the
+// server's `error` body lands in prStatusError and renders inline,
+// while the badge stays hidden (unknown state).
 const loadPrStatus = async () => {
   if (!props.cwd || !isPrMode.value) {
     prStatus.value = ''
     prStatusTitle.value = ''
     prMergeable.value = ''
     prMergeState.value = ''
+    prStatusError.value = ''
     return
   }
   const seq = ++prSeq
@@ -275,12 +301,14 @@ const loadPrStatus = async () => {
     prStatusTitle.value = data.title || ''
     prMergeable.value = data.mergeable || ''
     prMergeState.value = data.merge_state || ''
-  } catch {
+    prStatusError.value = ''
+  } catch (err) {
     if (seq !== prSeq) return
     prStatus.value = ''
     prStatusTitle.value = ''
     prMergeable.value = ''
     prMergeState.value = ''
+    prStatusError.value = serverErrorMessage(err, 'Failed to load PR status')
   }
 }
 
@@ -823,7 +851,13 @@ defineExpose({
         </div>
         <div v-else-if="prError" class="flex flex-col items-center justify-center p-4 text-center">
           <span class="text-2xl mb-2">⚠️</span>
-          <p class="text-xs" style="color: var(--semantic-error)">{{ prError }}</p>
+          <p
+            class="text-xs break-words"
+            style="color: var(--semantic-error); white-space: pre-wrap"
+            data-testid="sidebar-pr-error"
+          >
+            {{ prError }}
+          </p>
           <button
             type="button"
             class="mt-3 px-3 py-1.5 text-sm rounded"
@@ -840,6 +874,15 @@ defineExpose({
         >
           <span class="text-3xl mb-3">🔀</span>
           <p class="text-xs" style="color: var(--semantic-text-dim)">No PR changes found</p>
+          <p
+            v-if="prStatusError"
+            class="text-xs break-words mt-2"
+            style="color: var(--semantic-error); white-space: pre-wrap"
+            :title="prStatusError"
+            data-testid="sidebar-pr-status-error"
+          >
+            PR status unavailable — {{ prStatusError }}
+          </p>
         </div>
         <template v-else>
           <div
@@ -861,6 +904,19 @@ defineExpose({
               >web editor</a
             ><span v-else>web editor</span>
             or the command line to resolve conflicts before continuing.
+          </div>
+          <div
+            v-if="!prStatusLabel && prStatusError"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs break-words"
+            style="
+              background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
+              color: var(--semantic-text);
+              white-space: pre-wrap;
+            "
+            :title="prStatusError"
+            data-testid="sidebar-pr-status-error"
+          >
+            PR status unavailable — {{ prStatusError }}
           </div>
           <div
             v-if="prStatus === 'merged'"
