@@ -1,0 +1,12 @@
+# Android/Gradle local state
+.gradle/
+build/
+*/build/
+local.properties
+
+# IDE files
+.idea/
+*.iml
+
+# OS files
+.DS_Store

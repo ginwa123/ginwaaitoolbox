@@ -5,12 +5,16 @@
 **Nalar** is an AI agent workspace. Chat with LLMs that can actually *do things*
 (read/write files, search code, browse the web, run routines, manage kanban boards,
 draw on a design canvas), all persisted in a local SQLite database and presented
-through a Vue web app or a native desktop shell.
+through a Vue web app, native desktop shell, or native Android client.
 
 ## What this project is about
 
-Three pillars, one repo:
+Four pillars, one repo:
 
+0. **Android client — native Jetpack Compose** (`android_mobile/`)
+   - A standalone Kotlin client for Nalar.
+   - The first milestone is a polished login screen; authentication and the
+     rest of the mobile experience are intentionally staged for later iterations.
 1. **Backend — Zig 0.16 agent runtime** (`src/`)
    - Orchestrates LLM calls (Anthropic, OpenAI-compatible, custom `base_url`)
      with streaming, auto-retry ("unattended mode"), and per-profile config.
