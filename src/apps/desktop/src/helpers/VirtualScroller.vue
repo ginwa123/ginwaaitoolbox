@@ -161,6 +161,31 @@ const props = withDefaults(
      */
     itemKey?: (item: T, index: number) => string
     /**
+     * Hard cap, in pixels, on the blank region the user can scroll into
+     * BELOW the last rendered row.
+     *
+     * WHY: the sizer height is the height MODEL (Σ measured/estimated row
+     * heights). Unmeasured rows are estimated from the running median of
+     * the measured ones, so a tail of short rows (one-line tool cards)
+     * inherits a tall median and the model overshoots the real content by
+     * thousands of px. `scrollToBottom` still lands on the real bottom,
+     * but the browser lets the user scroll on into the overshoot — a
+     * blank viewport below the last message (user report + DevTools:
+     * `sizer 26796px`, `content translate3d(0, 23406px)`, `min-height
+     * 708px` → ~2682px of empty sizer below the content box).
+     *
+     * So while the rendered window covers the LAST item (i.e. the real
+     * bottom is directly measurable), the sizer is clamped to
+     * `realBottom + maxTailGap`. The model is never written — the cap is
+     * a render-time `min()` on the style binding, so it cannot feed back
+     * into the measure/scroll loop (PR #355's clamp was removed because
+     * its input went stale and inflated the sizer; a cap can only ever
+     * SHRINK the reserved void, never grow it).
+     *
+     * `0` disables the cap (sizer is always the full model total).
+     */
+    maxTailGap?: number
+    /**
      * Debug chat id for VirtualScroller internal logging (2026-09-02).
      * When provided, the scroller creates its own scrollLogger and emits
      * sizer-recomputed / measure-compensation / scroll-to-bottom-target
@@ -178,6 +203,7 @@ const props = withDefaults(
     loadMoreThresholdRatio: 0.5,
     loadMoreAtTop: false,
     itemKey: undefined,
+    maxTailGap: 500,
     debugChatId: undefined,
   },
 )
@@ -480,18 +506,58 @@ const updateAccumulatedHeights = () => {
 // it back to the model total. sizer → scrollHeight → contentShift →
 // scrollToBottom → scrollTop → visibleRange → sizer: a loop.
 //
-// Fixed invariant: the RENDERED sizer is ALWAYS the model total (plus the
-// hysteresis dead-band). It changes only when the height MODEL changes
-// (measurement, items mutation) — never from scrolling. Undershoot is
-// safe: scrollToBottom targets the real DOM bottom at the tail, and the
-// model converges as items measure. Overshoot from stale reads is gone
-// by construction — there is no scroll-derived input left.
+// Fixed invariant: the RENDERED sizer is the model total (plus the
+// hysteresis dead-band), minus the tail-gap cap below. It changes only
+// when the height MODEL changes (measurement, items mutation) — never
+// from scrolling. Undershoot is safe: scrollToBottom targets the real DOM
+// bottom at the tail, and the model converges as items measure. Overshoot
+// from stale reads is gone by construction — there is no scroll-derived
+// input left (see the tail-gap cap for the one deliberate exception).
 const modelTotal = computed(() => accumulatedHeights.value[props.items.length] ?? 0)
+
+// ── Tail-gap cap (task_1790236655228_2) ─────────────────────────────────────
+//
+// "the gap is too long" — the model can reserve thousands of px of empty
+// sizer BELOW the real content (DevTools: sizer 26796px vs a content box
+// ending at ~24114px), and the browser lets the user scroll into it.
+// `scrollToBottom` already lands on the real bottom, so the void shows up
+// as a blank region below the last message once the user keeps scrolling
+// DOWN (wheel momentum, keyboard End, dragging the scrollbar).
+//
+// `tailContentBottom` is the MEASURED bottom of the rendered window in
+// model space (model prefix of the first rendered row + the real heights
+// of the rows in the DOM). It is recorded by `measureItems()` — the one
+// place that reads live child geometry — and NOT from a template-ref
+// callback. That distinction is why the PR #355 clamp had to be reverted:
+// its `onContentRef` value only refreshed when the content DIV was
+// mounted/replaced, so after a window shift it described the PREVIOUS
+// window (a tall one), inflating the sizer ~3x and bouncing. `measureItems`
+// runs on every window change, scroll, and content resize, so the number
+// always describes the rows that are actually on screen.
+//
+// The cap is `min(modelTotal, tailContentBottom + maxTailGap)`: it can only
+// ever SHRINK the reserved void, never grow the sizer past the model — so
+// the "sizer blew up / bounce" failure mode is impossible. The model itself
+// is never written; only the style binding changes.
+const tailContentBottom = ref(0)
+// Latched "the rendered window covers the tail" flag. The clamp is applied
+// only while this is true, so a user reading history can always scroll back
+// down to newly appended rows (no cap → upstream model space is intact).
+// ON at the tail; OFF only once the window is clearly away from it
+// (`buffer` rows), which keeps a scrollTop clamp at the capped bottom from
+// flipping the cap off and on in the same frame (the bounce/dither the
+// user rejected in the earlier tail-clamp experiment).
+const tailCapLatched = ref(false)
 let cachedSizerHeight = -1
 const sizerHeight = computed(() => {
   const total = modelTotal.value
-  if (cachedSizerHeight < 0 || Math.abs(total - cachedSizerHeight) > HYSTERESIS_PX) {
-    cachedSizerHeight = total
+  const gap = props.maxTailGap
+  const capped =
+    gap > 0 && tailCapLatched.value && tailContentBottom.value > 0
+      ? Math.min(total, tailContentBottom.value + gap)
+      : total
+  if (cachedSizerHeight < 0 || Math.abs(capped - cachedSizerHeight) > HYSTERESIS_PX) {
+    cachedSizerHeight = capped
     if (vsLogger.value) {
       try {
         vsLogger.value.info({
@@ -507,7 +573,15 @@ const sizerHeight = computed(() => {
           },
           reason: 'sizer-recomputed',
           caller: 'VirtualScroller.sizerHeight',
-          extra: { modelTotal: total, sizerHeight: total, hysteresis: HYSTERESIS_PX },
+          extra: {
+            modelTotal: total,
+            sizerHeight: capped,
+            tailCapPx: capped === total ? null : total - capped,
+            tailContentBottom: tailContentBottom.value,
+            maxTailGap: gap,
+            tailCapLatched: tailCapLatched.value,
+            hysteresis: HYSTERESIS_PX,
+          },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
         } as any)
       } catch {}
@@ -542,6 +616,11 @@ watch(
     if (newLen === 0 && (oldLen ?? 0) > 0) {
       heightEstimator.reset()
       maxMeasuredIndex = -1
+      // The measured tail bottom belongs to the OLD list: keeping it
+      // would cap the new chat's sizer at a position that means nothing
+      // here.
+      tailContentBottom.value = 0
+      tailCapLatched.value = false
     }
     updateAccumulatedHeights()
   },
@@ -596,6 +675,46 @@ const visibleRange = computed(() => {
   const bottomSpacer = (accumulatedHeights.value[len] ?? 0) - (accumulatedHeights.value[end] ?? 0)
   return { start, end, topSpacer, bottomSpacer }
 })
+
+// Tail-cap latch (see the sizerHeight comment). ON as soon as the rendered
+// window reaches the last item — that is exactly when `measureItems` can
+// see the real content bottom and record it. OFF only once the window is a
+// full `buffer` away from the tail, so a clamp-driven scrollTop write at
+// the capped bottom cannot flip the cap off (the window would then re-grow,
+// get clamped again, and dither).
+watch(
+  () => visibleRange.value.end,
+  (end) => {
+    if (end >= props.items.length) tailCapLatched.value = true
+    else if (end < props.items.length - props.buffer) tailCapLatched.value = false
+  },
+  { immediate: true },
+)
+
+/**
+ * Record the MEASURED bottom of the rendered window, in model space.
+ *
+ * Only called from `measureItems()` with values read from the live DOM in
+ * that same pass, which is what keeps it fresh (PR #355's clamp stored this
+ * from a template-ref callback that never re-fired for the new window).
+ *
+ * FAIL-OPEN everywhere: if the last item is not in the DOM, or nothing in
+ * the window has laid out yet (`childrenSum <= 0`), the previous value is
+ * left untouched rather than guessed — a wrong real bottom would either
+ * re-open the phantom (too large) or hide real content (too small).
+ */
+const recordTailContentBottom = (
+  childrenSum: number,
+  firstIndex: number,
+  lastIndex: number,
+): void => {
+  if (props.maxTailGap <= 0) return
+  if (firstIndex < 0 || lastIndex < props.items.length - 1) return
+  if (childrenSum <= 0) return
+  const bottom = (accumulatedHeights.value[firstIndex] ?? 0) + childrenSum
+  if (bottom <= 0) return
+  if (Math.abs(bottom - tailContentBottom.value) >= 1) tailContentBottom.value = bottom
+}
 
 const visibleItems = computed(() => {
   const { start, end } = visibleRange.value
@@ -745,6 +864,13 @@ const measureItems = () => {
   // The attribute is stamped by the renderer at mount time and always
   // matches the node it decorates.
   const pendingWrites: Array<[string, number, number]> = []
+  // Tail-gap cap inputs (see recordTailContentBottom): the summed real
+  // height of the rows currently in the DOM, plus the first/last indices
+  // they were stamped with. Read in this same pass so the recorded real
+  // bottom can never describe a previous window.
+  let renderedChildrenSum = 0
+  let firstRenderedIndex = -1
+  let lastRenderedIndex = -1
   for (let i = 0; i < children.length; i++) {
     const el = children[i] as HTMLElement
     // Read the index stamped by the renderer — the live computed range
@@ -756,11 +882,14 @@ const measureItems = () => {
     const stamped = el.getAttribute?.('data-vs-index')
     const parsed =
       stamped !== null && stamped !== undefined && stamped !== '' ? Number(stamped) : NaN
-    const realIndex =
-      Number.isInteger(parsed) && parsed >= 0 && parsed < props.items.length
-        ? parsed
-        : visibleRange.value.start + i
+    const stampedOk = Number.isInteger(parsed) && parsed >= 0 && parsed < props.items.length
+    const realIndex = stampedOk ? parsed : visibleRange.value.start + i
+    if (stampedOk) {
+      if (firstRenderedIndex < 0) firstRenderedIndex = parsed
+      lastRenderedIndex = parsed
+    }
     const h = el.offsetHeight
+    renderedChildrenSum += h > 0 ? quantizePx(h) : 0
     if (h > 0) {
       // P1 perf: quantize to integer px. Fractional offsetHeights under
       // sub-pixel layout re-quantize differently between our prefix sums
@@ -794,6 +923,11 @@ const measureItems = () => {
       }
     }
   }
+  // Record the measured tail bottom on BOTH paths — a no-op pass still
+  // carries a fresh window geometry (e.g. the user scrolled: same stored
+  // heights, different rows on screen), and the cap must follow the
+  // window, not only the height writes.
+  recordTailContentBottom(renderedChildrenSum, firstRenderedIndex, lastRenderedIndex)
   if (!changed) return
   for (const [key, heightPx, realIndex] of pendingWrites) {
     itemHeights.value.set(key, heightPx)
@@ -805,6 +939,9 @@ const measureItems = () => {
     if (realIndex > maxMeasuredIndex) maxMeasuredIndex = realIndex
   }
   updateAccumulatedHeights()
+  // Prefixes moved: recompute the measured tail bottom against the fresh
+  // model so the cap describes where the content actually sits now.
+  recordTailContentBottom(renderedChildrenSum, firstRenderedIndex, lastRenderedIndex)
   // Post-pass prefix at the same anchor index: the delta vs
   // `oldAnchorTop` is the compensation (v2 prefix-delta — covers
   // measured writes AND estimator drift for unmeasured items above).
@@ -1286,6 +1423,7 @@ defineExpose({
   effectiveRange,
   sizerHeight,
   modelTotal,
+  tailContentBottom,
 })
 </script>
 
