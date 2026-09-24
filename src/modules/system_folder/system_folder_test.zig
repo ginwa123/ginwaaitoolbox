@@ -448,6 +448,24 @@ test "getParentPath: env without HOME yields HomeNotFound" {
 }
 
 // listDirectory tests
+test "listDirectory: relative path returns InvalidPath" {
+    const result = SystemFolder.listDirectory(
+        testing.allocator,
+        testing.io,
+        "relative/path",
+    );
+    try testing.expectError(SystemFolderError.InvalidPath, result);
+}
+
+test "listDirectory: empty path returns InvalidPath" {
+    const result = SystemFolder.listDirectory(
+        testing.allocator,
+        testing.io,
+        "",
+    );
+    try testing.expectError(SystemFolderError.InvalidPath, result);
+}
+
 test "listDirectory: nonexistent path returns InvalidPath" {
     const allocator = testing.allocator;
     const io = testing.io;
@@ -854,6 +872,18 @@ fn relContainsAny(root_abs: []const u8, entries: []system_folder.FolderEntry, ne
         if (relContains(root_abs, e.path, needle)) return true;
     }
     return false;
+}
+
+test "searchFiles: relative root returns InvalidPath" {
+    const result = SystemFolder.searchFiles(
+        testing.allocator,
+        testing.io,
+        "relative/path",
+        "comp",
+        50,
+        8,
+    );
+    try testing.expectError(SystemFolderError.InvalidPath, result);
 }
 
 test "searchFiles: skips node_modules, zig-out, zig-cache, target, dist" {
