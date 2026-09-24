@@ -88,10 +88,9 @@ const isStale = (human: string | undefined, updated: string | undefined): boolea
 // Inject processingState from App.vue
 const processingState = inject<Ref<Record<string, boolean>>>('processingState', ref({}))
 
-// Kanban-style git branch badge with PR-status colors (same palette
-// as WorkspaceItemTaskCard: green = open, violet = merged, red =
-// closed, orange = plain branch). Bold by design so the icon pops
-// against the muted chat row.
+// PR branch badges use the same palette as WorkspaceItemTaskCard:
+// green = open, violet = merged, red = closed. Rows without a pull
+// request omit the badge entirely.
 const prStatuses = ref<Record<string, string>>({})
 // Conflict-only hint per chat: true when the PR reports CONFLICTING/DIRTY.
 // Quiet-when-clean — absent/false for mergeable, unknown, or failed fetches.
@@ -853,7 +852,8 @@ defineExpose({
       <span
         class="text-xs font-semibold uppercase tracking-wider"
         style="color: var(--semantic-text-dim)"
-        >Chats</span
+        data-testid="recent-section-title"
+        >Recent</span
       >
       <div class="flex items-center gap-1 ml-auto" v-if="sidebarStore.navExpanded">
         <button
@@ -899,12 +899,10 @@ defineExpose({
             "
           >
             <span class="flex-1 text-left truncate">
-              <!-- Git icon first (kanban parity): icon-only branch badge
-                   with PR-status colors (green = open, violet = merged,
-                   red = closed). Tooltip carries the branch + full
-                   worktree path. -->
+              <!-- Icon-only branch badge for chats with a pull request.
+                   Tooltip carries the branch and worktree path. -->
               <span
-                v-if="item.git_branch"
+                v-if="item.git_branch && prStatuses[item.id]"
                 class="mr-1 inline-flex items-center align-middle cursor-context-menu"
                 :style="chatBranchStyle(item.id)"
                 :title="chatBranchTitle(item) + ' — right-click to open GitHub'"
@@ -928,31 +926,6 @@ defineExpose({
                   />
                 </svg>
                 <span v-if="prConflicts[item.id]" class="ml-0.5 text-[10px] font-bold">⚠</span>
-              </span>
-              <!-- Fallback for bound worktrees whose cwd is not a git
-                   repo (no branch to show): same icon in bold orange so
-                   the binding stays visible. -->
-              <span
-                v-else-if="item.git_worktree_cwd"
-                class="mr-1 inline-flex items-center align-middle"
-                style="color: var(--color-orange)"
-                :title="item.git_worktree_cwd"
-                data-testid="worktree-badge"
-              >
-                <svg
-                  class="w-4 h-4 shrink-0"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  stroke-width="2.5"
-                  aria-hidden="true"
-                >
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
-                  />
-                </svg>
               </span>
               {{ item.name }}
               <span
