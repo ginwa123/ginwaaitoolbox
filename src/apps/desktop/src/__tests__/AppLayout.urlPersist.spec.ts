@@ -1029,3 +1029,140 @@ describe('AppLayout — design page URL persistence (pageId in URL)', () => {
     wrapper.unmount()
   })
 })
+
+describe('AppLayout — readable code-editor URLs (keep-append)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    installBusForTests()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+    vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({ columns: [], count: 0 })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('openInCodeEditor appends a readable file param to the current route (no base64, no cwd)', async () => {
+    const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'readFileContent').mockResolvedValue({ content: 'hello' } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(
+      ws.workspaces,
+      { pageId: PAGE_ID_2 },
+      `/app/${WS_ID}/projects/${DESIGN_ID}`,
+    )
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const layout = wrapper.vm as any
+    await layout.openInCodeEditor({ filePath: 'src/foo.ts', cwd: '/tmp/design', line: 7 })
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2, view: 'code-editor', file: 'src/foo.ts', line: '7' },
+    })
+    const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]![0] as {
+      query: Record<string, string>
+    }
+    expect(lastCall.query.cwd).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('closeCodeEditor strips only the editor keys on a context path', async () => {
+    const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [makeDesignItem()] } as Workspace,
+    ]
+    const wrapper = mountAppLayout(
+      ws.workspaces,
+      { view: 'code-editor', file: 'src/foo.ts', line: '3', pageId: PAGE_ID_2 },
+      `/app/${WS_ID}/projects/${DESIGN_ID}`,
+    )
+    await nextTick()
+    await nextTick()
+    replaceMock.mockClear()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const layout = wrapper.vm as any
+    layout.closeCodeEditor()
+    expect(replaceMock).toHaveBeenCalledWith({
+      path: `/app/${WS_ID}/projects/${DESIGN_ID}`,
+      query: { pageId: PAGE_ID_2 },
+    })
+    wrapper.unmount()
+  })
+
+  it('boot restores the editor from a readable chat-path link', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouterMock.mockReturnValue({ replace: vi.fn(), push: vi.fn() } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '/w' } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const readMock = vi.spyOn(api, 'readFileContent').mockResolvedValue({ content: 'hi' } as any)
+    const ws = useWorkspacesStore()
+    ws.workspaces = [{ id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [] } as Workspace]
+    const wrapper = mountAppLayout(
+      ws.workspaces,
+      { view: 'code-editor', file: 'notes.txt' },
+      `/app/${WS_ID}/chat/sess_9`,
+    )
+    await vi.waitFor(() => {
+      expect(readMock).toHaveBeenCalledWith('/w', 'notes.txt')
+    })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const layout = wrapper.vm as any
+    expect(layout.codeEditorFile?.path).toBe('notes.txt')
+    wrapper.unmount()
+  })
+
+  it('boot retries the restore when the item cwd arrives late', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouterMock.mockReturnValue({ replace: vi.fn(), push: vi.fn() } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const readMock = vi.spyOn(api, 'readFileContent').mockResolvedValue({ content: 'late' } as any)
+    const ws = useWorkspacesStore()
+    const kanban = makeKanbanItem({ path: '/tmp/kb' })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    kanban.tasks = [{ id: 'task_active', name: 'Active Task' } as any]
+    const wrapper = mountAppLayout(
+      [],
+      { view: 'code-editor', file: 'late.txt' },
+      `/app/${WS_ID}/projects/${KANBAN_ID}/chat/task_active`,
+    )
+    await nextTick()
+    await nextTick()
+    // No cwd yet: explicit error state, no read attempted.
+    expect(readMock).not.toHaveBeenCalled()
+    // Tree + task arrive late (cold-boot race).
+    ws.workspaces = [
+      { id: WS_ID, name: 'WS', icon: '📁', expanded: true, items: [kanban] } as Workspace,
+    ]
+    ws.setActiveWorkspaceItem(KANBAN_ID)
+    ws.setActiveTask('task_active')
+    await vi.waitFor(() => {
+      expect(readMock).toHaveBeenCalledWith('/tmp/kb', 'late.txt')
+    })
+    wrapper.unmount()
+  })
+})
