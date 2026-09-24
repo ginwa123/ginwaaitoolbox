@@ -1,8 +1,6 @@
 const std = @import("std");
 const sqlite = @import("nalarcore").sqlite;
 
-pub const MAX_SIBLING_CWDS: u32 = 20;
-
 /// Build the dynamic sibling-cwd list for the cross-project prompt.
 ///
 /// Source is `workspace_items` ONLY: sibling items in the same workspace
@@ -25,15 +23,13 @@ pub fn makeCrossProjectCwdContext(
         allocator.free(anchor.self_item_id);
     }
 
-    const items_sql = try std.fmt.allocPrint(allocator,
+    const items_sql =
         \\SELECT wi.id, wi.name, wi.path
         \\FROM workspace_items wi
         \\WHERE wi.workspace_id = ? AND wi.id != ?
         \\AND wi.path IS NOT NULL AND TRIM(wi.path) != ''
         \\ORDER BY wi.position DESC, wi.id ASC
-        \\LIMIT {d}
-    , .{MAX_SIBLING_CWDS});
-    defer allocator.free(items_sql);
+    ;
 
     var q = db.query(allocator, items_sql, &.{ anchor.workspace_id, anchor.self_item_id }) catch |err| {
         std.log.warn("makeCrossProjectCwdContext: sibling lookup failed: {}", .{err});
@@ -184,5 +180,35 @@ test "makeCrossProjectCwdContext: lists sibling paths from workspace_items only"
     try testing.expect(std.mem.indexOf(u8, result, "Sibling project directories:") != null);
     try testing.expect(std.mem.indexOf(u8, result, "`/tmp/alpha`") != null);
     try testing.expect(std.mem.indexOf(u8, result, "`/tmp/beta`") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "`/tmp/self`") == null);
+}
+
+test "makeCrossProjectCwdContext: renders every sibling path without a cap" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc, "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('item_self', 'ws_1', 'kanban', 'Self', '/tmp/self', 100)", &[_][]const u8{});
+
+    var sql_buf: [256]u8 = undefined;
+    for (0..25) |index| {
+        const sql = try std.fmt.bufPrint(
+            &sql_buf,
+            "INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES ('item_{d}', 'ws_1', 'chat', 'Sibling {d}', '/tmp/sibling_{d}', {d})",
+            .{ index, index, index, index },
+        );
+        try ctx.db.exec(alloc, sql, &[_][]const u8{});
+    }
+    try ctx.db.exec(alloc, "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, created_at, updated_at, task_type) VALUES ('task_all', 'T', 'item_self', datetime('now'), datetime('now'), 'standard')", &[_][]const u8{});
+
+    const result = try makeCrossProjectCwdContext(alloc, &ctx.db, "task_all");
+    defer alloc.free(result);
+
+    for (0..25) |index| {
+        const expected = try std.fmt.allocPrint(alloc, "`/tmp/sibling_{d}`", .{index});
+        defer alloc.free(expected);
+        try testing.expect(std.mem.indexOf(u8, result, expected) != null);
+    }
     try testing.expect(std.mem.indexOf(u8, result, "`/tmp/self`") == null);
 }
