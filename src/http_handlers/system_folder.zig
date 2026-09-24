@@ -35,6 +35,12 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     const action = req.query.get("action");
     const do_list = std.mem.eql(u8, action orelse "", "list");
 
+    if (path_param) |p| {
+        if (p.len == 0 and std.mem.eql(u8, action orelse "", "search")) {
+            return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "path required" }) });
+        }
+    }
+
     const di = try nalarcore.getSingleton();
     const environment = di.environment;
 
@@ -53,6 +59,13 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
         };
         break :blk dup;
     };
+
+    if (!std.fs.path.isAbsolute(target_path)) {
+        if (path_param != null) {
+            return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeSystemFolderErrorResponse(allocator, "path must be absolute", SystemFolderError.InvalidPath) });
+        }
+        return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeSystemFolderErrorResponse(allocator, "home directory must be absolute", SystemFolderError.InvalidPath) });
+    }
 
     const relative = SystemFolder.getRelativePathFromHome(allocator, target_path, home) catch |err| {
         return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeSystemFolderErrorResponse(allocator, "Failed to compute relative path", err) });
@@ -144,14 +157,6 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     // 200); `max_depth` defaults to 8 (clamp 1..16).
     const do_search = std.mem.eql(u8, action orelse "", "search");
     if (do_search) {
-        // Empty-slice-as-NULL rule: an explicitly empty `path=` is a
-        // 400 (missing `path` still falls back to home above).
-        if (path_param) |p| {
-            if (p.len == 0) {
-                return res.jsonResponse( .{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "path required" }) });
-            }
-        }
-
         const q = req.query.get("q") orelse "";
         const limit = SystemFolder.parseSearchLimit(req.query.get("limit"));
         const max_depth = SystemFolder.parseSearchMaxDepth(req.query.get("max_depth"));
@@ -204,17 +209,19 @@ pub fn systemFolderHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest,
     if (do_read_write) {
         const file_name = req.query.get("file") orelse "";
 
-        // If file_name is an absolute path, use it directly
-        // Otherwise, join with target_path. Windows absolutes
-        // (`C:\...`, `C:/...`, `\\server\share`) must also count.
-        const is_abs = std.mem.startsWith(u8, file_name, "/") or
-            (file_name.len >= 2 and std.ascii.isAlphabetic(file_name[0]) and file_name[1] == ':') or
-            std.mem.startsWith(u8, file_name, "\\\\");
+        // Use native absolute-path semantics. A Windows-looking path on
+        // POSIX (or a drive-relative `C:file` on Windows) is not absolute
+        // and must be joined to the already-validated base path.
+        const is_abs = std.fs.path.isAbsolute(file_name);
         const full_path: []u8 = if (is_abs)
             allocator.dupe(u8, file_name) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }) })
         else
             std.fs.path.join(allocator, &.{ target_path, file_name }) catch return res.jsonResponse( .{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to build path" }) });
         defer allocator.free(full_path);
+
+        if (!std.fs.path.isAbsolute(full_path)) {
+            return res.jsonResponse( .{ .status_code = 403, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Cannot open file" }) });
+        }
 
         // Read file using std.Io.Dir.openFileAbsolute
         const file = std.Io.Dir.openFileAbsolute(ctx.io, full_path, .{}) catch return res.jsonResponse( .{ .status_code = 403, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Cannot open file" }) });

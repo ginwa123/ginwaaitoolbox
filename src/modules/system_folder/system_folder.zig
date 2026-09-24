@@ -157,6 +157,8 @@ pub const SystemFolder = struct {
 
     /// List directory contents (first level only)
     pub fn listDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8) SystemFolderError![]FolderEntry {
+        if (!std.fs.path.isAbsolute(dir_path)) return SystemFolderError.InvalidPath;
+
         var entries = std.ArrayList(FolderEntry).empty;
         errdefer entries.deinit(allocator);
 
@@ -461,6 +463,8 @@ pub const SystemFolder = struct {
         limit: usize,
         max_depth: usize,
     ) SystemFolderError![]FolderEntry {
+        if (!std.fs.path.isAbsolute(root_path)) return SystemFolderError.InvalidPath;
+
         const cap: usize = if (limit == 0) 50 else if (limit > 200) 200 else limit;
         const depth_cap: usize = if (max_depth == 0) 8 else max_depth;
 
