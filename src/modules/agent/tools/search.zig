@@ -1175,6 +1175,7 @@ pub const search_tool_system_prompt =
     \\  exist than were shown. Raise `max_results`, or narrow `pattern`/`path`/`glob`.
     \\- Snippets are windowed to `snippet_max_chars` (default 240) and control-char sanitized.
     \\- Bound results with `max_results`/`max_output`.
+    \\- Use at most one of `head`/`tail`; omit the unused field entirely (never send 0 as a placeholder).
     \\
 ;
 
@@ -1274,7 +1275,8 @@ pub const search_tool = AgentTool{
         \\- Pattern must be non-empty and contain no NUL bytes.
         \\- max_results and max_output must be > 0.
         \\- max_output is hard-capped at 100MB.
-        \\- head/tail must be > 0 and are mutually exclusive. Both are still
+        \\- head/tail must be > 0 and are mutually exclusive. Omit the unused
+        \\  field entirely; do not send 0 as a placeholder. Both are still
         \\  bounded by max_results (the hard row cap); `tail` scans the whole
         \\  match stream and keeps the newest rows, so it means "last N of the
         \\  search", not "last N of the first max_results".
@@ -1309,12 +1311,12 @@ pub const search_tool = AgentTool{
                 .{
                     .name = "head",
                     .type = "number",
-                    .description = "Return the first N matches (stops collecting early). Still bounded by max_results. Mutually exclusive with tail. Must be > 0.",
+                    .description = "Optional first-N filter. Still bounded by max_results. Mutually exclusive with tail. Must be > 0; omit this field when unused instead of sending 0.",
                 },
                 .{
                     .name = "tail",
                     .type = "number",
-                    .description = "Return the last N matches of the WHOLE search: the collector scans to the end and keeps the newest rows (bounded by max_results). Mutually exclusive with head. Must be > 0.",
+                    .description = "Optional last-N filter of the WHOLE search: the collector scans to the end and keeps the newest rows (bounded by max_results). Mutually exclusive with head. Must be > 0; omit this field when unused instead of sending 0.",
                 },
                 .{
                     .name = "max_output",
@@ -3356,6 +3358,7 @@ test "agentic_loop/tools_exec_search.zig maps new SearchErrors to LLM-friendly m
     try testing.expect(std.mem.indexOf(u8, source, "error.InvalidMaxOutput") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.MaxOutputTooLarge") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.InvalidMaxResults") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "error.HeadAndTailMutuallyExclusive") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.InvalidHeadTail") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.GlobContainsNulByte") != null);
     try testing.expect(std.mem.indexOf(u8, source, "error.RegexParseError") != null);
