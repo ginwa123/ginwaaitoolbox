@@ -475,6 +475,7 @@ export interface ParsedSearch {
   returned: number | null
   total: number | null
   truncated: boolean
+  outputTruncated: boolean
   truncatedHint: string | null
 }
 
@@ -507,6 +508,7 @@ export function parseSearch(data: unknown): ParsedSearch {
     returned: numOrNullField(o, 'returned'),
     total: numOrNullField(o, 'total'),
     truncated: boolField(o, 'truncated', false),
+    outputTruncated: boolField(o, 'output_truncated', false),
     truncatedHint: strOrNullField(o, 'truncated_hint'),
   }
 }

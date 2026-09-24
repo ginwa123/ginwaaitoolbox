@@ -64,16 +64,19 @@ current raw-interpolation hazard). Fixture: `envelope_success_read_file.json`.
 
 Booleans stay booleans (today's `true`/`false` text). Fixture: `data_shell.json`.
 
-### 2.3 `search` grouped (from `search.zig:945 search_result_to_string_grouped`)
+### 2.3 `search` grouped (from `search.zig` `search_result_to_json_grouped`)
 
 ```json
 {
   "pattern": "foo",
   "path": "src/",
-  "returned": 2,
-  "total": 2,
+  "returned": 1,
+  "total": 1,
   "truncated": false,
+  "output_truncated": false,
+  "output_bytes": 1234,
   "truncated_hint": null,
+  "grouped": true,
   "files": [
     { "path": "src/a.zig", "total": 1, "count": 1,
       "matches": [ { "line": 10, "text": "foo bar" } ] }
@@ -83,7 +86,7 @@ Booleans stay booleans (today's `true`/`false` text). Fixture: `data_shell.json`
 ```
 
 No-matches case: `"files": []` + `"warning": "<today's warning body>"`.
-`truncated_hint` carries today's `<truncated>N of M…</truncated>` prose, null otherwise.
+`output_truncated` is true when the raw rg JSON stream exceeded `max_output`; the call still succeeds with complete records from the retained prefix. `output_bytes` is the observed stdout size. `truncated_hint` carries the reason-specific prose (row cap or output cap), null otherwise.
 Attribute-style metadata (`pattern=`, `returned=`) becomes plain keys.
 Fixture: `data_search.json`.
 
