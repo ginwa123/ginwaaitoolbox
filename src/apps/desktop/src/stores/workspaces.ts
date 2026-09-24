@@ -6,6 +6,7 @@ import { useSseBus } from '../helpers/sseBus'
 import { designLogger } from '../helpers/designLogger'
 import { readWorkspacesCache } from '../helpers/workspacesCache'
 import { readTaskMediaCache, writeTaskMediaCache } from '../helpers/taskMediaCache'
+import { TaskEngineDb, type TaskRequest } from '../sync/TaskEngineDb'
 import type { DesignElement, DesignPage } from '../api'
 
 export interface KanbanColumn {
@@ -631,6 +632,98 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // Map (not reactive ref) — same reason as activeSearchQueries.
   const activeSortBy: Map<string, 'created_at' | 'updated_at' | 'name'> = new Map()
   const activeSortDirection: Map<string, 'asc' | 'desc'> = new Map()
+  const taskEngineDb = new TaskEngineDb()
+
+  function taskRequest(
+    workspaceId: string,
+    itemId: string,
+    columnId?: string,
+    q?: string,
+    sortBy?: 'created_at' | 'updated_at' | 'name',
+    direction?: 'asc' | 'desc',
+  ): TaskRequest {
+    return {
+      workspaceId,
+      itemId,
+      ...(columnId ? { columnId } : {}),
+      ...(q ? { q } : {}),
+      ...(sortBy ? { sortBy } : {}),
+      ...(direction ? { direction } : {}),
+    }
+  }
+
+  function taskCacheContexts(
+    workspaceId: string,
+    itemId: string,
+    columnId?: string,
+  ): TaskRequest[] {
+    return [taskRequest(workspaceId, itemId, columnId), taskRequest(workspaceId, itemId)]
+  }
+
+  function replaceItemTasksForColumn(item: WorkspaceItem, columnId: string, rows: Task[]): void {
+    const normalized = rows.map(normalizeTaskTags)
+    const freshIds = new Set(normalized.map((task) => task.id))
+    const otherTasks = (item.tasks ?? []).filter(
+      (task) => task.kanban_column_id !== columnId && !freshIds.has(task.id),
+    )
+    item.tasks = [...otherTasks, ...normalized]
+  }
+
+  async function cacheTaskMutation(
+    workspaceId: string,
+    itemId: string,
+    task: Task,
+    columnId?: string,
+  ): Promise<void> {
+    await taskEngineDb.putTaskInContexts(taskCacheContexts(workspaceId, itemId, columnId), task)
+  }
+
+  // Evict one task from every cache context it could live in (the
+  // task's column context plus the board-wide context). Every cache
+  // write goes through taskCacheContexts, so these two cover it.
+  async function removeTaskFromCache(
+    workspaceId: string,
+    itemId: string,
+    taskId: string,
+    columnId?: string,
+  ): Promise<void> {
+    for (const request of taskCacheContexts(workspaceId, itemId, columnId)) {
+      await taskEngineDb.removeTask(request, taskId)
+    }
+  }
+
+  async function primeTaskCache(
+    workspaceId: string,
+    itemId: string,
+    columnId: string | undefined,
+    limit: number,
+    q?: string,
+    sortBy?: 'created_at' | 'updated_at' | 'name',
+    direction?: 'asc' | 'desc',
+  ): Promise<Task[]> {
+    const request = taskRequest(workspaceId, itemId, columnId, q, sortBy, direction)
+    const rows = await taskEngineDb.primeFromCache(request, limit)
+    return rows.map((row) => normalizeTaskTags(row.raw))
+  }
+
+  async function revalidateTaskCache(
+    workspaceId: string,
+    itemId: string,
+    columnId: string | undefined,
+    limit: number,
+    q?: string,
+    sortBy?: 'created_at' | 'updated_at' | 'name',
+    direction?: 'asc' | 'desc',
+  ): Promise<{ tasks: Task[]; has_more: boolean; next_cursor: string | null } | null> {
+    const request = taskRequest(workspaceId, itemId, columnId, q, sortBy, direction)
+    const delta = await taskEngineDb.loadDelta(request, limit)
+    if (!delta) return null
+    return {
+      tasks: delta.items.map((row) => normalizeTaskTags(row.raw)),
+      has_more: delta.hasMore,
+      next_cursor: delta.paginationCursor,
+    }
+  }
 
   // System folder info from API
   const systemFolderInfo = ref<SystemFolderInfo | null>(null)
@@ -800,12 +893,20 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           return
         }
         try {
-          const { tasks } = await api.getTasks(ws.id, item.id)
-          if (tasks && tasks.length > 0) {
-            // Migration 067 — normalize tags from wire string to
-            // in-memory string[]. All fetch sites do this; the
-            // card UI and dialog rely on tags being a string[].
-            tasksByItem.set(item.id, tasks.map(normalizeTaskTags))
+          const cached = await primeTaskCache(ws.id, item.id, undefined, 10)
+          if (cached.length > 0) tasksByItem.set(item.id, cached)
+          const fresh = await revalidateTaskCache(ws.id, item.id, undefined, 10)
+          if (fresh) {
+            // A complete page (has_more=false) lists every row in this context —
+        // cached rows it omits were deleted or moved out, so they are dropped
+        // instead of merged back in.
+        const merged = new Map(
+          (fresh.has_more ? cached : []).map((task) => [task.id, task]),
+        )
+            for (const task of fresh.tasks) merged.set(task.id, task)
+            tasksByItem.set(item.id, [...merged.values()])
+          } else if (cached.length > 0) {
+            tasksByItem.set(item.id, cached)
           }
         } catch (err) {
           console.error(`Failed to fetch tasks for item ${item.id}:`, err)
@@ -874,28 +975,31 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           // <100ms after mount, before the user can perceive it).
           await Promise.all(
             item.kanban_columns.map(async (col) => {
-              const { tasks, has_more, next_cursor } = await api.getTasks(
-                ws.id,
-                item.id,
-                10, // limit
-                undefined, // cursor — page 1
-                undefined, // sortBy — default sort
-                undefined, // direction — default sort
-                col.id, // column_id — per-column filter
-                undefined, // q — no search
-              )
-              const normalized = (tasks ?? []).map(normalizeTaskTags)
-              // Merge into the in-flight item — drop any prior
-              // tasks for THIS column (idempotent refresh), then
-              // push the new ones.
-              const otherTasks = (item.tasks ?? []).filter((t) => t.kanban_column_id !== col.id)
-              item.tasks = [...otherTasks, ...normalized]
-              // Initialise pagination entry for the column.
-              item.columnPagination ??= {} as Record<string, ColumnPaginationState>
-              item.columnPagination[col.id] = {
-                cursor: next_cursor,
-                hasMore: has_more,
-                isLoading: false,
+              const cached = await primeTaskCache(ws.id, item.id, col.id, 10)
+              if (cached.length > 0) replaceItemTasksForColumn(item, col.id, cached)
+              const fresh = await revalidateTaskCache(ws.id, item.id, col.id, 10)
+              if (fresh) {
+                // A complete page (has_more=false) lists every row in this context —
+        // cached rows it omits were deleted or moved out, so they are dropped
+        // instead of merged back in.
+        const merged = new Map(
+          (fresh.has_more ? cached : []).map((task) => [task.id, task]),
+        )
+                for (const task of fresh.tasks) merged.set(task.id, task)
+                replaceItemTasksForColumn(item, col.id, [...merged.values()])
+                item.columnPagination ??= {} as Record<string, ColumnPaginationState>
+                item.columnPagination[col.id] = {
+                  cursor: fresh.next_cursor,
+                  hasMore: fresh.has_more,
+                  isLoading: false,
+                }
+              } else if (cached.length > 0) {
+                item.columnPagination ??= {} as Record<string, ColumnPaginationState>
+                item.columnPagination[col.id] = {
+                  cursor: null,
+                  hasMore: false,
+                  isLoading: false,
+                }
               }
             }),
           )
@@ -1452,6 +1556,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         cwd: params.cwd,
       })
       item.tasks.unshift(newTask)
+      await cacheTaskMutation(
+        workspaceId,
+        itemId,
+        newTask,
+        newTask.kanban_column_id ?? undefined,
+      )
       return newTask.id
     } catch (err) {
       console.error('Failed to create task:', err)
@@ -1780,54 +1890,41 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const item = findItem(workspaceId, itemId)
     if (!item) return
     try {
-      // Per-column initial fetch — pass the columnId straight through.
-      // Backend returns ONLY this column's tasks (filtered by WHERE
-      // clause in listWorkspaceItemTasksWithCursor).
-      const { tasks, has_more, next_cursor } = await api.getTasks(
+      const cached = cursor
+        ? []
+        : await primeTaskCache(workspaceId, itemId, columnId, limit, q, sortBy, direction)
+      if (cached.length > 0) replaceItemTasksForColumn(item, columnId, cached)
+      const fresh = await revalidateTaskCache(
         workspaceId,
         itemId,
+        columnId,
         limit,
-        cursor,
+        q,
         sortBy,
         direction,
-        columnId, // per-column filter (the new arg)
-        q,
       )
-      // Migration 067 — normalize tags from wire string to in-memory
-      // string[]. The card UI reads task.tags directly; if the wire
-      // string leaks through, JSON.stringify fails silently and the
-      // chip render path crashes.
-      const normalized = (tasks ?? []).map(normalizeTaskTags)
-
-      // Merge into `item.tasks`: remove existing tasks for THIS column
-      // (in case the response is a refresh of column A and column B's
-      // tasks should stay intact), then push the new ones. We assume
-      // the SAME column is being refetched (cursor/refresh semantics):
-      // the wire response carries the server-sorted (or per-column-
-      // cursor-scoped) order for this column only.
-      //
-      // Double-task guard (task_1788811916878_4): also evict any
-      // existing entry whose id is in the fresh response. The old
-      // filter (`!== columnId` only) kept a stale source-column copy
-      // whenever the SSE mirror missed (event before load, unknown
-      // task, parallel per-column race, rapid A->B->C moves) and the
-      // fresh dest copy was appended alongside it — same id in 2
-      // columns until refresh. Last-writer-wins by id keeps one copy.
-      if (!item.tasks) item.tasks = []
-      const freshIds = new Set(normalized.map((t) => t.id))
-      const otherTasks = item.tasks.filter(
-        (t) => t.kanban_column_id !== columnId && !freshIds.has(t.id),
-      )
-      item.tasks = [...otherTasks, ...normalized]
-
-      // Update this column's pagination state. For an initial fetch
-      // (no prior state), this initializes the entry. For a refresh
-      // (SSE / sort / search), this replaces the cursor + hasMore.
-      if (!item.columnPagination) item.columnPagination = {}
-      item.columnPagination[columnId] = {
-        cursor: next_cursor,
-        hasMore: has_more,
-        isLoading: false,
+      if (fresh) {
+        // A complete page (has_more=false) lists every row in this context —
+        // cached rows it omits were deleted or moved out, so they are dropped
+        // instead of merged back in.
+        const merged = new Map(
+          (fresh.has_more ? cached : []).map((task) => [task.id, task]),
+        )
+        for (const task of fresh.tasks) merged.set(task.id, task)
+        replaceItemTasksForColumn(item, columnId, [...merged.values()])
+        if (!item.columnPagination) item.columnPagination = {}
+        item.columnPagination[columnId] = {
+          cursor: fresh.next_cursor,
+          hasMore: fresh.has_more,
+          isLoading: false,
+        }
+      } else if (cached.length > 0) {
+        if (!item.columnPagination) item.columnPagination = {}
+        item.columnPagination[columnId] = {
+          cursor: null,
+          hasMore: false,
+          isLoading: false,
+        }
       }
 
       // Track the active q so SSE handlers + loadMoreTasks can
@@ -2050,8 +2147,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       item.kanban_columns = (item.kanban_columns ?? []).filter((c) => c.id !== columnId)
       // Mirror the backend's NULL-unassign for tasks in the column.
       if (item.tasks) {
+        const unassigned: Task[] = []
         for (const t of item.tasks) {
-          if (t.kanban_column_id === columnId) t.kanban_column_id = null
+          if (t.kanban_column_id === columnId) {
+            t.kanban_column_id = null
+            unassigned.push(t)
+          }
+        }
+        for (const t of unassigned) {
+          await removeTaskFromCache(workspaceId, itemId, t.id, columnId)
+          await cacheTaskMutation(workspaceId, itemId, t)
         }
       }
     }
@@ -2075,6 +2180,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       if (task) {
         task.kanban_column_id = columnId
         task.kanban_position = position
+        await cacheTaskMutation(workspaceId, itemId, task, columnId)
       }
     }
   }
@@ -2119,6 +2225,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     if (newPosition !== undefined) {
       task.kanban_position = newPosition
     }
+    void cacheTaskMutation(workspaceId, itemId, task, newColumnId ?? undefined)
   }
 
   // Patch a task's `needs_human_review` flag IN PLACE (zero network).
@@ -2151,6 +2258,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     const task = item.tasks.find((t) => t.id === taskId)
     if (!task) return
     task.needs_human_review = needsHumanReview
+    void cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
   }
 
   // ─── Design mode actions (Chunk 6 of design-mode-redesign plan) ──────
@@ -3319,6 +3427,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       if (result.pinned_position !== undefined) {
         task.pinned_position = result.pinned_position
       }
+      await cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
       return { success: true, pinned_position: result.pinned_position }
     } catch (err) {
       console.error('[workspacesStore.pinTask] API call failed, rolling back:', err)
@@ -3382,6 +3491,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
 
     try {
       await api.reorderPinnedTasks(workspaceId, itemId, orderedIds)
+      for (const task of reorderedPinned) {
+        await cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
+      }
     } catch (err) {
       console.error('[workspacesStore.reorderPinnedTasks] API call failed, rolling back:', err)
       item.tasks = previousOrder
@@ -3402,6 +3514,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // Sync with API
       try {
         await api.updateTask(workspaceId, itemId, taskId, { completed: task.completed })
+        await cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
       } catch (err) {
         console.error('Failed to update task:', err)
         // Revert on error
@@ -3433,11 +3546,23 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // Sync with API
     try {
       await api.deleteTask(workspaceId, itemId, taskId)
+      await removeTaskFromCache(
+        workspaceId,
+        itemId,
+        taskId,
+        deletedTask?.kanban_column_id ?? undefined,
+      )
     } catch (err) {
       console.error('Failed to delete task:', err)
       // Rollback on error
       if (deletedTask) {
         item.tasks.splice(taskIndex, 0, deletedTask)
+        await cacheTaskMutation(
+          workspaceId,
+          itemId,
+          deletedTask,
+          deletedTask.kanban_column_id ?? undefined,
+        )
       }
     }
   }
@@ -3512,6 +3637,14 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         seenIds.add(t.id)
         item.tasks.push(t)
       }
+      await taskEngineDb.putLocal(
+        taskRequest(workspaceId, itemId, columnId, activeQ, activeSort, activeDirection),
+        tasks.map((task) => ({
+          id: task.id,
+          sortKey: (task as unknown as { updated_at?: unknown }).updated_at as string,
+          raw: task,
+        })),
+      )
       // Update this column's pagination state with the new cursor +
       // hasMore. The backend tells us if THIS column has more pages.
       colState.cursor = next_cursor
@@ -3698,6 +3831,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // a session.updated SSE event (see backend tasks_update.zig).
     try {
       await api.updateTaskSimple(taskId, { name: trimmed })
+      await cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
     } catch (err) {
       console.error('Failed to rename task:', err)
       // Rollback on error
@@ -3823,6 +3957,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
       // its own Save handler.
       throw err
     }
+    await cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
   }
 
   // Refetch ONE task from the server and patch the in-store copy
@@ -3866,6 +4001,12 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           // this preserves all caller state. The dialog re-derives
           // its local form state from the new task via its watcher.
           item.tasks.splice(idx, 1, freshTask)
+          await cacheTaskMutation(
+            workspaceId,
+            itemId,
+            freshTask,
+            freshTask.kanban_column_id ?? undefined,
+          )
           return
         }
       }
@@ -3991,6 +4132,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           (!fresh.videoUrls || fresh.videoUrls.length === 0 || painted)
         )
           fresh.videoUrls = media.videoUrls
+        await cacheTaskMutation(workspaceId, itemId, fresh, fresh.kanban_column_id ?? undefined)
       } catch (err) {
         console.warn('Failed to fetch task media:', err)
       } finally {
@@ -4051,6 +4193,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             (!task.videoUrls || task.videoUrls.length === 0 || revalidate)
           )
             task.videoUrls = media.videoUrls
+          await cacheTaskMutation(workspaceId, itemId, task, task.kanban_column_id ?? undefined)
         }
       } catch (err) {
         console.warn('Failed to fetch tasks media:', err)
@@ -4335,6 +4478,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               if (activeTaskId.value === task.id) {
                 useNavigationStore().setActiveChatName(task.name)
               }
+              void cacheTaskMutation(ws.id, item.id, task, task.kanban_column_id ?? undefined)
               return
             }
           }
@@ -4348,9 +4492,18 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
             if (!item.tasks) continue
             const idx = item.tasks.findIndex((t) => t.id === event.id)
             if (idx !== -1) {
+              const doomed = item.tasks[idx]
               item.tasks.splice(idx, 1)
               if (activeTaskId.value === event.id) {
                 activeTaskId.value = null
+              }
+              if (doomed) {
+                void removeTaskFromCache(
+                  ws.id,
+                  item.id,
+                  event.id,
+                  doomed.kanban_column_id ?? undefined,
+                )
               }
               return
             }
