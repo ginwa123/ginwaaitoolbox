@@ -75,8 +75,9 @@ const paramStr = (obj: Record<string, unknown> | null, ...keys: string[]): strin
 }
 
 // Diff content: prefer explicit props.diffviewBefore/After, then the
-// envelope's before/after, then the call parameters (covers the error path
-// where the envelope nulls `data` but parameters still carry old_str/new_str).
+// envelope's before/after, then the call parameters. The parameter fallback
+// is useful for successful results whose legacy diff fields are absent, but
+// the result is gated by `parsed.success` below before anything is rendered.
 // Null-safe: the SSE/REST layer may deliver explicit null (DB column null),
 // which must fall through — passing null into DiffView crashes splitLines.
 const diffBefore = computed(() => {
@@ -91,7 +92,13 @@ const diffAfter = computed(() => {
   return fallback ?? ''
 })
 
-const hasDiff = computed(() => diffBefore.value !== '' || diffAfter.value !== '')
+// Parameters describe the attempted edit; they are not proof that the edit
+// was applied. Only a successful result may render a diff — otherwise an
+// OldStrNotFound/MissingField failure would show the proposed replacement as
+// if it were a real file change.
+const hasDiff = computed(
+  () => parsed.value.success && (diffBefore.value !== '' || diffAfter.value !== ''),
+)
 
 // old_str/new_str are already visualized as the diff above — hide them from
 // Arguments so the expanded card shows a visual diff plus the path instead

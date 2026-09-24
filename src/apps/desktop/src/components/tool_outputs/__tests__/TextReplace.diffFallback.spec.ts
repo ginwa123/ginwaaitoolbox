@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { beforeAll, describe, expect, it } from 'vitest'
 import TextReplace from '../TextReplace.vue'
+import DiffView from '../_shared/DiffView.vue'
 import ToolParameters from '../_shared/ToolParameters.vue'
 
 beforeAll(() => {
@@ -24,7 +25,7 @@ beforeAll(() => {
 })
 
 describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
-  it('error envelope with null data still renders a diff from parameters old_str/new_str', async () => {
+  it('error envelope with null data does not render a diff from attempted parameters', async () => {
     const params = JSON.stringify({
       path: '/proj/a.txt',
       old_str: 'line1\nline2',
@@ -43,15 +44,42 @@ describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
     const wrapper = mount(TextReplace, {
       props: { content: envelope, parameters: params, expanded: true } as never,
     })
-    // Diff renders from the parameters fallback even though data is null.
-    expect(wrapper.html()).toContain('Before')
-    expect(wrapper.html()).toContain('After')
-    // Arguments must NOT repeat the huge raw blob — only the path survives.
+    // The attempted edit failed, so it must not be presented as an applied diff.
+    expect(wrapper.findComponent(DiffView).exists()).toBe(false)
+    expect(wrapper.html()).not.toContain('Before')
+    expect(wrapper.html()).not.toContain('After')
+    // Arguments still remain available for diagnosing the failed call.
     const args = wrapper.findComponent(ToolParameters)
     expect(args.exists()).toBe(true)
     expect(args.find('pre').text()).toContain('/proj/a.txt')
     expect(args.find('pre').text()).not.toContain('LINE2-EDITED')
     expect(args.find('pre').text()).not.toContain('old_str')
+  })
+
+  it('MissingField error does not render a partial diff from the replacement', async () => {
+    // The LLM used `old_string` instead of the tool schema's `old_str`.
+    // The backend rejects the call before touching the file; rendering the
+    // still-present `new_str` would incorrectly look like a pure insertion.
+    const params = JSON.stringify({
+      path: '/proj/a.txt',
+      old_string: 'line1\\nline2',
+      new_str: 'line1\\nLINE2-EDITED',
+    })
+    const envelope = JSON.stringify({
+      tool: 'text_replace',
+      parameters: JSON.parse(params),
+      success: false,
+      data: null,
+      error: 'text_replace failed: MissingField',
+      v: 1,
+    })
+    const wrapper = mount(TextReplace, {
+      props: { content: envelope, parameters: params, expanded: true } as never,
+    })
+    expect(wrapper.findComponent(DiffView).exists()).toBe(false)
+    expect(wrapper.html()).toContain('MissingField')
+    expect(wrapper.html()).not.toContain('Before')
+    expect(wrapper.html()).not.toContain('After')
   })
 
   it('success envelope keeps envelope diff and hides old_str/new_str from Arguments', async () => {
@@ -81,23 +109,25 @@ describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
     expect(args.find('pre').text()).not.toContain('new_str')
   })
 
-  it('delete (new_str="") still counts as a diff via parameters fallback', async () => {
+  it('successful delete (new_str="") still renders its applied diff', async () => {
     const params = JSON.stringify({
       path: '/proj/a.txt',
       old_str: 'remove me',
       new_str: '',
     })
-    const envelope = JSON.stringify({
-      tool: 'text_replace',
-      parameters: JSON.parse(params),
-      success: false,
-      data: null,
-      error: 'text_replace failed: OldStrNotFound',
-      v: 1,
-    })
     const wrapper = mount(TextReplace, {
-      props: { content: envelope, parameters: params, expanded: true } as never,
+      props: {
+        content: {
+          path: '/proj/a.txt',
+          before: 'remove me',
+          after: '',
+          error: null,
+        },
+        parameters: params,
+        expanded: true,
+      } as never,
     })
+    expect(wrapper.findComponent(DiffView).exists()).toBe(true)
     expect(wrapper.html()).toContain('Before')
   })
 
@@ -132,7 +162,7 @@ describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
     expect(wrapper.html()).toContain('After')
   })
 
-  it('null diffview props + error envelope still diffs from parameters', async () => {
+  it('null diffview props + error envelope does not diff from parameters', async () => {
     const params = JSON.stringify({
       path: '/proj/a.txt',
       old_str: 'aaa',
@@ -155,7 +185,8 @@ describe('TextReplace.vue — diff fallback + filtered Arguments', () => {
         diffviewAfter: null,
       } as never,
     })
-    expect(wrapper.html()).toContain('Before')
-    expect(wrapper.html()).toContain('After')
+    expect(wrapper.findComponent(DiffView).exists()).toBe(false)
+    expect(wrapper.html()).not.toContain('Before')
+    expect(wrapper.html()).not.toContain('After')
   })
 })
