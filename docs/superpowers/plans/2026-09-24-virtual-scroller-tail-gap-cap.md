@@ -1,4 +1,4 @@
-# VirtualScroller Tail-Gap Cap — `maxTailGap` (500px)
+# VirtualScroller Tail-Gap Cap — `maxTailGap` (100px)
 
 **Goal (user report):** "virtual scroll weird issue gap is to long, ma — can we limit that the gap only maybe 500px?"
 DevTools evidence: `virtual-scroller-sizer { height: 26796px }`, `virtual-scroller-content { transform: translate3d(0px, 23406px, 0px); min-height: 708px }`
@@ -22,7 +22,7 @@ An earlier attempt (PR #355) clamped the sizer to `topSpacer + realContentHeight
 
 `src/apps/desktop/src/helpers/VirtualScroller.vue`
 
-- New prop `maxTailGap` (default **500**, `0` disables).
+- New prop `maxTailGap` (default **100**, `0` disables).
 - `measureItems()` (the one place that reads live child geometry) now also sums the rendered rows' real heights and tracks the first/last `data-vs-index` they are stamped with, then `recordTailContentBottom()` stores
   `tailContentBottom = accumulatedHeights[firstRenderedIndex] + Σ rendered row heights`.
   Fresh by construction: it runs on every window change (pre-paint), scroll, and content resize — no ref-callback staleness.
@@ -34,7 +34,7 @@ An earlier attempt (PR #355) clamped the sizer to `topSpacer + realContentHeight
 ## Verification
 
 - [x] `npx vitest --run src/helpers/__tests__/virtualScroller* + VirtualScroller* + chatView*` → 17 files / 109 tests green.
-- [x] New spec `virtualScrollerTailGap.spec.ts` (7 tests): cap value, custom/smaller gap, `0` disables, latch release away from the tail, fresh re-record on window shift, fail-open on an un-laid-out window, never inflates above the model. Verified to FAIL when the cap default is set to 0.
+- [x] New spec `virtualScrollerTailGap.spec.ts` (7 tests): cap value, custom gap, `0` disables, latch release away from the tail, fresh re-record on window shift, fail-open on an un-laid-out window, never inflates above the model. Verified to FAIL when the cap default is set to 0.
 - [x] Full frontend unit suite: 3816 passed / 35 failed — the same 35 pre-existing failures (ChatView.*, workspacesStore*, FilePicker*, …) reproduce on a clean checkout with this file stashed, i.e. no new failures.
 - [x] `vue-tsc --noEmit -p tsconfig.app.json` clean; `oxlint`/`eslint` clean on the touched files.
 - [x] Playwright probe `tests/functional_ui/chatview_tail_gap_probe_test.py` on a real 700-message chat (Vite + nalar + Chromium): reachable blank ≤ maxTailGap at the bottom, tail rows still rendered, and 12 × 60px steps inside the tail region track scrollTop 1:1 (no jump/hole).

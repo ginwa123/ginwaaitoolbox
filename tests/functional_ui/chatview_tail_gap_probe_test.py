@@ -52,7 +52,7 @@ SHORT_BODIES = ("ok", "go on", "Done.", "On it.", "thanks", "noted")
 
 #: Contract under test — never let the user scroll more than this far past
 #: the measured content bottom (mirrors VirtualScroller's `maxTailGap`).
-MAX_TAIL_GAP_PX = 500
+MAX_TAIL_GAP_PX = 100
 #: Layout/rounding slack.
 SLACK_PX = 24
 
