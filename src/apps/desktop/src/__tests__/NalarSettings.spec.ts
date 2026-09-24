@@ -121,9 +121,7 @@ describe('NalarSettings (orchestrator)', () => {
     const profileTab = wrapper.find('[data-tab-id="profiles"]')
     await profileTab.trigger('click')
     await flushPromises()
-    // Edit a profile to make the form dirty.
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
-    await flushPromises()
+    // Save the profile-only config.
     await wrapper.find('[data-testid="save-btn"]').trigger('click')
     await flushPromises()
     expect(mockSave).toHaveBeenCalledTimes(1)
@@ -174,9 +172,7 @@ describe('NalarSettings (orchestrator)', () => {
     await profileTab.trigger('click')
     await flushPromises()
 
-    // Expand 'work', click + Add sub-agent.
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
-    await flushPromises()
+    // 'work' is expanded by default, so open + Add sub-agent directly.
     await wrapper.find('[data-testid="add-sub-agent-btn-work"]').trigger('click')
     await flushPromises()
 
