@@ -149,6 +149,59 @@ describe('ChatEngineDb mapping', () => {
     expect(await eng.getCursor('sess-fresh')).toBe(String(30 * 1e9))
   })
 
+  it('does not let a delta overwrite a live row in preserveIds', async () => {
+    const fetchFn = vi.fn(async () => ({
+      messages: [rawRow({ id: 'tool-row-1', content: 'stale server row' })],
+      has_more: false,
+      next_cursor: null,
+    }))
+    const eng = new ChatEngineDb(fetchFn as never)
+    await eng.putLocal('sess-preserve', [
+      toChatMessage('sess-preserve', rawRow({ id: 'tool-row-1', content: 'live SSE row' })),
+    ])
+
+    await eng.loadDelta('sess-preserve', 100, new Set(['tool-row-1']))
+
+    const cached = await eng.primeFromCache('sess-preserve', 100)
+    expect(cached[0]?.raw.content).toBe('live SSE row')
+    expect(await eng.getCursor('sess-preserve')).toBeNull()
+  })
+
+  it('protects a live row written while the delta request is pending', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let started!: () => void
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve
+    })
+    const fetchFn = vi.fn(async () => {
+      started()
+      await gate
+      return {
+        messages: [rawRow({ id: 'tool-row-1', content: 'stale server row' })],
+        has_more: false,
+        next_cursor: null,
+      }
+    })
+    const eng = new ChatEngineDb(fetchFn as never)
+    const preserveIds = new Set<string>()
+    const pending = eng.loadDelta('sess-race', 100, preserveIds)
+    await startedPromise
+
+    preserveIds.add('tool-row-1')
+    await eng.putLocal('sess-race', [
+      toChatMessage('sess-race', rawRow({ id: 'tool-row-1', content: 'live SSE row' })),
+    ])
+    release()
+    await pending
+
+    const cached = await eng.primeFromCache('sess-race', 100)
+    expect(cached[0]?.raw.content).toBe('live SSE row')
+    expect(await eng.getCursor('sess-race')).toBeNull()
+  })
+
   it('older-from-cache hit serves rows with zero network calls', async () => {
     const fetchFn = vi.fn(async () => ({
       messages: [],

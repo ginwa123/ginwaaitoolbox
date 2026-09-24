@@ -157,15 +157,21 @@ export class ChatEngineDb extends BaseSyncEngine<ChatMessage, ChatCtx> {
 
   /**
    * Background refresh for a cached mount: fetch the tail, persist it,
-   * advance the cursor. Never throws — IDB/network failure keeps the
-   * painted cache.
+   * advance the cursor. `preserveIds` prevents a response that started
+   * before a live SSE update from overwriting that newer row. Never throws —
+   * IDB/network failure keeps the painted cache.
    */
-  async loadDelta(ctx: ChatCtx, limit: number): Promise<ChatDelta | null> {
+  async loadDelta(
+    ctx: ChatCtx,
+    limit: number,
+    preserveIds: ReadonlySet<string> = new Set(),
+  ): Promise<ChatDelta | null> {
     try {
       const cursor = await this.getCursor(ctx)
       const delta = await this.fetchDeltaPage(cursor, limit, ctx)
-      await this.putLocal(ctx, delta.items)
-      if (delta.cursorToSave !== undefined) {
+      const persistableItems = delta.items.filter((item) => !preserveIds.has(item.id))
+      await this.putLocal(ctx, persistableItems)
+      if (delta.cursorToSave !== undefined && persistableItems.length === delta.items.length) {
         await this.setCursor(ctx, delta.cursorToSave)
       }
       return delta

@@ -97,9 +97,9 @@ export class IndexedDbStore<T extends Syncable> implements SyncStore<T> {
 
   async putAll(storeKey: string, items: T[]): Promise<void> {
     const stamped = items.map((i) => ({ ...i, ctx: storeKey }))
-    const cur = this.mem.get(storeKey) ?? []
-    const seen = new Set(cur.map((m) => m.id))
-    this.mem.set(storeKey, [...cur, ...stamped.filter((m) => !seen.has(m.id))] as T[])
+    const byId = new Map((this.mem.get(storeKey) ?? []).map((item) => [item.id, item]))
+    for (const item of stamped) byId.set(item.id, item as T)
+    this.mem.set(storeKey, [...byId.values()])
     const db = await this.db()
     if (!db) return
     const tx = db.transaction(this.storeName, 'readwrite')

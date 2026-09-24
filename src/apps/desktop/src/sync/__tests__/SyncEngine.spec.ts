@@ -15,9 +15,9 @@ class FakeStore implements SyncStore<Item> {
     return (this.items.get(key) ?? []).slice(0, limit)
   }
   async putAll(key: string, items: Item[]) {
-    const cur = this.items.get(key) ?? []
-    const seen = new Set(cur.map((m) => m.id))
-    this.items.set(key, [...cur, ...items.filter((m) => !seen.has(m.id))])
+    const byId = new Map((this.items.get(key) ?? []).map((item) => [item.id, item]))
+    for (const item of items) byId.set(item.id, item)
+    this.items.set(key, [...byId.values()])
   }
   async remove(key: string, id: string) {
     this.items.set(
@@ -95,6 +95,37 @@ describe('BaseSyncEngine orchestration', () => {
     const res = await eng.syncOnMount('s1', 50)
     expect(res.items.map((m) => m.id)).toEqual(['a'])
     expect(res.delta).toBeNull()
+  })
+
+  it('syncOnMount returns the same replacement it persists', async () => {
+    const eng = new TestEngine(null, async () => ({
+      items: [{ ...mk('tool-row-1', 3), label: 'server completed' } as Item],
+      nextCursor: null,
+      hasMore: false,
+      cursorToSave: null,
+    }))
+    await eng.putLocal('s1', [{ ...mk('tool-row-1', 3), label: 'placeholder' } as Item])
+
+    const result = await eng.syncOnMount('s1', 50)
+
+    expect(result.items[0]).toMatchObject({ id: 'tool-row-1', label: 'server completed' })
+    expect((await eng.primeFromCache('s1', 50))[0]).toMatchObject({ label: 'server completed' })
+  })
+
+  it('putLocal replaces an existing row with the same id', async () => {
+    const eng = new TestEngine(null, async () => ({
+      items: [],
+      nextCursor: null,
+      hasMore: false,
+      cursorToSave: null,
+    }))
+
+    await eng.putLocal('s1', [mk('tool-row-1', 3)])
+    await eng.putLocal('s1', [{ ...mk('tool-row-1', 3), label: 'completed' } as Item])
+
+    const rows = await eng.primeFromCache('s1', 10)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ id: 'tool-row-1', label: 'completed' })
   })
 
   it('putLocal never throws and loadOlderFromCache reads older rows', async () => {
