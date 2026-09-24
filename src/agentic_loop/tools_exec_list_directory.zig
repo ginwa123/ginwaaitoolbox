@@ -439,9 +439,16 @@ test "execListDirectory: non-existent relative path returns an error envelope, n
     defer arena.deinit();
     const a = arena.allocator();
 
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = path_buf[0..n];
+    const missing_dir = try std.fs.path.join(a, &.{ root_abs, "definitely/not/here" });
+
     var temperature: f32 = 0.0;
     var thinking: bool = false;
-    const ctx = testCtx(a, "/tmp", &temperature, &thinking);
+    const ctx = testCtx(a, root_abs, &temperature, &thinking);
 
     const result = try execListDirectory(
         ctx,
@@ -454,8 +461,8 @@ test "execListDirectory: non-existent relative path returns an error envelope, n
     const obj = parsed.value.object;
     try testing.expect(!obj.get("success").?.bool);
     try testing.expect(obj.get("data").? == .null);
-    // The error names the resolved path so the LLM can self-correct.
-    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "/tmp/definitely/not/here") != null);
+    // The error names the resolved native path so the LLM can self-correct.
+    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, missing_dir) != null);
 }
 
 // ─── Static contracts ──────────────────────────────────────────────────
