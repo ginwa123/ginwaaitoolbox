@@ -595,6 +595,15 @@ pub fn executeAddSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: []
     };
     defer allocator.free(skill_file);
 
+    // `createFileAbsolute` below asserts `skill_file` is absolute and ABORTS the
+    // whole process (Debug/ReleaseSafe) when it is not. The local branch is
+    // joined onto the session `cwd` — which no ingress validates as absolute
+    // (e.g. a session created with a relative `cwd_session`) — and the global
+    // branch trusts an unchecked XDG_CONFIG_HOME/HOME, so enforce the contract.
+    if (!std.fs.path.isAbsolute(skill_file)) {
+        return addSkillJsonError(allocator, input.name, "Skills directory must be an absolute path");
+    }
+
     // Create directories if needed using std.io.Dir
     if (input.create_with_dir) {
         const cwd_dir = std.Io.Dir.cwd();
@@ -837,6 +846,14 @@ pub fn executeEditSkillToString(allocator: std.mem.Allocator, io: std.Io, cwd: [
 
     const skill_file = try std.fs.path.join(allocator, &[_][]const u8{ skills_dir, skill_name_copy, "SKILL.MD" });
     defer allocator.free(skill_file);
+
+    // `createFileAbsolute` at the bottom of this function asserts `skill_file` is
+    // absolute and ABORTS the whole process (Debug/ReleaseSafe) when it is not.
+    // The local branch joins onto the session `cwd` (never validated as
+    // absolute at ingress) and the global branch trusts XDG_CONFIG_HOME/HOME.
+    if (!std.fs.path.isAbsolute(skill_file)) {
+        return editSkillJsonError(allocator, input.skill_name, "Skills directory must be an absolute path");
+    }
 
     // Check if the skill file exists
     const file_exists = blk: {

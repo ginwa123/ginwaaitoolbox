@@ -30,28 +30,28 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer parsed.deinit();
 
-    // 2. Resolve relative paths against the active session/worktree cwd.
-    // The lower-level helper uses openDirAbsolute, which asserts rather
-    // than returning an error for a relative path.
-    const base_path = ctx.cwd_override orelse ctx.cwd;
-    const resolved_path = if (std.fs.path.isAbsolute(parsed.value.path))
-        try ctx.allocator.dupe(u8, parsed.value.path)
-    else
-        try std.fs.path.join(ctx.allocator, &.{ base_path, parsed.value.path });
-    defer ctx.allocator.free(resolved_path);
+    // 2. Resolve the model-supplied path against the session cwd.
+    // `execute_list_directory` reaches `std.Io.Dir.openDirAbsolute`, whose
+    // precondition is `assert(path.isAbsolute(...))` — in a Debug build that
+    // becomes `unreachable`, which panics and aborts the WHOLE worker instead
+    // of returning an error. Passing the raw relative path straight through
+    // (what this wrapper used to do) crashed the process for the documented
+    // `path: "frontend/src"` call.
+    const dir_path_abs = try resolveAgainstCwd(ctx, parsed.value.path);
+    defer ctx.allocator.free(dir_path_abs);
 
     // 3. Execute the listing.
     const entries = list_directory_mod.execute_list_directory(
         ctx.allocator,
         ctx.io,
-        resolved_path,
+        dir_path_abs,
         parsed.value.hidden,
         parsed.value.respect_ignore_files,
     ) catch |err| {
         const err_msg = try std.fmt.allocPrint(
             ctx.allocator,
-            "list_directory failed: {s}",
-            .{@errorName(err)},
+            "list_directory failed: {s} (resolved path: {s})",
+            .{ @errorName(err), dir_path_abs },
         );
         defer ctx.allocator.free(err_msg);
         const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, false, err_msg, "");
@@ -59,17 +59,38 @@ pub fn execListDirectory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResu
     };
     defer list_directory_mod.freeEntries(ctx.allocator, entries);
 
-    // 4. Serialise to JSON and wrap.
-    const inner = try list_directory_mod.toJSON(ctx.allocator, entries, resolved_path);
+    // 4. Serialise to JSON and wrap. The reported `path` is the resolved
+    // absolute path, so the LLM (and the tool-output panel) can see which
+    // directory `frontend/src` actually meant.
+    const inner = try list_directory_mod.toJSON(ctx.allocator, entries, dir_path_abs);
     const output = try wrapToolOutput(ctx.allocator, "list_directory", tc.function.arguments, true, null, inner);
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
-// 2026-08-15 — end-to-end proof that the list_directory exec wrapper
-// passes the LLM-supplied path through unchanged after the
-// ban-absolute-paths revert. We pass the absolute path of a tmp dir
-// directly to execListDirectory and verify both entries show up in
-// the output AND the path appears as-is (no relative-path transform).
+/// Resolve a model-supplied directory path to an absolute path.
+///
+/// Contract (mirrors the `list_directory` tool description):
+///   - `""` or `"."`    → the effective session cwd itself
+///   - already absolute → used as-is
+///   - anything else    → relative to the effective session cwd
+///
+/// The base is `ctx.cwd_override orelse ctx.cwd`: `cwd_override` is the worktree
+/// trust anchor when set (forward-compat — nothing assigns it today, so this is
+/// `ctx.cwd` in practice; keep consulting it so a future wiring of that field
+/// does not silently stop affecting path resolution). Caller owns the returned
+/// slice.
+fn resolveAgainstCwd(ctx: ToolExecContext, raw: []const u8) ![]u8 {
+    const effective_cwd = ctx.cwd_override orelse ctx.cwd;
+    const base = if (effective_cwd.len == 0) "." else effective_cwd;
+    if (raw.len == 0 or std.mem.eql(u8, raw, ".")) return ctx.allocator.dupe(u8, base);
+    if (std.fs.path.isAbsolute(raw)) return ctx.allocator.dupe(u8, raw);
+    return std.fs.path.join(ctx.allocator, &.{ base, raw });
+}
+
+// End-to-end proof that the list_directory exec wrapper resolves its
+// input BEFORE reaching the underlying tool. Absolute input is used
+// as-is; relative input is joined onto ctx.cwd (see the
+// "relative LLM path resolves against ctx.cwd" test below).
 test "execListDirectory: absolute path passes through and lists entries" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -141,7 +162,7 @@ test "execListDirectory: absolute path passes through and lists entries" {
     const obj = parsed.value.object;
     try testing.expect(obj.get("success").?.bool);
     const data = obj.get("data").?.object;
-    // Path is passed through unchanged (no relative-path transform).
+    // Absolute input is used as-is (no prefixing, no normalization).
     try testing.expectEqualStrings(root_abs, data.get("path").?.string);
     const entries = data.get("entries").?.array.items;
     try testing.expectEqual(@as(usize, 2), entries.len);
@@ -159,12 +180,10 @@ test "execListDirectory: absolute path passes through and lists entries" {
 }
 
 test "execListDirectory: absolute path returns success envelope without validator error" {
-    // After the ban-absolute-paths revert, absolute paths are passed
-    // straight through to the underlying tool. Calling with
-    // `path: "/tmp"` (which exists on every Linux machine) MUST
-    // produce a success envelope containing `<directory_listing
-    // path="/tmp"`, and MUST NOT contain the previous validator's
-    // error envelope (`<error>absolute paths are not allowed`).
+    // Absolute paths are used as-is (never joined onto ctx.cwd).
+    // Calling with `path: "/tmp"` (which exists on every Linux machine)
+    // MUST produce a success envelope containing `"path":"/tmp"`, and
+    // MUST NOT contain a relative-path resolution error.
     //
     // Uses an arena to paper over the current `execListDirectory`
     // implementation allocating an intermediate `inner` XML string
@@ -216,113 +235,249 @@ test "execListDirectory: absolute path returns success envelope without validato
     try testing.expect(obj2.get("error").? == .null);
 }
 
-test "execListDirectory: relative path resolves against ctx.cwd" {
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
+// =====================================================================
+// Relative-path regression tests (crash: task_1790256349339_0)
+//
+// The LLM called `list_directory` with `{"path":"frontend/src"}` and the
+// wrapper forwarded that relative string straight into
+// `std.Io.Dir.openDirAbsolute`, whose precondition is
+// `assert(path.isAbsolute(...))`. In a Debug build the assert is
+// `unreachable` → panic → abort(), so the ENTIRE worker died (the
+// sub-agent thread included) instead of the tool returning an error.
+//
+// Every test below drives `execListDirectory` with the wire body the
+// model actually sends.
+// =====================================================================
 
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_len = try tmp.dir.realPath(testing.io, &path_buf);
-    const root_abs = path_buf[0..root_len];
-
-    try tmp.dir.createDirPath(testing.io, "graph");
-    const file = try tmp.dir.createFile(testing.io, "graph/index.txt", .{});
-    defer file.close(testing.io);
-
-    var agent_temperature: f32 = 0.0;
-    var is_thinking: bool = false;
-    const ctx = ToolExecContext{
-        .allocator = allocator,
+/// Build a ToolExecContext for the wrapper tests. `ctx.cwd` is the session
+/// (or worktree) cwd the LLM's relative paths are resolved against.
+fn testCtx(
+    a: std.mem.Allocator,
+    session_cwd: []const u8,
+    temperature: *f32,
+    thinking: *bool,
+) ToolExecContext {
+    return .{
+        .allocator = a,
         .io = testing.io,
         .db = undefined,
         .logger = undefined,
         .session_id = "test_session",
         .model = "test",
-        .cwd = root_abs,
+        .cwd = session_cwd,
         .api_key = "test",
         .base_url = "test",
         .config = undefined,
-        .agent_temperature = &agent_temperature,
-        .is_thinking = &is_thinking,
+        .agent_temperature = temperature,
+        .is_thinking = thinking,
         .environment = null,
         .active_loops = undefined,
     };
-    const tool_call = agent.ToolCall{
-        .id = "call_relative",
-        .type = "function",
-        .function = .{
-            .name = "list_directory",
-            .arguments = "{\"path\":\"graph\",\"respect_ignore_files\":false}",
-        },
-    };
-
-    const result = try execListDirectory(ctx, tool_call);
-    defer result.deinit(allocator);
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
-    defer parsed.deinit();
-    const obj = parsed.value.object;
-    try testing.expect(obj.get("success").?.bool);
-
-    const expected_dir = try std.fs.path.join(allocator, &.{ root_abs, "graph" });
-    const data = obj.get("data").?.object;
-    try testing.expectEqualStrings(expected_dir, data.get("path").?.string);
-
-    const entries = data.get("entries").?.array.items;
-    try testing.expectEqual(@as(usize, 1), entries.len);
-    try testing.expectEqualStrings("index.txt", entries[0].object.get("name").?.string);
 }
 
-test "execListDirectory: omitted path uses ctx.cwd instead of asserting" {
+fn listDirectoryCall(id: []const u8, args: []const u8) agent.ToolCall {
+    return .{
+        .id = id,
+        .type = "function",
+        .function = .{ .name = "list_directory", .arguments = args },
+    };
+}
+
+test "execListDirectory: relative 'frontend/src' resolves against ctx.cwd (crash regression)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const allocator = arena.allocator();
+    const a = arena.allocator();
 
-    var tmp = testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const root_len = try tmp.dir.realPath(testing.io, &path_buf);
-    const root_abs = path_buf[0..root_len];
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = try a.dupe(u8, path_buf[0..n]);
 
-    var agent_temperature: f32 = 0.0;
-    var is_thinking: bool = false;
-    const ctx = ToolExecContext{
-        .allocator = allocator,
-        .io = testing.io,
-        .db = undefined,
-        .logger = undefined,
-        .session_id = "test_session",
-        .model = "test",
-        .cwd = root_abs,
-        .api_key = "test",
-        .base_url = "test",
-        .config = undefined,
-        .agent_temperature = &agent_temperature,
-        .is_thinking = &is_thinking,
-        .environment = null,
-        .active_loops = undefined,
-    };
-    const tool_call = agent.ToolCall{
-        .id = "call_default_path",
-        .type = "function",
-        .function = .{
-            .name = "list_directory",
-            .arguments = "{}",
-        },
-    };
+    // <root>/frontend/src/index.ts — the layout the crashed session had.
+    try tmp.dir.createDirPath(testing.io, "frontend/src");
+    {
+        const f = try tmp.dir.createFile(testing.io, "frontend/src/index.ts", .{});
+        defer f.close(testing.io);
+    }
 
-    const result = try execListDirectory(ctx, tool_call);
-    defer result.deinit(allocator);
+    var temperature: f32 = 0.0;
+    var thinking: bool = false;
+    const ctx = testCtx(a, root_abs, &temperature, &thinking);
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    // The EXACT arguments JSON the model emitted when the worker aborted.
+    const result = try execListDirectory(
+        ctx,
+        listDirectoryCall(
+            "call_crash",
+            "{\"path\":\"frontend/src\",\"hidden\":false,\"respect_ignore_files\":true}",
+        ),
+    );
+    defer if (result.output_allocated) a.free(result.output);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, result.output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+
+    // Success envelope — BEFORE the fix this line never ran: the process
+    // aborted inside openDirAbsolute's assertion.
+    try testing.expect(obj.get("success").?.bool);
+    try testing.expect(obj.get("error").? == .null);
+
+    const data = obj.get("data").?.object;
+    const expected_dir = try std.fs.path.join(a, &.{ root_abs, "frontend/src" });
+    // The reported path is the resolved ABSOLUTE path, so the LLM can see
+    // which directory its relative path meant.
+    try testing.expectEqualStrings(expected_dir, data.get("path").?.string);
+    // NB: `count` may legitimately be 0 on this call — `tmpDir` creates the
+    // fixture under `.zig-cache/tmp/<rand>`, which lives INSIDE the repo and
+    // is covered by the repo's `.gitignore`, so `git check-ignore` filters
+    // every entry. That is the gitignore feature working, not a resolution
+    // failure. The second call below turns filtering off and asserts the
+    // resolved directory really was walked.
+    const entries = data.get("entries").?.array.items;
+    try testing.expectEqual(data.get("count").?.integer, @as(i64, @intCast(entries.len)));
+
+    // Same relative path, gitignore filtering off — proves `frontend/src`
+    // resolved to <ctx.cwd>/frontend/src (and not the server process cwd).
+    const result2 = try execListDirectory(
+        ctx,
+        listDirectoryCall(
+            "call_crash_no_ignore",
+            "{\"path\":\"frontend/src\",\"hidden\":false,\"respect_ignore_files\":false}",
+        ),
+    );
+    defer if (result2.output_allocated) a.free(result2.output);
+
+    const parsed2 = try std.json.parseFromSlice(std.json.Value, a, result2.output, .{});
+    defer parsed2.deinit();
+    const obj2 = parsed2.value.object;
+    try testing.expect(obj2.get("success").?.bool);
+    const data2 = obj2.get("data").?.object;
+    try testing.expectEqualStrings(expected_dir, data2.get("path").?.string);
+    try testing.expectEqual(@as(i64, 1), data2.get("count").?.integer);
+
+    const entries2 = data2.get("entries").?.array.items;
+    try testing.expectEqual(@as(usize, 1), entries2.len);
+    try testing.expectEqualStrings("index.ts", entries2[0].object.get("name").?.string);
+    try testing.expect(!entries2[0].object.get("is_directory").?.bool);
+}
+
+test "execListDirectory: omitted path lists the session cwd (not the process cwd)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = try a.dupe(u8, path_buf[0..n]);
+    {
+        const f = try tmp.dir.createFile(testing.io, "only_here.txt", .{});
+        defer f.close(testing.io);
+    }
+
+    var temperature: f32 = 0.0;
+    var thinking: bool = false;
+    const ctx = testCtx(a, root_abs, &temperature, &thinking);
+
+    const result = try execListDirectory(
+        ctx,
+        listDirectoryCall("call_default", "{\"respect_ignore_files\":false}"),
+    );
+    defer if (result.output_allocated) a.free(result.output);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, result.output, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
     try testing.expect(obj.get("success").?.bool);
 
+    // The default `"."` means the session cwd itself — NOT the server
+    // process cwd, and never an abort.
     const data = obj.get("data").?.object;
-    const expected_dir = try std.fs.path.join(allocator, &.{ root_abs, "." });
-    try testing.expectEqualStrings(expected_dir, data.get("path").?.string);
-    try testing.expectEqual(@as(i64, 0), data.get("count").?.integer);
+    try testing.expectEqualStrings(root_abs, data.get("path").?.string);
+    const entries = data.get("entries").?.array.items;
+    try testing.expectEqual(@as(usize, 1), entries.len);
+    try testing.expectEqualStrings("only_here.txt", entries[0].object.get("name").?.string);
+}
+
+test "execListDirectory: empty path falls back to the session cwd" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const root_abs = try a.dupe(u8, path_buf[0..n]);
+
+    var temperature: f32 = 0.0;
+    var thinking: bool = false;
+    const ctx = testCtx(a, root_abs, &temperature, &thinking);
+
+    // Some providers emit `"path":""` for an optional string instead of
+    // omitting the field (same class of bug as the migrations' empty-slice
+    // binding). `std.fs.path.isAbsolute("")` is false, so this used to be
+    // another route into the same assertion.
+    const result = try execListDirectory(
+        ctx,
+        listDirectoryCall("call_empty", "{\"path\":\"\",\"respect_ignore_files\":false}"),
+    );
+    defer if (result.output_allocated) a.free(result.output);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, result.output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("success").?.bool);
+    try testing.expectEqualStrings(root_abs, obj.get("data").?.object.get("path").?.string);
+}
+
+test "execListDirectory: non-existent relative path returns an error envelope, not a crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var temperature: f32 = 0.0;
+    var thinking: bool = false;
+    const ctx = testCtx(a, "/tmp", &temperature, &thinking);
+
+    const result = try execListDirectory(
+        ctx,
+        listDirectoryCall("call_missing", "{\"path\":\"definitely/not/here\",\"respect_ignore_files\":false}"),
+    );
+    defer if (result.output_allocated) a.free(result.output);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, result.output, .{});
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expect(!obj.get("success").?.bool);
+    try testing.expect(obj.get("data").? == .null);
+    // The error names the resolved path so the LLM can self-correct.
+    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "/tmp/definitely/not/here") != null);
+}
+
+// ─── Static contracts ──────────────────────────────────────────────────
+// `zig build test` runs the process with the repo root as cwd, so the impl
+// file is readable by its repo-relative path (same technique as
+// tools_exec_spawn_sub_agent.zig's static-contract tests).
+
+test "execListDirectory resolves the model path before the absolute-only tool" {
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        testing.io,
+        "src/agentic_loop/tools_exec_list_directory.zig",
+        testing.allocator,
+        .limited(1 * 1024 * 1024),
+    );
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "fn resolveAgainstCwd(") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "std.fs.path.isAbsolute(raw)") != null);
+    try testing.expect(
+        std.mem.indexOf(u8, source, "const dir_path_abs = try resolveAgainstCwd(ctx, parsed.value.path);") != null,
+    );
+    // The resolved path is what reaches the tool AND what gets reported.
+    try testing.expect(std.mem.indexOf(u8, source, "list_directory_mod.execute_list_directory(") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "list_directory failed: {s} (resolved path: {s})") != null);
 }

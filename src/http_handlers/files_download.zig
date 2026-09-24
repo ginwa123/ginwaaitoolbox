@@ -149,6 +149,12 @@ pub fn resolveSessionRoot(
     const cwd = row.values[1];
     const root = if (worktree_cwd.len > 0) worktree_cwd else cwd;
     if (root.len == 0) return error.NoWorkingDirectory;
+    // `root` is later handed to `std.Io.Dir.realPathFileAbsoluteAlloc`, which
+    // asserts `path.isAbsolute(...)`. That assertion ABORTS the whole process
+    // (Debug/ReleaseSafe) rather than returning an error, and `sessions.cwd` is
+    // NOT validated as absolute at every write path (e.g. a session created
+    // with a relative `cwd_session`) — so refuse a non-absolute root here.
+    if (!std.fs.path.isAbsolute(root)) return error.NoWorkingDirectory;
     return allocator.dupe(u8, root) catch return error.OutOfMemory;
 }
 

@@ -4,10 +4,18 @@
 //! Companion to `glob` (which finds files by pattern, recursive) —
 //! `list_directory` answers "what's in this folder?" with one level.
 //!
-//! PATH HANDLING: the LLM-facing input may be relative or absolute.
-//! The exec wrapper resolves relative paths against the active session
-//! or worktree cwd. The lower-level `execute_list_directory` API only
-//! accepts an absolute path because it passes it to `openDirAbsolute`.
+//! PATH HANDLING: `execute_list_directory` takes an ABSOLUTE path only —
+//! it calls `std.Io.Dir.openDirAbsolute`, whose precondition is
+//! `assert(path.isAbsolute(...))`. In a Debug build that assert is
+//! `unreachable`, so a relative path aborts the process instead of
+//! returning an error.
+//!
+//! The LLM-facing `path` may be relative (the tool description promises it
+//! resolves against the session's cwd), so the `execListDirectory` wrapper
+//! in src/agentic_loop/tools_exec_list_directory.zig resolves it against
+//! `ctx.cwd` before calling in here. As defence in depth,
+//! `execute_list_directory` itself returns `error.PathNotAbsolute` for a
+//! relative path rather than reaching the asserting API.
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
@@ -34,9 +42,10 @@ pub fn freeEntries(allocator: std.mem.Allocator, entries: []Entry) void {
     allocator.free(entries);
 }
 
-/// `dir_path_abs` MUST be an absolute path. The exec wrapper resolves
-/// relative LLM input before calling this function; this guard keeps a
-/// future direct caller from triggering `openDirAbsolute`'s assertion.
+/// `dir_path_abs` MUST be an absolute path. Relative LLM input is resolved
+/// against the session cwd by the exec wrapper before it gets here; the
+/// guard below keeps any other caller from triggering `openDirAbsolute`'s
+/// assertion (which panics and aborts the worker rather than erroring).
 ///
 /// Behaviour:
 /// - Relative path → returns `error.PathNotAbsolute`
@@ -52,6 +61,13 @@ pub fn execute_list_directory(
     hidden: bool,
     respect_ignore_files: bool,
 ) ![]Entry {
+    // Defence in depth — `openDirAbsolute` below asserts
+    // `path.isAbsolute(...)`, and that assert is `unreachable` in a Debug
+    // build: it panics and aborts the whole worker (sig 6) instead of
+    // returning an error, which no `catch` up the stack can intercept.
+    // The exec wrapper resolves relative LLM input against the session cwd
+    // first, so this only fires for a direct caller passing a relative
+    // path; fail that caller cleanly.
     if (!std.fs.path.isAbsolute(dir_path_abs)) return error.PathNotAbsolute;
 
     var entries = std.ArrayList(Entry).empty;
@@ -189,8 +205,9 @@ pub const list_directory_tool = AgentTool{
         \\Each entry is an object {name, path, is_directory, is_symlink}
         \\inside `entries`, with `path` and `count` alongside.
         \\
-        \\Path is RELATIVE to the session's cwd by default. Absolute
-        \\paths are accepted (passed through to openDirAbsolute).
+        \\`path` may be relative — it is resolved against the session's
+        \\current working directory — or absolute, in which case it is
+        \\used as-is. Every entry's `path` is absolute.
         ,
         .parameters = .{
             .type = "object",
@@ -198,7 +215,7 @@ pub const list_directory_tool = AgentTool{
                 .{
                     .name = "path",
                     .type = "string",
-                    .description = "Directory to list. Absolute paths are accepted. Default: \".\" (the cwd itself).",
+                    .description = "Directory to list. Relative paths resolve against the session's cwd; absolute paths are used as-is. Default: \".\" (the session's cwd).",
                 },
                 .{
                     .name = "hidden",
@@ -317,15 +334,22 @@ test "execute_list_directory: hidden=true includes dotfiles" {
     try testing.expectEqualStrings("visible.txt", entries[1].name);
 }
 
-test "execute_list_directory: rejects a relative path without panicking" {
-    const result = list_directory.execute_list_directory(
-        testing.allocator,
-        testing.io,
-        ".",
-        false,
-        false,
-    );
-    try testing.expectError(error.PathNotAbsolute, result);
+test "execute_list_directory: returns PathNotAbsolute for a relative path (no panic)" {
+    const alloc = testing.allocator;
+
+    // `openDirAbsolute` asserts `path.isAbsolute(...)`; in a Debug build that
+    // assertion is `unreachable` → panic → abort(), killing the whole worker.
+    // A direct caller passing a relative path must get an error instead.
+    for ([_][]const u8{ ".", "frontend/src", "" }) |relative| {
+        const result = list_directory.execute_list_directory(
+            alloc,
+            testing.io,
+            relative,
+            false,
+            false,
+        );
+        try testing.expectError(error.PathNotAbsolute, result);
+    }
 }
 
 test "execute_list_directory: returns PathNotFound for missing dir" {
@@ -489,15 +513,23 @@ test "list_directory_tool schema: name is list_directory, parameters object with
     try testing.expectEqual(@as(usize, 0), params.required.len);
 }
 
-test "list_directory_tool description mentions absolute paths policy" {
+test "list_directory_tool description documents relative + absolute path handling" {
     const desc = list_directory.list_directory_tool.function.description;
-    // Static-contract grep — guards against accidental removal of
-    // the path-handling note when the description is edited. The
-    // description wraps "Absolute paths are accepted" across one or
-    // more lines, so we look for the substring "accepted" which
-    // appears only in that policy phrase.
-    if (std.mem.indexOf(u8, desc, "accepted") == null) {
-        std.debug.print("!! list_directory description does not mention 'accepted' (path policy) !!\n", .{});
-        try testing.expect(false);
+    // Static-contract grep — guards the path contract the exec wrapper
+    // implements (resolveAgainstCwd in tools_exec_list_directory.zig).
+    // If the description stops promising relative support, the resolver
+    // stops being load-bearing; if it claims anything is rejected, that
+    // contradicts the "absolute paths are used as-is" branch.
+    try testing.expect(std.mem.indexOf(u8, desc, "resolved against the session's") != null);
+    try testing.expect(std.mem.indexOf(u8, desc, "used as-is") != null);
+    try testing.expect(std.mem.indexOf(u8, desc, "rejected") == null);
+
+    // The `path` parameter description carries the same contract.
+    var found_path_param = false;
+    for (list_directory.list_directory_tool.function.parameters.properties) |prop| {
+        if (!std.mem.eql(u8, prop.name, "path")) continue;
+        found_path_param = true;
+        try testing.expect(std.mem.indexOf(u8, prop.description, "resolve against the session's cwd") != null);
     }
+    try testing.expect(found_path_param);
 }

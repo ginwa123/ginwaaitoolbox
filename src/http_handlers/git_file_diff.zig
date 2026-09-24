@@ -32,6 +32,19 @@ pub fn gitFileDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     const staged_param = query.get("staged") orelse "false";
     const staged = std.mem.eql(u8, staged_param, "true");
 
+    // Both values come straight from the query string and `path` is later used
+    // as the BASE of a `std.fs.path.join` whose result is handed to
+    // `std.Io.Dir.openFileAbsolute`. That API asserts `path.isAbsolute(...)`,
+    // and a failed assertion ABORTS the whole process (Debug/ReleaseSafe)
+    // instead of returning an error — so a relative `?path=` would kill the
+    // server for every client. Reject it here.
+    if (!std.fs.path.isAbsolute(path_param)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
+    }
+    if (std.fs.path.isAbsolute(file_param)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "file must be relative to path") });
+    }
+
     // Use git diff command to get proper diff output
     // For staged: git diff --cached -- <file> (staged vs HEAD)
     // For unstaged: git diff -- <file> (working tree vs staged area)
@@ -60,6 +73,13 @@ pub fn gitFileDiffHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         const full_file_path = std.fs.path.join(allocator, &.{ path_param, file_param }) catch "";
         if (full_file_path.len > 0) {
             defer allocator.free(full_file_path);
+            // Defence in depth: `path_param` is validated absolute above, so this
+            // join is absolute — but `openFileAbsolute` ASSERTS it and aborts the
+            // whole process instead of returning an error, so never hand it
+            // anything else.
+            if (!std.fs.path.isAbsolute(full_file_path)) {
+                return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
+            }
             const file = std.Io.Dir.openFileAbsolute(io, full_file_path, .{}) catch null;
             if (file) |f| {
                 defer f.close(io);
@@ -96,6 +116,17 @@ pub fn gitFileReadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     const file_param = query.get("file") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "Missing file parameter") });
     };
+
+    // Both values come straight from the query string. `openFileAbsolute` below
+    // ASSERTS the path is absolute and ABORTS the whole process
+    // (Debug/ReleaseSafe) instead of returning an error, so validate before the
+    // join (and reject an absolute `file`, which would escape `path`).
+    if (!std.fs.path.isAbsolute(path_param)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "path must be an absolute directory") });
+    }
+    if (std.fs.path.isAbsolute(file_param)) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeGitStatusErrorResponse(allocator, "file must be relative to path") });
+    }
 
     // Build full file path
     const file_path = std.fs.path.join(allocator, &.{ path_param, file_param }) catch |err| {

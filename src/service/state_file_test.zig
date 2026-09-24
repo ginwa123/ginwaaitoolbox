@@ -25,6 +25,26 @@ test "readStateFile returns null when file does not exist" {
     try testing.expect(result == null);
 }
 
+test "writeStateFile rejects a relative path instead of aborting" {
+    const allocator = testing.allocator;
+    const original: state_file.State = .{
+        .pid = 1,
+        .port = 8081,
+        .host = "127.0.0.1",
+        .started_at = 1,
+        .version = "v",
+        .static_dir = null,
+    };
+
+    // `writeStateFile` ends in `std.Io.Dir.renameAbsolute`, whose
+    // `assert(path.isAbsolute(...))` is `unreachable` in Debug/ReleaseSafe — it
+    // ABORTS the whole process instead of returning an error. A relative path
+    // (e.g. a relative $XDG_STATE_HOME / $HOME, now rejected in
+    // `defaultStatePath`, or any caller-supplied path) must yield a normal error.
+    const result = state_file.writeStateFile(allocator, testing.io, "relative/state.json", original);
+    try testing.expectError(error.PathNotAbsolute, result);
+}
+
 test "writeStateFile round-trips a State" {
     const allocator = testing.allocator;
     var tmp = std.testing.tmpDir(.{});

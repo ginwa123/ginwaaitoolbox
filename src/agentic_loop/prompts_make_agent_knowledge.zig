@@ -45,18 +45,23 @@ fn resolveWorkspaceItemId(
 
 /// Read a single file's full contents. Caller owns the returned slice.
 /// Returns `null` (logged + skipped by caller) on failure.
+///
+/// `file_path` comes from the `agent_knowledge.file_path` DB column. An empty
+/// or RELATIVE value is reachable (the create/update handlers accept
+/// `file_path = ""` and only validate non-empty values, and legacy rows may
+/// predate that validation), so the contract is enforced HERE:
+/// `std.Io.Dir.openFileAbsolute` asserts `path.isAbsolute(...)`, and a failed
+/// assertion ABORTS the whole process (Debug/ReleaseSafe) instead of returning
+/// an error — one bad knowledge row would kill the worker on every turn.
 fn readFileContents(
     io: std.Io,
     allocator: std.mem.Allocator,
     file_path: []const u8,
 ) !?[]u8 {
-    const file = std.Io.Dir.openFileAbsolute(io, file_path, .{
-        .mode = .read_only,
-    }) catch |err| {
-        std.log.warn("makeAgentKnowledge: failed to open {s}: {}", .{ file_path, err });
+    if (file_path.len == 0 or !std.fs.path.isAbsolute(file_path)) {
+        std.log.warn("makeAgentKnowledge: skipping knowledge entry with a non-absolute file_path: {s}", .{file_path});
         return null;
-    };
-    defer std.Io.File.close(file, io);
+    }
 
     const contents = std.Io.Dir.cwd().readFileAlloc(
         io,
@@ -377,6 +382,35 @@ test "makeAgentKnowledge: respects position DESC ordering" {
     const high_idx = std.mem.indexOf(u8, result, "content_high_marker") orelse return error.MarkerNotFound;
     const low_idx = std.mem.indexOf(u8, result, "content_low_marker") orelse return error.MarkerNotFound;
     try testing.expect(high_idx < low_idx);
+}
+
+test "makeAgentKnowledge: skips empty/relative file paths instead of aborting" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try insertWorkspaceItem(&ctx, "ws_item_1", "agent");
+    try insertSession(&ctx, "sess_1", "ws_item_1");
+
+    // Two reachable bad states, both of which used to reach
+    // `openFileAbsolute`'s `assert(path.isAbsolute(...))` — an ABORT of the whole
+    // process (Debug/ReleaseSafe) — on EVERY turn, because this runs during prompt
+    // building:
+    //   * ""               — the create handler accepts an empty file_path (it only
+    //                        validates non-empty values) and leaves content empty
+    //                        too; PATCH can also clear file_path afterwards.
+    //   * "relative/x.md"  — representable in the DB (no CHECK constraint), e.g. a
+    //                        legacy row written before that validation landed.
+    try insertKnowledge(&ctx, "know_empty", "ws_item_1", "", 0);
+    try insertKnowledge(&ctx, "know_relative", "ws_item_1", "relative/knowledge.md", 1);
+
+    const result = try makeAgentKnowledge(alloc, ctx.threaded.io(), &ctx.db, "sess_1");
+    defer alloc.free(result);
+
+    // No abort — and neither unusable entry leaks a (missing) body into the prompt.
+    try testing.expect(std.mem.indexOf(u8, result, "## Agent Knowledge") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "relative/knowledge.md") == null);
 }
 
 test "makeAgentKnowledge: skips unreadable file paths with logged warning" {

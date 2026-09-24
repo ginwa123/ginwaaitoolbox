@@ -122,6 +122,13 @@ pub fn writeStateFile(
     path: []const u8,
     state: State,
 ) !void {
+    // `path` is either the canonical default ($XDG_STATE_HOME / $HOME derived)
+    // or a caller-supplied `state_path`. The `renameAbsolute` below asserts both
+    // paths are absolute and ABORTS the process (Debug/ReleaseSafe) instead of
+    // returning an error, so enforce the contract up front. `defaultStatePath`
+    // also validates its environment bases — this guard also covers callers.
+    if (path.len == 0 or !std.fs.path.isAbsolute(path)) return error.PathNotAbsolute;
+
     // 1. Serialize to a JSON string. static_dir's value is wrapped in
     //    quotes via the `{s}` formatter for strings; null is a literal.
     //    We track ownership via `sd_owned` so the defer cleanup only
@@ -211,10 +218,16 @@ pub fn defaultStatePath(allocator: std.mem.Allocator) PathError![]u8 {
     // std.c.getenv returns `?[*:0]u8` (nullable NUL-terminated). For path
     // joining we need a `[]const u8` slice; `std.mem.sliceTo` walks to
     // the NUL terminator and returns a length-counted slice.
+    //
+    // Every base below must be ABSOLUTE: the product is passed to
+    // `renameAbsolute` in `writeStateFile`, which asserts `path.isAbsolute(...)`
+    // and ABORTS the whole process (Debug/ReleaseSafe) otherwise. A relative
+    // (or empty) XDG_STATE_HOME / HOME / LOCALAPPDATA used to reach that assert.
     if (builtin.os.tag == .windows) {
         const appdata_z = std.c.getenv("LOCALAPPDATA") orelse
             return error.PathResolutionFailed;
         const appdata = std.mem.sliceTo(appdata_z, 0);
+        if (!std.fs.path.isAbsolute(appdata)) return error.PathResolutionFailed;
         return std.fs.path.join(allocator, &.{ appdata, "nalar", "state.json" });
     }
     // POSIX: XDG_STATE_HOME wins; fall back to ~/.local/state.
@@ -222,7 +235,9 @@ pub fn defaultStatePath(allocator: std.mem.Allocator) PathError![]u8 {
     const home = std.mem.sliceTo(home_z, 0);
     if (std.c.getenv("XDG_STATE_HOME")) |xdg_z| {
         const xdg = std.mem.sliceTo(xdg_z, 0);
+        if (!std.fs.path.isAbsolute(xdg)) return error.PathResolutionFailed;
         return std.fs.path.join(allocator, &.{ xdg, "nalar", "state.json" });
     }
+    if (!std.fs.path.isAbsolute(home)) return error.PathResolutionFailed;
     return std.fs.path.join(allocator, &.{ home, ".local", "state", "nalar", "state.json" });
 }
