@@ -115,38 +115,63 @@ describe('ProfilesSection', () => {
   })
 
   // ─── Expand / collapse ────────────────────────────────────────────
-  it('does not render the sub-agents list by default (collapsed)', () => {
+  it('expands every profile and sub-agent profile by default', () => {
     const wrapper = mount(ProfilesSection, {
-      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
+      props: {
+        modelValue: [
+          { ...baseProfile, sub_agents: [baseSubAgent] },
+          { ...baseProfile, name: 'home' },
+        ],
+        activeProfile: null,
+      },
     })
-    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(false)
-  })
 
-  it('expands the sub-agents list when the chevron is clicked', async () => {
-    const wrapper = mount(ProfilesSection, {
-      props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
-    })
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
+    expect(wrapper.find('[data-testid="expand-btn-work"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-testid="expand-btn-home"]').attributes('aria-expanded')).toBe('true')
     expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(true)
-    expect(wrapper.find(`[data-testid="profile-sub-agent-work-coder"]`).exists()).toBe(true)
+    expect(wrapper.find('[data-testid="expand-sub-agent-btn-work-coder"]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.find('[data-testid="sub-agent-details-work-coder"]').exists()).toBe(true)
   })
 
-  it('toggles the sub-agents list when the chevron is clicked twice', async () => {
+  it('collapses and re-expands one profile without changing the others', async () => {
+    const wrapper = mount(ProfilesSection, {
+      props: {
+        modelValue: [
+          { ...baseProfile, sub_agents: [baseSubAgent] },
+          { ...baseProfile, name: 'home' },
+        ],
+        activeProfile: null,
+      },
+    })
+    const workToggle = wrapper.find('[data-testid="expand-btn-work"]')
+
+    await workToggle.trigger('click')
+    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sub-agents-list-home"]').exists()).toBe(true)
+
+    await workToggle.trigger('click')
+    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(true)
+  })
+
+  it('collapses and re-expands an individual sub-agent profile', async () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
     })
-    const btn = wrapper.find('[data-testid="expand-btn-work"]')
-    await btn.trigger('click')
-    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(true)
-    await btn.trigger('click')
-    expect(wrapper.find('[data-testid="sub-agents-list-work"]').exists()).toBe(false)
+    const toggle = wrapper.find('[data-testid="expand-sub-agent-btn-work-coder"]')
+
+    await toggle.trigger('click')
+    expect(wrapper.find('[data-testid="sub-agent-details-work-coder"]').exists()).toBe(false)
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+
+    await toggle.trigger('click')
+    expect(wrapper.find('[data-testid="sub-agent-details-work-coder"]').exists()).toBe(true)
+    expect(toggle.attributes('aria-expanded')).toBe('true')
   })
 
-  it('shows a "no sub-agents" hint when the profile has none and is expanded', async () => {
+  it('shows a "no sub-agents" hint by default when the profile has none', () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [baseProfile], activeProfile: null },
     })
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
     const list = wrapper.find('[data-testid="sub-agents-list-work"]')
     expect(list.exists()).toBe(true)
     expect(list.text()).toContain('No sub-agents')
@@ -157,7 +182,6 @@ describe('ProfilesSection', () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [baseProfile], activeProfile: null },
     })
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
     await wrapper.find('[data-testid="add-sub-agent-btn-work"]').trigger('click')
     expect(wrapper.emitted('addSubAgent')?.[0]).toEqual(['work'])
   })
@@ -166,7 +190,6 @@ describe('ProfilesSection', () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
     })
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
     await wrapper.find('[data-testid="edit-sub-agent-btn-work-coder"]').trigger('click')
     expect(wrapper.emitted('editSubAgent')?.[0]).toEqual(['work', baseSubAgent])
   })
@@ -175,7 +198,6 @@ describe('ProfilesSection', () => {
     const wrapper = mount(ProfilesSection, {
       props: { modelValue: [{ ...baseProfile, sub_agents: [baseSubAgent] }], activeProfile: null },
     })
-    await wrapper.find('[data-testid="expand-btn-work"]').trigger('click')
     await wrapper.find('[data-testid="delete-sub-agent-btn-work-coder"]').trigger('click')
     expect(wrapper.emitted('deleteSubAgent')?.[0]).toEqual(['work', 'coder'])
   })

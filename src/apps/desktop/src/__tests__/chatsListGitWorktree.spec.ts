@@ -1,25 +1,10 @@
 /**
- * Regression tests for the git icon rendered in the ChatsList
- * sidebar. Rows show icon-only badges (no model badge, no text
- * labels) in front of the chat name:
- *   - `chat-git-branch`: kanban fork/branch SVG with PR-status colors
- *     when the session has a `git_branch` value (tooltip carries the
- *     branch + worktree path).
- *   - `worktree-badge`: same SVG icon (bold orange fallback) when only
- *     `git_worktree_cwd` is set (bound worktree, non-git cwd).
- * Both are absent when the values are empty.
+ * Regression tests for the Recent list in ChatsList.
  *
- * This guards the Chunk 4 wiring:
- *   - `Session` interface declares `git_worktree_cwd` (api/index.ts)
- *   - `SessionEvent` interface declares `git_worktree_cwd`
- *     (SSE updates carry it through)
- *   - `ChatsList.vue` `loadChats` maps `session.git_worktree_cwd`
- *     into the local `navItems[i].git_worktree_cwd`
- *   - The template renders the icon gated on
- *     `v-if="item.git_branch"` / `v-else-if="item.git_worktree_cwd"`
- *
- * The component is mounted with `vi.spyOn(api, 'getChats')` (the
- * same pattern as `sidebarActiveState.spec.ts`).
+ * The section title is "Recent". A row shows the icon-only
+ * `chat-git-branch` badge only when the session has both a branch and
+ * a known pull-request status. Worktree bindings and branches without
+ * a pull request show no git badge.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
@@ -27,8 +12,9 @@ import { createApp, type App as VueApp, nextTick, ref } from 'vue'
 
 import * as api from '../api'
 import ChatsList from '../components/views/ChatsList.vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { makeLocalStorageStub } from './helpers'
+import { clearPrStatusCache } from '../helpers/prStatusCache'
 import { installSseBus, __resetSseBus, __setSseBusGlobalClient } from '../helpers/sseBus'
 import type { SseClient, SseState, SseStateInfo } from '../helpers/sseClient'
 
@@ -94,6 +80,14 @@ describe('ChatsList git icon', () => {
     app = createApp({})
     installSseBus(app)
     __setSseBusGlobalClient(makeStubClient('connecting'))
+    clearPrStatusCache()
+    vi.spyOn(api, 'getPrStatus').mockResolvedValue({
+      status: '',
+      state: '',
+      mergeable: '',
+      merge_state: '',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
   })
 
   afterEach(() => {
@@ -101,7 +95,7 @@ describe('ChatsList git icon', () => {
     vi.restoreAllMocks()
   })
 
-  it('renders the worktree icon when a session has a non-empty git_worktree_cwd', async () => {
+  it('labels the section Recent and omits git icons for worktrees without a PR', async () => {
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
@@ -114,32 +108,17 @@ describe('ChatsList git icon', () => {
       ],
       has_more: false,
       next_cursor: null,
-
       total: 1,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
-    // ChatsList no longer opens a session-events SSE stream of its
-    // own — that subscription moved to workspacesStore (Chunk 5).
-    // The component still mounts cleanly without a local SSE stub.
 
     const wrapper = mountChatsList()
-    // Wait for the async loadChats() in onMounted to resolve and the
-    // navItems to populate, then let Vue's render queue flush.
-    await new Promise((r) => setTimeout(r, 0))
-    await nextTick()
+    await flushPromises()
     await nextTick()
 
-    const badge = wrapper.find('[data-testid="worktree-badge"]')
-    expect(badge.exists()).toBe(true)
-    // Icon-only fallback: same kanban fork/branch SVG, no text label.
-    expect(badge.html()).toContain('M6 3v12')
-    expect(badge.text()).not.toContain('🌳')
-    expect(badge.text()).not.toContain('worktree')
-    // The badge exposes the worktree path via the title attribute
-    // (hovering shows it as a native tooltip). The browser's
-    // attribute name is lowercase `title`, which jsdom preserves
-    // verbatim.
-    expect(badge.attributes('title')).toBe('/abs/.worktrees/worktree/session_abc')
+    expect(wrapper.get('[data-testid="recent-section-title"]').text()).toBe('Recent')
+    expect(wrapper.find('[data-testid="chat-git-branch"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
   })
 
   it('does NOT render the worktree icon when git_worktree_cwd is empty', async () => {
@@ -200,10 +179,8 @@ describe('ChatsList git icon', () => {
   })
 
   it('does NOT render a model badge even when selected_profile_model is set', async () => {
-    // Chat rows show only the git icon + name + time. The model badge
-    // was removed (icon-only rows) — a session with a profile model
-    // must render no model text, while the worktree icon still shows
-    // for the bound path.
+    // Chat rows show only the chat name, optional PR badge, and time.
+    // A worktree binding without a pull request stays visually plain.
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
@@ -225,12 +202,12 @@ describe('ChatsList git icon', () => {
     await nextTick()
     await nextTick()
 
-    expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="worktree-badge"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('🤖')
     expect(wrapper.text()).not.toContain('gpt-4o')
   })
 
-  it('renders the icon-only branch badge when git_branch is present', async () => {
+  it('renders the icon-only branch badge when the session has a pull request', async () => {
     // Sidebar parity with WorkspaceItemTaskCard's SVG icon, but
     // icon-only: no branch-name text, no legacy chip. The branch +
     // worktree path stay discoverable via the tooltip.
@@ -251,14 +228,21 @@ describe('ChatsList git icon', () => {
       total: 1,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
+    vi.spyOn(api, 'getPrStatus').mockResolvedValue({
+      status: 'open',
+      state: 'OPEN',
+      mergeable: 'MERGEABLE',
+      merge_state: 'CLEAN',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any)
 
     const wrapper = mountChatsList()
-    await new Promise((r) => setTimeout(r, 0))
-    await nextTick()
+    await flushPromises()
     await nextTick()
 
     const badge = wrapper.find('[data-testid="chat-git-branch"]')
     expect(badge.exists()).toBe(true)
+    expect(badge.attributes('data-pr-status')).toBe('open')
     // Icon-only: the SVG icon with no branch-name text.
     expect(badge.html()).toContain('M6 3v12')
     expect(badge.text()).not.toContain('worktree/feature-x')
@@ -271,17 +255,17 @@ describe('ChatsList git icon', () => {
     expect(badge.attributes('title')).toContain('/repo/.worktrees/feature-x')
   })
 
-  it('renders no git badge when both git_branch and git_worktree_cwd are empty', async () => {
+  it('does NOT render a git badge when the branch has no pull request', async () => {
     vi.spyOn(api, 'getChats').mockResolvedValue({
       sessions: [
         {
-          session_id: 'session_plain2',
-          session_name: 'Plain Chat',
+          session_id: 'session_branch_no_pr',
+          session_name: 'Branch Without PR',
           updated_at: '2026-06-18T10:00:00Z',
           selected_profile_model: '',
-          cwd: '',
-          git_worktree_cwd: '',
-          git_branch: '',
+          cwd: '/repo',
+          git_worktree_cwd: '/repo/.worktrees/no-pr',
+          git_branch: 'worktree/no-pr',
         },
       ],
       has_more: false,
@@ -291,8 +275,7 @@ describe('ChatsList git icon', () => {
     } as any)
 
     const wrapper = mountChatsList()
-    await new Promise((r) => setTimeout(r, 0))
-    await nextTick()
+    await flushPromises()
     await nextTick()
 
     expect(wrapper.find('[data-testid="chat-git-branch"]').exists()).toBe(false)

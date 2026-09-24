@@ -10,10 +10,10 @@ kanban-style branch badge reads:
     "" when the cwd is not a git repo / HEAD is detached.
   * `git_worktree_cwd` — bound worktree path ("" = none).
 
-The frontend (`ChatsList.vue`) renders the kanban fork/branch SVG +
-branch name with PR-status colors (green = open, violet = merged,
-red = closed) when `git_branch` is non-empty, and falls back to the
-legacy `🌳 worktree` chip when only `git_worktree_cwd` is set.
+The frontend (`ChatsList.vue`) renders an icon-only PR branch badge
+with status colors (green = open, violet = merged, red = closed) only
+after a pull request is found. Worktree bindings and branches without
+a pull request render no git badge.
 
 Run:
     NALAR_BIN=<worktree>/zig-out/bin/nalarcore-linux-x86_64 \\

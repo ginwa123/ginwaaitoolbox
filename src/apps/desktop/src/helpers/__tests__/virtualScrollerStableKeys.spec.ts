@@ -38,6 +38,9 @@ function mountKeyed(n: number) {
       defaultItemHeight: 64,
       totalCount: n,
       itemKey: (item: unknown) => (item as Item).id,
+      // These tests assert the height model itself. The tail cap has its own
+      // spec and may intentionally hold the rendered sizer within hysteresis.
+      maxTailGap: 0,
     },
   })
   const el = wrapper.element as HTMLElement

@@ -20,7 +20,7 @@
  * the model keeps its (median) estimate for it forever.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, type ComponentMountingOptions } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import VirtualScroller from '../VirtualScroller.vue'
 
@@ -36,7 +36,7 @@ function mkItems(n = N): Item[] {
 
 function mountScroller(opts?: { n?: number; maxTailGap?: number }) {
   const n = opts?.n ?? N
-  const props: Record<string, unknown> = {
+  const props: NonNullable<ComponentMountingOptions<typeof VirtualScroller>['props']> = {
     items: mkItems(n),
     buffer: BUFFER,
     defaultItemHeight: 64,
@@ -99,11 +99,11 @@ function renderedIndices(el: HTMLElement): number[] {
  * The invariant the cap guarantees: the sizer never reserves more room
  * below the MEASURED content bottom than `maxTailGap`.
  */
-function expectCapHolds(el: HTMLElement, gap = 500, slack = 2): void {
+function expectCapHolds(el: HTMLElement, gap = 100, slack = 2): void {
   const sizer = sizerTotal(el)
   const content = contentEl(el)
   const m = /translate3d\(0px,\s*([-\d.]+)px/.exec(content.style.transform || '')
-  const topSpacer = m ? parseFloat(m[1]) : NaN
+  const topSpacer = m?.[1] !== undefined ? parseFloat(m[1]) : NaN
   const childrenSum = Array.from(content.children).reduce(
     (acc, c) => acc + ((c as HTMLElement).offsetHeight || 0),
     0,
@@ -162,13 +162,13 @@ describe('VirtualScroller tail-gap cap', () => {
     // …but the rendered sizer must stop `maxTailGap` past the measured
     // bottom of the rows actually in the DOM.
     expect(bottom).toBeGreaterThan(0)
-    expect(sizer).toBe(bottom + 500)
+    expect(sizer).toBe(bottom + 100)
     expect(sizer).toBeLessThan(modelTotal)
     expectCapHolds(el)
     wrapper.unmount()
   })
 
-  it('honours a smaller maxTailGap', async () => {
+  it('honours a custom maxTailGap', async () => {
     const { wrapper, el } = await mountOvershootingTail(120)
     expect(sizerTotal(el)).toBe(tailBottomOf(wrapper) + 120)
     expectCapHolds(el, 120)
@@ -208,14 +208,14 @@ describe('VirtualScroller tail-gap cap', () => {
 
     const content = contentEl(el)
     const m = /translate3d\(0px,\s*([-\d.]+)px/.exec(content.style.transform || '')
-    const topSpacer = m ? parseFloat(m[1]) : 0
+    const topSpacer = m?.[1] !== undefined ? parseFloat(m[1]) : 0
     const childrenSum = Array.from(content.children).reduce(
       (acc, c) => acc + ((c as HTMLElement).offsetHeight || 0),
       0,
     )
     expect(tailBottomOf(wrapper)).toBe(topSpacer + childrenSum)
     expect(tailBottomOf(wrapper)).not.toBe(before)
-    expect(sizerTotal(el)).toBe(Math.min(modelTotalOf(wrapper), tailBottomOf(wrapper) + 500))
+    expect(sizerTotal(el)).toBe(Math.min(modelTotalOf(wrapper), tailBottomOf(wrapper) + 100))
     wrapper.unmount()
   })
 
@@ -231,7 +231,7 @@ describe('VirtualScroller tail-gap cap', () => {
     await nextTick()
 
     expect(tailBottomOf(wrapper)).toBe(before)
-    expect(sizerTotal(el)).toBe(before + 500)
+    expect(sizerTotal(el)).toBe(before + 100)
     wrapper.unmount()
   })
 

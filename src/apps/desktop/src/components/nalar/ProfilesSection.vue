@@ -41,15 +41,31 @@ const emit = defineEmits<{
   deleteSubAgent: [profileName: string, subAgentName: string]
 }>()
 
-// Map of profile name -> expanded state. Local to this component;
-// the orchestrator does not need to know which profile is expanded.
-const expanded = ref<Record<string, boolean>>({})
+// Track explicit collapses so every profile starts expanded. Using the
+// absence of a key as the expanded state also keeps newly added profiles
+// expanded without watching the prop list.
+const collapsed = ref<Set<string>>(new Set())
 
-function toggleExpand(name: string) {
-  expanded.value = { ...expanded.value, [name]: !expanded.value[name] }
+function profileExpansionKey(name: string): string {
+  return `profile:${name}`
 }
-function isExpanded(name: string): boolean {
-  return expanded.value[name] === true
+
+function subAgentExpansionKey(profileName: string, subAgentName: string): string {
+  return `sub-agent:${profileName}:${subAgentName}`
+}
+
+function isExpanded(key: string): boolean {
+  return !collapsed.value.has(key)
+}
+
+function toggleExpand(key: string): void {
+  const next = new Set(collapsed.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  collapsed.value = next
 }
 
 /**
@@ -135,13 +151,13 @@ function compactionSummary(profile: ProfileRow): string {
             <div class="flex items-center gap-2">
               <button
                 type="button"
-                :aria-label="isExpanded(profile.name) ? `Collapse sub-agents for ${profile.name}` : `Expand sub-agents for ${profile.name}`"
-                :aria-expanded="isExpanded(profile.name)"
+                :aria-label="isExpanded(profileExpansionKey(profile.name)) ? `Collapse profile ${profile.name}` : `Expand profile ${profile.name}`"
+                :aria-expanded="isExpanded(profileExpansionKey(profile.name))"
                 :data-testid="`expand-btn-${profile.name}`"
-                @click="toggleExpand(profile.name)"
+                @click="toggleExpand(profileExpansionKey(profile.name))"
                 class="w-4 h-4 flex items-center justify-center text-xs font-mono hover:opacity-80"
                 style="color: var(--semantic-text-muted);"
-              >{{ isExpanded(profile.name) ? '▼' : '▶' }}</button>
+              >{{ isExpanded(profileExpansionKey(profile.name)) ? '▼' : '▶' }}</button>
               <span
                 v-if="activeProfile === profile.name"
                 class="w-1.5 h-1.5 rounded-full"
@@ -208,7 +224,7 @@ function compactionSummary(profile: ProfileRow): string {
 
         <!-- Expanded: per-profile sub-agents list -->
         <div
-          v-if="isExpanded(profile.name)"
+          v-if="isExpanded(profileExpansionKey(profile.name))"
           :data-testid="`sub-agents-list-${profile.name}`"
           class="border-t px-4 py-3 space-y-2"
           style="border-color: var(--color-border);"
@@ -229,16 +245,31 @@ function compactionSummary(profile: ProfileRow): string {
               :data-testid="`profile-sub-agent-${profile.name}-${sa.name}`"
             >
               <div class="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  :aria-label="isExpanded(subAgentExpansionKey(profile.name, sa.name)) ? `Collapse sub-agent profile ${sa.name}` : `Expand sub-agent profile ${sa.name}`"
+                  :aria-expanded="isExpanded(subAgentExpansionKey(profile.name, sa.name))"
+                  :data-testid="`expand-sub-agent-btn-${profile.name}-${sa.name}`"
+                  @click="toggleExpand(subAgentExpansionKey(profile.name, sa.name))"
+                  class="w-3 h-3 shrink-0 flex items-center justify-center text-[10px] font-mono hover:opacity-80"
+                  style="color: var(--semantic-text-muted);"
+                >{{ isExpanded(subAgentExpansionKey(profile.name, sa.name)) ? '▼' : '▶' }}</button>
                 <div class="flex-1 min-w-0">
                   <div class="text-xs font-medium" style="color: var(--semantic-text);">{{ sa.name }}</div>
-                  <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
-                    {{ sa.model }} · {{ sa.base_url || '—' }}
-                  </div>
                   <div
-                    v-if="sa.system_prompt"
-                    class="text-xs mt-1 line-clamp-2"
-                    style="color: var(--semantic-text-muted); white-space: pre-wrap;"
-                  >{{ sa.system_prompt }}</div>
+                    v-if="isExpanded(subAgentExpansionKey(profile.name, sa.name))"
+                    class="min-w-0"
+                    :data-testid="`sub-agent-details-${profile.name}-${sa.name}`"
+                  >
+                    <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
+                      {{ sa.model }} · {{ sa.base_url || '—' }}
+                    </div>
+                    <div
+                      v-if="sa.system_prompt"
+                      class="text-xs mt-1"
+                      style="color: var(--semantic-text-muted); white-space: pre-wrap;"
+                    >{{ sa.system_prompt }}</div>
+                  </div>
                 </div>
                 <div class="flex items-center gap-1 shrink-0">
                   <button
