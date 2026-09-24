@@ -167,7 +167,14 @@ async function handleBootUrl(): Promise<void> {
     )
   }
 
-  workspacesStore.initializeFromSystemFolder()
+  // Prefer the workspace encoded by a workspace/project deep link. A
+  // fresh tab may otherwise boot with the persisted/default workspace,
+  // leave the URL-restored item inactive, and render a blank main view.
+  const preferredWorkspaceId =
+    parsed.kind === 'workspace' || parsed.kind === 'project' || parsed.kind === 'projectChat'
+      ? parsed.workspaceId
+      : undefined
+  workspacesStore.initializeFromSystemFolder(preferredWorkspaceId)
 
   // 5. Overlay restore for deep links. The path boot above adopted
   // the workspace/chat context; reopen the editor so a reload or
