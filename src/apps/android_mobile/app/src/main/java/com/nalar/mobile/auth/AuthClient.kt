@@ -1,12 +1,10 @@
 package com.nalar.mobile.auth
 
+import com.nalar.mobile.http.HttpHeader
+import com.nalar.mobile.http.HttpRequestSpec
+import com.nalar.mobile.http.HttpsHttpExchange
 import org.json.JSONObject
-import java.io.IOException
-import java.io.InputStream
 import java.net.HttpURLConnection
-import java.net.URL
-import java.nio.charset.StandardCharsets
-import javax.net.ssl.HttpsURLConnection
 
 data class AuthUser(
     val id: String,
@@ -19,6 +17,8 @@ data class AuthHttpResponse(
     val statusCode: Int,
     val body: String,
     val setCookieHeaders: List<String> = emptyList(),
+    /** Full response header list; the network inspector shows it verbatim. */
+    val headers: List<HttpHeader> = emptyList(),
 )
 
 sealed interface AuthResult {
@@ -44,6 +44,10 @@ interface AuthTransport {
 
 class HttpsAuthTransport(baseUrl: String) : AuthTransport {
     private val normalizedBaseUrl = baseUrl.trimEnd('/')
+    private val exchange = HttpsHttpExchange(
+        connectTimeoutMillis = NETWORK_TIMEOUT_MILLIS,
+        readTimeoutMillis = NETWORK_TIMEOUT_MILLIS,
+    )
 
     init {
         require(normalizedBaseUrl.startsWith("https://")) {
@@ -68,49 +72,22 @@ class HttpsAuthTransport(baseUrl: String) : AuthTransport {
         body: String?,
         headers: Map<String, String>,
     ): AuthHttpResponse {
-        val connection = (URL("$normalizedBaseUrl$path").openConnection() as? HttpsURLConnection)
-            ?: throw IOException("Nalar API did not return an HTTPS connection")
+        val response = exchange.execute(
+            HttpRequestSpec(
+                method = method,
+                url = "$normalizedBaseUrl$path",
+                headers = headers.map { (name, value) -> HttpHeader(name, value) },
+                body = body,
+            ),
+        )
 
-        return try {
-            connection.requestMethod = method
-            connection.connectTimeout = NETWORK_TIMEOUT_MILLIS
-            connection.readTimeout = NETWORK_TIMEOUT_MILLIS
-            connection.instanceFollowRedirects = false
-            connection.useCaches = false
-            connection.setRequestProperty("Accept", "application/json")
-            headers.forEach(connection::setRequestProperty)
-
-            if (body != null) {
-                val bodyBytes = body.toByteArray(StandardCharsets.UTF_8)
-                connection.doOutput = true
-                connection.setFixedLengthStreamingMode(bodyBytes.size)
-                connection.outputStream.use { it.write(bodyBytes) }
-            }
-
-            val statusCode = connection.responseCode
-            val responseStream = if (statusCode in 200..299) {
-                connection.inputStream
-            } else {
-                connection.errorStream
-            }
-            AuthHttpResponse(
-                statusCode = statusCode,
-                body = responseStream.readText(),
-                setCookieHeaders = connection.cookieHeaders(),
-            )
-        } finally {
-            connection.disconnect()
-        }
+        return AuthHttpResponse(
+            statusCode = response.statusCode,
+            body = response.body.orEmpty(),
+            setCookieHeaders = response.headerValues("Set-Cookie"),
+            headers = response.headers,
+        )
     }
-
-    private fun HttpsURLConnection.cookieHeaders(): List<String> =
-        getHeaderFields()
-            .entries
-            .filter { it.key?.equals("Set-Cookie", ignoreCase = true) == true }
-            .flatMap { it.value.orEmpty() }
-
-    private fun InputStream?.readText(): String =
-        this?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() }.orEmpty()
 
     private companion object {
         const val NETWORK_TIMEOUT_MILLIS = 15_000
