@@ -5,6 +5,7 @@ const sqlite = nalarcore.sqlite;
 const agent = nalarcore.agent;
 const logger_mod = nalarcore.loggermod;
 const helpers = @import("helpers");
+const auth_common = @import("../http_handlers/auth_common.zig");
 const config_mod = nalarcore.config;
 const TUIHistory = @import("models.zig").TUIHistory;
 const llm_models = @import("nalarcore").llm_models;
@@ -256,6 +257,7 @@ pub fn getSessionListWithCursor(
     agent_type: ?[]const u8,
     cwd: ?[]const u8,
     workspace_ids: ?[]const []const u8,
+    owner: []const u8,
     limit: u32,
     cursor: ?[]const u8,
     sort_field: SessionSortField,
@@ -314,6 +316,16 @@ pub fn getSessionListWithCursor(
     if (cursor) |c| {
         _ = c;
         // Cursor filtering is done via subquery below
+    }
+
+    // Per-user scope (plan 2026-09-25, W2.3). Appended LAST so the two owner
+    // binds land after any `s.id IN (…)` binds — parameter order must match the
+    // order of `?` in where_clause, and BOTH the main and the count query bind
+    // `id_binds.items`, so `total` stays truthful under the same predicate.
+    if (!auth_common.isSharedOwner(owner)) {
+        try where_parts.append(allocator, auth_common.ownerVisibilityClause("s"));
+        try id_binds.append(allocator, owner);
+        try id_binds.append(allocator, owner);
     }
 
     const where_clause = try std.mem.join(allocator, " AND ", where_parts.items);
@@ -8544,7 +8556,7 @@ test "getSessionListWithCursor converts unix-ms storage to SQLite datetime on th
 
     // Run the SELECT.
     const result = getSessionListWithCursor(
-        alloc, &db, null, null, null, null, 10, null, .created_at, .desc,
+        alloc, &db, null, null, null, null, auth_common.system_user_id, 10, null, .created_at, .desc,
     ) catch return error.QueryFailed;
     defer {
         for (result.sessions) |s| s.deinit(alloc);
@@ -8594,7 +8606,7 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
     , &.{});
 
     const result = getSessionListWithCursor(
-        alloc, &db, null, null, null, null, 10, null, .created_at, .desc,
+        alloc, &db, null, null, null, null, auth_common.system_user_id, 10, null, .created_at, .desc,
     ) catch return error.QueryFailed;
     defer {
         for (result.sessions) |s| s.deinit(alloc);
@@ -8653,7 +8665,7 @@ test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count h
     scoped[0] = "s_keep_a";
     scoped[1] = "s_keep_b";
     const scoped_result = try getSessionListWithCursor(
-        alloc, &db, null, null, null, scoped, 50, null, .created_at, .desc,
+        alloc, &db, null, null, null, scoped, auth_common.system_user_id, 50, null, .created_at, .desc,
     );
     defer {
         for (scoped_result.sessions) |s| s.deinit(alloc);
@@ -8666,7 +8678,7 @@ test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count h
     // total. Also proves we never emit `IN ()` (a syntax error that
     // would make this db.query throw instead of returning 0 rows).
     const empty_result = try getSessionListWithCursor(
-        alloc, &db, null, null, null, &.{}, 50, null, .created_at, .desc,
+        alloc, &db, null, null, null, &.{}, auth_common.system_user_id, 50, null, .created_at, .desc,
     );
     defer {
         for (empty_result.sessions) |s| s.deinit(alloc);
@@ -8678,7 +8690,7 @@ test "getSessionListWithCursor: workspace_ids bounds sessions AND total (count h
     // null: global list unchanged (back-compat with pre-scoping
     // callers — SQL and binds are identical to before the param).
     const global_result = try getSessionListWithCursor(
-        alloc, &db, null, null, null, null, 50, null, .created_at, .desc,
+        alloc, &db, null, null, null, null, auth_common.system_user_id, 50, null, .created_at, .desc,
     );
     defer {
         for (global_result.sessions) |s| s.deinit(alloc);
