@@ -107,21 +107,34 @@ DEFAULT_PORT = 8080
 PORT_SCAN_END = 8199
 
 #: Random-port range used by ``_find_free_port`` (no args) and
-#: ``find_free_port_random``. IANA's "dynamic/private" port range is
-#: 49152-65535, but we extend slightly downward to 40000 to give 20,000
-#: ports of headroom. CI runners routinely hold thousands of ephemeral
-#: ports in TIME_WAIT; 20k picks with 50 random attempts gives
-#: effectively-zero collision probability for any realistic host
-#: occupancy.
-RANDOM_PORT_START = 40000
-RANDOM_PORT_END = 60000
+#: ``find_free_port_random``. Deliberately BELOW the kernel's ephemeral
+#: range rather than inside it.
+#:
+#: The previous range was 40000-60000, chosen for 20,000 ports of
+#: headroom against TIME_WAIT. But Linux's default
+#: ``net.ipv4.ip_local_port_range`` is 32768-60999, so 40000-60000 sits
+#: ENTIRELY INSIDE the pool the kernel hands out as *source* ports for
+#: outgoing connections. Every ``bind()`` probe the harness does, plus
+#: every pnpm / vite / zig / git / curl on the box, draws from that same
+#: pool. The picker closes its probe socket and returns the number; the
+#: nalar child binds the real listener tens of ms later, and in between
+#: the port can be taken. The collision surfaces as
+#: ``error: BindFailed`` at boot and — before the matching main.zig fix —
+#: an rc=-11 "crash" that fails an unrelated test. Observed in
+#: llm_stream_get_test::test_stream_route_does_not_shadow_sibling_routes
+#: on a loaded self-hosted runner.
+#:
+#: 20000-32000 gives 12,000 ports that no ephemeral allocation can reach
+#: under a default ``ip_local_port_range`` and stays clear of the
+#: documented dev ports (8080/8081) and the sequential 8080-8199 window.
+RANDOM_PORT_START = 20000
+RANDOM_PORT_END = 32000
 
-#: Number of random attempts before giving up. With 20,000 ports and
-#: ~1000 ephemeral ports in TIME_WAIT on a busy CI runner, the chance
-#: of 50 consecutive collisions is ~(1000/20000)^50 ≈ 10�⁷⁹ — safely
-#: "never happens". If a host is so loaded that this raises, the
-#: harness surfaces the failure with the actionable hint to widen the
-#: range.
+#: Number of random attempts before giving up. With 12,000 ports and
+#: a busy CI runner holding a few hundred listeners, the chance of 50
+#: consecutive collisions is vanishingly small — safely "never
+#: happens". If a host is so loaded that this raises, the harness
+#: surfaces the failure with the actionable hint to widen the range.
 RANDOM_PORT_ATTEMPTS = 50
 
 #: Ports that the random picker MUST skip regardless of bind() success.

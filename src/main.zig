@@ -364,7 +364,20 @@ pub fn main(init: std.process.Init) !void {
     // };
     //
 
-    const address = try gserverz.Address.init("127.0.0.1", port);
+    const address = gserverz.Address.init("127.0.0.1", port) catch |err| switch (err) {
+        // A port already in use is an ordinary, expected operator error (a
+        // second nalar, a stale dev server). Letting `try` carry `BindFailed`
+        // out of `main` sends the process down the runtime's error path,
+        // where it dies with SIGSEGV (exit code -11) and a bare stack trace —
+        // which reads like a memory-safety bug and, in the functional suite,
+        // masks a plain port collision as an apparent crash of the binary
+        // itself. Report it and exit non-zero instead.
+        error.BindFailed => {
+            std.log.err("cannot bind 127.0.0.1:{d} - address already in use (is another nalar already running on this port?)", .{port});
+            std.process.exit(1);
+        },
+        else => return err,
+    };
     const gs = try gserverz.GinwaServer.init(allocator, io, address);
     defer gs.deinit();
     gs.enable_h2c = enable_h2c;

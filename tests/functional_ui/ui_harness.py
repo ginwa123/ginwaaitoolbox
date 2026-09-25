@@ -9,7 +9,8 @@ Vite dev server that:
     reads). This is what makes the test isolated: the running web app
     talks to the fixture's backend, not to the developer's always-on :8081.
   - Runs on its own free port — picked RANDOMLY from the wide shared
-    range ``[40000, 60000]`` (see ``find_free_port_random`` in
+    range ``[20000, 32000]`` (see ``RANDOM_PORT_START`/`_END` and the
+    ephemeral-range note in ``find_free_port_random`` in
     ``harness.py``). Skips Vite's default ``5173`` and the dev
     backend ``8081`` via the reserved-port list. Random selection
     avoids the CI pathology where the previous narrow sequential

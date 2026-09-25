@@ -40,7 +40,8 @@ Control run (proves the gate measures the fix) — same command against `main`,
 assertion 1 must FAIL.
 
 Ports: the UI harness reserves (5173, 8081) and picks the backend port from
-[40000, 60000]. NEVER 8081 (a dev server runs there).
+[20000, 32000] (below the kernel ephemeral range — see RANDOM_PORT_START in
+tests/functional/harness.py). NEVER 8081 (a dev server runs there).
 """
 
 from __future__ import annotations
