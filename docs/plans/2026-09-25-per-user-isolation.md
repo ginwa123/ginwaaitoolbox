@@ -311,3 +311,29 @@ Plan:
 - [ ] Manually verified on a scratch instance (`--auth`, two admins, two browsers/profiles): A sees only A+legacy; A's live events never appear in B's EventSource; A's workspace never appears in B's sidebar after a browser switch without a page reload.
 - [ ] `README.md` documents: per-user ownership, the `user_system` legacy rule, no admin cross-user visibility, `config.json` = auth-off only, and the **deferred** filesystem boundary (D9).
 - [ ] Ratchet test listing still-unscoped routes is committed (so the remaining gap is visible, not forgotten).
+
+---
+
+## Progress log
+
+### 2026-09-25 — W0 + W1 + W2.1 landed and verified on the wire (PR #646)
+
+| slice | what landed |
+|---|---|
+| **W0** | `system_user_id`, `ownerVisibilityClause(comptime alias)`, `isSharedOwner`, `resolveRequestUserId` in `auth_common.zig`; `Migration093AddOwnerColumns` (`worker.user_id` + index + sentinel backfill); registered `auth_common.zig` in the test-discovery list (its inline tests, including four pre-existing ones, were dormant) |
+| **W1** | owner stamped server-side on `POST /api/workspaces` (`workspaces_create.zig`) — cookie is the only source, never the body |
+| **W2.1** | workspaces scoped: list (`workspaces_list.zig`), get/update/delete (`workspace_get.zig`, `workspace_update.zig`, `workspace_delete.zig`). Foreign id → **404**; delete re-checks visibility so a guessed id cannot destroy data |
+
+Verification: `zig build test` → 4/4 steps, **3630/3638 passed**; new `tests/functional/workspace_isolation_test.py` → **4 passed** on a real binary with two cookie jars in one DB (list isolation both directions, foreign get 404, foreign delete/rename refused + data intact, auth-off regression). Adjacent suites (`auth_test`, `agent_workspace_history_test`, `kanban_task_session_name_test`) → 18 passed.
+
+### Corrections to claims made earlier in this doc
+
+1. **`add_mcp_server` does not "write into the sentinel row" for new sessions.** `persistAuthModeStatus` (`src/agentic_loop/tools_exec_add_mcp_server.zig:339-381`) reads `COALESCE(user_id,'') FROM sessions WHERE id = ?` and, when that is empty, **fails the persist** with `false: session lookup session has no owner`. So the real symptom for any session created by a current build is *"MCP servers silently fail to persist in auth mode"*; for pre-093 rows (which the backfill set to `user_system`) it merges into the sentinel's config rather than the caller's. Either way the fix is the **session write path** (W1/W2.3), not this tool — the tool needs no change once `sessions.user_id` is real.
+2. **Auth-off after users exist is fail-closed, and that has a consequence.** The predicate is applied with the sentinel whenever auth is off, and the sentinel does *not* match real owners. A pure auth-off install is fully self-consistent (every row it writes carries the sentinel), but restarting an install **without** `--auth` after users created private rows makes those rows invisible. This is deliberate (fail-closed), documented, and asserted in `workspaces_list.zig`'s test — but if "auth-off should show everything" is preferred, resolve it via a richer `Principal{ id, scoped }` rather than by widening the sentinel. **Raised with the user 2026-09-25.**
+
+### Still unscoped (the remaining gap, in priority order)
+
+- `workspaces_reorder.zig:160` — reorder still writes by raw id.
+- **`workspace_items*` (`main.zig:675-691`) — create/list/get/update/delete/reorder take a `:workspace_id` and do not check it, so B can still add or delete items inside A's workspace.** This is the most urgent remaining hole; same pattern as W2.1.
+- W2.3 sessions/llm_history, W2.4 workers, W2.5 terminals, W2.6 skills/memories; W3 SSE/WS filtering; W5 frontend storage namespacing.
+

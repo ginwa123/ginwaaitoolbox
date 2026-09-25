@@ -3,6 +3,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const sqlite = nalarcore.sqlite;
+const auth_common = @import("auth_common.zig");
 
 pub const WorkspaceWithItemsResponse = struct {
     id: []const u8,
@@ -54,7 +55,18 @@ pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
-    const response = useCase(allocator, sqlite_db, is_include_items) catch |err| {
+    // Scope the list to this request's owner (server-derived from the
+    // `nalar_session` cookie). Auth off / no cookie -> the shared sentinel,
+    // which also matches every legacy row, so auth-off is unchanged.
+    const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
+        });
+    };
+    defer allocator.free(owner);
+
+    const response = useCase(allocator, sqlite_db, is_include_items, owner) catch |err| {
         const message: []const u8 = switch (err) {
             error.DatabaseError => "Failed to fetch workspaces",
             error.OutOfMemory => "Out of memory",
@@ -68,20 +80,28 @@ pub fn workspacesListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReques
     return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, response, .{}) });
 }
 
-fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool) WorkspacesListError!WorkspacesListResponse {
-    return fetchWorkspacesList(alloc, db, include_items) catch |err| {
+fn useCase(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool, owner: []const u8) WorkspacesListError!WorkspacesListResponse {
+    return fetchWorkspacesList(alloc, db, include_items, owner) catch |err| {
         std.log.err("Failed to fetch workspaces: {s}", .{@errorName(err)});
         return error.DatabaseError;
     };
 }
 
-fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool) !WorkspacesListResponse {
-    // Fetch all workspaces first. ORDER BY position DESC drives the
-    // user-controlled drag-and-drop reorder (see
+fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, include_items: bool, owner: []const u8) !WorkspacesListResponse {
+    // Fetch the workspaces this request may see first. ORDER BY position DESC
+    // drives the user-controlled drag-and-drop reorder (see
     // docs/plans/2026-06-12-workspace-drag-and-drop.md); created_at
     // DESC is a tiebreaker for any workspaces that share a position
     // (shouldn't happen post-reorder, but defense in depth).
-    var rows = try db.query(alloc, "SELECT id, name, created_at, updated_at FROM workspaces ORDER BY position DESC, created_at DESC", &[_][]const u8{});
+    //
+    // Every nested read below is keyed by ids from THIS result, so a
+    // workspace's items/tasks are filtered transitively by the same owner
+    // predicate and need no predicate of their own (see plan §Design D1).
+    var rows = try db.query(
+        alloc,
+        "SELECT id, name, created_at, updated_at FROM workspaces WHERE " ++ comptime auth_common.ownerVisibilityClause("workspaces") ++ " ORDER BY position DESC, created_at DESC",
+        &[_][]const u8{owner},
+    );
     defer rows.deinit();
 
     var workspace_ids = std.ArrayList([]const u8).empty;
@@ -334,7 +354,8 @@ fn setupDb() !TestCtx {
         \\  name TEXT NOT NULL,
         \\  created_at DATETIME,
         \\  updated_at DATETIME,
-        \\  position INTEGER
+        \\  position INTEGER,
+        \\  user_id TEXT
         \\)
     , &.{});
     try db.exec(alloc,
@@ -392,7 +413,7 @@ test "fetchWorkspacesList: items_count is populated even when items are skipped"
     defer teardown(&ctx);
     const alloc = testing.allocator;
 
-    const response = try fetchWorkspacesList(alloc, &ctx.db, false);
+    const response = try fetchWorkspacesList(alloc, &ctx.db, false, auth_common.system_user_id);
     defer freeResponse(response);
 
     try testing.expectEqual(@as(usize, 3), response.workspaces.len);
@@ -413,5 +434,56 @@ test "fetchWorkspacesList: items_count is populated even when items are skipped"
         }
     }
     try testing.expectEqual(@as(usize, 3), checked);
+}
+
+test "fetchWorkspacesList: another user's workspace is invisible; the shared legacy bucket is not" {
+    var ctx = try setupDb();
+    defer teardown(&ctx);
+    const alloc = testing.allocator;
+
+    // The fixture rows carry `user_id = NULL` (legacy). Add one workspace
+    // owned by a real user and one owned by the sentinel.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspaces (id, name, created_at, updated_at, position, user_id) VALUES
+        \\  ('ws_b', 'B only', datetime('now'), datetime('now'), 3, 'user_b'),
+        \\  ('ws_sys', 'Sentinel', datetime('now'), datetime('now'), 4, 'user_system')
+    , &.{});
+
+    // user_a sees the 3 legacy rows + the sentinel row — never ws_b.
+    {
+        const response = try fetchWorkspacesList(alloc, &ctx.db, false, "user_a");
+        defer freeResponse(response);
+        try testing.expectEqual(@as(usize, 4), response.workspaces.len);
+        for (response.workspaces) |ws| {
+            try testing.expect(!std.mem.eql(u8, ws.id, "ws_b"));
+        }
+    }
+
+    // user_b sees their own row PLUS the shared bucket (legacy NULL rows and
+    // the sentinel) — that is the whole point of the shared-bucket rule, so
+    // the isolation claim is "A cannot see B's row", not "B sees only one".
+    {
+        const response = try fetchWorkspacesList(alloc, &ctx.db, false, "user_b");
+        defer freeResponse(response);
+        try testing.expectEqual(@as(usize, 5), response.workspaces.len);
+        var saw_own = false;
+        for (response.workspaces) |ws| {
+            if (std.mem.eql(u8, ws.id, "ws_b")) saw_own = true;
+        }
+        try testing.expect(saw_own);
+    }
+
+    // Auth-off (sentinel) sees the shared bucket only — NOT user_b's row.
+    // Deliberate and fail-closed: an install restarted without `--auth`
+    // cannot read rows that a logged-in user created. Documented in the
+    // plan; the trade-off is raised with the user rather than hidden.
+    {
+        const response = try fetchWorkspacesList(alloc, &ctx.db, false, auth_common.system_user_id);
+        defer freeResponse(response);
+        try testing.expectEqual(@as(usize, 4), response.workspaces.len);
+        for (response.workspaces) |ws| {
+            try testing.expect(!std.mem.eql(u8, ws.id, "ws_b"));
+        }
+    }
 }
 
