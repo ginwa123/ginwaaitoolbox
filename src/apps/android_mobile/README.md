@@ -38,7 +38,11 @@ machine.
 ## Current behavior
 
 `LoginScreen` owns the form state and validates email/password input locally.
-The `onSignIn` callback is the integration seam for the future
-`POST /api/auth/login` client. This milestone does not declare the Internet
-permission or claim to authenticate against a server; it is a native UI
-preview until that client is added.
+Submitting valid preview credentials opens `MobileHomeScreen`, whose left
+navigation drawer contains only a workspace selector and the selected
+workspace's recent chat list. Workspace changes scope the list immediately and
+choosing a chat updates the active selection and closes the modal drawer.
+
+The mobile app still does not declare the Internet permission or claim to
+authenticate against a server. The sidebar currently uses injected preview data;
+its callbacks are the integration seams for a future authenticated API client.
