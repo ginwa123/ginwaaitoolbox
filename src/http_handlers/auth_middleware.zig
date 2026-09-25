@@ -81,6 +81,21 @@ pub fn authMiddleware(
         }
     }
 
+    // Same choke point for the `:session_id` routes (`/api/session/…` and
+    // `/api/llm/session/…`): without it, any authenticated user could read or
+    // mutate any session by id — messages included. Both param spellings are
+    // covered because the stop route uses `:session`. The SSE/WS transports
+    // bypass middleware entirely and gate themselves (see the module doc).
+    if (req.params.get("session_id") orelse req.params.get("session")) |sid| {
+        if (!auth_common.canSeeSession(allocator, di.db, sid, sess.user_id)) {
+            auth_common.freeSessionLookup(allocator, sess);
+            return res.jsonResponse(.{
+                .status_code = 404,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }),
+            });
+        }
+    }
+
     auth_common.freeSessionLookup(allocator, sess);
     return chain.next(ctx, req, res);
 }

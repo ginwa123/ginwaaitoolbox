@@ -166,6 +166,33 @@ pub fn canSeeWorkspace(
     return false;
 }
 
+/// Session counterpart of `canSeeWorkspace`: true when `session_id` exists AND
+/// the given owner may see it.
+///
+/// Same rule as workspaces: the system user sees everything (auth off), while
+/// a real user sees the shared legacy bucket plus their own sessions. Used by
+/// the middleware choke point for every route carrying `:session_id`.
+pub fn canSeeSession(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    session_id: []const u8,
+    owner: []const u8,
+) bool {
+    if (session_id.len == 0) return false;
+    var q = db.query(
+        allocator,
+        "SELECT 1 FROM sessions WHERE id = ? AND " ++ comptime ownerVisibilityClause("sessions"),
+        &[_][]const u8{ session_id, owner, owner },
+    ) catch return false;
+    defer q.deinit();
+    const row = q.next() catch return false;
+    if (row) |r| {
+        r.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
 /// Resolve the owner id for the current request, server-side.
 ///
 /// The ONLY accepted source is the `nalar_session` cookie — never a body
@@ -284,10 +311,30 @@ test "ownerVisibilityClause lets the system user see everything" {
     try std.testing.expect(std.mem.indexOf(u8, h, "w.") == null);
 }
 
-test "isSharedOwner flags the empty and sentinel ids only" {
-    try std.testing.expect(isSharedOwner(""));
-    try std.testing.expect(isSharedOwner(system_user_id));
-    try std.testing.expect(!isSharedOwner("user_1786000000000"));
+test "canSeeSession: own + shared visible, another user's hidden, system sees all" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, user_id) VALUES ('s_a','user_a'), ('s_b','user_b'), ('s_legacy',NULL)",
+        &.{});
+
+    // Own session and shared legacy row: visible.
+    try std.testing.expect(canSeeSession(alloc, &db, "s_a", "user_a"));
+    try std.testing.expect(canSeeSession(alloc, &db, "s_legacy", "user_a"));
+    // Another user's session: hidden. This is the leak the middleware closes.
+    try std.testing.expect(!canSeeSession(alloc, &db, "s_b", "user_a"));
+    // The system user (auth off) sees everything, by decision 2026-09-25.
+    try std.testing.expect(canSeeSession(alloc, &db, "s_b", system_user_id));
+    try std.testing.expect(canSeeSession(alloc, &db, "s_a", system_user_id));
+    // Unknown / empty ids are never visible.
+    try std.testing.expect(!canSeeSession(alloc, &db, "s_missing", "user_a"));
+    try std.testing.expect(!canSeeSession(alloc, &db, "", "user_a"));
 }
 
 test "resolveRequestUserId falls back to the sentinel without identity" {
