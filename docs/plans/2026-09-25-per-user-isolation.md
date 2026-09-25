@@ -354,3 +354,24 @@ Verification: `zig build test` → 4/4 steps, **3630/3638 passed**; new `tests/f
 
 **Verification protocol that caught two of the three corrections here:** never trust a `file:line` for a write path without grepping for its *callers*; and after adding a test, confirm the test NAME appears in the runner output — a test that is not discovered passes by absence.
 
+### W3 — SSE channel filtering: root cause found, NOT implemented (2026-09-25)
+
+**Symptom.** With `?channels=sessions` (likewise `workers`, `llm`, `queue`, `design_element`), every connected client receives every user's events. B's browser gets A's session renames, worker progress and token streams.
+
+**Root cause — the bus is a global broadcast and scoping was delegated to the browser:**
+- `unified_events_sse.zig:198-220` — each channel's callback is just `forwardToClients("<family>", data)`.
+- Client registration is keyed by **family routing key only** (`ai_mod.registerSessionClient(rk, client_id_copy, true)`, `:337-343`), so `forwardToClients("sessions", …)` fans out to *every* client that asked for `sessions`.
+- The comment on `CallbackUnifiedLLMBroadcast` states the design outright: *"the frontend listener then filters by `data.session_id` on the JS side"*. By then the payload is already in B's browser. Client-side filtering is not isolation. Same pattern on `queue` (`session_id`) and `design_element` (`workspace_id`).
+
+**Fix shape (one slice, three parts):**
+1. **Carry the owner on the payload.** Add `owner_user_id: []const u8 = ""` to `ai_mod.on_event_sent.SseEvent`. Empty = shared/system ⇒ deliver to everyone, which keeps auth-off behaviour byte-identical.
+2. **Store the subscriber's owner** in the client registry, then filter at forward time: `forwardToClients` skips a client when `data.owner_user_id` is non-empty and != that client's owner. Chosen over owner-scoped routing keys because it needs no routing-key churn — publishers only have to set a field.
+3. **Set the field at the publish sites.** Session/worker/queue events have a `session_id`, so one indexed lookup (`SELECT user_id FROM sessions WHERE id = ?`) resolves it. **`llm` streams at token rate — resolve once per stream, never per token.**
+
+**Verification bar (must exist before this is called done):** a two-cookie wire test that puts both users on `channels=sessions,workers`, has A trigger a session rename and a worker run, and asserts B receives **zero** frames mentioning A's session id while still receiving its own. A unit test cannot see this bug — the leak is in the fan-out, not in a query.
+
+**Why it is not half-built here:** a partly-filtered bus passes unit tests and leaks exactly where nobody looked. Its failure mode is green.
+
+**Interim:** no mitigation for SSE. Until this lands, do not describe the system as per-user isolated for *live events*, and treat an `--auth` install as single-user for streaming.
+
+
