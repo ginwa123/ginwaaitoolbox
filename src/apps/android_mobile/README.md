@@ -1,9 +1,9 @@
 # Nalar Android
 
 A native Android client for Nalar, written in Kotlin with Jetpack Compose. The
-first milestone is intentionally focused: it presents a polished, dark-only
-sign-in screen and keeps the authentication boundary ready for the next
-iteration. It does not embed the web app and does not start or manage a Nalar
+current milestone includes real HTTPS sign-in against `agent.ginwa.site`,
+encrypted session restoration, and a left drawer with workspace-scoped recent
+chats. It does not embed the web app and does not start or manage a Nalar
 server.
 
 ## Stack
@@ -37,12 +37,16 @@ machine.
 
 ## Current behavior
 
-`LoginScreen` owns the form state and validates email/password input locally.
-Submitting valid preview credentials opens `MobileHomeScreen`, whose left
-navigation drawer contains only a workspace selector and the selected
-workspace's recent chat list. Workspace changes scope the list immediately and
-choosing a chat updates the active selection and closes the modal drawer.
+The Android app authenticates against `https://agent.ginwa.site` through
+`POST /api/auth/login`. A successful sign-in stores the `nalar_session` cookie
+encrypted with an Android Keystore AES-GCM key. On startup the app verifies that
+cookie with `GET /api/auth/me`; a 401 clears it and returns to the login screen.
+Network and credential errors are shown in the login form, and the submit
+button is disabled while a request is in flight.
 
-The mobile app still does not declare the Internet permission or claim to
-authenticate against a server. The sidebar currently uses injected preview data;
-its callbacks are the integration seams for a future authenticated API client.
+The authenticated home shell still uses injected workspace/chat preview data.
+Its workspace selector and recent-chat callbacks are the integration seams for
+the next API-backed milestone. The app declares `INTERNET` but explicitly
+rejects cleartext traffic, so the auth client only accepts HTTPS endpoints.
+A transient startup verification failure offers retry and account-switch
+recovery without deleting the saved cookie.

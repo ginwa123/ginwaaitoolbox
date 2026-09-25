@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -107,6 +108,8 @@ fun validateLogin(email: String, password: String): LoginValidation {
 fun LoginScreen(
     modifier: Modifier = Modifier,
     onSignIn: (LoginCredentials) -> Unit = {},
+    authError: String? = null,
+    isAuthenticating: Boolean = false,
 ) {
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -118,7 +121,7 @@ fun LoginScreen(
 
     fun submit() {
         submitted = true
-        if (validation.isValid) {
+        if (validation.isValid && !isAuthenticating) {
             onSignIn(LoginCredentials(email.trim(), password))
         }
     }
@@ -259,37 +262,56 @@ fun LoginScreen(
                             .fillMaxWidth()
                             .height(54.dp)
                             .testTag("login_submit"),
+                        enabled = !isAuthenticating,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = NalarAccent,
                             contentColor = NalarBackground,
+                            disabledContainerColor = NalarBorder,
+                            disabledContentColor = NalarMuted,
                         ),
                     ) {
-                        Text(
-                            text = "Sign in",
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                        )
+                        if (isAuthenticating) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                color = NalarBackground,
+                                strokeWidth = 2.dp,
+                            )
+                        } else {
+                            Text(
+                                text = "Sign in",
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
 
                     Text(
-                        text = if (submitted && validation.isValid) {
-                            "Credentials ready · authentication will be connected in the next step."
-                        } else {
-                            "Preview build · authentication will be connected in the next step."
+                        text = when {
+                            authError != null -> authError
+                            isAuthenticating -> "Signing in…"
+                            submitted && validation.isValid -> "Credentials ready."
+                            else -> "Connect to your Nalar account to continue."
                         },
                         modifier = Modifier
                             .fillMaxWidth()
+                            .testTag(if (authError != null) "login_error" else "login_status")
                             .clip(RoundedCornerShape(12.dp))
-                            .background(NalarAccent.copy(alpha = 0.10f))
+                            .background(
+                                if (authError != null) {
+                                    NalarErrorSoft
+                                } else {
+                                    NalarAccent.copy(alpha = 0.10f)
+                                },
+                            )
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = NalarAccentSoft,
+                        color = if (authError != null) NalarError else NalarAccentSoft,
                     )
                 }
             }
