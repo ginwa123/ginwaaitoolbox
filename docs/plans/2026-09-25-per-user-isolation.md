@@ -30,9 +30,9 @@ Concrete A↔B interference that exists **right now** with `--auth` on (each is 
 
 ## Non-goals (v1)
 
-- **No filesystem / OS sandbox.** `bash`, `terminal/ws`, `read_file`, `list_directory`, `/api/git/*`, `/api/files/download` all run as the OS user against caller-supplied paths. Per-user isolation of *pull-request-able* code paths is DB/browser isolation; host-level confinement (per-user chroot/uid) is a separate sub-project and should be documented as an explicit boundary, not silently assumed safe.
+- **No filesystem / OS sandbox — deferred, see D9.** `bash`, `terminal/ws`, `read_file`, `list_directory`, `/api/git/*`, `/api/files/download` all run as the OS user against caller-supplied paths. Per-user isolation of *pull-request-able* code paths is DB/browser isolation; host-level confinement (per-user chroot/uid) is a separate item, explicitly deferred by the user on 2026-09-25, and must be documented as a boundary rather than silently assumed safe.
 - **No tenant/company layer.** `user_companies` / `user_company_members` (M077) stay unused; ownership is personal-first.
-- **No RBAC role checks** beyond ownership. `users.role` stays decorative (`admin` has no extra powers over another user's rows).
+- **No RBAC role checks** beyond ownership. `users.role` stays decorative — `admin` has no extra powers over another user's rows (approved 2026-09-25, D8).
 - **No sharing / team collaboration, no JWT/OAuth, no login UI work.**
 - **No attempt to make the browser a security boundary.** L5 is UX hygiene (stop B inheriting A's view); the security boundary is server-side (L1–L4).
 
@@ -40,18 +40,21 @@ Concrete A↔B interference that exists **right now** with `--auth` on (each is 
 
 ## Decision log
 
+- **2026-09-25 (user, approved):** the open questions are answered — legacy data is shared, `admin` gets no cross-user visibility, new rows are private while legacy rows stay shared (writes included), filesystem scope deferred. Locked in "Decisions resolved by the user" below; implementation may proceed on these.
 - **2026-09-25 (this plan):** enforcement is scoped to three ownership **roots** + transitive ownership, not a `user_id` column on all 40 tables. §Design D1.
 - **2026-09-25 (this plan):** legacy pre-auth rows (owner `user_system`) stay visible to every authenticated user — a local-first upgrade must not make the existing user's data vanish. §Design D2. This matches the unmerged worker branch and deliberately overrides the M077 spec's stricter `WHERE user_id = current_user` reading.
 - **2026-09-25 (this plan):** identity is re-resolved per request from the `nalar_session` cookie via a shared helper; **kabelweb is not modified**. §Design D3.
 - 2026-08-21 (prior, `docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md:484`): "Personal-first (Option A). workspaces belong to users, not companies."
 - 2026-08-21 (prior, same doc `:17`): sub-project 1 was schema-only; "no permission checks, no frontend changes."
 
-### Open questions for the human (answer before W1 starts)
+### Decisions resolved by the user (2026-09-25) — implementation may proceed on these
 
-1. **Legacy data policy** — confirm D2 (shared `user_system` sentinel stays visible to all) vs. strict personal (`user_system` rows become invisible once anyone logs in). Recommendation: **D2**; strict would hide every existing workspace/session the first time the owner of the machine creates a login.
-2. **Should `admin` see other users' data?** Recommendation: **no** in v1 (simplest, least surprising); revisit with RBAC.
-3. **Can a logged-in user still create new workspaces?** Recommendation: yes — stamped to them; the legacy rows remain visible read/write to everyone (same as the worker branch's visibility clause). If "shared legacy is read-only" is wanted, that is a small extra predicate.
-4. **Is the filesystem scope acceptable as a non-goal** for this sub-project (i.e. B can still `cat` A's files by path)? Recommendation: yes, split it out.
+1. **Legacy data policy: SHARED.** `user_system` / `NULL` / `''` rows stay visible to every authenticated user (D2 as written). Strict personal ownership is rejected.
+2. **`admin` does NOT see other users' data.** No role-based bypass in v1; the owner predicate applies to every user including admins. §Design D8.
+3. **New workspaces are stamped to their creator; legacy rows stay shared — including writes.** A logged-in user creating a workspace gets it privately; pre-auth rows remain visible *and mutable* by all authenticated users (exactly what the visibility clause does). If read-only legacy is wanted later, that is a small extra predicate — noted, not implemented.
+4. **Filesystem scope: DEFERRED, not decided.** Recorded as an open boundary in §Design D9; this sub-project neither fixes nor claims it. Revisit as its own item.
+
+Consequence of (1)+(3): the shared bucket only shrinks — rows created after this lands are always private. The migration doc-comment must say so, because a future reader will otherwise assume the sentinel is a permanent junk drawer.
 
 ---
 
@@ -162,6 +165,16 @@ Every scoping change is written as "resolver + clause"; with auth off the resolv
 | browser `settings-*` localStorage (legacy store) | browser profile | `src/apps/desktop/src/stores/settings.ts:5-73` | legacy, no production call site; delete or namespace (W5) |
 | `agent.db` | **one global file per OS account** (`src/helpers/db_path.zig:4-44`, opened at `main.zig:216-221`) | all users share one DB → ownership must be row-level | the reason D1/D2 exist; a per-user DB file is explicitly **not** the plan (it would break cross-user workspace sharing later and double the migration surface) |
 
+### D8 — No `admin` bypass (approved 2026-09-25)
+
+`users.role = 'admin'` grants **no** cross-user read or write. The owner predicate is applied identically for every authenticated user, admins included. Deliberate: the authorization rule stays a single predicate with no role branch — a role branch is the classic hiding place for a bypass bug — and it matches "personal-first" from the M077 spec. RBAC over other users' rows is a later sub-project with its own spec.
+
+Test consequence, and a free win: `nalar create-admin` is the only way to make a user, and it creates `role = 'admin'`. So the two-user functional tests **are** admin-vs-admin tests — `test_workspaces_list_is_per_user` with both users created via `create-admin` already asserts "no admin bypass". Say so in the test docstrings rather than adding a separate case.
+
+### D9 — Filesystem scope: deferred boundary (approved 2026-09-25, unresolved)
+
+Not addressed by this sub-project. `bash`, `terminal/ws`, `read_file`, `list_directory`, `/api/git/*`, `/api/files/download` run as the OS user against caller-supplied paths, so a second user on the same machine can still read files by path. This is neither a regression introduced here nor something fixed here. It must be stated in `README.md` as a known boundary so "per-user isolation" is never read as "sandboxed". A future item decides between per-user OS uid/chroot, a workspace-root allowlist for the file tools, or accepting the boundary (single-operator machine, multiple browser users).
+
 ---
 
 ## Workstreams
@@ -173,7 +186,7 @@ Each workstream is independently shippable and has its own acceptance test. Orde
 1. `src/http_handlers/auth_common.zig`: add `resolveRequestUserId` + `owner_visibility_clause` (+ a `freeRequestUserId` if ownership is transferred, mirroring `freeSessionLookup`). Add a `Principal { id: []const u8, shared: bool }` if call sites want the shared flag.
 2. Add `src/http_handlers/auth_common_test.zig` cases (or inline `test` blocks per repo convention): auth off → `user_system`; missing cookie → `user_system`; invalid/expired cookie → `user_system`; valid cookie → the user's id; **owned copy** (freed by the caller, no aliasing into the lookup).
 3. Renumber the unmerged worker migration 092 → 093 (D6) — do this **on that branch or during its merge**, and note it in the PR that lands it.
-4. Decide + document the legacy-visibility policy in the migration doc-comment (D2) so the next reader doesn't re-litigate it.
+4. Document the **decided** legacy-visibility policy (D2: shared — approved 2026-09-25) in the migration doc-comment so the next reader doesn't re-litigate it, including the point that the shared bucket only shrinks.
 
 **Acceptance:** `zig build test` green; new unit tests cover the 5 resolver cases.
 
@@ -273,7 +286,7 @@ Plan:
 | **Framework limits** — no principal on `ctx`; `req.session` is a cookie flash bag | D3: server-side re-resolve; documented so nobody "optimises" it into `req.session` |
 | **Breaking the auth-off path** (the default for almost all users) | D5: resolver returns `user_system`, clause always true; explicit regression test + the existing ~40 functional tests must stay green |
 | **Performance**: extra PK lookup per request | single indexed SELECT (`auth_sessions.token_hash` is the PK); measure in the W2 spike on a cold cache if it shows up in profiles |
-| **False sense of security**: filesystem/host still shared | non-goal stated up front; document the boundary in `README.md`; do not claim "multi-tenant" anywhere |
+| **False sense of security**: filesystem/host still shared | deferred by explicit user decision (D9); state the boundary in `README.md`; never claim "multi-tenant" or "sandboxed" anywhere |
 | **Frontend purge races** (tab A logs out while tab B is mid-fetch) | purge on identity *change* observed from `/api/auth/me`, plus `storage`-event fan-out; never paint cached data before the identity is known (W5.5) |
 
 ## Verification checklist (definition of done)
@@ -282,5 +295,5 @@ Plan:
 - [ ] `tests/functional/per_user_isolation_test.py` green, all 10 cases, on an isolated `HOME`.
 - [ ] Existing suites untouched by the change: `tests/functional/auth_test.py`, `user_config_test.py`, plus the wider functional suite.
 - [ ] Manually verified on a scratch instance (`--auth`, two admins, two browsers/profiles): A sees only A+legacy; A's live events never appear in B's EventSource; A's workspace never appears in B's sidebar after a browser switch without a page reload.
-- [ ] `README.md` documents: per-user ownership, the `user_system` legacy rule, `config.json` = auth-off only, and the filesystem non-goal.
+- [ ] `README.md` documents: per-user ownership, the `user_system` legacy rule, no admin cross-user visibility, `config.json` = auth-off only, and the **deferred** filesystem boundary (D9).
 - [ ] Ratchet test listing still-unscoped routes is committed (so the remaining gap is visible, not forgotten).
