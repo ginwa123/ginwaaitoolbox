@@ -18,6 +18,7 @@
  * don't provide one) degrade to a plain cache miss.
  */
 import type { Workspace } from '../api'
+import { userScopedKey } from './userScope'
 
 const WORKSPACES_CACHE_KEY = 'nalar-workspaces:v1'
 
@@ -61,7 +62,7 @@ function normalizeWorkspaces(raw: unknown): Workspace[] | null {
 /** Last-known workspace list, or null on miss / corrupt entry / no storage. */
 export function readWorkspacesCache(): Workspace[] | null {
   try {
-    const raw = localStorage.getItem(WORKSPACES_CACHE_KEY)
+    const raw = localStorage.getItem(userScopedKey(WORKSPACES_CACHE_KEY))
     if (raw === null) return null
     return normalizeWorkspaces(JSON.parse(raw) as unknown)
   } catch {
@@ -78,7 +79,7 @@ export function writeWorkspacesCache(workspaces: Workspace[]): void {
       icon: typeof w.icon === 'string' ? w.icon : '📁',
       ...(typeof w.items_count === 'number' ? { items_count: w.items_count } : {}),
     }))
-    localStorage.setItem(WORKSPACES_CACHE_KEY, JSON.stringify(slim))
+    localStorage.setItem(userScopedKey(WORKSPACES_CACHE_KEY), JSON.stringify(slim))
   } catch {
     // quota / private mode / no storage — the live fetch still works,
     // only the next init's instant paint is lost.
@@ -88,7 +89,7 @@ export function writeWorkspacesCache(workspaces: Workspace[]): void {
 /** Test-only escape hatch — drops the cached workspace list. */
 export function clearWorkspacesCache(): void {
   try {
-    localStorage.removeItem(WORKSPACES_CACHE_KEY)
+    localStorage.removeItem(userScopedKey(WORKSPACES_CACHE_KEY))
   } catch {
     /* see writeWorkspacesCache */
   }

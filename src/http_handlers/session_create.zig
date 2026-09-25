@@ -122,7 +122,14 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         });
     };
 
-    const usecase = useCase(allocator, io, di, parsed) catch |err| {
+    // Owner for the session row this request creates (plan 2026-09-25, W1).
+    // Server-derived from the `nalar_session` cookie only — never a body,
+    // query, or header field. Empty when auth is off, which leaves the row in
+    // the shared legacy bucket.
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+
+    const usecase = useCase(allocator, io, di, parsed, owner) catch |err| {
         return res.jsonResponse(.{
             .status_code = 500,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
@@ -139,9 +146,9 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     // write claims it, which is the legacy rule, not a leak of another user's
     // data.
     if (di.auth_enabled) {
-        const owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch null;
-        defer if (owner) |o| allocator.free(o);
-        if (owner) |o| {
+        const stamp_owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch null;
+        defer if (stamp_owner) |o| allocator.free(o);
+        if (stamp_owner) |o| {
             _ = di.db.exec(allocator,
                 "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
                 &[_][]const u8{ o, usecase.id },
@@ -161,7 +168,7 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     });
 }
 
-fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession) !ResponseSession {
+fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, parsed: RequestSession, owner: []const u8) !ResponseSession {
     const environment = di.environment orelse return error.EnvironmentNotInitialized;
 
     // --- Resolve all values locally using arena ---
@@ -367,6 +374,11 @@ fn useCase(alloc: std.mem.Allocator, io: std.Io, di: *nalarcore.ContextIPCTui, p
         .video_urls = video_urls,
         .selected_profile_model = selected_profile_model,
         .is_auto_retry_until_stop = is_auto_retry_until_stop,
+        // Owner rides along so the concurrent insert_worker task stamps the
+        // session row at INSERT time (plan 2026-09-25, W1). Without it the
+        // row is briefly ownerless and its `session_created` event is
+        // delivered to every user by the (correct) SSE fan-out.
+        .user_id = owner,
     });
 
     ai_workflow.llm_history.updateTaskLastHumanTouchedAt(

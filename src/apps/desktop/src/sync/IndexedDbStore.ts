@@ -6,8 +6,26 @@
  * best-effort safe: IDB failures reject and the engine catches them.
  */
 import type { Syncable, SyncStore } from './SyncEngine'
+import { getCurrentUserId } from '../helpers/userScope'
 
 const DB_NAME = 'nalar-sync'
+
+/**
+ * Per-user database name (plan 2026-09-25, W5).
+ *
+ * The sync cache holds full message bodies, so one shared database means B
+ * inherits A's cached chats. Splitting the DATABASE (rather than adding a
+ * `userId` to every key path) needs no schema or key migration and makes a
+ * cross-user read impossible by construction — the other user's rows are in
+ * a different database.
+ *
+ * No identity (auth off, or `/api/auth/me` unresolved) keeps the legacy
+ * `nalar-sync` name, so the auth-off path is unchanged.
+ */
+function dbName(): string {
+  const userId = getCurrentUserId()
+  return userId ? `${DB_NAME}:${userId}` : DB_NAME
+}
 // v2 added sessions; v3 adds the task-list cache.
 const DB_VERSION = 3
 const KNOWN_STORES = ['messages', 'sessions', 'tasks']
@@ -41,7 +59,7 @@ export class IndexedDbStore<T extends Syncable> implements SyncStore<T> {
       const mod = await this.idb()
       if (!mod) return null
       const sortKeyPath = this.sortKeyPath
-      this.dbPromise = mod.openDB(DB_NAME, DB_VERSION, {
+      this.dbPromise = mod.openDB(dbName(), DB_VERSION, {
         upgrade(db) {
           for (const name of KNOWN_STORES) {
             if (db.objectStoreNames.contains(name)) continue

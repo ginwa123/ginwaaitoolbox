@@ -11,6 +11,7 @@ import WorkspaceSwitcher from '../workspace/WorkspaceSwitcher.vue'
 import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
 import { getAuthMeCached, invalidateAuthMe } from '../../helpers/authMe'
+import { purgeForeignScopedKeys, setCurrentUserId } from '../../helpers/userScope'
 import RenameWorkspaceModal from '../dialogs/RenameWorkspaceModal.vue'
 import RenameTaskModal from '../dialogs/RenameTaskModal.vue'
 import RenameDesignPageModal from '../dialogs/RenameDesignPageModal.vue'
@@ -263,6 +264,11 @@ async function handleLogout() {
   } finally {
     // Drop the cached authed /me so the guard redirects to /login.
     invalidateAuthMe()
+    // Drop this user's scoped browser state (plan 2026-09-25, W5): the next
+    // user on this browser profile must not inherit the workspace list,
+    // active chat, open tabs, task media or diff comments.
+    setCurrentUserId(null)
+    purgeForeignScopedKeys()
     loggingOut.value = false
     await router.replace('/login')
   }
@@ -274,6 +280,21 @@ if (typeof window !== 'undefined') {
   onUnmounted(() => window.removeEventListener('focus', refreshAuthState))
 }
 
+// Sibling-tab identity change (plan 2026-09-25, W5): when another tab logs
+// out or switches user, `nalar-auth-me:v1` is rewritten/removed. The
+// `storage` event fires in THIS tab, so drop the previous user's scoped keys
+// here too — otherwise an already-open tab keeps painting A's cache after B
+// signed in next door.
+if (typeof window !== 'undefined') {
+  const onStorage = (e: StorageEvent) => {
+    if (e.key !== null && e.key !== 'nalar-auth-me:v1') return
+    setCurrentUserId(null)
+    purgeForeignScopedKeys()
+    refreshAuthState()
+  }
+  window.addEventListener('storage', onStorage)
+  onUnmounted(() => window.removeEventListener('storage', onStorage))
+}
 // Handle navigation events from ChatsList component
 const handleChatsNavigate = (id: string, chatName?: string) => {
   if (id.startsWith('chat-')) {
@@ -839,8 +860,7 @@ const createAndOpenStandardChat = async (workspaceId: string, itemId: string) =>
     const parentItem = workspacesStore.workspaces
       .flatMap((ws) => ws.items)
       .find((it) => it.id === itemId)
-    const itemType =
-      parentItem?.item_type ?? workspacesStore.activeWorkspaceItem?.item_type ?? null
+    const itemType = parentItem?.item_type ?? workspacesStore.activeWorkspaceItem?.item_type ?? null
     await router.replace(
       buildTaskAppUrl({
         taskId,

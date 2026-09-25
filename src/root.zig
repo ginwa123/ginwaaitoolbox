@@ -71,6 +71,15 @@ pub const EmitRunAgentInput = struct {
     // existing session without queueing a new user message. Default
     // `false` preserves the existing create-session behaviour.
     skip_initial_queue_message: bool = false,
+    /// Owning user id for the session row this run creates (plan
+    /// 2026-09-25, W1). The background worker has NO HTTP request, so the
+    /// owner must ride along from the enqueuing request — otherwise the
+    /// concurrent `insert_worker` task INSERTs an ownerless row and emits
+    /// `session_created` before the handler's stamp commits, and the SSE
+    /// fan-out (correctly) treats that row as shared and delivers it to
+    /// every user. Empty means "no identity" (auth off, or a caller with no
+    /// request context) and the row stays in the shared bucket.
+    user_id: []const u8 = "",
 };
 
 pub const ContextIPCTui = struct {
@@ -86,6 +95,24 @@ pub const ContextIPCTui = struct {
 
     session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayList([16]u8)) = .empty,
     session_map_lock: std.Io.Mutex = .init,
+
+    /// SSE client_id -> owning user id, for per-user event filtering.
+    ///
+    /// The event bus fans out by *family routing key* (`sessions`, `workers`,
+    /// `llm`, …), so without this map every connected client receives every
+    /// user's events. `unified_events_sse.forwardToClients` consults it to
+    /// drop an event whose `session_id` the client's owner cannot see.
+    ///
+    /// Keyed by the 16-byte client id (the same key `session_to_client_ids`
+    /// stores in its value lists), value is an owned copy of the owner id.
+    /// Populated at SSE connect, removed in `handleClientDisconnect` — which
+    /// the SseManager calls on EVERY removal path (explicit shutdown, peer
+    /// HUP, heartbeat/broadcast write failure, stale sweep).
+    ///
+    /// An absent entry means "owner unknown" and the fan-out delivers, so
+    /// auth-off (no identity) stays byte-identical.
+    client_owners: std.StringHashMapUnmanaged([]const u8) = .empty,
+    client_owners_lock: std.Io.Mutex = .init,
 
     on_disconnect_cb: ?*fn (client_id: [16]u8) void = null,
     on_disconnect_lock: std.Io.Mutex = .init,
@@ -168,6 +195,11 @@ pub const ContextIPCTui = struct {
         errdefer self.allocator.free(owned_selected_profile_model);
         const owned_is_auto_retry_until_stop = try self.allocator.dupe(u8, obj.is_auto_retry_until_stop);
         errdefer self.allocator.free(owned_is_auto_retry_until_stop);
+        // Owner rides along to the concurrent task (plan 2026-09-25, W1):
+        // the worker has no request context, so the enqueuing request's
+        // owner is the only source. Empty when auth is off.
+        const owned_user_id = try self.allocator.dupe(u8, obj.user_id);
+        errdefer self.allocator.free(owned_user_id);
         // NEW (plan: 2026-08-18-kanban-task-detail-start-agent). The
         // flag is a `bool` (no string dupe needed) — pass through the
         // Io group directly.
@@ -209,11 +241,13 @@ pub const ContextIPCTui = struct {
                     spm: []const u8,
                     iaur: []const u8,
                     siqm: bool,
+                    uid: []const u8,
                 ) void {
                     // These slices are owned by the Io task lifetime —
                     // they were duped synchronously by `emit_run_agent`
                     // into `di_inner.allocator` (which lives forever).
                     // Free them all on the way out, in reverse order.
+                    defer di_inner.allocator.free(uid);
                     defer di_inner.allocator.free(iaur);
                     defer di_inner.allocator.free(spm);
                     defer di_inner.allocator.free(vurls);
@@ -238,6 +272,7 @@ pub const ContextIPCTui = struct {
                         .video_urls = vurls,
                         .selected_profile_model = spm,
                         .is_auto_retry_until_stop = iaur,
+                        .user_id = uid,
                     }) catch unreachable;
 
                     event_buss.emit(agentic_loop_mod.RunParamsNew, "ai_worker_flow", .{
@@ -257,7 +292,7 @@ pub const ContextIPCTui = struct {
                     });
                 }
             }.run,
-            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_video_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message },
+            .{ self, owned_session_id, owned_session_name, owned_queue_message, owned_cwd, owned_body_message, owned_allowed_tools, owned_image_urls, owned_video_urls, owned_selected_profile_model, owned_is_auto_retry_until_stop, obj.skip_initial_queue_message, owned_user_id },
         );
     }
 
@@ -273,15 +308,23 @@ pub const ContextIPCTui = struct {
 
         // (no debug log — production code)
 
-        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop) " ++
-            "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)";
+        const session_sql = "INSERT OR IGNORE INTO sessions (id, name, status, cwd, created_at, updated_at, selected_profile_model, is_auto_retry_until_stop, user_id) " ++
+            "VALUES (?, ?, 'active', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?)";
         const copy_session_name = try allocator.dupe(u8, session_name);
         const copy_cwd = try allocator.dupe(u8, effective_cwd);
         const copy_profile = if (effective_profile.len > 0) try allocator.dupe(u8, effective_profile) else "";
+        // Owner stamped at INSERT time (plan 2026-09-25, W1). Stamping here —
+        // in the same task that INSERTs — closes the race where the handler's
+        // post-hoc UPDATE had not committed yet when this task emitted
+        // `session_created`: the row was briefly ownerless, so the SSE fan-out
+        // (correctly) treated it as shared and delivered it to every user.
+        // Empty `user_id` (auth off) leaves the column NULL, i.e. the shared
+        // legacy bucket.
+        const copy_user_id = if (parsed.user_id.len > 0) try allocator.dupe(u8, parsed.user_id) else "";
         try self.db.exec(
             allocator,
             session_sql,
-            &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry },
+            &.{ session_id, copy_session_name, copy_cwd, copy_profile, effective_auto_retry, copy_user_id },
         );
 
         // Broadcast session created event
@@ -399,6 +442,67 @@ fn freeLlmConfig(allocator: std.mem.Allocator, ptr: *const config.LlmConfig) voi
     var mut: *config.LlmConfig = @constCast(ptr);
     mut.deinit();
     allocator.destroy(mut);
+}
+
+/// Record the owning user id for an SSE client, for per-user event filtering.
+///
+/// Called once at SSE connect (`unified_events_sse.unifiedEventsStreamHandler`)
+/// with the owner resolved from the request cookie. The value is duped into
+/// the singleton allocator; a re-register for the same client replaces (and
+/// frees) the previous value, so a reconnect cannot leak.
+///
+/// `owner` may be the shared/system sentinel — the fan-out treats that as
+/// "sees everything", so storing it is harmless and keeps the map complete.
+pub fn registerClientOwner(client_id: [16]u8, owner: []const u8) void {
+    const di = getSingleton() catch return;
+    const allocator = di.allocator;
+    const io = di.io;
+    di.client_owners_lock.lock(io) catch {};
+    defer di.client_owners_lock.unlock(io);
+
+    // The key MUST be an owned copy: `client_id` is a by-value parameter, so
+    // `client_id[0..]` would dangle the moment this function returns.
+    const owned_key = allocator.dupe(u8, client_id[0..]) catch return;
+    const owned = allocator.dupe(u8, owner) catch {
+        allocator.free(owned_key);
+        return;
+    };
+    if (di.client_owners.fetchRemove(owned_key)) |kv| {
+        allocator.free(kv.key);
+        allocator.free(kv.value);
+    }
+    di.client_owners.put(allocator, owned_key, owned) catch {
+        allocator.free(owned_key);
+        allocator.free(owned);
+    };
+}
+
+/// Look up the owning user id recorded for an SSE client.
+///
+/// Returns a BORROWED slice valid only while the caller holds no other
+/// registry mutation — the fan-out uses it immediately and never stores it.
+/// Null means "owner unknown" (auth off, or a client registered before this
+/// map existed), which the fan-out treats as "deliver".
+pub fn getClientOwner(client_id: [16]u8) ?[]const u8 {
+    const di = getSingleton() catch return null;
+    const io = di.io;
+    di.client_owners_lock.lock(io) catch {};
+    defer di.client_owners_lock.unlock(io);
+    return di.client_owners.get(client_id[0..]);
+}
+
+/// Drop the recorded owner for a disconnected SSE client. Called from
+/// `handleClientDisconnect`, which the SseManager invokes on every removal
+/// path, so the map cannot grow across reconnects.
+pub fn unregisterClientOwner(client_id: [16]u8) void {
+    const di = getSingleton() catch return;
+    const allocator = di.allocator;
+    const io = di.io;
+    di.client_owners_lock.lock(io) catch {};
+    defer di.client_owners_lock.unlock(io);
+    if (di.client_owners.fetchRemove(client_id[0..])) |kv| {
+        allocator.free(kv.value);
+    }
 }
 
 /// Register a session -> client_id mapping (appends to list)
@@ -570,6 +674,12 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
         // defer di.session_map_lock.unlock(io);
         cb(client_id);
     }
+
+    // Drop the per-user event-filter entry for this client. The SseManager
+    // calls this on EVERY removal path (explicit shutdown, peer HUP,
+    // heartbeat/broadcast write failure, stale sweep), so the map cannot
+    // grow across reconnects.
+    unregisterClientOwner(client_id);
 
     // Collect EVERY routing_key that contains this client_id, then
     // unregister each one and drop its event_bus subscription.

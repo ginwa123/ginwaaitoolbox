@@ -9,6 +9,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const terminal_session = @import("terminal_session.zig");
+const auth_common = @import("auth_common.zig");
 
 pub const TerminalInputBody = struct {
     data: []const u8 = "",
@@ -58,7 +59,11 @@ pub fn terminalInputHandler(
         });
     }
 
-    const session = terminal_session.getSession(id) orelse {
+    // Owner check (plan 2026-09-25, W2.5): a foreign terminal id is
+    // indistinguishable from a missing one (404, never 403).
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+    const session = terminal_session.getSessionForOwner(id, owner) orelse {
         return res.jsonResponse(.{
             .status_code = 404,
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "terminal session not found" }),

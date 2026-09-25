@@ -8,6 +8,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const terminal_session = @import("terminal_session.zig");
+const auth_common = @import("auth_common.zig");
 
 pub const TerminalDeleteResponse = struct {
     ok: bool,
@@ -33,7 +34,12 @@ pub fn terminalDeleteHandler(
         });
     }
 
-    terminal_session.destroySession(id) catch |err| {
+    // Owner check (plan 2026-09-25, W2.5): a foreign terminal id is
+    // indistinguishable from a missing one (404, never 403).
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+
+    terminal_session.destroySessionForOwner(id, owner) catch |err| {
         const status: u16 = switch (err) {
             error.SessionNotFound => 404,
             error.UnsupportedPlatform => 501,

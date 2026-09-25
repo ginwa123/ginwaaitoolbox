@@ -19,11 +19,12 @@
  * don't provide one) degrade to a plain cache miss.
  */
 import type { GitStatus } from '../api'
+import { userScopedKey } from './userScope'
 
 const KEY_PREFIX = 'nalar-git-status:v1:'
 
 function storageKey(cwd: string): string {
-  return `${KEY_PREFIX}${cwd}`
+  return userScopedKey(`${KEY_PREFIX}${cwd}`)
 }
 
 /**

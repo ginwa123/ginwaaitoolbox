@@ -43,6 +43,7 @@ import {
   type TabQuery,
 } from '../helpers/tabTarget'
 import { getWindowId } from '../helpers/windowId'
+import { userScopedKey } from '../helpers/userScope'
 import { parseItemIdWithChat } from '../helpers/buildItemIdWithChat'
 import { useSseBus } from '../helpers/sseBus'
 
@@ -67,7 +68,7 @@ export interface SyncResult {
 }
 
 function listKey(windowId: string): string {
-  return `${LIST_PREFIX}${windowId}`
+  return userScopedKey(`${LIST_PREFIX}${windowId}`)
 }
 
 function readStorage(key: string): string | null {
