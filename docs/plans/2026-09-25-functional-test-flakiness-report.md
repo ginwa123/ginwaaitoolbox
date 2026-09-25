@@ -13,7 +13,7 @@ small number of tests are genuinely flaky *on top of* that.**
 | | tests | consistent failures | genuinely flaky |
 |---|---|---|---|
 | `functional-test` (API) | 575 | **9** (+1 intermittent error) | **2** |
-| `functional-test-ui` (Playwright) | 75 | **26–28** | **2** |
+| `functional-test-ui` (Playwright) | 75 | **30** | **1** |
 
 CI has **never** gone green on either job in the last 31 runs:
 
@@ -186,10 +186,21 @@ the window is stealable — which is exactly what happened.
 
 ## Part 2 — `tests/functional_ui/` (Playwright)
 
-**26–28 of 75 tests fail, on every single run.** Local run 1 is in flight; CI runs `36120290245`
-(28 failed / 47 passed) and `36105185462` (29 failed / 46 passed) agree.
+**31 of 75 tests fail on the local run** (`31 failed, 44 passed in 790.04s`).
 
-### 2a. One root cause for ~26 of them: **the URL contract changed and the tests didn't**
+> Correction to an earlier reading of the CI logs: CI runs reported 28 and 29 failures, but
+> `ci.yml:1828` pipes the pytest output through `tail -n 50`, so the `FAILED` lines visible in the
+> GitHub log are a **truncated prefix**, not the full list. The local junit run is the complete
+> picture. Treat 31 as the real number.
+
+The split is unusually clean, and that is the most useful fact in this report:
+
+| route the test navigates to | result |
+|---|---|
+| `?view=chat&session=<id>` (dead) | **30 of 30 fail** |
+| `/app/<wsId>/chat/<sessionId>` (current) | **pass** — with exactly 1 flaky exception |
+
+### 2a. One root cause for 30 of the 31: **the URL contract changed and the tests didn't**
 
 The revamp moved the app to **path-based** URLs. `src/apps/desktop/src/helpers/appUrl.ts:58-63`:
 
@@ -232,41 +243,54 @@ The empty state is still in the template — `ChatView.vue:4289-4306` has it ver
 reached, because `<ChatView v-else-if="activeChatId.startsWith('chat-')">` (`AppLayout.vue:3254`)
 is downstream of a workspace branch that never matches.
 
-**11 test files still navigate the dead `?view=chat&session=` shape:**
+**10 test files still navigate the dead `?view=chat&session=` shape — 30 tests, 30 failures:**
 
-```
-chatview_ui_test.py                 chatview_lazy_prefetch_ui_test.py
-chatview_html_tag_ui_test.py        chatview_present_files_ui_test.py
-chatview_html_frame_layout_test.py  chatview_scroll_popin_probe_test.py
-chatview_agent_error_card_ui_test.py chatview_tool_calls_json_wire_test.py
-chatview_command_output_live_ui_test.py  kanban_profile_select_ui_test.py
-terminal_sidebar_ui_test.py
-```
+| file | fail / total |
+|---|---|
+| `chatview_ui_test.py` | **9 / 9** |
+| `chatview_html_tag_ui_test.py` | **5 / 5** |
+| `chatview_html_frame_layout_test.py` | **4 / 4** |
+| `chatview_agent_error_card_ui_test.py` | **3 / 3** |
+| `terminal_sidebar_ui_test.py` | **3 / 3** |
+| `chatview_lazy_prefetch_ui_test.py` | 2 / 3 |
+| `chatview_command_output_live_ui_test.py` | 1 / 1 |
+| `chatview_present_files_ui_test.py` | 1 / 1 |
+| `chatview_tool_calls_json_wire_test.py` | 1 / 2 |
+| `kanban_profile_select_ui_test.py` | 1 / 3 (`…chip` only) |
+
+Fully green, for contrast: `agent_system_prompt_ui_test` (5), `auth_login_sse_ui_test` (1),
+`harness_safety_test` (17), `kanban_lifecycle_ui_test` (4), `kanban_sidebar_open_ui_test` (4),
+`smoke_boot_test` (5), and `chatview_scroll_popin_probe_test` (3) — the last of which navigates
+the current path-based route.
 
 `terminal_sidebar_ui_test.py` fails for the same reason — it gates on the same empty-state copy
 (`page.locator("text=…").first.wait_for(timeout=20000)`).
 
 **Fix:** seed a workspace + project item alongside the session, and navigate to
-`/app/<wsId>/chat/<sessionId>`. `chatview_tail_gap_probe_test.py` already does this and is the
-one chatview file that is not solidly red — good template to copy.
+`/app/<wsId>/chat/<sessionId>`. `chatview_scroll_popin_probe_test.py` (3/3 green) and
+`chatview_tail_gap_probe_test.py` (1/2 green) already do this and are the template to copy.
 
 ### 2b. The genuinely flaky remainder (UI)
 
-Flipping between CI runs 36120290245 / 36105185462 / 36091588272:
+**Exactly one**, and the split above is what isolates it:
 
 ```
-chatview_html_frame_layout_test.py::test_srcdoc_shell_carries_theme_and_resize_script
 chatview_tail_gap_probe_test.py::test_small_scrolls_at_the_tail_do_not_teleport
+  AssertionError: tail-region scroll signatures:
+    step 7: JUMP (d_scroll=40 d_spacer=361 win 317->318 …)
 ```
 
-Both are **timing-budget assertions on a Vite dev server**, and both have the same shape — a fixed
-`wait_for_timeout` that guards a measurement with a tight tolerance:
+It is one of only two tests that already navigate the **current** path-based route, so it is the
+only flaky test in the suite that is not merely collateral damage. Shape: a fixed
+`wait_for_timeout` guarding a measurement with a tight tolerance. ~8.4 s of sleeps across 6
+sites; the tail-gap cap is `MAX_TAIL_GAP_PX + SLACK_PX = 124 px`. The test re-samples at
+`:189`→`:195` "to let it settle" and then asserts — the settle is unbounded.
 
-* `chatview_tail_gap_probe_test.py` — ~8.4 s of sleeps across 6 sites; the tail-gap cap is
-  `MAX_TAIL_GAP_PX + SLACK_PX = 124 px`. The test itself re-samples at `:189`→`:195` "to let it
-  settle" and then asserts — the settle is unbounded.
-* `chatview_html_frame_layout_test.py:322-333` — an 8 s auto-resize settle loop that **falls
-  through without setting a flag** on timeout and then asserts anyway on a half-resized frame.
+Its sibling `chatview_html_frame_layout_test::test_srcdoc_shell_carries_theme_and_resize_script`
+also flipped between CI runs, but locally it fails 4/4 like the rest of its file, so that is
+contract drift plus a weak budget rather than an independent flake. It has the same smell though:
+`chatview_html_frame_layout_test.py:322-333` is an 8 s auto-resize settle loop that **falls
+through without setting a flag** on timeout and then asserts anyway on a half-resized frame.
 
 Both are "the budget is a guess, the tolerance is tight" rather than "the code is wrong".
 
@@ -293,24 +317,29 @@ Both are "the budget is a guess, the tolerance is tight" rather than "the code i
 
 ## Part 3 — Summary: flaky vs broken
 
-### Actually flaky (2 per suite, 4 total)
+### Actually flaky (3 total, 0.5% of the 650)
 
 | test | flake signature | root cause |
 |---|---|---|
 | `session_pr_url_test::test_direct_update_reflected_in_messages_response` | 5/5 alone, 0/2 in order | server-side SQLite read-visibility race + `catch \|_\| => ""` fallback that masks a DB error as `null` |
-| `llm_stream_get_test::test_stream_route_does_not_shadow_sibling_routes` | 5/5 alone, errors in the full run | harness port TOCTOU inside the kernel ephemeral range; masked as a "segfault" by a product bug |
-| `chatview_tail_gap_probe_test::test_small_scrolls_at_the_tail_do_not_teleport` | flips between CI runs | unbounded "settle" vs a 124 px tolerance |
-| `chatview_html_frame_layout_test::test_srcdoc_shell_carries_theme_and_resize_script` | flips between CI runs | 8 s settle loop that asserts on timeout |
+| `llm_stream_get_test::test_stream_route_does_not_shadow_sibling_routes` | 5/5 alone, errors in the full run | harness port TOCTOU inside the kernel ephemeral range; masked as a "segfault" by a product bug — **fixed in this PR** |
+| `chatview_tail_gap_probe_test::test_small_scrolls_at_the_tail_do_not_teleport` | fails in some runs, passes in others | unbounded "settle" vs a 124 px tolerance |
 
-### Broken, not flaky (35 tests, 3 causes)
+`chatview_html_frame_layout_test::test_srcdoc_shell_carries_theme_and_resize_script` also flipped
+between CI runs, but locally it fails 4/4 like the rest of its file, so it is contract drift
+rather than an independent flake. It has the same smell though: the 8 s settle loop at
+`chatview_html_frame_layout_test.py:322-333` asserts on timeout.
 
-1. **URL contract drift** — 26 UI tests. Fix the 11 files' navigation + seeding.
+### Broken, not flaky (39 tests, 3 causes)
+
+1. **URL contract drift** — 30 UI tests. Fix the 10 files' navigation + seeding.
 2. **TLS listener drops the connection after the handshake** — 4 API tests. Real product bug.
 3. **media-flags contract drift** — 4 API tests. Point them at `…/tasks/:task_id/media`.
 
 ### Also real, and a bad look in CI
 
-4. **Occupied port ⇒ SIGSEGV** instead of a clean exit. 1 line of `main.zig`.
+4. **Occupied port ⇒ SIGSEGV** instead of a clean exit. One `catch` in `main.zig` — **fixed in
+   this PR**.
 
 ### Environment-coupled test (will fail on any dev box, not CI)
 
@@ -326,17 +355,17 @@ rewritten to assert on the harness's own `temp_dir`.
 
 | # | change | size | unblocks |
 |---|---|---|---|
-| 1 | `main.zig`: clean exit on `BindFailed` | S | turns a mystifying `rc=-11` into an honest error |
-| 2 | `harness.py`: retry boot on `BindFailed`; move `RANDOM_PORT_*` to `[20000, 32000]` | S | kills flake #2 permanently |
+| 1 | `main.zig`: clean exit on `BindFailed` | S | ✅ **done (this PR)** — `rc=1` + operator message instead of `rc=-11` |
+| 2 | `harness.py`: move `RANDOM_PORT_*` to `[20000, 32000]` | S | ✅ **done (this PR)**. A boot retry on `BindFailed` would be belt-and-braces; not needed once the range is outside the ephemeral pool |
 | 3 | 4 media tests → `…/tasks/:task_id/media` | S | 4 API failures |
-| 4 | 11 UI files → path-based URL + workspace seeding | **L** | 26 UI failures |
+| 4 | 10 UI files → path-based URL + workspace seeding | **L** | 30 UI failures |
 | 5 | TLS: handshake-then-drop | M (product) | 4 API failures + the whole `--tls` surface |
 | 6 | `session_pr_url` read-visibility | M (product) | flake #1 |
 | 7 | Replace fixed sleeps with `expect(...).to_be_visible()` in kanban UI tests | M | removes the next flake tier |
 | 8 | Vite readiness gate + `cacheDir` + pidfile + group-kill in `ui_harness.py` | M | hardens the UI suite for `-n auto` |
 
-Items 1–3 are small, safe, and independently reviewable. Item 4 is the big one and is really its
-own task.
+Items 1–2 are small, safe, and independently reviewable — both landed here. Items 3–4 are the
+next two, and item 4 is really its own task.
 
 ---
 
