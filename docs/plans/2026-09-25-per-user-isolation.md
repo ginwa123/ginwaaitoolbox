@@ -46,6 +46,7 @@ Concrete A↔B interference that exists **right now** with `--auth` on (each is 
 - **2026-09-25 (this plan):** identity is re-resolved per request from the `nalar_session` cookie via a shared helper; **kabelweb is not modified**. §Design D3.
 - 2026-08-21 (prior, `docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md:484`): "Personal-first (Option A). workspaces belong to users, not companies."
 - 2026-08-21 (prior, same doc `:17`): sub-project 1 was schema-only; "no permission checks, no frontend changes."
+- **2026-09-25 (user, approved):** the unmerged `worker.user_id` branch (`1aa1d97c`, which also declares `version = 92`) is **not** being merged. Its scope therefore folds into this plan: W0's migration claims **093** and adds `worker.user_id` itself, and W2.4 implements the worker queries here. No dependency, no renumbering of anyone else's branch — the branch is a **design reference only**. §Design D6, §W2.4.
 
 ### Decisions resolved by the user (2026-09-25) — implementation may proceed on these
 
@@ -53,6 +54,7 @@ Concrete A↔B interference that exists **right now** with `--auth` on (each is 
 2. **`admin` does NOT see other users' data.** No role-based bypass in v1; the owner predicate applies to every user including admins. §Design D8.
 3. **New workspaces are stamped to their creator; legacy rows stay shared — including writes.** A logged-in user creating a workspace gets it privately; pre-auth rows remain visible *and mutable* by all authenticated users (exactly what the visibility clause does). If read-only legacy is wanted later, that is a small extra predicate — noted, not implemented.
 4. **Filesystem scope: DEFERRED, not decided.** Recorded as an open boundary in §Design D9; this sub-project neither fixes nor claims it. Revisit as its own item.
+5. **The unmerged `worker.user_id` branch is NOT merged.** Its scope folds into this plan instead of arriving as a dependency: W0's migration 093 adds `worker.user_id` (+ index + backfill), and W2.4 writes the worker queries here. The branch's code is a design reference only — nothing is rebased, nothing is inherited, nothing waits on it. **W0 can start immediately.**
 
 Consequence of (1)+(3): the shared bucket only shrinks — rows created after this lands are always private. The migration doc-comment must say so, because a future reader will otherwise assume the sentinel is a permanent junk drawer.
 
@@ -68,7 +70,7 @@ Stamp the owner on the **roots** only:
 |---|---|---|
 | `workspaces` | `workspaces.user_id` | column exists (M077, `src/migrations/migration.zig:4228-4234`), never written |
 | `sessions` | `sessions.user_id` | column exists (M077, `:4237-4243`), never written |
-| `worker` | `worker.user_id` | column **does not exist on main**; lands with the unmerged branch (see D6) |
+| `worker` | `worker.user_id` | column does **not** exist on main; created by this plan's migration 093 (D6) — not inherited from anywhere |
 
 Everything else is reachable through a root and inherits its owner:
 
@@ -115,7 +117,7 @@ Verified constraints (kabelweb pinned at `7e97a09ea9e01cec0fe1d46e54aedce76852f7
 - `MiddlewareFn` returns an `HttpResponse` and passes `ctx`/`req` **by value**; the framework's own docs say to derive a new value via builder methods (`kabelweb src/server/router.zig:55-71`).
 - `req.session` **is** a stable per-request pointer (`session: *Session = undefined`, `kabelweb src/server/http_parser.zig:145`; wired by the listen loop at `kabelweb src/server/http_server.zig:967-968`), so middleware *could* stash identity there — **but** `Session.set` requires a wired `ContextStore` and returns `error.NoContextStore` otherwise (`http_parser.zig:299-306`), and its documented semantics are a **cookie round-trip flash bag** ("Store a string value for the next request … the redirect helper serialises pending values into a cookie"). Putting an identity there would leak it into a client-visible cookie on any redirect. Rejected.
 
-**Chosen mechanism** (precedent: the unmerged worker branch, `1aa1d97c:src/http_handlers/auth_common.zig:98-122`):
+**Chosen mechanism** (design precedent: `1aa1d97c:src/http_handlers/auth_common.zig:98-122` — that branch is **not** merged (D6), so the helper is re-implemented here rather than inherited):
 
 ```zig
 /// Resolve the owning user id for this request. Never reads the body.
@@ -149,12 +151,22 @@ A request for a resource the caller cannot see returns **404**, not 403 — so B
 
 Every scoping change is written as "resolver + clause"; with auth off the resolver yields `user_system`, the clause matches everything, and no filter is applied (skip the `WHERE` entirely rather than binding a sentinel, where convenient, so query plans and existing tests don't shift).
 
-### D6 — Migration hygiene: the 092 collision
+### D6 — Migration numbers: this plan owns 093 (no dependency)
 
-- Landed on main: `Migration092AddUserConfigJson` (`version = 92`, name `add_user_config_json`, `src/migrations/migration.zig:4920-4934`, from `d73d9511`).
-- Unmerged branch `worktree/add-colum-name-user-id-for-table-worker-1789921741109` (commit `1aa1d97c`) also declares `version = 92`, name `add_user_id_to_worker` (`1aa1d97c:src/migrations/migration.zig:4913-4957`).
+- **92 is taken on main**: `Migration092AddUserConfigJson` (`version = 92`, name `add_user_config_json`, `src/migrations/migration.zig:4920-4934`, from `d73d9511`).
+- The branch that *also* declared `version = 92` (`1aa1d97c`, name `add_user_id_to_worker`) is **not being merged** (user decision 2026-09-25). There is therefore no collision to arbitrate and nothing to wait for — but also nothing to inherit.
 
-`MigrationManager` applies by version, so whichever lands second is silently skipped or double-applied. **The worker migration must be renumbered to 093** (or folded into this workstream's single migration) before merging. The new migration in *this* plan takes the next free number after that.
+⇒ **This workstream claims version 093** and owns the entire `worker` owner column itself: `addColumnIfMissing(worker.user_id TEXT)` + `idx_worker_user_id` + the `NULL → 'user_system'` backfill (mirroring M077 `:4285-4290`), in the same migration as the `workspaces`/`sessions` backfill.
+
+`MigrationManager` applies by `version >` (`migration.zig:1597`) with **no duplicate-version guard** — a clash is silently skipped, never an error. So before registering anything, prove the number is free across *all* branches, not just main:
+
+```bash
+git log --all -G 'version: u32 = 9[23]' -- src/migrations/migration.zig
+```
+
+This is the only failure mode in this plan that produces no error message, so it is a checklist item, not a note.
+
+**Verified 2026-09-25 (this plan):** 93 is free. `rg -o "version: u32 = [0-9]+" src/migrations/migration.zig | sort -n | tail` tops out at **92** on main, and only two commits in the whole repo touch 92/93 — `d73d9511` (the landed `add_user_config_json`) and `1aa1d97c` (the branch that is not being merged). No commit declares 93.
 
 ### D7 — Where settings live (answer to "settings")
 
@@ -185,7 +197,7 @@ Each workstream is independently shippable and has its own acceptance test. Orde
 
 1. `src/http_handlers/auth_common.zig`: add `resolveRequestUserId` + `owner_visibility_clause` (+ a `freeRequestUserId` if ownership is transferred, mirroring `freeSessionLookup`). Add a `Principal { id: []const u8, shared: bool }` if call sites want the shared flag.
 2. Add `src/http_handlers/auth_common_test.zig` cases (or inline `test` blocks per repo convention): auth off → `user_system`; missing cookie → `user_system`; invalid/expired cookie → `user_system`; valid cookie → the user's id; **owned copy** (freed by the caller, no aliasing into the lookup).
-3. Renumber the unmerged worker migration 092 → 093 (D6) — do this **on that branch or during its merge**, and note it in the PR that lands it.
+3. Register the new migration as **093** (D6) and own the `worker.user_id` column + index + backfill in it. Nothing is renumbered and nothing is inherited — that branch is not being merged. Run the D6 all-branches version check first.
 4. Document the **decided** legacy-visibility policy (D2: shared — approved 2026-09-25) in the migration doc-comment so the next reader doesn't re-litigate it, including the point that the shared bucket only shrinks.
 
 **Acceptance:** `zig build test` green; new unit tests cover the 5 resolver cases.
@@ -197,10 +209,11 @@ Each workstream is independently shippable and has its own acceptance test. Orde
 | `src/http_handlers/workspaces_create.zig:117-123` | `INSERT INTO workspaces (id, name, position, created_at, updated_at, user_id) …` with the resolved owner |
 | `src/http_handlers/session_create.zig:390-392` | add `user_id` to the `INSERT OR IGNORE INTO sessions` column list |
 | `src/agentic_loop/llm_history.zig:1411` | same, for the other session-creation path |
-| `src/agentic_loop/update_worker.zig` | stamp `worker.user_id`, never downgrade a real owner to `user_system` (copy the unmerged branch's rule) |
+| `src/agentic_loop/update_worker.zig` | stamp `worker.user_id`, never downgrade a real owner to `user_system` |
 | `src/root.zig` (`EmitRunAgentInput`) | thread `user_id` into worker creation — the background worker has **no** HTTP request, so the owner must ride along from the enqueuing request (§W3) |
 | `src/agentic_loop/tools_exec_add_mcp_server.zig:343-349` | **fix the live bug**: once `sessions.user_id` is actually written, this resolves correctly; add a regression test (2 users → 2 config rows) |
-| `src/migrations/migration.zig` | new migration `Migration0NNBackfillOwners`: backfill `workspaces.user_id`/`sessions.user_id` where NULL → `'user_system'` (idempotent, mirrors M077 `:4285-4290`), plus the same for `worker` once 093 lands. No FKs (project convention: `PRAGMA foreign_keys` is deliberately off — `migration_072_test.zig:156-164`). |
+| `src/migrations/migration.zig` | new migration **`Migration093AddOwnerColumns`** (`version = 93`, D6): `addColumnIfMissing` `worker.user_id TEXT` + `idx_worker_user_id`, then backfill `workspaces.user_id` / `sessions.user_id` / `worker.user_id` where NULL → `'user_system'` (idempotent, mirrors M077 `:4285-4290`). No FKs (project convention: `PRAGMA foreign_keys` is deliberately off — `migration_072_test.zig:156-164`). |
+| `src/models/worker.zig` | carry the `user_id` field; default `user_system` so pre-auth/legacy callers keep compiling and behaving identically |
 
 **Acceptance (python functional, two cookies):** create workspace as A → `SELECT user_id` is A's id (assert via a subsequent scoped read); create session as A → same; B's `add_mcp_server` run writes B's row, not `user_system`.
 
@@ -211,7 +224,7 @@ Do these in separate commits so review is tractable. Every change is the same sh
 1. **workspaces** — `workspaces_list.zig:84,131,161,219` (list + the 3 count/batch queries), `workspace_get.zig:69`, `workspace_update.zig`, `workspace_delete.zig:43`, `workspaces_reorder.zig:367`.
 2. **workspace items / tasks / kanban / design** — `workspace_items_get.zig:45-60`, the item create/update/delete/reorder handlers, `kanban_model.zig` queries, `design_*` handlers. Each must resolve the workspace root and check it before returning children.
 3. **sessions / llm history** (the biggest leak) — `llm_history.zig:164-191,225,346-358,405,530-552,1672-1700,2780,2924-2932`, `session_list.zig:66`, `session_get.zig`, `session_messages_get.zig:285-290`, queue/plan/skills/background-process handlers. `session_list.zig:68-96` already derives its workspace scope **server-side** — keep that, and add the owner predicate at the same place.
-4. **workers** — `worker_list.zig:43-52`, `worker_get.zig`, `start_agent.zig`, `run_all_agents.zig`, `getWorkerBySessionIdForUser` (all exist on the unmerged branch — **rebase/reuse rather than rewrite**).
+4. **workers** — `worker_list.zig:43-52`, `worker_get.zig`, `start_agent.zig`, `run_all_agents.zig`, plus a new `getWorkerBySessionIdForUser`. **Written here — nothing to inherit**: the branch that had them is not merged (D6), so `1aa1d97c` is a reference for the query shape only. Depends on the 093 column from W0/W1; worker scoping is *not* optional, or B still sees A's running workers in `/api/workers`.
 5. **terminals** — `terminal_create.zig:69` (in-memory sessions have no owner) + the REST/WS surface; add an owner field and reject cross-user attach.
 6. **misc** — `/api/skills*`, `/api/memories*` (cwd-scoped today; workspace ownership makes them transitively owned once the workspace is checked), `/api/files/download.zig:139`, `/api/git/*`.
 
@@ -270,7 +283,7 @@ Plan:
    - `test_auth_off_is_unchanged` (regression: one user, no cookie, everything visible)
    - `test_legacy_user_system_rows_visible_to_all` (D2)
 2. **Static contract test** listing ownership-sensitive routes (ratchet, §W2).
-3. **Zig in-memory tests**: the visibility clause for 2 users + sentinel (`1aa1d97c`'s test is a template), and the migration's idempotency + registration (`Migration0NN is registered in allMigrations`).
+3. **Zig in-memory tests**: the visibility clause for 2 users + sentinel (`1aa1d97c`'s test is a reference template), and the migration's idempotency + registration (`Migration093 is registered in allMigrations`).
 4. **CI**: the functional suite must run in the same job that runs `tests/functional/auth_test.py`; add the new file to the list if the runner enumerates explicitly.
 
 ---
@@ -282,7 +295,7 @@ Plan:
 | **Data disappears on upgrade** — the machine owner enables `--auth` and their existing workspaces vanish | D2 shared sentinel; `test_legacy_user_system_rows_visible_to_all` |
 | **181 handlers is too big for one PR → half-scoped state** | ship by route family (W2.1…W2.6), each with its own test; the ratchet test (W6.2) makes the remaining unscoped routes an explicit, visible list |
 | **`user_system` sentinel becomes a permanent junk drawer** — unscoped writes keep landing there and are visible to everyone | assert stamping in W1 tests; the sentinel bucket only shrinks (D2); add a metric/log when a write falls back to `user_system` in auth mode |
-| **Migration 092 collision** with the unmerged worker branch | D6: renumber to 093 before/while merging; check `git log --all -G 'version: u32 = 92'` before adding the new migration |
+| **Silent migration skip** — `MigrationManager` applies by `version >` with no duplicate guard, so a version clash produces no error at all | D6: this plan owns 093; prove the number is free across **all** branches with `git log --all -G 'version: u32 = 9[23]'` before registering |
 | **Framework limits** — no principal on `ctx`; `req.session` is a cookie flash bag | D3: server-side re-resolve; documented so nobody "optimises" it into `req.session` |
 | **Breaking the auth-off path** (the default for almost all users) | D5: resolver returns `user_system`, clause always true; explicit regression test + the existing ~40 functional tests must stay green |
 | **Performance**: extra PK lookup per request | single indexed SELECT (`auth_sessions.token_hash` is the PK); measure in the W2 spike on a cold cache if it shows up in profiles |
@@ -292,6 +305,7 @@ Plan:
 ## Verification checklist (definition of done)
 
 - [ ] `zig build test` green; new resolver + migration + clause unit tests present.
+- [ ] `git log --all -G 'version: u32 = 9[23]'` run before registering migration **093** (D6 — a duplicate version is the only silently-skipped failure mode in this plan).
 - [ ] `tests/functional/per_user_isolation_test.py` green, all 10 cases, on an isolated `HOME`.
 - [ ] Existing suites untouched by the change: `tests/functional/auth_test.py`, `user_config_test.py`, plus the wider functional suite.
 - [ ] Manually verified on a scratch instance (`--auth`, two admins, two browsers/profiles): A sees only A+legacy; A's live events never appear in B's EventSource; A's workspace never appears in B's sidebar after a browser switch without a page reload.
