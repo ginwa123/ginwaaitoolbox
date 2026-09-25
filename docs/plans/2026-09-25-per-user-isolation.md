@@ -338,5 +338,19 @@ Verification: `zig build test` → 4/4 steps, **3630/3638 passed**; new `tests/f
 - `workspaces_reorder.zig:160` — reorder still writes by raw id.
 - ~~`workspace_items*`~~ — **fixed by W2.2** (middleware choke point on `:workspace_id`); it was the most urgent hole, since B could add or delete items inside an invisible workspace.
 - Everything else with a `:workspace_id` is now covered by the same choke point: kanban columns/tasks, design items/pages, agent + routine sub-resources (they all inherit the middleware check).
-- W2.3 sessions/llm_history, W2.4 workers, W2.5 terminals, W2.6 skills/memories; W3 SSE/WS filtering; W5 frontend storage namespacing.
+- W2.4 workers, W2.5 terminals, W2.6 skills/memories; W3 SSE/WS filtering; W5 frontend storage namespacing.
+
+### 2026-09-25 (later) — W2.3 part 1 landed + correction 3
+
+**W2.3 part 1 (`80ff4b74`): session-by-id access closed.** `/api/session/:session_id/*` and `/api/llm/session/:session_id/*` (get, messages, update, touched, queue_messages, background_processes, answer, stop, …) previously let any authenticated user read or mutate any session by raw id. `auth_common.canSeeSession()` is the sessions counterpart of `canSeeWorkspace()` and joins the same middleware choke point (both `:session_id` and `:session` spellings; SSE/WS bypass middleware and gate themselves). Unit-tested directly: own + shared visible, another user's hidden, system user sees all, unknown/empty never visible.
+
+**Correction 3 — a claim in this doc was wrong twice over.** `session_create.zig`'s `insertWorker()` — which this doc (and the W1 commit message) cited as *the* session write path at `:390` — is **dead code: never called**. Its `INSERT OR IGNORE INTO sessions` is not the live path, so stamping it would have changed nothing. The live session-create path needs its own recon before anyone touches it. Treat every `file:line` this doc attributes to session creation as unverified until re-checked.
+
+**Precise state of W2.3 (the rest of it, for whoever continues):**
+
+1. **Session LIST is still unscoped** — `GET /api/session` / `GET /api/llm/session` route to `session_list.zig:useCase`, which resolves `workspace_ids` and calls `llm_history.getSessionListWithCursor(...)`. That function builds `where_parts` (static literals + owned fragments) and the SQL at `llm_history.zig:346-358`; the fix is an owner predicate appended to `where_parts` (note it is shared by the count query at `:405`, so both get it). This is the *user-visible* half of the leak — B's sidebar currently lists A's chats.
+2. **Sessions are still created without an owner**, so an ownerless session is born into the shared bucket (visible to all). Find the live create path first (correction 3), then stamp it. `update_worker.zig:102`'s `INSERT OR IGNORE INTO sessions` is a second, real creator and has no request context — it needs the owner threaded from the enqueuing request (`EmitRunAgentInput`, `src/root.zig:57-74`) or an explicit decision that worker-created sessions stay shared.
+3. **`add_mcp_server` stays broken until (2) lands** — it fails with `false: session lookup session has no owner`.
+
+**Verification protocol that caught two of the three corrections here:** never trust a `file:line` for a write path without grepping for its *callers*; and after adding a test, confirm the test NAME appears in the runner output — a test that is not discovered passes by absence.
 
