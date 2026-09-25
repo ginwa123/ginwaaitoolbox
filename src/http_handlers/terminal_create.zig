@@ -18,6 +18,7 @@ const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const terminal_session = @import("terminal_session.zig");
+const auth_common = @import("auth_common.zig");
 
 pub const TerminalCreateError = error{
     UnsupportedPlatform,
@@ -66,7 +67,14 @@ pub fn terminalCreateHandler(
     const cwd = parsed.cwd;
     const shell: ?[]const u8 = if (parsed.shell) |s| (if (s.len == 0) null else s) else null;
 
-    const info = terminal_session.createSession(ctx.io, cwd, shell, parsed.cols, parsed.rows) catch |err| {
+    // Owner for the new PTY session (plan 2026-09-25, W2.5). Server-derived
+    // from the `nalar_session` cookie only — never a body/query/header field.
+    // Auth off (or no singleton) yields the shared sentinel, which
+    // `mayAccess` treats as "no identity" so every caller may attach.
+    var owner_buf: [128]u8 = undefined;
+    const owner: []const u8 = auth_common.resolveOwnerInto(&owner_buf, req.headers) orelse "";
+
+    const info = terminal_session.createSession(ctx.io, cwd, shell, parsed.cols, parsed.rows, owner) catch |err| {
         const status: u16 = switch (err) {
             error.InvalidCwd, error.InvalidShell, error.InvalidSize => 400,
             error.CwdNotDir => 404,

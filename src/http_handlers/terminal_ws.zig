@@ -155,10 +155,20 @@ pub fn terminalWsHandler(
 ) !void {
     _ = client_id;
     // Manual auth gate: kabelweb ws() does not run middleware.
+    //
+    // The resolved owner is kept for the attach check below (plan
+    // 2026-09-25, W2.5): a foreign terminal id must be rejected exactly like
+    // an unknown one, so B cannot stream A's shell.
+    var owner_buf: [128]u8 = undefined;
+    var owner: []const u8 = "";
     if (nalarcore.getSingleton()) |di| {
         if (di.auth_enabled) {
             const tok = auth_common.parseSessionToken(req.headers) orelse return;
             const sess = auth_common.lookupSession(ctx.allocator, di.db, tok) orelse return;
+            if (sess.user_id.len <= owner_buf.len) {
+                @memcpy(owner_buf[0..sess.user_id.len], sess.user_id);
+                owner = owner_buf[0..sess.user_id.len];
+            }
             auth_common.freeSessionLookup(ctx.allocator, sess);
         }
     } else |_| {}
@@ -167,7 +177,7 @@ pub fn terminalWsHandler(
 
     const id = req.query.get("id") orelse return;
     if (id.len == 0) return;
-    const session = terminal_session.getSession(id) orelse return;
+    const session = terminal_session.getSessionForOwner(id, owner) orelse return;
     // Attach = explicit user action (tab switch): refresh the user
     // stamp so switching back to a session keeps it alive.
     terminal_session.touchUser(session);

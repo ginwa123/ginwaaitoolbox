@@ -223,6 +223,22 @@ pub fn resolveRequestUserId(
     return sess.user_id;
 }
 
+/// Buffer-writing variant of `resolveRequestUserId` for callers that want to
+/// avoid a heap allocation (the terminal handlers, whose owner is a short
+/// per-request string).
+///
+/// Returns the owner slice inside `buf`, or null when the singleton is not
+/// initialised (unit tests) or the id does not fit — callers treat null as
+/// "no identity", which is the auth-off behaviour.
+pub fn resolveOwnerInto(buf: []u8, headers: anytype) ?[]const u8 {
+    const di = nalarcore.getSingleton() catch return null;
+    const owner = resolveRequestUserId(di.allocator, di.db, di.auth_enabled, headers) catch return null;
+    defer di.allocator.free(owner);
+    if (owner.len > buf.len) return null;
+    @memcpy(buf[0..owner.len], owner);
+    return buf[0..owner.len];
+}
+
 /// Verify a password against a stored `users.password_hash`.
 /// Sentinel `!disabled` (user_system) always fails. Supports bcrypt
 /// hashes; any other format fails closed.

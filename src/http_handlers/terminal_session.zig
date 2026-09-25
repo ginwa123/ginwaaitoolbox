@@ -141,6 +141,13 @@ pub const Session = struct {
     child_pid: c_int,
     cols: u16,
     rows: u16,
+    /// Owning user id (plan 2026-09-25, W2.5). Empty means "no identity" —
+    /// auth off, or a session created before this field existed — and every
+    /// caller may attach, which keeps the auth-off path unchanged. A real
+    /// owner is compared against the request's server-derived owner; a
+    /// mismatch is a 404, never a 403, so a foreign id is indistinguishable
+    /// from a missing one.
+    owner: []u8,
     /// Ring-ish output log: `buf` holds the newest bytes, `base` is the
     /// absolute cursor of `buf[0]`, `total` the absolute cursor of the
     /// end. Bytes in [0, base) were dropped by the cap.
@@ -420,9 +427,32 @@ pub const SessionInfo = struct {
 
 /// Spawn a shell on a fresh PTY. `shell` null/empty selects
 /// `$SHELL`, then `/bin/bash`, then `/bin/sh`.
-pub fn createSession(io: std.Io, cwd: []const u8, shell: ?[]const u8, cols: ?u16, rows: ?u16) SessionError!SessionInfo {
+///
+/// `owner` is the server-derived user id (plan 2026-09-25, W2.5). Pass an
+/// empty slice when there is no identity (auth off) — the session is then
+/// accessible to every caller, which is the pre-isolation behaviour.
+pub fn createSession(io: std.Io, cwd: []const u8, shell: ?[]const u8, cols: ?u16, rows: ?u16, owner: []const u8) SessionError!SessionInfo {
     if (comptime !is_pty_os) return error.UnsupportedPlatform;
-    return createSessionPosix(io, cwd, shell, cols, rows);
+    return createSessionPosix(io, cwd, shell, cols, rows, owner);
+}
+
+/// True when `caller_owner` may drive `s`.
+///
+/// An empty owner on EITHER side means "no identity" (auth off, or a session
+/// created before this field existed) and access is allowed — the auth-off
+/// path must stay byte-identical. Otherwise the ids must match exactly.
+pub fn mayAccess(s: *Session, caller_owner: []const u8) bool {
+    if (s.owner.len == 0 or caller_owner.len == 0) return true;
+    return std.mem.eql(u8, s.owner, caller_owner);
+}
+
+/// Look up a session by id AND check the caller may drive it. Returns null
+/// for both "no such session" and "someone else's session", so a foreign id
+/// is indistinguishable from a missing one (404, never 403).
+pub fn getSessionForOwner(id: []const u8, caller_owner: []const u8) ?*Session {
+    const s = getSession(id) orelse return null;
+    if (!mayAccess(s, caller_owner)) return null;
+    return s;
 }
 
 fn allocId() SessionError![]u8 {
@@ -444,7 +474,7 @@ fn defaultShell() []const u8 {
     return "/bin/bash";
 }
 
-fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_opt: ?u16, rows_opt: ?u16) SessionError!SessionInfo {
+fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_opt: ?u16, rows_opt: ?u16, owner: []const u8) SessionError!SessionInfo {
     // Empty cwd (fresh standalone chats have no session cwd yet):
     // fall back to the server process cwd, mirroring the agent shell
     // tools' optional-cwd behavior. Never fail closed here — an empty
@@ -504,6 +534,9 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
     const id = try allocId();
     errdefer g_alloc.free(id);
 
+    const owner_copy = g_alloc.dupe(u8, owner) catch return error.OutOfMemory;
+    errdefer g_alloc.free(owner_copy);
+
     const session = g_alloc.create(Session) catch return error.OutOfMemory;
     errdefer g_alloc.destroy(session);
     session.* = .{
@@ -512,6 +545,7 @@ fn createSessionPosix(io: std.Io, cwd: []const u8, shell_opt: ?[]const u8, cols_
         .child_pid = pid,
         .cols = dims.cols,
         .rows = dims.rows,
+        .owner = owner_copy,
         .buf = .empty,
         .base = 0,
         .total = 0,
@@ -813,6 +847,29 @@ pub fn destroySession(id: []const u8) SessionError!void {
     reapSession(entry.value);
 }
 
+/// Owner-checked `destroySession` (plan 2026-09-25, W2.5). A caller who may
+/// not drive the session gets `SessionNotFound`, so a foreign id cannot be
+/// used to kill another user's shell and is indistinguishable from a
+/// missing one.
+pub fn destroySessionForOwner(id: []const u8, caller_owner: []const u8) SessionError!void {
+    if (comptime !is_pty_os) return error.UnsupportedPlatform;
+    const reg = registry();
+    mutexLock(&g_mutex);
+    const entry = reg.fetchRemove(id) orelse {
+        g_mutex.unlock();
+        return error.SessionNotFound;
+    };
+    const allowed = mayAccess(entry.value, caller_owner);
+    if (!allowed) {
+        // Put it back: the caller is not allowed to destroy it.
+        reg.put(entry.key, entry.value) catch {};
+        g_mutex.unlock();
+        return error.SessionNotFound;
+    }
+    g_mutex.unlock();
+    reapSession(entry.value);
+}
+
 /// Tear down a session that is NO LONGER in the registry — the caller
 /// must have removed it under g_mutex (exclusive ownership) and must
 /// not touch `s` afterwards. Frees `s.id` and `s` itself.
@@ -833,6 +890,7 @@ fn reapSession(s: *Session) void {
 
     _ = close(s.master_fd);
     s.buf.deinit(g_alloc);
+    g_alloc.free(s.owner);
     g_alloc.free(s.id);
     g_alloc.destroy(s);
 }
@@ -892,7 +950,7 @@ test "decodeStatus maps normal exits and signals" {
 test "empty cwd falls back to the server cwd (posix only)" {
     if (comptime !is_pty_os) return error.SkipZigTest;
 
-    const info = try createSession(testing.io, "", "/bin/sh", 80, 24);
+    const info = try createSession(testing.io, "", "/bin/sh", 80, 24, "user_test");
     defer destroySession(info.id) catch {};
     const s = getSession(info.id) orelse return error.SessionNotFound;
     _ = s;
@@ -905,10 +963,10 @@ test "idle sweep reaps untouched sessions, keeps active ones (posix only)" {
     const prev_kill = setIdleKillForTest(3600);
     defer _ = setIdleKillForTest(prev_kill);
 
-    const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     const a_id = try testing.allocator.dupe(u8, a.id);
     defer testing.allocator.free(a_id);
-    const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     defer destroySession(b.id) catch {};
 
     // Backdate a past the timeout (both stamps); touch b's user stamp
@@ -936,7 +994,7 @@ test "isBusyByStamps exempts recent output, not exited or stale" {
 
 test "poll does not refresh the user stamp (posix only)" {
     if (comptime !is_pty_os) return error.SkipZigTest;
-    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     defer destroySession(info.id) catch {};
     const s = getSession(info.id) orelse return error.SessionNotFound;
     mutexLock(&s.mutex);
@@ -957,7 +1015,7 @@ test "busy session survives the user-idle kill (posix only)" {
     const prev_timeout = setIdleTimeoutForTest(3600);
     defer _ = setIdleTimeoutForTest(prev_timeout);
 
-    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     const id = try testing.allocator.dupe(u8, info.id);
     defer testing.allocator.free(id);
     defer destroySession(id) catch {};
@@ -983,18 +1041,18 @@ test "max sessions cap rejects over the limit (posix only)" {
     const prev_timeout = setIdleTimeoutForTest(3600);
     defer _ = setIdleTimeoutForTest(prev_timeout);
 
-    const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const a = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     defer destroySession(a.id) catch {};
-    const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const b = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     defer destroySession(b.id) catch {};
-    try testing.expectError(error.TooManySessions, createSession(testing.io, "/tmp", "/bin/sh", 80, 24));
+    try testing.expectError(error.TooManySessions, createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test"));
 }
 
 test "spawned shell echoes input (posix only)" {
     if (comptime !is_pty_os) return error.SkipZigTest;
 
     const cwd = "/tmp";
-    const info = try createSession(testing.io, cwd, "/bin/sh", 80, 24);
+    const info = try createSession(testing.io, cwd, "/bin/sh", 80, 24, "user_test");
     defer destroySession(info.id) catch {};
 
     const s = getSession(info.id) orelse return error.SessionNotFound;
@@ -1058,7 +1116,7 @@ test "readOutput never reaps its own session mid-call (posix only)" {
     const prev_kill = setIdleKillForTest(1);
     defer _ = setIdleKillForTest(prev_kill);
 
-    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     const id = try testing.allocator.dupe(u8, info.id);
     defer testing.allocator.free(id);
     defer destroySession(id) catch {};
@@ -1082,7 +1140,7 @@ test "readOutputAlloc returns an owned copy independent of the ring (posix only)
     const prev_kill = setIdleKillForTest(3600);
     defer _ = setIdleKillForTest(prev_kill);
 
-    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
     defer destroySession(info.id) catch {};
     const s = getSession(info.id) orelse return error.SessionNotFound;
     sleepMillis(500);
@@ -1156,7 +1214,7 @@ test "concurrent sweep and destroy never double-free a victim (posix only)" {
         var victims: [per_round]*Session = undefined;
         var i: usize = 0;
         while (i < per_round) : (i += 1) {
-            const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24);
+            const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_test");
             // Test-owned id copies: the session's own id buffer is
             // freed by whoever reaps it, so the destroy side must hash
             // its own stable slice (mirrors DELETE, whose id comes from
@@ -1203,4 +1261,101 @@ test "concurrent sweep and destroy never double-free a victim (posix only)" {
         // double-frees.
         try testing.expectEqual(@as(usize, 0), sessionCount());
     }
+}
+
+// ---------------------------------------------------------------------
+// Per-user terminal isolation (plan 2026-09-25, W2.5)
+// ---------------------------------------------------------------------
+
+test "mayAccess: same owner allowed, different owner denied" {
+    var s = Session{
+        .id = @constCast("t1"),
+        .master_fd = -1,
+        .child_pid = 0,
+        .cols = 80,
+        .rows = 24,
+        .owner = @constCast("user_a"),
+        .buf = .empty,
+        .base = 0,
+        .total = 0,
+        .exited = false,
+        .exit_code = null,
+        .mutex = .unlocked,
+        .last_active_s = 0,
+        .last_user_active_s = 0,
+        .last_output_at_s = 0,
+        .last_output_total = 0,
+    };
+    try testing.expect(mayAccess(&s, "user_a"));
+    try testing.expect(!mayAccess(&s, "user_b"));
+}
+
+test "mayAccess: an empty owner on either side means no identity (auth off)" {
+    // Auth off: the session was created with no owner, so every caller may
+    // attach — the pre-isolation behaviour.
+    var ownerless = Session{
+        .id = @constCast("t2"),
+        .master_fd = -1,
+        .child_pid = 0,
+        .cols = 80,
+        .rows = 24,
+        .owner = @constCast(""),
+        .buf = .empty,
+        .base = 0,
+        .total = 0,
+        .exited = false,
+        .exit_code = null,
+        .mutex = .unlocked,
+        .last_active_s = 0,
+        .last_user_active_s = 0,
+        .last_output_at_s = 0,
+        .last_output_total = 0,
+    };
+    try testing.expect(mayAccess(&ownerless, "user_a"));
+    try testing.expect(mayAccess(&ownerless, ""));
+
+    // A caller with no identity (auth off) may attach to an owned session.
+    var owned = ownerless;
+    owned.owner = @constCast("user_a");
+    try testing.expect(mayAccess(&owned, ""));
+}
+
+test "getSessionForOwner: foreign id is indistinguishable from a missing one" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+    const prev_kill = setIdleKillForTest(3600);
+    defer _ = setIdleKillForTest(prev_kill);
+
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_a");
+    const id = try testing.allocator.dupe(u8, info.id);
+    defer testing.allocator.free(id);
+    defer destroySession(id) catch {};
+
+    // The owner can reach it; another user gets null (=> 404 at the handler).
+    try testing.expect(getSessionForOwner(id, "user_a") != null);
+    try testing.expect(getSessionForOwner(id, "user_b") == null);
+    // An unknown id is also null — the two cases are indistinguishable.
+    try testing.expect(getSessionForOwner("term-does-not-exist", "user_a") == null);
+}
+
+test "destroySessionForOwner: a foreign caller cannot kill the session" {
+    if (comptime !is_pty_os) return error.SkipZigTest;
+    const prev_timeout = setIdleTimeoutForTest(3600);
+    defer _ = setIdleTimeoutForTest(prev_timeout);
+    const prev_kill = setIdleKillForTest(3600);
+    defer _ = setIdleKillForTest(prev_kill);
+
+    const info = try createSession(testing.io, "/tmp", "/bin/sh", 80, 24, "user_a");
+    const id = try testing.allocator.dupe(u8, info.id);
+    defer testing.allocator.free(id);
+    defer destroySession(id) catch {};
+
+    // B's attempt reports "not found" and the session survives.
+    try testing.expectError(error.SessionNotFound, destroySessionForOwner(id, "user_b"));
+    try testing.expect(getSession(id) != null);
+
+    // A can still destroy its own session.
+    try destroySessionForOwner(id, "user_a");
+    try testing.expect(getSession(id) == null);
 }
