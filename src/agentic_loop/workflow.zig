@@ -755,6 +755,22 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     var current_max_tokens: usize = 20000;
     var loop_counter: u32 = 0;
     var last_iter_start_ns: i128 = 0;
+    // The auto-name call is a blocking LLM round-trip, so it runs at most
+    // ONCE per worker run (one user turn) — never once per loop iteration.
+    // The retry that this bugfix is about is CROSS-turn: the next user
+    // message re-enters this function, re-evaluates the placeholder gate,
+    // and tries again. Without this bound, a provider that keeps failing
+    // the name request would add one extra LLM call (with a 5-minute
+    // read timeout) to every tool-call iteration of every turn.
+    var auto_name_attempted = false;
+    // The auto-name call is a blocking LLM round-trip, so it runs at most
+    // ONCE per worker run (one user turn) — never once per loop iteration.
+    // The retry that this bugfix is about is CROSS-turn: the next user
+    // message re-enters this function, re-evaluates the placeholder gate,
+    // and tries again. Without this bound, a provider that keeps failing
+    // the name request would add one extra LLM call (with a 5-minute
+    // read timeout) to every tool-call iteration of every turn.
+
 
     const initial_config = nalarcore.getLlmConfig(di.di);
 
@@ -1268,7 +1284,11 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
         // idempotent AND retryable: it re-runs on the next turn while the
         // name is still a placeholder, and stops for good once the name
         // exists (LLM-generated or typed by the user).
-        if (!is_task_kanban and sessionNameIsPlaceholder(allocator, db, copy_session_id)) {
+        if (!is_task_kanban and
+            !auto_name_attempted and
+            sessionNameIsPlaceholder(allocator, db, copy_session_id))
+        {
+            auto_name_attempted = true;
             generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, logger, io, db, event_bus);
         }
 
@@ -1719,7 +1739,10 @@ fn sessionNameIsPlaceholder(
     db: *sqlite.SqliteBackend,
     session_id: []const u8,
 ) bool {
-    const session = llm_history.getSession(allocator, db, session_id) catch return true;
+    // A read error must NOT answer "still a placeholder": this predicate
+    // gates an overwrite, so it fails CLOSED on error. A missing row is
+    // the one case that legitimately has no name to protect.
+    const session = llm_history.getSession(allocator, db, session_id) catch return false;
     const maybe = session orelse return true;
     defer maybe.deinit(allocator);
     return isPlaceholderSessionName(maybe.name);
@@ -1729,6 +1752,15 @@ fn isPlaceholderSessionName(name: []const u8) bool {
     return name.len == 0 or
         std.mem.eql(u8, name, "New Chat") or
         std.mem.eql(u8, name, "New Session");
+}
+
+/// True when a model-returned name is usable. `sessions.name` is TEXT NOT
+/// NULL, and this repo's `db.exec` binds an empty slice as SQL NULL, so a
+/// blank name must never reach the UPDATE — it would fail (or leave an
+/// empty title) and, because the session would keep its placeholder, the
+/// auto-name gate would reopen on every later turn.
+fn isUsableGeneratedName(name: []const u8) bool {
+    return std.mem.trim(u8, name, " \t\r\n").len > 0;
 }
 
 fn generateSessionNameNew(
@@ -1765,8 +1797,10 @@ fn generateSessionNameNew(
     name_messages[1] = .{ .role = .user, .content = first_user_message.? };
 
     var name_agent = agent.Agent.init(allocator, io);
-    // The name agent owns a libcurl client handle; without this the
-    // handle (and its sockets) leaked on every attempt.
+    // Frees `last_error_message` (the drained server error body) on the
+    // failure path. The http Client itself is stateless — every perform
+    // builds and tears down its own CURL* — so this is a small clean-up,
+    // not a handle-leak fix.
     defer name_agent.deinit();
     name_agent.apiKey = api_key;
     name_agent.model = model;
@@ -1804,6 +1838,22 @@ fn generateSessionNameNew(
         } else |err| {
             logger.warnFmt("[SESSION NAME] Failed to strip thinking tags: {s}, using original content", .{@errorName(err)});
         }
+
+        // An empty / whitespace-only name is not a name. `sessions.name`
+        // is TEXT NOT NULL, so writing "" would either fail the UPDATE
+        // (this repo's db.exec binds an empty slice as NULL) or leave a
+        // blank title. Bail instead — and because the session keeps its
+        // placeholder, a later turn retries rather than looping here.
+        const trimmed_name = std.mem.trim(u8, stripped_content, " \t\r\n");
+        if (!isUsableGeneratedName(trimmed_name)) {
+            logger.warnFmt(
+                "[SESSION NAME] model returned an empty name session_id={s} — keeping the placeholder",
+                .{session_id},
+            );
+            if (needs_free) allocator.free(stripped_content);
+            return;
+        }
+        stripped_content = trimmed_name;
 
         // limit to 50 chars
         if (stripped_content.len > 50) {
@@ -3590,6 +3640,19 @@ test "sessionNameIsPlaceholder: un-named sessions are a placeholder, real names 
     // Missing row: the worker can run before the session row exists in
     // some paths; treat it as "needs a name" rather than skipping.
     try testing.expect(sessionNameIsPlaceholder(alloc, &s.db, "s_absent"));
+}
+
+test "isUsableGeneratedName: blank / whitespace names are rejected, real ones pass" {
+    // These are the names that would otherwise reach
+    // `UPDATE sessions SET name = ?` on a TEXT NOT NULL column and (per
+    // this repo's documented db.exec behaviour) bind as SQL NULL, failing
+    // the write and leaving the auto-name gate latched open forever.
+    for ([_][]const u8{ "", " ", "\n", "\t\r\n  ", "\n \t" }) |blank| {
+        try testing.expect(!isUsableGeneratedName(blank));
+    }
+    for ([_][]const u8{ "fix-login-bug", " fix-login-bug ", "hai", "0" }) |real_name| {
+        try testing.expect(isUsableGeneratedName(real_name));
+    }
 }
 
 test "generateSessionNameNew: name call failure leaves the placeholder name and does not throw" {
