@@ -185,6 +185,45 @@ def test_foreign_delete_and_rename_are_refused(default_nalar_bin: Path):
         h.teardown()
 
 
+def test_sessions_are_owned_by_their_creator(default_nalar_bin: Path):
+    """Session ownership end to end: stamp, read-by-id, and the LIST filter.
+
+    This is the test that covers the list filter's REAL-OWNER branch — every
+    other list test passes the system user, which is now unscoped by design,
+    so none of them exercise filtering at all. It also proves the create
+    handler's owner stamp actually lands.
+    """
+    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    try:
+        status, _, body = _raw(
+            "POST", h.port, "/api/session", body={}, cookie=f"nalar_session={tok_a}"
+        )
+        assert status == 201, body[:500]
+        sess = json.loads(body.decode())["id"]
+        assert sess, "create must return a session id"
+
+        # A can read its own session; B is refused with 404, not 403.
+        ok, _, _ = _raw("GET", h.port, f"/api/llm/session/{sess}", cookie=f"nalar_session={tok_a}")
+        assert ok == 200, f"creator must read its own session, got {ok}"
+        foreign, _, _ = _raw(
+            "GET", h.port, f"/api/llm/session/{sess}", cookie=f"nalar_session={tok_b}"
+        )
+        assert foreign == 404, f"expected 404 for a foreign session, got {foreign}"
+
+        # The LIST: the id appears for its owner and never for the other user.
+        # Compared on the raw body so the test does not depend on the JSON
+        # envelope's shape.
+        status, _, a_body = _raw("GET", h.port, "/api/session", cookie=f"nalar_session={tok_a}")
+        assert status == 200, a_body[:300]
+        assert sess in a_body.decode(), "own session must appear in own list"
+
+        status, _, b_body = _raw("GET", h.port, "/api/session", cookie=f"nalar_session={tok_b}")
+        assert status == 200, b_body[:300]
+        assert sess not in b_body.decode(), "A's session must NOT appear in B's list"
+    finally:
+        h.teardown()
+
+
 def test_items_of_a_foreign_workspace_are_refused(default_nalar_bin: Path):
     """B cannot list, create in, or delete inside A's workspace.
 

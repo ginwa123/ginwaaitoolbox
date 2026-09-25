@@ -3,6 +3,7 @@ const nalarcore = @import("nalarcore");
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 const gserverz = nalarcore.gserverz;
+const auth_common = @import("auth_common.zig");
 const ai_workflow = nalarcore.ai_mod;
 const sqlite_db_mod = nalarcore.sqlite;
 
@@ -127,6 +128,26 @@ pub fn sessionCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
         });
     };
+
+    // Stamp the owner on the session row this create path produced (plan
+    // 2026-09-25: W1/W2.3). Done in the handler because the owner comes from
+    // the request cookie and the create path below has no request context.
+    //
+    // The WHERE clause only claims an OWNERLESS row, so a real owner is never
+    // overwritten and a re-run is a no-op. Left un-stamped if the row does not
+    // exist yet -- the choke point then treats it as shared until some later
+    // write claims it, which is the legacy rule, not a leak of another user's
+    // data.
+    if (di.auth_enabled) {
+        const owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch null;
+        defer if (owner) |o| allocator.free(o);
+        if (owner) |o| {
+            _ = di.db.exec(allocator,
+                "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+                &[_][]const u8{ o, usecase.id },
+            ) catch {};
+        }
+    }
 
     const data = try http_response.makeSessionCreateResponse(allocator, .{
         .id = usecase.id,
