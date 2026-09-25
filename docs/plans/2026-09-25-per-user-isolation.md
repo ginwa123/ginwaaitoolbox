@@ -323,6 +323,7 @@ Plan:
 | **W0** | `system_user_id`, `ownerVisibilityClause(comptime alias)`, `isSharedOwner`, `resolveRequestUserId` in `auth_common.zig`; `Migration093AddOwnerColumns` (`worker.user_id` + index + sentinel backfill); registered `auth_common.zig` in the test-discovery list (its inline tests, including four pre-existing ones, were dormant) |
 | **W1** | owner stamped server-side on `POST /api/workspaces` (`workspaces_create.zig`) — cookie is the only source, never the body |
 | **W2.1** | workspaces scoped: list (`workspaces_list.zig`), get/update/delete (`workspace_get.zig`, `workspace_update.zig`, `workspace_delete.zig`). Foreign id → **404**; delete re-checks visibility so a guessed id cannot destroy data |
+| **W2.2** | **one choke point** for every route whose path carries `:workspace_id` — the workspace's items plus their kanban/design/agent/routine children. `auth_common.canSeeWorkspace()` + a check in `auth_middleware` after session validation. Rather than repeat the guard in six handlers (and forget it on the seventh), the middleware enforces it, so a newly added child route inherits it |
 
 Verification: `zig build test` → 4/4 steps, **3630/3638 passed**; new `tests/functional/workspace_isolation_test.py` → **4 passed** on a real binary with two cookie jars in one DB (list isolation both directions, foreign get 404, foreign delete/rename refused + data intact, auth-off regression). Adjacent suites (`auth_test`, `agent_workspace_history_test`, `kanban_task_session_name_test`) → 18 passed.
 
@@ -334,6 +335,7 @@ Verification: `zig build test` → 4/4 steps, **3630/3638 passed**; new `tests/f
 ### Still unscoped (the remaining gap, in priority order)
 
 - `workspaces_reorder.zig:160` — reorder still writes by raw id.
-- **`workspace_items*` (`main.zig:675-691`) — create/list/get/update/delete/reorder take a `:workspace_id` and do not check it, so B can still add or delete items inside A's workspace.** This is the most urgent remaining hole; same pattern as W2.1.
+- ~~`workspace_items*`~~ — **fixed by W2.2** (middleware choke point on `:workspace_id`); it was the most urgent hole, since B could add or delete items inside an invisible workspace.
+- Everything else with a `:workspace_id` is now covered by the same choke point: kanban columns/tasks, design items/pages, agent + routine sub-resources (they all inherit the middleware check).
 - W2.3 sessions/llm_history, W2.4 workers, W2.5 terminals, W2.6 skills/memories; W3 SSE/WS filtering; W5 frontend storage namespacing.
 
