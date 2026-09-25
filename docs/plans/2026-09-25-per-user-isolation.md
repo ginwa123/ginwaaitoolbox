@@ -445,5 +445,68 @@ workspace-root allowlist).
 
 **Remaining:** W5 (frontend storage namespacing + purge + first-paint gate).
 
+### 2026-09-25 (final) — W5 landed; the W3 filter exposed a session-create race
+
+**W5 (`aa18895a`) — browser storage is per-user.** `helpers/userScope.ts` is
+the single mapping from a logical key to a per-user physical key:
+`userScopedKey(key)` returns the key **unchanged** when there is no identity
+(auth off, or `/api/auth/me` unresolved), so the auth-off path is
+byte-identical and needs no migration; with an identity it returns
+`key::u:<userId>`. `purgeForeignScopedKeys` removes only keys carrying the
+`::u:` marker, so unscoped preferences and the auth cache are never
+destroyed. Data-bearing keys namespaced: `nalar-workspaces:v1`,
+`nalar-active-workspace`, `active-chat-id`/`-name`, `active-task-id`,
+`nalar-tabs:v1:<win>`, `nalar-task-media:v1`, `nalar-git-status:v1:<cwd>`.
+The IndexedDB **database** name is per user (`nalar-sync:<userId>`) — a
+database split rather than a `userId` in every key path, so no schema/key
+migration and a cross-user read is impossible by construction.
+`router/index.ts`'s `applyIdentity()` runs in the guard on every navigation
+before any view mounts: it sets the scope and, on an identity **change**,
+purges the previous user's keys — that is both the first-paint gate and the
+logout/login purge. `Sidebar.vue` clears on logout and reacts to a sibling
+tab via a `storage` listener. `stores/workspaces.ts` gates its cache read on
+`isIdentityResolved()`.
+
+Verification: `__tests__/userScope.spec.ts` (11) +
+`__tests__/perUserStorageIsolation.spec.ts` (5); `npx vitest run` → 444
+passed (base 442) with a **byte-identical** set of 16 pre-existing failures
+(verified by diffing the FAIL file lists); `vue-tsc --noEmit` clean.
+
+**Correction 4 — the W3 filter exposed a race in the session create path
+(`500e090a`).** `session_create.useCase` calls `emit_run_agent`, which spawns
+the concurrent `insert_worker` task, and only **after** that does the handler
+run its post-hoc `UPDATE sessions SET user_id = ?`. The concurrent task could
+INSERT the row and emit `session_created` before that UPDATE committed, so
+the row was briefly ownerless — and the fan-out (correctly) treats an
+ownerless row as shared and delivered the event to every user. Symptom: the
+SSE isolation test failed **intermittently**, a different test each run, with
+a leaked frame whose payload had `"session_id": ""`.
+
+This is the plan's W1 item "thread `user_id` into worker creation — the
+background worker has **no** HTTP request, so the owner must ride along from
+the enqueuing request". Implemented exactly so: `EmitRunAgentInput.user_id`
+carries the owner from the request, and `insert_worker` stamps it in the
+INSERT itself — the same task that emits the event, so there is no window.
+Empty `user_id` leaves the column NULL (the shared legacy bucket), so
+auth-off is unchanged. The handler's post-hoc UPDATE stays as a safety net
+for the already-exists case.
+
+**Lesson worth keeping:** a filter that is *correct* can still surface a
+pre-existing write-path race as a flaky test. The first two runs of the SSE
+test passed and the third failed — the fix was not in the filter but in the
+writer. Treat an intermittent isolation failure as a write-ordering bug, not
+as test flake.
+
+**Final verification (all four workstreams):**
+
+| check | result |
+|---|---|
+| `zig build test` | 4/4 steps, **3640/3648 passed** (8 skipped), no leaks |
+| isolation + adjacent functional suites | **28/28 passed** |
+| whole functional suite | **559 passed / 8 failed** — a strict subset of the base commit's 10 pre-existing environmental failures (video upload, TLS, kanban task get) |
+| `npx vitest run` | **444 passed** (base 442); the 16 failures are byte-identical to base |
+| `vue-tsc --noEmit` | clean |
+
+
 
 
