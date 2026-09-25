@@ -105,22 +105,30 @@ pub fn freeSessionLookup(allocator: std.mem.Allocator, s: SessionLookup) void {
 /// value, such rows stay visible and scoping is a no-op in auth-off mode.
 pub const system_user_id = "user_system";
 
-/// SQL predicate for "rows that `alias` may see": the shared legacy bucket
-/// (NULL / empty / the system sentinel) plus rows owned by the viewer,
-/// whose id the caller binds as the next `?` parameter.
+/// SQL predicate for "rows that `alias` may see".
 ///
-/// Compile-time formatted, so it concatenates into a constant SQL string
-/// at no runtime cost:
-///   `"SELECT ... WHERE " ++ ownerVisibilityClause("w") ++ " AND ..."`
+/// Two rules, in one constant:
+///   1. the **system user sees everything** — with `--auth` off there is no
+///      identity, and the system user IS the installation itself, so it sees
+///      every workspace (user decision 2026-09-25);
+///   2. otherwise: the shared legacy bucket (NULL / empty / the sentinel)
+///      plus rows owned by the viewer.
 ///
-/// Sharing the legacy bucket is deliberate (user decision 2026-09-25):
-/// turning `--auth` on must not hide the machine owner's existing data.
-/// Rows written after isolation lands always carry a real owner, so the
-/// shared bucket only ever shrinks.
+/// The bound owner must therefore be passed **twice** (the sentinel test and
+/// the ownership test), e.g. `WHERE id = ? AND <clause>` binds
+/// `{ id, owner, owner }`.
+///
+/// Safety depends on one invariant: in auth-ON mode a handler only ever sees a
+/// real user id, because `authMiddleware` 401s an invalid/missing cookie before
+/// the handler runs. The sentinel reaches a handler only when `--auth` is off,
+/// where "see everything" is the intended meaning.
+///
+/// Compile-time formatted, so it concatenates into a constant SQL string at no
+/// runtime cost: `"SELECT ... WHERE " ++ ownerVisibilityClause("w")`.
 pub fn ownerVisibilityClause(comptime alias: []const u8) []const u8 {
     return std.fmt.comptimePrint(
-        "({s}.user_id IS NULL OR {s}.user_id = '' OR {s}.user_id = '{s}' OR {s}.user_id = ?)",
-        .{ alias, alias, alias, system_user_id, alias },
+        "(? = '{s}' OR {s}.user_id IS NULL OR {s}.user_id = '' OR {s}.user_id = '{s}' OR {s}.user_id = ?)",
+        .{ system_user_id, alias, alias, alias, system_user_id, alias },
     );
 }
 
@@ -147,7 +155,7 @@ pub fn canSeeWorkspace(
     var q = db.query(
         allocator,
         "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime ownerVisibilityClause("workspaces"),
-        &[_][]const u8{ workspace_id, owner },
+        &[_][]const u8{ workspace_id, owner, owner },
     ) catch return false;
     defer q.deinit();
     const row = q.next() catch return false;
@@ -261,9 +269,11 @@ test "verifyPassword rejects sentinel and empty" {
     try std.testing.expect(!verifyPassword("$2b$10$xxx", ""));
 }
 
-test "ownerVisibilityClause embeds the shared bucket and a bound viewer" {
+test "ownerVisibilityClause lets the system user see everything" {
     const sql = ownerVisibilityClause("w");
-    try std.testing.expect(std.mem.indexOf(u8, sql, "(w.user_id IS NULL") != null);
+    // The sentinel test comes FIRST, which is why callers bind the owner twice.
+    try std.testing.expect(std.mem.startsWith(u8, sql, "(? = 'user_system' OR "));
+    try std.testing.expect(std.mem.indexOf(u8, sql, "w.user_id IS NULL") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "w.user_id = ''") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "w.user_id = 'user_system'") != null);
     // The viewer's id is always the trailing bind parameter.

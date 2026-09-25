@@ -64,7 +64,7 @@ fn useCase(
         var q = sqlite_db.query(
             allocator,
             "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
-            &[_][]const u8{ id, owner },
+            &[_][]const u8{ id, owner, owner },
         ) catch {
             std.log.warn("workspaceDelete: visibility check failed for {s}", .{id});
             return error.DatabaseError;
@@ -80,7 +80,7 @@ fn useCase(
     sqlite_db.exec(
         allocator,
         "DELETE FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
-        &[_][]const u8{ id, owner },
+        &[_][]const u8{ id, owner, owner },
     ) catch {
         std.log.warn("workspaceDelete: DELETE failed for {s}", .{id});
         return error.DatabaseError;

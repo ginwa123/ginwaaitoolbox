@@ -69,7 +69,7 @@ fn useCase(
     var rows = db.query(
         allocator,
         "SELECT id, name, created_at, updated_at FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
-        &.{ id, owner },
+        &.{ id, owner, owner },
     ) catch |err| {
         // Build a best-effort message. The sqlite3_errmsg is not
         // available here because Rows was never created; surface

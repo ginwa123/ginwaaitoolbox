@@ -100,7 +100,7 @@ fn fetchWorkspacesList(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, incl
     var rows = try db.query(
         alloc,
         "SELECT id, name, created_at, updated_at FROM workspaces WHERE " ++ comptime auth_common.ownerVisibilityClause("workspaces") ++ " ORDER BY position DESC, created_at DESC",
-        &[_][]const u8{owner},
+        &[_][]const u8{ owner, owner },
     );
     defer rows.deinit();
 
@@ -473,17 +473,18 @@ test "fetchWorkspacesList: another user's workspace is invisible; the shared leg
         try testing.expect(saw_own);
     }
 
-    // Auth-off (sentinel) sees the shared bucket only — NOT user_b's row.
-    // Deliberate and fail-closed: an install restarted without `--auth`
-    // cannot read rows that a logged-in user created. Documented in the
-    // plan; the trade-off is raised with the user rather than hidden.
+    // The SYSTEM USER sees EVERYTHING (user decision 2026-09-25): with auth
+    // off there is no identity and the system user IS the installation, so a
+    // real user's row is visible here. ws_b must appear.
     {
         const response = try fetchWorkspacesList(alloc, &ctx.db, false, auth_common.system_user_id);
         defer freeResponse(response);
-        try testing.expectEqual(@as(usize, 4), response.workspaces.len);
+        try testing.expectEqual(@as(usize, 5), response.workspaces.len);
+        var saw_ws_b = false;
         for (response.workspaces) |ws| {
-            try testing.expect(!std.mem.eql(u8, ws.id, "ws_b"));
+            if (std.mem.eql(u8, ws.id, "ws_b")) saw_ws_b = true;
         }
+        try testing.expect(saw_ws_b);
     }
 }
 
