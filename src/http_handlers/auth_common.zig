@@ -131,6 +131,33 @@ pub fn isSharedOwner(user_id: []const u8) bool {
     return user_id.len == 0 or std.mem.eql(u8, user_id, system_user_id);
 }
 
+/// True when `workspace_id` exists AND the given owner may see it.
+///
+/// This is the predicate behind the middleware choke point for every route
+/// whose path carries a `:workspace_id` (`/api/workspaces/:workspace_id/items…`
+/// and its kanban/design/agent/routine children). Centralising it means a
+/// newly added child route cannot forget the check.
+pub fn canSeeWorkspace(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    workspace_id: []const u8,
+    owner: []const u8,
+) bool {
+    if (workspace_id.len == 0) return false;
+    var q = db.query(
+        allocator,
+        "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime ownerVisibilityClause("workspaces"),
+        &[_][]const u8{ workspace_id, owner },
+    ) catch return false;
+    defer q.deinit();
+    const row = q.next() catch return false;
+    if (row) |r| {
+        r.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
 /// Resolve the owner id for the current request, server-side.
 ///
 /// The ONLY accepted source is the `nalar_session` cookie — never a body

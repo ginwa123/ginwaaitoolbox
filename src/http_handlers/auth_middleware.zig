@@ -60,6 +60,27 @@ pub fn authMiddleware(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Unauthenticated" }),
         });
     };
+
+    // Per-user isolation choke point.
+    //
+    // Every route whose path carries a `:workspace_id` — the workspace's
+    // items plus their kanban/design/agent/routine children — must prove the
+    // caller can see that workspace before its handler runs. Enforcing it
+    // here (rather than in each handler) means a newly added child route
+    // cannot forget the check, and a handler that only knows a child id
+    // cannot act on another user's workspace by raw id.
+    //
+    // 404, never 403, so a foreign id is indistinguishable from a missing one.
+    if (req.params.get("workspace_id")) |ws_id| {
+        if (!auth_common.canSeeWorkspace(allocator, di.db, ws_id, sess.user_id)) {
+            auth_common.freeSessionLookup(allocator, sess);
+            return res.jsonResponse(.{
+                .status_code = 404,
+                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Workspace not found" }),
+            });
+        }
+    }
+
     auth_common.freeSessionLookup(allocator, sess);
     return chain.next(ctx, req, res);
 }

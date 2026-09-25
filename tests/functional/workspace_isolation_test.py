@@ -183,3 +183,44 @@ def test_foreign_delete_and_rename_are_refused(default_nalar_bin: Path):
         assert status == 200, "A must still be able to delete its own workspace"
     finally:
         h.teardown()
+
+
+def test_items_of_a_foreign_workspace_are_refused(default_nalar_bin: Path):
+    """B cannot list, create in, or delete inside A's workspace.
+
+    These routes carry `:workspace_id` and previously never checked it, so a
+    workspace being invisible did NOT stop B from adding or deleting items in
+    it. The check now lives in one middleware choke point, which is why a
+    single assertion here covers every child route.
+    """
+    h, tok_a, tok_b = _two_users(default_nalar_bin)
+    try:
+        ws_a = _create_workspace(h.port, "A items", f"nalar_session={tok_a}")
+        items_url = f"/api/workspaces/{ws_a}/items"
+
+        # A can list its own items — proves the gate is not a blanket 404.
+        status, _, before = _raw("GET", h.port, items_url, cookie=f"nalar_session={tok_a}")
+        assert status == 200, before[:300]
+
+        # B cannot list them.
+        status, _, _ = _raw("GET", h.port, items_url, cookie=f"nalar_session={tok_b}")
+        assert status == 404, f"expected 404 listing a foreign workspace's items, got {status}"
+
+        # B cannot add an item (the middleware rejects before the body is parsed).
+        status, _, _ = _raw(
+            "POST", h.port, items_url, body={"name": "intruder"}, cookie=f"nalar_session={tok_b}"
+        )
+        assert status == 404, f"expected 404 adding to a foreign workspace, got {status}"
+
+        # B cannot act on an item id inside A's workspace either.
+        status, _, _ = _raw(
+            "DELETE", h.port, f"{items_url}/whatever", cookie=f"nalar_session={tok_b}"
+        )
+        assert status == 404, f"expected 404 deleting inside a foreign workspace, got {status}"
+
+        # A's items are byte-identical before and after B's attempts.
+        status, _, after = _raw("GET", h.port, items_url, cookie=f"nalar_session={tok_a}")
+        assert status == 200, after[:300]
+        assert before == after, "A's items changed after B's attempts"
+    finally:
+        h.teardown()
