@@ -1260,7 +1260,15 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
             break :blk max_loop_counter;
         };
         loop_counter += 1;
-        if (loop_counter == 1 and is_task_kanban == false) {
+        // Auto-name gate: keyed on the session's CURRENT name, not on
+        // `loop_counter == 1`. A name call that fails (transport blip,
+        // 429, a provider rejecting the extra request) used to leave the
+        // session "New Chat" for the rest of its life because this branch
+        // never ran again. Gating on the placeholder makes the attempt
+        // idempotent AND retryable: it re-runs on the next turn while the
+        // name is still a placeholder, and stops for good once the name
+        // exists (LLM-generated or typed by the user).
+        if (!is_task_kanban and sessionNameIsPlaceholder(allocator, db, copy_session_id)) {
             generateSessionNameNew(db_messages, allocator, eff.api_key, eff.model, eff.base_url, eff.url_style, copy_session_id, logger, io, db, event_bus);
         }
 
@@ -1694,6 +1702,35 @@ pub fn runAgenticMultiStepnew(di: RunAgenticMultiStepInput, params: RunParamsNew
     logger.debugFmt("WORKFLOW: exiting while loop for session_id {s}", .{copy_session_id});
 }
 
+/// True when the session has no real name yet, so the LLM name
+/// generator should (still) be allowed to run.
+///
+/// The two placeholder literals are the only names the product itself
+/// writes for a fresh chat: "New Chat" (sidebar new-chat flow, stored on
+/// the task row so both lists agree) and "New Session" (session_create /
+/// TUI default). Anything else is either generated or typed by the user,
+/// and must never be overwritten.
+///
+/// A missing row or an unreadable name answers `true`: the worker can
+/// start before the session row lands, and skipping the name there would
+/// reproduce the very "stuck on New Chat forever" bug this gate fixes.
+fn sessionNameIsPlaceholder(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) bool {
+    const session = llm_history.getSession(allocator, db, session_id) catch return true;
+    const maybe = session orelse return true;
+    defer maybe.deinit(allocator);
+    return isPlaceholderSessionName(maybe.name);
+}
+
+fn isPlaceholderSessionName(name: []const u8) bool {
+    return name.len == 0 or
+        std.mem.eql(u8, name, "New Chat") or
+        std.mem.eql(u8, name, "New Session");
+}
+
 fn generateSessionNameNew(
     db_messages: []LLMHistory,
     allocator: std.mem.Allocator,
@@ -1728,6 +1765,9 @@ fn generateSessionNameNew(
     name_messages[1] = .{ .role = .user, .content = first_user_message.? };
 
     var name_agent = agent.Agent.init(allocator, io);
+    // The name agent owns a libcurl client handle; without this the
+    // handle (and its sockets) leaked on every attempt.
+    defer name_agent.deinit();
     name_agent.apiKey = api_key;
     name_agent.model = model;
     name_agent.baseUrl = base_url;
@@ -1741,8 +1781,16 @@ fn generateSessionNameNew(
         .messages = name_messages,
     };
 
-    const response = name_agent.callStreaming(params, null, noopStreamCallbackNew) catch {
-        logger.errFmt("[SESSION NAME] Failed to call LLM for session name", .{});
+    // A failed name call must be DIAGNOSABLE. The pre-fix code logged a
+    // bare constant, so a provider that rejects the name request (429,
+    // auth, a gateway that dislikes the extra call) looked identical to a
+    // success. `last_error_message` carries the drained HTTP body / scanner
+    // reason; read it before `deinit` frees it.
+    const response = name_agent.callStreaming(params, null, noopStreamCallbackNew) catch |err| {
+        logger.errFmt(
+            "[SESSION NAME] Failed to call LLM for session name session_id={s} model={s} error={s} detail={s}",
+            .{ session_id, model, @errorName(err), name_agent.last_error_message orelse "(no server detail)" },
+        );
         return;
     };
 
@@ -1762,14 +1810,22 @@ fn generateSessionNameNew(
             stripped_content = stripped_content[0..50];
         }
 
-        // Update session name in database
-        updateSessionName(allocator, db, session_id, stripped_content, event_bus) catch {
-            logger.errFmt("[SESSION NAME] Failed to update session name: {s}", .{stripped_content});
+        // Update session name in database. Log the ERROR, not the name:
+        // the pre-fix line printed the generated name, so a failed UPDATE
+        // was indistinguishable from a successful one in the log.
+        updateSessionName(allocator, db, session_id, stripped_content, event_bus) catch |err| {
+            logger.errFmt(
+                "[SESSION NAME] Failed to update session name session_id={s} error={s} name={s}",
+                .{ session_id, @errorName(err), stripped_content },
+            );
             if (needs_free) allocator.free(stripped_content);
             return;
         };
-        llm_history.updateTaskName(allocator, db, session_id, stripped_content) catch {
-            logger.errFmt("[SESSION NAME] Failed to update task name: {s}", .{stripped_content});
+        llm_history.updateTaskName(allocator, db, session_id, stripped_content) catch |err| {
+            logger.errFmt(
+                "[SESSION NAME] Failed to update task name session_id={s} error={s} name={s}",
+                .{ session_id, @errorName(err), stripped_content },
+            );
             if (needs_free) allocator.free(stripped_content);
             return;
         };
@@ -3503,4 +3559,94 @@ test "flushCancelledPartial persists the streamed partial as a cancelled turn" {
     // placeholder for a turn that is no longer running.
     const snap = try stream_snapshot.getSnapshot(a, session_id);
     try testing.expect(!snap.active);
+}
+
+test "sessionNameIsPlaceholder: un-named sessions are a placeholder, real names are not" {
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer teardownDb(&s);
+
+    // Both UI placeholders count — "New Chat" is what the sidebar's
+    // new-chat flow creates, "New Session" is the TUI/handler default.
+    for ([_][]const u8{ "s_new_chat", "s_new_session" }) |id| {
+        try s.db.exec(
+            alloc,
+            "INSERT INTO sessions (id, name, status) VALUES (?, ?, 'active')",
+            &.{ id, if (std.mem.eql(u8, id, "s_new_chat")) "New Chat" else "New Session" },
+        );
+        try testing.expect(sessionNameIsPlaceholder(alloc, &s.db, id));
+    }
+
+    // A generated or user-typed name must never be treated as a
+    // placeholder, otherwise the auto-name would overwrite it on the
+    // next turn.
+    try s.db.exec(
+        alloc,
+        "INSERT INTO sessions (id, name, status) VALUES ('s_named', 'fix-login-bug', 'active')",
+        &.{},
+    );
+    try testing.expect(!sessionNameIsPlaceholder(alloc, &s.db, "s_named"));
+
+    // Missing row: the worker can run before the session row exists in
+    // some paths; treat it as "needs a name" rather than skipping.
+    try testing.expect(sessionNameIsPlaceholder(alloc, &s.db, "s_absent"));
+}
+
+test "generateSessionNameNew: name call failure leaves the placeholder name and does not throw" {
+    // The pre-fix bug: the name call's transport error was swallowed by
+    // a bare `catch {}` that logged a constant, and the gate
+    // (`loop_counter == 1`) meant the failure was never retried — the
+    // session stayed "New Chat" forever. Point the name agent at a
+    // closed port so `callStreaming` fails, and assert the row is
+    // untouched and the function returns normally.
+    const alloc = testing.allocator;
+    var s = try setupDb();
+    defer teardownDb(&s);
+
+    const session_id = "s_name_call_fails";
+    try s.db.exec(
+        alloc,
+        "INSERT INTO sessions (id, name, status) VALUES (?, 'New Chat', 'active')",
+        &.{session_id},
+    );
+    try s.db.exec(
+        alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, role, loop_index) " ++
+            "VALUES ('h1', ?, 'stub-model', 'please fix the login bug', 'user', 0)",
+        &.{session_id},
+    );
+
+    var lg = logger_mod.Logger.init(alloc, std.testing.io, .{});
+    defer lg.deinit();
+    var bus = event_bus_mod.EventBus.init("name-fail-test", alloc, std.testing.io);
+    defer bus.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const messages = try getLLMHistories(*SqliteBackend, .{
+        .allocator = a,
+        .db = &s.db,
+        .session_id = session_id,
+    });
+
+    // Port 1 is never listening — openStream fails fast.
+    generateSessionNameNew(
+        messages,
+        a,
+        "k",
+        "m",
+        "http://127.0.0.1:1/v1/chat/completions",
+        "openai",
+        session_id,
+        &lg,
+        s.threaded.io(),
+        &s.db,
+        &bus,
+    );
+
+    // The gate the retry depends on: the name is STILL a placeholder, so
+    // the next turn tries again.
+    try testing.expect(sessionNameIsPlaceholder(alloc, &s.db, session_id));
 }
