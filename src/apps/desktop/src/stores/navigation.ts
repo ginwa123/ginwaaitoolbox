@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { userScopedKey } from '../helpers/userScope'
 
 // Storage keys
 const STORAGE_KEY_SIDEBAR_COLLAPSED = 'sidebar-collapsed'
@@ -96,12 +97,12 @@ export const useNavigationStore = defineStore('navigation', () => {
     activeChatId.value = sessionId ? `chat-${sessionId}` : ''
     if (name) activeChatName.value = name
     if (sessionId) {
-      localStorage.setItem(STORAGE_KEY_ACTIVE_CHAT_ID, sessionId)
+      localStorage.setItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_ID), sessionId)
     } else {
-      localStorage.removeItem(STORAGE_KEY_ACTIVE_CHAT_ID)
+      localStorage.removeItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_ID))
     }
     if (name) {
-      localStorage.setItem(STORAGE_KEY_ACTIVE_CHAT_NAME, name)
+      localStorage.setItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_NAME), name)
     }
     // Clear task when setting chat
     clearActiveTask()
@@ -109,23 +110,23 @@ export const useNavigationStore = defineStore('navigation', () => {
 
   function setActiveChatName(name: string) {
     activeChatName.value = name
-    localStorage.setItem(STORAGE_KEY_ACTIVE_CHAT_NAME, name)
+    localStorage.setItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_NAME), name)
   }
 
   function clearActiveChat() {
     activeChatId.value = ''
     activeChatName.value = ''
-    localStorage.removeItem(STORAGE_KEY_ACTIVE_CHAT_ID)
-    localStorage.removeItem(STORAGE_KEY_ACTIVE_CHAT_NAME)
+    localStorage.removeItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_ID))
+    localStorage.removeItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_NAME))
   }
 
   // Task actions
   function setActiveTask(taskId: string | null) {
     activeTaskId.value = taskId
     if (taskId) {
-      localStorage.setItem(STORAGE_KEY_ACTIVE_TASK_ID, taskId)
+      localStorage.setItem(userScopedKey(STORAGE_KEY_ACTIVE_TASK_ID), taskId)
     } else {
-      localStorage.removeItem(STORAGE_KEY_ACTIVE_TASK_ID)
+      localStorage.removeItem(userScopedKey(STORAGE_KEY_ACTIVE_TASK_ID))
     }
     // Clear chat when ACTIVATING a task. We do NOT clear the chat
     // when passing null — that's the "exit task only, chat may still
@@ -141,7 +142,7 @@ export const useNavigationStore = defineStore('navigation', () => {
 
   function clearActiveTask() {
     activeTaskId.value = null
-    localStorage.removeItem(STORAGE_KEY_ACTIVE_TASK_ID)
+    localStorage.removeItem(userScopedKey(STORAGE_KEY_ACTIVE_TASK_ID))
   }
 
   // Clear all active state
@@ -155,14 +156,14 @@ export const useNavigationStore = defineStore('navigation', () => {
     if (view === 'chat' && sessionId) {
       // From URL params, we just set the ID - name comes from localStorage or API
       activeChatId.value = `chat-${sessionId}`
-      activeChatName.value = localStorage.getItem(STORAGE_KEY_ACTIVE_CHAT_NAME) || ''
+      activeChatName.value = localStorage.getItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_NAME)) || ''
     } else if (view === 'task' && taskId) {
       setActiveTask(taskId)
     } else {
       // Fallback to localStorage
-      const savedChatId = localStorage.getItem(STORAGE_KEY_ACTIVE_CHAT_ID)
-      const savedChatName = localStorage.getItem(STORAGE_KEY_ACTIVE_CHAT_NAME)
-      const savedTaskId = localStorage.getItem(STORAGE_KEY_ACTIVE_TASK_ID)
+      const savedChatId = localStorage.getItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_ID))
+      const savedChatName = localStorage.getItem(userScopedKey(STORAGE_KEY_ACTIVE_CHAT_NAME))
+      const savedTaskId = localStorage.getItem(userScopedKey(STORAGE_KEY_ACTIVE_TASK_ID))
 
       if (savedChatId) {
         activeChatId.value = `chat-${savedChatId}`

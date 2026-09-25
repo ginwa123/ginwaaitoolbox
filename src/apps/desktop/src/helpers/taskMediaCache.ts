@@ -32,6 +32,8 @@ export interface CachedTaskMedia {
   videoUrls: string[]
 }
 
+import { userScopedKey } from './userScope'
+
 const TASK_MEDIA_CACHE_KEY = 'nalar-task-media:v1'
 // Largest single-task payload we'll persist (~1.5MB serialized — a
 // phone-photo base64 can exceed this; skipping it only loses the
@@ -65,7 +67,7 @@ function loadAll(): Map<string, CachedTaskMedia> {
   if (memCache) return memCache
   const out = new Map<string, CachedTaskMedia>()
   try {
-    const raw = localStorage.getItem(TASK_MEDIA_CACHE_KEY)
+    const raw = localStorage.getItem(userScopedKey(TASK_MEDIA_CACHE_KEY))
     if (raw !== null) {
       const parsed: unknown = JSON.parse(raw)
       if (parsed && typeof parsed === 'object') {
@@ -86,15 +88,15 @@ function loadAll(): Map<string, CachedTaskMedia> {
 function persist(): void {
   if (!memCache) return
   try {
-    localStorage.setItem(TASK_MEDIA_CACHE_KEY, JSON.stringify(Object.fromEntries(memCache)))
+    localStorage.setItem(userScopedKey(TASK_MEDIA_CACHE_KEY), JSON.stringify(Object.fromEntries(memCache)))
   } catch {
     try {
       // Quota hit: drop the whole media namespace and retry once with
       // just the current memo (which the cap below already trimmed).
       // If that still fails (private mode), the session memo still
       // serves instant paints until reload.
-      localStorage.removeItem(TASK_MEDIA_CACHE_KEY)
-      localStorage.setItem(TASK_MEDIA_CACHE_KEY, JSON.stringify(Object.fromEntries(memCache)))
+      localStorage.removeItem(userScopedKey(TASK_MEDIA_CACHE_KEY))
+      localStorage.setItem(userScopedKey(TASK_MEDIA_CACHE_KEY), JSON.stringify(Object.fromEntries(memCache)))
     } catch {
       /* live fetch still works — only the next cold boot loses paint */
     }
@@ -138,7 +140,7 @@ export function writeTaskMediaCache(taskId: string, media: CachedTaskMedia): voi
 export function clearTaskMediaCache(): void {
   memCache = null
   try {
-    localStorage.removeItem(TASK_MEDIA_CACHE_KEY)
+    localStorage.removeItem(userScopedKey(TASK_MEDIA_CACHE_KEY))
   } catch {
     /* see persist */
   }

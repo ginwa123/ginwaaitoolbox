@@ -3,6 +3,7 @@ import AppLayout from '../components/AppLayout.vue'
 import LoginView from '../views/LoginView.vue'
 import { getAuthMeCached } from '../helpers/authMe'
 import { useLoadingStore } from '../stores/loading'
+import { getCurrentUserId, purgeForeignScopedKeys, setCurrentUserId } from '../helpers/userScope'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -108,6 +109,39 @@ function loadingStore() {
   }
 }
 
+/**
+ * Apply the identity reported by `/api/auth/me` to the storage scope
+ * (plan 2026-09-25, W5).
+ *
+ * Called from the guard on EVERY navigation, before any view renders, so:
+ *  - the first paint after a reload happens with the correct scope (a
+ *    data-bearing key read during mount resolves to this user's slot, never
+ *    the previous user's);
+ *  - an identity CHANGE (A logs out, B logs in — or a sibling tab switched
+ *    users) purges the previous user's scoped keys before B's first paint.
+ *
+ * `auth_enabled === false` (or an unauthenticated response) means there is no
+ * identity: the scope is cleared and keys stay unscoped, which is the
+ * auth-off behaviour.
+ */
+function applyIdentity(
+  data: { auth_enabled?: boolean; authenticated?: boolean; user?: { id?: string } } | null,
+): void {
+  const nextId =
+    data && data.auth_enabled !== false && data.authenticated === true && data.user?.id
+      ? data.user.id
+      : null
+  const previousId = getCurrentUserId()
+  if (previousId !== nextId) {
+    // Identity changed (including "was A, now nobody"): drop the previous
+    // user's scoped keys so they can never be painted under the new scope.
+    setCurrentUserId(nextId)
+    purgeForeignScopedKeys()
+  } else {
+    setCurrentUserId(nextId)
+  }
+}
+
 router.beforeEach(async (to) => {
   loadingStore()?.startRoute()
   if (to.meta.public) {
@@ -116,6 +150,7 @@ router.beforeEach(async (to) => {
       try {
         // Cached: a slow /me must not block leaving /login (see helpers/authMe).
         const { data } = await getAuthMeCached()
+        applyIdentity(data)
         if (data && data.authenticated === true) {
           const r = to.query.redirect
           const target = typeof r === 'string' && r.startsWith('/') ? r : '/app'
@@ -131,6 +166,7 @@ router.beforeEach(async (to) => {
     // Cached + 4s timeout: the async auth check was the slowest part of
     // a redirect (~20s on a busy boot) — see helpers/authMe.
     const { status, data } = await getAuthMeCached()
+    applyIdentity(data)
     if (data) {
       // Auth disabled on server → open access, no redirect.
       if (data.auth_enabled === false) return true

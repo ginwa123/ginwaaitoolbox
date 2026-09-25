@@ -5,6 +5,7 @@ import { useNotificationStore } from './notifications'
 import { useSseBus } from '../helpers/sseBus'
 import { designLogger } from '../helpers/designLogger'
 import { readWorkspacesCache } from '../helpers/workspacesCache'
+import { userScopedKey, isIdentityResolved } from '../helpers/userScope'
 import { readTaskMediaCache, writeTaskMediaCache } from '../helpers/taskMediaCache'
 import { TaskEngineDb, type TaskRequest } from '../sync/TaskEngineDb'
 import type { DesignElement, DesignPage } from '../api'
@@ -810,7 +811,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   // that don't install the stub must not crash the getter.
   function readActiveWorkspaceKey(): string | null {
     try {
-      return localStorage.getItem(STORAGE_KEY_ACTIVE_WORKSPACE)
+      return localStorage.getItem(userScopedKey(STORAGE_KEY_ACTIVE_WORKSPACE))
     } catch {
       return null
     }
@@ -819,9 +820,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
   function writeActiveWorkspaceKey(value: string | null) {
     try {
       if (value === null) {
-        localStorage.removeItem(STORAGE_KEY_ACTIVE_WORKSPACE)
+        localStorage.removeItem(userScopedKey(STORAGE_KEY_ACTIVE_WORKSPACE))
       } else {
-        localStorage.setItem(STORAGE_KEY_ACTIVE_WORKSPACE, value)
+        localStorage.setItem(userScopedKey(STORAGE_KEY_ACTIVE_WORKSPACE), value)
       }
     } catch {
       // Storage unavailable — the selection just isn't persisted.
@@ -898,11 +899,9 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
           const fresh = await revalidateTaskCache(ws.id, item.id, undefined, 10)
           if (fresh) {
             // A complete page (has_more=false) lists every row in this context —
-        // cached rows it omits were deleted or moved out, so they are dropped
-        // instead of merged back in.
-        const merged = new Map(
-          (fresh.has_more ? cached : []).map((task) => [task.id, task]),
-        )
+            // cached rows it omits were deleted or moved out, so they are dropped
+            // instead of merged back in.
+            const merged = new Map((fresh.has_more ? cached : []).map((task) => [task.id, task]))
             for (const task of fresh.tasks) merged.set(task.id, task)
             tasksByItem.set(item.id, [...merged.values()])
           } else if (cached.length > 0) {
@@ -980,11 +979,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
               const fresh = await revalidateTaskCache(ws.id, item.id, col.id, 10)
               if (fresh) {
                 // A complete page (has_more=false) lists every row in this context —
-        // cached rows it omits were deleted or moved out, so they are dropped
-        // instead of merged back in.
-        const merged = new Map(
-          (fresh.has_more ? cached : []).map((task) => [task.id, task]),
-        )
+                // cached rows it omits were deleted or moved out, so they are dropped
+                // instead of merged back in.
+                const merged = new Map(
+                  (fresh.has_more ? cached : []).map((task) => [task.id, task]),
+                )
                 for (const task of fresh.tasks) merged.set(task.id, task)
                 replaceItemTasksForColumn(item, col.id, [...merged.values()])
                 item.columnPagination ??= {} as Record<string, ColumnPaginationState>
@@ -1173,7 +1172,15 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     // so the dropdown/sidebar shows rows instantly on boot, then the
     // live fetch below refreshes it in the same init. api.getWorkspaces
     // persists every success to the cache (fail-silent).
-    const cached = readWorkspacesCache()
+    //
+    // First-paint gate (plan 2026-09-25, W5): only paint from cache once the
+    // identity is known. Before `/api/auth/me` resolves, `userScopedKey`
+    // returns the UNSCOPED key — painting then would show whatever the last
+    // user on this browser profile left behind. The router guard resolves the
+    // identity before any view mounts, so in practice this is already true;
+    // the check makes the guarantee explicit and covers a store initialised
+    // outside the router (a spec, or a future non-routed entry point).
+    const cached = isIdentityResolved() ? readWorkspacesCache() : null
     const hasCache = !!cached && cached.length > 0
     if (hasCache) {
       seedList(cached as Workspace[])
@@ -1556,12 +1563,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         cwd: params.cwd,
       })
       item.tasks.unshift(newTask)
-      await cacheTaskMutation(
-        workspaceId,
-        itemId,
-        newTask,
-        newTask.kanban_column_id ?? undefined,
-      )
+      await cacheTaskMutation(workspaceId, itemId, newTask, newTask.kanban_column_id ?? undefined)
       return newTask.id
     } catch (err) {
       console.error('Failed to create task:', err)
@@ -1907,9 +1909,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         // A complete page (has_more=false) lists every row in this context —
         // cached rows it omits were deleted or moved out, so they are dropped
         // instead of merged back in.
-        const merged = new Map(
-          (fresh.has_more ? cached : []).map((task) => [task.id, task]),
-        )
+        const merged = new Map((fresh.has_more ? cached : []).map((task) => [task.id, task]))
         for (const task of fresh.tasks) merged.set(task.id, task)
         replaceItemTasksForColumn(item, columnId, [...merged.values()])
         if (!item.columnPagination) item.columnPagination = {}

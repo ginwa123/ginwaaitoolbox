@@ -19,6 +19,7 @@ import { useWorkspacesStore, type Workspace, type WorkspaceItem } from '../store
 import WorkspaceSwitcher from '../components/workspace/WorkspaceSwitcher.vue'
 import { makeLocalStorageStub } from './helpers'
 import { workspacesCacheKey } from '../helpers/workspacesCache'
+import { resetUserScopeForTest, setCurrentUserId } from '../helpers/userScope'
 import {
   installSseBus,
   __resetSseBus,
@@ -69,6 +70,14 @@ describe('workspaces store lazy per-workspace item loading', () => {
       writable: true,
       configurable: true,
     })
+
+    // Declare the identity as resolved with no user (the auth-off case):
+    // `userScopedKey` then returns the legacy unscoped key, which is what
+    // these specs write via `workspacesCacheKey()`. Without this the store's
+    // first-paint gate (plan 2026-09-25, W5) refuses to read the cache,
+    // because a real boot resolves `/api/auth/me` before any view mounts.
+    resetUserScopeForTest()
+    setCurrentUserId(null)
 
     // init() installs the bus-backed session handlers — install the
     // stub bus first so useSseBus() doesn't throw.
