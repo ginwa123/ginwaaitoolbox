@@ -7,13 +7,33 @@
 
 ## TL;DR
 
-**No — not in the sense "sometimes red, sometimes green". Both suites are *permanently red*, and a
-small number of tests are genuinely flaky *on top of* that.**
+**No — not in the sense "sometimes red, sometimes green". Both suites are *permanently red*, and
+only 4 tests out of 650 are genuinely flaky *on top of* that.**
+
+This is measured over **3 consecutive full local runs of both suites** (junit-xml, 650 tests × 3 =
+1950 test executions):
 
 | | tests | consistent failures | genuinely flaky |
 |---|---|---|---|
-| `functional-test` (API) | 575 | **9** (+1 intermittent error) | **2** |
+| `functional-test` (API) | 575 | **8** | **3** |
 | `functional-test-ui` (Playwright) | 75 | **30** | **1** |
+
+### The 3-run outcome matrix
+
+```
+API  tests/functional       ...  564 tests  always pass
+                            FFF     8 tests  always fail
+                            E..     1 test   llm_stream_get_test  (port race)      → FIXED
+                            .F.     1 test   mcp_test_test        (error-string race) → FIXED
+                            F.F     1 test   session_pr_url_test  (sqlite read race)
+
+UI   tests/functional_ui    ...  44 tests  always pass
+                            FFF    30 tests  always fail   ← all of them the dead route
+                            F..     1 test   chatview_tail_gap_probe_test
+```
+
+So: **644 of 650 tests are perfectly deterministic.** 38 fail every single time, 4 flip, and the
+other 608 pass every single time.
 
 CI has **never** gone green on either job in the last 31 runs:
 
@@ -317,20 +337,16 @@ Both are "the budget is a guess, the tolerance is tight" rather than "the code i
 
 ## Part 3 — Summary: flaky vs broken
 
-### Actually flaky (3 total, 0.5% of the 650)
+### Actually flaky (4 of 650 = 0.6%)
 
-| test | flake signature | root cause |
-|---|---|---|
-| `session_pr_url_test::test_direct_update_reflected_in_messages_response` | 5/5 alone, 0/2 in order | server-side SQLite read-visibility race + `catch \|_\| => ""` fallback that masks a DB error as `null` |
-| `llm_stream_get_test::test_stream_route_does_not_shadow_sibling_routes` | 5/5 alone, errors in the full run | harness port TOCTOU inside the kernel ephemeral range; masked as a "segfault" by a product bug — **fixed in this PR** |
-| `chatview_tail_gap_probe_test::test_small_scrolls_at_the_tail_do_not_teleport` | fails in some runs, passes in others | unbounded "settle" vs a 124 px tolerance |
+| test | 3-run pattern | root cause | status |
+|---|---|---|---|
+| `llm_stream_get_test::test_stream_route_does_not_shadow_sibling_routes` | `E..` | harness port TOCTOU inside the kernel ephemeral range, masked as a "segfault" by a product bug | **fixed in this PR** |
+| `mcp_test_test::test_mcp_test_stdio_diagnostic_on_child_death` | `.F.` | over-specified assertion — `mcp_test.zig:856-857` has two legitimate errors and a dying child loses the send/recv race. Run 2 produced `failed to send request to MCP server` where the test demanded `failed to receive response from MCP server` | **fixed in this PR** |
+| `session_pr_url_test::test_direct_update_reflected_in_messages_response` | `F.F` | server-side SQLite read-visibility race + `catch \|_\| => ""` fallback that masks a DB error as `null` | open |
+| `chatview_tail_gap_probe_test::test_small_scrolls_at_the_tail_do_not_teleport` | `F..` | unbounded "settle" vs a 124 px tolerance | open |
 
-`chatview_html_frame_layout_test::test_srcdoc_shell_carries_theme_and_resize_script` also flipped
-between CI runs, but locally it fails 4/4 like the rest of its file, so it is contract drift
-rather than an independent flake. It has the same smell though: the 8 s settle loop at
-`chatview_html_frame_layout_test.py:322-333` asserts on timeout.
-
-### Broken, not flaky (39 tests, 3 causes)
+### Broken, not flaky (38 tests, 3 causes)
 
 1. **URL contract drift** — 30 UI tests. Fix the 10 files' navigation + seeding.
 2. **TLS listener drops the connection after the handshake** — 4 API tests. Real product bug.
@@ -340,7 +356,6 @@ rather than an independent flake. It has the same smell though: the 8 s settle l
 
 4. **Occupied port ⇒ SIGSEGV** instead of a clean exit. One `catch` in `main.zig` — **fixed in
    this PR**.
-
 ### Environment-coupled test (will fail on any dev box, not CI)
 
 `tests/functional/sessions_and_llm_test.py::test_no_state_leaked_to_real_home` asserts
@@ -363,27 +378,55 @@ rewritten to assert on the harness's own `temp_dir`.
 | 6 | `session_pr_url` read-visibility | M (product) | flake #1 |
 | 7 | Replace fixed sleeps with `expect(...).to_be_visible()` in kanban UI tests | M | removes the next flake tier |
 | 8 | Vite readiness gate + `cacheDir` + pidfile + group-kill in `ui_harness.py` | M | hardens the UI suite for `-n auto` |
+| 9 | `mcp_test_test`: accept both MCP child-death error messages | S | ✅ **done (this PR)** — flake `.F.` |
 
-Items 1–2 are small, safe, and independently reviewable — both landed here. Items 3–4 are the
+Items 1–2 and 9 are small, safe, and independently reviewable — all landed here. Items 3–4 are the
 next two, and item 4 is really its own task.
 
 ---
 
 ## Reproduction
 
+Three consecutive runs of both suites is what turns "this looks flaky" into a per-test outcome
+matrix. The junit XML is the source of truth — the console log is not:
+
 ```bash
 # API suite (575 tests, ~10 min)
 NALAR_BIN=$PWD/zig-out/bin/nalar .venv-func/bin/python -m pytest tests/functional/ \
-    -q --tb=no -rf --junit-xml=/tmp/junit_func.xml
+    -q --tb=no -rf --junit-xml=/tmp/junit_func_$i.xml
 
-# UI suite (75 tests, ~12 min) — MUST use .venv-func (it has playwright);
+# UI suite (75 tests, ~13 min) — MUST use .venv-func (it has playwright);
 # /tmp/nalar-func-venv silently SKIPS every test with `could not import 'playwright'`
 NALAR_BIN=$PWD/zig-out/bin/nalar .venv-func/bin/python -m pytest tests/functional_ui/ \
-    -q --tb=no -rf --junit-xml=/tmp/junit_ui.xml
+    -q --tb=no -rf --junit-xml=/tmp/junit_ui_$i.xml
+```
 
-# CI job history
+Then join the runs per test id to get the pattern matrix:
+
+```python
+import xml.etree.ElementTree as ET
+def load(p):
+    d = {}
+    for tc in ET.parse(p).iter('testcase'):
+        bad = [c for c in tc if c.tag in ('failure', 'error')]
+        d[f"{tc.get('classname')}::{tc.get('name')}"] = (bad[0].get('type') or bad[0].tag) if bad else 'PASS'
+    return d
+runs = [load(f'/tmp/junit_func_{i}.xml') for i in (1, 2, 3)]
+for k in sorted(set().union(*[set(r) for r in runs])):
+    seq = [r.get(k) for r in runs]
+    if len(set(seq)) > 1:
+        print(k, seq)          # <- the flaky set
+```
+
+**Do not read flake counts off the CI log.** `ci.yml:1828` pipes the pytest output through
+`tail -n 50`, so the `FAILED` lines in the GitHub UI are a truncated prefix — that is how a 31-failure
+run was first mis-read as 28.
+
+CI job history:
+
+```bash
 gh run list --workflow=ci --limit 40 --json databaseId,conclusion
-gh run view <id> --log | rg -o 'FAILED tests/\S+' | sort -u
+gh run view <id> --log | rg -o 'FAILED tests/\S+' | sort -u   # truncated, see above
 ```
 
 Probes used in this investigation live in `/tmp/probe_chatview.py`, `/tmp/probe_prurl{,2,3}.py`,
