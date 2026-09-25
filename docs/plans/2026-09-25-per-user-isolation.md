@@ -196,7 +196,7 @@ Each workstream is independently shippable and has its own acceptance test. Orde
 ### W0 — identity primitive + migration hygiene
 
 1. `src/http_handlers/auth_common.zig`: add `resolveRequestUserId` + `owner_visibility_clause` (+ a `freeRequestUserId` if ownership is transferred, mirroring `freeSessionLookup`). Add a `Principal { id: []const u8, shared: bool }` if call sites want the shared flag.
-2. Add `src/http_handlers/auth_common_test.zig` cases (or inline `test` blocks per repo convention): auth off → `user_system`; missing cookie → `user_system`; invalid/expired cookie → `user_system`; valid cookie → the user's id; **owned copy** (freed by the caller, no aliasing into the lookup).
+2. Add tests for the resolver: auth off → `user_system`; missing cookie → `user_system`; invalid/expired cookie → `user_system`; valid cookie → the user's id; **owned copy** (freed by the caller, no aliasing into the lookup). Register the file in the test-discovery list (`src/ai_workflow/tui/test_runner.zig`) — `auth_common.zig`'s inline tests were **dormant** before W0, because the `pub const authMiddleware` re-export in `http_handlers/mod.zig` does not pull a file's tests into the binary (documented workaround, same as the other handlers listed there).
 3. Register the new migration as **093** (D6) and own the `worker.user_id` column + index + backfill in it. Nothing is renumbered and nothing is inherited — that branch is not being merged. Run the D6 all-branches version check first.
 4. Document the **decided** legacy-visibility policy (D2: shared — approved 2026-09-25) in the migration doc-comment so the next reader doesn't re-litigate it, including the point that the shared bucket only shrinks.
 
@@ -213,7 +213,7 @@ Each workstream is independently shippable and has its own acceptance test. Orde
 | `src/root.zig` (`EmitRunAgentInput`) | thread `user_id` into worker creation — the background worker has **no** HTTP request, so the owner must ride along from the enqueuing request (§W3) |
 | `src/agentic_loop/tools_exec_add_mcp_server.zig:343-349` | **fix the live bug**: once `sessions.user_id` is actually written, this resolves correctly; add a regression test (2 users → 2 config rows) |
 | `src/migrations/migration.zig` | new migration **`Migration093AddOwnerColumns`** (`version = 93`, D6): `addColumnIfMissing` `worker.user_id TEXT` + `idx_worker_user_id`, then backfill `workspaces.user_id` / `sessions.user_id` / `worker.user_id` where NULL → `'user_system'` (idempotent, mirrors M077 `:4285-4290`). No FKs (project convention: `PRAGMA foreign_keys` is deliberately off — `migration_072_test.zig:156-164`). |
-| `src/models/worker.zig` | carry the `user_id` field; default `user_system` so pre-auth/legacy callers keep compiling and behaving identically |
+| ~~`src/models/worker.zig`~~ | **dropped (verified 2026-09-25):** `src/models/` is an orphaned tree — `build.zig` never references it, nothing imports `worker.zig` except `models_test.zig`, and that test file is not in the test binary. The live worker code is raw SQL (`worker_list.zig`, `update_worker.zig`, `llm_history.zig`), so the owner column work belongs there, not in the model |
 
 **Acceptance (python functional, two cookies):** create workspace as A → `SELECT user_id` is A's id (assert via a subsequent scoped read); create session as A → same; B's `add_mcp_server` run writes B's row, not `user_system`.
 

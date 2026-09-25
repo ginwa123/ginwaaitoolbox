@@ -8,6 +8,13 @@ test {
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
     _ = @import("../../agentic_loop/workflow.zig");
+    // Per-request owner resolution for per-user isolation (W0): the
+    // `resolveRequestUserId` resolver + `ownerVisibilityClause`. Its inline
+    // tests were dormant before this — the `pub const authMiddleware`
+    // re-export in http_handlers/mod.zig alone doesn't pull the file's
+    // tests into the test binary. Same discovery workaround as the
+    // handlers below.
+    _ = @import("../../http_handlers/auth_common.zig");
 _ = @import("../../http_handlers/nalar_config_put.zig");
 _ = @import("../../http_handlers/design_elements_reorder.zig");
 _ = @import("../../http_handlers/design_elements_ungroup.zig");

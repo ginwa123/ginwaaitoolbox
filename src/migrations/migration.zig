@@ -1999,6 +1999,11 @@ pub const allMigrations: []const Migration = &.{
     // When auth is on, per-user LLM config lives in this column and
     // config.json is ignored. NULL/empty = defaults.
     .{ .version = Migration092AddUserConfigJson.version, .name = Migration092AddUserConfigJson.name, .up = Migration092AddUserConfigJson.up },
+    // Migration 093 — owner columns for per-user row isolation.
+    // Adds worker.user_id (+ index) and backfills every still-NULL
+    // workspaces/sessions/worker row to the shared `user_system` sentinel.
+    // Plan: docs/plans/2026-09-25-per-user-isolation.md (W0).
+    .{ .version = Migration093AddOwnerColumns.version, .name = Migration093AddOwnerColumns.name, .up = Migration093AddOwnerColumns.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4932,6 +4937,48 @@ pub const Migration092AddUserConfigJson = struct {
     }
 };
 
+// Migration 093 — owner columns for per-user row isolation.
+//
+// `workspaces.user_id` and `sessions.user_id` have existed since Migration
+// 077 but nothing has ever written them; `worker` has no owner column at
+// all. This migration closes the SCHEMA half of that gap:
+//
+//   1. add `worker.user_id` (+ index) so the worker lifecycle endpoints can
+//      be scoped the same way as workspaces and sessions;
+//   2. backfill every still-NULL root row to the shared sentinel
+//      `user_system` (`auth_common.system_user_id`), exactly as Migration
+//      077 did for workspaces/sessions.
+//
+// Rows in the sentinel bucket stay visible to EVERY authenticated user.
+// That is deliberate (user decision 2026-09-25): enabling `--auth` must not
+// hide the machine owner's existing workspaces/sessions. Rows written after
+// isolation lands always carry a real owner, so the shared bucket only ever
+// shrinks — it is not a destination for new writes.
+//
+// Nullable with no FK: nullable because `SqliteBackend.exec` binds an empty
+// slice as SQL NULL (Migration 079's `content` and Migration 092's
+// `config_json` broke exactly this way), and no FK because the project
+// deliberately leaves `PRAGMA foreign_keys` off (see Migration 072 tests),
+// which would make a declared FK documentation only.
+pub const Migration093AddOwnerColumns = struct {
+    pub const version: u32 = 93;
+    pub const name = "add_owner_columns";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(.{ .db = db }, allocator, "worker", "user_id", "user_id TEXT");
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_worker_user_id ON worker(user_id)",
+            &[_][]const u8{},
+        );
+
+        // Idempotent: only rows that still have no owner are touched, so a
+        // re-run is a no-op and post-isolation rows keep their real owner.
+        try db.exec(allocator, "UPDATE workspaces SET user_id = 'user_system' WHERE user_id IS NULL", &[_][]const u8{});
+        try db.exec(allocator, "UPDATE sessions SET user_id = 'user_system' WHERE user_id IS NULL", &[_][]const u8{});
+        try db.exec(allocator, "UPDATE worker SET user_id = 'user_system' WHERE user_id IS NULL", &[_][]const u8{});
+    }
+};
+
 // ============================================================================
 // Migration 087 — agent config tables for routine workspace items.
 // ============================================================================
@@ -5875,4 +5922,126 @@ test "Migration091 is registered in allMigrations" {
         if (m.version == Migration091AddSubAgentNameToSessions.version) return;
     }
     return error.Migration091NotRegistered;
+}
+
+// ============================================================================
+// Migration 093 — owner columns for per-user row isolation — inline tests
+// ============================================================================
+
+/// Minimal pre-093 root schema: `workspaces` and `sessions` already carry
+/// `user_id` (Migration 077), `worker` does not.
+fn setupOwnerRoots(ctx: *TestCtx) !void {
+    const alloc = testing.allocator;
+    try ctx.db.exec(alloc, "CREATE TABLE workspaces (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
+    try ctx.db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
+    try ctx.db.exec(alloc, "CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT NOT NULL)", &.{});
+}
+
+/// Assert one row's owner. Deliberately a comparison helper (not a getter)
+/// so no duped value can escape and trip the leak-checking test allocator.
+fn expectOwner(ctx: *TestCtx, table: []const u8, id: []const u8, expected: []const u8) !void {
+    const alloc = testing.allocator;
+    const sql = try std.fmt.allocPrint(
+        alloc,
+        "SELECT COALESCE(user_id, '<null>') FROM {s} WHERE id = ?",
+        .{table},
+    );
+    defer alloc.free(sql);
+    var q = try ctx.db.query(alloc, sql, &[_][]const u8{id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings(expected, row.values[0]);
+}
+
+test "Migration093 adds worker.user_id and its index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupOwnerRoots(&ctx);
+
+    try Migration093AddOwnerColumns.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "worker");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var found = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "user_id")) found = true;
+    }
+    try testing.expect(found);
+
+    // Nullable TEXT: an empty-string bind (which SqliteBackend collapses to
+    // SQL NULL) must never violate the column.
+    var q = try ctx.db.query(alloc,
+        "SELECT type, \"notnull\" FROM pragma_table_info('worker') WHERE name = 'user_id'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", row.values[0]);
+    try testing.expectEqualStrings("0", row.values[1]);
+
+    var qi = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_worker_user_id'",
+        &.{});
+    defer qi.deinit();
+    const irow = (try qi.next()) orelse return error.RowMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("1", irow.values[0]);
+}
+
+test "Migration093 backfills legacy NULL owners to the shared sentinel" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupOwnerRoots(&ctx);
+
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_legacy', NULL)", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO sessions (id, user_id) VALUES ('sess_legacy', NULL)", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id) VALUES ('w_legacy', 'sess_legacy')", &.{});
+
+    try Migration093AddOwnerColumns.up(&ctx.db, alloc);
+
+    // The shared bucket is what keeps pre-auth data visible once `--auth`
+    // is switched on (user decision 2026-09-25).
+    try expectOwner(&ctx, "workspaces", "ws_legacy", "user_system");
+    try expectOwner(&ctx, "sessions", "sess_legacy", "user_system");
+    try expectOwner(&ctx, "worker", "w_legacy", "user_system");
+}
+
+test "Migration093 never downgrades a real owner and is idempotent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupOwnerRoots(&ctx);
+    // Simulate a database that already ran 093: worker.user_id present, so
+    // the ADD COLUMN path is exercised as a no-op too.
+    try ctx.db.exec(alloc, "ALTER TABLE worker ADD COLUMN user_id TEXT", &.{});
+
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_a', 'user_a')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, user_id) VALUES ('ws_legacy', NULL)", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO sessions (id, user_id) VALUES ('sess_a', 'user_a')", &.{});
+    try ctx.db.exec(alloc, "INSERT INTO worker (id, session_id, user_id) VALUES ('w_a', 'sess_a', 'user_a')", &.{});
+
+    try Migration093AddOwnerColumns.up(&ctx.db, alloc);
+    try Migration093AddOwnerColumns.up(&ctx.db, alloc);
+
+    try expectOwner(&ctx, "workspaces", "ws_a", "user_a");
+    try expectOwner(&ctx, "sessions", "sess_a", "user_a");
+    try expectOwner(&ctx, "worker", "w_a", "user_a");
+    // The legacy row is backfilled, and only once.
+    try expectOwner(&ctx, "workspaces", "ws_legacy", "user_system");
+}
+
+test "Migration093 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration093AddOwnerColumns.version) return;
+    }
+    return error.Migration093NotRegistered;
 }
