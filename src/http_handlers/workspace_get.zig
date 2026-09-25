@@ -15,6 +15,7 @@ const mod = @import("mod.zig");
 const nalarcore = mod.nalarcore;
 const gserverz = nalarcore.gserverz;
 const http_response = mod.http_response;
+const auth_common = @import("auth_common.zig");
 
 /// SQLite error info surfaced from the use-case to the handler.
 /// `sqlite_message` is the raw `sqlite3_errmsg(db)` string for the
@@ -57,6 +58,7 @@ fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
     id: []const u8,
+    owner: []const u8,
 ) WorkspaceGetResult {
     if (id.len == 0) return .id_required;
 
@@ -66,8 +68,8 @@ fn useCase(
     // the handler can return a 500 with a useful prefix.
     var rows = db.query(
         allocator,
-        "SELECT id, name, created_at, updated_at FROM workspaces WHERE id = ?",
-        &.{id},
+        "SELECT id, name, created_at, updated_at FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+        &.{ id, owner, owner },
     ) catch |err| {
         // Build a best-effort message. The sqlite3_errmsg is not
         // available here because Rows was never created; surface
@@ -133,7 +135,17 @@ pub fn workspaceGetHandler(
 
     const id = req.params.get("id") orelse "";
 
-    const outcome = useCase(allocator, sqlite_db, id);
+    // Not-found (not 403) when the workspace belongs to another user, so a
+    // caller cannot probe for the existence of someone else's ids.
+    const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
+        });
+    };
+    defer allocator.free(owner);
+
+    const outcome = useCase(allocator, sqlite_db, id, owner);
 
     switch (outcome) {
         .found => |data| {

@@ -95,6 +95,134 @@ pub fn freeSessionLookup(allocator: std.mem.Allocator, s: SessionLookup) void {
     allocator.free(s.role);
 }
 
+// =====================================================================
+// Per-request owner resolution — the input to per-user row isolation.
+// =====================================================================
+
+/// Sentinel owner id: Migration 077's backfill target for every row that
+/// predates `--auth`, and the answer `resolveRequestUserId` gives whenever
+/// identity cannot be established. Because legacy rows carry this same
+/// value, such rows stay visible and scoping is a no-op in auth-off mode.
+pub const system_user_id = "user_system";
+
+/// SQL predicate for "rows that `alias` may see".
+///
+/// Two rules, in one constant:
+///   1. the **system user sees everything** — with `--auth` off there is no
+///      identity, and the system user IS the installation itself, so it sees
+///      every workspace (user decision 2026-09-25);
+///   2. otherwise: the shared legacy bucket (NULL / empty / the sentinel)
+///      plus rows owned by the viewer.
+///
+/// The bound owner must therefore be passed **twice** (the sentinel test and
+/// the ownership test), e.g. `WHERE id = ? AND <clause>` binds
+/// `{ id, owner, owner }`.
+///
+/// Safety depends on one invariant: in auth-ON mode a handler only ever sees a
+/// real user id, because `authMiddleware` 401s an invalid/missing cookie before
+/// the handler runs. The sentinel reaches a handler only when `--auth` is off,
+/// where "see everything" is the intended meaning.
+///
+/// Compile-time formatted, so it concatenates into a constant SQL string at no
+/// runtime cost: `"SELECT ... WHERE " ++ ownerVisibilityClause("w")`.
+pub fn ownerVisibilityClause(comptime alias: []const u8) []const u8 {
+    return std.fmt.comptimePrint(
+        "(? = '{s}' OR {s}.user_id IS NULL OR {s}.user_id = '' OR {s}.user_id = '{s}' OR {s}.user_id = ?)",
+        .{ system_user_id, alias, alias, alias, system_user_id, alias },
+    );
+}
+
+/// True when `user_id` is the shared/legacy bucket rather than a real
+/// owner. Callers use this to detect (and log) writes that fell back to
+/// the sentinel while `--auth` was on — a mis-scoping signal.
+pub fn isSharedOwner(user_id: []const u8) bool {
+    return user_id.len == 0 or std.mem.eql(u8, user_id, system_user_id);
+}
+
+/// True when `workspace_id` exists AND the given owner may see it.
+///
+/// This is the predicate behind the middleware choke point for every route
+/// whose path carries a `:workspace_id` (`/api/workspaces/:workspace_id/items…`
+/// and its kanban/design/agent/routine children). Centralising it means a
+/// newly added child route cannot forget the check.
+pub fn canSeeWorkspace(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    workspace_id: []const u8,
+    owner: []const u8,
+) bool {
+    if (workspace_id.len == 0) return false;
+    var q = db.query(
+        allocator,
+        "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime ownerVisibilityClause("workspaces"),
+        &[_][]const u8{ workspace_id, owner, owner },
+    ) catch return false;
+    defer q.deinit();
+    const row = q.next() catch return false;
+    if (row) |r| {
+        r.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
+/// Session counterpart of `canSeeWorkspace`: true when `session_id` exists AND
+/// the given owner may see it.
+///
+/// Same rule as workspaces: the system user sees everything (auth off), while
+/// a real user sees the shared legacy bucket plus their own sessions. Used by
+/// the middleware choke point for every route carrying `:session_id`.
+pub fn canSeeSession(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    session_id: []const u8,
+    owner: []const u8,
+) bool {
+    if (session_id.len == 0) return false;
+    var q = db.query(
+        allocator,
+        "SELECT 1 FROM sessions WHERE id = ? AND " ++ comptime ownerVisibilityClause("sessions"),
+        &[_][]const u8{ session_id, owner, owner },
+    ) catch return false;
+    defer q.deinit();
+    const row = q.next() catch return false;
+    if (row) |r| {
+        r.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
+/// Resolve the owner id for the current request, server-side.
+///
+/// The ONLY accepted source is the `nalar_session` cookie — never a body
+/// field, query param, or header, all of which the client controls.
+///
+/// - auth disabled                            -> `system_user_id`
+/// - cookie missing / invalid / expired / inactive user -> `system_user_id`
+/// - valid session                            -> that user's `users.id`
+///
+/// Note the deliberate fallback for the middle case: an unauthenticated
+/// request in auth-on mode keeps seeing the shared legacy bucket, exactly
+/// what it saw before isolation existed. It never becomes a real user.
+///
+/// Returns an owned slice — free it with `allocator.free`.
+pub fn resolveRequestUserId(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    auth_enabled: bool,
+    headers: anytype,
+) ![]const u8 {
+    if (!auth_enabled) return allocator.dupe(u8, system_user_id);
+    const token = parseSessionToken(headers) orelse return allocator.dupe(u8, system_user_id);
+    const sess = lookupSession(allocator, db, token) orelse return allocator.dupe(u8, system_user_id);
+    // Keep only the owner id; the rest of the identity is not needed here.
+    allocator.free(sess.email);
+    allocator.free(sess.name);
+    allocator.free(sess.role);
+    return sess.user_id;
+}
+
 /// Verify a password against a stored `users.password_hash`.
 /// Sentinel `!disabled` (user_system) always fails. Supports bcrypt
 /// hashes; any other format fails closed.
@@ -166,4 +294,111 @@ test "verifyPassword rejects sentinel and empty" {
     try std.testing.expect(!verifyPassword("!disabled", "anything"));
     try std.testing.expect(!verifyPassword("", "x"));
     try std.testing.expect(!verifyPassword("$2b$10$xxx", ""));
+}
+
+test "ownerVisibilityClause lets the system user see everything" {
+    const sql = ownerVisibilityClause("w");
+    // The sentinel test comes FIRST, which is why callers bind the owner twice.
+    try std.testing.expect(std.mem.startsWith(u8, sql, "(? = 'user_system' OR "));
+    try std.testing.expect(std.mem.indexOf(u8, sql, "w.user_id IS NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "w.user_id = ''") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "w.user_id = 'user_system'") != null);
+    // The viewer's id is always the trailing bind parameter.
+    try std.testing.expect(std.mem.endsWith(u8, sql, "w.user_id = ?)"));
+    // And the alias is honoured (callers use real table aliases).
+    const h = ownerVisibilityClause("h");
+    try std.testing.expect(std.mem.indexOf(u8, h, "h.user_id IS NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, h, "w.") == null);
+}
+
+test "canSeeSession: own + shared visible, another user's hidden, system sees all" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, user_id) VALUES ('s_a','user_a'), ('s_b','user_b'), ('s_legacy',NULL)",
+        &.{});
+
+    // Own session and shared legacy row: visible.
+    try std.testing.expect(canSeeSession(alloc, &db, "s_a", "user_a"));
+    try std.testing.expect(canSeeSession(alloc, &db, "s_legacy", "user_a"));
+    // Another user's session: hidden. This is the leak the middleware closes.
+    try std.testing.expect(!canSeeSession(alloc, &db, "s_b", "user_a"));
+    // The system user (auth off) sees everything, by decision 2026-09-25.
+    try std.testing.expect(canSeeSession(alloc, &db, "s_b", system_user_id));
+    try std.testing.expect(canSeeSession(alloc, &db, "s_a", system_user_id));
+    // Unknown / empty ids are never visible.
+    try std.testing.expect(!canSeeSession(alloc, &db, "s_missing", "user_a"));
+    try std.testing.expect(!canSeeSession(alloc, &db, "", "user_a"));
+}
+
+test "resolveRequestUserId falls back to the sentinel without identity" {
+    // Both the auth-off path and the auth-on-with-no-cookie path return
+    // before the DB is touched, so an undefined db is safe here.
+    var headers = std.StringHashMap([]const u8).init(std.testing.allocator);
+    defer headers.deinit();
+
+    const off = try resolveRequestUserId(std.testing.allocator, undefined, false, headers);
+    defer std.testing.allocator.free(off);
+    try std.testing.expectEqualStrings(system_user_id, off);
+
+    const on = try resolveRequestUserId(std.testing.allocator, undefined, true, headers);
+    defer std.testing.allocator.free(on);
+    try std.testing.expectEqualStrings(system_user_id, on);
+}
+
+test "resolveRequestUserId maps a valid cookie to the owning user" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE users (
+        \\  id TEXT PRIMARY KEY,
+        \\  email TEXT NOT NULL,
+        \\  name TEXT NOT NULL DEFAULT '',
+        \\  password_hash TEXT NOT NULL,
+        \\  role TEXT NOT NULL DEFAULT 'user',
+        \\  is_active INTEGER NOT NULL DEFAULT 1
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE auth_sessions (
+        \\  token_hash TEXT PRIMARY KEY,
+        \\  user_id TEXT NOT NULL,
+        \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\  expires_at DATETIME NOT NULL,
+        \\  last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+    try db.exec(alloc, "INSERT INTO users (id, email, password_hash) VALUES ('user_a', 'a@example.com', 'x')", &.{});
+
+    const token = "deadbeef";
+    var hash: [64]u8 = undefined;
+    sha256Hex(token, &hash);
+    try db.exec(alloc, "INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, 'user_a', datetime('now', '+1 day'))", &[_][]const u8{hash[0..]});
+
+    var headers = std.StringHashMap([]const u8).init(alloc);
+    defer headers.deinit();
+    try headers.put("Cookie", "nalar_session=deadbeef");
+    const owner = try resolveRequestUserId(alloc, &db, true, headers);
+    defer alloc.free(owner);
+    try std.testing.expectEqualStrings("user_a", owner);
+
+    // An unknown token is not an error — it resolves to the shared bucket.
+    var anon = std.StringHashMap([]const u8).init(alloc);
+    defer anon.deinit();
+    try anon.put("Cookie", "nalar_session=unknown");
+    const stranger = try resolveRequestUserId(alloc, &db, true, anon);
+    defer alloc.free(stranger);
+    try std.testing.expectEqualStrings(system_user_id, stranger);
 }

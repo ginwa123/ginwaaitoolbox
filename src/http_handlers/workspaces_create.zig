@@ -5,6 +5,7 @@ const gserverz = nalarcore.gserverz;
 const process = @import("helpers").process;
 const getCurrentProcessId = process.getCurrentProcessId;
 const sqlite = nalarcore.sqlite;
+const auth_common = @import("auth_common.zig");
 
 /// Process-local monotonic counter for workspace_id generation. The
 /// (PID ^ ts_ms)-only generator collided when 2+ workspaces were
@@ -31,7 +32,19 @@ pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
-    const result = useCase(allocator, sqlite_db, ctx.io, req.body) catch |err| {
+    // The owner is derived server-side from the `nalar_session` cookie —
+    // never from the request body, which a client controls (a body-supplied
+    // owner id would be a spoofing vector). Auth off / no cookie resolves to
+    // the shared `user_system` sentinel, so auth-off behaviour is unchanged.
+    const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
+        });
+    };
+    defer allocator.free(owner);
+
+    const result = useCase(allocator, sqlite_db, ctx.io, req.body, owner) catch |err| {
         const status: u16 = switch (err) {
             error.InvalidJson, error.MissingBody, error.MissingName, error.NameNotString => 400,
             error.DatabaseError => 500,
@@ -69,6 +82,7 @@ fn useCase(
     sqlite_db: *sqlite.SqliteBackend,
     io: std.Io,
     body: []const u8,
+    owner: []const u8,
 ) WorkspacesCreateError!WorkspacesCreateResult {
     if (body.len == 0) return error.MissingBody;
 
@@ -102,7 +116,7 @@ fn useCase(
     }
     const workspace_id = try std.fmt.allocPrint(allocator, "ws_{d}_{s}", .{ ts_nanos, &hex_buf });
 
-    createWorkspace(allocator, sqlite_db, workspace_id, name.string) catch {
+    createWorkspace(allocator, sqlite_db, workspace_id, name.string, owner) catch {
         return error.DatabaseError;
     };
 
@@ -114,11 +128,15 @@ fn useCase(
 /// by position DESC). The COALESCE(..., -1) makes the very first
 /// workspace in an empty table get position 0 (= -1 + 1).
 /// See docs/plans/2026-06-12-workspace-drag-and-drop.md.
-fn createWorkspace(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8) !void {
+///
+/// `owner` is the server-derived owner id (see the handler). Rows created
+/// from now on carry a real owner and are private to it; rows from before
+/// per-user isolation keep the shared `user_system` sentinel.
+fn createWorkspace(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, workspace_id: []const u8, name: []const u8, owner: []const u8) !void {
     _ = try db.exec(allocator,
-        \\INSERT INTO workspaces (id, name, position, created_at, updated_at)
+        \\INSERT INTO workspaces (id, name, position, created_at, updated_at, user_id)
         \\VALUES (?, ?,
         \\    COALESCE((SELECT MAX(position) FROM workspaces), -1) + 1,
-        \\    datetime('now'), datetime('now'))
-    , &[_][]const u8{ workspace_id, name });
+        \\    datetime('now'), datetime('now'), ?)
+    , &[_][]const u8{ workspace_id, name, owner });
 }

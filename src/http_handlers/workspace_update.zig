@@ -4,6 +4,7 @@ const gserverz = root_mod.gserverz;
 const nalarcore = root_mod;
 const ai_workflow = nalarcore.ai_workflow;
 const http_response = nalarcore.http_response;
+const auth_common = @import("auth_common.zig");
 
 pub const WorkspaceUpdateError = error{
     OutOfMemory,
@@ -12,6 +13,10 @@ pub const WorkspaceUpdateError = error{
     MissingName,
     NameNotString,
     DatabaseError,
+    /// The workspace does not exist, or belongs to another user — the two
+    /// are deliberately indistinguishable (404, never 403) so a caller
+    /// cannot probe for the existence of someone else's ids.
+    NotFound,
 };
 
 /// PUT /api/workspaces/:id
@@ -25,9 +30,10 @@ pub fn workspaceUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "id is required" }) });
     }
 
-    const result = useCase(allocator, sqlite_db, id, req.body) catch |err| {
+    const result = useCase(allocator, sqlite_db, id, req.body, di.auth_enabled, req.headers) catch |err| {
         const status: u16 = switch (err) {
             error.InvalidJson, error.MissingBody, error.MissingName, error.NameNotString => 400,
+            error.NotFound => 404,
             error.DatabaseError => 500,
             error.OutOfMemory => 500,
         };
@@ -36,6 +42,7 @@ pub fn workspaceUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReque
             error.MissingBody => "name is required",
             error.MissingName => "name is required",
             error.NameNotString => "name must be a string",
+            error.NotFound => "Workspace not found",
             error.DatabaseError => "Failed to update workspace",
             error.OutOfMemory => "Out of memory",
         };
@@ -58,8 +65,17 @@ fn useCase(
     sqlite_db: *nalarcore.sqlite.SqliteBackend,
     id: []const u8,
     body: []const u8,
+    auth_enabled: bool,
+    headers: anytype,
 ) WorkspaceUpdateError!WorkspaceUpdateResult {
     if (body.len == 0) return error.MissingBody;
+
+    // Owner resolved server-side (cookie only). A caller must not be able to
+    // rename another user's workspace by guessing its id.
+    const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, auth_enabled, headers) catch {
+        return error.OutOfMemory;
+    };
+    defer allocator.free(owner);
 
     // Per the project memory (nalar-http-handler-thin-wrapper-pattern.md),
     // the per-request arena allocator (`allocator`) is the per-request
@@ -73,9 +89,25 @@ fn useCase(
     const name_val = root.get("name") orelse return error.MissingName;
     if (name_val != .string) return error.NameNotString;
 
+    {
+        var q = sqlite_db.query(
+            allocator,
+            "SELECT 1 FROM workspaces WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+            &[_][]const u8{ id, owner, owner },
+        ) catch {
+            return error.DatabaseError;
+        };
+        defer q.deinit();
+        const row = q.next() catch {
+            return error.DatabaseError;
+        };
+        if (row == null) return error.NotFound;
+        if (row) |r| r.deinit(allocator);
+    }
+
     sqlite_db.exec(allocator,
-        "UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ?",
-        &[_][]const u8{ name_val.string, id },
+        "UPDATE workspaces SET name = ?, updated_at = datetime('now') WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"),
+        &[_][]const u8{ name_val.string, id, owner, owner },
     ) catch {
         return error.DatabaseError;
     };

@@ -1,6 +1,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = nalarcore.gserverz;
 const sqlite = nalarcore.sqlite;
 
@@ -83,7 +84,10 @@ pub fn workspacesReorderHandler(
 
     // Step 3: call the use case.
     const di = try nalarcore.getSingleton();
-    const result = reorderWorkspaces(allocator, di.db, ids.items) catch |err| switch (err) {
+    const owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch "";
+    defer if (owner.len > 0) allocator.free(owner);
+
+    const result = reorderWorkspaces(allocator, di.db, ids.items, owner) catch |err| switch (err) {
         error.TooManyIds => return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "ordered_ids too long (max 100)" }) }),
         error.DatabaseUpdateFailed => return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Failed to update workspace position" }) }),
         error.IntegerTooLarge => return res.jsonResponse(.{ .status_code = 500, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Internal error: position value too large" }) }),
@@ -130,11 +134,7 @@ const ReorderError = error{
 // UX this is acceptable: concurrent reorders from different
 // clients are last-write-wins, and the final state is always a
 // valid permutation of the existing rows.
-fn reorderWorkspaces(
-    allocator: std.mem.Allocator,
-    db: *sqlite.SqliteBackend,
-    ordered_ids: []const []const u8,
-) ReorderError!ReorderResult {
+fn reorderWorkspaces(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, ordered_ids: []const []const u8, owner: []const u8) ReorderError!ReorderResult {
     if (ordered_ids.len > MAX_REORDER_IDS) return error.TooManyIds;
 
     const count: i64 = @intCast(ordered_ids.len);
@@ -157,7 +157,7 @@ fn reorderWorkspaces(
         const pos_str = std.fmt.bufPrint(&buf, "{d}", .{new_pos}) catch {
             return error.IntegerTooLarge;
         };
-        db.exec(allocator, "UPDATE workspaces SET position = ?, updated_at = datetime('now') WHERE id = ?", &.{ pos_str, id_str }) catch {
+        db.exec(allocator, "UPDATE workspaces SET position = ?, updated_at = datetime('now') WHERE id = ? AND " ++ comptime auth_common.ownerVisibilityClause("workspaces"), &.{ pos_str, id_str, owner, owner }) catch {
             return error.DatabaseUpdateFailed;
         };
         updated_count += 1;

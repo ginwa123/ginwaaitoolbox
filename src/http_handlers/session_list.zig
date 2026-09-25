@@ -25,6 +25,8 @@ pub const SessionListError = error{
     OutOfMemory,
 };
 
+const auth_common = @import("auth_common.zig");
+
 pub const SessionListInput = struct {
     limit: u32,
     cursor: ?[]const u8,
@@ -34,6 +36,10 @@ pub const SessionListInput = struct {
     workspace_id: ?[]const u8,
     sort_field: llm_history.SessionSortField,
     sort_direction: llm_history.SessionSortDirection,
+    /// Server-derived owner id. Defaults to the system user so same-file
+    /// tests (and any caller without a request) keep the pre-isolation
+    /// behaviour; the handler always sets the real owner.
+    owner: []const u8 = auth_common.system_user_id,
 };
 
 pub const SessionListResult = []const u8; // pre-serialized JSON
@@ -98,6 +104,7 @@ fn useCase(
         null,
         input.cwd,
         workspace_ids,
+        input.owner,
         input.limit,
         input.cursor,
         input.sort_field,
@@ -161,7 +168,18 @@ pub fn sessionListHandler(
     const di = try nalarcore.getSingleton();
     const sqlite_db = di.db;
 
-    const input = parseInput(req.query) catch |err| {
+    // Server-derived owner (cookie only, never a query param). Scopes the
+    // list so B never sees A's chats; with --auth off the system user sees
+    // everything, by decision 2026-09-25.
+    const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch {
+        return res.jsonResponse(.{
+            .status_code = 500,
+            .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Out of memory" }),
+        });
+    };
+    defer allocator.free(owner);
+
+    var input = parseInput(req.query) catch |err| {
         // Today `parseInput` never returns an error (parseInt with
         // catch defaults; enumFromString with catch defaults). Kept
         // for forward compatibility — if a future field gains a
@@ -171,6 +189,8 @@ pub fn sessionListHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = @errorName(err) }),
         });
     };
+
+    input.owner = owner;
 
     const response = useCase(allocator, sqlite_db, io, input) catch |err| {
         const status: u16 = switch (err) {
