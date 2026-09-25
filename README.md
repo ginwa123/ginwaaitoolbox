@@ -207,6 +207,32 @@ On first run an empty config is auto-created — the server still starts
   the `users.config_json` DB column (per-user, managed via the same
   Settings UI / API).
 
+### Per-user isolation — what is scoped, and what is not
+
+With `--auth` on, every user-owned **DB row** and **push channel** belongs
+to exactly one user: workspaces (and every child resource via a middleware
+choke point on `:workspace_id`), sessions (by id, in the list, and
+owner-stamped on create), workers, terminals, and the SSE fan-out. A
+foreign id returns **404**, never 403, so one user cannot probe for the
+existence of another's ids. `admin` grants **no** cross-user visibility.
+Rows created before `--auth` existed carry the `user_system` sentinel and
+stay visible to everyone (a local-first upgrade must not make data vanish);
+the shared bucket only shrinks. With `--auth` off there is no identity, so
+the system user sees everything — the pre-isolation behaviour.
+
+**Not scoped — the filesystem boundary (deferred).** `bash`,
+`terminal/ws`, `read_file`, `list_directory`, `/api/git/*`,
+`/api/files/download`, `/api/skills*` and `/api/memories*` all run as the
+**OS user** against caller-supplied paths. Global skills/memories live in
+one `~/.config/nalar/skills|memories/` directory per OS account, and local
+ones in `{cwd}/.nalar/…` where `cwd` comes from the request — so a second
+browser user on the same machine can still read those files by path. This
+is a known boundary, not a regression: closing it needs a per-user OS
+uid/chroot or a workspace-root allowlist, which is a separate decision.
+`tests/functional/skills_memories_boundary_test.py` pins the boundary so a
+future change that closes it must update the test and this section. Never
+describe the system as "sandboxed" or "multi-tenant".
+
 ### 4. CLI + tests
 
 ```bash

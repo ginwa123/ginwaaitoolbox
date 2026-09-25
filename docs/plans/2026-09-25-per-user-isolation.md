@@ -393,4 +393,57 @@ That is a single-file-ish change (registry + two call sites + the loop), which i
 
 **Interim:** no mitigation for SSE. Until this lands, do not describe the system as per-user isolated for *live events*, and treat an `--auth` install as single-user for streaming.
 
+### 2026-09-25 (later still) — W3 + W2.5 landed; W2.6 resolved as a documented boundary
+
+**W3 (`dd36b631`) — SSE fan-out is now per-user.** The corrected design in the
+section above was right about the shape but incomplete about the data: the
+claim "`SseEvent` already carries `session_id`" holds for `sessions`, `llm`,
+`queue` and `background_process`, but **not** for `workers` and
+`design_element` — those publishers set `SseEvent.session_id` to the
+*routing-key literal* (`"workers"`, `"design_element"`), and the worker
+publishers (`llm_history.updateWorkerActivity` / `removeWorker` /
+`deleteWorkerBySessionId`) leave the payload's `session_id` **empty**, putting
+the worker id in `id`. A naive `canSeeSession(envelope_id)` therefore dropped
+every worker and design event for its own owner — a silent over-filter, the
+mirror image of the leak.
+
+The shipped resolver (`resolveEventSessionId`) tries, in order: the envelope
+id when it names a session row → the payload's `session_id` → the payload's
+`id` when it names a session row → `worker.session_id` for that id. An
+unattributable event is delivered (nothing to scope on), so the auth-off path
+stays byte-identical. `client_id → owner` lives on the singleton
+(`registerClientOwner` / `getClientOwner` / `unregisterClientOwner`), set at
+connect and cleared in `handleClientDisconnect` — which the SseManager calls
+on **every** removal path, so the map cannot grow across reconnects.
+
+Verification: `tests/functional/sse_isolation_test.py` (written first, failed
+on the unfixed binary — B received A's `session_updated` verbatim) plus Zig
+unit tests pinning the resolution order. `zig build test` → 3636/3644.
+
+**W2.5 (`204a64a1`) — terminals are owned.** `Session.owner` +
+`mayAccess` + `getSessionForOwner` + `destroySessionForOwner` in
+`terminal_session.zig`; `auth_common.resolveOwnerInto` for the handlers;
+create stamps, and input/output/resize/delete/ws all go through the
+owner-checked lookup. Foreign id → 404. An empty owner on either side means
+"no identity" (auth off) and allows access, so the auth-off path is
+unchanged. Verification: `tests/functional/terminal_isolation_test.py`
+(written first — B's output read returned 200 pre-fix) + Zig unit tests.
+`zig build test` → 3640/3648.
+
+**W2.6 — resolved as a documented boundary, not a code change.** `/api/skills*`
+and `/api/memories*` are **filesystem-scoped**, not DB rows: global entries
+live in one `~/.config/nalar/skills|memories/` directory per OS account, and
+local entries in `{cwd}/.nalar/…` with a caller-supplied `cwd`. There is no
+`user_id` to filter on, so "scope them per user" means inventing a per-user
+filesystem root — which is exactly the **deferred D9 boundary**, not a
+row-level predicate. A fake fix would make the system *look* isolated while
+the same bytes stay readable by path, so the boundary is now **pinned by a
+test** (`tests/functional/skills_memories_boundary_test.py`: global entries
+are shared across users; B can read A's directory via `?cwd=`) and documented
+in `README.md`. Closing it is a separate decision (per-user OS uid/chroot or a
+workspace-root allowlist).
+
+**Remaining:** W5 (frontend storage namespacing + purge + first-paint gate).
+
+
 
