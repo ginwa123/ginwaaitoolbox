@@ -83,7 +83,7 @@ class LoginScreenTest {
 
         assertEquals(LoginCredentials("person@example.com", "secret"), received)
         composeTestRule
-            .onNodeWithText("Credentials ready · authentication will be connected in the next step.")
+            .onNodeWithText("Credentials ready.")
             .assertIsDisplayed()
     }
 }

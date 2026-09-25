@@ -1,0 +1,333 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
+package com.nalar.mobile.shell
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.PermanentDrawerSheet
+import androidx.compose.material3.PermanentNavigationDrawer
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
+import com.nalar.mobile.recents.ChatSummary
+import com.nalar.mobile.recents.PreviewChats
+import com.nalar.mobile.recents.PreviewWorkspaces
+import com.nalar.mobile.recents.RecentsSidebar
+import com.nalar.mobile.recents.WorkspaceOption
+import com.nalar.mobile.recents.formatRelativeTime
+import com.nalar.mobile.recents.recentChatsForWorkspace
+import com.nalar.mobile.ui.NalarAccent
+import com.nalar.mobile.ui.NalarBackground
+import com.nalar.mobile.ui.NalarBackgroundRaised
+import com.nalar.mobile.ui.NalarBorder
+import com.nalar.mobile.ui.NalarDim
+import com.nalar.mobile.ui.NalarMuted
+import com.nalar.mobile.ui.NalarText
+import com.nalar.mobile.ui.NalarTheme
+import kotlinx.coroutines.launch
+
+enum class MobileDrawerLayout {
+    Auto,
+    Modal,
+    Permanent,
+}
+
+private val ExpandedDrawerBreakpoint = 720.dp
+
+@Composable
+fun MobileHomeScreen(
+    workspaces: List<WorkspaceOption>,
+    chats: List<ChatSummary>,
+    modifier: Modifier = Modifier,
+    initialWorkspaceId: String? = null,
+    initialChatId: String? = null,
+    onWorkspaceSelected: (String) -> Unit = {},
+    onChatSelected: (String) -> Unit = {},
+    drawerLayout: MobileDrawerLayout = MobileDrawerLayout.Auto,
+) {
+    val initialResolvedWorkspaceId = initialWorkspaceId
+        ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
+        ?: workspaces.firstOrNull()?.id
+
+    var selectedWorkspaceId by rememberSaveable {
+        mutableStateOf(initialResolvedWorkspaceId)
+    }
+    val scopedChats = selectedWorkspaceId
+        ?.let { workspaceId -> recentChatsForWorkspace(chats, workspaceId) }
+        .orEmpty()
+
+    var selectedChatId by rememberSaveable {
+        mutableStateOf(
+            initialChatId
+                ?.takeIf { requestedId -> scopedChats.any { it.id == requestedId } }
+                ?: scopedChats.firstOrNull()?.id,
+        )
+    }
+
+    LaunchedEffect(workspaces, selectedWorkspaceId) {
+        if (workspaces.none { it.id == selectedWorkspaceId }) {
+            selectedWorkspaceId = workspaces.firstOrNull()?.id
+        }
+    }
+
+    LaunchedEffect(scopedChats, selectedChatId) {
+        if (scopedChats.none { it.id == selectedChatId }) {
+            selectedChatId = scopedChats.firstOrNull()?.id
+        }
+    }
+
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+    val closeDrawer: () -> Unit = {
+        coroutineScope.launch {
+            drawerState.close()
+        }
+    }
+    val selectedWorkspace = workspaces.firstOrNull { it.id == selectedWorkspaceId }
+    val selectedChat = scopedChats.firstOrNull { it.id == selectedChatId }
+
+    val selectWorkspace: (String) -> Unit = { workspaceId ->
+        selectedWorkspaceId = workspaceId
+        selectedChatId = recentChatsForWorkspace(chats, workspaceId).firstOrNull()?.id
+        onWorkspaceSelected(workspaceId)
+    }
+    val selectChat: (String) -> Unit = { chatId ->
+        selectedChatId = chatId
+        onChatSelected(chatId)
+    }
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .background(NalarBackground),
+    ) {
+        val usePermanentDrawer = when (drawerLayout) {
+            MobileDrawerLayout.Auto -> maxWidth >= ExpandedDrawerBreakpoint
+            MobileDrawerLayout.Modal -> false
+            MobileDrawerLayout.Permanent -> true
+        }
+
+        if (usePermanentDrawer) {
+            PermanentNavigationDrawer(
+                drawerContent = {
+                    PermanentDrawerSheet(
+                        modifier = Modifier
+                            .width(320.dp)
+                            .testTag("sidebar_sheet"),
+                        drawerContainerColor = NalarBackground,
+                        drawerContentColor = NalarText,
+                    ) {
+                        RecentsSidebar(
+                            workspaces = workspaces,
+                            chats = chats,
+                            selectedWorkspaceId = selectedWorkspaceId,
+                            selectedChatId = selectedChatId,
+                            onWorkspaceSelected = selectWorkspace,
+                            onChatSelected = selectChat,
+                        )
+                    }
+                },
+            ) {
+                HomeContent(
+                    workspaceName = selectedWorkspace?.name ?: "No workspace",
+                    selectedChat = selectedChat,
+                    showNavigationMenu = false,
+                    onOpenNavigationMenu = {},
+                )
+            }
+        } else {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    ModalDrawerSheet(
+                        modifier = Modifier.testTag("sidebar_sheet"),
+                        drawerState = drawerState,
+                        drawerContainerColor = NalarBackground,
+                        drawerContentColor = NalarText,
+                    ) {
+                        RecentsSidebar(
+                            workspaces = workspaces,
+                            chats = chats,
+                            selectedWorkspaceId = selectedWorkspaceId,
+                            selectedChatId = selectedChatId,
+                            onWorkspaceSelected = selectWorkspace,
+                            onChatSelected = selectChat,
+                            onNavigate = closeDrawer,
+                        )
+                    }
+                },
+            ) {
+                HomeContent(
+                    workspaceName = selectedWorkspace?.name ?: "No workspace",
+                    selectedChat = selectedChat,
+                    showNavigationMenu = true,
+                    onOpenNavigationMenu = {
+                        coroutineScope.launch {
+                            drawerState.open()
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeContent(
+    workspaceName: String,
+    selectedChat: ChatSummary?,
+    showNavigationMenu: Boolean,
+    onOpenNavigationMenu: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Scaffold(
+        modifier = modifier
+            .fillMaxSize()
+            .testTag("home_screen"),
+        containerColor = NalarBackground,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = "Nalar",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = NalarText,
+                        )
+                        Text(
+                            text = workspaceName,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NalarDim,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    if (showNavigationMenu) {
+                        IconButton(
+                            onClick = onOpenNavigationMenu,
+                            modifier = Modifier.testTag("sidebar_open_menu"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Menu,
+                                contentDescription = "Open navigation menu",
+                            )
+                        }
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = NalarBackground,
+                    navigationIconContentColor = NalarText,
+                    titleContentColor = NalarText,
+                ),
+            )
+        },
+    ) { contentPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(contentPadding)
+                .padding(24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(24.dp),
+                color = NalarBackgroundRaised,
+                contentColor = NalarText,
+                border = BorderStroke(1.dp, NalarBorder),
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(48.dp)
+                            .background(NalarAccent, RoundedCornerShape(14.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "N",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = NalarBackground,
+                        )
+                    }
+
+                    Spacer(Modifier.height(2.dp))
+
+                    Text(
+                        text = selectedChat?.displayTitle ?: "No recent chat selected",
+                        modifier = Modifier.testTag("home_chat_title"),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = NalarText,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = selectedChat?.let { chat ->
+                            formatRelativeTime(chat.updatedAtEpochMillis, System.currentTimeMillis())
+                        } ?: "Choose a workspace to see its recent chats.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = NalarMuted,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        text = "Android preview · chat content is not connected yet.",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NalarDim,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Preview(showBackground = true, widthDp = 390, heightDp = 844)
+@Composable
+private fun MobileHomeScreenPreview() {
+    NalarTheme {
+        MobileHomeScreen(
+            workspaces = PreviewWorkspaces,
+            chats = PreviewChats,
+        )
+    }
+}
