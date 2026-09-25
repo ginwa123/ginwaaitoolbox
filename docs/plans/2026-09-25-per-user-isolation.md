@@ -363,12 +363,31 @@ Verification: `zig build test` → 4/4 steps, **3630/3638 passed**; new `tests/f
 - Client registration is keyed by **family routing key only** (`ai_mod.registerSessionClient(rk, client_id_copy, true)`, `:337-343`), so `forwardToClients("sessions", …)` fans out to *every* client that asked for `sessions`.
 - The comment on `CallbackUnifiedLLMBroadcast` states the design outright: *"the frontend listener then filters by `data.session_id` on the JS side"*. By then the payload is already in B's browser. Client-side filtering is not isolation. Same pattern on `queue` (`session_id`) and `design_element` (`workspace_id`).
 
-**Fix shape (one slice, three parts):**
-1. **Carry the owner on the payload.** Add `owner_user_id: []const u8 = ""` to `ai_mod.on_event_sent.SseEvent`. Empty = shared/system ⇒ deliver to everyone, which keeps auth-off behaviour byte-identical.
-2. **Store the subscriber's owner** in the client registry, then filter at forward time: `forwardToClients` skips a client when `data.owner_user_id` is non-empty and != that client's owner. Chosen over owner-scoped routing keys because it needs no routing-key churn — publishers only have to set a field.
-3. **Set the field at the publish sites.** Session/worker/queue events have a `session_id`, so one indexed lookup (`SELECT user_id FROM sessions WHERE id = ?`) resolves it. **`llm` streams at token rate — resolve once per stream, never per token.**
+**Fix shape — CORRECTED 2026-09-25 after reading the bus (one filter, no publisher sweep):**
 
-**Verification bar (must exist before this is called done):** a two-cookie wire test that puts both users on `channels=sessions,workers`, has A trigger a session rename and a worker run, and asserts B receives **zero** frames mentioning A's session id while still receiving its own. A unit test cannot see this bug — the leak is in the fan-out, not in a query.
+My first note said "add `owner_user_id` to `SseEvent` and set it at every publish site". That is unnecessary: **`SseEvent` already carries `session_id`** (a required field):
+
+```zig
+pub const SseEvent = struct {
+    session_id: []const u8,
+    data: []const u8,
+    event_type: ?[]const u8 = null,
+};
+```
+
+Every channel's events therefore already name the entity they belong to — a task chat's `session_id` IS the task id — so ownership is resolvable at the fan-out with no publisher changes and no payload change. The whole fix is:
+
+1. **Remember each SSE client's owner.** Add a `client_id → owner` map beside the existing client registry on the singleton (`ContextIPCTui`), mirroring the `di.session_to_client_ids` + `di.session_map_lock` pattern (`root.zig:405-440`). Populate it at SSE connect; clear it wherever the client is disposed (`unified_events_sse.zig:261`, `:615`).
+2. **Filter in the fan-out.** `forwardToClients` ends with
+   ```zig
+   for (client_ids) |client_id| {
+       server.sse_manager.sendToClient(client_id, sse_event_data) catch {};
+   }
+   ```
+   (`unified_events_sse.zig:79-81`). Before `sendToClient`, skip the client when its owner is known, is not the shared/system user, and `!auth_common.canSeeSession(alloc, di.db, data.session_id, owner)`. Empty `session_id` or unknown owner ⇒ deliver, which keeps auth-off byte-identical.
+3. **Cost.** One indexed `SELECT 1 FROM sessions WHERE id = ?` per (client, event). Fine for session/worker/kanban rates; the `llm` channel is per-token, so if it shows up in profiles, memoise `session_id → allowed` per client for the life of the stream. Do **not** pre-optimise this before measuring.
+
+That is a single-file-ish change (registry + two call sites + the loop), which is why it is now a tractable next step rather than a redesign.
 
 **Why it is not half-built here:** a partly-filtered bus passes unit tests and leaks exactly where nobody looked. Its failure mode is green.
 
