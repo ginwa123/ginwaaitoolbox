@@ -108,6 +108,17 @@ pub fn updateWorker(obj: UpsertWorkerInput) !void {
         &.{session_id},
     );
 
+    // Inherit the session's owner onto this worker row (plan 2026-09-25, W2.4).
+    // The worker has no request context, so the session row -- stamped by the
+    // session-create handler -- is the authority. Only an OWNERLESS worker is
+    // claimed, so an existing owner is never overwritten. A session that has no
+    // owner yet copies NULL, i.e. stays in the shared bucket.
+    try db.exec(
+        allocator,
+        "UPDATE worker SET user_id = (SELECT user_id FROM sessions WHERE id = ?) WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+        &.{ session_id, worker_id },
+    );
+
     // update workspace_item_tasks if exists
     try db.exec(allocator, "UPDATE workspace_item_tasks SET updated_at = datetime('now') WHERE id = ?", &.{session_id});
 
@@ -153,7 +164,8 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    session_id TEXT,
         \\    working_directory TEXT,
         \\    last_activity_nano INTEGER,
-        \\    last_activity_description TEXT
+        \\    last_activity_description TEXT,
+        \\    user_id TEXT
         \\)
     , &.{});
     try db.exec(alloc,

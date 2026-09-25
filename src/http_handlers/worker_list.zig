@@ -10,6 +10,7 @@
 const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
+const auth_common = @import("auth_common.zig");
 const gserverz = nalarcore.gserverz;
 
 pub const WorkerListError = error{
@@ -35,19 +36,30 @@ fn useCase(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
     input: WorkerListInput,
+    owner: []const u8,
 ) WorkerListError!WorkerListResult {
     // Build query with optional session_id filter. SQL convention:
     // alias the table (`w`) so the column references stay
     // unambiguous when filters grow (see project memory
     // nalar-sql-alias-tables.md).
     const base_sql = "SELECT w.id, w.session_id, w.working_directory, w.last_activity_nano AS last_activity, w.last_activity_description, w.created_at FROM worker w";
+    // Owner scope (plan 2026-09-25, W2.4). Skipped only for the shared/system
+    // user, i.e. auth off, where the system user sees every worker.
+    const scoped = !auth_common.isSharedOwner(owner);
     const query_sql = if (input.session_id_filter != null)
-        try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? ORDER BY w.last_activity_nano DESC", .{base_sql})
+        if (scoped)
+            try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? AND " ++ auth_common.ownerVisibilityClause("w") ++ " ORDER BY w.last_activity_nano DESC", .{base_sql})
+        else
+            try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? ORDER BY w.last_activity_nano DESC", .{base_sql})
+    else if (scoped)
+        try std.fmt.allocPrint(allocator, "{s} WHERE " ++ auth_common.ownerVisibilityClause("w") ++ " ORDER BY w.last_activity_nano DESC", .{base_sql})
     else
         try std.fmt.allocPrint(allocator, "{s} ORDER BY w.last_activity_nano DESC", .{base_sql});
 
     const query_params: []const []const u8 = if (input.session_id_filter) |sid|
-        &[_][]const u8{sid}
+        if (scoped) &[_][]const u8{ sid, owner, owner } else &[_][]const u8{sid}
+    else if (scoped)
+        &[_][]const u8{ owner, owner }
     else
         &[_][]const u8{};
 
@@ -100,7 +112,12 @@ pub fn workerListHandler(
         .session_id_filter = req.query.get("session_id"),
     };
 
-    const outcome = useCase(allocator, sqlite_db, input) catch |err| {
+    // Server-derived owner (cookie only). Scopes the list so B never sees A's
+    // running workers; auth off resolves to the system user, who sees all.
+    const owner = auth_common.resolveRequestUserId(allocator, sqlite_db, di.auth_enabled, req.headers) catch "";
+    defer if (owner.len > 0) allocator.free(owner);
+
+    const outcome = useCase(allocator, sqlite_db, input, owner) catch |err| {
         const status: u16 = switch (err) {
             error.QueryFailed => 500,
             error.OutOfMemory => 500,
