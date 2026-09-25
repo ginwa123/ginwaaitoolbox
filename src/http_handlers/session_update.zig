@@ -3,6 +3,7 @@ const root_mod = @import("nalarcore");
 const gserverz = root_mod.gserverz;
 const llm_history = root_mod.llm_history;
 const http_response = @import("http_response.zig");
+const auth_common = @import("auth_common.zig");
 
 /// Request body for updating an existing session
 pub const RequestSessionUpdate = struct {
@@ -64,6 +65,21 @@ pub fn sessionUpdateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     // LLM call. Without this, getSession() below returns null and the
     // handler 404s with "session not found".
     _ = try llm_history.ensureSessionExists(allocator, sqlite_db, session_id);
+
+    // Claim an ownerless row created by the ensure above (same pattern as
+    // session_create + session_mark_touched). Only claims ownerless rows.
+    if (di.auth_enabled) {
+        const stamp_owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch null;
+        defer if (stamp_owner) |o| allocator.free(o);
+        if (stamp_owner) |o| {
+            if (!auth_common.isSharedOwner(o)) {
+                _ = di.db.exec(allocator,
+                    "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+                    &[_][]const u8{ o, session_id },
+                ) catch {};
+            }
+        }
+    }
 
     // Update selected_profile_model (always — even if empty, to allow clearing)
     try llm_history.updateSessionSelectedProfileModel(allocator, sqlite_db, session_id, parsed.selected_profile_model);

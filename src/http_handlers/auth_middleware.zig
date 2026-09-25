@@ -86,13 +86,24 @@ pub fn authMiddleware(
     // mutate any session by id — messages included. Both param spellings are
     // covered because the stop route uses `:session`. The SSE/WS transports
     // bypass middleware entirely and gate themselves (see the module doc).
+    //
+    // Missing rows pass through so lazy-create handlers (PUT update,
+    // POST touched with ensureSessionExists) can create the row: a brand-new
+    // chat navigates with the task id in the URL before any session row
+    // exists, and 404ing here produced the "Session not found" toasts on
+    // every New Chat open. Only an existing-but-foreign row 404s.
     if (req.params.get("session_id") orelse req.params.get("session")) |sid| {
         if (!auth_common.canSeeSession(allocator, di.db, sid, sess.user_id)) {
+            if (auth_common.sessionExistsById(allocator, di.db, sid)) {
+                auth_common.freeSessionLookup(allocator, sess);
+                return res.jsonResponse(.{
+                    .status_code = 404,
+                    .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }),
+                });
+            }
+            // No row yet — let the handler decide (ensure-create or 404).
             auth_common.freeSessionLookup(allocator, sess);
-            return res.jsonResponse(.{
-                .status_code = 404,
-                .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }),
-            });
+            return chain.next(ctx, req, res);
         }
     }
 
