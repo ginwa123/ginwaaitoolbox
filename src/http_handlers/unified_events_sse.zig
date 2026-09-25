@@ -42,6 +42,14 @@ const auth_common = @import("auth_common.zig");
 /// `getListClientsForSession` returns an owned copy of the client list, so
 /// the SSE event loop can safely `unregisterSessionClient` on POLL.HUP
 /// while we are still iterating here.
+///
+/// Per-user isolation (plan 2026-09-25, W3): the bus fans out by *family*
+/// routing key, so without a filter every connected client receives every
+/// user's events. Each client's owner is recorded at connect
+/// (`registerClientOwner`); before sending, a client whose owner is a real
+/// user and who cannot see `data.session_id` is skipped. An empty
+/// `session_id` or an unknown owner (auth off) delivers, so the auth-off
+/// path stays byte-identical.
 fn forwardToClients(routing_key: []const u8, data: ai_mod.on_event_sent.SseEvent) void {
     const di = nalar_core.getSingleton() catch return;
     const allocator = di.allocator;
@@ -77,9 +85,123 @@ fn forwardToClients(routing_key: []const u8, data: ai_mod.on_event_sent.SseEvent
     defer allocator.free(sse_event_data);
 
     for (client_ids) |client_id| {
+        if (!clientMayReceive(di, client_id, data)) continue;
         server.sse_manager.sendToClient(client_id, sse_event_data) catch {};
     }
 }
+
+/// True when the SSE client identified by `client_id` may receive an event
+/// about `session_id`.
+///
+/// Deliver when:
+///   - the client's owner is unknown (auth off / pre-registration), or
+///   - the owner is the shared/system user (sees everything by decision), or
+///   - the event's session cannot be resolved to a row the owner is denied.
+///
+/// Skip only for a real owner who is positively denied the event's session —
+/// the leak this closes.
+///
+/// `SseEvent.session_id` is the real session id on the `sessions`, `llm`,
+/// `queue` and `background_process` channels, but the *routing-key literal*
+/// on `workers` ("workers") and `design_element` ("design_element") — those
+/// publishers put the real id only in the JSON payload. So when the envelope
+/// id does not name a session row, fall back to the payload's `session_id`
+/// field before deciding; a payload that names no session either is
+/// delivered (nothing to scope on).
+fn clientMayReceive(di: *nalar_core.ContextIPCTui, client_id: [16]u8, data: ai_mod.on_event_sent.SseEvent) bool {
+    const owner = nalar_core.getClientOwner(client_id) orelse return true;
+    if (auth_common.isSharedOwner(owner)) return true;
+
+    // Resolve the session this event is about, then ask whether the owner
+    // may see it. `null` means "cannot be attributed to a session" — deliver,
+    // because there is nothing to scope on.
+    const session_id = resolveEventSessionId(di.allocator, di.db, data) orelse return true;
+    if (session_id.len == 0) return true;
+    return auth_common.canSeeSession(di.allocator, di.db, session_id, owner);
+}
+
+/// Resolve the session id an SSE event is about, or null when it cannot be
+/// attributed to one.
+///
+/// `SseEvent.session_id` is the real session id on the `sessions`, `llm`,
+/// `queue` and `background_process` channels, but the *routing-key literal*
+/// on `workers` ("workers") and `design_element` ("design_element") — those
+/// publishers put the real id only in the JSON payload, and the worker
+/// publishers leave the payload's `session_id` empty (the worker id is in
+/// `id`). So the resolution order is:
+///
+///   1. the envelope id, when it names a session row;
+///   2. the payload's `session_id`, when non-empty;
+///   3. the payload's `id`, when it names a session row (worker events carry
+///      the worker id there, and `worker.id` is not always the session id —
+///      so also try the `worker` table's `session_id` for that id).
+///
+/// Returns an owned-by-arena slice (the fan-out is a short-lived callback).
+fn resolveEventSessionId(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    data: ai_mod.on_event_sent.SseEvent,
+) ?[]const u8 {
+    if (data.session_id.len > 0 and sessionRowExists(allocator, db, data.session_id)) {
+        return data.session_id;
+    }
+    const payload = payloadFields(allocator, data.data) orelse return null;
+    if (payload.session_id.len > 0) return payload.session_id;
+    if (payload.id.len == 0) return null;
+    if (sessionRowExists(allocator, db, payload.id)) return payload.id;
+    // Worker events: `id` is the worker id; map it to its session.
+    return workerSessionId(allocator, db, payload.id);
+}
+
+const PayloadFields = struct {
+    session_id: []const u8 = "",
+    id: []const u8 = "",
+};
+
+/// Extract `session_id` and `id` from an SSE payload. Null when the payload
+/// is not a JSON object.
+fn payloadFields(allocator: std.mem.Allocator, data: []const u8) ?PayloadFields {
+    if (data.len == 0) return null;
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, allocator, data, .{}) catch return null;
+    const obj = switch (parsed) {
+        .object => |o| o,
+        else => return null,
+    };
+    var out = PayloadFields{};
+    if (obj.get("session_id")) |v| {
+        if (v == .string) out.session_id = v.string;
+    }
+    if (obj.get("id")) |v| {
+        if (v == .string) out.id = v.string;
+    }
+    return out;
+}
+
+fn sessionRowExists(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, id: []const u8) bool {
+    if (id.len == 0) return false;
+    var q = db.query(allocator, "SELECT 1 FROM sessions WHERE id = ?", &[_][]const u8{id}) catch return false;
+    defer q.deinit();
+    const row = q.next() catch return false;
+    if (row) |r| {
+        r.deinit(allocator);
+        return true;
+    }
+    return false;
+}
+
+fn workerSessionId(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBackend, worker_id: []const u8) ?[]const u8 {
+    if (worker_id.len == 0) return null;
+    var q = db.query(allocator, "SELECT session_id FROM worker WHERE id = ?", &[_][]const u8{worker_id}) catch return null;
+    defer q.deinit();
+    const row = q.next() catch return null;
+    const r = row orelse return null;
+    defer r.deinit(allocator);
+    if (r.values.len == 0) return null;
+    return allocator.dupe(u8, r.values[0]) catch null;
+}
+
+
+
 
 /// ChannelList — the parsed result of `?channels=`.
 pub const ChannelList = struct {
@@ -279,6 +401,14 @@ pub fn unifiedEventsStreamHandler(
     // JSON below is type-compat only and never reaches the wire
     // (headers already sent); the `auth_error` event + removeClient
     // in terminateSseStream are what the browser actually observes.
+    //
+    // The resolved owner is kept for the per-user fan-out filter (W3):
+    // it is recorded against this client_id below, so `forwardToClients`
+    // can drop events about sessions this user cannot see.
+    var owner_buf: ?[]const u8 = null;
+    defer {
+        if (owner_buf) |o| allocator.free(o);
+    }
     if (nalar_core.getSingleton()) |di_gate| {
         if (di_gate.auth_enabled) {
             const tok = auth_common.parseSessionToken(req.headers) orelse {
@@ -289,6 +419,7 @@ pub fn unifiedEventsStreamHandler(
                 terminateSseStream(ctx, "auth_error", "{\"error\":\"Unauthenticated\"}");
                 return res.jsonResponse(.{ .status_code = 401, .data = "{\"error\":\"Unauthenticated\"}" });
             };
+            owner_buf = allocator.dupe(u8, sess.user_id) catch null;
             auth_common.freeSessionLookup(allocator, sess);
         }
     } else |_| {}
@@ -334,7 +465,14 @@ pub fn unifiedEventsStreamHandler(
     if (ctx.client_id) |client_id| {
         const client_id_copy: [16]u8 = client_id;
 
-        // 2a. Register the client_id under EVERY routing key.
+        // 2a. Record this client's owner for the per-user fan-out filter
+        // (W3). Absent/unknown owner => the fan-out delivers, so auth-off
+        // (owner_buf == null) stays byte-identical.
+        if (owner_buf) |o| {
+            nalar_core.registerClientOwner(client_id_copy, o);
+        }
+
+        // 2b. Register the client_id under EVERY routing key.
         // registerSessionClient dupes the key internally, so we can
         // pass each entry of channels.routing_keys (already-owned
         // slices) directly.
@@ -770,4 +908,118 @@ test "parseChannels: trims whitespace around tokens" {
     try testing.expectEqual(@as(usize, 2), list.routing_keys.len);
     try testing.expectEqualStrings("workers", list.routing_keys[0]);
     try testing.expectEqualStrings("sessions", list.routing_keys[1]);
+}
+
+// ===== Per-user fan-out filter (plan 2026-09-25, W3) =====================
+//
+// The bus fans out by family routing key, so the fan-out must resolve which
+// session an event is about before deciding whether a client may see it.
+// `SseEvent.session_id` is the real session id on the `sessions`/`llm`/
+// `queue`/`background_process` channels but the routing-key literal on
+// `workers`/`design_element`, and the worker publishers leave the payload's
+// `session_id` empty (the worker id is in `id`). These tests pin the
+// resolution order so a future publisher change cannot silently reopen the
+// leak (an unresolvable event is delivered, so a wrong resolution is a leak,
+// not a dropped frame).
+
+fn testDb(alloc: std.mem.Allocator) !nalarcore.sqlite.SqliteBackend {
+    var db: nalarcore.sqlite.SqliteBackend = .{};
+    try db.init(std.testing.io, ":memory:");
+    try db.exec(alloc, "CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT)", &.{});
+    try db.exec(alloc, "CREATE TABLE worker (id TEXT PRIMARY KEY, session_id TEXT)", &.{});
+    try db.exec(alloc,
+        "INSERT INTO sessions (id, user_id) VALUES ('s_a','user_a'), ('s_b','user_b')",
+        &.{});
+    try db.exec(alloc, "INSERT INTO worker (id, session_id) VALUES ('w_a','s_a')", &.{});
+    return db;
+}
+
+test "resolveEventSessionId: envelope id wins when it names a session" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var db = try testDb(alloc);
+    defer db.deinit();
+
+    const ev = ai_mod.on_event_sent.SseEvent{ .session_id = "s_a", .data = "{}" };
+    const resolved = resolveEventSessionId(alloc, &db, ev) orelse return error.NotResolved;
+    try std.testing.expectEqualStrings("s_a", resolved);
+}
+
+test "resolveEventSessionId: routing-key literal falls back to the payload session_id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var db = try testDb(alloc);
+    defer db.deinit();
+
+    // The `workers` channel sets the envelope id to the literal "workers".
+    const ev = ai_mod.on_event_sent.SseEvent{
+        .session_id = "workers",
+        .data = "{\"action\":\"updated\",\"id\":\"w_a\",\"session_id\":\"s_a\"}",
+    };
+    const resolved = resolveEventSessionId(alloc, &db, ev) orelse return error.NotResolved;
+    try std.testing.expectEqualStrings("s_a", resolved);
+}
+
+test "resolveEventSessionId: worker event with empty payload session_id maps id -> worker.session_id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var db = try testDb(alloc);
+    defer db.deinit();
+
+    // `llm_history.updateWorkerActivity` emits exactly this shape: the
+    // envelope id is "workers", the payload's session_id is empty, and the
+    // worker id is in `id`. Without the worker-table hop this event would be
+    // delivered to every user (the leak).
+    const ev = ai_mod.on_event_sent.SseEvent{
+        .session_id = "workers",
+        .data = "{\"action\":\"updated\",\"id\":\"w_a\",\"session_id\":\"\"}",
+    };
+    const resolved = resolveEventSessionId(alloc, &db, ev) orelse return error.NotResolved;
+    try std.testing.expectEqualStrings("s_a", resolved);
+}
+
+test "resolveEventSessionId: unattributable event resolves to null (delivered)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var db = try testDb(alloc);
+    defer db.deinit();
+
+    // design_element events carry a workspace_id, not a session id — there is
+    // nothing to scope on, so the fan-out must deliver rather than drop.
+    const ev = ai_mod.on_event_sent.SseEvent{
+        .session_id = "design_element",
+        .data = "{\"action\":\"created\",\"workspace_id\":\"ws_1\"}",
+    };
+    try std.testing.expect(resolveEventSessionId(alloc, &db, ev) == null);
+}
+
+test "resolveEventSessionId: non-JSON payload with a literal envelope id resolves to null" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var db = try testDb(alloc);
+    defer db.deinit();
+
+    const ev = ai_mod.on_event_sent.SseEvent{ .session_id = "workers", .data = "not json" };
+    try std.testing.expect(resolveEventSessionId(alloc, &db, ev) == null);
+}
+
+test "payloadFields: extracts session_id and id, tolerates missing fields" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const both = payloadFields(alloc, "{\"session_id\":\"s1\",\"id\":\"w1\"}") orelse return error.NoFields;
+    try std.testing.expectEqualStrings("s1", both.session_id);
+    try std.testing.expectEqualStrings("w1", both.id);
+
+    const only_id = payloadFields(alloc, "{\"id\":\"w1\"}") orelse return error.NoFields;
+    try std.testing.expectEqualStrings("", only_id.session_id);
+    try std.testing.expectEqualStrings("w1", only_id.id);
+
+    try std.testing.expect(payloadFields(alloc, "[]") == null);
+    try std.testing.expect(payloadFields(alloc, "") == null);
 }

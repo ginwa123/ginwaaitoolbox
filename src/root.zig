@@ -87,6 +87,24 @@ pub const ContextIPCTui = struct {
     session_to_client_ids: std.StringHashMapUnmanaged(std.ArrayList([16]u8)) = .empty,
     session_map_lock: std.Io.Mutex = .init,
 
+    /// SSE client_id -> owning user id, for per-user event filtering.
+    ///
+    /// The event bus fans out by *family routing key* (`sessions`, `workers`,
+    /// `llm`, …), so without this map every connected client receives every
+    /// user's events. `unified_events_sse.forwardToClients` consults it to
+    /// drop an event whose `session_id` the client's owner cannot see.
+    ///
+    /// Keyed by the 16-byte client id (the same key `session_to_client_ids`
+    /// stores in its value lists), value is an owned copy of the owner id.
+    /// Populated at SSE connect, removed in `handleClientDisconnect` — which
+    /// the SseManager calls on EVERY removal path (explicit shutdown, peer
+    /// HUP, heartbeat/broadcast write failure, stale sweep).
+    ///
+    /// An absent entry means "owner unknown" and the fan-out delivers, so
+    /// auth-off (no identity) stays byte-identical.
+    client_owners: std.StringHashMapUnmanaged([]const u8) = .empty,
+    client_owners_lock: std.Io.Mutex = .init,
+
     on_disconnect_cb: ?*fn (client_id: [16]u8) void = null,
     on_disconnect_lock: std.Io.Mutex = .init,
     group_emit_session_create: std.Io.Group,
@@ -401,6 +419,67 @@ fn freeLlmConfig(allocator: std.mem.Allocator, ptr: *const config.LlmConfig) voi
     allocator.destroy(mut);
 }
 
+/// Record the owning user id for an SSE client, for per-user event filtering.
+///
+/// Called once at SSE connect (`unified_events_sse.unifiedEventsStreamHandler`)
+/// with the owner resolved from the request cookie. The value is duped into
+/// the singleton allocator; a re-register for the same client replaces (and
+/// frees) the previous value, so a reconnect cannot leak.
+///
+/// `owner` may be the shared/system sentinel — the fan-out treats that as
+/// "sees everything", so storing it is harmless and keeps the map complete.
+pub fn registerClientOwner(client_id: [16]u8, owner: []const u8) void {
+    const di = getSingleton() catch return;
+    const allocator = di.allocator;
+    const io = di.io;
+    di.client_owners_lock.lock(io) catch {};
+    defer di.client_owners_lock.unlock(io);
+
+    // The key MUST be an owned copy: `client_id` is a by-value parameter, so
+    // `client_id[0..]` would dangle the moment this function returns.
+    const owned_key = allocator.dupe(u8, client_id[0..]) catch return;
+    const owned = allocator.dupe(u8, owner) catch {
+        allocator.free(owned_key);
+        return;
+    };
+    if (di.client_owners.fetchRemove(owned_key)) |kv| {
+        allocator.free(kv.key);
+        allocator.free(kv.value);
+    }
+    di.client_owners.put(allocator, owned_key, owned) catch {
+        allocator.free(owned_key);
+        allocator.free(owned);
+    };
+}
+
+/// Look up the owning user id recorded for an SSE client.
+///
+/// Returns a BORROWED slice valid only while the caller holds no other
+/// registry mutation — the fan-out uses it immediately and never stores it.
+/// Null means "owner unknown" (auth off, or a client registered before this
+/// map existed), which the fan-out treats as "deliver".
+pub fn getClientOwner(client_id: [16]u8) ?[]const u8 {
+    const di = getSingleton() catch return null;
+    const io = di.io;
+    di.client_owners_lock.lock(io) catch {};
+    defer di.client_owners_lock.unlock(io);
+    return di.client_owners.get(client_id[0..]);
+}
+
+/// Drop the recorded owner for a disconnected SSE client. Called from
+/// `handleClientDisconnect`, which the SseManager invokes on every removal
+/// path, so the map cannot grow across reconnects.
+pub fn unregisterClientOwner(client_id: [16]u8) void {
+    const di = getSingleton() catch return;
+    const allocator = di.allocator;
+    const io = di.io;
+    di.client_owners_lock.lock(io) catch {};
+    defer di.client_owners_lock.unlock(io);
+    if (di.client_owners.fetchRemove(client_id[0..])) |kv| {
+        allocator.free(kv.value);
+    }
+}
+
 /// Register a session -> client_id mapping (appends to list)
 pub fn registerSessionClient(session_id: []const u8, client_id: [16]u8, is_use_lock: bool) !void {
     _ = is_use_lock;
@@ -570,6 +649,12 @@ pub fn handleClientDisconnect(client_id: [16]u8) void {
         // defer di.session_map_lock.unlock(io);
         cb(client_id);
     }
+
+    // Drop the per-user event-filter entry for this client. The SseManager
+    // calls this on EVERY removal path (explicit shutdown, peer HUP,
+    // heartbeat/broadcast write failure, stale sweep), so the map cannot
+    // grow across reconnects.
+    unregisterClientOwner(client_id);
 
     // Collect EVERY routing_key that contains this client_id, then
     // unregister each one and drop its event_bus subscription.
