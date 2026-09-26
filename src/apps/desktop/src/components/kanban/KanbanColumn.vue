@@ -76,10 +76,15 @@ const props = withDefaults(
     // `handleRunAllAgents` POST is in flight; the menu item is disabled
     // while true.
     runAllBusy?: boolean
+    // Every column on the board, already ordered. Threaded to each
+    // card so its context menu can render the "Move to column"
+    // submenu. Empty (default) hides the submenu entirely.
+    columns?: KanbanColumn[]
   }>(),
   {
     cwd: '',
     runAllBusy: false,
+    columns: () => [],
   },
 )
 
@@ -126,6 +131,11 @@ const emit = defineEmits<{
   // Open the per-task detail dialog (kanban-task-detail-dialog
   // feature). Re-emitted verbatim from <KanbanCard>.
   viewTaskDetail: [taskId: string]
+  // Context-menu "Move to column" requested by one of this column's
+  // cards. This component resolves the append position and re-emits it
+  // as the EXISTING `moveTask` shape, so <KanbanView> and AppLayout —
+  // which already handle drag-and-drop moves — need no change at all.
+  moveTaskToColumn: [payload: { taskId: string; columnId: string }]
 }>()
 
 // ─── Per-column sort state (kanban-sort-by, plan Task 3) ────────────────
@@ -546,6 +556,31 @@ const handleDrop = (event: DragEvent) => {
   })
 }
 
+// ─── Context-menu "Move to column" ────────────────────────────────────
+//
+// The card's context menu emits the DESTINATION column only — it cannot
+// see the rest of the board, so it cannot know the append position. This
+// component can (`props.tasks` is the whole board), so it resolves the
+// position and re-emits as `moveTask`, the same shape and the same
+// host handler the drag-and-drop path above uses.
+//
+// Reusing the drop rule (position = the target column's current card
+// count) is deliberate: doing one and then the other must not produce
+// divergent state.
+const handleMoveToColumn = (payload: { taskId: string; columnId: string }) => {
+  // No-op when the target is the card's current column — the POST would
+  // renumber siblings for no visible change.
+  if (payload.columnId === props.column.id) return
+  const task = props.tasks.find((t) => t.id === payload.taskId)
+  if (task && task.kanban_column_id === payload.columnId) return
+  const position = props.tasks.filter((t) => t.kanban_column_id === payload.columnId).length
+  emit('moveTask', {
+    taskId: payload.taskId,
+    columnId: payload.columnId,
+    position,
+  })
+}
+
 // Mirror KanbanCard's dragstart so the source card can dim while
 // dragging (visual cue). We listen on the cards container with
 // event delegation, the same pattern as ProjectsList's item DnD.
@@ -847,6 +882,8 @@ const handleColumnDrop = (event: DragEvent) => {
               :workspace-id="workspaceId"
               :item-id="itemId"
               :cwd="cwd"
+              :columns="columns"
+              :current-column-id="column.id"
               :style="isDragging ? 'opacity: 0.4;' : ''"
               @select-task="(id) => emit('selectTask', id)"
               @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
@@ -857,6 +894,7 @@ const handleColumnDrop = (event: DragEvent) => {
               @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
               @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
               @view-task-detail="(id) => emit('viewTaskDetail', id)"
+              @move-task-to-column="handleMoveToColumn"
             />
           </div>
         </template>

@@ -35,9 +35,11 @@ import { useContextMenu } from '../../composables/useContextMenu'
 import { useTaskActions, type TaskComponentProps } from '../../composables/useTaskActions'
 import { parseAgentErrorHeadline } from '../../helpers/parseAgentErrorHeadline'
 import MarkdownDescription from '../kanban/MarkdownDescription.vue'
-import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
+import KanbanTaskContextMenu from '../kanban/KanbanTaskContextMenu.vue'
 import GitBranchMenu from '../shell/GitBranchMenu.vue'
+import ConfirmDialog from '../dialogs/ConfirmDialog.vue'
 import { stopSession } from '../../api'
+import type { KanbanColumn } from '../../stores/workspaces'
 import {
   fetchPrInfoCached,
   fetchPrStatusCached,
@@ -97,9 +99,25 @@ const errorRetryLabel = computed(() =>
   agentError.value ? parseAgentErrorHeadline(agentError.value.content).retryLabel : null,
 )
 
-const props = withDefaults(defineProps<TaskComponentProps>(), {
-  cwd: '',
-})
+// `columns` / `currentColumnId` back the context menu's "Move to
+// column" submenu. They are NOT part of the shared TaskComponentProps
+// because the sidebar-row variant (<WorkspaceItemTaskRow>) has no
+// board to move between and passes neither.
+const props = withDefaults(
+  defineProps<
+    TaskComponentProps & {
+      /** The board's columns, already ordered. Drives the submenu. */
+      columns?: KanbanColumn[]
+      /** Marked as "current" in the submenu. */
+      currentColumnId?: string | null
+    }
+  >(),
+  {
+    cwd: '',
+    columns: () => [],
+    currentColumnId: null,
+  },
+)
 
 const emit = defineEmits<{
   selectTask: [taskId: string]
@@ -112,22 +130,29 @@ const emit = defineEmits<{
   viewTaskDetail: [taskId: string]
   openTaskInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
   openTaskDetailInBackground: [payload: { workspaceId: string; itemId: string; taskId: string }]
+  // Context-menu "Move to column". We emit only the DESTINATION — the
+  // append position depends on how many tasks the target column holds,
+  // which this component can't see. <KanbanColumn> resolves it and
+  // re-emits the existing `moveTask` shape its host already handles.
+  moveTaskToColumn: [payload: { taskId: string; columnId: string }]
 }>()
 
 // Shared logic — event handlers, drop indicator.
-const {
-  dropIndicatorBoxShadow,
-  handleSelectTask,
-  handleDeleteTask,
-  handleRenameTask,
-  handlePinToggle,
-} = useTaskActions(props, emit)
+// Only the two pieces the card still uses inline. The event-taking
+// handlers (delete / rename / pin) existed for the hover buttons and
+// are gone with them — the context menu emits the same payloads
+// directly (see `*FromMenu` below), because those handlers' only job
+// was `stopPropagation()` away from the card root's @click and the
+// teleported menu never traverses the card. They stay in the composable
+// for <WorkspaceItemTaskRow>, which still renders its own buttons.
+const { dropIndicatorBoxShadow, handleSelectTask } = useTaskActions(props, emit)
 
-// Right-click "Open in new tab" for this task. The menu position
-// lives in useContextMenu; the task ids come from props. The event
-// bubbles up (sidebar list or kanban board) where the host builds
-// the task chat URL and opens a real browser tab.
-const { menuPos, openAt, close: closeTaskMenu } = useContextMenu()
+// Right-click action menu for this task. The menu position lives in
+// useContextMenu; the task ids come from props and the handlers below.
+// `clampToViewport` is destructured too so the ContextMenu-key path
+// (which builds its own position from the card's rect) applies the same
+// edge clamp as a real right-click.
+const { menuPos, openAt, close: closeTaskMenu, clampToViewport } = useContextMenu()
 
 const onTaskContextMenu = (event: MouseEvent) => {
   openAt(event)
@@ -135,14 +160,76 @@ const onTaskContextMenu = (event: MouseEvent) => {
 
 // Enter / Space activate the card. The root is a <div role="button"> rather
 // than a real <button> because the card contains nested interactive controls
-// (pin / rename / details / delete / tags) and HTML forbids
+// (the description's @path chips / tag links) and HTML forbids
 // button-inside-button. This restores the keyboard contract the native
 // element would have given us.
+//
+// ContextMenu / F10 open the action menu. Removing the hover button strip
+// (plan §2, G1) took away the only discoverable route to rename / delete /
+// move, so the keyboard path to the menu is a hard requirement, not a
+// nice-to-have — otherwise the change is an accessibility regression.
 const handleCardKeydown = (event: KeyboardEvent) => {
   if (event.key === 'Enter' || event.key === ' ') {
     event.preventDefault()
     handleSelectTask()
+    return
   }
+  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
+    event.preventDefault()
+    // Anchor at the card's centre — there is no cursor to follow on a
+    // keyboard gesture. Reuses the same viewport clamp as a real
+    // right-click so a card near the bottom-right corner doesn't push
+    // the menu off-screen.
+    const rect = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+    menuPos.value = clampToViewport(
+      rect ? rect.left + rect.width / 2 : 0,
+      rect ? rect.top + rect.height / 2 : 0,
+    )
+  }
+}
+
+// Context-menu "Move to column". We forward the destination only; the
+// <KanbanColumn> ancestor resolves the append position and re-emits the
+// existing `moveTask` shape, so nothing above the card changes.
+const moveTaskFromMenu = (columnId: string) => {
+  closeTaskMenu()
+  emit('moveTaskToColumn', { taskId: props.task.id, columnId })
+}
+
+// Pin / rename / view-detail, driven from the context menu.
+//
+// These deliberately do NOT call the `useTaskActions` handlers. Those take
+// a DOM event solely to `stopPropagation()` it away from the card root's
+// @click — a defence that the old inline buttons needed (a <button> nested
+// inside the card's role="button" div). The menu is Teleported to `body`,
+// so its clicks never traverse the card at all and there is nothing to
+// stop; synthesising a MouseEvent to satisfy the signature would be noise.
+// The emitted payloads are identical to the buttons'.
+const pinFromMenu = () => {
+  closeTaskMenu()
+  emit('pinTask', props.workspaceId, props.itemId, props.task.id, !props.task.is_pinned)
+}
+const renameFromMenu = () => {
+  closeTaskMenu()
+  emit('renameTask', props.workspaceId, props.itemId, props.task.id, props.task.name)
+}
+const viewDetailFromMenu = () => {
+  closeTaskMenu()
+  emit('viewTaskDetail', props.task.id)
+}
+
+// Context-menu "Delete task". Gated behind a confirmation: the button
+// needed a precise hit on a 24px target, the menu item needs a right-click
+// plus one pick from a list. Similar odds, same consequence, so the
+// irreversible row gets an explicit stop.
+const confirmDeleteOpen = ref(false)
+const requestDeleteFromMenu = () => {
+  closeTaskMenu()
+  confirmDeleteOpen.value = true
+}
+const confirmDelete = () => {
+  confirmDeleteOpen.value = false
+  emit('deleteTask', props.workspaceId, props.itemId, props.task.id)
 }
 
 const openTaskMenuInBackground = () => {
@@ -225,18 +312,6 @@ const stopAgentFromMenu = async () => {
   } finally {
     isStoppingAgent.value = false
   }
-}
-
-// Local-only handler — opens the per-task detail dialog. NOT in
-// useTaskActions because that composable is shared with the row
-// variant (sidebar list) which doesn't render the info button. CRITICAL:
-// we must stopPropagation so the click doesn't also bubble up to the
-// card-root <button>'s @click="handleSelectTask" — otherwise both the
-// dialog AND the chat would open on the same click.
-const handleViewTaskDetail = (event: MouseEvent) => {
-  event.stopPropagation()
-  event.preventDefault()
-  emit('viewTaskDetail', props.task.id)
 }
 
 // (card-ux-v3 — Jira-style priority-bar pattern). A thin 3px colored
@@ -674,76 +749,12 @@ watch([gitBranchBadge, effectiveCwd], () => {
         </svg>
       </span>
       <span class="flex-1 min-w-0 text-sm font-medium leading-snug truncate">{{ task.name }}</span>
-      <button
-        @click="handlePinToggle($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg]"
-        :class="
-          task.is_pinned ? 'text-yellow-400' : 'text-[--semantic-text-dim] hover:text-yellow-400'
-        "
-        :title="task.is_pinned ? 'Unpin task' : 'Pin task'"
-        data-testid="task-pin-toggle"
-      >
-        <svg v-if="task.is_pinned" class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
-          <path
-            d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
-          />
-        </svg>
-        <svg v-else class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"
-          />
-        </svg>
-      </button>
-      <button
-        @click="handleRenameTask($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-blue-400"
-        style="color: var(--semantic-text-dim)"
-        title="Rename Task"
-      >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
-          />
-        </svg>
-      </button>
-      <!-- Info / view detail button (always visible). Opens the
-             KanbanTaskDetailDialog via the host (KanbanView). -->
-      <button
-        @click="handleViewTaskDetail($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-cyan-400"
-        style="color: var(--semantic-text-dim)"
-        title="View task details"
-        data-testid="view-task-detail-btn"
-      >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-          />
-        </svg>
-      </button>
-      <button
-        @click="handleDeleteTask($event)"
-        class="shrink-0 w-6 h-6 flex items-center justify-center rounded opacity-60 hover:opacity-100 transition-opacity hover:bg-[--semantic-active-bg] hover:text-red-400"
-        style="color: var(--semantic-text-dim)"
-      >
-        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M6 18L18 6M6 6l12 12"
-          />
-        </svg>
-      </button>
+      <!-- The four hover action buttons that used to live here
+           (pin / rename / details / delete) are gone: they ate ~100px
+           of a 280px column and truncated the task name to ~150px.
+           Every one of them now lives in <KanbanTaskContextMenu>,
+           opened by right-click or the ContextMenu key. The pin
+           INDICATOR above stays — that is state, not an action. -->
     </div>
     <!-- Description preview. Renders the markdown via <MarkdownDescription>
          (which handles bold/italic/headings/images/@path chips). The
@@ -930,15 +941,23 @@ watch([gitBranchBadge, effectiveCwd], () => {
         <span>{{ errorRetryLabel ? `${errorRetryLabel} retries` : 'workflow halted' }}</span>
       </span>
     </div>
-    <OpenInNewTabMenu
+    <KanbanTaskContextMenu
       v-if="menuPos"
       :x="menuPos.x"
       :y="menuPos.y"
-      show-details
-      :show-stop="isAgentRunning"
-      @open="openTaskMenuInBackground"
+      :is-pinned="!!task.is_pinned"
+      :is-agent-running="isAgentRunning"
+      :task-name="task.name"
+      :columns="columns"
+      :current-column-id="currentColumnId"
+      @pin="pinFromMenu"
+      @rename="renameFromMenu"
+      @view-detail="viewDetailFromMenu"
+      @delete-task="requestDeleteFromMenu"
+      @open-chat="openTaskMenuInBackground"
       @open-details="openTaskDetailMenuInBackground"
       @stop="stopAgentFromMenu"
+      @move-to-column="moveTaskFromMenu"
     />
     <GitBranchMenu
       v-if="gitMenuPos"
@@ -949,6 +968,14 @@ watch([gitBranchBadge, effectiveCwd], () => {
       :pr-url="gitMenuPrUrl"
       @open-branch="openGitBranchInBackground"
       @open-pr="openGitPrInBackground"
+    />
+    <ConfirmDialog
+      :show="confirmDeleteOpen"
+      title="Delete task"
+      :message="`“${task.name}” will be permanently deleted. This cannot be undone.`"
+      confirm-text="Delete"
+      @close="confirmDeleteOpen = false"
+      @confirm="confirmDelete"
     />
   </div>
 </template>
@@ -1016,10 +1043,15 @@ watch([gitBranchBadge, effectiveCwd], () => {
 }
 
 /* Red-tinted card border + box-shadow ring when the task has an
-   active agent error. The data-attribute is bound on the root
-   <button> by the script section above; the selector targets the
-   attribute value so it never leaks outside this card. */
-button[data-has-agent-error='true'] {
+   active agent error. The data-attribute is bound on the card ROOT by
+   the script section above; the selector targets the attribute value so
+   it never leaks outside this card.
+
+   The `button` tag qualifier this used to carry was dead: the root
+   element is a <div role="button">, not a <button>, so the rule never
+   matched and the error ring had not been rendering at all. Scoped to
+   the data attribute instead. */
+[data-has-agent-error='true'] {
   border-color: rgba(196, 116, 110, 0.55);
   box-shadow: 0 0 0 1px rgba(196, 116, 110, 0.25);
 }

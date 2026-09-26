@@ -32,7 +32,7 @@
 -->
 <script setup lang="ts">
 import WorkspaceItemTaskCard from '../workspace/WorkspaceItemTaskCard.vue'
-import type { Task, WorkspaceItem } from '../../stores/workspaces'
+import type { Task, WorkspaceItem, KanbanColumn } from '../../stores/workspaces'
 
 const props = withDefaults(
   defineProps<{
@@ -50,9 +50,18 @@ const props = withDefaults(
     // falls back to '' (no @path resolution) when the kanban has no
     // path set (legacy kanbans).
     cwd?: string
+    //
+    // The board's columns + the card's own column, threaded down to
+    // the card's context menu for the "Move to column" submenu. The
+    // menu emits the destination only; the append position is resolved
+    // one level up in <KanbanColumn>, which can see the whole board.
+    columns?: KanbanColumn[]
+    currentColumnId?: string | null
   }>(),
   {
     cwd: '',
+    columns: () => [],
+    currentColumnId: null,
   },
 )
 
@@ -69,6 +78,9 @@ const emit = defineEmits<{
   // Open the per-task detail dialog (kanban-task-detail-dialog
   // feature). Re-emitted verbatim from <WorkspaceItemTaskCard>.
   viewTaskDetail: [taskId: string]
+  // Context-menu "Move to column". Re-emitted verbatim from
+  // <WorkspaceItemTaskCard> so <KanbanColumn> can resolve the position.
+  moveTaskToColumn: [payload: { taskId: string; columnId: string }]
 }>()
 
 const handleDragStart = (event: DragEvent) => {
@@ -102,6 +114,8 @@ const handleDragEnd = () => {
       :workspace-id="workspaceId"
       :item-id="itemId"
       :cwd="cwd"
+      :columns="columns"
+      :current-column-id="currentColumnId"
       @select-task="(id) => emit('selectTask', id)"
       @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
       @open-task-detail-in-background="(payload) => emit('openTaskDetailInBackground', payload)"
@@ -109,6 +123,7 @@ const handleDragEnd = () => {
       @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
       @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
       @view-task-detail="(id) => emit('viewTaskDetail', id)"
+      @move-task-to-column="(payload) => emit('moveTaskToColumn', payload)"
     />
   </div>
 </template>
