@@ -68,6 +68,32 @@ object ChatApi {
     fun stopPath(sessionId: String): String =
         "/api/llm/session/${encodeQueryValue(sessionId)}/stop"
 
+    /**
+     * Settles a pending `ask_user` question.
+     *
+     * The `ask_user` tool *ends the turn* — it records a question and returns.
+     * Nothing resumes until this is posted, which is why an unanswered question
+     * is a stuck chat rather than a missing message.
+     *
+     * `question_id` is preferred and `tool_call_id` is the fallback the card
+     * always has, because it is on the tool row. The endpoint is idempotent, so
+     * a double tap or a retry after a timeout returns the stored status rather
+     * than an error.
+     */
+    fun answerPath(sessionId: String): String =
+        "/api/llm/session/${encodeQueryValue(sessionId)}/answer"
+
+    fun answerQuestionBody(
+        questionId: String? = null,
+        toolCallId: String? = null,
+        answer: String? = null,
+        skip: Boolean = false,
+    ): String = JSONObject().apply {
+        if (!questionId.isNullOrBlank()) put("question_id", questionId)
+        if (!toolCallId.isNullOrBlank()) put("tool_call_id", toolCallId)
+        if (skip) put("skip", true) else put("answer", answer.orEmpty())
+    }.toString()
+
     fun streamSnapshotPath(sessionId: String): String =
         "/api/llm/session/${encodeQueryValue(sessionId)}/stream"
 
@@ -159,6 +185,9 @@ object ChatApi {
             finishReason = row.optNullableString("finish_reason").orEmpty(),
             imageUrls = splitPipeDelimited(row.optNullableString("image_url")),
             videoUrls = splitPipeDelimited(row.optNullableString("video_url")),
+            diffviewBefore = row.optNullableString("diffview_before").orEmpty(),
+            diffviewAfter = row.optNullableString("diffview_after").orEmpty(),
+            toolCallsJson = row.optNullableString("tool_calls_json").orEmpty(),
             isError = row.optBoolean("is_error", false),
         )
     }
@@ -267,3 +296,13 @@ object ChatApi {
  */
 internal fun JSONObject.optNullableString(name: String): String? =
     if (!has(name) || isNull(name)) null else optString(name).takeIf { it != "null" }
+
+/**
+ * A nested object, or null when absent or an explicit JSON null.
+ *
+ * `usage` on a `chunk_final` frame is the reason this exists: the token counts
+ * are nested one level down, and reading them from the top level yields nothing
+ * on every single turn.
+ */
+internal fun JSONObject.optNullableObject(name: String): JSONObject? =
+    if (!has(name) || isNull(name)) null else optJSONObject(name)

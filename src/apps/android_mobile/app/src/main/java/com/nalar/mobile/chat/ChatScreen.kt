@@ -61,6 +61,7 @@ fun ChatScreen(
     onStop: () -> Unit = {},
     onLoadOlder: () -> Unit = {},
     onDismissError: () -> Unit = {},
+    onAnswer: (QuestionAnswer) -> Unit = {},
 ) {
     Scaffold(
         modifier = modifier
@@ -82,6 +83,9 @@ fun ChatScreen(
                             isLive = state.isLive,
                             isStreaming = state.isStreaming,
                             queuedCount = state.queuedCount,
+                            subAgentsRunning = state.subAgentsRunning,
+                            subAgentsTotal = state.subAgentsTotal,
+                            subAgentsFailed = state.subAgentsFailed,
                         )
                     }
                 },
@@ -131,6 +135,7 @@ fun ChatScreen(
                 onSend = onSend,
                 onLoadOlder = onLoadOlder,
                 onDismissError = onDismissError,
+                onAnswer = onAnswer,
             )
         }
     }
@@ -141,6 +146,9 @@ private fun ChatStatusLine(
     isLive: Boolean,
     isStreaming: Boolean,
     queuedCount: Int,
+    subAgentsRunning: Int,
+    subAgentsTotal: Int,
+    subAgentsFailed: Int,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -163,6 +171,18 @@ private fun ChatStatusLine(
                 // A turn that looks like it vanished is usually still queued,
                 // and saying so is the difference between "slow" and "broken".
                 if (queuedCount > 0) append(" · $queuedCount queued")
+                // A fan-out emits no rows at all until every sub-agent is done,
+                // so without this a two-minute spawn_sub_agent is
+                // indistinguishable from a hang.
+                if (subAgentsRunning > 0 || subAgentsFailed > 0) {
+                    append(" · $subAgentsRunning/$subAgentsTotal agents")
+                }
+                // A fan-out that finished with failures and nothing left running
+                // shows only this, or the header would go quiet right when the
+                // reader is waiting to find out whether it worked.
+                if (subAgentsRunning == 0 && subAgentsFailed > 0) {
+                    append(" · $subAgentsFailed failed")
+                }
             },
             style = MaterialTheme.typography.labelSmall,
             color = if (queuedCount > 0) NalarMuted else NalarDim,

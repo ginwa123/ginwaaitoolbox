@@ -1,6 +1,8 @@
 package com.nalar.mobile.chat
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -149,12 +151,35 @@ class ChatStreamEventTest {
 
     @Test
     fun `a final chunk carries no message`() {
+        // `total_tokens` is nested under `usage`, not at the top level — the
+        // backend's `FinalChunkJson` is `{index, type, finish_reason, usage,
+        // session_id}` and `usage` is `{prompt_tokens, completion_tokens,
+        // total_tokens}`. The fixture that used to read it from the top level
+        // was the only thing keeping the wrong read green.
         val decoded = decodeChatFrame(
-            frame("llm_chunk", """{"type":"chunk_final","index":0,"session_id":"sess_1","total_tokens":42}"""),
+            frame(
+                "llm_chunk",
+                """{"type":"chunk_final","index":0,"session_id":"sess_1",
+                   "usage":{"prompt_tokens":10,"completion_tokens":32,"total_tokens":42}}""",
+            ),
         ) as ChatStreamEvent.ChunkFinished
 
         assertEquals("sess_1", decoded.sessionId)
         assertEquals(42, decoded.totalTokens)
+    }
+
+    @Test
+    fun `a final chunk with no usage reports no token count`() {
+        // The emitter leaves `usage` null whenever the provider sent no usage
+        // block, which is the normal case for a turn that was cut short.
+        val decoded = decodeChatFrame(
+            frame(
+                "llm_chunk",
+                """{"type":"chunk_final","index":0,"session_id":"sess_1","usage":null}""",
+            ),
+        ) as ChatStreamEvent.ChunkFinished
+
+        assertNull(decoded.totalTokens)
     }
 
     @Test
@@ -191,6 +216,109 @@ class ChatStreamEventTest {
         assertNull(
             decodeChatFrame(frame("llm_full", """{"type":"full","id":"m1","session_id":"sess_1"}""")),
         )
+    }
+
+    /**
+     * Sub-agent pings ride the `llm_full` channel with a synthetic role and an
+     * empty body. Handled as a generic row they would insert a phantom turn
+     * into the transcript that the next revalidate then has to erase — and,
+     * worse, they would never fire, because an empty body with no tool name is
+     * filtered out as a blank bubble.
+     */
+    @Test
+    fun `a sub-agent progress ping is routed before the generic row handling`() {
+        val decoded = decodeChatFrame(
+            frame(
+                "llm_full",
+                """{"type":"full","role":"subagent_progress","session_id":"sess_1",
+                   "tool_call_id":"call_9","agent_name":"explorer","status":"launched",
+                   "agent_index":0,"total_agents":3,"elapsed_ms":0,"content":"",
+                   "subagent_session_id":"subagent_1756_frontend"}""",
+            ),
+        ) as ChatStreamEvent.SubAgentProgress
+
+        assertEquals("sess_1", decoded.sessionId)
+        assertEquals("call_9", decoded.toolCallId)
+        assertEquals("explorer", decoded.agentName)
+        assertEquals(ChatStreamEvent.SubAgentProgress.STATUS_LAUNCHED, decoded.status)
+        assertEquals(0, decoded.agentIndex)
+        assertEquals(3, decoded.totalAgents)
+    }
+
+    @Test
+    fun aCompletedSubAgentPingCarriesItsStatusAndPosition() {
+        val decoded = decodeChatFrame(
+            frame(
+                "llm_full",
+                """{"type":"full","role":"subagent_progress","session_id":"sess_1",
+                   "tool_call_id":"call_9","agent_name":"explorer","status":"failed",
+                   "agent_index":1,"total_agents":3,"elapsed_ms":4200,"content":""}""",
+            ),
+        ) as ChatStreamEvent.SubAgentProgress
+
+        assertEquals(ChatStreamEvent.SubAgentProgress.STATUS_FAILED, decoded.status)
+        // The index is what tells two nameless agents in one batch apart, so it
+        // is the one field the running count cannot do without.
+        assertEquals(1, decoded.agentIndex)
+    }
+
+    /**
+     * A tool row's `content` is the result envelope, and the two frames for one
+     * row — the placeholder and the result — share an `id`. Keying on anything
+     * else appends a duplicate.
+     */
+    @Test
+    fun `the placeholder and the result of one tool share a row id`() {
+        val row = { content: String ->
+            frame(
+                "llm_full",
+                // The row fields the backend sends, with the envelope supplied
+                // per-frame: the placeholder carries `data: null`, the result
+                // carries the payload, and the `id` is the same in both.
+                """{"type":"full","id":"row_7","session_id":"sess_1","role":"tool",""" +
+                    """"finish_reason":"tool","tool_call_id":"call_1",""" +
+                    """"tool_name":"read_file","content":""" + JSONObject.quote(content) + "}",
+            )
+        }
+        val placeholder = decodeChatFrame(
+            row(
+                """{"tool":"read_file","parameters":{"path":"/x"},"success":true,""" +
+                    """"data":null,"error":null,"v":1}""",
+            ),
+        ) as ChatStreamEvent.Full
+        val result = decodeChatFrame(
+            row(
+                """{"tool":"read_file","parameters":{"path":"/x"},"success":true,""" +
+                    """"data":{"path":"/x","content":"hi"},"error":null,"v":1}""",
+            ),
+        ) as ChatStreamEvent.Full
+
+        // One row, two frames: the store upserts by id, and anything else
+        // renders the same tool twice.
+        assertEquals(placeholder.message.id, result.message.id)
+        assertTrue(ToolCard.from(placeholder.message).pending)
+        assertFalse(ToolCard.from(result.message).pending)
+        assertEquals("hi", (ToolCard.from(result.message).body as ToolBody.ReadFile).content)
+    }
+
+    /**
+     * An assistant turn that only calls tools has an empty body. Without the
+     * `tool_calls_json` it is filtered out as a blank bubble, so the reader
+     * never learns the tools ran at all.
+     */
+    @Test
+    fun `an assistant tool-call turn survives its empty body`() {
+        val decoded = decodeChatFrame(
+            frame(
+                "llm_full",
+                """{"type":"full","id":"m2","session_id":"sess_1","role":"assistant",
+                   "finish_reason":"tool_calls","content":"","tool_name":"read_file,write_file",
+                   "tool_calls_json":"[{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"/x\\\"}\"}}]"}""",
+            ),
+        ) as ChatStreamEvent.Full
+
+        assertTrue(decoded.message.isToolCallTurn)
+        assertEquals(1, ToolCalls.parse(decoded.message.toolCallsJson).size)
     }
 
     @Test
