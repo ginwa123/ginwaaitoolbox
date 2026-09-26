@@ -80,9 +80,41 @@ that true rather than nominal, and each is covered by a test:
   the list sees them, and groups with nothing renderable are dropped so they
   cannot leave a blank band in the viewport.
 
-The list follows new content only while the reader is already at the bottom, and
-a scroll to the top prepends the previous page and re-anchors on the message the
-reader was looking at.
+A scroll to the top prepends the previous page and re-anchors on the message
+the reader was looking at, by key and by the pixel row they had it at.
+
+### The transcript follows the newest turn
+
+Opening a chat lands on its newest turn, and the viewport stays there while a
+reply streams in. A reader who has deliberately scrolled back into history is
+left alone: following the tail is a courtesy for a reader who is already at the
+end, not a claim on where they are.
+
+The rule lives in `ChatScrollPolicy`, a pure function of the state *before* and
+*after* a change, with no Compose in it. It is in that shape because every way
+this used to break was an interaction between two consecutive states rather than
+a property of any one frame:
+
+- **Open.** Keyed on the session, not on the counts. Two chats holding the same
+  number of turns move neither count, so an effect that only watched the counts
+  did not re-run when the reader switched between them and the new chat opened
+  exactly where the old one was parked.
+- **Stream.** A delta replaces the newest message in place — same id, same group,
+  same number of items, taller by a line. Nothing counted changes, so the effect
+  is additionally keyed on a fingerprint of the tail; without it a live answer
+  grew steadily out of the bottom of the viewport.
+- **Prepend.** A backwards page re-anchors by item *key* and *offset*, never by
+  index, and beats the follow flag: the reader asked to read further back, not to
+  be thrown to the end.
+- **Scroll.** Only an interactive scroll clears the follow flag. A programmatic
+  scroll moves the viewport exactly as much as a drag does, and reading the
+  settled layout of a chat that has just been opened — index 0, nobody's
+  finger on it — as "the reader has left the end" is what used to cancel the
+  auto-scroll it was supposed to inform.
+
+The `LaunchedEffect` that performs the scroll is also the only one that may: a
+prepend, an append and an open are all answered by the same decision, so they
+cannot fight over the scroll position.
 
 ### The transcript is cached
 

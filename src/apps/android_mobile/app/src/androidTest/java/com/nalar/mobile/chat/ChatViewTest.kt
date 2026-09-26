@@ -8,8 +8,12 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeUp
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -47,6 +51,48 @@ class ChatViewTest {
 
     private fun transcript(count: Int): List<ChatMessage> = (1..count).map { index ->
         message("m$index", ChatMessage.ROLE_ASSISTANT, "message number $index")
+    }
+
+    /**
+     * Alternating roles, so every turn is its own list item.
+     *
+     * [transcript] is one group, not `count` of them — consecutive same-role
+     * turns collapse — which makes it useless for asserting where the viewport
+     * is. This is the shape a real conversation has.
+     */
+    private fun conversation(prefix: String, count: Int): List<ChatMessage> = (1..count).map { index ->
+        val role = if (index % 2 == 1) ChatMessage.ROLE_USER else ChatMessage.ROLE_ASSISTANT
+        message("${prefix}m$index", role, "turn $index of the $prefix transcript")
+    }
+
+    /** Long enough to overflow a phone viewport several times over. */
+    private fun longConversation(prefix: String = "") = conversation(prefix, 80)
+
+    /**
+     * A transcript whose last turn is still streaming, with [lines] of text
+     * already in it.
+     */
+    private fun streamingTail(prefix: String = "", count: Int = 3, lines: Int = 1): List<ChatMessage> =
+        conversation(prefix, count) + message(
+            id = "${prefix}stream",
+            role = ChatMessage.ROLE_ASSISTANT,
+            content = (1..lines).joinToString("\n") { "chunk line $it" },
+            streaming = true,
+        )
+
+    /**
+     * Renders a chat the test can re-point at another session, which is the only
+     * way to express "the reader switched chats" — a fresh composition would
+     * reset the scroll state and prove nothing.
+     */
+    private fun renderSwitchable(initial: ChatUiState): MutableState<ChatUiState> {
+        val state = mutableStateOf(initial)
+        compose.setContent {
+            NalarTheme {
+                ChatView(state = state.value)
+            }
+        }
+        return state
     }
 
     /** The production entry point, so the route's top bar is exercised too. */
@@ -141,12 +187,116 @@ class ChatViewTest {
             ChatUiState(
                 sessionId = "s",
                 isLoading = false,
-                messages = transcript(4),
+                messages = longConversation(),
                 hasMoreOlder = true,
             ),
         )
 
-        compose.onNodeWithTag("chat_message_m4").assertExists()
+        compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
+        // Off-screen rows are not composed at all, so this is a real assertion
+        // about the viewport and not merely about rendering.
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+    }
+
+    @Test
+    fun openingAChatLandsOnItsNewestTurn() {
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = longConversation()))
+
+        compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+    }
+
+    @Test
+    fun switchingToAChatOfTheSameLengthStillLandsOnItsNewestTurn() {
+        // The regression. Two chats holding the same number of turns move
+        // neither the group count nor the message count, so a view that only
+        // reacted to counts changing did not react at all: the second chat
+        // opened exactly where the first one was parked.
+        val state = renderSwitchable(
+            ChatUiState(sessionId = "a", isLoading = false, messages = longConversation("a")),
+        )
+        compose.onNodeWithTag("chat_message_am80").assertIsDisplayed()
+
+        compose.runOnIdle {
+            state.value = ChatUiState(sessionId = "b", isLoading = false, messages = longConversation("b"))
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("chat_message_bm80").assertIsDisplayed()
+        compose.onNodeWithTag("chat_message_bm1").assertDoesNotExist()
+    }
+
+    @Test
+    fun aChatThatOpensEmptyAndLoadsLaterStillLandsOnItsNewestTurn() {
+        // `openSession` paints an empty transcript first when there is no cache,
+        // and the rows land a frame later. The scroll intent has to survive
+        // that empty paint.
+        val state = renderSwitchable(ChatUiState(sessionId = "s", isLoading = true))
+        compose.onNodeWithTag("chat_loading").assertExists()
+
+        compose.runOnIdle {
+            state.value = ChatUiState(sessionId = "s", isLoading = false, messages = longConversation())
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+    }
+
+    @Test
+    fun aStreamingAnswerKeepsTheNewestTurnInView() {
+        // A streamed delta replaces the newest message in place: the same id in
+        // the same group, the same number of items, taller by a line. Counted by
+        // items, the list reports no change at all while the answer grows out of
+        // the bottom of the viewport.
+        val state = renderSwitchable(
+            ChatUiState(sessionId = "s", isLoading = false, messages = streamingTail()),
+        )
+        compose.onNodeWithTag("chat_message_m1").assertIsDisplayed()
+
+        repeat(6) { chunk ->
+            compose.runOnIdle {
+                val grown = state.value.messages.dropLast(1) + state.value.messages.last().copy(
+                    content = (1..(6 * (chunk + 1))).joinToString("\n") { "chunk line $it" },
+                )
+                state.value = state.value.copy(messages = grown)
+            }
+            compose.waitForIdle()
+        }
+
+        compose.onNodeWithTag("chat_message_stream").assertIsDisplayed()
+        // Re-pinned to the newest turn, so the top of the transcript is now well
+        // out of view. Left to itself the list would still be showing m1.
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+    }
+
+    @Test
+    fun aTurnThatArrivesWhileTheReaderIsInHistoryDoesNotYankThem() {
+        // Following the tail is a courtesy for a reader who is already there. A
+        // reader who has deliberately scrolled back must not be thrown to the
+        // end by the next turn.
+        val state = renderSwitchable(
+            ChatUiState(sessionId = "s", isLoading = false, messages = longConversation()),
+        )
+        compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
+
+        compose.onNodeWithTag("chat_message_list").performTouchInput { swipeUp() }
+        compose.waitForIdle()
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+
+        compose.runOnIdle {
+            state.value = state.value.copy(
+                messages = state.value.messages + message(
+                    id = "brandNew",
+                    role = ChatMessage.ROLE_ASSISTANT,
+                    content = "a turn that lands while the reader is reading history",
+                ),
+            )
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("chat_message_brandNew").assertDoesNotExist()
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
     }
 
     // --- Composer -----------------------------------------------------------

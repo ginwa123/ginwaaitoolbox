@@ -35,7 +35,6 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -60,6 +59,7 @@ import com.nalar.mobile.ui.NalarMuted
 import com.nalar.mobile.ui.NalarText
 import com.nalar.mobile.ui.NalarTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 
 /** Top-visible index that arms the older page, matching the web's load-more band. */
 private const val LOAD_OLDER_INDEX_THRESHOLD = 2
@@ -69,7 +69,18 @@ private const val LOAD_OLDER_KEY = "__load_older__"
 
 private const val CONTENT_TYPE_SENTINEL = "sentinel"
 
-private data class ListAnchor(val key: String, val offset: Int)
+/**
+ * One sample of where the viewport is and whether the reader is driving it.
+ *
+ * A value class rather than three separate flows so a scroll and the position
+ * it produced are always read from the same frame — splitting them let a
+ * position arrive without the gesture that justified it.
+ */
+private data class ViewportReading(
+    val lastVisibleIndex: Int,
+    val totalItems: Int,
+    val isScrolling: Boolean,
+)
 
 /**
  * One chat: a virtualized transcript and a composer.
@@ -115,20 +126,32 @@ fun ChatView(
     val sentinelOffset = if (state.hasMoreOlder) 1 else 0
 
     /**
-     * Whether new content should pull the viewport. Tracks the reader's own
-     * position so an append never yanks them out of the history they are
-     * reading — the web's `isAtBottom`, minus the hysteresis it needs for
-     * measured (non-virtualized) rows.
+     * A fingerprint of the *tail* of the transcript.
+     *
+     * A streamed delta replaces the newest message in place: the same id in the
+     * same group, the same number of items, taller by a line. Keyed on the
+     * counts alone the list reports "nothing changed" while a live answer grows
+     * out of the bottom of the viewport, which is why an answer used to stream
+     * in under the fold and stay there.
      */
-    var followBottom by remember { mutableStateOf(true) }
-    var lastItemCount by remember { mutableIntStateOf(0) }
+    val tailSignature = remember(state.messages) {
+        val last = state.messages.lastOrNull()
+        if (last == null) {
+            ""
+        } else {
+            "${last.id}|${last.content.length}|${last.reasoningContent.length}|${last.isStreaming}"
+        }
+    }
 
     /**
-     * The top visible item's key and offset, captured when an older page is
-     * requested. Re-anchoring by key rather than by index is what keeps the
-     * reader on the same message after rows are prepended above them.
+     * Where the transcript belongs after each change, and whether it should
+     * follow the end. One object rather than three `remember`ed values because
+     * the three only mean anything together, and keeping them together is what
+     * stops the "is the reader following?" flag from being recomputed against a
+     * layout nobody has scrolled yet.
      */
-    var pendingAnchor by remember { mutableStateOf<ListAnchor?>(null) }
+    val chatScroll = remember { ChatScrollState() }
+    val onLoadOlderNow by rememberUpdatedState(onLoadOlder)
 
     /**
      * One page per approach to the top.
@@ -141,23 +164,81 @@ fun ChatView(
      */
     var loadOlderLatched by remember { mutableStateOf(true) }
 
+    /**
+     * Waits for the list to have measured the row a scroll is aimed at.
+     *
+     * `scrollToItem` resolves against measured item offsets, so a scroll issued
+     * before the first layout has nothing to apply it to and is dropped. That
+     * is exactly the frame a chat opens in: `openSession` paints an empty
+     * transcript first when there is no cache, and the rows arrive a frame
+     * later.
+     */
+    suspend fun awaitMeasuredItems() {
+        if (listState.layoutInfo.totalItemsCount > 0) return
+        snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > 0 }
+    }
+
+    suspend fun pinToNewest() {
+        if (groups.isEmpty()) return
+        awaitMeasuredItems()
+        listState.scrollToItem(groups.lastIndex + sentinelOffset)
+    }
+
+    suspend fun restoreAnchor(action: ChatScrollAction.RestoreAnchor) {
+        val groupIndex = groups.indexOfFirst { it.key == action.key }
+        if (groupIndex < 0) {
+            // The anchored turn is gone — grouped away, or paged out with the
+            // page it came from. The newest turn beats a guess at an index.
+            pinToNewest()
+            return
+        }
+        awaitMeasuredItems()
+        // The captured offset, not zero. The reader's message may have been
+        // half scrolled past, and re-anchoring it by its top edge walks them a
+        // little further up on every page they pull.
+        listState.scrollToItem(groupIndex + sentinelOffset, action.offset)
+    }
+
+    // A new chat re-arms the backwards-page latch, so opening a transcript
+    // whose top is on screen does not immediately request a page it already
+    // holds.
     LaunchedEffect(state.sessionId) {
-        listState.scrollToItem(0)
-        followBottom = true
-        lastItemCount = 0
         loadOlderLatched = true
     }
 
-    LaunchedEffect(listState, groups.size) {
-        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+    /**
+     * Where the reader actually is.
+     *
+     * Keyed on the list alone. Re-creating this watcher every time the group
+     * count changed re-delivered its first reading, and that first reading is a
+     * layout of whatever the list was showing *before* the scroll that was
+     * about to run — index 0 — so it read as "the reader has left the bottom"
+     * and cancelled the very auto-scroll it was supposed to inform.
+     *
+     * It is the only thing that can clear the follow flag, and it does so only
+     * for an interactive scroll. A programmatic scroll moves the viewport
+     * exactly as much as a drag does and must not be mistaken for the reader
+     * having left.
+     */
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            ViewportReading(
+                lastVisibleIndex = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                totalItems = listState.layoutInfo.totalItemsCount,
+                isScrolling = listState.isScrollInProgress,
+            )
+        }
             .distinctUntilChanged()
-            .collect { lastVisible ->
-                val total = listState.layoutInfo.totalItemsCount
-                if (total > 0) followBottom = lastVisible >= total - 1
+            .collect { reading ->
+                chatScroll.onViewportMoved(
+                    lastVisibleIndex = reading.lastVisibleIndex,
+                    totalItems = reading.totalItems,
+                    isScrolling = reading.isScrolling,
+                )
             }
     }
 
-    LaunchedEffect(listState, groups.size, state.hasMoreOlder) {
+    LaunchedEffect(listState, state.hasMoreOlder) {
         snapshotFlow { listState.firstVisibleItemIndex <= LOAD_OLDER_INDEX_THRESHOLD }
             .distinctUntilChanged()
             .collect { nearTop ->
@@ -166,47 +247,50 @@ fun ChatView(
                 } else if (!loadOlderLatched) {
                     loadOlderLatched = true
                     if (state.hasMoreOlder && !state.isLoadingOlder) {
-                        pendingAnchor = listState.layoutInfo.visibleItemsInfo
-                            .firstOrNull()
-                            ?.let { ListAnchor(it.key.toString(), it.offset) }
-                        onLoadOlder()
+                        // Taken before the request, not after the response: the
+                        // prepend renumbers every index above the reader, so an
+                        // index captured afterwards names a different message.
+                        chatScroll.armOlderPage(
+                            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.let { item ->
+                                ChatScrollAnchor(item.key.toString(), item.offset)
+                            },
+                        )
+                        onLoadOlderNow()
                     }
                 }
             }
     }
 
-    // One effect owns "the list changed", so a prepend and an append can never
-    // fight over the scroll position.
-    LaunchedEffect(groups.size, state.messages.size) {
-        val anchor = pendingAnchor
-        val delta = groups.size - lastItemCount
-        when {
-            anchor != null && delta > 0 -> {
-                val restored = groups.indexOfFirst { it.key == anchor.key } + sentinelOffset
-                listState.scrollToItem(restored.coerceIn(0, groups.lastIndex.coerceAtLeast(0)))
-                pendingAnchor = null
-            }
-
-            // A brand-new session should land on the newest turn even if the
-            // reader was scrolled up in the previous one.
-            delta < 0 -> {
-                listState.scrollToItem(groups.lastIndex.coerceAtLeast(0) + sentinelOffset)
-                followBottom = true
-            }
-
-            followBottom && groups.isNotEmpty() -> {
-                listState.scrollToItem(groups.lastIndex + sentinelOffset)
-            }
+    /**
+     * The single effect that owns "the transcript changed, where does it
+     * belong" — so a prepend, an append and an open can never fight over the
+     * scroll position.
+     *
+     * Keyed on the session and on the tail, not on the counts. Two chats with
+     * the same number of turns change neither count, so a count-keyed effect
+     * never re-ran when the reader switched between them and the new chat
+     * opened wherever the old one happened to be scrolled.
+     */
+    LaunchedEffect(
+        state.sessionId,
+        groups.size,
+        state.messages.size,
+        state.hasMoreOlder,
+        tailSignature,
+    ) {
+        when (val action = chatScroll.onContentChanged(state.sessionId, groups.size)) {
+            ChatScrollAction.Hold -> Unit
+            is ChatScrollAction.PinToNewest -> pinToNewest()
+            is ChatScrollAction.RestoreAnchor -> restoreAnchor(action)
         }
-        lastItemCount = groups.size
     }
 
     // Sending is an explicit "take me to the newest turn" — the reader is
     // looking at history, but the turn they just asked for lands at the end.
     LaunchedEffect(state.isSending) {
-        if (state.isSending && groups.isNotEmpty()) {
-            listState.scrollToItem(groups.lastIndex + sentinelOffset)
-            followBottom = true
+        if (state.isSending) {
+            chatScroll.onTurnSent()
+            pinToNewest()
         }
     }
 
