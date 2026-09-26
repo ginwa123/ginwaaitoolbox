@@ -321,6 +321,32 @@ class ChatStreamEventTest {
         assertEquals(1, ToolCalls.parse(decoded.message.toolCallsJson).size)
     }
 
+    /**
+     * The regression that a "draws something" gate would introduce.
+     *
+     * A declaration draws nothing once its result card has landed, so it is
+     * tempting to filter it out at the frame gate alongside the other empty
+     * rows. But the window where a declaration is the *only* thing on screen is
+     * exactly the window between it arriving and its result arriving — drop it
+     * here and a tool call in flight is invisible for its whole run.
+     */
+    @Test
+    fun `a declaration is kept by the stream even though it draws nothing`() {
+        val message = ChatMessage(
+            id = "m2",
+            role = ChatMessage.ROLE_ASSISTANT,
+            content = "",
+            createdAtEpochMillis = 0L,
+            sortKeyNanos = 0L,
+            toolName = "read_file",
+            finishReason = ChatMessage.FINISH_REASON_TOOL_CALLS,
+            toolCallsJson = """[{"id":"call_1","type":"function","function":{"name":"read_file"}}]""",
+        )
+
+        assertFalse(message.hasVisibleContent)
+        assertTrue(message.isRealTurn)
+    }
+
     @Test
     fun `an is_error frame is a diagnostic, not a chat turn`() {
         val decoded = decodeChatFrame(

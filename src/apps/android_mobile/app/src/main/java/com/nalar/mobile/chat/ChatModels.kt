@@ -72,16 +72,55 @@ data class ChatMessage(
     val hasDiff: Boolean
         get() = diffviewBefore.isNotEmpty() || diffviewAfter.isNotEmpty()
 
-    /** True when there is something to draw, so an empty row is never rendered. */
+    /**
+     * True when there is something to draw, so an empty row is never rendered.
+     *
+     * A bare `tool_calls` declaration is deliberately *not* here, and neither is
+     * its `tool_name`. That column holds every tool in the batch comma-joined —
+     * `read_file,write_file` — which is a list, not a tool, so counting it as
+     * drawable is what kept a fully-answered declaration alive as a row with
+     * nothing in it. Whether an unanswered one is worth a row is a question
+     * about the run it belongs to, not about the row: the answer is
+     * [ChatMessageGroup.unpairedToolCalls].
+     */
     val hasVisibleContent: Boolean
-        get() = content.isNotBlank() ||
+        get() = hasRenderableContent ||
             reasoningContent.isNotBlank() ||
-            toolName.isNotBlank() ||
+            isDrawableToolRow ||
             imageUrls.isNotEmpty() ||
             videoUrls.isNotEmpty() ||
             hasDiff ||
-            isToolCallTurn ||
             isError
+
+    /** A tool row is drawable from its name alone; its body is an envelope. */
+    private val isDrawableToolRow: Boolean
+        get() = role == ROLE_TOOL && toolName.isNotBlank()
+
+    /**
+     * The row is a real turn the transcript keeps, whether or not it draws.
+     *
+     * Distinct from [hasVisibleContent] on purpose, because they answer
+     * different questions and conflating them loses a turn. "Does this row draw
+     * anything" is a layout question — a fully-answered declaration draws
+     * nothing because its result card already says it. "Is this a real turn" is
+     * a transport question, and the stream's frame gate asks it: dropping a
+     * declaration there would mean [ChatMessageGroup.unpairedToolCalls] could
+     * never be non-empty, because the live window the header exists for is
+     * exactly the moment the result has not arrived yet.
+     */
+    val isRealTurn: Boolean
+        get() = hasVisibleContent || isToolCallTurn
+
+    /**
+     * The content a renderer would actually show, which is not the raw column.
+     *
+     * An assistant turn wrapped in `<markdown>…</markdown>` is non-blank as a
+     * string and draws as nothing once the envelope is off, so gating
+     * visibility on raw `content` is how a visible-but-empty bubble gets into
+     * the transcript. The web pins the same thing in `hasVisibleContent`.
+     */
+    val hasRenderableContent: Boolean
+        get() = content.isNotBlank() && Markdown.hasContent(content)
 
     companion object {
         const val ROLE_USER = "user"
@@ -124,9 +163,36 @@ data class ChatMessageGroup(
     val role: String,
     val messages: List<ChatMessage>,
     val timestampEpochMillis: Long,
+    /**
+     * The tool calls of this run that no tool row has answered yet.
+     *
+     * Empty in the common case, and empty is the point: a call whose result is
+     * already on screen as a card needs no second line above it saying so. What
+     * is left here is a call with no result — the live window between the
+     * declaration landing and the `tool` row arriving — and hiding those is how
+     * a running tool call becomes invisible. See [groupMessages].
+     */
+    val unpairedToolCalls: List<ToolCallEntry> = emptyList(),
 ) {
     val isUser: Boolean get() = role == ChatMessage.ROLE_USER
 }
+
+/**
+ * The bare call declarations this group carries.
+ *
+ * "Bare" is the whole test: a declaration that also carries prose is an
+ * ordinary assistant turn with a tool run attached, and its text is the
+ * sentence worth reading. Only the one that says nothing but `tool_calls_json`
+ * is a header for a run rather than a turn of its own.
+ */
+private val ChatMessageGroup.bareDeclarations: List<ToolCallEntry>
+    get() = if (role != ChatMessage.ROLE_ASSISTANT) {
+        emptyList()
+    } else {
+        messages
+            .filter { it.isToolCallTurn && it.content.isBlank() && it.reasoningContent.isBlank() }
+            .flatMap { ToolCalls.parse(it.toolCallsJson) }
+    }
 
 data class ChatUiState(
     val sessionId: String? = null,
@@ -180,13 +246,32 @@ data class ChatUiState(
 }
 
 /**
- * Collapses consecutive same-role turns into groups, dropping any group that
- * would render nothing.
+ * Collapses consecutive same-role turns into groups, folds a tool call into the
+ * tool run that answers it, and drops any group that would render nothing.
+ *
+ * **Why a call and its output share a row.** The backend sends them as two
+ * rows — an `assistant` turn whose only payload is `tool_calls_json`, then a
+ * `role: 'tool'` row carrying the result — so a naive role-run grouping draws
+ * the run as a stripe of interleaved cards and "1 TOOL command" lines, one per
+ * step, which is the screenshot this replaces. But the call and its output are
+ * one thing the reader looks at, and the output card already shows the call's
+ * name and arguments. So a declaration with no prose is absorbed into the tool
+ * group that follows it: same key, same `contentType`, one list item, and the
+ * duplicate "1 TOOL command" line disappears because there is nothing left for
+ * it to say.
+ *
+ * What survives is [ChatMessageGroup.unpairedToolCalls] — calls with no
+ * matching `tool_call_id` in the run, which is the live window between the
+ * declaration landing and the result arriving. Those keep their summary, keyed
+ * on the call id, so a running tool call is never invisible. This is the same
+ * rule the web reaches in `ChatView.vue`'s `groupToolNames`, whose `allRendered`
+ * check suppresses the pill once every declared call has a card.
  *
  * The empty-group filter is load-bearing rather than cosmetic: an item with no
  * content still occupies the virtualizer's height estimate, so leaving one in
  * leaves a blank band in the viewport and the auto-scroll lands short of the
- * last message.
+ * last message. That is also why a declaration with an unparseable
+ * `tool_calls_json` is dropped — it is a row that would draw nothing.
  */
 fun groupMessages(messages: List<ChatMessage>): List<ChatMessageGroup> {
     val groups = ArrayList<ChatMessageGroup>()
@@ -218,7 +303,45 @@ fun groupMessages(messages: List<ChatMessage>): List<ChatMessageGroup> {
     }
     flush()
 
-    return groups.filter { group ->
-        group.messages.any { message -> message.hasVisibleContent }
+    return attachUnpairedToolCalls(groups).filter { group ->
+        group.unpairedToolCalls.isNotEmpty() || group.messages.any { it.hasVisibleContent }
     }
+}
+
+/**
+ * The second grouping pass: work out which declared calls still need naming.
+ *
+ * A call is *answered* once some later tool row carries its `tool_call_id`, and
+ * an answered call is dropped from the header. Not because the header is
+ * hidden — because the result card is already on screen showing that call's
+ * name and arguments, and a line above it repeating them is exactly the
+ * duplication the report is about. What is left is a call whose result has not
+ * landed, and the header is the only thing drawing it.
+ *
+ * Walking *forward* rather than matching a global set is deliberate: a global
+ * set also suppresses a call whose result row precedes the declaration, which a
+ * re-delivered or out-of-order row can produce, and suppressing on that is
+ * showing nothing at all.
+ */
+private fun attachUnpairedToolCalls(
+    groups: List<ChatMessageGroup>,
+): List<ChatMessageGroup> {
+    if (groups.none { it.bareDeclarations.isNotEmpty() }) return groups
+
+    val attached = ArrayList<ChatMessageGroup>(groups.size)
+    groups.forEachIndexed { index, group ->
+        val declared = group.bareDeclarations
+        if (declared.isEmpty()) {
+            attached += group
+            return@forEachIndexed
+        }
+        val answered = groups.asSequence()
+            .drop(index + 1)
+            .filter { it.role == ChatMessage.ROLE_TOOL }
+            .flatMap { it.messages.asSequence() }
+            .mapNotNull { it.toolCallId.takeIf(String::isNotBlank) }
+            .toSet()
+        attached += group.copy(unpairedToolCalls = declared.filter { it.id !in answered })
+    }
+    return attached
 }

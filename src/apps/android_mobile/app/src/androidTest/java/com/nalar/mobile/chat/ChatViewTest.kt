@@ -167,6 +167,125 @@ class ChatViewTest {
         assertTrue("expected one collapsed group, got $composed", composed <= 1)
     }
 
+    // --- Tool call and its output are one row -------------------------------
+
+    /** A call declaration with nothing but `tool_calls_json` on it. */
+    private fun declaration(id: String, callId: String, name: String) = message(
+        id = id,
+        role = ChatMessage.ROLE_ASSISTANT,
+        content = "",
+    ).copy(
+        toolName = name,
+        finishReason = ChatMessage.FINISH_REASON_TOOL_CALLS,
+        toolCallsJson = """[{"id":"$callId","type":"function",""" +
+            """"function":{"name":"$name","arguments":"{}"}}]""",
+    )
+
+    /** The `tool` row that answers it, carrying the join key back to the call. */
+    private fun answered(id: String, callId: String, name: String) = message(
+        id = id,
+        role = ChatMessage.ROLE_TOOL,
+        content = """{"tool":"$name","success":true,"data":{"ok":true},"error":null}""",
+    ).copy(toolName = name, toolCallId = callId)
+
+    @Test
+    fun anAnsweredToolCallDropsItsSummaryLine() {
+        // The reported bug. The card already shows the call's name and its
+        // arguments, so the "1 TOOL" line above it repeated the same two facts
+        // in a separate row — once per step, all the way down the transcript.
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    declaration("a1", "c1", "read_file"),
+                    answered("t1", "c1", "read_file"),
+                ),
+            ),
+        )
+
+        compose.onNodeWithTag("tool_call_summary").assertDoesNotExist()
+        // And the answer is not thrown away with the summary: the card is there.
+        compose.onNodeWithTag("chat_tool_t1").assertExists()
+    }
+
+    @Test
+    fun anUnansweredToolCallKeepsItsSummaryLine() {
+        // The other half, and the reason the suppression above is safe. While
+        // the result is in flight the header is the only thing on screen naming
+        // the call, so it has to stay.
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(declaration("a1", "c1", "read_file")),
+            ),
+        )
+
+        compose.onNodeWithTag("tool_call_summary").assertIsDisplayed()
+    }
+
+    @Test
+    fun aTwelveStepRunDrawsTwelveCardsAndNoSummaries() {
+        // The whole shape in the screenshot, end to end: no interleaved
+        // "1 TOOL command" rows anywhere in it.
+        val messages = buildList {
+            repeat(12) { index ->
+                add(declaration("a$index", "c$index", "command"))
+                add(answered("t$index", "c$index", "command"))
+            }
+        }
+
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = messages))
+
+        compose.onAllNodesWithTag("tool_call_summary", useUnmergedTree = true)
+            .assertCountEquals(0)
+    }
+
+    // --- Markdown in the answer ---------------------------------------------
+
+    @Test
+    fun anAssistantAnswerRendersItsMarkdown() {
+        // The other reported bug: the answer arrived wrapped in `<markdown>`
+        // and every heading and `**bold**` on it was drawn literally.
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    message(
+                        "a1",
+                        ChatMessage.ROLE_ASSISTANT,
+                        "<markdown>\n**PR:** https://example.dev/pull/663\n\n" +
+                            "## What I built\n\nA **model** layer.\n</markdown>",
+                    ),
+                ),
+            ),
+        )
+
+        compose.onNodeWithTag("markdown").assertExists()
+        // The wrapper is gone, so nothing on screen is a tag or an asterisk.
+        compose.onNodeWithText("<markdown>", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("**", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("##", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun aUsersOwnMarkdownIsNotRewrittenBackAtThem() {
+        // The web draws a user turn as plain text and only `marked.parse`s the
+        // assistant's. A question the reader typed has to come back looking
+        // exactly as they sent it.
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(message("u1", ChatMessage.ROLE_USER, "is **this** right?")),
+            ),
+        )
+
+        compose.onNodeWithText("is **this** right?").assertIsDisplayed()
+    }
+
     @Test
     fun aStreamedAppendKeepsEarlierRowsAddressable() {
         renderList(ChatUiState(sessionId = "s", isLoading = false, messages = transcript(6)))

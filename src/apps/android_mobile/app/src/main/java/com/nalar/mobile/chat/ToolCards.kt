@@ -558,10 +558,12 @@ private fun QuestionCard(
 
     body.header?.let { ToolKeyValue(key = "header", value = it) }
 
-    Text(
-        text = body.question,
-        style = MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.Medium,
+    // Markdown, like the web's `renderMarkdownHtml` on the same field. The
+    // model writes a question in its own voice — "**Option 1 — postgres.** Is
+    // that right?" — and rendering it as one literal wall of asterisks is the
+    // reported case this card exists for.
+    MarkdownText(
+        source = body.question,
         color = NalarText,
         modifier = Modifier
             .padding(horizontal = 8.dp, vertical = 6.dp)
