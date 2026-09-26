@@ -1,15 +1,7 @@
 package com.nalar.mobile.recents
 
 import android.content.Context
-import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyProperties
-import android.util.Base64
-import java.nio.charset.StandardCharsets
-import java.security.KeyStore
-import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
+import com.nalar.mobile.storage.EncryptedPrefs
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -166,113 +158,40 @@ object RecentsCacheCodec {
 
 /**
  * [RecentsCache] on SharedPreferences, with every value sealed under AES-GCM
- * through the Android Keystore.
- *
- * A separate key alias from the session cookie on purpose: a suspected
- * credential leak and a suspected cache leak are different investigations, and
- * rotating one must not invalidate the other.
+ * through the Android Keystore. Shares [EncryptedPrefs] with the session cookie
+ * so the crypto lives in one place, but under its own key alias.
  */
 class KeystoreRecentsCache(context: Context) : RecentsCache {
-    private val preferences by lazy {
-        context.applicationContext.getSharedPreferences(
-            PREFERENCES_NAME,
-            Context.MODE_PRIVATE,
-        )
-    }
+    private val prefs = EncryptedPrefs(
+        context = context,
+        preferencesName = PREFERENCES_NAME,
+        keyAlias = KEY_ALIAS,
+    )
 
     override fun readWorkspaces(userId: String?): List<WorkspaceOption>? {
         val key = RecentsCacheCodec.workspacesKey(userId) ?: return null
-        return RecentsCacheCodec.decodeWorkspaces(read(key))
+        return RecentsCacheCodec.decodeWorkspaces(prefs.get(key))
     }
 
     override fun writeWorkspaces(userId: String?, workspaces: List<WorkspaceOption>) {
         val key = RecentsCacheCodec.workspacesKey(userId) ?: return
-        write(key, RecentsCacheCodec.encodeWorkspaces(workspaces))
+        prefs.put(key, RecentsCacheCodec.encodeWorkspaces(workspaces))
     }
 
     override fun readChats(userId: String?, workspaceId: String): List<ChatSummary>? {
         val key = RecentsCacheCodec.chatsKey(userId, workspaceId) ?: return null
-        return RecentsCacheCodec.decodeChats(read(key))
+        return RecentsCacheCodec.decodeChats(prefs.get(key))
     }
 
     override fun writeChats(userId: String?, workspaceId: String, chats: List<ChatSummary>) {
         val key = RecentsCacheCodec.chatsKey(userId, workspaceId) ?: return
-        write(key, RecentsCacheCodec.encodeChats(chats))
+        prefs.put(key, RecentsCacheCodec.encodeChats(chats))
     }
 
-    override fun clear() {
-        // `commit` rather than `apply`: sign-out must not race a pending write
-        // that would restore the very rows we are purging.
-        preferences.edit().clear().commit()
-    }
-
-    private fun read(key: String): String? = try {
-        val payload = preferences.getString(key, null) ?: return null
-        decrypt(payload).takeIf { it.isNotBlank() }
-    } catch (_: Exception) {
-        // An entry written by a different Keystore key (e.g. after a restore to
-        // a new device) is unreadable. Drop it and treat it as a miss.
-        runCatching { preferences.edit().remove(key).commit() }
-        null
-    }
-
-    private fun write(key: String, plainText: String) {
-        try {
-            preferences.edit().putString(key, encrypt(plainText)).commit()
-        } catch (_: Exception) {
-            // Quota / Keystore unavailable — the live fetch still works; only
-            // the next launch's instant paint is lost.
-        }
-    }
-
-    private fun encrypt(plainText: String): String {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val encrypted = cipher.doFinal(plainText.toByteArray(StandardCharsets.UTF_8))
-        return listOf(
-            Base64.encodeToString(cipher.iv, Base64.NO_WRAP),
-            Base64.encodeToString(encrypted, Base64.NO_WRAP),
-        ).joinToString(PAYLOAD_SEPARATOR)
-    }
-
-    private fun decrypt(payload: String): String {
-        val parts = payload.split(PAYLOAD_SEPARATOR, limit = 2)
-        require(parts.size == 2) { "Malformed recents cache payload" }
-
-        val iv = Base64.decode(parts[0], Base64.NO_WRAP)
-        val encrypted = Base64.decode(parts[1], Base64.NO_WRAP)
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
-        return String(cipher.doFinal(encrypted), StandardCharsets.UTF_8)
-    }
-
-    private fun getOrCreateKey(): SecretKey {
-        val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        val existing = keyStore.getKey(KEY_ALIAS, null) as? SecretKey
-        if (existing != null) return existing
-
-        val generator = KeyGenerator.getInstance(
-            KeyProperties.KEY_ALGORITHM_AES,
-            ANDROID_KEYSTORE,
-        )
-        generator.init(
-            KeyGenParameterSpec.Builder(
-                KEY_ALIAS,
-                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-            )
-                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                .setUserAuthenticationRequired(false)
-                .build(),
-        )
-        return generator.generateKey()
-    }
+    override fun clear() = prefs.clear()
 
     private companion object {
         const val PREFERENCES_NAME = "nalar_recents"
         const val KEY_ALIAS = "nalar_cache_key_v1"
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val PAYLOAD_SEPARATOR = ":"
     }
 }

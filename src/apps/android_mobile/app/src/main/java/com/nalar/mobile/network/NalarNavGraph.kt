@@ -60,6 +60,8 @@ fun NalarNavGraph(
             when (authState.phase) {
                 SessionPhase.Restoring -> AuthRestoringScreen()
 
+                // `onRetrySession` bypasses the /me cache: the user pressed "Try
+                // again" to re-check, so it has to reach the network.
                 SessionPhase.NeedsRetry -> AuthRestoringScreen(
                     errorMessage = authState.errorMessage,
                     onRetry = onRetrySession,

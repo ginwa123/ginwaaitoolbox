@@ -51,7 +51,9 @@ class MainActivity : ComponentActivity() {
                 NalarNavGraph(
                     authState = authState,
                     onSignIn = authViewModel::login,
-                    onRetrySession = authViewModel::restoreSession,
+                    // The retry screen's whole purpose is to re-check the
+                    // session, so it must bypass the /me cache.
+                    onRetrySession = { authViewModel.restoreSession(forceRefresh = true) },
                     onUseAnotherAccount = {
                         // Purge before the cookie goes, so no cached row from the
                         // outgoing account can be painted after it.

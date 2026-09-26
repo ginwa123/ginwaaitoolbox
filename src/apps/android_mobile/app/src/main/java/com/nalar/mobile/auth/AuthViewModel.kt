@@ -38,6 +38,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         // Recording wraps the real transport so the inspector shows the same
         // bytes the auth flow sent, including a rejected sign-in.
         httpTransport = RecordingAuthTransport(HttpsAuthTransport(AuthConfig.BASE_URL)),
+        meCache = KeystoreAuthMeCache(application),
     )
     private val _uiState = MutableStateFlow(AuthUiState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
@@ -47,11 +48,11 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         restoreSession()
     }
 
-    fun restoreSession() {
+    fun restoreSession(forceRefresh: Boolean = false) {
         restoreJob?.cancel()
         restoreJob = viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                client.restoreSession()
+                client.restoreSession(forceRefresh)
             }
             _uiState.value = when (result) {
                 is AuthResult.Authenticated -> AuthUiState(
