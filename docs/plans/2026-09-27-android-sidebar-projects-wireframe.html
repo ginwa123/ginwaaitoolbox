@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe — Android drawer · Projects section</title>
+<style>
+  /* Page chrome inherits the host theme. Only the *device screens* are painted,
+     because the subject of this mockup is the app, which is dark by design
+     (src/apps/android_mobile/app/src/main/java/com/nalar/mobile/ui/Color.kt). */
+  :root{
+    --bg:#181616; --raised:#211F1C; --card:#1D1C19; --field:#24221F;
+    --border:#393836; --text:#C5C9C5; --muted:#A6A69C; --dim:#7A8382;
+    --accent:#8992A7; --accent-soft:#B7C0D8; --aqua:#8EA4A2; --error:#E08C86;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:32px 24px 64px;font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:16px;margin:40px 0 12px;padding-bottom:6px;border-bottom:1px solid #282727}
+  h3{font-size:13px;margin:0 0 8px;letter-spacing:.06em;text-transform:uppercase}
+  p.lede{margin:0 0 4px;max-width:76ch}
+  p.note{margin:6px 0 0;max-width:76ch;color:#a6a69c;font-size:12.5px}
+  code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace;background:#24221F;padding:1px 5px;border-radius:4px}
+  .grid{display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start}
+  figure{margin:0;width:296px}
+  figcaption{margin-top:10px;font-size:12.5px;line-height:1.45}
+  figcaption b{display:block;margin-bottom:2px}
+
+  /* ---- device ---- */
+  .phone{width:296px;border:1px solid #282727;border-radius:26px;overflow:hidden;background:#000}
+  .statusbar{height:22px;background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:0 14px;font-size:10px;color:var(--dim)}
+  .appbar{height:52px;background:var(--raised);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;padding:0 12px}
+  .burger{width:22px;height:16px;display:flex;flex-direction:column;justify-content:space-between}
+  .burger i{display:block;height:1.5px;background:var(--muted);border-radius:1px}
+  .appbar .t{font-size:13px;color:var(--text)}
+  .appbar .ico{margin-left:auto;color:var(--dim);font-size:14px}
+
+  .drawer{background:var(--bg);border-right:1px solid var(--border);padding:0 12px 10px;display:flex;flex-direction:column;min-height:470px}
+
+  /* ---- workspace dropdown (unchanged) ---- */
+  .ws{margin-top:12px;border:1px solid var(--border);background:var(--field);border-radius:14px;padding:10px 13px;display:flex;align-items:center;gap:8px}
+  .ws .eyebrow{font-size:10px;letter-spacing:.08em;color:var(--dim);text-transform:uppercase}
+  .ws .name{font-size:14px;color:var(--text);font-weight:500}
+  .ws .caret{margin-left:auto;color:var(--muted);font-size:11px}
+
+  /* ---- sections ---- */
+  .sec-h{margin:22px 0 8px;padding:0 8px;display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--dim)}
+  .sec-h .chev{color:var(--dim);font-size:10px;transition:transform .2s}
+  .sec-h .chev.open{transform:rotate(90deg)}
+  .sec-h .count{margin-left:auto;font-size:11px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted);opacity:.8}
+
+  /* ---- rows ---- */
+  .row{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:12px;min-height:34px}
+  .row.chat{background:transparent}
+  .row.chat.sel{background:rgba(137,146,167,.16);box-shadow:inset 0 0 0 1px rgba(137,146,167,.36)}
+  .row.proj{background:transparent}
+  .row.proj.sel{background:var(--field)}
+  .row .lbl{flex:1;min-width:0;font-size:13px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .meta{font-size:11px;color:var(--muted);flex:none}
+  .row .glyph{width:16px;text-align:center;font-size:13px;color:var(--muted);flex:none}
+  .row .sub{width:16px;text-align:center;font-size:9px;color:var(--dim);flex:none}
+  .row .sub.open{transform:rotate(90deg)}
+  .row .spin{width:12px;height:12px;border:1.5px solid var(--accent);border-top-color:transparent;border-radius:50%;flex:none}
+  .rule{height:1px;background:var(--border);margin:18px -12px 0}
+  .nested{margin:0 0 0 12px;padding-left:12px;border-left:1px solid var(--border)}
+  .nested .row.chat{padding:7px 9px}
+  .seeall{margin:2px 0 6px 8px;padding:7px 10px;border-radius:10px;background:rgba(137,146,167,.10);color:var(--accent-soft);font-size:12px;display:flex;align-items:center;gap:6px}
+  .seeall .chev{margin-left:auto;font-size:11px}
+
+  /* ---- footer / placeholders ---- */
+  .acct{margin-top:auto;padding-top:12px;border-top:1px solid var(--border)}
+  .acct .l{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim)}
+  .acct .e{font-size:13px;color:var(--text);margin-top:2px}
+  .acct .btn{margin-top:6px;font-size:12.5px;color:var(--accent)}
+  .empty{padding:14px 10px;text-align:center}
+  .empty .t{font-size:14px;color:var(--muted)}
+  .empty .d{font-size:12.5px;color:var(--dim);margin-top:3px}
+  .banner{margin:10px 0 0;padding:8px 10px;border:1px solid var(--border);border-radius:10px;background:var(--raised);font-size:11.5px;color:var(--dim);display:flex;align-items:center;gap:8px}
+  .banner .retry{margin-left:auto;color:var(--accent);flex:none}
+
+  /* ---- chat / board behind the scrim ---- */
+  .content{padding:16px 14px;color:var(--dim);font-size:12.5px}
+  .bubble{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px 12px;margin-bottom:10px;color:var(--muted)}
+  .scrim{background:rgba(0,0,0,.5)}
+
+  /* ---- callouts ---- */
+  .pin{position:absolute;font-size:10px;font-weight:700;background:#8ba4b0;color:#12110f;padding:1px 5px;border-radius:5px;letter-spacing:.04em}
+  .rel{position:relative}
+  .rel .pin{transform:translateY(-11px)}
+  table{border-collapse:collapse;width:100%;max-width:940px;font-size:12.5px}
+  th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #282727;vertical-align:top}
+  th{font-weight:600;color:#a6a69c;white-space:nowrap}
+  ul{margin:6px 0 0;padding-left:20px}
+  li{margin:3px 0}
+  .kbd{font:11px ui-monospace,monospace;border:1px solid #393836;border-radius:5px;padding:1px 6px;background:#24221F;white-space:nowrap}
+  .tag{display:inline-block;font-size:10.5px;letter-spacing:.04em;text-transform:uppercase;padding:1px 6px;border-radius:5px;background:#24221F;border:1px solid #393836;color:#a6a69c}
+</style>
+</head>
+<body>
+
+<h1>Wireframe — Android drawer · <b style="font-weight:600">Projects</b> section</h1>
+<p class="lede">
+  Mirrors the Vue sidebar's <code>ProjectsList</code> on a 390dp phone. The workspace dropdown,
+  the <b>Recent</b> list and the account footer are unchanged; the whole feature is the block between them.
+</p>
+<p class="note">
+  <span class="tag">Confirmed</span>
+  Tap a <b>Project</b> row → it expands in place, drawer stays <b>open</b> (a project is a filter,
+  not a destination — <code>README.md §Drawer</code>: only a <b>chat</b> closes the drawer).
+  Tap <code>See all chats ›</code> → the drawer closes and a new screen opens, which
+  <b>lazy-loads on scroll</b>.
+  Plan: <code>docs/plans/2026-09-27-android-sidebar-projects-menu.md</code>
+</p>
+
+<h2>1 · Closed → open</h2>
+<div class="grid">
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar">
+        <span class="burger"><i></i><i></i><i></i></span>
+        <span class="t">identify-model</span>
+        <span class="ico">◷</span>
+      </div>
+      <div class="content">
+        <div class="bubble">Where do we put the model config?</div>
+        <div class="bubble">Checking the workspace files now.</div>
+        <div class="bubble">It lives in <code>config/model.json</code> …</div>
+      </div>
+    </div>
+    <figcaption><b>1. Home (drawer closed)</b>
+      Unchanged. Hamburger <span class="kbd">sidebar_open_menu</span> opens the drawer.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="scrim" style="height:8px"></div>
+      <div class="drawer" style="min-height:520px">
+        <div class="ws">
+          <div><div class="eyebrow">Workspace</div><div class="name">kabelweb</div></div>
+          <span class="caret">▾</span>
+        </div>
+
+        <div class="sec-h"><span class="chev open">▶</span>Recent</div>
+        <div class="row chat sel"><span class="lbl">identify-model</span><span class="meta">2m</span><span class="spin"></span></div>
+        <div class="row chat"><span class="lbl">fix the drawer collapse</span><span class="meta">1h</span></div>
+        <div class="row chat"><span class="lbl">drawer plan</span><span class="meta">1d</span></div>
+        <div class="row chat"><span class="lbl">wire contract check</span><span class="meta">2d</span></div>
+        <div class="row chat" style="opacity:.5"><span class="lbl">older chats…</span><span class="meta">6d</span></div>
+
+        <div class="rule"></div>
+
+        <div class="sec-h"><span class="chev open">▶</span>Projects<span class="count">(7)</span></div>
+        <div class="row proj"><span class="sub open">▶</span><span class="glyph">▦</span><span class="lbl">sprint board</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">◍</span><span class="lbl">agentic coding</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">✎</span><span class="lbl">design system</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">↻</span><span class="lbl">mobile pipeline</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">▤</span><span class="lbl">cabelweb</span></div>
+
+        <div class="acct">
+          <div class="l">Signed in as</div>
+          <div class="e">ginwa@ginwa.site</div>
+          <div class="btn">Log out</div>
+        </div>
+      </div>
+    </div>
+    <figcaption><b>2. Drawer open — default</b>
+      <b>Projects is expanded by default</b>, matching Vue. One scroller, not two: Recent, then the
+      Projects block. A project row shows a <b>type glyph</b> and a name — <b>no count</b> (see §5).</figcaption>
+  </figure>
+
+</div>
+
+<h2>2 · The taps</h2>
+<div class="grid">
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="drawer" style="min-height:560px">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">kabelweb</div></div><span class="caret">▾</span></div>
+
+        <div class="sec-h"><span class="chev open">▶</span>Recent</div>
+        <div class="row chat sel"><span class="lbl">identify-model</span><span class="meta">2m</span><span class="spin"></span></div>
+        <div class="row chat"><span class="lbl">fix the drawer collapse</span><span class="meta">1h</span></div>
+        <div class="row chat"><span class="lbl">drawer plan</span><span class="meta">1d</span></div>
+
+        <div class="rule"></div>
+
+        <div class="sec-h"><span class="chev open">▶</span>Projects<span class="count">(7)</span></div>
+        <div class="row proj sel"><span class="sub open">▶</span><span class="glyph">▦</span><span class="lbl">sprint board</span></div>
+        <div class="nested">
+          <div class="row chat"><span class="lbl">·</span><span class="lbl">rename the drawer</span><span class="meta">4h</span></div>
+          <div class="row chat"><span class="lbl">·</span><span class="lbl">collapse on tablet</span><span class="meta">2d</span></div>
+          <div class="row chat"><span class="lbl">·</span><span class="lbl">workspace scoping</span><span class="meta">5d</span></div>
+          <div class="row chat"><span class="lbl">·</span><span class="lbl">load more for projects</span><span class="meta">6d</span></div>
+          <div class="row chat"><span class="lbl">·</span><span class="lbl">drawer scroll latch</span><span class="meta">9d</span></div>
+        </div>
+        <div class="seeall">See all chats<span class="chev">›</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">◍</span><span class="lbl">agentic coding</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">↻</span><span class="lbl">mobile pipeline</span></div>
+
+        <div class="acct"><div class="l">Signed in as</div><div class="e">ginwa@ginwa.site</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption><b>3. Project expanded — a preview, not the whole list</b>
+      Tap a project row → the first <b>5</b> chats unroll beneath it behind a guide rule (Vue's
+      <code>WorkspaceItemTaskRow</code>). The drawer stays <b>open</b>. A second tap collapses it and
+      does <b>not</b> refetch.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar" style="padding-left:6px">
+        <span style="color:var(--muted);font-size:16px">‹</span>
+        <span class="t">sprint board</span>
+      </div>
+      <div class="content" style="padding:8px 12px">
+        <div class="row chat"><span class="lbl">rename the drawer</span><span class="meta">4h</span></div>
+        <div class="row chat"><span class="lbl">collapse on tablet</span><span class="meta">2d</span></div>
+        <div class="row chat"><span class="lbl">workspace scoping</span><span class="meta">5d</span></div>
+        <div class="row chat"><span class="lbl">load more for projects</span><span class="meta">6d</span></div>
+        <div class="row chat"><span class="lbl">drawer scroll latch</span><span class="meta">9d</span></div>
+        <div class="row chat"><span class="lbl">kanban column ordering</span><span class="meta">11d</span></div>
+        <div class="row chat"><span class="lbl">drop indicator</span><span class="meta">2w</span></div>
+        <div class="row chat"><span class="lbl">auto-rename on first msg</span><span class="meta">3w</span></div>
+        <div class="row chat"><span class="lbl">card text overflow</span><span class="meta">3w</span></div>
+        <div class="row chat"><span class="lbl">agent event colours</span><span class="meta">1mo</span></div>
+      </div>
+      <div style="text-align:center;font-size:11px;color:var(--dim);padding:2px 0 12px">Scroll for older chats</div>
+    </div>
+    <figcaption><b>4. <code>See all chats ›</code> — the new screen</b>
+      A real destination: closes the drawer, pushes
+      <code>project/{workspaceId}/{itemId}</code>. Lists <b>that project's</b> sessions and
+      <b>lazy-loads on scroll</b> — the same footer the Recent list already uses. Reuses the page the
+      drawer already fetched, so opening it is instant and costs no extra request.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="scrim" style="height:8px"></div>
+      <div class="drawer" style="min-height:520px">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">kabelweb</div></div><span class="caret">▾</span></div>
+        <div class="sec-h"><span class="chev open">▶</span>Recent</div>
+        <div class="row chat"><span class="lbl">identify-model</span><span class="meta">2m</span><span class="spin"></span></div>
+        <div class="row chat"><span class="lbl">fix the drawer collapse</span><span class="meta">1h</span></div>
+        <div class="sec-h" style="margin-top:14px"><span class="chev">▶</span>Projects<span class="count">(7)</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">▦</span><span class="lbl">sprint board</span></div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">◍</span><span class="lbl">agentic coding</span></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">ginwa@ginwa.site</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption><b>5. Section collapsed</b>
+      Tap the <code>PROJECTS</code> header → the whole block folds away and Recent gets the space.
+      This is the escape hatch for a chat-heavy workspace.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="appbar">
+        <span class="burger"><i></i><i></i><i></i></span>
+        <span class="t">rename the drawer</span>
+        <span class="ico">◷</span>
+      </div>
+      <div class="content">
+        <div class="bubble">the drawer closes on a workspace switch — that reads as a bug</div>
+        <div class="bubble">Agreed. Only a chat should dismiss it. A workspace is a filter, and now a
+        project is a filter too, so the same rule applies.</div>
+      </div>
+    </div>
+    <figcaption><b>6. Nested chat tapped</b>
+      Identical to a Recent row: drawer closes, pushes <code>chat/{sessionId}</code>. The nested row
+      and the Recent row call the <b>same lambda</b> — that is why a project needs no new route of
+      its own for the common case.</figcaption>
+  </figure>
+
+</div>
+
+<h2>3 · Loading, empty, and failure</h2>
+<div class="grid">
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="drawer" style="min-height:440px">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">kabelweb</div></div><span class="caret">▾</span></div>
+        <div class="sec-h"><span class="chev open">▶</span>Recent</div>
+        <div class="row chat"><span class="lbl">identify-model</span><span class="meta">2m</span></div>
+        <div class="rule"></div>
+        <div class="sec-h"><span class="chev open">▶</span>Projects</div>
+        <div class="empty"><div class="t" style="margin:0 auto 10px;width:18px;height:18px;border:1.5px solid var(--muted);border-top-color:transparent;border-radius:50%"></div>
+          <div class="t">Loading projects</div>
+          <div class="d">Fetching the projects in this workspace.</div></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">ginwa@ginwa.site</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption><b>7. First load</b>
+      Reuses the drawer's existing <code>SidebarPlaceholder</code> shape, word-for-word the Recent
+      list's own loading state.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="drawer" style="min-height:440px">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">design</div></div><span class="caret">▾</span></div>
+        <div class="sec-h"><span class="chev open">▶</span>Recent</div>
+        <div class="row chat"><span class="lbl">identify-model</span><span class="meta">2m</span></div>
+        <div class="rule"></div>
+        <div class="sec-h"><span class="chev open">▶</span>Projects<span class="count">(0)</span></div>
+        <div class="empty"><div class="t">No projects yet</div><div class="d">Create one on the web app and it will show up here.</div></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">ginwa@ginwa.site</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption><b>8. Empty</b>
+      Vue's string is "No projects yet — use <code>+</code> above to add one"; there is no <code>+</code> in
+      v1, so the copy points at the web app instead. Same fallback the drawer already uses for
+      "No workspaces yet". A project that <i>has</i> no chats says
+      "No chats in this project yet" on the screen in §2.</figcaption>
+  </figure>
+
+  <figure>
+    <div class="phone">
+      <div class="statusbar"><span>9:41</span><span>▮▮▮ ⏻</span></div>
+      <div class="drawer" style="min-height:500px">
+        <div class="ws"><div><div class="eyebrow">Workspace</div><div class="name">kabelweb</div></div><span class="caret">▾</span></div>
+        <div class="banner">Showing saved data · The server could not load your projects.<span class="retry">Retry</span></div>
+        <div class="sec-h"><span class="chev open">▶</span>Recent</div>
+        <div class="row chat sel"><span class="lbl">identify-model</span><span class="meta">2m</span><span class="spin"></span></div>
+        <div class="row chat"><span class="lbl">fix the drawer collapse</span><span class="meta">1h</span></div>
+        <div class="rule"></div>
+        <div class="sec-h"><span class="chev open">▶</span>Projects<span class="count">(2)</span></div>
+        <div class="row proj sel"><span class="sub open">▶</span><span class="glyph">▦</span><span class="lbl">sprint board</span></div>
+        <div class="nested">
+          <div class="row chat"><span class="lbl">·</span><span class="lbl">rename the drawer</span><span class="meta">4h</span></div>
+          <div class="row chat" style="opacity:.45"><span class="spin"></span><span class="lbl" style="font-size:12px">Showing 1 of 4 chats · couldn't load more</span><span class="retry" style="color:var(--accent)">Retry</span></div>
+        </div>
+        <div class="row proj"><span class="sub">▶</span><span class="glyph">◍</span><span class="lbl">agentic coding</span></div>
+        <div class="acct"><div class="l">Signed in as</div><div class="e">ginwa@ginwa.site</div><div class="btn">Log out</div></div>
+      </div>
+    </div>
+    <figcaption><b>9. Partial failure</b>
+      A failed revalidate keeps the cached rows and says so, exactly like the drawer's existing
+      <code>StaleDataNotice</code>. A failed <b>page</b> keeps the rows it has and retries in place —
+      the drawer never turns a stale list into an error banner. The new screen behaves the same way.</figcaption>
+  </figure>
+
+</div>
+
+<h2>4 · Tap semantics — the rule, written down</h2>
+<table>
+  <thead><tr><th>Target</th><th>Kind</th><th>Drawer</th><th>Result</th><th>Backend</th></tr></thead>
+  <tbody>
+    <tr><td>Workspace option</td><td>filter</td><td>stays <b>open</b></td><td>Recent rescopes to the new workspace; Projects reload for it</td><td><code>GET /api/workspaces/{ws}/items</code></td></tr>
+    <tr><td><code>PROJECTS</code> header</td><td>toggle</td><td>stays <b>open</b></td><td>Section folds / unfolds</td><td>—</td></tr>
+    <tr><td>Project row</td><td>filter</td><td>stays <b>open</b></td><td>The first <b>5</b> of that project's chats unroll beneath it</td><td><code>GET …/items/{item}/tasks?limit=20</code></td></tr>
+    <tr><td><b>See all chats ›</b></td><td><b>destination</b></td><td><b>closes</b></td><td>Pushes <code>project/{workspaceId}/{itemId}</code> — a full-screen list of that project's sessions, lazy-loading on scroll</td><td>same endpoint, <code>&amp;cursor=</code> as it pages</td></tr>
+    <tr><td>Recent chat row</td><td><b>destination</b></td><td><b>closes</b></td><td>Pushes <code>chat/{sessionId}</code></td><td>—</td></tr>
+    <tr><td>Nested chat row</td><td><b>destination</b></td><td><b>closes</b></td><td>Pushes <code>chat/{sessionId}</code> — <b>same lambda as Recent</b></td><td>—</td></tr>
+    <tr><td>Back from the project screen</td><td>—</td><td>reopens with the project <b>still expanded</b></td><td>Returns to the shell via the existing <code>goBackToPreviousOrShell()</code>; no new Back rule</td><td>—</td></tr>
+  </tbody>
+</table>
+<p class="note">
+  A task row's <code>id</code> <b>is</b> the session id (the backend's own convention,
+  <code>http_response.zig</code>). That is why a project expands straight into openable chats with no join
+  and no second lookup — and why the drawer preview and the new screen can share one fetched page instead
+  of fetching twice.
+</p>
+
+<h2>5 · Project type glyphs</h2>
+<table>
+  <thead><tr><th>Wire <code>item_type</code></th><th>Glyph</th><th>Material icon</th><th>Expands to</th></tr></thead>
+  <tbody>
+    <tr><td><code>kanban</code></td><td>▦</td><td><code>Icons.Filled.ViewKanban</code></td><td>its tasks (chats) — on a phone, not the board</td></tr>
+    <tr><td><code>agent</code></td><td>◍</td><td><code>Icons.Filled.SmartToy</code></td><td>its tasks (chats) — not the agent config</td></tr>
+    <tr><td><code>routine</code></td><td>↻</td><td><code>Icons.Filled.Autorenew</code></td><td>its tasks (chats)</td></tr>
+    <tr><td><code>design</code></td><td>✎</td><td><code>Icons.Filled.Brush</code></td><td>its tasks (chats) — not the canvas</td></tr>
+    <tr><td><code>folder</code></td><td>▤</td><td><code>Icons.Filled.Folder</code></td><td>its tasks (chats) — folder entries are <b>out of scope</b> in v1</td></tr>
+    <tr><td>anything else</td><td>▤</td><td><code>Icons.Filled.Folder</code></td><td>fallback, so a new type never renders a nameless row</td></tr>
+  </tbody>
+</table>
+
+<h2>6 · Explicitly not in this wireframe</h2>
+<ul>
+  <li><b>No <code>+</code> Add Item menu.</b> Vue has four live options (Kanban, Design, Agent, Routine). Creating a project from a phone is its own card.</li>
+  <li><b>No counts anywhere.</b> Not on a collapsed project row, not on the <code>See all chats ›</code> button, not in the new screen. The tasks endpoint returns <code>count</code> = page length, not a total, so an honest number costs paging the whole list — per project, per refresh. The only number the UI ever prints is the one the page in hand proves: the footer's <i>Scroll for older chats</i> → <i>No older chats</i> flip.</li>
+  <li><b>No project board / agent config / design canvas.</b> The new screen lists <i>chats</i>. Tapping a project row never navigates; only <code>See all chats ›</code> does.</li>
+  <li><b>No delete / rename / reorder / drag-and-drop.</b> A phone is the wrong surface for reordering a tree.</li>
+  <li><b>No two independent scrollers in the drawer.</b> Vue makes the Recent pane resizable and gives Projects <code>flex-1</code>. On 390dp that leaves Recent about four rows tall, so both live in one <code>LazyColumn</code>. The <i>new screen</i> is a second scroller, but it is a whole screen, not a pane.</li>
+  <li><b>No folder file listing.</b> Vue fetches <code>GET /api/system/folder?action=list&amp;path=…</code> for a <code>folder</code> project; here a folder project just expands to its chats like every other type.</li>
+</ul>
+
+</body>
+</html>
