@@ -17,6 +17,7 @@ import {
   branchUrlFromPrUrl,
 } from '../../helpers/prStatusCache'
 import { sessionEngineDb, toSessionRow } from '../../sync/SessionEngineDb'
+import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../../sync/runtime'
 import * as api from '../../api'
 import SessionSlider from '../SessionSlider.vue'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
@@ -464,14 +465,18 @@ const loadChats = async () => {
   const isCurrentCtx = () => sessionCacheKey() === ctx
   try {
     console.log('[ChatsList] loadChats called, cache-first...')
-    const cached = await sessionEngineDb.primeFromCache(ctx, 30)
+    const cached = await runSyncEffectOr(
+      sessionEngineDb.primeFromCache(ctx, 30),
+      [],
+      'sessions.primeFromCache',
+    )
     if (cached.length > 0 && isCurrentCtx()) {
       navItems.value = cached.map((r) => toNavItem(r.raw))
       sortNavItemsForDisplay()
       chatsLoading.value = false
       restoreActiveFromUrl()
     }
-    const delta = await sessionEngineDb.loadDelta(ctx, 30)
+    const delta = await runSyncEffect(sessionEngineDb.loadDelta(ctx, 30), 'sessions.loadDelta')
     if (delta && isCurrentCtx()) {
       navItems.value = delta.items.map((r) => toNavItem(r.raw))
       sortNavItemsForDisplay()
@@ -544,7 +549,11 @@ const loadMoreChats = async () => {
   // backend cursor that pages in display order.
   if (chatsSortDirection.value === 'desc' && navItems.value.length > 0) {
     const oldest = navItems.value[navItems.value.length - 1]?.sortKey ?? ''
-    const cached = await sessionEngineDb.loadOlderFromCache(ctx, oldest, 20)
+    const cached = await runSyncEffectOr(
+      sessionEngineDb.loadOlderFromCache(ctx, oldest, 20),
+      [],
+      'sessions.loadOlderFromCache',
+    )
     if (cached.length > 0) {
       const seen = new Set(navItems.value.map((i) => i.id))
       const fresh = cached.filter((r) => !seen.has(r.id))
@@ -566,7 +575,10 @@ const loadMoreChats = async () => {
     const newItems = (data.sessions || []).map(toNavItem)
     navItems.value.push(...newItems)
     // Write-through so later mounts and scroll-backs hit the cache.
-    await sessionEngineDb.putLocal(ctx, (data.sessions || []).map(toSessionRow))
+    await runSyncVoid(
+      sessionEngineDb.putLocal(ctx, (data.sessions || []).map(toSessionRow)),
+      'sessions.putLocal',
+    )
     chatsHasMore.value = data.has_more
     chatsNextCursor.value = data.next_cursor
   } catch (err) {
@@ -657,7 +669,10 @@ const removeChat = async (chatId: string) => {
     const wasActive = navItems.value[index]?.active ?? false
     navItems.value.splice(index, 1)
     // Keep the cache consistent with the optimistic splice.
-    await sessionEngineDb.removeSession(sessionCacheKey(), chatId)
+    await runSyncVoid(
+      sessionEngineDb.removeSession(sessionCacheKey(), chatId),
+      'sessions.removeSession',
+    )
     // Clear from navigation store if this was the active chat
     if (wasActive) {
       navigationStore.clearActiveChat()
@@ -737,7 +752,10 @@ const unsubSession = workspacesStore.onSessionEvent((event) => {
   if (event.action === 'deleted') {
     // Instant evict: drop the row from the cache and the list now,
     // then let the debounced reload revalidate totals/cursors.
-    void sessionEngineDb.removeSession(sessionCacheKey(), event.id)
+    void runSyncVoid(
+      sessionEngineDb.removeSession(sessionCacheKey(), event.id),
+      'sessions.removeSession',
+    )
     navItems.value = navItems.value.filter((i) => i.id !== event.id)
     scheduleSseReload()
     return

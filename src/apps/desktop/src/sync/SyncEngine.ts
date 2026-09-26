@@ -1,200 +1,212 @@
 /**
- * Generic local-first sync engine (Phase 1).
+ * Generic local-first sync engine.
  *
  * Storage-agnostic orchestration: cache-then-delta reads, cursor tracking,
  * write-through, and older-page loads from cache. Knows nothing about chat —
- * concrete children (e.g. ChatEngineDb) wire the store name, cursor, compare
- * function, and network fetcher.
+ * concrete children (e.g. ChatEngineDb) wire the object-store name, the
+ * compare function and the network fetcher.
  *
- * Concrete persistence plugs in via the protected abstract methods, which
- * IndexedDbStore implements. An in-memory Map fallback covers SSR/tests where
- * IndexedDB is unavailable.
+ * Effect notes
+ * ------------
+ * Every operation returns an `Effect` instead of a `Promise`. The important
+ * change is not the promise wrapper, it is the second type parameter:
+ *
+ *   - Operations documented as best-effort (`putLocal`, `removeLocal`,
+ *     `setCursor`, `clear`) keep their "must never break the UI" contract and
+ *     therefore have an error channel of `never`. They still swallow, but
+ *     with `Effect.catchAll` and a warning, instead of a bare `catch {}` that
+ *     discarded the reason entirely.
+ *   - Operations a caller may want to reason about (`primeFromCache`,
+ *     `getCursor`, `loadOlderFromCache`) surface `SyncError`, so "the backend
+ *     is down" is no longer indistinguishable from "there is nothing new".
+ *
+ * Two structural changes fall out of the port:
+ *
+ *  - The engine no longer keeps a private in-memory mirror. The `SyncStore`
+ *    is always present — `IndexedDbStoreLive` falls back to memory when
+ *    IndexedDB is unavailable, and `makeMemorySyncStore` is the SSR/spec
+ *    variant — so the two parallel memory maps that used to exist (one here,
+ *    one inside the store) collapse into one.
+ *  - The store is injected as a value rather than a `Layer`, and each engine
+ *    instance keeps its own — the pre-port behaviour, deliberately. A
+ *    `Layer.sync` would construct a fresh instance per `Effect.provide`
+ *    (rebuilding the IndexedDB connection on every operation), and sharing one
+ *    instance across engines changes which rows a given engine can see, which
+ *    is a separate behavioural change that needs its own test coverage.
+ *    `IndexedDbStoreLive` remains available for callers that compose a whole
+ *    program and want the store in context.
  */
+import { Effect, Either } from 'effect'
+import type { SyncError } from './SyncError'
+import { SyncRemoteError } from './SyncError'
+import { makeIndexedDbSyncStore } from './IndexedDbStore'
+import type { SyncStoreShape } from './SyncStore'
+import type { Syncable, SyncDelta } from './SyncTypes'
 
-export interface Syncable {
-  id: string
-  /** Monotonic sort key used for older-page queries (e.g. created_at_nano). */
-  sortKey: string | number
-}
+export type { Syncable, SyncDelta, SyncPage } from './SyncTypes'
 
-export interface SyncPage<T> {
+/** Result of a mount-time cache-then-revalidate read. */
+export interface SyncMountResult<T> {
   items: T[]
-  nextCursor: string | null
-  hasMore: boolean
-}
-
-export interface SyncDelta<T> extends SyncPage<T> {
-  /** Cursor to persist after a successful delta (usually nextCursor). */
-  cursorToSave: string | null
-}
-
-export interface SyncFetcher<T, C> {
-  (cursor: string | null, limit: number, ctx: C): Promise<SyncDelta<T>>
-}
-
-/** Minimal store surface the engine needs. Implemented by IndexedDbStore. */
-export interface SyncStore<T extends Syncable> {
-  getAll(key: string, limit: number): Promise<T[]>
-  putAll(key: string, items: T[]): Promise<void>
-  remove(key: string, id: string): Promise<void>
-  getOlder(key: string, beforeSortKey: string | number, limit: number): Promise<T[]>
-  getCursor(key: string): Promise<string | null>
-  setCursor(key: string, cursor: string | null): Promise<void>
-  clear(key: string): Promise<void>
+  /** True when the cache supplied the first paint. */
+  fromCache: boolean
+  /** The revalidated delta, or `null` when the revalidation failed. */
+  delta: SyncDelta<T> | null
+  /**
+   * Why the revalidation failed, when it did. `null` means the delta fetch
+   * succeeded — including the "it succeeded and returned no rows" case that
+   * the previous `catch { return { items: cached, fromCache, delta } }` made
+   * indistinguishable from failure.
+   */
+  error: SyncError | null
 }
 
 export abstract class BaseSyncEngine<T extends Syncable, C = string> {
-  /** In-memory fallback when IndexedDB is unavailable (SSR/tests). */
-  private memItems = new Map<string, T[]>()
-  private memCursors = new Map<string, string | null>()
+  /**
+   * @param storeName Object-store name this engine reads and writes.
+   * @param store     Local-cache implementation; specs substitute a fake.
+   *                 Defaults to a fresh IndexedDB-backed store per engine,
+   *                 matching the isolation the pre-port constructors had.
+   */
+  constructor(
+    protected readonly storeName: string,
+    protected readonly store: SyncStoreShape = makeIndexedDbSyncStore(),
+  ) {}
 
-  protected abstract storeOrNull(): SyncStore<T> | null
-  protected abstract fetchDelta(cursor: string | null, limit: number, ctx: C): Promise<SyncDelta<T>>
+  /** Remote delta fetch. Rejections arrive as `SyncRemoteError`. */
+  protected abstract fetchDelta(
+    cursor: string | null,
+    limit: number,
+    ctx: C,
+  ): Effect.Effect<SyncDelta<T>, SyncRemoteError>
+
   protected abstract cursorOf(item: T): string | null
+
   protected abstract compareFn(a: T, b: T): number
 
   protected memKey(ctx: C): string {
     return String(ctx)
   }
 
-  private memGet(key: string): T[] {
-    return this.memItems.get(key) ?? []
+  protected sortKeyOf(item: T): string | number {
+    return item.sortKey
   }
 
-  async getCursor(ctx: C): Promise<string | null> {
-    const store = this.storeOrNull()
-    const key = this.memKey(ctx)
-    if (!store) return this.memCursors.get(key) ?? null
-    try {
-      return await store.getCursor(key)
-    } catch {
-      return this.memCursors.get(key) ?? null
-    }
+  getCursor(ctx: C): Effect.Effect<string | null, SyncError> {
+    return this.store.getCursor(this.storeName, this.memKey(ctx))
   }
 
-  async setCursor(ctx: C, cursor: string | null): Promise<void> {
-    const key = this.memKey(ctx)
-    this.memCursors.set(key, cursor)
-    const store = this.storeOrNull()
-    if (!store) return
-    try {
-      await store.setCursor(key, cursor)
-    } catch {
-      // Best-effort: memory copy already updated.
-    }
+  /** Best-effort: the store's own mirror is already updated. Never fails. */
+  setCursor(ctx: C, cursor: string | null): Effect.Effect<void> {
+    return this.store
+      .setCursor(this.storeName, this.memKey(ctx), cursor)
+      .pipe(Effect.catchAll((e) => this.note(`setCursor(${this.storeName})`, e)))
   }
 
-  async clear(ctx: C): Promise<void> {
-    const key = this.memKey(ctx)
-    this.memItems.delete(key)
-    this.memCursors.delete(key)
-    const store = this.storeOrNull()
-    if (!store) return
-    try {
-      await store.clear(key)
-    } catch {
-      // Best-effort.
-    }
+  clear(ctx: C): Effect.Effect<void> {
+    return this.store
+      .clear(this.storeName, this.memKey(ctx))
+      .pipe(Effect.catchAll((e) => this.note(`clear(${this.storeName})`, e)))
   }
 
   /** Cache-first read for mount: newest `limit` rows, already sorted. */
-  async primeFromCache(ctx: C, limit: number): Promise<T[]> {
-    const key = this.memKey(ctx)
-    const store = this.storeOrNull()
-    if (!store) return this.memGet(key).slice().sort(this.compareFn.bind(this)).slice(0, limit)
-    try {
-      const rows = await store.getAll(key, limit)
-      // IDB returns ascending — ensure newest-first via compareFn.
-      const sorted = rows.slice().sort(this.compareFn.bind(this))
-      if (sorted.length > 0) this.memItems.set(key, sorted)
-      return sorted
-    } catch {
-      return this.memGet(key).slice().sort(this.compareFn.bind(this)).slice(0, limit)
-    }
+  primeFromCache(ctx: C, limit: number): Effect.Effect<T[], SyncError> {
+    return this.store
+      .getAll<T>(this.storeName, this.memKey(ctx), limit)
+      .pipe(Effect.map((rows) => rows.slice().sort(this.compareFn.bind(this)) as T[]))
   }
 
   /**
    * Cache-then-delta: return cached rows immediately when present, then fetch
    * the network delta, merge (dedupe by id), persist, and advance the cursor.
-   * Returns the merged list plus whether the cache supplied the first paint.
+   *
+   * Never fails — a broken cache or an unreachable backend degrades to the
+   * painted cache — but `error` now records why, which the previous bare
+   * `catch` discarded.
    */
-  async syncOnMount(
+  syncOnMount(ctx: C, limit: number): Effect.Effect<SyncMountResult<T>> {
+    // `Effect.gen` takes a generator function, and a generator's `this` is its
+    // own — so `this` has to be captured outside. It cannot be destructured
+    // instead: the engine API lives on the prototype, and an unbound
+    // destructured method would run with `this === undefined`.
+    // oxlint-disable-next-line typescript-eslint/no-this-alias -- see above
+    const engine = this
+    return Effect.gen(function* () {
+      const cached = yield* engine
+        .primeFromCache(ctx, limit)
+        .pipe(Effect.catchAll(() => Effect.succeed<T[]>([])))
+
+      const attempt = yield* Effect.either(
+        Effect.gen(function* () {
+          const cursor = yield* engine.getCursor(ctx)
+          const delta = yield* engine.fetchDelta(cursor, limit, ctx)
+          const merged = engine.mergeReplacing(cached, delta.items)
+          yield* engine.putLocal(ctx, delta.items)
+          if (delta.cursorToSave !== undefined) {
+            yield* engine.setCursor(ctx, delta.cursorToSave)
+          }
+          return {
+            items: merged,
+            fromCache: cached.length > 0,
+            delta,
+            error: null,
+          } satisfies SyncMountResult<T>
+        }),
+      )
+
+      if (Either.isRight(attempt)) return attempt.right
+      return {
+        items: cached,
+        fromCache: cached.length > 0,
+        delta: null,
+        error: attempt.left,
+      } satisfies SyncMountResult<T>
+    })
+  }
+
+  /**
+   * Best-effort write-through (e.g. SSE `full` handler). Never fails: a cache
+   * write must not break the live update path that triggered it.
+   */
+  putLocal(ctx: C, items: T[]): Effect.Effect<void> {
+    if (items.length === 0) return Effect.void
+    return this.store
+      .putAll(this.storeName, this.memKey(ctx), items)
+      .pipe(Effect.catchAll((e) => this.note(`putLocal(${this.storeName})`, e)))
+  }
+
+  /** Best-effort single-row eviction (e.g. SSE `deleted`). Never fails. */
+  removeLocal(ctx: C, id: string): Effect.Effect<void> {
+    return this.store
+      .remove(this.storeName, this.memKey(ctx), id)
+      .pipe(Effect.catchAll((e) => this.note(`removeLocal(${this.storeName})`, e)))
+  }
+
+  /**
+   * Older-page read for scroll-back: cache first. An empty result means the
+   * caller should fetch from the network — an *error* now says the cache
+   * itself is unavailable, which the previous `catch { return [] }` could not.
+   */
+  loadOlderFromCache(
     ctx: C,
+    beforeSortKey: string | number,
     limit: number,
-  ): Promise<{ items: T[]; fromCache: boolean; delta: SyncDelta<T> | null }> {
-    const cached = await this.primeFromCache(ctx, limit)
-    let delta: SyncDelta<T> | null = null
-    try {
-      const cursor = await this.getCursor(ctx)
-      delta = await this.fetchDelta(cursor, limit, ctx)
-      const merged = this.mergeReplacing(cached, delta.items)
-      await this.putLocal(ctx, delta.items)
-      if (delta.cursorToSave !== undefined) {
-        await this.setCursor(ctx, delta.cursorToSave)
-      }
-      return { items: merged, fromCache: cached.length > 0, delta }
-    } catch {
-      return { items: cached, fromCache: cached.length > 0, delta }
-    }
-  }
-
-  /** Best-effort write-through (e.g. SSE `full` handler). Never throws. */
-  async putLocal(ctx: C, items: T[]): Promise<void> {
-    if (items.length === 0) return
-    const key = this.memKey(ctx)
-    const merged = this.mergeReplacing(this.memGet(key), items)
-    this.memItems.set(key, merged)
-    const store = this.storeOrNull()
-    if (!store) return
-    try {
-      await store.putAll(key, items)
-      this.memItems.set(key, await store.getAll(key, Math.max(merged.length, items.length)))
-    } catch {
-      // Memory copy already updated; IDB failure must not break the UI.
-    }
-  }
-
-  /** Best-effort single-row eviction (e.g. SSE `deleted`). Never throws. */
-  async removeLocal(ctx: C, id: string): Promise<void> {
-    const key = this.memKey(ctx)
-    this.memItems.set(
-      key,
-      this.memGet(key).filter((m) => m.id !== id),
-    )
-    const store = this.storeOrNull()
-    if (!store) return
-    try {
-      await store.remove(key, id)
-    } catch {
-      // Memory copy already updated.
-    }
-  }
-
-  /** Older-page read for scroll-back: cache first, empty miss = caller fetches. */
-  async loadOlderFromCache(ctx: C, beforeSortKey: string | number, limit: number): Promise<T[]> {
-    const key = this.memKey(ctx)
-    const store = this.storeOrNull()
-    if (!store) {
-      return this.memGet(key)
-        .filter((m) => this.sortKeyOf(m) < beforeSortKey)
-        .sort(this.compareFn.bind(this))
-        .slice(-limit)
-    }
-    try {
-      return await store.getOlder(key, beforeSortKey, limit)
-    } catch {
-      return []
-    }
-  }
-
-  protected sortKeyOf(item: T): string | number {
-    return item.sortKey
+  ): Effect.Effect<T[], SyncError> {
+    return this.store.getOlder<T>(this.storeName, this.memKey(ctx), beforeSortKey, limit)
   }
 
   /** Write-through merge: a same-id incoming row replaces the cached value. */
-  private mergeReplacing(cached: T[], incoming: T[]): T[] {
+  protected mergeReplacing(cached: T[], incoming: T[]): T[] {
     const byId = new Map(cached.map((item) => [item.id, item]))
     for (const item of incoming) byId.set(item.id, item)
     return [...byId.values()].sort(this.compareFn.bind(this))
+  }
+
+  /** Swallow a best-effort failure, keeping the reason diagnosable. */
+  private note(op: string, error: SyncError): Effect.Effect<void> {
+    if (import.meta.env?.DEV) {
+      console.warn(`[sync] best-effort ${op} failed: ${error._tag} ${error.reason}`)
+    }
+    return Effect.void
   }
 }

@@ -6,10 +6,14 @@
  * calls the existing task-list endpoint again; it does not send a new
  * backend cursor or introduce a backend delta-query contract.
  */
+import { Effect } from 'effect'
 import * as api from '../api'
 import type { Task } from '../api'
-import { BaseSyncEngine, type SyncDelta } from './SyncEngine'
-import { IndexedDbStore } from './IndexedDbStore'
+import { BaseSyncEngine } from './SyncEngine'
+import { SyncRemoteError, type SyncError } from './SyncError'
+import type { SyncStoreShape } from './SyncStore'
+import { makeIndexedDbSyncStore } from './IndexedDbStore'
+import type { SyncDelta } from './SyncTypes'
 
 export type TaskRawRow = Task
 
@@ -64,26 +68,14 @@ export interface TaskDelta extends SyncDelta<TaskRow> {
 }
 
 export class TaskEngineDb extends BaseSyncEngine<TaskRow, TaskCtx> {
-  private store: IndexedDbStore<TaskRow> | null = null
-
   constructor(
     // Read the API namespace at call time so Vitest spies on api.getTasks
     // remain effective, as they are for the session engine.
     private fetchFn: typeof api.getTasks = (...args) => api.getTasks(...args),
     storeName = 'tasks',
+    store: SyncStoreShape = makeIndexedDbSyncStore(),
   ) {
-    super()
-    try {
-      // The context is part of the IndexedDB key path for the task store,
-      // so the public row id remains the task id returned by the API.
-      this.store = new IndexedDbStore<TaskRow>(storeName, 'sortKey')
-    } catch {
-      this.store = null
-    }
-  }
-
-  protected storeOrNull(): IndexedDbStore<TaskRow> | null {
-    return this.store
+    super(storeName, store)
   }
 
   protected memKey(ctx: TaskCtx): string {
@@ -101,45 +93,52 @@ export class TaskEngineDb extends BaseSyncEngine<TaskRow, TaskCtx> {
     return item.sortKey || null
   }
 
-  private async fetchFirstPage(
+  private fetchFirstPage(
     limit: number,
     ctx: TaskCtx,
-  ): Promise<Awaited<ReturnType<typeof api.getTasks>>> {
+  ): Effect.Effect<Awaited<ReturnType<typeof api.getTasks>>, SyncRemoteError> {
     // Preserve the pre-cache call shape exactly. In particular, the
     // default board-wide path still calls getTasks(workspaceId, itemId).
-    if (
-      ctx.columnId === undefined &&
-      ctx.q === undefined &&
-      ctx.sortBy === undefined &&
-      ctx.direction === undefined
-    ) {
-      return this.fetchFn(ctx.workspaceId, ctx.itemId)
-    }
-    return this.fetchFn(
-      ctx.workspaceId,
-      ctx.itemId,
-      limit,
-      undefined,
-      ctx.sortBy,
-      ctx.direction,
-      ctx.columnId,
-      ctx.q,
-    )
+    return Effect.tryPromise({
+      try: () =>
+        ctx.columnId === undefined &&
+        ctx.q === undefined &&
+        ctx.sortBy === undefined &&
+        ctx.direction === undefined
+          ? this.fetchFn(ctx.workspaceId, ctx.itemId)
+          : this.fetchFn(
+              ctx.workspaceId,
+              ctx.itemId,
+              limit,
+              undefined,
+              ctx.sortBy,
+              ctx.direction,
+              ctx.columnId,
+              ctx.q,
+            ),
+      catch: (e) =>
+        new SyncRemoteError({
+          op: 'tasks.fetchDelta',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+    })
   }
 
-  protected async fetchDelta(
+  protected fetchDelta(
     _cursor: string | null,
     limit: number,
     ctx: TaskCtx,
-  ): Promise<TaskDelta> {
-    const data = await this.fetchFirstPage(limit, ctx)
-    return {
-      items: (data.tasks ?? []).map(toTaskRow),
-      nextCursor: data.next_cursor ?? null,
-      hasMore: data.has_more ?? false,
-      cursorToSave: null,
-      paginationCursor: data.next_cursor ?? null,
-    }
+  ): Effect.Effect<TaskDelta, SyncRemoteError> {
+    return Effect.map(
+      this.fetchFirstPage(limit, ctx),
+      (data): TaskDelta => ({
+        items: (data.tasks ?? []).map(toTaskRow),
+        nextCursor: data.next_cursor ?? null,
+        hasMore: data.has_more ?? false,
+        cursorToSave: null,
+        paginationCursor: data.next_cursor ?? null,
+      }),
+    )
   }
 
   /**
@@ -147,39 +146,48 @@ export class TaskEngineDb extends BaseSyncEngine<TaskRow, TaskCtx> {
    * write the returned rows through. Older-page pagination is handled by
    * the store and also writes through with putLocal.
    */
-  async loadDelta(ctx: TaskCtx, limit: number): Promise<TaskDelta | null> {
-    try {
-      const delta = await this.fetchDelta(null, limit, ctx)
-      await this.putLocal(ctx, delta.items)
+  loadDelta(ctx: TaskCtx, limit: number): Effect.Effect<TaskDelta, SyncError> {
+    // A generator's `this` is its own, so capture the engine outside.
+    // oxlint-disable-next-line typescript-eslint/no-this-alias -- see SyncEngine.syncOnMount
+    const engine = this
+    return Effect.gen(function* () {
+      const delta = yield* engine.fetchDelta(null, limit, ctx)
+      yield* engine.putLocal(ctx, delta.items)
       // A complete first page lists every row in this context, so cached
       // rows it omits were deleted or moved out — evict them so future
       // offline primes do not resurrect them.
-      if (!delta.hasMore) await this.reconcileCompletePage(ctx, delta.items)
+      if (!delta.hasMore) yield* engine.reconcileCompletePage(ctx, delta.items)
       return delta
-    } catch {
-      return null
-    }
+    })
   }
 
-  private async reconcileCompletePage(ctx: TaskCtx, fresh: TaskRow[]): Promise<void> {
-    try {
+  private reconcileCompletePage(ctx: TaskCtx, fresh: TaskRow[]): Effect.Effect<void> {
+    // A generator's `this` is its own, so capture the engine outside.
+    // oxlint-disable-next-line typescript-eslint/no-this-alias -- see SyncEngine.syncOnMount
+    const engine = this
+    return Effect.gen(function* () {
       const freshIds = new Set(fresh.map((row) => row.id))
-      const cached = await this.primeFromCache(ctx, 10000)
+      const cached = yield* engine
+        .primeFromCache(ctx, 10000)
+        .pipe(Effect.catchAll(() => Effect.succeed<TaskRow[]>([])))
       for (const row of cached) {
-        if (!freshIds.has(row.id)) await this.removeLocal(ctx, row.id)
+        if (!freshIds.has(row.id)) yield* engine.removeLocal(ctx, row.id)
       }
-    } catch {
-      // Best-effort: a failed reconcile must not fail the revalidation.
-    }
+    })
   }
 
-  async putTaskInContexts(requests: TaskCtx[], task: Task): Promise<void> {
+  putTaskInContexts(requests: TaskCtx[], task: Task): Effect.Effect<void> {
+    // A generator's `this` is its own, so capture the engine outside.
+    // oxlint-disable-next-line typescript-eslint/no-this-alias -- see SyncEngine.syncOnMount
+    const engine = this
     const row = toTaskRow(task)
-    for (const request of requests) await this.putLocal(request, [row])
+    return Effect.forEach(requests, (request) => engine.putLocal(request, [row]), {
+      discard: true,
+    })
   }
 
-  async removeTask(ctx: TaskCtx, id: string): Promise<void> {
-    await this.removeLocal(ctx, id)
+  removeTask(ctx: TaskCtx, id: string): Effect.Effect<void> {
+    return this.removeLocal(ctx, id)
   }
 }
 

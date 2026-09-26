@@ -1,5 +1,5 @@
 /**
- * Chat child of the generic sync engine (Phase 2: cached mount + delta).
+ * Chat child of the generic sync engine (cached mount + delta).
  *
  * Wires storeName='messages', cursorOf/compareFn over created_at_nano, and
  * fetchDelta over api.getChatHistory. Each row keeps the full server object
@@ -7,9 +7,13 @@
  * toChatMessages mapper with no shape drift; sortKey stays created_at_nano
  * (created_at*1e9 fallback) for older-page queries.
  */
+import { Effect } from 'effect'
 import { getChatHistory } from '../api'
-import { BaseSyncEngine, type SyncDelta } from './SyncEngine'
-import { IndexedDbStore } from './IndexedDbStore'
+import { BaseSyncEngine } from './SyncEngine'
+import { SyncRemoteError, type SyncError } from './SyncError'
+import type { SyncStoreShape } from './SyncStore'
+import { makeIndexedDbSyncStore } from './IndexedDbStore'
+import type { SyncDelta } from './SyncTypes'
 
 /** Full server row for one chat message (tool calls, images, reasoning...). */
 export type ChatRawRow = Awaited<ReturnType<typeof getChatHistory>>['messages'][number]
@@ -89,22 +93,12 @@ export function toChatMessage(ctx: ChatCtx, m: ChatRawRow): ChatMessage {
 }
 
 export class ChatEngineDb extends BaseSyncEngine<ChatMessage, ChatCtx> {
-  private store: IndexedDbStore<ChatMessage> | null = null
-
   constructor(
     private fetchFn: typeof getChatHistory = getChatHistory,
     storeName = 'messages',
+    store: SyncStoreShape = makeIndexedDbSyncStore(),
   ) {
-    super()
-    try {
-      this.store = new IndexedDbStore<ChatMessage>(storeName, 'sortKey')
-    } catch {
-      this.store = null
-    }
-  }
-
-  protected storeOrNull(): IndexedDbStore<ChatMessage> | null {
-    return this.store
+    super(storeName, store)
   }
 
   /** Newest-first: larger created_at_nano sorts earlier. */
@@ -117,13 +111,12 @@ export class ChatEngineDb extends BaseSyncEngine<ChatMessage, ChatCtx> {
     return String(item.sortKey)
   }
 
-  protected async fetchDelta(
+  protected fetchDelta(
     cursor: string | null,
     limit: number,
     ctx: ChatCtx,
-  ): Promise<SyncDelta<ChatMessage>> {
-    const delta = await this.fetchDeltaPage(cursor, limit, ctx)
-    return delta
+  ): Effect.Effect<SyncDelta<ChatMessage>, SyncRemoteError> {
+    return this.fetchDeltaPage(cursor, limit, ctx)
   }
 
   /**
@@ -132,52 +125,68 @@ export class ChatEngineDb extends BaseSyncEngine<ChatMessage, ChatCtx> {
    * before it, so ask ascending for just the tail; cold start (no cursor)
    * keeps the desc full load.
    */
-  async fetchDeltaPage(cursor: string | null, limit: number, ctx: ChatCtx): Promise<ChatDelta> {
-    const data = cursor
-      ? await this.fetchFn(ctx, limit, cursor, 'asc')
-      : await this.fetchFn(ctx, limit, undefined)
-    const items: ChatMessage[] = (data.messages ?? []).map((m) => toChatMessage(ctx, m))
-    return {
-      items,
-      nextCursor: data.next_cursor ?? null,
-      hasMore: data.has_more ?? false,
-      cursorToSave: newestCursor(items, data.next_cursor ?? null, cursor),
-      extra: {
-        cwd: data.cwd,
-        git_worktree_cwd: data.git_worktree_cwd,
-        pr_url: data.pr_url,
-        pr_provider: data.pr_provider,
-        selected_profile_model: data.selected_profile_model,
-        max_total_tokens: data.max_total_tokens,
-        max_capacity_total_tokens: data.max_capacity_total_tokens,
-        skills: data.skills,
-      },
-    }
+  fetchDeltaPage(
+    cursor: string | null,
+    limit: number,
+    ctx: ChatCtx,
+  ): Effect.Effect<ChatDelta, SyncRemoteError> {
+    return Effect.tryPromise({
+      try: () =>
+        cursor ? this.fetchFn(ctx, limit, cursor, 'asc') : this.fetchFn(ctx, limit, undefined),
+      catch: (e) =>
+        new SyncRemoteError({
+          op: 'messages.fetchDelta',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+    }).pipe(
+      Effect.map((data): ChatDelta => {
+        const items: ChatMessage[] = (data.messages ?? []).map((m) => toChatMessage(ctx, m))
+        return {
+          items,
+          nextCursor: data.next_cursor ?? null,
+          hasMore: data.has_more ?? false,
+          cursorToSave: newestCursor(items, data.next_cursor ?? null, cursor),
+          extra: {
+            cwd: data.cwd,
+            git_worktree_cwd: data.git_worktree_cwd,
+            pr_url: data.pr_url,
+            pr_provider: data.pr_provider,
+            selected_profile_model: data.selected_profile_model,
+            max_total_tokens: data.max_total_tokens,
+            max_capacity_total_tokens: data.max_capacity_total_tokens,
+            skills: data.skills,
+          },
+        }
+      }),
+    )
   }
 
   /**
    * Background refresh for a cached mount: fetch the tail, persist it,
    * advance the cursor. `preserveIds` prevents a response that started
-   * before a live SSE update from overwriting that newer row. Never throws —
-   * IDB/network failure keeps the painted cache.
+   * before a live SSE update from overwriting that newer row.
+   *
+   * Now honest about failure — the old `catch { return null }` made a
+   * backend outage indistinguishable from "no new messages".
    */
-  async loadDelta(
+  loadDelta(
     ctx: ChatCtx,
     limit: number,
     preserveIds: ReadonlySet<string> = new Set(),
-  ): Promise<ChatDelta | null> {
-    try {
-      const cursor = await this.getCursor(ctx)
-      const delta = await this.fetchDeltaPage(cursor, limit, ctx)
+  ): Effect.Effect<ChatDelta, SyncError> {
+    // A generator's `this` is its own, so capture the engine outside.
+    // oxlint-disable-next-line typescript-eslint/no-this-alias -- see SyncEngine.syncOnMount
+    const engine = this
+    return Effect.gen(function* () {
+      const cursor = yield* engine.getCursor(ctx)
+      const delta = yield* engine.fetchDeltaPage(cursor, limit, ctx)
       const persistableItems = delta.items.filter((item) => !preserveIds.has(item.id))
-      await this.putLocal(ctx, persistableItems)
+      yield* engine.putLocal(ctx, persistableItems)
       if (delta.cursorToSave !== undefined && persistableItems.length === delta.items.length) {
-        await this.setCursor(ctx, delta.cursorToSave)
+        yield* engine.setCursor(ctx, delta.cursorToSave)
       }
       return delta
-    } catch {
-      return null
-    }
+    })
   }
 }
 

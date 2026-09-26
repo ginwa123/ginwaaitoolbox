@@ -3,6 +3,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createApp, nextTick, ref, type App as VueApp, type Ref } from 'vue'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
+import { Effect } from 'effect'
 
 import * as api from '../../../api'
 import ChatView from '../ChatView.vue'
@@ -130,7 +131,7 @@ describe('ChatView command tool output — live placeholder-to-result update', (
       configurable: true,
     })
     setActivePinia(createPinia())
-    await chatEngineDb.clear(SESSION_ID)
+    await Effect.runPromise(chatEngineDb.clear(SESSION_ID))
 
     __resetSseBus()
     app = createApp({})
@@ -144,7 +145,7 @@ describe('ChatView command tool output — live placeholder-to-result update', (
     wrapper = null
     __resetSseBus()
     app = null
-    await chatEngineDb.clear(SESSION_ID)
+    await Effect.runPromise(chatEngineDb.clear(SESSION_ID))
     vi.restoreAllMocks()
   })
 
@@ -235,7 +236,7 @@ describe('ChatView command tool output — live placeholder-to-result update', (
     await card.get('div[role="button"]').trigger('click')
     await nextTick()
     expect(card.text()).toContain('RACE_STDOUT_MARKER')
-    const cachedAfterHistory = await chatEngineDb.primeFromCache(SESSION_ID, 100)
+    const cachedAfterHistory = await Effect.runPromise(chatEngineDb.primeFromCache(SESSION_ID, 100))
     expect(cachedAfterHistory[0]?.raw.content).toContain('RACE_STDOUT_MARKER')
   })
 
@@ -294,7 +295,7 @@ describe('ChatView command tool output — live placeholder-to-result update', (
     await flushPromises()
     await nextTick()
 
-    const placeholderCache = await chatEngineDb.primeFromCache(SESSION_ID, 100)
+    const placeholderCache = await Effect.runPromise(chatEngineDb.primeFromCache(SESSION_ID, 100))
     expect(placeholderCache).toHaveLength(1)
     expect(placeholderCache[0]?.raw.content).not.toContain('CACHE_STDOUT_MARKER')
 
@@ -313,7 +314,7 @@ describe('ChatView command tool output — live placeholder-to-result update', (
     await flushPromises()
     await nextTick()
 
-    const finalCache = await chatEngineDb.primeFromCache(SESSION_ID, 100)
+    const finalCache = await Effect.runPromise(chatEngineDb.primeFromCache(SESSION_ID, 100))
     expect(finalCache).toHaveLength(1)
     expect(finalCache[0]?.raw.content).toContain('CACHE_STDOUT_MARKER')
   })
