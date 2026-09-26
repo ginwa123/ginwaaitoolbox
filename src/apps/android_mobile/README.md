@@ -49,6 +49,23 @@ The app declares `INTERNET` but explicitly rejects cleartext traffic, so every
 client only accepts HTTPS endpoints. A transient startup verification failure
 offers retry and account-switch recovery without deleting the saved cookie.
 
+## Drawer
+
+The two taps inside the drawer are not the same kind of gesture, so they do not
+do the same thing to the drawer:
+
+- **A chat is a destination.** Tapping a row closes the drawer and pushes
+  `chat/{sessionId}`.
+- **A workspace is a filter.** Tapping an option in the workspace dropdown
+  rescopes the list in place and leaves the drawer **open**, because the point
+  of switching workspace is to then pick a chat in it — closing would throw
+  away the tap the user was in the middle of. Only the dropdown itself
+  dismisses.
+
+The callback that leaves the drawer is named `onOpenChat` rather than the
+earlier `onNavigate` for exactly this reason: `onNavigate` invited the second
+caller, and a filter has nowhere to navigate to.
+
 ## Chat
 
 Tapping a chat in the drawer opens it as its own destination

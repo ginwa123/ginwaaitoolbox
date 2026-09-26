@@ -49,7 +49,7 @@ class RecentsSidebarTest {
     }
 
     @Test
-    fun workspaceSelectionScopesRecentsAndClosesDrawer() {
+    fun workspaceSelectionScopesRecentsAndKeepsTheDrawerOpen() {
         var selectedWorkspaceId: String? = null
         showModalScreen(
             onWorkspaceSelected = { selectedWorkspaceId = it },
@@ -61,13 +61,22 @@ class RecentsSidebarTest {
         composeTestRule.waitForIdle()
 
         assertEquals("workspace-b", selectedWorkspaceId)
-        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
-        composeTestRule.onNodeWithTag("home_chat_title").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Router regression").assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        // Picking a workspace is a filter, not a destination. Closing the
+        // drawer here hides the chats the user just asked to see, and makes
+        // them reopen the menu to reach the row they were about to tap.
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("workspace_menu").assertDoesNotExist()
         composeTestRule.onNodeWithTag("chat_row_chat-b1").assertIsDisplayed()
         composeTestRule.onNodeWithTag("chat_row_chat-a1").assertDoesNotExist()
+
+        // Still in the drawer, so the chat is one tap away — no second trip
+        // through the menu button.
+        composeTestRule.onNodeWithTag("chat_row_chat-b1").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
+        composeTestRule.onNodeWithText("Router regression").assertIsDisplayed()
     }
 
     @Test
