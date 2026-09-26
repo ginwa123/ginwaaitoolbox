@@ -1,6 +1,7 @@
 package com.nalar.mobile.chat
 
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.getUnclippedBoundsInRoot
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -34,6 +35,14 @@ class ChatViewTest {
 
     @get:Rule
     val compose = createComposeRule()
+
+    /**
+     * Layout is computed in sub-pixel floats and rounded per density, so exact
+     * equality on a 12dp padding is a coin flip on a 2.75x screen. Half a dp is
+     * wide enough to absorb the rounding and narrow enough that a bubble's
+     * padding, or the 24dp of it that appears on both sides, still shows.
+     */
+    private val TOLERANCE = 0.5f
 
     private fun message(
         id: String,
@@ -538,4 +547,160 @@ class ChatViewTest {
         )
         compose.onAllNodesWithTag("chat_load_older").assertCountEquals(1)
     }
+
+    // --- Bubble vs paragraph -----------------------------------------------
+
+    /**
+     * The rules the `chat_message_<id>` assertions above rest on: the tag rides
+     * the reader's bubble AND the assistant's paragraph.
+     *
+     * Splitting the two rows into two composables is exactly the kind of change
+     * that drops a `testTag` on the way through, and the tag is what those
+     * virtualization assertions locate rows by. They would not fail loudly —
+     * they would fail as "node not found", pointing at the virtualizer.
+     */
+    @Test
+    fun bothRowsKeepTheirMessageTag() {
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    message("u1", ChatMessage.ROLE_USER, "a question"),
+                    message("a1", ChatMessage.ROLE_ASSISTANT, "an answer"),
+                ),
+            ),
+        )
+
+        compose.onNodeWithTag("chat_message_u1").assertIsDisplayed()
+        compose.onNodeWithTag("chat_message_a1").assertIsDisplayed()
+    }
+
+    /**
+     * The assistant's answer fills the measure; a short reader turn does not.
+     *
+     * This is the de-bubbling assertion, stated as geometry because geometry is
+     * what "boxed" means on screen. The reader's column wraps its content under
+     * a 460dp cap, so a three-word question is a narrow slab; the assistant's
+     * paragraph is `fillMaxWidth()` and no `Surface` sits behind it, so it runs
+     * the full width of its group. Before this change both rows were the same
+     * narrow inset slab and this failed on the assistant half.
+     */
+    @Test
+    fun anAssistantTurnFillsTheMeasureWhileAReaderTurnStaysABubble() {
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    message("u1", ChatMessage.ROLE_USER, "why?"),
+                    message("a1", ChatMessage.ROLE_ASSISTANT, "because the agentic loop is a while loop"),
+                ),
+            ),
+        )
+
+        val groupWidth = width("chat_group_assistant")
+        val assistantWidth = width("chat_message_a1")
+        val readerWidth = width("chat_message_u1")
+
+        assertEquals(
+            "an assistant paragraph should span its group",
+            groupWidth.value,
+            assistantWidth.value,
+            TOLERANCE,
+        )
+        assertTrue(
+            "a reader bubble should be inset, was $readerWidth against a $groupWidth group",
+            readerWidth < groupWidth,
+        )
+    }
+
+    /**
+     * The bubble's 12dp inner padding is the visible edge of the box, and only
+     * the reader's row has it.
+     *
+     * Two ways to de-bubble and this catches both: a row drawn without the
+     * `Surface` has nothing to inset, and one that kept a `Surface` but
+     * cleared its fill and border would still show the padding as a dead 12dp
+     * gutter. The reader's row is the control — if the padding assertion ever
+     * stops holding there, this test is measuring the wrong thing rather than
+     * reporting a real regression.
+     */
+    @Test
+    fun onlyTheReaderRowCarriesBubblePadding() {
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    message("u1", ChatMessage.ROLE_USER, "why?"),
+                    message("a1", ChatMessage.ROLE_ASSISTANT, "because the agentic loop is a while loop"),
+                ),
+            ),
+        )
+
+        val readerInset = left("chat_body_u1") - left("chat_message_u1")
+        val assistantInset = left("chat_body_a1") - left("chat_message_a1")
+
+        assertEquals(
+            "the reader bubble should pad its text by 12dp",
+            12f,
+            readerInset.value,
+            TOLERANCE,
+        )
+        assertEquals(
+            "an assistant paragraph should have no bubble gutter",
+            0f,
+            assistantInset.value,
+            TOLERANCE,
+        )
+    }
+
+    /**
+     * The two rows anchor to opposite edges: a reader turn belongs under the
+     * reader's thumb, an assistant answer belongs to the left margin.
+     *
+     * Straightening the assistant's alignment — a `fillMaxWidth` column that
+     * somehow still measured against the trailing edge — is invisible in a
+     * width assertion alone.
+     */
+    @Test
+    fun theTwoRowsAnchorToOppositeEdges() {
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    message("u1", ChatMessage.ROLE_USER, "why?"),
+                    message("a1", ChatMessage.ROLE_ASSISTANT, "because the agentic loop is a while loop"),
+                ),
+            ),
+        )
+
+        val assistantGroup = bounds("chat_group_assistant")
+        val readerGroup = bounds("chat_group_user")
+
+        assertEquals(assistantGroup.left.value, left("chat_message_a1").value, TOLERANCE)
+        assertEquals(
+            readerGroup.right.value,
+            right("chat_message_u1").value,
+            TOLERANCE,
+        )
+    }
+
+    // --- Geometry helpers ---------------------------------------------------
+    // Unclipped bounds, because the thing under test is the box itself: a
+    // clipped assertion cannot tell "the row is narrow" from "the row is wide
+    // and the viewport is not", which is the whole difference on the reader side.
+
+    private fun bounds(tag: String) = compose
+        .onNodeWithTag(tag, useUnmergedTree = true)
+        .getUnclippedBoundsInRoot()
+
+    /** Derived from the edges so it means the same thing on every BOM. */
+    private fun width(tag: String) = right(tag) - left(tag)
+
+    private fun left(tag: String) = bounds(tag).left
+
+    private fun right(tag: String) = bounds(tag).right
 }
