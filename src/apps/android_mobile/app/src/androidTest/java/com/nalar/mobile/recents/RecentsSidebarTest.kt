@@ -4,6 +4,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -76,7 +77,11 @@ class RecentsSidebarTest {
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
-        composeTestRule.onNodeWithText("Router regression").assertIsDisplayed()
+        // The closed drawer is still composed, so the title also appears in its
+        // chat row. Address the home content by its tag, not by its text.
+        composeTestRule.onNodeWithTag("home_chat_title")
+            .assertIsDisplayed()
+            .assertTextEquals("Router regression")
     }
 
     @Test
@@ -94,7 +99,11 @@ class RecentsSidebarTest {
 
         assertEquals("chat-a2", selectedChatId)
         composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
-        composeTestRule.onNodeWithText("Release checklist").assertIsDisplayed()
+        // The closed drawer is still composed, so the title also appears in its
+        // chat row. Address the home content by its tag, not by its text.
+        composeTestRule.onNodeWithTag("home_chat_title")
+            .assertIsDisplayed()
+            .assertTextEquals("Release checklist")
 
         composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
         composeTestRule.onNodeWithTag("chat_row_chat-a2").assertIsSelected()
