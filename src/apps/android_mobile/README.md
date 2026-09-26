@@ -45,12 +45,76 @@ cookie with `GET /api/auth/me`; a 401 clears it and returns to the login screen.
 Network and credential errors are shown in the login form, and the submit
 button is disabled while a request is in flight.
 
-The authenticated home shell still uses injected workspace/chat preview data.
-Its workspace selector and recent-chat callbacks are the integration seams for
-the next API-backed milestone. The app declares `INTERNET` but explicitly
-rejects cleartext traffic, so the auth client only accepts HTTPS endpoints.
-A transient startup verification failure offers retry and account-switch
-recovery without deleting the saved cookie.
+The app declares `INTERNET` but explicitly rejects cleartext traffic, so every
+client only accepts HTTPS endpoints. A transient startup verification failure
+offers retry and account-switch recovery without deleting the saved cookie.
+
+## Chat
+
+Tapping a chat in the drawer opens it as its own destination
+(`chat/{sessionId}`, deep link `nalar://chat/{sessionId}`), so it survives
+process death, works with the system Back button, and can be shared as a link.
+
+The transcript is **live**: it reads `GET /api/llm/session/{id}/messages`,
+subscribes to `GET /api/events?channels=llm,sessions,queue`, streams deltas into
+a placeholder as they arrive, and replaces the placeholder with the canonical
+row when it lands. Sending posts to `POST /api/llm/session`, the same endpoint
+that creates a session, which enqueues the turn and returns immediately — so
+there is no optimistic bubble and the transcript waits for the server's own copy
+of the message. A run in progress when the chat is opened is re-attached from
+`GET /api/llm/session/{id}/stream`, because the backend writes a turn to
+`llm_history` only once it completes.
+
+### The transcript list is virtualized
+
+`ChatView` renders the transcript in a `LazyColumn` — Compose's `RecyclerView` —
+so a thousand-turn session costs the same as a ten-turn one. Three details make
+that true rather than nominal, and each is covered by a test:
+
+- **Stable keys.** Each list item is keyed by the first message id of its group,
+  never by index. An index key re-keys every row above an append, discarding
+  per-item state and re-composing the whole list on every streamed delta.
+- **`contentType`**, so a run of tool rows reuses one composable instead of
+  alternating layouts down the list.
+- **Grouping.** Consecutive same-role turns collapse into a single item before
+  the list sees them, and groups with nothing renderable are dropped so they
+  cannot leave a blank band in the viewport.
+
+The list follows new content only while the reader is already at the bottom, and
+a scroll to the top prepends the previous page and re-anchors on the message the
+reader was looking at.
+
+### The transcript is cached
+
+`ChatCache` is the Android mirror of the web's `ChatEngineDb` (IndexedDB
+`sync_state` + `messages`): paint the last-known transcript from disk, then fetch
+the tail, then write through.
+
+- **Cached rows keep the whole server object** in a `raw` envelope, and are
+  rendered by the *same* `ChatApi.toChatMessage` as live rows. Two mappers for
+  one endpoint is how a cached mount and a live mount drift apart, and on a phone
+  the cached mount is what the user sees first.
+- **The sync cursor is the newest `created_at_nano` seen**, not the server's
+  `next_cursor`. The backend only sends `next_cursor` when `has_more` is true,
+  so persisting it wipes a good cursor to null after every small delta and forces
+  a full reload on the next open. The cursor is monotonic and an empty delta
+  leaves it alone.
+- **Namespaced per user, and per session.** Sign-out only clears the cookie, so
+  an unscoped cache would put the previous account's conversation on screen for
+  whoever signs in next. An unresolved identity is a cache *miss*, not an
+  unscoped read.
+- **No TTL**, matching the web. That is only safe because every paint is
+  immediately followed by a live fetch, which `ChatViewModel.openSession`
+  enforces by having prime and revalidate in one function.
+- **Fail-silent throughout.** A corrupt payload, a truncated write or a full disk
+  degrades to a plain cache miss; a broken cache is never the reason the app
+  fails.
+
+Unlike the sidebar's cache, the transcript is *not* sealed with the Android
+Keystore: it is bulk user content rewritten on every streamed frame, and a
+Keystore round-trip per write costs more than the exposure is worth on a device
+that is already full-disk-encrypted. The session cookie, which is a credential,
+stays under the Keystore.
 
 ## Network inspector
 
@@ -75,6 +139,11 @@ that transport, so the captured record is exactly what the auth flow sent rather
 than a parallel reimplementation. A new API-backed feature only needs to go
 through an `AuthTransport`-style wrapper to appear in the inspector.
 
+The chat's message, send, stop and snapshot calls all go through that transport
+and are captured. The SSE stream is the one exception: a long-lived response with
+no end of body cannot be read through a request/response transport, and capturing
+it would pin a record open for the life of the session.
+
 ### Privacy and safety
 
 - The buffer is in memory only and is never written to disk or to logcat, so a
@@ -94,6 +163,7 @@ through an `AuthTransport`-style wrapper to appear in the inspector.
 
 ### Deep links
 
-The inspector and its record detail are navigation routes, so they survive
-process death and system Back. `nalar://network` opens the list and
-`nalar://network/record/{id}` opens one captured record.
+The inspector, its record detail and each chat are navigation routes, so they
+survive process death and system Back. `nalar://network` opens the list,
+`nalar://network/record/{id}` opens one captured record, and
+`nalar://chat/{sessionId}` opens a chat directly.

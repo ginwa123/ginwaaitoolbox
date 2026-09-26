@@ -11,9 +11,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
+import com.nalar.mobile.chat.ChatViewModel
 import com.nalar.mobile.network.NalarNavGraph
 import com.nalar.mobile.recents.HomeViewModel
 import com.nalar.mobile.ui.NalarTheme
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -33,18 +35,27 @@ class MainActivity : ComponentActivity() {
                 )
                 val homeState by homeViewModel.uiState.collectAsState()
 
-                // The signed-in account namespaces the sidebar cache. Reacting
-                // to it here (rather than inside the ViewModel's init) means the
-                // first paint is already scoped to the right account.
+                val chatViewModel: ChatViewModel = viewModel(
+                    factory = ChatViewModel.factory(application),
+                )
+                val chatState by chatViewModel.uiState.collectAsState()
+
+                // The signed-in account namespaces both caches. Reacting to it
+                // here (rather than inside a ViewModel's init) means the first
+                // paint is already scoped to the right account.
                 LaunchedEffect(authState.userId) {
                     homeViewModel.onUserChanged(authState.userId)
+                    chatViewModel.onUserChanged(authState.userId)
                 }
 
-                // A 401 on any sidebar call means the saved cookie is dead;
-                // signing out is the only outcome a retry cannot fix.
-                LaunchedEffect(homeViewModel) {
-                    homeViewModel.sessionExpired.collect {
-                        authViewModel.useAnotherAccount()
+                // A 401 on any call means the saved cookie is dead; signing out
+                // is the only outcome a retry cannot fix.
+                LaunchedEffect(homeViewModel, chatViewModel) {
+                    launch {
+                        homeViewModel.sessionExpired.collect { authViewModel.useAnotherAccount() }
+                    }
+                    launch {
+                        chatViewModel.sessionExpired.collect { authViewModel.useAnotherAccount() }
                     }
                 }
 
@@ -58,12 +69,20 @@ class MainActivity : ComponentActivity() {
                         // Purge before the cookie goes, so no cached row from the
                         // outgoing account can be painted after it.
                         homeViewModel.onSignedOut()
+                        chatViewModel.onSignedOut()
                         authViewModel.useAnotherAccount()
                     },
                     homeState = homeState,
+                    chatState = chatState,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,
                     onRetryHome = homeViewModel::refresh,
+                    onOpenSession = chatViewModel::openSession,
+                    onChatDraftChanged = chatViewModel::onDraftChanged,
+                    onSendChatMessage = chatViewModel::sendMessage,
+                    onStopChatRun = chatViewModel::stopRun,
+                    onLoadOlderChatMessages = chatViewModel::loadOlderMessages,
+                    onDismissChatError = chatViewModel::clearError,
                 )
             }
         }

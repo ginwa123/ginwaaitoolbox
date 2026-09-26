@@ -27,6 +27,16 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="nalar" android:host="network" />
             </intent-filter>
+            <!-- A deep link is only reachable if the manifest claims the host.
+                 Without this filter `nalar://chat/{sessionId}` matches no
+                 activity and silently does nothing, while the nav graph's
+                 `navDeepLink` looks like it works. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="nalar" android:host="chat" />
+            </intent-filter>
         </activity>
     </application>
 </manifest>
