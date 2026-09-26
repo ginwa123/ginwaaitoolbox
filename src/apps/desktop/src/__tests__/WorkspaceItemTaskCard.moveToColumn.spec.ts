@@ -16,25 +16,50 @@ import { nextTick, ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import WorkspaceItemTaskCard from '../components/workspace/WorkspaceItemTaskCard.vue'
 import KanbanColumn from '../components/kanban/KanbanColumn.vue'
-import type { Task } from '../stores/workspaces'
+import type { KanbanColumn as KanbanColumnType, Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
-const COLUMNS = [
-  { id: 'col_todo', name: 'todo', position: 0 },
-  { id: 'col_doing', name: 'in progress', position: 1 },
-  { id: 'col_done', name: 'merged', position: 2 },
+const ITEM_ID = 'item_1'
+
+// Typed factory rather than a bare literal: KanbanColumn carries
+// workspace_item_id + created_at, and a plain object literal silently
+// drifts from the interface the component actually receives. The type is
+// aliased because this file also imports the <KanbanColumn> component —
+// same setup as KanbanColumn.spec.ts.
+const makeColumn = (overrides: Partial<KanbanColumnType> = {}): KanbanColumnType => ({
+  id: 'col_todo',
+  workspace_item_id: ITEM_ID,
+  name: 'todo',
+  position: 0,
+  created_at: '2026-06-21 12:00:00',
+  ...overrides,
+})
+
+// DOING is a named handle rather than COLUMNS[1]: the repo enables
+// noUncheckedIndexedAccess, so an index reads as `KanbanColumn | undefined`
+// and forces a non-null assertion at every use site.
+const DOING = makeColumn({ id: 'col_doing', name: 'in progress', position: 1 })
+
+const COLUMNS: KanbanColumnType[] = [
+  makeColumn(),
+  DOING,
+  makeColumn({ id: 'col_done', name: 'merged', position: 2 }),
 ]
 
 const q = (testid: string) =>
   document.body.querySelector(`[data-testid="${testid}"]`) as HTMLElement | null
 
-function mountCard(task: Task, columns = COLUMNS, currentColumnId: string | null = 'col_doing') {
+function mountCard(
+  task: Task,
+  columns: KanbanColumnType[] = COLUMNS,
+  currentColumnId: string | null = 'col_doing',
+) {
   return mount(WorkspaceItemTaskCard, {
     attachTo: document.body,
     props: {
       task,
       workspaceId: 'ws_1',
-      itemId: 'item_1',
+      itemId: ITEM_ID,
       columns,
       currentColumnId,
     },
@@ -78,7 +103,7 @@ describe('Move to column — submenu visibility', () => {
   })
 
   it('hides the row when the board has only ONE column (nowhere to move)', async () => {
-    const wrapper = mountCard({ id: 't1', name: 'Alpha' }, [COLUMNS[1]], 'col_doing')
+    const wrapper = mountCard({ id: 't1', name: 'Alpha' }, [DOING], 'col_doing')
     await wrapper.find('[data-task-card]').trigger('contextmenu', { clientX: 10, clientY: 10 })
     await nextTick()
 
@@ -163,10 +188,10 @@ describe('Move to column — <KanbanColumn> resolves the append position', () =>
     return mount(KanbanColumn, {
       attachTo: document.body,
       props: {
-        column: COLUMNS[1],
+        column: DOING,
         tasks,
         workspaceId: 'ws_1',
-        itemId: 'item_1',
+        itemId: ITEM_ID,
         columns: COLUMNS,
       },
       global: {
@@ -183,7 +208,7 @@ describe('Move to column — <KanbanColumn> resolves the append position', () =>
 
   it('re-emits as moveTask with position = the target column card count', async () => {
     const wrapper = mountColumn(BOARD_TASKS)
-    const card = wrapper.findAllComponents(WorkspaceItemTaskCard)[0]
+    const card = wrapper.findAllComponents(WorkspaceItemTaskCard)[0]!
     expect(card.exists()).toBe(true)
 
     card.vm.$emit('moveTaskToColumn', { taskId: 'a', columnId: 'col_done' })
@@ -199,7 +224,8 @@ describe('Move to column — <KanbanColumn> resolves the append position', () =>
 
   it('does not emit when the destination is the column the card is already in', async () => {
     const wrapper = mountColumn(BOARD_TASKS)
-    const card = wrapper.findAllComponents(WorkspaceItemTaskCard)[0]
+    const card = wrapper.findAllComponents(WorkspaceItemTaskCard)[0]!
+    expect(card.exists()).toBe(true)
 
     card.vm.$emit('moveTaskToColumn', { taskId: 'a', columnId: 'col_doing' })
     await nextTick()

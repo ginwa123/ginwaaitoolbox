@@ -13,20 +13,35 @@ import { setActivePinia, createPinia } from 'pinia'
 import { nextTick, ref, type Ref } from 'vue'
 import { mount, type VueWrapper } from '@vue/test-utils'
 import WorkspaceItemTaskCard from '../components/workspace/WorkspaceItemTaskCard.vue'
-import type { Task } from '../stores/workspaces'
+import type { KanbanColumn, Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
-const COLUMNS = [
-  { id: 'col_todo', name: 'todo', position: 0 },
-  { id: 'col_doing', name: 'in progress', position: 1 },
-  { id: 'col_done', name: 'merged', position: 2 },
+const ITEM_ID = 'item_1'
+
+// Typed factory rather than a bare literal: KanbanColumn carries
+// workspace_item_id + created_at, and a plain object literal silently
+// drifts from the interface the component actually receives. Same
+// shape as makeColumn() in KanbanView.rowMode.spec.ts / KanbanRowView.spec.ts.
+const makeColumn = (overrides: Partial<KanbanColumn> = {}): KanbanColumn => ({
+  id: 'col_todo',
+  workspace_item_id: ITEM_ID,
+  name: 'todo',
+  position: 0,
+  created_at: '2026-06-21 12:00:00',
+  ...overrides,
+})
+
+const COLUMNS: KanbanColumn[] = [
+  makeColumn(),
+  makeColumn({ id: 'col_doing', name: 'in progress', position: 1 }),
+  makeColumn({ id: 'col_done', name: 'merged', position: 2 }),
 ]
 
 function mountCard(
   task: Task,
   opts: {
     processingState?: Ref<Record<string, boolean>>
-    columns?: typeof COLUMNS
+    columns?: KanbanColumn[]
     currentColumnId?: string | null
   } = {},
 ) {
@@ -37,7 +52,7 @@ function mountCard(
     props: {
       task,
       workspaceId: 'ws_1',
-      itemId: 'item_1',
+      itemId: ITEM_ID,
       columns: opts.columns ?? COLUMNS,
       currentColumnId: opts.currentColumnId ?? 'col_doing',
     },
