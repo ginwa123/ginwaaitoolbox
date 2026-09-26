@@ -9,11 +9,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
 import com.nalar.mobile.chat.ChatViewModel
 import com.nalar.mobile.network.NalarNavGraph
 import com.nalar.mobile.recents.HomeViewModel
+import com.nalar.mobile.storage.PrefsLastPositionStore
 import com.nalar.mobile.ui.NalarTheme
 import kotlinx.coroutines.launch
 
@@ -30,8 +32,14 @@ class MainActivity : ComponentActivity() {
                 val authViewModel: AuthViewModel = viewModel()
                 val authState by authViewModel.uiState.collectAsState()
 
+                // One store for the process. The ViewModel writes the position
+                // the user just moved to; the nav graph reads it back to decide
+                // what a relaunch should reopen. Two instances would be two views
+                // of the same two preference keys.
+                val positionStore = remember { PrefsLastPositionStore(application) }
+
                 val homeViewModel: HomeViewModel = viewModel(
-                    factory = HomeViewModel.factory(application),
+                    factory = HomeViewModel.factory(application, positionStore),
                 )
                 val homeState by homeViewModel.uiState.collectAsState()
 
@@ -80,6 +88,7 @@ class MainActivity : ComponentActivity() {
                     onLogout = signOut,
                     homeState = homeState,
                     chatState = chatState,
+                    positionStore = positionStore,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,
                     onLoadMoreChats = homeViewModel::loadMoreChats,

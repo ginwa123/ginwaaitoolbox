@@ -3,6 +3,8 @@ package com.nalar.mobile.recents
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.storage.LastPositionStore
+import com.nalar.mobile.testing.InMemoryLastPositionStore
 import com.nalar.mobile.testing.InMemoryRecentsCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -89,9 +91,11 @@ class HomeViewModelCacheTest {
         ioDispatcher: CoroutineDispatcher,
         cache: RecentsCache,
         transport: AuthTransport = FakeTransport(),
+        positionStore: LastPositionStore = InMemoryLastPositionStore(),
     ) = HomeViewModel(
         client = RecentsClient(MemorySessionStore(), httpTransport = transport),
         cache = cache,
+        positionStore = positionStore,
         ioDispatcher = ioDispatcher,
     )
 

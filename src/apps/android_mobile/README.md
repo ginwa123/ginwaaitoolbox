@@ -450,3 +450,62 @@ The inspector, its record detail and each chat are navigation routes, so they
 survive process death and system Back. `nalar://network` opens the list,
 `nalar://network/record/{id}` opens one captured record, and
 `nalar://chat/{sessionId}` opens a chat directly.
+
+## The app reopens where you left it
+
+Close the app on workspace B with session C open, open it again, and it is back
+on workspace B with session C. The desktop has always done this
+(`nalar-active-workspace` and `active-chat-id` in `localStorage`); the phone
+needed somewhere to keep the same two ids.
+
+**Why it is not the back stack.** `rememberNavController` does restore a saved
+back stack, but only when the process comes back *with* its saved instance
+state. The case that needs the position store is the other one: the app is
+closed, the controller starts empty at the shell, and the chat is gone from the
+screen even though the server still has it. Nothing in the nav layer recovers
+that, so `PrefsLastPositionStore` holds the two ids across process death.
+
+**The two halves are applied in two different places, on purpose.** A workspace
+is drawer state, so `HomeViewModel` reads the saved id while it is still choosing
+which list to paint — before its first fetch. That costs nothing: the drawer
+opens on the right workspace, the recents request goes to the right workspace,
+and nothing jumps once the live list lands. A chat is a route, and a route needs
+a destination to navigate to, so `NalarNavGraph` navigates to it once the list
+has settled.
+
+**The precedence is the desktop's**: what the user just chose beats what was
+saved, and what was saved beats the first item. A `nalar://` deep link or a back
+stack restored from saved instance state is a choice made a moment ago, so the
+resume only runs while the shell is the current destination. A saved id that
+the server no longer has falls back instead of dead-ending — the chat is not
+opened onto a route whose session is gone, and the shell, which is where the app
+would have opened anyway, is the truthful answer.
+
+**The policy is four conditions in two pure functions** — `sessionToResume` and
+`ResumePlan` — with the composable left holding no rules of its own, the same
+split `goBackToPreviousOrShell` makes for Back. `SessionToResumeTest` and
+`ResumePlanTest` assert the rule on the JVM; `HomeViewModelPositionTest`
+asserts the workspace seed and the writes; `NalarNavGraphResumeInstrumentedTest`
+drives the real `NavHost`, which is the only way to prove the `navigate()`
+happens once and leaves the shell underneath it.
+
+### What is stored, and what is not
+
+The store is per account, and sign-out clears it along with the caches — the
+next person to sign in on a shared device must not open straight into the
+previous person's transcript. A server running without `--auth` leaves
+`AuthUiState.userId` null, because there is no account to attribute anything to;
+that case gets one well-known namespace instead of a miss, which is deliberately
+looser than `RecentsCache`. Refusing to persist there would lose a cache the
+next fetch rebuilds; refusing to persist a position would switch this feature off
+for every self-hosted install.
+
+The value is two opaque ids. It is not sealed under a Keystore key the way chat
+titles are: the same `RoomRecentsCache` leaves its id columns in the clear,
+because `ORDER BY` cannot run on ciphertext, and a 22-character session id is not
+user prose. What the pointer refers to — the titles — is sealed.
+
+Writes use `commit()` rather than `apply()`, and they happen on user actions
+rather than per frame. The whole feature turns on a write surviving the process,
+and `apply()` only guarantees reaching memory; a force-stop in the same instant
+the user taps a chat is exactly the case the store exists for.
