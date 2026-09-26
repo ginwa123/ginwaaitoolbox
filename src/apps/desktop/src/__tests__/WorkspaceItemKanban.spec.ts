@@ -146,7 +146,7 @@ describe('WorkspaceItem — item_type branching (post-kanban-migration)', () => 
     const kanban = wrapper.find(`[data-kanban-view="${ITEM_ID}"]`)
     expect(kanban.exists()).toBe(false)
     // The folder-item task row IS rendered.
-    expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-task-id="task_1"]').exists()).toBe(true)
   })
 
   it("renders the existing task list when item_type='memory' (any non-kanban type)", async () => {
@@ -156,7 +156,7 @@ describe('WorkspaceItem — item_type branching (post-kanban-migration)', () => 
     await nextTick()
     const kanban = wrapper.find(`[data-kanban-view="${ITEM_ID}"]`)
     expect(kanban.exists()).toBe(false)
-    expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-task-id="task_1"]').exists()).toBe(true)
   })
 })
 
@@ -264,6 +264,6 @@ describe('WorkspaceItem — show-all-arrows (kanban chevron)', () => {
     wrapper = mountItem(makeKanbanItem({ tasks: [makeTask()] }))
     expandItem()
     await nextTick()
-    expect(wrapper.find('button[data-task-id="task_1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-task-id="task_1"]').exists()).toBe(false)
   })
 })

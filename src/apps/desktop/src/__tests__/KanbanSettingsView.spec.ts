@@ -165,7 +165,8 @@ describe('KanbanSettingsView', () => {
           // UI (reused from `item_type='agent'`). We only assert its
           // presence/absence here; AgentView's own spec covers behaviour.
           AgentView: {
-            template: '<div data-testid="kanban-settings-page-agent-panel-stub"><slot name="right-extra" /></div>',
+            template:
+              '<div data-testid="kanban-settings-page-agent-panel-stub"><slot name="right-extra" /></div>',
             props: ['item', 'workspaceId', 'itemId', 'knowledge', 'tools', 'systemPrompts'],
           },
           // Stub KanbanColumnEditor to avoid the Teleport + nested
@@ -200,16 +201,10 @@ describe('KanbanSettingsView', () => {
     seedWorkspaces()
     mountView()
     await flushPromises()
-    const rows = findAllInDom<HTMLElement>(
-      '[data-testid^="kanban-settings-page-column-row-"]',
-    )
+    const rows = findAllInDom<HTMLElement>('[data-testid^="kanban-settings-page-column-row-"]')
     expect(rows).toHaveLength(2)
-    expect(rows[0]!.getAttribute('data-testid')).toBe(
-      'kanban-settings-page-column-row-col_a',
-    )
-    expect(rows[1]!.getAttribute('data-testid')).toBe(
-      'kanban-settings-page-column-row-col_b',
-    )
+    expect(rows[0]!.getAttribute('data-testid')).toBe('kanban-settings-page-column-row-col_a')
+    expect(rows[1]!.getAttribute('data-testid')).toBe('kanban-settings-page-column-row-col_b')
   })
 
   it('adds a column via the inline form', async () => {
@@ -248,10 +243,7 @@ describe('KanbanSettingsView', () => {
     expect(renameDisplay).not.toBeNull()
     renameDisplay!.click()
     await flushPromises()
-    setInputValue(
-      '[data-testid="kanban-settings-page-rename-input"]',
-      'Sprint 13',
-    )
+    setInputValue('[data-testid="kanban-settings-page-rename-input"]', 'Sprint 13')
     clickInDom('[data-testid="kanban-settings-page-rename-save"]')
     expect(wrapper!.emitted('renameItem')).toEqual([['Sprint 13']])
   })
@@ -270,9 +262,35 @@ describe('KanbanSettingsView', () => {
     mountView()
     await flushPromises()
     clickInDom('[data-testid="kanban-settings-page-back"]')
+    // Canonical path shape (not the legacy `/app?view=workspace` one) so the
+    // board's sub-state survives the boot rewrite.
     expect(router.replace).toHaveBeenCalledWith({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: 'ws_1', itemId: 'wi_test' },
+      path: '/app/ws_1/projects/wi_test',
+      query: {},
+    })
+  })
+
+  it('Back preserves the board sub-state (?sorts=, ?layout=) instead of resetting it', async () => {
+    seedWorkspaces()
+    const { router } = setupRoute({ sorts: 'col_1:name:asc', layout: 'rows' })
+    mountView()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-settings-page-back"]')
+    expect(router.replace).toHaveBeenCalledWith({
+      path: '/app/ws_1/projects/wi_test',
+      query: { sorts: 'col_1:name:asc', layout: 'rows' },
+    })
+  })
+
+  it('Back does not leak the settings page own params onto the board', async () => {
+    seedWorkspaces()
+    const { router } = setupRoute({ tab: 'tools', section: 'agent', layout: 'rows' })
+    mountView()
+    await flushPromises()
+    clickInDom('[data-testid="kanban-settings-page-back"]')
+    expect(router.replace).toHaveBeenCalledWith({
+      path: '/app/ws_1/projects/wi_test',
+      query: { layout: 'rows' },
     })
   })
 
@@ -296,10 +314,7 @@ describe('KanbanSettingsView', () => {
     await flushPromises()
     const tabs = findAllInDom<HTMLElement>('[data-testid^="kanban-settings-page-tab-"]')
     const tabIds = tabs.map((t) => t.getAttribute('data-testid')).sort()
-    expect(tabIds).toEqual([
-      'kanban-settings-page-tab-agent',
-      'kanban-settings-page-tab-columns',
-    ])
+    expect(tabIds).toEqual(['kanban-settings-page-tab-agent', 'kanban-settings-page-tab-columns'])
   })
 
   it('shows a "no kanban selected" hint when the URL itemId is empty', async () => {
@@ -307,9 +322,7 @@ describe('KanbanSettingsView', () => {
     seedWorkspaces()
     mountView()
     await flushPromises()
-    const hint = findInDom<HTMLElement>(
-      '[data-testid="kanban-settings-page-no-item"]',
-    )
+    const hint = findInDom<HTMLElement>('[data-testid="kanban-settings-page-no-item"]')
     expect(hint).not.toBeNull()
   })
 
@@ -318,9 +331,7 @@ describe('KanbanSettingsView', () => {
     seedWorkspaces() // store has wi_test, NOT wi_missing
     mountView()
     await flushPromises()
-    const hint = findInDom<HTMLElement>(
-      '[data-testid="kanban-settings-page-not-found"]',
-    )
+    const hint = findInDom<HTMLElement>('[data-testid="kanban-settings-page-not-found"]')
     expect(hint).not.toBeNull()
   })
 
@@ -330,9 +341,7 @@ describe('KanbanSettingsView', () => {
     seedWorkspaces({ ...baseItem, path: null })
     mountView()
     await flushPromises()
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]'),
-    ).not.toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-tab-agent"]')).not.toBeNull()
   })
 
   it('does NOT render separate Tools / Knowledge tabs (regression — unified into Agent)', async () => {
@@ -353,9 +362,7 @@ describe('KanbanSettingsView', () => {
     const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
     expect(panel).not.toBeNull()
     // Columns body should NOT be rendered.
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
-    ).toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]')).toBeNull()
   })
 
   it('mounts AgentView for legacy ?tab=agent (backward compat, pre tab-mode)', async () => {
@@ -366,9 +373,7 @@ describe('KanbanSettingsView', () => {
     const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
     expect(panel).not.toBeNull()
     // Columns body should NOT be rendered.
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
-    ).toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]')).toBeNull()
   })
 
   it('also mounts AgentView for legacy ?tab=tools (backward compat)', async () => {
@@ -397,9 +402,7 @@ describe('KanbanSettingsView', () => {
     const panel = findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')
     expect(panel).not.toBeNull()
     // Columns body should NOT be rendered.
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]'),
-    ).toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]')).toBeNull()
   })
 
   it('calls router.replace with {query:{section:"agent"}} when the Agent tab is clicked', async () => {
@@ -437,13 +440,9 @@ describe('KanbanSettingsView', () => {
     setupRoute({ tab: 'tab_mu0lle6j940yz' })
     mountView()
     await flushPromises()
-    const columnsList = findInDom<HTMLElement>(
-      '[data-testid="kanban-settings-page-column-list"]',
-    )
+    const columnsList = findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]')
     expect(columnsList).not.toBeNull()
-    expect(
-      findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]'),
-    ).toBeNull()
+    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-panel"]')).toBeNull()
   })
 
   it('prefers ?section= over legacy ?tab= when both are present', async () => {
@@ -461,9 +460,7 @@ describe('KanbanSettingsView', () => {
     setupRoute({ tab: 'totally-bogus' })
     mountView()
     await flushPromises()
-    const columnsList = findInDom<HTMLElement>(
-      '[data-testid="kanban-settings-page-column-list"]',
-    )
+    const columnsList = findInDom<HTMLElement>('[data-testid="kanban-settings-page-column-list"]')
     expect(columnsList).not.toBeNull()
   })
 
@@ -502,7 +499,9 @@ describe('KanbanSettingsView', () => {
     mountView()
     await flushPromises()
     expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-memories"]')).toBeNull()
-    expect(findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-memories-no-path"]')).toBeNull()
+    expect(
+      findInDom<HTMLElement>('[data-testid="kanban-settings-page-agent-memories-no-path"]'),
+    ).toBeNull()
     expect(findInDom<HTMLElement>('[data-testid="stub-memories"]')).toBeNull()
   })
 

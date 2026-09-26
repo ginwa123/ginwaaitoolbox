@@ -273,6 +273,9 @@ function rewriteLegacyQuery(query: Record<string, string>): AppUrlLocation | nul
     if (query.pageId) sub.pageId = query.pageId
     if (query.sorts) sub.sorts = query.sorts
     if (query.detail) sub.detail = query.detail
+    // Kanban layout (columns | rows). Without this the boot rewrite drops
+    // `?layout=rows` and a shared link / second machine loses row mode.
+    if (query.layout) sub.layout = query.layout
     if (parsed.itemId) {
       return buildAppUrl({
         workspaceId: query.workspaceId,
@@ -1781,6 +1784,12 @@ const handleCloseTaskView = () => {
     sub.sorts = workspacesStore.savedSortsParam
     workspacesStore.savedSortsParam = ''
   }
+  // Restore the kanban layout (columns | rows). Like `sorts`, this is
+  // URL-only state, so it is read back off the current route rather than
+  // the store. Without it, opening a task chat and closing it snapped the
+  // board back to column mode.
+  const urlLayout = route.query.layout
+  if (typeof urlLayout === 'string' && urlLayout.length > 0) sub.layout = urlLayout
   if (wsId && itemId) {
     router.replace(buildAppUrl({ workspaceId: wsId, projectId: itemId, query: sub }))
   } else if (wsId) {

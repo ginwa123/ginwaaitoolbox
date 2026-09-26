@@ -370,7 +370,7 @@ describe('KanbanRowView', () => {
 
   it('clicking a row emits selectTask', async () => {
     wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
-    await wrapper.find('[data-kanban-row="t1"] button').trigger('click')
+    await wrapper.find('[data-kanban-row="t1"] [data-task-row]').trigger('click')
     expect(wrapper.emitted('selectTask')?.[0]).toEqual(['t1'])
   })
 

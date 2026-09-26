@@ -19,6 +19,16 @@
             pinTask  (same shapes as before)
     NOTE: editRoutine/runRoutine emits deleted with per-task routines
     (Migration 084).
+
+  Why a <div role="button"> instead of a <button> for the row?
+  The row contains nested interactive controls (pin / rename / delete),
+  and HTML forbids button-inside-button — Vue's compiler warns about it,
+  keyboard activation of a button with focusable descendants is
+  spec-undefined, and a screen reader folds the inner buttons' labels
+  into the outer button's accessible name. So the root is a div with
+  role="button" + tabindex=0 + an Enter/Space handler, and the inner
+  controls stay real <button>s for native focus rings and activation.
+  Same pattern as DesignPageRow.vue.
 -->
 <script setup lang="ts">
 // Extracted from WorkspaceItem.vue on 2026-06-10. This component owns
@@ -108,6 +118,18 @@ const onTaskContextMenu = (event: MouseEvent) => {
   openAt(event)
 }
 
+// Enter / Space activate the row. The root is a <div role="button"> rather
+// than a real <button> because the row contains nested interactive controls
+// (pin / rename / delete) and HTML forbids button-inside-button — see the
+// header comment. This restores the keyboard contract the native element
+// would have given us.
+const handleRowKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    handleSelectTask()
+  }
+}
+
 const openTaskMenuInBackground = () => {
   closeTaskMenu()
   emit('openTaskInBackground', {
@@ -133,7 +155,9 @@ const errorRetryLabel = computed(() =>
 </script>
 
 <template>
-  <button
+  <div
+    role="button"
+    tabindex="0"
     class="relative flex items-center gap-2 px-2 py-[7px] rounded-lg text-xs group/task cursor-pointer transition-colors duration-150 min-h-[32px] w-full text-left"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
@@ -144,6 +168,7 @@ const errorRetryLabel = computed(() =>
       boxShadow: dropIndicatorBoxShadow,
     }"
     @click="handleSelectTask"
+    @keydown="handleRowKeydown"
     @contextmenu.prevent="onTaskContextMenu"
   >
     <!-- single branch — per-task routines deleted (Migration 084,
@@ -303,7 +328,7 @@ const errorRetryLabel = computed(() =>
       :y="menuPos.y"
       @open="openTaskMenuInBackground"
     />
-  </button>
+  </div>
 </template>
 
 <!-- 2026-08-29 agent-error-row (task_1787985074550_0) — scoped

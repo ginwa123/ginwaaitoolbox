@@ -133,6 +133,18 @@ const onTaskContextMenu = (event: MouseEvent) => {
   openAt(event)
 }
 
+// Enter / Space activate the card. The root is a <div role="button"> rather
+// than a real <button> because the card contains nested interactive controls
+// (pin / rename / details / delete / tags) and HTML forbids
+// button-inside-button. This restores the keyboard contract the native
+// element would have given us.
+const handleCardKeydown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    handleSelectTask()
+  }
+}
+
 const openTaskMenuInBackground = () => {
   closeTaskMenu()
   emit('openTaskInBackground', {
@@ -489,7 +501,9 @@ watch([gitBranchBadge, effectiveCwd], () => {
 </script>
 
 <template>
-  <button
+  <div
+    role="button"
+    tabindex="0"
     class="flex flex-col gap-2 p-3 w-full rounded-lg text-xs group/task cursor-pointer transition-shadow duration-200"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
@@ -505,6 +519,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       boxShadow: cardBoxShadow,
     }"
     @click="handleSelectTask"
+    @keydown="handleCardKeydown"
     @contextmenu.prevent="onTaskContextMenu"
     @mouseenter="isHovered = true"
     @mouseleave="isHovered = false"
@@ -935,7 +950,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       @open-branch="openGitBranchInBackground"
       @open-pr="openGitPrInBackground"
     />
-  </button>
+  </div>
 </template>
 
 <style scoped>

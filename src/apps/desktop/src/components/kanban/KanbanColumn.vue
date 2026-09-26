@@ -436,12 +436,23 @@ const openSortModal = () => {
   sortModalOpen.value = true
 }
 
-// Close the modal AND emit the sort change unconditionally —
-// even if the user picked the SAME sort (Manual again, etc.), the
-// parent's per-column fetch should still fire so the wire data
-// is refreshed. The watcher-based emit (below) only fires on VALUE
-// CHANGE; this explicit emit fires on every USER PICK, regardless
-// of whether the values actually changed.
+// Close the modal AND emit the sort change unconditionally — even if the
+// user picked the SAME sort (Manual again, etc.), the parent's per-column
+// fetch should still fire so the wire data is refreshed.
+//
+// This is wired as `@click` on <KanbanSortMenu>, which declares no `click`
+// emit — so it is a NATIVE listener on the menu's root <div>. That is
+// deliberate and safe here: the menu's root has no padding or background of
+// its own, so every pixel is covered by the <ul> of items, and the click
+// that OPENS the modal cannot reach it (the modal is a sibling subtree, not
+// on the opening click's propagation path, and it is not yet mounted when
+// that event dispatches). The only reachable case is a click on an item,
+// where <KanbanSortMenu>'s own handler has already written the new
+// sortBy/direction via v-model before the event bubbles here.
+//
+// <KanbanRowView> uses the equivalent `watch([sortBy, direction])` instead.
+// Both are correct; this one additionally fires on a re-pick of the same
+// value, which is the behaviour the comment above describes.
 //
 // Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 const handleSortModalSelect = () => {

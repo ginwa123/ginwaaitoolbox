@@ -65,6 +65,7 @@ import InlineEditableText from '../preview/InlineEditableText.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useKanbanScrollRestore } from '../../composables/useKanbanScrollRestore'
 import { useRoute, useRouter } from 'vue-router'
+import { buildAppUrl } from '../../helpers/appUrl'
 import type { PreviewFile } from '../file/FilePreview.vue'
 import type { WorkspaceItem, Task, KanbanColumn as KanbanColumnType } from '../../stores/workspaces'
 
@@ -363,9 +364,16 @@ const setLayout = (next: KanbanLayout) => {
   writeStoredLayout(next)
   try {
     const query = flatQuery()
+    // `sorts` is written from the reactive ref, not read back off the
+    // (possibly stale) `route.query` snapshot — the sorts watcher can fire
+    // in the same tick as this switch, and a stale read would clobber it.
+    // Mirrors the protection the sorts watcher applies to `layout`.
+    const encoded = encodeSortsParam(Object.values(columnSorts.value))
+    if (encoded) query.sorts = encoded
+    else delete query.sorts
     if (next === 'columns') delete query[LAYOUT_PARAM]
     else query[LAYOUT_PARAM] = next
-    void router.replace({ query })
+    void router.replace(buildAppUrlForBoard(query))
   } catch {
     // Router absent in unit tests — local state already updated.
   }
@@ -619,14 +627,18 @@ watch(columnSorts, (next) => {
   // switch, before the router has committed the new query, and reading
   // the stale route would clobber the switch.
   const query = flatQuery()
-  query.view = 'workspace'
   if (props.workspaceId) query.workspaceId = props.workspaceId
   if (effectiveItemId.value) query.itemId = effectiveItemId.value
   if (encoded) query.sorts = encoded
   else delete query.sorts
   if (layout.value === 'rows') query[LAYOUT_PARAM] = 'rows'
   else delete query[LAYOUT_PARAM]
-  void router.replace({ path: '/app', query })
+  // Emit the CANONICAL path shape, not the legacy `/app?view=workspace`
+  // one. The legacy shape is rewritten once at boot by
+  // AppLayout.rewriteLegacyQuery, whose sub-state whitelist is hardcoded —
+  // any param it does not know about (e.g. `layout`) is dropped on reload,
+  // which silently loses row mode for shared links and second machines.
+  void router.replace(buildAppUrlForBoard(query))
 })
 
 // Handler for the column's sort-change emit. Updates the map
@@ -849,6 +861,22 @@ const flatQuery = (): Record<string, string> => {
   return out
 }
 
+// Build the canonical board URL for a query map. The board's canonical
+// shape is `/app/{workspaceId}/projects/{itemId}` with sub-state in the
+// query — NOT the legacy `/app?view=workspace&itemId=…` shape, which the
+// boot rewrite (`AppLayout.rewriteLegacyQuery`) rewrites through a
+// hardcoded whitelist that silently drops unknown params.
+//
+// Falls back to the legacy shape only when the ids are missing (a
+// defensive path for tests / partially-hydrated state), because
+// `buildAppUrl` throws on a project target without a workspace.
+const buildAppUrlForBoard = (query: Record<string, string>) => {
+  const wsId = props.workspaceId
+  const itemId = effectiveItemId.value
+  if (!wsId || !itemId) return { path: '/app', query }
+  return buildAppUrl({ workspaceId: wsId, projectId: itemId, query })
+}
+
 // Close the inline detail panel + drop the ?detail= param so the
 // URL reflects the board-only state. Used by save-success,
 // start-agent-success, and the panel's close/cancel affordance.
@@ -858,7 +886,7 @@ const closeTaskDetail = () => {
   try {
     const next = flatQuery()
     delete next.detail
-    void router.replace({ query: next })
+    void router.replace(buildAppUrlForBoard(next))
   } catch {
     // Router may be absent in unit tests — local state already cleared.
   }
@@ -937,7 +965,7 @@ watch(showTaskDetail, (open) => {
     if (typeof raw === 'string' && raw !== '') {
       const next = flatQuery()
       delete next.detail
-      void router.replace({ query: next })
+      void router.replace(buildAppUrlForBoard(next))
     }
   } catch {
     // Router absent in tests — nothing to sync.

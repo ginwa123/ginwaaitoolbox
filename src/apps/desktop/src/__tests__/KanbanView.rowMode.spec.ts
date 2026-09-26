@@ -415,7 +415,7 @@ describe('KanbanView row mode', () => {
     )
     wrapper = mounted.wrapper
 
-    await wrapper.find('[data-kanban-row="t1"] button').trigger('click')
+    await wrapper.find('[data-kanban-row="t1"] [data-task-row]').trigger('click')
     expect(wrapper.emitted('selectTask')?.[0]).toEqual(['t1'])
   })
 

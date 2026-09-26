@@ -390,8 +390,10 @@ describe('KanbanView — event pass-through', () => {
         tasks: [{ id: 't1', name: 'Task A', kanban_column_id: 'col_x', kanban_position: 0 }],
       }),
     )
-    // Click on the task's WorkspaceItemTask (button has data-task-id)
-    const taskBtn = wrapper.find('button[data-task-id="t1"]')
+    // Click on the task's WorkspaceItemTaskCard (the card root carries
+    // data-task-card; the outer KanbanCard drag wrapper also carries
+    // data-task-id, so target the card root explicitly).
+    const taskBtn = wrapper.find('[data-task-card][data-task-id="t1"]')
     await taskBtn.trigger('click')
     expect(wrapper.emitted('selectTask')?.[0]).toEqual(['t1'])
   })

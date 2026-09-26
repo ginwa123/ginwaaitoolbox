@@ -16,10 +16,7 @@
  * IS the session id).
  */
 import { describe, expect, it } from 'vitest'
-import {
-  buildTaskUrlQuery,
-  pickBreadcrumbFromQuery,
-} from '../buildTaskUrlQuery'
+import { buildTaskUrlQuery, pickBreadcrumbFromQuery } from '../buildTaskUrlQuery'
 
 const WS_ID = 'ws_a'
 const ITEM_ID = 'item_kanban'
@@ -105,6 +102,34 @@ describe('buildTaskUrlQuery — emits view=workspace + /chat/<taskId> suffix (si
     expect(query.workspaceId).toBe(WS_ID)
     expect(query.itemId).toBe(`${ITEM_ID}/chat/${TASK_ID}`)
     expect(query.sorts).toBe('col_a:name:asc')
+  })
+
+  it('carries ?layout= through the task URL (kanban row mode round-trip)', () => {
+    // `layout` is URL-only state like `sorts`. Without it, opening a task
+    // chat from a row-mode board and closing it snapped the board back to
+    // column mode.
+    const query = buildTaskUrlQuery({
+      taskId: TASK_ID,
+      currentQuery: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+        layout: 'rows',
+      },
+    })
+    expect(query.layout).toBe('rows')
+  })
+
+  it('omits ?layout= when the board is in the default column mode', () => {
+    const query = buildTaskUrlQuery({
+      taskId: TASK_ID,
+      currentQuery: {
+        view: 'workspace',
+        workspaceId: WS_ID,
+        itemId: ITEM_ID,
+      },
+    })
+    expect(query.layout).toBeUndefined()
   })
 
   it('preserves an existing /chat/<taskId> suffix in the URL breadcrumb (re-navigation)', () => {
@@ -205,12 +230,13 @@ describe('buildTaskUrlQuery — emits view=workspace + /chat/<taskId> suffix (si
 })
 
 describe('pickBreadcrumbFromQuery — extracts breadcrumb scalars', () => {
-  it('picks workspaceId, itemId, pageId, sorts when all are strings', () => {
+  it('picks workspaceId, itemId, pageId, sorts, layout when all are strings', () => {
     const out = pickBreadcrumbFromQuery({
       workspaceId: WS_ID,
       itemId: ITEM_ID,
       pageId: 'page_x',
       sorts: 'col_a:name:asc',
+      layout: 'rows',
       view: 'workspace', // not breadcrumb — ignored
     })
     expect(out).toEqual({
@@ -218,6 +244,7 @@ describe('pickBreadcrumbFromQuery — extracts breadcrumb scalars', () => {
       itemId: ITEM_ID,
       pageId: 'page_x',
       sorts: 'col_a:name:asc',
+      layout: 'rows',
     })
   })
 
