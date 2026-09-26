@@ -40,6 +40,17 @@ class MainActivity : ComponentActivity() {
                 )
                 val chatState by chatViewModel.uiState.collectAsState()
 
+                // One sign-out, three entry points: the sidebar's "Log out", the
+                // retry screen's "Sign in", and a 401 from either cache. They are
+                // the same action, so they must purge the account-scoped caches
+                // the same way — before the cookie goes, or a cached row from the
+                // outgoing account can still be painted afterwards.
+                val signOut: () -> Unit = {
+                    homeViewModel.onSignedOut()
+                    chatViewModel.onSignedOut()
+                    authViewModel.logout()
+                }
+
                 // The signed-in account namespaces both caches. Reacting to it
                 // here (rather than inside a ViewModel's init) means the first
                 // paint is already scoped to the right account.
@@ -52,10 +63,10 @@ class MainActivity : ComponentActivity() {
                 // is the only outcome a retry cannot fix.
                 LaunchedEffect(homeViewModel, chatViewModel) {
                     launch {
-                        homeViewModel.sessionExpired.collect { authViewModel.useAnotherAccount() }
+                        homeViewModel.sessionExpired.collect { signOut() }
                     }
                     launch {
-                        chatViewModel.sessionExpired.collect { authViewModel.useAnotherAccount() }
+                        chatViewModel.sessionExpired.collect { signOut() }
                     }
                 }
 
@@ -65,13 +76,8 @@ class MainActivity : ComponentActivity() {
                     // The retry screen's whole purpose is to re-check the
                     // session, so it must bypass the /me cache.
                     onRetrySession = { authViewModel.restoreSession(forceRefresh = true) },
-                    onUseAnotherAccount = {
-                        // Purge before the cookie goes, so no cached row from the
-                        // outgoing account can be painted after it.
-                        homeViewModel.onSignedOut()
-                        chatViewModel.onSignedOut()
-                        authViewModel.useAnotherAccount()
-                    },
+                    onUseAnotherAccount = signOut,
+                    onLogout = signOut,
                     homeState = homeState,
                     chatState = chatState,
                     onSelectWorkspace = homeViewModel::selectWorkspace,

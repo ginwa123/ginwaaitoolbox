@@ -46,7 +46,7 @@ class RecentsCacheCodecTest {
     @Test
     fun aUsersKeysAreDistinctFromAnothers() {
         // The whole point of namespacing: B must never be able to address A's
-        // namespace, because that is what `useAnotherAccount()` leaves behind.
+        // namespace, because that is what `logout()` leaves behind.
         assertNotEquals(
             RecentsCacheCodec.workspacesKey("user_a"),
             RecentsCacheCodec.workspacesKey("user_b"),
