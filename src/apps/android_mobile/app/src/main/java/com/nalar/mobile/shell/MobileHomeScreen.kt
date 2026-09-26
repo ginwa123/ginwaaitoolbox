@@ -127,9 +127,23 @@ fun MobileHomeScreen(
         }
     }
 
-    LaunchedEffect(scopedChats, selectedChatId) {
-        if (scopedChats.none { it.id == selectedChatId }) {
-            selectedChatId = scopedChats.firstOrNull()?.id
+    LaunchedEffect(scopedChats, selectedChatId, initialChatId) {
+        // Already on a real row: nothing to decide. Reached on every refresh and
+        // every tap, and short-circuiting is what stops a revalidation from
+        // moving the highlight off the chat the user is reading.
+        if (selectedChatId != null && scopedChats.any { it.id == selectedChatId }) {
+            return@LaunchedEffect
+        }
+        // `initialChatId` is a *request*, not a seed. It arrives after the first
+        // composition — the chat list is still loading then, so an id read at
+        // construction time is either null or cannot be checked — and honouring
+        // it only at construction is what lets the app resume a chat the drawer
+        // does not highlight.
+        val requested = initialChatId
+        selectedChatId = if (requested != null && scopedChats.any { it.id == requested }) {
+            requested
+        } else {
+            scopedChats.firstOrNull()?.id
         }
     }
 
