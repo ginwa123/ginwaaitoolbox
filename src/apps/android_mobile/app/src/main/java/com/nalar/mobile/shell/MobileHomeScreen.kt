@@ -5,6 +5,7 @@ package com.nalar.mobile.shell
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -78,6 +79,12 @@ fun MobileHomeScreen(
     initialChatId: String? = null,
     onWorkspaceSelected: (String) -> Unit = {},
     onChatSelected: (String) -> Unit = {},
+    /**
+     * Opens a chat as its own destination. A chat is a view, so it lives on a
+     * route rather than in a local selection flag — that is what makes it
+     * survive process death and the system Back button.
+     */
+    onOpenChat: (String) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
     drawerLayout: MobileDrawerLayout = MobileDrawerLayout.Auto,
     isLoading: Boolean = false,
@@ -133,6 +140,7 @@ fun MobileHomeScreen(
     val selectChat: (String) -> Unit = { chatId ->
         selectedChatId = chatId
         onChatSelected(chatId)
+        onOpenChat(chatId)
     }
 
     BoxWithConstraints(
@@ -301,7 +309,7 @@ private fun HomeContent(
                 Column(
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Box(
                         modifier = Modifier
@@ -319,7 +327,7 @@ private fun HomeContent(
                     Spacer(Modifier.height(2.dp))
 
                     Text(
-                        text = selectedChat?.displayTitle ?: "No recent chat selected",
+                        text = selectedChat?.displayTitle ?: "No chat selected",
                         modifier = Modifier.testTag("home_chat_title"),
                         style = MaterialTheme.typography.headlineSmall,
                         color = NalarText,
@@ -338,7 +346,7 @@ private fun HomeContent(
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "Chat messages are not connected yet — the sidebar above is live.",
+                        text = "Open a chat from the list to read and reply to it.",
                         style = MaterialTheme.typography.labelMedium,
                         color = NalarDim,
                         textAlign = TextAlign.Center,
