@@ -181,6 +181,12 @@ fun NalarNavGraph(
     onLoadOlderChatMessages: () -> Unit,
     onDismissChatError: () -> Unit,
     onAnswerChatQuestion: (QuestionAnswer) -> Unit,
+    /**
+     * Sign-out from the sidebar. A separate parameter from
+     * [onUseAnotherAccount] only because the two start from different screens —
+     * the caller is expected to point both at the same action.
+     */
+    onLogout: () -> Unit = {},
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -190,6 +196,17 @@ fun NalarNavGraph(
     // inclusive `popBackStack()`, which emptied the back stack and left `NavHost`
     // drawing nothing at all. See [BackAction].
     val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
+
+    // Signing out is app-wide, but only the shell reads the auth phase — the
+    // chat route would happily keep painting a transcript the user can no
+    // longer act on. Coming back to the shell is what lets the login screen
+    // replace the app instead of that.
+    val signOut: () -> Unit = {
+        onLogout()
+        if (navController.currentDestination?.route != NalarRoutes.SHELL) {
+            goBack()
+        }
+    }
 
     // `NavHost` emits nothing at all when the controller has no destination, and
     // the window then shows only the theme's background. This guard is not a
@@ -249,6 +266,10 @@ fun NalarNavGraph(
                     isLoadingMoreChats = homeState.isLoadingMoreChats,
                     hasMoreChats = homeState.hasMoreChats,
                     onLoadMoreChats = onLoadMoreChats,
+                    isAuthEnabled = authState.isAuthEnabled,
+                    signedInEmail = authState.userEmail,
+                    isLoggingOut = authState.isLoggingOut,
+                    onLogout = signOut,
                 )
             }
         }

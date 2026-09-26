@@ -19,7 +19,7 @@ import org.json.JSONObject
  *
  * Three rules make this safe on a phone, and all three are load-bearing:
  *
- * 1. **Namespaced per user.** `useAnotherAccount()` only clears the session
+ * 1. **Namespaced per user.** `logout()` only clears the session
  *    cookie, so an unscoped cache would put the previous account's workspaces
  *    and chat titles on screen for the next person who signs in on a shared
  *    device. Every read and write requires a non-blank `userId`.

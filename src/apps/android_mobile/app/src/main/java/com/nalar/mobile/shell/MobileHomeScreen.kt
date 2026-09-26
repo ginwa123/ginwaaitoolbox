@@ -93,6 +93,14 @@ fun MobileHomeScreen(
     isLoadingMoreChats: Boolean = false,
     hasMoreChats: Boolean = false,
     onLoadMoreChats: () -> Unit = {},
+    /**
+     * The signed-in account, and the one action that ends it. Defaults keep the
+     * screen renderable in previews and tests with no session to describe.
+     */
+    isAuthEnabled: Boolean = false,
+    signedInEmail: String? = null,
+    isLoggingOut: Boolean = false,
+    onLogout: () -> Unit = {},
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
         ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
@@ -180,6 +188,10 @@ fun MobileHomeScreen(
                             isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
                             onLoadMore = onLoadMoreChats,
+                            isAuthEnabled = isAuthEnabled,
+                            signedInEmail = signedInEmail,
+                            isLoggingOut = isLoggingOut,
+                            onLogout = onLogout,
                         )
                     }
                 },
@@ -216,6 +228,10 @@ fun MobileHomeScreen(
                             isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
                             onLoadMore = onLoadMoreChats,
+                            isAuthEnabled = isAuthEnabled,
+                            signedInEmail = signedInEmail,
+                            isLoggingOut = isLoggingOut,
+                            onLogout = onLogout,
                         )
                     }
                 },
