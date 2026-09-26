@@ -41,6 +41,7 @@ Covers:
 from __future__ import annotations
 
 import sqlite3
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -191,3 +192,49 @@ def test_unknown_session_404(harness: FunctionalHarness):
 def test_invalid_disposition_400(harness: FunctionalHarness):
     sid, root = _setup(harness)
     _download(harness, sid, str(root / "notes.txt"), "download", expect=400)
+
+
+# ─── Android client's exact query string ────────────────────────────────────
+#
+# The Kotlin client (src/apps/android_mobile/.../chat/PresentFiles.kt,
+# downloadUrl) builds the query itself with java.net.URLEncoder and then
+# rewrites `+` back to `%20`, so its wire bytes differ from everything above —
+# which is precisely the case a unit test on the URL string cannot catch. The
+# server's query parser has to decode `%20` as a space for a presented file
+# with a space in its name to open at all, and a space is the single most
+# common character in a file the agent chooses to show you.
+
+SPACED_BODY = b"a file whose name has a space in it\n"
+
+
+def _spaced_sandbox(harness: FunctionalHarness) -> Path:
+    root = Path(harness.temp_dir) / "present-files-spaced"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "my notes.md").write_bytes(SPACED_BODY)
+    return root
+
+
+def test_android_percent_twenty_path_decodes_to_a_space(harness: FunctionalHarness):
+    """The Android card's exact wire form: `my%20notes.md`, not `my+notes.md`."""
+    _create_session(harness, "sess_present_android")
+    root = _spaced_sandbox(harness)
+    _set_session_cwd(harness, "sess_present_android", str(root))
+
+    encoded_path = urllib.parse.quote(str(root / "my notes.md"), safe="")
+    assert "%20" in encoded_path, "the Android client percent-encodes spaces as %20"
+    assert "+" not in encoded_path, "the Android client never emits a form-style plus"
+
+    query = (
+        "?session_id=sess_present_android"
+        f"&path={encoded_path}"
+        "&disposition=inline"
+    )
+    r = harness.http("GET", f"/api/files/download{query}", expect=200)
+    assert r.body == SPACED_BODY, (
+        "the server did not decode %20 into a space, so the Android client's "
+        "preview of any file with a space in its name would 404"
+    )
+    assert 'filename="my notes.md"' in _header(r, "Content-Disposition"), (
+        "the decoded name must survive into Content-Disposition so a viewer "
+        "app and the Open action agree on what the file is called"
+    )

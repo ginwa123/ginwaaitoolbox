@@ -2,6 +2,21 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      Android 11+ package visibility. Without this, `startActivity` on a VIEW
+      intent still works, but `resolveActivity` reports null and the
+      "no app can open this" branch would fire for a file the phone can in fact
+      view. The intent targets are the broadest useful set rather than the
+      viewer names, because a user who installed a third-party PDF reader is
+      precisely the case this was written for.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="*/*" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -38,5 +53,21 @@
                 <data android:scheme="nalar" android:host="chat" />
             </intent-filter>
         </activity>
+
+        <!--
+          Serves a `present_files` download to a viewer app. The endpoint is
+          cookie-authenticated, so the file has to be fetched in-app and handed
+          over as a content URI — `ExternalFileOpener` builds the URI from
+          `${applicationId}.fileprovider`, which is this authority.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>
