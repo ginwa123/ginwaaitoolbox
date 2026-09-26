@@ -171,10 +171,22 @@ internal object HtmlResponse {
         RegexOption.IGNORE_CASE,
     )
 
-    private fun isCandidate(text: String): Boolean =
-        DOCUMENT_OPENER.containsMatchIn(text) ||
+    /**
+     * Whether this text could possibly hold a document.
+     *
+     * All three patterns need a `<`, and a plain markdown answer has none — so
+     * the honest question is not "which pattern matches" but "is a tag even
+     * present". `indexOf` answers that in one native scan; the three regexes
+     * each re-scan the whole string, and [ChatMessage.hasRenderableContent]
+     * asks this for every row of every group on the main thread every time the
+     * transcript changes.
+     */
+    private fun isCandidate(text: String): Boolean {
+        if (text.indexOf('<') < 0) return false
+        return DOCUMENT_OPENER.containsMatchIn(text) ||
             HTML_BLOCK.containsMatchIn(text) ||
             UNFENCED.containsMatchIn(text)
+    }
 
     /**
      * True when [document] is finished.

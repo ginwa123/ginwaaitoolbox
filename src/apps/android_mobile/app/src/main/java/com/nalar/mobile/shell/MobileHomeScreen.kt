@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -287,6 +288,12 @@ private fun HomeContent(
     onOpenNetworkInspector: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // One clock for the whole composition rather than a fresh read inside the
+    // body below. A `System.currentTimeMillis()` in a composition body is a
+    // parameter that changes on every recomposition, which is what makes every
+    // row of a list built here unskippable.
+    val nowEpochMillis = remember { System.currentTimeMillis() }
+
     Scaffold(
         modifier = modifier
             .fillMaxSize()
@@ -393,7 +400,7 @@ private fun HomeContent(
                                 // and says nothing about the human.
                                 formatRelativeTime(
                                     chat.lastHumanTouchedAtEpochMillis,
-                                    System.currentTimeMillis(),
+                                    nowEpochMillis,
                                 )
                             } else {
                                 "No timestamp for this chat yet."

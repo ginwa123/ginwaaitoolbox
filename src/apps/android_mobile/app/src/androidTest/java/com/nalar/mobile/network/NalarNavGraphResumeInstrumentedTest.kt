@@ -218,7 +218,7 @@ private fun ResumeGraph(
         onUseAnotherAccount = {},
         navController = navController,
         homeState = homeState,
-        chatState = ChatUiState(isLoading = false),
+        chatState = { ChatUiState(isLoading = false) },
         positionStore = positionStore,
         onSelectWorkspace = {},
         onSelectChat = {},

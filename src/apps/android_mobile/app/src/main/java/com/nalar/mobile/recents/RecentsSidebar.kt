@@ -88,7 +88,23 @@ fun RecentsSidebar(
     onWorkspaceSelected: (String) -> Unit,
     onChatSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
-    nowEpochMillis: Long = System.currentTimeMillis(),
+    /**
+     * Read once per composition, not once per recomposition.
+     *
+     * This default used to be a bare `System.currentTimeMillis()`, which is a
+     * *new value every time the sidebar recomposes*. Compose compares
+     * parameters to decide what may be skipped, so a parameter that changes
+     * every frame means no row is ever skippable: opening the drawer, and
+     * switching chat, re-ran `formatRelativeTime`, the accessibility string and
+     * two colour copies for every visible row.
+     *
+     * `remember` is legal in a default argument — it is evaluated inside the
+     * composable — so callers that pin the clock (tests, previews) are
+     * unaffected and the default stops being a moving target. The trade is that
+     * "2 hours ago" is as old as the composition; the sidebar is re-entered
+     * constantly and the string is only ever a hint.
+     */
+    nowEpochMillis: Long = remember { System.currentTimeMillis() },
     /**
      * Leave the sidebar because a chat was opened — a chat is a destination.
      *

@@ -176,7 +176,7 @@ class RoomChatCache(
             // No rows is a miss, and it is the *only* miss a read can have now.
             // The file version could also hold a decoded-empty document; it
             // never did in practice, because `writeMessages` refused an empty
-            // list, and `ChatViewModel.primeFromCache` cannot tell the two
+            // list, and `ChatViewModel.readCachedTranscript` cannot tell the two
             // apart.
             if (rows.isEmpty()) null else rows.map { it.toCachedMessage() }
         }

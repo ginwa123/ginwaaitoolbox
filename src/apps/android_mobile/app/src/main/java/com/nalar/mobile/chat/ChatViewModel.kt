@@ -34,6 +34,12 @@ import org.json.JSONObject
  * paint with no fetch behind it is permanently stale and nothing will ever
  * correct it.
  *
+ * The disk read and the JSON parse are on [ioDispatcher], not on the caller.
+ * [openSession] is called from a tap handler, and the cache holds the *verbatim*
+ * server row, so a 400-row window is megabytes to read and parse — work that
+ * used to land on the UI thread before the navigation even started, and which
+ * read on the phone as a freeze.
+ *
  * There is no preview or mock data here. A transcript that quietly renders demo
  * turns is indistinguishable from a working one.
  */
@@ -54,6 +60,7 @@ class ChatViewModel(
 
     private var userId: String? = null
     private var loadJob: Job? = null
+    private var cachePrimeJob: Job? = null
     private var olderJob: Job? = null
     private var sendJob: Job? = null
     private var stopJob: Job? = null
@@ -92,6 +99,24 @@ class ChatViewModel(
      */
     private var generation: Int = 0
 
+    /**
+     * Whether anything *newer than the cache* has painted for this generation.
+     *
+     * Set the moment a page, a live frame or a paged-older response lands. The
+     * cache prime reads and parses on an IO dispatcher now, so it can finish
+     * *after* a tail fetch that left first — and the cache, by definition, is
+     * older than what that fetch returned. Publishing it then would roll a
+     * finished turn back to whatever placeholder the cache holds, which is the
+     * one thing paint-from-cache is never allowed to do.
+     *
+     * `@Volatile` because the writes are not all on the same thread: a live
+     * frame arrives on the SSE pump thread, and the read is on the main thread
+     * where the prime resumes. Without it the main thread is entitled to serve
+     * itself a stale `false` from a register.
+     */
+    @Volatile
+    private var hasFreshContent: Boolean = false
+
     private var hasConnectedStreamOnce = false
 
     /**
@@ -116,11 +141,20 @@ class ChatViewModel(
             liveMessageIds.clear()
             subAgentBatches.clear()
             olderCursor = null
+            hasFreshContent = false
         }
     }
 
     /**
      * Opens a chat: paint from cache, then attach the stream, then revalidate.
+     *
+     * **Returns immediately.** This runs from a tap handler, so everything it
+     * can do to the caller is bounded: it resets the state, publishes the empty
+     * loading paint, and hands the rest to coroutines. The cache read, the
+     * parse, the fetch and the stream attach all run behind it. The transcript
+     * is correct for whichever of them lands first: the cache never overwrites
+     * something newer (see [hasFreshContent]), and a fetch that lands first
+     * simply becomes the state the cache declines to touch.
      *
      * The stream is attached *before* the fetch, deliberately. A tool call can
      * finish while the first REST load is still in flight, and an event that
@@ -146,8 +180,39 @@ class ChatViewModel(
         subAgentBatches.clear()
         olderCursor = null
         hasConnectedStreamOnce = false
+        hasFreshContent = false
 
-        primeFromCache(sessionId)
+        // The empty paint is the *only* part of the prime that stays on the
+        // caller's thread, and it is a field assignment. It has to be here: the
+        // navigation that follows reads `sessionId` to decide whether this chat
+        // is open yet, and the transcript needs a state to render its spinner
+        // against.
+        _uiState.value = ChatUiState(sessionId = sessionId, isLoading = true)
+
+        // The read and the parse are the expensive half, and they are not cheap
+        // because of the SQL: the cache keeps the *verbatim* server row, so a
+        // 400-row window is megabytes of `diffview_before`/`diffview_after` and
+        // double-escaped `tool_calls_json` to pull off disk and JSON-parse, per
+        // session switch. Doing that in the tap handler is what froze the phone
+        // on a long transcript, so it now runs on the IO pool and publishes when
+        // it lands.
+        cachePrimeJob?.cancel()
+        cachePrimeJob = viewModelScope.launch {
+            val painted = withContext(ioDispatcher) { readCachedTranscript(sessionId) }
+            if (requestGeneration != generation) return@launch
+            if (painted == null || hasFreshContent) return@launch
+            // The cache reads newest-first; a transcript reads oldest-first.
+            // Sorting by the hoisted nano key is what lets the auto-scroll target
+            // "the last item" without the view knowing anything about sort order.
+            _uiState.update { state ->
+                if (state.sessionId != sessionId) {
+                    state
+                } else {
+                    state.copy(messages = painted.sortedBy { it.sortKeyNanos })
+                }
+            }
+        }
+
         startEventStream(sessionId)
         revalidate(sessionId, requestGeneration)
         reattachInFlightTurn(sessionId, requestGeneration)
@@ -172,6 +237,7 @@ class ChatViewModel(
             // A failed snapshot must not disturb a transcript that loaded fine.
             val content = (result as? ChatResult.Loaded)?.value.orEmpty()
             if (content.isBlank()) return@launch
+            hasFreshContent = true
 
             _uiState.update { state ->
                 if (state.messages.any { message -> message.isStreaming }) {
@@ -196,29 +262,24 @@ class ChatViewModel(
     }
 
     /**
-     * Paints the last-known transcript, if any survives, before any network
-     * call. Always followed by [revalidate] from [openSession] — priming and
-     * revalidating are not separable from outside this class.
+     * The last-known transcript, oldest-first, or null when there is none.
+     *
+     * **Off the main thread, deliberately.** This is the single most expensive
+     * thing a session switch does: [ChatViewModel.CACHED_MESSAGE_LIMIT] rows of
+     * verbatim server JSON, each one a full `JSONObject` parse, with the tool
+     * rows carrying both sides of a diff. Room is opened with
+     * `allowMainThreadQueries()` so this *may* run inline, and it used to — from
+     * inside the tap handler, before the navigation even started. A phone paid
+     * hundreds of milliseconds of UI-thread time per switch there, which reads
+     * to the user as the app freezing.
+     *
+     * The cost of moving it is one spinner frame on a warm cache. The cost of
+     * leaving it was the whole freeze.
      */
-    private fun primeFromCache(sessionId: String) {
+    private fun readCachedTranscript(sessionId: String): List<ChatMessage>? {
         val cached = cache.readMessages(userId, sessionId, CACHED_MESSAGE_LIMIT)
-        if (cached == null || cached.isEmpty()) {
-            _uiState.value = ChatUiState(sessionId = sessionId, isLoading = true)
-            return
-        }
-
-        // The cache reads newest-first; a transcript reads oldest-first. Sorting
-        // by the hoisted nano key is what lets the auto-scroll target "the last
-        // item" without the view knowing anything about sort order.
-        val painted = cached
-            .mapNotNull { ChatApi.toChatMessage(it.raw) }
-            .sortedBy { it.sortKeyNanos }
-
-        _uiState.value = ChatUiState(
-            sessionId = sessionId,
-            isLoading = true,
-            messages = painted,
-        )
+        if (cached.isNullOrEmpty()) return null
+        return cached.mapNotNull { ChatApi.toChatMessage(it.raw) }
     }
 
     /**
@@ -275,6 +336,9 @@ class ChatViewModel(
         isFullReload: Boolean,
     ) {
         val incoming = page.messages.filterNot { message -> message.id in liveMessageIds }
+        // Whatever the network just returned is newer than the cache, so the
+        // prime must not be allowed to land on top of it.
+        hasFreshContent = true
 
         _uiState.update {
             it.copy(
@@ -352,6 +416,7 @@ class ChatViewModel(
                 -> _uiState.update { it.copy(isLoadingOlder = false) }
 
                 is ChatResult.Loaded -> {
+                    hasFreshContent = true
                     val older = result.value.messages
                         .filterNot { message -> message.id in liveMessageIds }
                         .asReversed()
@@ -521,6 +586,8 @@ class ChatViewModel(
         subAgentBatches.clear()
         olderCursor = null
         _uiState.value = ChatUiState()
+        hasFreshContent = false
+        cachePrimeJob?.cancel()
         loadJob?.cancel()
         olderJob?.cancel()
         sendJob?.cancel()
@@ -530,6 +597,7 @@ class ChatViewModel(
     }
 
     override fun onCleared() {
+        cachePrimeJob?.cancel()
         stopEventStream()
         super.onCleared()
     }
@@ -619,6 +687,7 @@ class ChatViewModel(
      * leave only the last fragment on screen.
      */
     private fun appendStreamingChunk(event: ChatStreamEvent.Chunk) {
+        hasFreshContent = true
         _uiState.update { state ->
             val existing = state.messages.lastOrNull { message -> message.isStreaming }
             val placeholder = ChatMessage(
@@ -667,6 +736,7 @@ class ChatViewModel(
     private fun upsertFullMessage(sessionId: String, event: ChatStreamEvent.Full) {
         val message = event.message
         liveMessageIds += message.id
+        hasFreshContent = true
 
         _uiState.update { state ->
             // Match the placeholder by its RESERVED ID, not just by
@@ -786,9 +856,10 @@ class ChatViewModel(
 
     companion object {
         /**
-         * Bounded so the synchronous cache read in [primeFromCache] stays small
-         * enough to be unnoticeable before the first frame. Older turns stay
-         * reachable by scrolling, which pages them from the network.
+         * Bounded so the cache read in [readCachedTranscript] is a bounded
+         * amount of JSON on a background dispatcher rather than an unbounded
+         * one. Older turns stay reachable by scrolling, which pages them from
+         * the network.
          */
         const val CACHED_MESSAGE_LIMIT = 400
 

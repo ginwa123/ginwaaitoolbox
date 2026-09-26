@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
+import com.nalar.mobile.chat.ChatUiState
 import com.nalar.mobile.chat.ChatViewModel
 import com.nalar.mobile.network.NalarNavGraph
 import com.nalar.mobile.recents.HomeViewModel
@@ -47,7 +48,11 @@ class MainActivity : ComponentActivity() {
                 val chatViewModel: ChatViewModel = viewModel(
                     factory = ChatViewModel.factory(application),
                 )
-                val chatState by chatViewModel.uiState.collectAsState()
+                // Deliberately not collected here. A `by collectAsState()` at
+                // the top of the tree would make every transcript emission
+                // recompose the whole nav graph; the chat route reads the flow
+                // itself, so only the transcript moves.
+                val chatState: () -> ChatUiState = { chatViewModel.uiState.value }
 
                 // Which sessions have a live worker. Its own ViewModel, and its
                 // own `workers` subscription, because the chat stream only exists

@@ -211,14 +211,17 @@ data class ChatMessageGroup(
  * sentence worth reading. Only the one that says nothing but `tool_calls_json`
  * is a header for a run rather than a turn of its own.
  */
-private val ChatMessageGroup.bareDeclarations: List<ToolCallEntry>
-    get() = if (role != ChatMessage.ROLE_ASSISTANT) {
-        emptyList()
-    } else {
-        messages
-            .filter { it.isToolCallTurn && it.content.isBlank() && it.reasoningContent.isBlank() }
-            .flatMap { ToolCalls.parse(it.toolCallsJson) }
+private fun ChatMessageGroup.bareDeclarations(): List<ToolCallEntry> {
+    if (role != ChatMessage.ROLE_ASSISTANT) return emptyList()
+    val bare = messages.filter {
+        it.isToolCallTurn && it.content.isBlank() && it.reasoningContent.isBlank()
     }
+    // No candidate, no `tool_calls_json` to parse. The common group is an
+    // assistant turn carrying prose, and it used to reach a `JSONArray` parse
+    // before discovering there was nothing to read.
+    if (bare.isEmpty()) return emptyList()
+    return bare.flatMap { ToolCalls.parse(it.toolCallsJson) }
+}
 
 data class ChatUiState(
     val sessionId: String? = null,
@@ -348,26 +351,43 @@ fun groupMessages(messages: List<ChatMessage>): List<ChatMessageGroup> {
  * set also suppresses a call whose result row precedes the declaration, which a
  * re-delivered or out-of-order row can produce, and suppressing on that is
  * showing nothing at all.
+ *
+ * The walk backwards so that "later" is a running answer rather than a
+ * re-scan. This used to re-walk every group *after* the current one for every
+ * group with a declaration, over a `Sequence` chain that Kotlin does not fuse
+ * — quadratic in groups, on the main thread, on every streamed delta. A single
+ * descending pass carrying the ids seen so far answers the same question in
+ * one pass, and a declaration is still only ever matched by a tool row that
+ * follows it.
  */
 private fun attachUnpairedToolCalls(
     groups: List<ChatMessageGroup>,
 ): List<ChatMessageGroup> {
-    if (groups.none { it.bareDeclarations.isNotEmpty() }) return groups
+    val attached = arrayOfNulls<ChatMessageGroup>(groups.size)
+    val answeredAfter = HashSet<String>()
+    var sawDeclaration = false
 
-    val attached = ArrayList<ChatMessageGroup>(groups.size)
-    groups.forEachIndexed { index, group ->
-        val declared = group.bareDeclarations
-        if (declared.isEmpty()) {
-            attached += group
-            return@forEachIndexed
+    for (index in groups.indices.reversed()) {
+        val group = groups[index]
+        if (group.role == ChatMessage.ROLE_TOOL) {
+            group.messages.forEach { message ->
+                if (message.toolCallId.isNotBlank()) answeredAfter.add(message.toolCallId)
+            }
         }
-        val answered = groups.asSequence()
-            .drop(index + 1)
-            .filter { it.role == ChatMessage.ROLE_TOOL }
-            .flatMap { it.messages.asSequence() }
-            .mapNotNull { it.toolCallId.takeIf(String::isNotBlank) }
-            .toSet()
-        attached += group.copy(unpairedToolCalls = declared.filter { it.id !in answered })
+        val declared = group.bareDeclarations()
+        if (declared.isEmpty()) {
+            attached[index] = group
+        } else {
+            sawDeclaration = true
+            attached[index] = group.copy(
+                unpairedToolCalls = declared.filter { it.id !in answeredAfter },
+            )
+        }
     }
-    return attached
+
+    // Nothing was declared anywhere, so nothing was copied either. The original
+    // list is handed back rather than an equal one, which is what keeps a
+    // transcript with no tool run from reallocating on every delta.
+    if (!sawDeclaration) return groups
+    return List(groups.size) { index -> attached[index] ?: groups[index] }
 }

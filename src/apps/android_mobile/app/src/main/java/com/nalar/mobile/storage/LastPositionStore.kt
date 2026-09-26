@@ -77,11 +77,19 @@ interface LastPositionStore {
  * alias to rotate for content nobody can act on. The cache rows this points at
  * hold the actual chat titles, and those are sealed.
  *
- * **Writes use `commit()`, not `apply()`.** The whole feature turns on a write
- * surviving the process, and `apply()` only guarantees reaching *memory* — a
- * force-stop in the same instant the user taps a chat is exactly the case this
- * class exists for. The writes happen on user actions (a workspace tap, a chat
- * tap) rather than per frame, so the synchronous write is not a hot path.
+ * **Writes use `apply()`, not `commit()`.** `commit()` is a synchronous fsync
+ * on the calling thread, and the calling thread for every write here is the UI
+ * thread inside a tap handler — `HomeViewModel.selectChat` writes one on every
+ * chat the reader opens, and it does so *before* the navigation starts, so the
+ * fsync lands in the middle of the transition the user is watching. Small, but
+ * it is UI-thread time in the one gesture that must not stutter.
+ *
+ * `apply()` is not a weaker guarantee where it counts. It updates the
+ * in-memory map synchronously — so [read] called on the very next line sees the
+ * new value, which is what every ordering rule in the interface above relies
+ * on — and the framework completes the in-flight disk write before the process
+ * changes state. The residue is a force-stop *within microseconds* of the tap,
+ * a window the previous `commit()` only narrowed; it did not close.
  */
 class PrefsLastPositionStore(context: Context) : LastPositionStore {
 
@@ -111,7 +119,7 @@ class PrefsLastPositionStore(context: Context) : LastPositionStore {
                 ?.let { editor.putString(workspaceKey(userId), it) }
             sessionId?.takeIf { it.isNotBlank() }
                 ?.let { editor.putString(sessionKey(userId), it) }
-            editor.commit()
+            editor.apply()
         }
     }
 
@@ -121,12 +129,12 @@ class PrefsLastPositionStore(context: Context) : LastPositionStore {
             preferences.edit()
                 .putString(workspaceKey(userId), workspaceId)
                 .remove(sessionKey(userId))
-                .commit()
+                .apply()
         }
     }
 
     override fun clear() {
-        runCatching { preferences.edit().clear().commit() }
+        runCatching { preferences.edit().clear().apply() }
     }
 
     private fun android.content.SharedPreferences.readString(key: String): String? =
