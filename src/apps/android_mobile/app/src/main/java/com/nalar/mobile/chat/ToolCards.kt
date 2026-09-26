@@ -66,6 +66,13 @@ fun ToolCardView(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
     onAnswer: (QuestionAnswer) -> Unit = {},
+    /**
+     * Which chat this row belongs to. Only `present_files` needs it, and only
+     * to scope its download to this session's working directory — but the
+     * endpoint requires it, so it has to reach the card. Empty means "no
+     * session", which the file client refuses rather than guessing.
+     */
+    sessionId: String = "",
 ) {
     // A card with neither a body nor any arguments has nothing to reveal, so
     // its header is a label rather than a button. A *placeholder* row is in
@@ -115,7 +122,7 @@ fun ToolCardView(
                 if (error != null) {
                     ToolErrorRow(message = error)
                 } else {
-                    ToolBodyFor(model, onAnswer)
+                    ToolBodyFor(model, onAnswer, sessionId)
                 }
             }
         }
@@ -147,7 +154,11 @@ internal fun CardRuleColor(model: ToolCardModel): Color = when {
 }
 
 @Composable
-private fun ToolBodyFor(model: ToolCardModel, onAnswer: (QuestionAnswer) -> Unit) {
+private fun ToolBodyFor(
+    model: ToolCardModel,
+    onAnswer: (QuestionAnswer) -> Unit,
+    sessionId: String,
+) {
     when (val body = model.body) {
         is ToolBody.ReadFile -> ReadFileBody(body)
         is ToolBody.WriteFile -> WriteFileBody(body)
@@ -168,7 +179,7 @@ private fun ToolBodyFor(model: ToolCardModel, onAnswer: (QuestionAnswer) -> Unit
         is ToolBody.SkillMutation -> SkillMutationBody(body)
         is ToolBody.KanbanMove -> KanbanMoveBody(body)
         is ToolBody.KanbanList -> KanbanListBody(body)
-        is ToolBody.PresentFiles -> PresentFilesBody(body)
+        is ToolBody.PresentFiles -> PresentFilesBody(body, sessionId)
         is ToolBody.GenerateImage -> GenerateImageBody(body)
         is ToolBody.Worktree -> WorktreeBody(body)
         is ToolBody.SessionReader -> SessionReaderBody(body)
@@ -946,19 +957,21 @@ private fun KanbanListBody(body: ToolBody.KanbanList) {
     }
 }
 
+/**
+ * One [PresentFileCard] per file.
+ *
+ * This used to be a `label → path · size` text row per file, which is the
+ * reason `present_files` looked broken on the phone: the tool's whole promise
+ * is "here is a file, look at it", and a path is not a file. The card now
+ * fetches the bytes and draws them — a screenshot as a picture, a README as
+ * markdown, a PDF as a row with an Open button — matching
+ * `PresentFiles.vue`, which has fetched `GET /api/files/download` this whole
+ * time.
+ */
 @Composable
-private fun PresentFilesBody(body: ToolBody.PresentFiles) {
+private fun PresentFilesBody(body: ToolBody.PresentFiles, sessionId: String) {
     body.files.forEach { file ->
-        ToolKeyValue(
-            key = file.label.ifEmpty { file.path.substringAfterLast('/') },
-            value = buildString {
-                append(file.path)
-                if (file.bytes > 0) {
-                    append("  ·  ")
-                    append(formatBytes(file.bytes))
-                }
-            },
-        )
+        PresentFileCard(file = file, sessionId = sessionId)
     }
     if (body.files.isEmpty()) {
         Text(

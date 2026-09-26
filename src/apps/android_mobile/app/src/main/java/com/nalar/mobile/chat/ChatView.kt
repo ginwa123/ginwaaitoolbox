@@ -527,7 +527,7 @@ fun ChatView(
                     key = { index -> groups[index].key },
                     contentType = { index -> groups[index].role },
                 ) { index ->
-                    ChatMessageGroupRow(groups[index], toolExpansion, onAnswer)
+                    ChatMessageGroupRow(groups[index], toolExpansion, onAnswer, state.sessionId.orEmpty())
                 }
             }
 
@@ -703,6 +703,7 @@ private fun ChatMessageGroupRow(
     group: ChatMessageGroup,
     toolExpansion: ToolExpansion,
     onAnswer: (QuestionAnswer) -> Unit,
+    sessionId: String,
 ) {
     Column(
         modifier = Modifier
@@ -729,7 +730,7 @@ private fun ChatMessageGroupRow(
             )
         }
         group.messages.forEach { message ->
-            MessageRow(message, toolExpansion, onAnswer)
+            MessageRow(message, toolExpansion, onAnswer, sessionId)
         }
     }
 }
@@ -752,6 +753,7 @@ private fun MessageRow(
     message: ChatMessage,
     toolExpansion: ToolExpansion,
     onAnswer: (QuestionAnswer) -> Unit,
+    sessionId: String,
 ) {
     when (messageChrome(message)) {
         MessageChrome.TOOL_CARD -> {
@@ -766,6 +768,7 @@ private fun MessageRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("chat_tool_${message.id}"),
+                sessionId = sessionId,
             )
         }
 
