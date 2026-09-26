@@ -344,9 +344,24 @@ pub fn getSessionListWithCursor(
     };
     defer allocator.free(order_by);
 
-    // Build cursor filter
+    // Build cursor filter. The resume key MUST be the same column the
+    // ORDER BY sorted on, because `next_cursor` is the last row's value
+    // *for that sort field* (see `session_list.zig`). This used to be
+    // hard-coded to `s.created_at`, which silently paginated the wrong
+    // window for every other sort: with `sort_by=updated_at` (what the
+    // sidebar and the web's ChatsList both send) page 1 ends at
+    // `updated_at = U` and page 2 then filtered `created_at < U`, so a
+    // long-lived session that was merely touched reappeared on every
+    // later page and anything created after U was skipped entirely.
+    // Keep the two switches in lockstep: change one, change both.
+    const cursor_column = switch (sort_field) {
+        .created_at => "s.created_at",
+        .session_name => "COALESCE(s.name, '')",
+        .agent => "COALESCE(h.agent, 'Agent')",
+        .updated_at => "s.updated_at",
+    };
     const cursor_filter = if (cursor) |c|
-        try std.fmt.allocPrint(allocator, " AND s.created_at {s} '{s}'", .{ if (sort_direction == .asc) ">" else "<", c })
+        try std.fmt.allocPrint(allocator, " AND {s} {s} '{s}'", .{ cursor_column, if (sort_direction == .asc) ">" else "<", c })
     else
         try allocator.dupe(u8, "");
     defer allocator.free(cursor_filter);
@@ -8615,6 +8630,146 @@ test "getSessionListWithCursor returns empty string for NULL last_human_touched_
 
 try testing.expectEqual(@as(usize, 1), result.sessions.len);
     try testing.expectEqualStrings("", result.sessions[0].last_human_touched_at);
+}
+
+test "getSessionListWithCursor pages on the sort field's column, not created_at" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER,
+        \\    git_worktree_cwd TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    // `created_at` and `updated_at` are deliberately INVERTED: every row was
+    // created in early 2026 and touched later, so the two columns disagree
+    // about ordering for every single row. A cursor filter hard-coded to
+    // `created_at` would re-serve the whole first page and never reach the
+    // third row — which is exactly the bug this locks in.
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd, created_at, updated_at) VALUES
+        \\  ('s_a', 'A', '', '2026-01-01 00:00:00', '2026-09-20 00:00:00'),
+        \\  ('s_b', 'B', '', '2026-02-01 00:00:00', '2026-09-10 00:00:00'),
+        \\  ('s_c', 'C', '', '2026-03-01 00:00:00', '2026-09-01 00:00:00')
+    , &.{});
+
+    // Page 1, newest two by updated_at.
+    const page1 = getSessionListWithCursor(
+        alloc, &db, null, null, null, null, auth_common.system_user_id, 2, null, .updated_at, .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (page1.sessions) |s| s.deinit(alloc);
+        alloc.free(page1.sessions);
+    }
+
+    try testing.expectEqual(@as(usize, 2), page1.sessions.len);
+    try testing.expectEqualStrings("s_a", page1.sessions[0].session_id);
+    try testing.expectEqualStrings("s_b", page1.sessions[1].session_id);
+    // `total` is the full filtered size, not the remaining rows.
+    try testing.expectEqual(@as(u32, 3), page1.total);
+
+    // `next_cursor` is the last row's sort-field value — s_b's updated_at.
+    const page2 = getSessionListWithCursor(
+        alloc,
+        &db,
+        null,
+        null,
+        null,
+        null,
+        auth_common.system_user_id,
+        2,
+        "2026-09-10 00:00:00",
+        .updated_at,
+        .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (page2.sessions) |s| s.deinit(alloc);
+        alloc.free(page2.sessions);
+    }
+
+    // Exactly the rows strictly older than the cursor — no replay of page 1.
+    try testing.expectEqual(@as(usize, 1), page2.sessions.len);
+    try testing.expectEqualStrings("s_c", page2.sessions[0].session_id);
+    // Unchanged by the cursor: it counts the whole scoped set.
+    try testing.expectEqual(@as(u32, 3), page2.total);
+}
+
+test "getSessionListWithCursor keeps the created_at filter when sorting by created_at" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    last_human_touched_at_nano INTEGER,
+        \\    git_worktree_cwd TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (id TEXT PRIMARY KEY, session_id TEXT, agent TEXT)
+    , &.{});
+
+    try db.exec(alloc,
+        \\INSERT INTO sessions (id, name, cwd, created_at, updated_at) VALUES
+        \\  ('s_new', 'New', '', '2026-09-20 00:00:00', '2026-01-01 00:00:00'),
+        \\  ('s_old', 'Old', '', '2026-01-01 00:00:00', '2026-09-20 00:00:00')
+    , &.{});
+
+    // `created_at` desc puts s_new first; the cursor is its created_at, and
+    // s_old is the only row created before it. Switching the filter column
+    // must not have regressed the default sort.
+    const result = getSessionListWithCursor(
+        alloc,
+        &db,
+        null,
+        null,
+        null,
+        null,
+        auth_common.system_user_id,
+        10,
+        "2026-09-20 00:00:00",
+        .created_at,
+        .desc,
+    ) catch return error.QueryFailed;
+    defer {
+        for (result.sessions) |s| s.deinit(alloc);
+        alloc.free(result.sessions);
+    }
+
+    try testing.expectEqual(@as(usize, 1), result.sessions.len);
+    try testing.expectEqualStrings("s_old", result.sessions[0].session_id);
 }
 
 // ───────────────────────────────────────────────────────────────────────

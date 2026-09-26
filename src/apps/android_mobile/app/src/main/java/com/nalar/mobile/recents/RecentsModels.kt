@@ -31,6 +31,20 @@ data class ChatSummary(
         get() = updatedAtEpochMillis > 0L
 }
 
+/**
+ * One page of recents, plus the fields the sidebar's scroll needs to decide
+ * whether to ask for another one. See [RecentsApi.parseChatsPage] for why
+ * [hasMore] — and not [nextCursor] — is the terminator.
+ */
+data class ChatsPage(
+    val chats: List<ChatSummary>,
+    val hasMore: Boolean,
+    /** The server's own resume value. Hand it back verbatim; never synthesize. */
+    val nextCursor: String?,
+    /** Full filtered row count, 0 when the server did not report one. */
+    val total: Int,
+)
+
 fun recentChatsForWorkspace(
     chats: List<ChatSummary>,
     workspaceId: String,

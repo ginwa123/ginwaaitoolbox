@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
                     chatState = chatState,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,
+                    onLoadMoreChats = homeViewModel::loadMoreChats,
                     onRetryHome = homeViewModel::refresh,
                     onOpenSession = chatViewModel::openSession,
                     onChatDraftChanged = chatViewModel::onDraftChanged,

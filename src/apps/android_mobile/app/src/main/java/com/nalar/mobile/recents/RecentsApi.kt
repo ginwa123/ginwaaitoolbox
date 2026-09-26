@@ -1,5 +1,6 @@
 package com.nalar.mobile.recents
 
+import com.nalar.mobile.chat.optNullableString
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.time.DateTimeException
@@ -34,11 +35,30 @@ object RecentsApi {
      * `workspace_id` is only honoured when it resolves to real sessions, so this
      * is a scoped list rather than a client-side filter. An unknown id fails
      * closed to an empty array — never send a guessed id.
+     *
+     * [cursor] is the server's own `next_cursor`, handed back verbatim. It is
+     * a raw sort-field value (`'2026-09-26 05:12:37'` when sorting by
+     * `updated_at`), not an opaque token and not an id — parse it, compare it or
+     * synthesize it and pagination silently degrades. Round-tripping it is the
+     * only supported way to get page 2+.
      */
-    fun chatsPath(workspaceId: String): String =
-        "/api/session?sort_by=updated_at&direction=desc" +
-            "&limit=$CHATS_PAGE_LIMIT" +
-            "&workspace_id=${encodeQueryValue(workspaceId)}"
+    fun chatsPath(
+        workspaceId: String,
+        cursor: String? = null,
+        limit: Int = CHATS_PAGE_LIMIT,
+    ): String = buildString {
+        append("/api/session?sort_by=updated_at&direction=desc")
+        append("&limit=")
+        append(limit.coerceIn(1, MAX_LIMIT))
+        append("&workspace_id=")
+        append(encodeQueryValue(workspaceId))
+        // A blank cursor is indistinguishable from "first page" to the server,
+        // so sending it would restart the list and re-serve page 1 forever.
+        if (!cursor.isNullOrBlank()) {
+            append("&cursor=")
+            append(encodeQueryValue(cursor))
+        }
+    }
 
     fun parseWorkspaces(body: String): List<WorkspaceOption> {
         val workspaces = JSONObject(body).optJSONArray("workspaces")
@@ -63,11 +83,33 @@ object RecentsApi {
     fun parseChats(
         body: String,
         workspaceId: String,
-    ): List<ChatSummary> {
-        val sessions = JSONObject(body).optJSONArray("sessions")
-            ?: return emptyList()
+    ): List<ChatSummary> = parseChatsPage(body, workspaceId).chats
 
-        return buildList(sessions.length()) {
+    /**
+     * One page of recents plus everything the scroll needs to know whether to
+     * ask for another one.
+     *
+     * Two of those fields are traps, and both are the server's contract rather
+     * than this client's choice (`buildSessionListJson` in
+     * `llm_history.zig`):
+     *
+     * - **`has_more` means "the page came back full"** (`len == limit`), not
+     *   "there is at least one more row". A final page that happens to be
+     *   exactly full therefore reports `true` and costs one extra round-trip.
+     *   [total] is the full filtered count, so it is the cheap way to avoid it.
+     * - **`nextCursor` is non-null even on the last page** — it is the last
+     *   row's sort value whenever the page was non-empty. Nothing about it
+     *   signals the end of the list, so the *only* terminator is `hasMore`.
+     */
+    fun parseChatsPage(
+        body: String,
+        workspaceId: String,
+    ): ChatsPage {
+        val root = JSONObject(body)
+        val sessions = root.optJSONArray("sessions")
+
+        val chats = buildList {
+            if (sessions == null) return@buildList
             for (index in 0 until sessions.length()) {
                 val session = sessions.optJSONObject(index) ?: continue
                 val id = session.stringField("session_id")
@@ -84,6 +126,42 @@ object RecentsApi {
                 )
             }
         }
+
+        val total = if (root.isNull("total")) 0 else root.optInt("total", 0)
+        val serverHasMore = if (root.isNull("has_more")) false else root.optBoolean("has_more", false)
+
+        return ChatsPage(
+            chats = chats,
+            // `total` is a backstop, not the primary signal. An older server
+            // that omits it reports 0, and reading that as "we have them all"
+            // would silently truncate every list to page 1.
+            hasMore = serverHasMore && (total <= 0 || chats.size < total),
+            // A blank cursor is worse than none: it would restart the list at
+            // page 1 and hand back rows the sidebar already shows.
+            nextCursor = root.optNullableString("next_cursor")?.takeIf { it.isNotBlank() },
+            total = total,
+        )
+    }
+
+    /**
+     * Write-through merge for a page append: a same-id incoming row replaces
+     * the one already held, order is preserved.
+     *
+     * Dedupe is not defensive paranoia — a session that gets touched while the
+     * user is between pages moves to the head of the ordering, so a page
+     * boundary can legitimately hand back a row that is already on screen.
+     * Without this, the sidebar grows duplicate rows that select the same chat
+     * twice. Mirrors `ChatApi.mergeById`.
+     */
+    fun mergeChatsById(
+        current: List<ChatSummary>,
+        incoming: List<ChatSummary>,
+    ): List<ChatSummary> {
+        if (incoming.isEmpty()) return current
+        val byId = LinkedHashMap<String, ChatSummary>(current.size + incoming.size)
+        current.forEach { chat -> byId[chat.id] = chat }
+        incoming.forEach { chat -> byId[chat.id] = chat }
+        return byId.values.toList()
     }
 
     /**
@@ -143,6 +221,9 @@ object RecentsApi {
 
     private fun encodeQueryValue(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
+
+    /** No upper clamp on the server, so the client picks one. */
+    private const val MAX_LIMIT = 1000
 
     private val SqliteUtcPattern =
         Regex("""^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$""")

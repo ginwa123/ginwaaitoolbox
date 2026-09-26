@@ -148,6 +148,44 @@ Keystore round-trip per write costs more than the exposure is worth on a device
 that is already full-disk-encrypted. The session cookie, which is a credential,
 stays under the Keystore.
 
+## Recents
+
+The drawer's **Recent** list is paged. It reads 30 rows from
+`GET /api/session?workspace_id=…&sort_by=updated_at&direction=desc&limit=30` and
+then asks for the next page when the reader reaches the bottom, resuming with the
+server's own `next_cursor`. `HomeViewModel.loadMoreChats` owns that; the sidebar
+only reports that it is near the end.
+
+Three details of the endpoint are load-bearing, and each is pinned by a test,
+because getting any of them wrong produces a list that merely *looks* fine:
+
+- **`next_cursor` is the terminator's decoy.** The backend emits it whenever a
+  page is non-empty, *including the last one*, so its presence says nothing
+  about there being more. `has_more` is the only signal that ends the scroll.
+- **`has_more` means "the page came back full"** (`len == limit`), so a final
+  page that happens to be exactly full still reports `true`. `total` is the
+  honest full count, so the client uses it as a backstop and skips the extra
+  round-trip. When the server sends no `total` at all, `has_more` is trusted
+  alone — reading a missing count as "you have them all" would silently
+  truncate every list to its first page.
+- **Pages can overlap.** A session touched while the reader is between pages
+  moves up the ordering, so a page boundary can legitimately hand back a row
+  already on screen. `RecentsApi.mergeChatsById` dedupes; without it the
+  sidebar grows two tappable rows for one chat.
+
+A page that adds nothing new also ends the scroll. That is the anti-loop guard:
+if a server ever stops advancing the cursor, continuing would re-request the
+same window forever.
+
+A failed page is *not* an error banner. The rows already on screen are real, so
+they stay, the footer spinner stops, and the next scroll retries the same page.
+
+The cursor pages on the *sort field's* column, which the backend had wrong: the
+resume key was hard-coded to `created_at` while the ordering and the cursor both
+used `updated_at`. With `sort_by=updated_at` — what this list and the web's
+`ChatsList` both send — page 2 re-served page 1 and skipped anything created
+after the cursor.
+
 ## Network inspector
 
 Every HTTP call is recorded and can be inspected in the app, the way a browser's

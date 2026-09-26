@@ -90,6 +90,9 @@ fun MobileHomeScreen(
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onRetry: () -> Unit = {},
+    isLoadingMoreChats: Boolean = false,
+    hasMoreChats: Boolean = false,
+    onLoadMoreChats: () -> Unit = {},
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
         ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
@@ -174,6 +177,9 @@ fun MobileHomeScreen(
                             isLoading = isLoading,
                             errorMessage = errorMessage,
                             onRetry = onRetry,
+                            isLoadingMore = isLoadingMoreChats,
+                            hasMoreChats = hasMoreChats,
+                            onLoadMore = onLoadMoreChats,
                         )
                     }
                 },
@@ -207,6 +213,9 @@ fun MobileHomeScreen(
                             isLoading = isLoading,
                             errorMessage = errorMessage,
                             onRetry = onRetry,
+                            isLoadingMore = isLoadingMoreChats,
+                            hasMoreChats = hasMoreChats,
+                            onLoadMore = onLoadMoreChats,
                         )
                     }
                 },
