@@ -57,6 +57,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
+import KanbanRowView from './KanbanRowView.vue'
 import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetail from './KanbanTaskDetail.vue'
 import { buildTaskCreateMessage } from './buildTaskCreateMessage'
@@ -166,6 +167,13 @@ const loadColumnsAndTasks = async () => {
   const nonDefaultUrlEntries = urlEntries.filter(
     (e) => !(e.sortBy === 'position' && e.direction === 'asc'),
   )
+
+  // Step 1b: mirror the URL's `?layout=` into the local ref so a deep
+  // link wins over the stored preference. The ref is initialised from
+  // the URL at setup time, but this re-runs on item navigation, where
+  // the query carries over to a different board.
+  const urlLayout = readLayoutParam()
+  if (urlLayout && urlLayout !== layout.value) layout.value = urlLayout
 
   // Step 2: mirror URL sorts into columnSorts (drives the
   // watcher's URL write — no-op since the URL already matches,
@@ -301,6 +309,110 @@ watch(
 const kanbanColumnsContainer = ref<HTMLElement | null>(null)
 const kanbanScrollStorageKey = computed(() => `kanban-scroll-${effectiveItemId.value}`)
 useKanbanScrollRestore(kanbanColumnsContainer, kanbanScrollStorageKey)
+
+// ─── Layout (columns | rows) ──────────────────────────────────────────────
+//
+// Row mode renders the same board as a vertical list grouped by column.
+// The choice is URL-backed (`?layout=rows`) so refresh, Back/Forward and
+// shared links restore it — a view that only lives in component state is
+// unreachable by all three. `columns` is the default and is stripped from
+// the URL to keep it clean.
+//
+// Precedence: URL (deep link) → localStorage (sticky preference) →
+// `columns`. A deep link must beat the stored preference.
+//
+// The stored preference is NOT user-scoped: it is a visual preference
+// like `sidebar-width`, and userScopedKey() is reserved for identity data.
+type KanbanLayout = 'columns' | 'rows'
+const LAYOUT_PARAM = 'layout'
+const LAYOUT_STORAGE_KEY = 'nalar-kanban-layout'
+
+const readStoredLayout = (): KanbanLayout | null => {
+  try {
+    const v = localStorage.getItem(LAYOUT_STORAGE_KEY)
+    return v === 'rows' || v === 'columns' ? v : null
+  } catch {
+    // localStorage may throw in disabled / private-mode.
+    return null
+  }
+}
+
+const writeStoredLayout = (next: KanbanLayout): void => {
+  try {
+    localStorage.setItem(LAYOUT_STORAGE_KEY, next)
+  } catch {
+    // Persistence is best-effort; the in-memory state still works.
+  }
+}
+
+const readLayoutParam = (): KanbanLayout | null => {
+  try {
+    const v = route.query?.[LAYOUT_PARAM]
+    return v === 'rows' || v === 'columns' ? v : null
+  } catch {
+    // route may be absent in tests that don't mock vue-router.
+    return null
+  }
+}
+
+const layout = ref<KanbanLayout>(readLayoutParam() ?? readStoredLayout() ?? 'columns')
+
+const setLayout = (next: KanbanLayout) => {
+  if (layout.value === next) return
+  layout.value = next
+  writeStoredLayout(next)
+  try {
+    const query = flatQuery()
+    if (next === 'columns') delete query[LAYOUT_PARAM]
+    else query[LAYOUT_PARAM] = next
+    void router.replace({ query })
+  } catch {
+    // Router absent in unit tests — local state already updated.
+  }
+}
+
+// Row-mode scroll position. The columns row scrolls horizontally; the
+// row list scrolls vertically, so it needs its own container + key.
+const kanbanRowsContainer = ref<HTMLElement | null>(null)
+const kanbanRowScrollStorageKey = computed(() => `kanban-row-scroll-${effectiveItemId.value}`)
+useKanbanScrollRestore(kanbanRowsContainer, kanbanRowScrollStorageKey, 'y')
+
+// ─── Row-mode group collapse ──────────────────────────────────────────────
+//
+// Per board, persisted in localStorage as a JSON array of collapsed
+// column ids. Collapse is a density preference, not a view switch, so it
+// deliberately does NOT go in the URL.
+const COLLAPSED_STORAGE_PREFIX = 'nalar-kanban-row-collapsed:'
+
+const readCollapsedIds = (): string[] => {
+  try {
+    const raw = localStorage.getItem(`${COLLAPSED_STORAGE_PREFIX}${effectiveItemId.value}`)
+    if (!raw) return []
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((v): v is string => typeof v === 'string')
+  } catch {
+    // Malformed JSON or unavailable storage — start expanded.
+    return []
+  }
+}
+
+const collapsedColumnIds = ref<string[]>(readCollapsedIds())
+
+const toggleColumnCollapsed = (columnId: string) => {
+  const next = collapsedColumnIds.value.includes(columnId)
+    ? collapsedColumnIds.value.filter((id) => id !== columnId)
+    : [...collapsedColumnIds.value, columnId]
+  collapsedColumnIds.value = next
+  try {
+    localStorage.setItem(
+      `${COLLAPSED_STORAGE_PREFIX}${effectiveItemId.value}`,
+      JSON.stringify(next),
+    )
+  } catch {
+    // Persistence is best-effort.
+  }
+}
 
 const emit = defineEmits<{
   addColumn: []
@@ -498,11 +610,23 @@ const setColumnRef = (columnId: string) => (el: unknown) => {
 // Plan: docs/superpowers/plans/2026-08-06-kanban-sort-independence.md
 watch(columnSorts, (next) => {
   const encoded = encodeSortsParam(Object.values(next))
-  const query: Record<string, string> = { view: 'workspace' }
+  // Preserve sibling params (`?detail=`, `?layout=`, …) — rebuilding the
+  // query from scratch here used to silently drop them, so picking a
+  // column sort closed the detail panel and reset the layout.
+  //
+  // `layout` is written from the reactive ref rather than read back off
+  // `route.query`: this watcher can fire in the same tick as a layout
+  // switch, before the router has committed the new query, and reading
+  // the stale route would clobber the switch.
+  const query = flatQuery()
+  query.view = 'workspace'
   if (props.workspaceId) query.workspaceId = props.workspaceId
   if (effectiveItemId.value) query.itemId = effectiveItemId.value
   if (encoded) query.sorts = encoded
-  router.replace({ path: '/app', query })
+  else delete query.sorts
+  if (layout.value === 'rows') query[LAYOUT_PARAM] = 'rows'
+  else delete query[LAYOUT_PARAM]
+  void router.replace({ path: '/app', query })
 })
 
 // Handler for the column's sort-change emit. Updates the map
@@ -784,6 +908,23 @@ watch(
       showTaskDetail.value = false
       activeTaskDetailId.value = null
     }
+  },
+)
+
+// Browser Back/forward across a layout switch. The URL is the source of
+// truth, so mirror it into the ref WITHOUT writing back (writing here
+// would fight the history entry the user just navigated to).
+watch(
+  () => {
+    try {
+      return (route.query as Record<string, unknown> | undefined)?.[LAYOUT_PARAM]
+    } catch {
+      return undefined
+    }
+  },
+  (raw) => {
+    const next: KanbanLayout = raw === 'rows' ? 'rows' : 'columns'
+    if (next !== layout.value) layout.value = next
   },
 )
 
@@ -1256,6 +1397,49 @@ const handleCreateTaskSave = async (payload: {
         </button>
         <KanbanSearchInput v-model="searchQuery" />
 
+        <!-- Layout toggle — Columns (the board) vs Rows (a grouped
+             linear list). URL-backed via `?layout=rows`; `columns` is
+             the default and is stripped from the URL. -->
+        <div
+          class="inline-flex rounded overflow-hidden shrink-0"
+          style="border: 1px solid var(--color-border)"
+          role="tablist"
+          aria-label="Kanban layout"
+        >
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="layout === 'columns'"
+            class="px-2 py-1 text-xs border-none cursor-pointer transition-colors"
+            :style="
+              layout === 'columns'
+                ? 'background: var(--color-violet); color: var(--color-bg);'
+                : 'background: transparent; color: var(--semantic-text-muted);'
+            "
+            :data-testid="`kanban-view-${item.id}-layout-columns`"
+            title="Show the board as columns"
+            @click="setLayout('columns')"
+          >
+            <span aria-hidden="true">▦</span><span class="ml-1">Columns</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="layout === 'rows'"
+            class="px-2 py-1 text-xs border-none cursor-pointer transition-colors"
+            :style="
+              layout === 'rows'
+                ? 'background: var(--color-violet); color: var(--color-bg);'
+                : 'background: transparent; color: var(--semantic-text-muted);'
+            "
+            :data-testid="`kanban-view-${item.id}-layout-rows`"
+            title="Show the board as a grouped list"
+            @click="setLayout('rows')"
+          >
+            <span aria-hidden="true">☰</span><span class="ml-1">Rows</span>
+          </button>
+        </div>
+
         <!-- NEW (plan: 2026-08-06-kanban-add-task-button-placement). One
            global + Add task button (replaces per-column footer add
            buttons — see KanbanColumn.vue cleanup). Opens the create
@@ -1366,6 +1550,7 @@ const handleCreateTaskSave = async (payload: {
       without also removing the composable call — the two are paired.
     -->
       <div
+        v-if="layout === 'columns'"
         ref="kanbanColumnsContainer"
         class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden"
         style="scrollbar-width: thin"
@@ -1401,6 +1586,37 @@ const handleCreateTaskSave = async (payload: {
             @sort-change="(payload) => handleColumnSortChange(column.id, payload)"
           />
         </div>
+      </div>
+
+      <!-- Row mode — the same board as a grouped linear list. Shares the
+           header, banners, detail panel and search with column mode; only
+           this body differs. The wrapper div owns the vertical scroll
+           container ref (a ref on a component yields the instance, not
+           the element). -->
+      <div v-else ref="kanbanRowsContainer" class="flex-1 min-h-0 flex flex-col">
+        <KanbanRowView
+          :columns="sortedColumns"
+          :tasks="tasks"
+          :workspace-id="workspaceId"
+          :item-id="itemId || item.id"
+          :cwd="item.path || ''"
+          :collapsed-ids="collapsedColumnIds"
+          :run-all-busy-by-column="runAllBusyByColumn"
+          @toggle-collapse="toggleColumnCollapsed"
+          @rename-column="(payload) => emit('renameColumn', payload)"
+          @delete-column="(columnId) => emit('deleteColumn', columnId)"
+          @request-rename-column="(columnId) => emit('requestRenameColumn', columnId)"
+          @request-delete-column="(columnId) => emit('requestDeleteColumn', columnId)"
+          @request-run-all-agents="handleRunAllAgents"
+          @select-task="(id) => emit('selectTask', id)"
+          @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
+          @open-task-detail-in-background="(payload) => emit('openTaskDetailInBackground', payload)"
+          @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
+          @rename-task="(ws, item, id, name) => emit('renameTask', ws, item, id, name)"
+          @pin-task="(ws, item, id, pinned) => emit('pinTask', ws, item, id, pinned)"
+          @view-task-detail="handleViewTaskDetail"
+          @sort-change="(payload) => handleColumnSortChange(payload.columnId, payload)"
+        />
       </div>
     </section>
     <!--

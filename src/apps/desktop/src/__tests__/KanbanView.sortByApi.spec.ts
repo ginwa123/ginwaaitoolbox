@@ -28,6 +28,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
+import { nextTick } from 'vue'
 
 import KanbanView from '../components/kanban/KanbanView.vue'
 import { useWorkspacesStore } from '../stores/workspaces'
@@ -42,8 +43,20 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
   item_type: 'kanban',
   path: '/tmp',
   kanban_columns: [
-    { id: 'col_a', name: 'todo', workspace_item_id: ITEM_ID, position: 0, created_at: '2026-01-01' },
-    { id: 'col_b', name: 'in_progress', workspace_item_id: ITEM_ID, position: 1, created_at: '2026-01-01' },
+    {
+      id: 'col_a',
+      name: 'todo',
+      workspace_item_id: ITEM_ID,
+      position: 0,
+      created_at: '2026-01-01',
+    },
+    {
+      id: 'col_b',
+      name: 'in_progress',
+      workspace_item_id: ITEM_ID,
+      position: 1,
+      created_at: '2026-01-01',
+    },
   ],
   tasks: [],
   // NOTE (kanban-sort-independence, 2026-08-06, onmount
@@ -86,23 +99,18 @@ vi.mock('vue-router', async () => {
   }
 })
 
-function mountKanbanView(
-  query: Record<string, string> = {},
-  opts: { item?: WorkspaceItem } = {},
-) {
+function mountKanbanView(query: Record<string, string> = {}, opts: { item?: WorkspaceItem } = {}) {
   useRouteMock.mockReturnValue({
     query,
     path: '/app',
     fullPath: '/app',
-   
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any)
   const item = opts.item ?? makeItem()
   const store = useWorkspacesStore()
-  store.workspaces = [
-    { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
-  ]
-   
+  store.workspaces = [{ id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] }]
+
   const replaceMock = vi.fn()
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
@@ -141,9 +149,7 @@ describe('KanbanView — per-column sort triggers API call (only the changed col
       },
     })
     const store = useWorkspacesStore()
-    const fetchAllSpy = vi
-      .spyOn(store, 'fetchKanbanTasksForAllColumns')
-      .mockResolvedValue()
+    const fetchAllSpy = vi.spyOn(store, 'fetchKanbanTasksForAllColumns').mockResolvedValue()
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
     const { wrapper } = mountKanbanView(
@@ -273,9 +279,7 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
 
   it('picking a sort on column A updates the URL with col_a sort, omits col_b', async () => {
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] },
-    ]
+    store.workspaces = [{ id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] }]
     vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
     const { wrapper, replaceMock } = mountKanbanView({
@@ -294,6 +298,37 @@ describe('KanbanView — URL persistence of per-column sorts', () => {
     const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]!
     const query = lastCall[0].query as Record<string, string>
     expect(query.sorts).toContain('col_a:name:asc')
+  })
+
+  it('picking a sort preserves the ?layout= row-mode param', async () => {
+    // Regression guard: the sorts watcher used to rebuild the query from
+    // scratch, which dropped every sibling param — including the layout
+    // switch, so picking a column sort silently snapped the board back to
+    // column mode.
+    const store = useWorkspacesStore()
+    store.workspaces = [{ id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [makeItem()] }]
+    vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
+
+    const { wrapper, replaceMock } = mountKanbanView({
+      view: 'workspace',
+      workspaceId: WS_ID,
+      itemId: ITEM_ID,
+      layout: 'rows',
+    })
+
+    // Switch to rows first so the ref is authoritative, then sort.
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-rows"]`).trigger('click')
+    await flushPromises()
+    await wrapper.find(`[data-testid="kanban-row-group-col_a-menu-trigger"]`).trigger('click')
+    await wrapper.find(`[data-testid="kanban-row-group-col_a-menu-sort"]`).trigger('click')
+    await nextTick()
+    await wrapper.find('[data-testid="kanban-sort-menu-name-asc"]').trigger('click')
+    await flushPromises()
+
+    const lastCall = replaceMock.mock.calls[replaceMock.mock.calls.length - 1]!
+    const query = lastCall[0].query as Record<string, string>
+    expect(query.sorts).toContain('col_a:name:asc')
+    expect(query.layout).toBe('rows')
   })
 })
 
@@ -315,9 +350,7 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
       tasks: [makeTask('t_z', 'Zeta', 0), makeTask('t_a', 'Alpha', 1)],
     })
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
-    ]
+    store.workspaces = [{ id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] }]
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
     useRouteMock.mockReturnValue({
@@ -327,11 +360,11 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
         itemId: ITEM_ID,
         sorts: 'col_a:name:asc',
       },
-       
+
       path: '/app',
       fullPath: '/app',
-     
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -370,9 +403,7 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
     // own sort. col_b is NOT told to use col_a's sort.
     const item = makeItem()
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
-    ]
+    store.workspaces = [{ id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] }]
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
     useRouteMock.mockReturnValue({
@@ -380,13 +411,13 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
         view: 'workspace',
         workspaceId: WS_ID,
         itemId: ITEM_ID,
-         
+
         sorts: 'col_a:name:asc,col_b:created_at:desc',
       },
-       
+
       path: '/app',
       fullPath: '/app',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -428,23 +459,21 @@ describe('KanbanView — URL restore fires per-column fetchKanbanTasks', () => {
       tasks: [makeTask('t_z', 'Zeta', 0), makeTask('t_a', 'Alpha', 1)],
     })
     const store = useWorkspacesStore()
-    store.workspaces = [
-      { id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] },
-    ]
+    store.workspaces = [{ id: WS_ID, name: 'ws', icon: '📁', expanded: false, items: [item] }]
     const fetchOneSpy = vi.spyOn(store, 'fetchKanbanTasks').mockResolvedValue()
 
     useRouteMock.mockReturnValue({
       query: {
         view: 'workspace',
-         
+
         workspaceId: WS_ID,
         itemId: ITEM_ID,
-         
+
         sorts: 'col_a:position:asc',
       },
       path: '/app',
       fullPath: '/app',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const replaceMock = vi.fn()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

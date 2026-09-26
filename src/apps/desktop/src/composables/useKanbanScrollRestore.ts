@@ -1,27 +1,33 @@
 import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 
 /**
- * Persists a horizontally-scrolling container's `scrollLeft` to
- * `localStorage` across component mounts.
+ * Persists a scrolling container's scroll offset to `localStorage`
+ * across component mounts.
  *
- * Use for horizontally-scrolled boards (e.g. the kanban columns
- * row) whose component may unmount and remount when the surrounding
- * layout flips — e.g. the kanban toggling between a full-bleed
- * standalone branch and a 3-column "kanban | chat" branch in
- * `AppLayout.vue`. Vue 3 does NOT reuse the component instance
- * across v-else-if branches at different DOM parents, so without
- * this composable the remounted container starts at `scrollLeft = 0`
- * and the user loses their scroll context.
+ * Use for scrolled boards (e.g. the kanban columns row, or the
+ * kanban row-mode list) whose component may unmount and remount when
+ * the surrounding layout flips — e.g. the kanban toggling between a
+ * full-bleed standalone branch and a 3-column "kanban | chat" branch
+ * in `AppLayout.vue`. Vue 3 does NOT reuse the component instance
+ * across v-else-if branches at different DOM parents, so without this
+ * composable the remounted container starts at offset 0 and the user
+ * loses their scroll context.
+ *
+ * Axis:
+ *   - `'x'` (default) — persists `scrollLeft`. The kanban columns row
+ *     scrolls horizontally.
+ *   - `'y'` — persists `scrollTop`. The kanban row-mode list scrolls
+ *     vertically.
  *
  * Behavior:
- *   - **On mount**: reads the saved `scrollLeft` from `localStorage`,
- *     awaits two `requestAnimationFrame` ticks so the columns have
- *     widths, then applies `scrollLeft = min(saved, scrollWidth -
- *     clientWidth)`. Skips when the saved value is 0 or the
- *     container has nothing to scroll (max <= 0).
+ *   - **On mount**: reads the saved offset from `localStorage`, awaits
+ *     two `requestAnimationFrame` ticks so the content has geometry,
+ *     then applies `offset = min(saved, scrollSize - clientSize)`.
+ *     Skips when the saved value is 0 or the container has nothing to
+ *     scroll (max <= 0).
  *   - **On `scrollend`** (fast path, ~100 ms after the user stops
  *     scrolling — supported in all modern browsers including the
- *     nalar Electron 27+ runtime): writes the current `scrollLeft`
+ *     nalar Electron 27+ runtime): writes the current offset
  *     synchronously and cancels any pending debounced write.
  *   - **On `scroll`** (fallback path for environments without
  *     `scrollend`): schedules a debounced 250 ms write via
@@ -31,9 +37,11 @@ import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
  *     fast scroll → click → remount cycle doesn't lose the latest
  *     position, then removes the scroll/scrollend listeners.
  *
- * Storage key convention: `kanban-scroll-<itemId>` (caller composes
- * with the item id). The key is accepted as either a plain `string`
- * or a `Ref<string>` so it can be computed from props reactively.
+ * Storage key convention: `kanban-scroll-<itemId>` for the columns
+ * row, `kanban-row-scroll-<itemId>` for the row-mode list (caller
+ * composes with the item id). The key is accepted as either a plain
+ * `string` or a `Ref<string>` so it can be computed from props
+ * reactively.
  *
  * Edge cases:
  *   - `localStorage` access is wrapped in `try/catch` so private-mode
@@ -41,8 +49,9 @@ import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
  *     still works for the current session; only reload persistence
  *     is lost.
  *   - The composable exposes nothing — it's purely side-effecting
- *     (writes to `localStorage` + sets `container.scrollLeft`).
- *     Easy to test: state is `localStorage[key]` + `element.scrollLeft`.
+ *     (writes to `localStorage` + sets the container's offset).
+ *     Easy to test: state is `localStorage[key]` + `element.scrollLeft`
+ *     / `element.scrollTop`.
  *
  * NOT for vertical scrolling inside a `VirtualScroller` — that
  * already has its own `beginPreserve` / `endPreserve` mechanism
@@ -52,6 +61,7 @@ import { onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue'
 export function useKanbanScrollRestore(
   containerRef: Ref<HTMLElement | null>,
   storageKey: Ref<string> | string,
+  axis: 'x' | 'y' = 'x',
 ): void {
   // Make a reactive local ref so a dynamic storage key (computed
   // from props) updates without re-registering listeners.
@@ -69,7 +79,17 @@ export function useKanbanScrollRestore(
 
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
-  const readSavedScrollLeft = (): number => {
+  // Axis accessors — the only place the two axes differ. Reading and
+  // writing through these keeps the rest of the composable shared.
+  const readOffset = (el: HTMLElement): number => (axis === 'y' ? el.scrollTop : el.scrollLeft)
+  const writeOffset = (el: HTMLElement, value: number): void => {
+    if (axis === 'y') el.scrollTop = value
+    else el.scrollLeft = value
+  }
+  const scrollSize = (el: HTMLElement): number => (axis === 'y' ? el.scrollHeight : el.scrollWidth)
+  const clientSize = (el: HTMLElement): number => (axis === 'y' ? el.clientHeight : el.clientWidth)
+
+  const readSavedOffset = (): number => {
     try {
       const raw = localStorage.getItem(keyRef.value)
       if (raw === null) return 0
@@ -81,7 +101,7 @@ export function useKanbanScrollRestore(
     }
   }
 
-  const writeScrollLeft = (value: number): void => {
+  const writeSavedOffset = (value: number): void => {
     try {
       localStorage.setItem(keyRef.value, String(value))
     } catch {
@@ -98,7 +118,7 @@ export function useKanbanScrollRestore(
       debounceTimer = null
     }
     const el = containerRef.value
-    if (el) writeScrollLeft(el.scrollLeft)
+    if (el) writeSavedOffset(readOffset(el))
   }
 
   const scheduleWrite = (): void => {
@@ -108,7 +128,7 @@ export function useKanbanScrollRestore(
     debounceTimer = setTimeout(() => {
       debounceTimer = null
       const e = containerRef.value
-      if (e) writeScrollLeft(e.scrollLeft)
+      if (e) writeSavedOffset(readOffset(e))
     }, 250)
   }
 
@@ -118,16 +138,17 @@ export function useKanbanScrollRestore(
     // commit immediately.
     flushPending()
     const el = containerRef.value
-    if (el) writeScrollLeft(el.scrollLeft)
+    if (el) writeSavedOffset(readOffset(el))
   }
 
   onMounted(async () => {
-    // Wait two animation frames so the columns have widths. A
+    // Wait two animation frames so the content has geometry. A
     // single rAF isn't enough: Vue mounts the DOM, then React-style
     // effects (useLayoutEffect-like) may still settle, and the
     // browser may need a second frame to fully compute
-    // scrollWidth. Two is the minimum that consistently produces
-    // correct geometry in jsdom-less browsers (Chrome / Firefox).
+    // scrollWidth / scrollHeight. Two is the minimum that
+    // consistently produces correct geometry in jsdom-less browsers
+    // (Chrome / Firefox).
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
     await new Promise<void>((r) => requestAnimationFrame(() => r()))
 
@@ -149,8 +170,7 @@ export function useKanbanScrollRestore(
     // be safe in test environments).
     const supportsScrollEnd =
       'onscrollend' in el ||
-      typeof (el as unknown as { onscrollend?: unknown }).onscrollend !==
-        'undefined'
+      typeof (el as unknown as { onscrollend?: unknown }).onscrollend !== 'undefined'
     if (supportsScrollEnd) {
       el.addEventListener('scrollend', handleScrollEnd, { passive: true })
     }
@@ -159,17 +179,16 @@ export function useKanbanScrollRestore(
     // scrollend the position is saved ~250 ms after the user
     // stops scrolling.
 
-    // Now restore from the previous session's saved scrollLeft.
-    // Clamp to (scrollWidth - clientWidth) — the new container
-    // may be narrower than the last session's, e.g. when the
+    // Now restore from the previous session's saved offset.
+    // Clamp to (scrollSize - clientSize) — the new container
+    // may be smaller than the last session's, e.g. when the
     // kanban toggled from full-bleed to the 3-column layout.
-    const saved = readSavedScrollLeft()
+    const saved = readSavedOffset()
     if (saved <= 0) return // nothing to restore (initial state)
 
-    const max = el.scrollWidth - el.clientWidth
-    if (max <= 0) return // column row fits in viewport — nothing to scroll
-    const clamped = Math.min(saved, max)
-    el.scrollLeft = clamped
+    const max = scrollSize(el) - clientSize(el)
+    if (max <= 0) return // content fits in viewport — nothing to scroll
+    writeOffset(el, Math.min(saved, max))
   })
 
   onBeforeUnmount(() => {
