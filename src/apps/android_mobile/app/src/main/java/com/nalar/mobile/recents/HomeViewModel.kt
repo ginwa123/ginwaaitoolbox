@@ -10,6 +10,7 @@ import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.network.RecordingAuthTransport
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -54,6 +55,9 @@ data class HomeUiState(
 class HomeViewModel(
     private val client: RecentsClient,
     private val cache: RecentsCache,
+    // Injected so tests can drive the fetch on the same scheduler as the paint;
+    // `advanceUntilIdle` cannot wait on the real IO pool.
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
@@ -85,11 +89,15 @@ class HomeViewModel(
     }
 
     fun refresh() {
-        primeFromCache()
+        primeWorkspacesFromCache()
+        // The workspace the prime above selected needs its own paint, and it
+        // must happen NOW — waiting for the workspaces fetch to return first
+        // would put a spinner over recents we already have on disk.
+        _uiState.value.selectedWorkspaceId?.let { primeChatsFromCache(it) }
 
         workspacesJob?.cancel()
         workspacesJob = viewModelScope.launch {
-            when (val result = withContext(Dispatchers.IO) { client.loadWorkspaces() }) {
+            when (val result = withContext(ioDispatcher) { client.loadWorkspaces() }) {
                 is RecentsResult.SignedOut -> expireSession()
 
                 is RecentsResult.Unavailable -> _uiState.update {
@@ -118,7 +126,7 @@ class HomeViewModel(
 
                     val id = userId
                     if (id != null) {
-                        withContext(Dispatchers.IO) { cache.writeWorkspaces(id, workspaces) }
+                        withContext(ioDispatcher) { cache.writeWorkspaces(id, workspaces) }
                     }
                     if (selected != null) loadChats(selected)
                 }
@@ -126,10 +134,13 @@ class HomeViewModel(
         }
     }
 
-    /** Paints the last-known list synchronously, before any network call. */
-    private fun primeFromCache() {
-        val id = userId
-        val cachedWorkspaces = cache.readWorkspaces(id).orEmpty()
+    /**
+     * Paints the last-known workspace list synchronously, before any network
+     * call. Chat priming lives in [loadChats] so that priming and revalidating
+     * cannot be separated by a future caller.
+     */
+    private fun primeWorkspacesFromCache() {
+        val cachedWorkspaces = cache.readWorkspaces(userId).orEmpty()
 
         if (cachedWorkspaces.isEmpty()) {
             // A genuine first launch has nothing to paint; the spinner is honest.
@@ -138,32 +149,17 @@ class HomeViewModel(
         }
 
         val current = _uiState.value
-        val selectedWorkspaceId = cachedWorkspaces
+        val selected = cachedWorkspaces
             .firstOrNull { it.id == current.selectedWorkspaceId }
             ?.id
             ?: cachedWorkspaces.firstOrNull()?.id
 
-        var primed = current.copy(
+        _uiState.value = current.copy(
             isLoading = true,
             workspaces = cachedWorkspaces,
-            selectedWorkspaceId = selectedWorkspaceId,
+            selectedWorkspaceId = selected,
             errorMessage = null,
         )
-
-        selectedWorkspaceId?.let { workspaceId ->
-            val cachedChats = cache.readChats(id, workspaceId)
-                ?.filter { chat -> chat.workspaceId == workspaceId }
-            if (cachedChats != null) {
-                primed = primed.copy(
-                    chats = cachedChats,
-                    selectedChatId = current.selectedChatId
-                        ?.takeIf { chatId -> cachedChats.any { it.id == chatId } }
-                        ?: cachedChats.firstOrNull()?.id,
-                )
-            }
-        }
-
-        _uiState.value = primed
     }
 
     fun selectWorkspace(workspaceId: String) {
@@ -186,10 +182,41 @@ class HomeViewModel(
         _uiState.update { it.copy(selectedChatId = chatId) }
     }
 
+    /**
+     * Paints one workspace's cached recents, if any survive. Always followed by
+     * the fetch in [loadChats].
+     */
+    private fun primeChatsFromCache(workspaceId: String) {
+        val cached = cache.readChats(userId, workspaceId)
+            ?.filter { chat -> chat.workspaceId == workspaceId }
+            ?: return
+
+        _uiState.update { state ->
+            // A paint for a workspace the user already left is not ours to apply.
+            if (state.selectedWorkspaceId != workspaceId) {
+                state
+            } else {
+                state.copy(
+                    chats = cached,
+                    selectedChatId = cached.firstOrNull()?.id,
+                )
+            }
+        }
+    }
+
+    /**
+     * Paint this workspace's cached recents, then revalidate. Both halves live
+     * in one function on purpose: a cache paint with no live fetch behind it
+     * would be permanently stale, and there is deliberately no TTL to catch
+     * that. The web relies on every call site remembering to follow up; making
+     * it structural here means no caller can get it wrong.
+     */
     private fun loadChats(workspaceId: String) {
+        primeChatsFromCache(workspaceId)
+
         chatsJob?.cancel()
         chatsJob = viewModelScope.launch {
-            when (val result = withContext(Dispatchers.IO) { client.loadChats(workspaceId) }) {
+            when (val result = withContext(ioDispatcher) { client.loadChats(workspaceId) }) {
                 is RecentsResult.SignedOut -> expireSession()
 
                 is RecentsResult.Unavailable -> _uiState.update { state ->
@@ -206,7 +233,7 @@ class HomeViewModel(
                     val chats = result.value
                     val id = userId
                     if (id != null) {
-                        withContext(Dispatchers.IO) {
+                        withContext(ioDispatcher) {
                             cache.writeChats(id, workspaceId, chats)
                         }
                     }

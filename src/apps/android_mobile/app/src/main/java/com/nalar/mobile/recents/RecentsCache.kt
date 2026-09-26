@@ -17,13 +17,24 @@ import org.json.JSONObject
  * Last-known sidebar data, so a cold boot or an offline launch paints real rows
  * instead of an error screen.
  *
- * Two rules make this safe on a phone, and both are load-bearing:
+ * **Scope: exactly two endpoints**, deliberately — `GET /api/workspaces?is_include_items=false`
+ * and `GET /api/session?workspace_id=…`. These are the two the sidebar renders and the
+ * two the Vue web's sidebar primitives mirror (`workspacesCache.ts`, `SessionEngineDb`).
+ * The web also caches git status, task media, auth/me and message history, but none of
+ * those are on this screen, and a general-purpose cache would be harder to reason about
+ * than two named accessors. Adding a third endpoint here should be a deliberate change
+ * to this interface, not a side effect of some new caller.
+ *
+ * Three rules make this safe on a phone, and all three are load-bearing:
  *
  * 1. **Namespaced per user.** `useAnotherAccount()` only clears the session
  *    cookie, so an unscoped cache would put the previous account's workspaces
  *    and chat titles on screen for the next person who signs in on a shared
  *    device. Every read and write requires a non-blank `userId`.
- * 2. **Encrypted at rest.** Chat titles are user content and
+ * 2. **Partitioned per workspace.** Recents are scoped server-side, so the cache
+ *    is keyed the same way. Painting workspace A's rows under workspace B's name
+ *    is the failure this prevents.
+ * 3. **Encrypted at rest.** Chat titles are user content and
  *    SharedPreferences are plaintext on disk. This mirrors
  *    [com.nalar.mobile.auth.SessionCookieStore], under its own key alias so the
  *    two can be rotated independently.
@@ -31,6 +42,10 @@ import org.json.JSONObject
  * Every operation is fail-silent: a corrupt payload, an undecryptable entry or
  * a Keystore that refuses to open degrades to a plain cache miss. A broken
  * cache must never be the reason the app fails.
+ *
+ * There is **no TTL**, matching `workspacesCache.ts`. That is only safe because
+ * every paint is immediately followed by a live fetch — an invariant
+ * [HomeViewModel] enforces by construction, not by convention.
  */
 interface RecentsCache {
     fun readWorkspaces(userId: String?): List<WorkspaceOption>?
