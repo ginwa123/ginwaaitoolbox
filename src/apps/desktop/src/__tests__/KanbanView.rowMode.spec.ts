@@ -512,4 +512,79 @@ describe('KanbanView row mode', () => {
     expect(wrapper.find('[data-kanban-column="col_1"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-kanban-row-group]')).toHaveLength(0)
   })
+
+  // ─── Row density (comfortable ⇄ compact) ────────────────────────────────
+  //
+  // Density is a localStorage preference, NOT a URL param — it is a
+  // legibility trade-off, not a distinct view, so a deep link should not
+  // carry it (same rule as group collapse).
+
+  it('hides the density toggle in column mode', () => {
+    const mounted = mountKanbanView()
+    wrapper = mounted.wrapper
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`).exists()).toBe(
+      false,
+    )
+  })
+
+  it('shows the density toggle in row mode, defaulting to comfortable', () => {
+    const mounted = mountKanbanView({ layout: 'rows' })
+    wrapper = mounted.wrapper
+    const toggle = wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`)
+    expect(toggle.exists()).toBe(true)
+    expect(toggle.text()).toContain('Comfortable')
+    expect(toggle.attributes('aria-pressed')).toBe('false')
+  })
+
+  it('clicking the density toggle switches the rows to compact', async () => {
+    const mounted = mountKanbanView(
+      { layout: 'rows' },
+      { item: makeItem({ tasks: [makeTask({ id: 't1' })] }) },
+    )
+    wrapper = mounted.wrapper
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`).trigger('click')
+    await nextTick()
+    expect(wrapper.find(`[data-kanban-row="t1"]`).attributes('data-kanban-row-density')).toBe(
+      'compact',
+    )
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`).text()).toContain(
+      'Compact',
+    )
+  })
+
+  it('the density choice persists to localStorage and survives a remount', async () => {
+    const first = mountKanbanView(
+      { layout: 'rows' },
+      { item: makeItem({ tasks: [makeTask({ id: 't1' })] }) },
+    )
+    await first.wrapper
+      .find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`)
+      .trigger('click')
+    await nextTick()
+    expect(localStorage.getItem('nalar-kanban-row-density')).toBe('compact')
+    first.wrapper.unmount()
+
+    // Remount with no `?layout=` density hint — the stored value wins.
+    const second = mountKanbanView(
+      { layout: 'rows' },
+      { item: makeItem({ tasks: [makeTask({ id: 't1' })] }) },
+    )
+    wrapper = second.wrapper
+    expect(wrapper.find(`[data-kanban-row="t1"]`).attributes('data-kanban-row-density')).toBe(
+      'compact',
+    )
+  })
+
+  it('toggling density does not write anything to the URL', async () => {
+    const mounted = mountKanbanView(
+      { layout: 'rows' },
+      { item: makeItem({ tasks: [makeTask({ id: 't1' })] }) },
+    )
+    wrapper = mounted.wrapper
+    const before = mounted.replaceMock.mock.calls.length
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-density-toggle"]`).trigger('click')
+    await nextTick()
+    // No router.replace at all — density is deliberately not URL state.
+    expect(mounted.replaceMock.mock.calls.length).toBe(before)
+  })
 })

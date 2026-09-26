@@ -16,6 +16,7 @@ import { nextTick } from 'vue'
 
 import KanbanRowView from '../components/kanban/KanbanRowView.vue'
 import { useWorkspacesStore, type KanbanColumn, type Task } from '../stores/workspaces'
+import { useAgentErrorStore } from '../stores/agentError'
 
 const WS_ID = 'ws_row_view'
 const ITEM_ID = 'item_row_view'
@@ -51,6 +52,7 @@ function mountRowView(
     tasks?: Task[]
     collapsedIds?: string[]
     runAllBusyByColumn?: Record<string, boolean>
+    density?: 'comfortable' | 'compact'
   } = {},
 ) {
   return mount(KanbanRowView, {
@@ -61,6 +63,7 @@ function mountRowView(
       itemId: ITEM_ID,
       collapsedIds: props.collapsedIds ?? [],
       runAllBusyByColumn: props.runAllBusyByColumn ?? {},
+      density: props.density ?? 'comfortable',
     },
   })
 }
@@ -485,5 +488,201 @@ describe('KanbanRowView', () => {
     ]
     wrapper = mountRowView({ tasks: [] })
     expect(wrapper.find('[data-testid="kanban-row-group-col_1-load-more"]').exists()).toBe(false)
+  })
+
+  // ─── Readable row: metadata line ─────────────────────────────────────────
+  //
+  // The row used to render a name and nothing else, so two tasks in a
+  // group were indistinguishable. These guard the second line: every
+  // field here already ships on the Task payload the board fetches.
+
+  it('renders the last-updated time in the metadata line', () => {
+    const updated = new Date(Date.now() - 2 * 60 * 60 * 1000)
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1', updatedAt: updated })] })
+    expect(wrapper.find('[data-testid="kanban-row-updated"]').text()).toBe('2h ago')
+  })
+
+  it('falls back to createdAt when updatedAt is absent', () => {
+    const created = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000)
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1', createdAt: created })] })
+    expect(wrapper.find('[data-testid="kanban-row-updated"]').text()).toBe('3d ago')
+  })
+
+  it('omits the time when the task has no timestamp at all', () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
+    expect(wrapper.find('[data-testid="kanban-row-updated"]').exists()).toBe(false)
+  })
+
+  it('renders the git branch when present', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', git_branch: 'worktree/fix-sse-reconnect' })],
+    })
+    const branch = wrapper.find('[data-testid="kanban-row-branch"]')
+    expect(branch.exists()).toBe(true)
+    expect(branch.text()).toContain('worktree/fix-sse-reconnect')
+  })
+
+  it('omits the branch badge for a null or empty git_branch', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', git_branch: null }), makeTask({ id: 't2', git_branch: '' })],
+    })
+    expect(wrapper.find('[data-testid="kanban-row-branch"]').exists()).toBe(false)
+  })
+
+  it('renders tag chips, capped at three, with a +N overflow marker', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', tags: ['agentic', 'wip', 'frontend', 'refactor', 'extra'] })],
+    })
+    expect(wrapper.find('[data-testid="kanban-row-tag-agentic"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-row-tag-refactor"]').exists()).toBe(false)
+    expect(wrapper.find('[data-kanban-row="t1"]').text()).toContain('+2')
+  })
+
+  it('renders the pin indicator only for a pinned task', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1' }), makeTask({ id: 't2', is_pinned: true })],
+    })
+    expect(
+      wrapper.find('[data-kanban-row="t1"] [data-testid="kanban-row-pin-indicator"]').exists(),
+    ).toBe(false)
+    expect(
+      wrapper.find('[data-kanban-row="t2"] [data-testid="kanban-row-pin-indicator"]').exists(),
+    ).toBe(true)
+  })
+
+  // ─── Readable row: status rail ───────────────────────────────────────────
+  //
+  // The rail is what makes a 110-row group scannable down its left
+  // margin. `data-kanban-row-state` is the assertion surface; the
+  // colour itself is a style binding.
+
+  it('marks a task awaiting human review', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', needs_human_review: true, last_finish_reason: 'stop' })],
+    })
+    expect(wrapper.find('[data-kanban-row="t1"]').attributes('data-kanban-row-state')).toBe(
+      'review',
+    )
+    expect(wrapper.find('[data-testid="kanban-row-status-review"]').text()).toContain(
+      'awaiting review',
+    )
+  })
+
+  it('marks a reviewed task', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', needs_human_review: false, last_finish_reason: 'stop' })],
+    })
+    expect(wrapper.find('[data-kanban-row="t1"]').attributes('data-kanban-row-state')).toBe(
+      'reviewed',
+    )
+  })
+
+  it('marks a task whose agent errored, and surfaces the halted label', () => {
+    const errorStore = useAgentErrorStore()
+    errorStore.setError('t1', 'boom')
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
+    expect(wrapper.find('[data-kanban-row="t1"]').attributes('data-kanban-row-state')).toBe('error')
+    expect(wrapper.find('[data-testid="kanban-row-status-error"]').exists()).toBe(true)
+  })
+
+  it('an agent error outranks a pending review request', () => {
+    const errorStore = useAgentErrorStore()
+    errorStore.setError('t1', 'boom')
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', needs_human_review: true, last_finish_reason: 'stop' })],
+    })
+    expect(wrapper.find('[data-kanban-row="t1"]').attributes('data-kanban-row-state')).toBe('error')
+  })
+
+  it('leaves a plain task in the default state with no status label', () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
+    expect(wrapper.find('[data-kanban-row="t1"]').attributes('data-kanban-row-state')).toBe(
+      'default',
+    )
+    expect(
+      wrapper.find('[data-kanban-row="t1"] [data-testid^="kanban-row-status-"]').exists(),
+    ).toBe(false)
+  })
+
+  // ─── Readable row: actions ───────────────────────────────────────────────
+
+  it('clicking the pin toggle emits pinTask and does not select the task', async () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
+    await wrapper.find('[data-kanban-row="t1"] [data-testid="task-pin-toggle"]').trigger('click')
+    expect(wrapper.emitted('pinTask')?.[0]).toEqual([WS_ID, ITEM_ID, 't1', true])
+    expect(wrapper.emitted('selectTask')).toBeUndefined()
+  })
+
+  it('clicking rename emits renameTask and does not select the task', async () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1', name: 'Original' })] })
+    await wrapper.find('[data-kanban-row="t1"] [data-testid="task-rename"]').trigger('click')
+    expect(wrapper.emitted('renameTask')?.[0]).toEqual([WS_ID, ITEM_ID, 't1', 'Original'])
+    expect(wrapper.emitted('selectTask')).toBeUndefined()
+  })
+
+  it('clicking delete emits deleteTask and does not select the task', async () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
+    await wrapper.find('[data-kanban-row="t1"] [data-testid="task-delete"]').trigger('click')
+    expect(wrapper.emitted('deleteTask')?.[0]).toEqual([WS_ID, ITEM_ID, 't1'])
+    expect(wrapper.emitted('selectTask')).toBeUndefined()
+  })
+
+  it('exposes the row as a keyboard-activatable button with a name tooltip', () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1', name: 'Fix the login redirect' })] })
+    const row = wrapper.find('[data-kanban-row="t1"] [data-task-row]')
+    expect(row.attributes('role')).toBe('button')
+    expect(row.attributes('tabindex')).toBe('0')
+    expect(wrapper.find('[data-testid="kanban-row-name"]').attributes('title')).toBe(
+      'Fix the login redirect',
+    )
+  })
+
+  it('Enter on the row emits selectTask', async () => {
+    wrapper = mountRowView({ tasks: [makeTask({ id: 't1' })] })
+    await wrapper
+      .find('[data-kanban-row="t1"] [data-task-row]')
+      .trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('selectTask')?.[0]).toEqual(['t1'])
+  })
+
+  // ─── Density ─────────────────────────────────────────────────────────────
+
+  it('renders the metadata line by default (comfortable)', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', updatedAt: new Date(Date.now() - 60_000) })],
+    })
+    expect(wrapper.find('[data-kanban-row="t1"] [data-testid="kanban-row-meta"]').exists()).toBe(
+      true,
+    )
+  })
+
+  it('hides the metadata line in compact density', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', updatedAt: new Date(Date.now() - 60_000) })],
+      density: 'compact',
+    })
+    expect(wrapper.find('[data-kanban-row="t1"] [data-testid="kanban-row-meta"]').exists()).toBe(
+      false,
+    )
+  })
+
+  it('threads density through to every row', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1' }), makeTask({ id: 't2' })],
+      density: 'compact',
+    })
+    for (const id of ['t1', 't2']) {
+      expect(wrapper.find(`[data-kanban-row="${id}"]`).attributes('data-kanban-row-density')).toBe(
+        'compact',
+      )
+    }
+  })
+
+  it('keeps the name rendered in compact density', () => {
+    wrapper = mountRowView({
+      tasks: [makeTask({ id: 't1', name: 'Still visible' })],
+      density: 'compact',
+    })
+    expect(wrapper.find('[data-testid="kanban-row-name"]').text()).toContain('Still visible')
   })
 })

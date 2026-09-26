@@ -34,7 +34,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanSortMenu from './KanbanSortMenu.vue'
-import KanbanTaskRow from './KanbanTaskRow.vue'
+import KanbanTaskRow, { type KanbanRowDensity } from './KanbanTaskRow.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import type { KanbanColumn, Task } from '../../stores/workspaces'
 
@@ -50,10 +50,18 @@ const props = withDefaults(
     cwd?: string
     collapsedIds: string[]
     runAllBusyByColumn?: Record<string, boolean>
+    /**
+     * Row height. `comfortable` is the two-line record (name +
+     * metadata); `compact` drops back to a single line for boards with
+     * hundreds of tasks. The parent owns persistence — this component
+     * only forwards it, so the preference survives a layout switch.
+     */
+    density?: KanbanRowDensity
   }>(),
   {
     cwd: '',
     runAllBusyByColumn: () => ({}),
+    density: 'comfortable',
   },
 )
 
@@ -274,7 +282,8 @@ onUnmounted(() => {
       >
         <!-- ─── Group header ─────────────────────────────────────────── -->
         <header
-          class="flex items-center gap-2 px-3 py-2"
+          class="flex items-center gap-2 px-3 py-2 border-b"
+          style="border-color: var(--color-border)"
           :data-testid="`kanban-row-group-${group.column.id}-header`"
         >
           <button
@@ -319,8 +328,8 @@ onUnmounted(() => {
           <button
             v-else
             type="button"
-            class="flex-1 text-left text-sm font-medium truncate hover:opacity-80"
-            style="color: var(--semantic-text)"
+            class="flex-1 text-left text-xs font-bold uppercase truncate hover:opacity-80"
+            style="color: var(--semantic-text); letter-spacing: 0.07em"
             :data-testid="`kanban-row-group-${group.column.id}-name`"
             @click="startInlineRename(group.column)"
           >
@@ -329,10 +338,15 @@ onUnmounted(() => {
 
           <!-- Count badge. `+` marks "more pages exist" — the wire has no
                total_count, so this is loaded rows, not a true total
-               (same limitation as the column board's badge). -->
+               (same limitation as the column board's badge).
+
+               11px semibold on --semantic-text-muted (4.86:1) rather
+               than 12px on --semantic-text-dim (2.79:1). A count is the
+               fastest way to size a group before expanding it, so it
+               has to clear the contrast bar. -->
           <span
-            class="text-xs px-1.5 py-0.5 rounded-full shrink-0"
-            style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim)"
+            class="text-[11px] font-semibold px-2 py-0.5 rounded-full shrink-0"
+            style="background-color: var(--color-bg-p1); color: var(--semantic-text-muted)"
             :data-testid="`kanban-row-group-${group.column.id}-count`"
           >
             {{ group.rows.length }}{{ moreTasksAvailable(group.column.id) ? '+' : '' }}
@@ -410,10 +424,14 @@ onUnmounted(() => {
           </div>
         </header>
 
+        <!-- Column description. Not truncated: these strings carry the
+             board's own rules ("only human puts the task here") and
+             clipping them to one 11px line hides exactly the part
+             that matters. `line-clamp-2` bounds the worst case. -->
         <p
           v-if="group.column.description"
-          class="text-[11px] px-3 pb-1.5 truncate"
-          style="color: var(--semantic-text-dim)"
+          class="text-xs px-3 pt-1.5 pb-1.5 leading-relaxed line-clamp-2"
+          style="color: var(--semantic-text-muted)"
           :title="group.column.description"
           :data-testid="`kanban-row-group-${group.column.id}-description`"
         >
@@ -434,6 +452,7 @@ onUnmounted(() => {
             :workspace-id="props.workspaceId"
             :item-id="props.itemId"
             :cwd="props.cwd"
+            :density="props.density"
             @select-task="(id) => emit('selectTask', id)"
             @open-task-in-background="(payload) => emit('openTaskInBackground', payload)"
             @delete-task="(ws, item, id) => emit('deleteTask', ws, item, id)"
