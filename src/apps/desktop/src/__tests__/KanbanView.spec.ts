@@ -25,7 +25,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { ref, type Ref } from 'vue'
+import { nextTick, ref, type Ref } from 'vue'
 
 import KanbanView from '../components/kanban/KanbanView.vue'
 import type { WorkspaceItem, KanbanColumn } from '../stores/workspaces'
@@ -51,10 +51,7 @@ const makeItem = (overrides: Partial<WorkspaceItem> = {}): WorkspaceItem => ({
   ...overrides,
 })
 
-function mountView(
-  item: WorkspaceItem,
-  workspaceId = WS_ID,
-) {
+function mountView(item: WorkspaceItem, workspaceId = WS_ID) {
   const processingState: Ref<Record<string, boolean>> = ref({})
   // attachTo: document.body — the detail panel is INLINE (no
   // Teleport since the Dialog → Detail refactor), so
@@ -107,11 +104,54 @@ describe('KanbanView — header rendering', () => {
 
   it('"Settings" button emits open-settings (no payload) on click', async () => {
     wrapper = mountView(makeItem())
-    await wrapper
-      .find(`[data-testid="kanban-view-${ITEM_ID}-open-settings"]`)
-      .trigger('click')
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-open-settings"]`).trigger('click')
     expect(wrapper.emitted('openSettings')).toBeTruthy()
     expect(wrapper.emitted('openSettings')?.[0]).toEqual([])
+  })
+
+  // ─── Layout toggle (row mode) ────────────────────────────────────────────
+  //
+  // The toggle's URL/persistence behaviour is covered in
+  // KanbanView.rowMode.spec.ts (which mocks vue-router). Here we only pin
+  // that the control renders in the header and that the default is the
+  // column board — this file mounts without a router.
+
+  it('renders the Columns/Rows layout toggle in the header', () => {
+    wrapper = mountView(makeItem())
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-columns"]`).exists()).toBe(
+      true,
+    )
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-rows"]`).exists()).toBe(true)
+  })
+
+  it('defaults to the column board (Columns selected, no row groups)', () => {
+    wrapper = mountView(makeItem())
+    expect(
+      wrapper
+        .find(`[data-testid="kanban-view-${ITEM_ID}-layout-columns"]`)
+        .attributes('aria-selected'),
+    ).toBe('true')
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-columns"]`).exists()).toBe(true)
+    expect(wrapper.findAll('[data-kanban-row-group]')).toHaveLength(0)
+  })
+
+  it('clicking Rows swaps the body to the grouped list', async () => {
+    wrapper = mountView(makeItem({ tasks: [{ id: 't1', name: 'A', kanban_column_id: 'col_1' }] }))
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-rows"]`).trigger('click')
+    await nextTick()
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-columns"]`).exists()).toBe(false)
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rows"]`).exists()).toBe(true)
+    expect(wrapper.findAll('[data-kanban-row-group]')).toHaveLength(1)
+  })
+
+  it('clicking Columns swaps back to the board', async () => {
+    wrapper = mountView(makeItem())
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-rows"]`).trigger('click')
+    await nextTick()
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-layout-columns"]`).trigger('click')
+    await nextTick()
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-columns"]`).exists()).toBe(true)
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rows"]`).exists()).toBe(false)
   })
 })
 
@@ -260,9 +300,7 @@ describe('KanbanView — event pass-through', () => {
 
     // Click the header + Add task button (was per-column footer
     // before plan: 2026-08-06-kanban-add-task-button-placement).
-    await wrapper
-      .find('[data-testid="kanban-add-task-button"]')
-      .trigger('click')
+    await wrapper.find('[data-testid="kanban-add-task-button"]').trigger('click')
     await flushPromises()
 
     // Dialog is now in the DOM (teleported to body).
@@ -276,9 +314,7 @@ describe('KanbanView — event pass-through', () => {
     expect(nameInput?.value).toBe('')
     // The column picker defaults to the first column (its
     // testid is the new dropdown — see KanbanTaskDetailDialog).
-    const picker = document.querySelector(
-      '[data-testid="kanban-task-detail-column-picker"]',
-    )
+    const picker = document.querySelector('[data-testid="kanban-task-detail-column-picker"]')
     expect(picker?.textContent).toContain('todo')
     // No addTask emit ever fired (the event was removed when the
     // per-column footer button was deleted).
@@ -289,9 +325,7 @@ describe('KanbanView — event pass-through', () => {
     wrapper = mountView(
       makeItem({
         kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
-        tasks: [
-          { id: 't1', name: 'Task A', kanban_column_id: 'col_x', kanban_position: 0 },
-        ],
+        tasks: [{ id: 't1', name: 'Task A', kanban_column_id: 'col_x', kanban_position: 0 }],
       }),
     )
     // Trigger a drop on the column's drop zone with a kanban MIME
@@ -324,9 +358,7 @@ describe('KanbanView — event pass-through', () => {
     const input = wrapper.find('[data-testid="kanban-column-col_x-rename-input"]')
     await input.setValue('Backlog')
     await input.trigger('keyup', { key: 'Enter' })
-    expect(wrapper.emitted('renameColumn')?.[0]).toEqual([
-      { columnId: 'col_x', name: 'Backlog' },
-    ])
+    expect(wrapper.emitted('renameColumn')?.[0]).toEqual([{ columnId: 'col_x', name: 'Backlog' }])
   })
 
   it('passes through request-rename-column from the ⋮ menu', async () => {
@@ -355,13 +387,13 @@ describe('KanbanView — event pass-through', () => {
     wrapper = mountView(
       makeItem({
         kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
-        tasks: [
-          { id: 't1', name: 'Task A', kanban_column_id: 'col_x', kanban_position: 0 },
-        ],
+        tasks: [{ id: 't1', name: 'Task A', kanban_column_id: 'col_x', kanban_position: 0 }],
       }),
     )
-    // Click on the task's WorkspaceItemTask (button has data-task-id)
-    const taskBtn = wrapper.find('button[data-task-id="t1"]')
+    // Click on the task's WorkspaceItemTaskCard (the card root carries
+    // data-task-card; the outer KanbanCard drag wrapper also carries
+    // data-task-id, so target the card root explicitly).
+    const taskBtn = wrapper.find('[data-task-card][data-task-id="t1"]')
     await taskBtn.trigger('click')
     expect(wrapper.emitted('selectTask')?.[0]).toEqual(['t1'])
   })
@@ -424,7 +456,9 @@ describe('KanbanView — "Set project root" banner', () => {
     // covered by FilePickerDialog.spec.ts). The point of this test is
     // that the click is a no-op and doesn't crash, which is what the
     // mount-time test verifies.
-    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-set-project-root"]`).exists()).toBe(true)
+    expect(wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-set-project-root"]`).exists()).toBe(
+      true,
+    )
   })
 })
 
@@ -456,9 +490,7 @@ describe('KanbanView — inline rename pencil', () => {
     // child <span data-testid="…-value">. Asserting on that span
     // confirms the name flows through the primitive without
     // truncation or extra whitespace.
-    const valueSpan = wrapper.find(
-      `[data-testid="kanban-view-${ITEM_ID}-rename-value"]`,
-    )
+    const valueSpan = wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rename-value"]`)
     expect(valueSpan.exists()).toBe(true)
     expect(valueSpan.text()).toBe('Sprint 12')
   })
@@ -467,19 +499,13 @@ describe('KanbanView — inline rename pencil', () => {
     const item = makeItem({ name: 'Sprint 12' })
     wrapper = mountView(item)
     // 1. Click the display span to enter edit mode.
-    await wrapper
-      .find(`[data-testid="kanban-view-${ITEM_ID}-rename-display"]`)
-      .trigger('click')
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rename-display"]`).trigger('click')
     await flushPromises()
     // 2. Edit the input value.
-    const input = wrapper.find(
-      `[data-testid="kanban-view-${ITEM_ID}-rename-input"]`,
-    )
+    const input = wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rename-input"]`)
     await input.setValue('Sprint 13')
     // 3. Click Save.
-    await wrapper
-      .find(`[data-testid="kanban-view-${ITEM_ID}-rename-save"]`)
-      .trigger('click')
+    await wrapper.find(`[data-testid="kanban-view-${ITEM_ID}-rename-save"]`).trigger('click')
 
     const emitted = wrapper.emitted('renameItem')
     expect(emitted).toBeTruthy()
@@ -590,9 +616,7 @@ describe('KanbanView — viewTaskDetail (task detail dialog)', () => {
     // Verify viewTaskDetail does NOT bubble out of KanbanView.
     const item = makeItem({
       kanban_columns: [makeColumn({ id: 'col_x', name: 'todo', position: 0 })],
-      tasks: [
-        { id: 'task_42', name: 'X', kanban_column_id: 'col_x', kanban_position: 0 },
-      ],
+      tasks: [{ id: 'task_42', name: 'X', kanban_column_id: 'col_x', kanban_position: 0 }],
     })
     wrapper = mountView(item)
     await flushPromises()
@@ -646,9 +670,7 @@ describe('KanbanView — create-task flow', () => {
     })
     wrapper = mountView(item)
     await flushPromises()
-    await wrapper
-      .find('[data-testid="kanban-add-task-button"]')
-      .trigger('click')
+    await wrapper.find('[data-testid="kanban-add-task-button"]').trigger('click')
     await flushPromises()
     return wrapper!
   }
@@ -661,12 +683,10 @@ describe('KanbanView — create-task flow', () => {
     const fakeTask = { id: 'task_new_1', name: 'My new task', task_type: 'standard' }
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
-       
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue({ task: fakeTask as any, session: null })
-    const moveTaskSpy = vi
-      .spyOn(store, 'moveTaskToColumn')
-      .mockResolvedValue(undefined)
+    const moveTaskSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
 
     const nameInput = document.querySelector<HTMLInputElement>(
       '[data-testid="kanban-task-detail-create-name"]',
@@ -675,11 +695,7 @@ describe('KanbanView — create-task flow', () => {
     nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="kanban-task-detail-save"]',
-      )!
-      .click()
+    document.querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!.click()
     await flushPromises()
     await flushPromises()
 
@@ -694,17 +710,9 @@ describe('KanbanView — create-task flow', () => {
       'create_session',
       expect.objectContaining({ name: 'My new task' }),
     )
-    expect(moveTaskSpy).toHaveBeenCalledWith(
-      WS_ID,
-      ITEM_ID,
-      'task_new_1',
-      'col_x',
-      0,
-    )
+    expect(moveTaskSpy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 'task_new_1', 'col_x', 0)
 
-    expect(
-      document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
-    ).toBeNull()
+    expect(document.querySelector('[data-testid="kanban-task-detail-dialog"]')).toBeNull()
     void w
   })
 
@@ -722,21 +730,13 @@ describe('KanbanView — create-task flow', () => {
     nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="kanban-task-detail-save"]',
-      )!
-      .click()
+    document.querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!.click()
     await flushPromises()
     await flushPromises()
 
-    const dialog = document.querySelector(
-      '[data-testid="kanban-task-detail-dialog"]',
-    )
+    const dialog = document.querySelector('[data-testid="kanban-task-detail-dialog"]')
     expect(dialog).not.toBeNull()
-    const banner = document.querySelector(
-      '[data-testid="kanban-task-detail-error"]',
-    )
+    const banner = document.querySelector('[data-testid="kanban-task-detail-error"]')
     expect(banner).not.toBeNull()
     expect(banner?.textContent).toContain('network down')
   })
@@ -747,7 +747,7 @@ describe('KanbanView — create-task flow', () => {
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
     const addKanbanSpy = vi
-       
+
       .spyOn(store, 'addKanbanTask')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       .mockResolvedValue({ task: null, session: null } as any)
@@ -760,19 +760,13 @@ describe('KanbanView — create-task flow', () => {
     nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="kanban-task-detail-save"]',
-      )!
-      .click()
+    document.querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!.click()
     await flushPromises()
     await flushPromises()
 
     expect(addKanbanSpy).toHaveBeenCalledTimes(1)
     expect(moveTaskSpy).not.toHaveBeenCalled()
-    expect(
-      document.querySelector('[data-testid="kanban-task-detail-error"]'),
-    ).not.toBeNull()
+    expect(document.querySelector('[data-testid="kanban-task-detail-error"]')).not.toBeNull()
   })
 
   it('Cancel button closes the dialog without creating a task', async () => {
@@ -782,17 +776,11 @@ describe('KanbanView — create-task flow', () => {
     const store = useWorkspacesStore()
     const addKanbanSpy = vi.spyOn(store, 'addKanbanTask')
 
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="kanban-task-detail-cancel"]',
-      )!
-      .click()
+    document.querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-cancel"]')!.click()
     await flushPromises()
 
     expect(addKanbanSpy).not.toHaveBeenCalled()
-    expect(
-      document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
-    ).toBeNull()
+    expect(document.querySelector('[data-testid="kanban-task-detail-dialog"]')).toBeNull()
   })
 
   it('forwards tags payload to addKanbanTask when the dialog emits tags (create mode)', async () => {
@@ -801,7 +789,7 @@ describe('KanbanView — create-task flow', () => {
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
     const fakeTask = { id: 'task_new_tags', name: 'Tagged task', task_type: 'standard' }
-     
+
     const addKanbanSpy = vi
       .spyOn(store, 'addKanbanTask')
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -823,11 +811,7 @@ describe('KanbanView — create-task flow', () => {
     tagInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
 
-    document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="kanban-task-detail-save"]',
-      )!
-      .click()
+    document.querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!.click()
     await flushPromises()
     await flushPromises()
 
@@ -874,9 +858,7 @@ describe('KanbanView — create-task flow', () => {
 
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
-    const updateSpy = vi
-      .spyOn(store, 'updateTaskDetails')
-      .mockResolvedValue(undefined)
+    const updateSpy = vi.spyOn(store, 'updateTaskDetails').mockResolvedValue(undefined)
 
     // Add a new tag without pressing Enter/comma — exercises the
     // draft-commit safety net.
@@ -947,9 +929,7 @@ describe('KanbanView — header + Add task button', () => {
     })
     wrapper = mountView(item)
     await flushPromises()
-    expect(
-      wrapper.find('[data-testid="kanban-add-task-button"]').exists(),
-    ).toBe(true)
+    expect(wrapper.find('[data-testid="kanban-add-task-button"]').exists()).toBe(true)
   })
 
   it('disables the header button when there are no columns', async () => {
@@ -985,13 +965,9 @@ describe('KanbanView — header + Add task button', () => {
     await wrapper.find('[data-testid="kanban-add-task-button"]').trigger('click')
     await flushPromises()
     // The dialog renders.
-    expect(
-      document.querySelector('[data-testid="kanban-task-detail-dialog"]'),
-    ).not.toBeNull()
+    expect(document.querySelector('[data-testid="kanban-task-detail-dialog"]')).not.toBeNull()
     // The dropdown defaults to the first column.
-    const picker = document.querySelector(
-      '[data-testid="kanban-task-detail-column-picker"]',
-    )
+    const picker = document.querySelector('[data-testid="kanban-task-detail-column-picker"]')
     expect(picker?.textContent).toContain('todo')
   })
 
@@ -1004,15 +980,13 @@ describe('KanbanView — header + Add task button', () => {
     })
     wrapper = mountView(item)
     await flushPromises()
-     
+
     const { useWorkspacesStore } = await import('../stores/workspaces')
     const store = useWorkspacesStore()
     const fakeTask = { id: 'task_new_1', name: 'My new task', task_type: 'standard' }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(store, 'addKanbanTask').mockResolvedValue({ task: fakeTask as any, session: null })
-    const moveTaskSpy = vi
-      .spyOn(store, 'moveTaskToColumn')
-      .mockResolvedValue(undefined)
+    const moveTaskSpy = vi.spyOn(store, 'moveTaskToColumn').mockResolvedValue(undefined)
 
     // Open the dialog via the header button (defaults to col_x).
     await wrapper.find('[data-testid="kanban-add-task-button"]').trigger('click')
@@ -1020,9 +994,7 @@ describe('KanbanView — header + Add task button', () => {
 
     // Open the column dropdown first, THEN pick col_y.
     document
-      .querySelector<HTMLButtonElement>(
-        '[data-testid="kanban-task-detail-column-picker"]',
-      )!
+      .querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-column-picker"]')!
       .click()
     await flushPromises()
     document
@@ -1039,20 +1011,12 @@ describe('KanbanView — header + Add task button', () => {
     nameInput!.value = 'My new task'
     nameInput!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
-    document
-      .querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!
-      .click()
+    document.querySelector<HTMLButtonElement>('[data-testid="kanban-task-detail-save"]')!.click()
     await flushPromises()
     await flushPromises()
 
     // moveTaskToColumn uses col_y (the chosen column), not col_x.
-    expect(moveTaskSpy).toHaveBeenCalledWith(
-      WS_ID,
-      ITEM_ID,
-      'task_new_1',
-      'col_y',
-      0,
-    )
+    expect(moveTaskSpy).toHaveBeenCalledWith(WS_ID, ITEM_ID, 'task_new_1', 'col_y', 0)
   })
 
   // ─── Agent button → settings page navigation (plan

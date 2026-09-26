@@ -66,11 +66,12 @@ export type UrlQueryInput = Record<string, unknown>
  * helpers can be co-located and the `pickBreadcrumbFromQuery` import
  * remains a one-line re-export.
  */
-export function pickBreadcrumbFromQuery(
-  query: Record<string, unknown>,
-): Record<string, string> {
+export function pickBreadcrumbFromQuery(query: Record<string, unknown>): Record<string, string> {
   const out: Record<string, string> = {}
-  for (const key of ['workspaceId', 'itemId', 'pageId', 'sorts']) {
+  // `layout` is the kanban columns/rows view mode. It lives in the URL only
+  // (like `sorts`), so it must ride the breadcrumb to survive the
+  // board → task-chat → close round-trip.
+  for (const key of ['workspaceId', 'itemId', 'pageId', 'sorts', 'layout']) {
     const v = query[key]
     if (typeof v === 'string' && v.length > 0) out[key] = v
   }

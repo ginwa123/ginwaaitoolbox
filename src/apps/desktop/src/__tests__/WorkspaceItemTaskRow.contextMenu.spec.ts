@@ -17,7 +17,11 @@ vi.mock('vue-router', async () => {
 describe('WorkspaceItemTaskRow — right-click context menu', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    Object.defineProperty(globalThis, 'localStorage', { value: makeLocalStorageStub(), writable: true, configurable: true })
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
     document.body.innerHTML = ''
   })
 
@@ -32,11 +36,13 @@ describe('WorkspaceItemTaskRow — right-click context menu', () => {
       global: { provide: { processingState: ref<Record<string, boolean>>({}) } },
     })
     await nextTick()
-    const row = wrapper.find('button[data-task-row]')
+    const row = wrapper.find('[data-task-row]')
     expect(row.exists()).toBe(true)
     await row.trigger('contextmenu', { clientX: 50, clientY: 60 })
     await nextTick()
-    const item = document.body.querySelector('[data-testid="open-new-tab-item"]') as HTMLButtonElement
+    const item = document.body.querySelector(
+      '[data-testid="open-new-tab-item"]',
+    ) as HTMLButtonElement
     expect(item).toBeTruthy()
     item.click()
     await nextTick()

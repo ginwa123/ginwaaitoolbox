@@ -104,9 +104,7 @@ export function buildTaskUrlQuery(input: TaskUrlContext): Record<string, string>
 
   // Breadcrumb from current URL (used for fallback + for view-specific
   // params like sorts/pageId that live in the URL but not the store).
-  const urlBreadcrumb = input.currentQuery
-    ? pickBreadcrumbFromQuery(input.currentQuery)
-    : {}
+  const urlBreadcrumb = input.currentQuery ? pickBreadcrumbFromQuery(input.currentQuery) : {}
 
   // Resolve the bare item id. Precedence:
   //   1. Active store (authoritative)
@@ -154,6 +152,12 @@ export function buildTaskUrlQuery(input: TaskUrlContext): Record<string, string>
   // URL stays self-describing ("I'm on kanban X with sort S,
   // viewing chat Y").
   if (urlBreadcrumb.sorts) query.sorts = urlBreadcrumb.sorts
+
+  // ─── layout (kanban view mode, lives in URL only) ────────────────
+  // Same reasoning as `sorts`: the columns/rows choice is URL state, not
+  // store state, so it must be carried explicitly or the board → chat →
+  // close round-trip silently snaps the board back to column mode.
+  if (urlBreadcrumb.layout) query.layout = urlBreadcrumb.layout
 
   return query
 }

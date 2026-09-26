@@ -105,8 +105,8 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     // drag-and-drop handlers.
     expect(wrapper.find('[data-task-row]').exists()).toBe(true)
     expect(wrapper.find('[data-task-card]').exists()).toBe(false)
-    // Bullet is a span.w-1.5.h-1.5.rounded-full — at least one exists.
-    expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(1)
+    // Bullet is a span.w-1.h-1.rounded-full — at least one exists.
+    expect(wrapper.findAll('span.w-1.h-1.rounded-full')).toHaveLength(1)
   })
 
   it('renders the slider and hides the bullet when processingState[task.id] is true', async () => {
@@ -118,7 +118,7 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     // visual marker per row). The bullet selector is w-1.5.h-1.5; the
     // slider track sits below the row, so the w-1.5 selector catches
     // only the bullet.
-    expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(0)
+    expect(wrapper.findAll('span.w-1.h-1.rounded-full')).toHaveLength(0)
   })
 
   it('hides the slider and restores the bullet when processingState[task.id] flips back to false', async () => {
@@ -128,12 +128,12 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     processingState.value = {}
     await nextTick()
     expect(wrapper.findAll('[data-testid="task-spinner"][aria-busy="true"]')).toHaveLength(0)
-    expect(wrapper.findAll('span.w-1\\.5.h-1\\.5.rounded-full')).toHaveLength(1)
+    expect(wrapper.findAll('span.w-1.h-1.rounded-full')).toHaveLength(1)
   })
 
   it('renders the bullet in the dim text color when not active and not processing', async () => {
     const { wrapper } = mountTask()
-    const bullet = wrapper.find('span.w-1\\.5.h-1\\.5.rounded-full')
+    const bullet = wrapper.find('span.w-1.h-1.rounded-full')
     expect(bullet.exists()).toBe(true)
     // activeTaskId is null in a fresh Pinia → bullet gets the dim
     // (semantic-text-dim) background.
@@ -159,22 +159,41 @@ describe('WorkspaceItemTaskRow per-task row', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any)
     const { wrapper } = mountTask()
-    const rowButton = wrapper.find('button.group\\/task')
+    const rowButton = wrapper.find('[data-task-row]')
     expect(rowButton.exists()).toBe(true)
-    expect(rowButton.attributes('style')).toContain('--semantic-active-bg')
-    expect(rowButton.attributes('style')).toContain('--color-aqua')
-    const bullet = wrapper.find('span.w-1\\.5.h-1\\.5.rounded-full')
-    expect(bullet.attributes('style')).toContain('--color-aqua')
+    expect(rowButton.attributes('style')).toContain('rgb(46, 45, 42)')
+    expect(rowButton.attributes('style')).toContain('rgb(230, 230, 224)')
+    const bullet = wrapper.find('span.w-1.h-1.rounded-full')
+    // Active/pinned bullet is the gold #e8c87a (hardcoded hex, not a var).
+    expect(bullet.attributes('style')).toContain('rgb(232, 200, 122)')
   })
 
   it('emits selectTask with task.id when the row is clicked', async () => {
     const { wrapper } = mountTask()
-    const rowButton = wrapper.find('button.group\\/task')
+    const rowButton = wrapper.find('[data-task-row]')
     await rowButton.trigger('click')
     const emitted = wrapper.emitted('selectTask')
     expect(emitted).toBeDefined()
     expect(emitted!).toHaveLength(1)
     expect(emitted![0]).toEqual(['task_alpha'])
+  })
+
+  it('emits selectTask when the row is activated with Enter', async () => {
+    const { wrapper } = mountTask()
+    await wrapper.find('[data-task-row]').trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('selectTask')?.[0]).toEqual(['task_alpha'])
+  })
+
+  it('emits selectTask when the row is activated with Space', async () => {
+    const { wrapper } = mountTask()
+    await wrapper.find('[data-task-row]').trigger('keydown', { key: ' ' })
+    expect(wrapper.emitted('selectTask')?.[0]).toEqual(['task_alpha'])
+  })
+
+  it('does not emit selectTask on an unrelated key', async () => {
+    const { wrapper } = mountTask()
+    await wrapper.find('[data-task-row]').trigger('keydown', { key: 'a' })
+    expect(wrapper.emitted('selectTask')).toBeUndefined()
   })
 
   it('emits renameTask with (workspaceId, itemId, taskId, currentName) when the pencil is clicked', async () => {
@@ -234,19 +253,23 @@ describe('WorkspaceItemTaskRow per-task row', () => {
     expect(deleteBtn.classes()).not.toContain('opacity-0')
   })
 
-  it('renders the row, the pin/rename/delete action buttons (4 buttons total)', async () => {
-    // Regression guard: the pin + rename + delete buttons are nested
-    // INSIDE the row's <button>. A future "fix" that moves them
-    // outside (e.g. <div> row + absolute-positioned buttons) would
-    // change the count. Preserve the original DOM structure.
+  it('renders the row plus the pin/rename/delete action buttons (3 buttons total)', async () => {
+    // The row root is a <div role="button"> (not a <button>) because the
+    // action buttons are nested inside it and HTML forbids
+    // button-inside-button. So the count here is the three INNER buttons;
+    // the row itself is asserted separately by its data attribute.
     //
     // Updated for the pinned-tasks feature (plan:
     // docs/superpowers/plans/2026-06-20-pinned-workspace-item-tasks.md).
     // The pin/unpin toggle button slots in between the row and the
     // rename button.
     const { wrapper } = mountTask()
+    expect(wrapper.find('[data-task-row]').exists()).toBe(true)
+    expect(wrapper.find('[data-task-row]').element.tagName).toBe('DIV')
+    expect(wrapper.find('[data-task-row]').attributes('role')).toBe('button')
+    expect(wrapper.find('[data-task-row]').attributes('tabindex')).toBe('0')
     const allButtons = wrapper.findAll('button')
-    expect(allButtons.length).toBe(4)
+    expect(allButtons.length).toBe(3)
   })
 
   it('emits the four renameTask args in the documented order', async () => {

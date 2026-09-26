@@ -33,15 +33,7 @@
  *     `await Promise.resolve()` × N + `vi.advanceTimersByTime(0)`
  *     where needed.
  */
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick, ref, type Ref } from 'vue'
 import { flushPromises, mount } from '@vue/test-utils'
 
@@ -324,11 +316,9 @@ describe('useKanbanScrollRestore', () => {
   })
 
   it('handles localStorage.setItem throw gracefully (no exception)', async () => {
-    const setItemSpy = vi
-      .spyOn(Storage.prototype, 'setItem')
-      .mockImplementation(() => {
-        throw new Error('QuotaExceededError')
-      })
+    const setItemSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceededError')
+    })
 
     const harness = mountHarness()
     setScrollGeometry(harness.container, {
@@ -428,5 +418,124 @@ describe('useKanbanScrollRestore', () => {
     await nextTick()
 
     expect(() => wrapper.unmount()).not.toThrow()
+  })
+})
+
+/**
+ * The `axis: 'y'` variant — used by the kanban row-mode list, which
+ * scrolls vertically (the columns row scrolls horizontally). Same
+ * contract, different offset property.
+ */
+describe('useKanbanScrollRestore (axis: y)', () => {
+  function mountVerticalHarness(initialKey = 'kanban-row-scroll-item_test') {
+    const itemIdRef = ref(initialKey)
+    const TestComp = defineComponent({
+      setup() {
+        const containerRef = ref<HTMLDivElement | null>(null)
+        useKanbanScrollRestore(containerRef, itemIdRef, 'y')
+        return { containerRef }
+      },
+      template: `<div ref="containerRef" class="outer"><div class="inner" style="height: 5000px;"></div></div>`,
+    })
+    const wrapper = mount(TestComp)
+    const container = wrapper.find('.outer').element as HTMLDivElement
+    return { wrapper, container, itemIdRef }
+  }
+
+  function setVerticalGeometry(
+    container: HTMLDivElement,
+    { scrollHeight, clientHeight }: { scrollHeight: number; clientHeight: number },
+  ): void {
+    Object.defineProperty(container, 'scrollHeight', {
+      value: scrollHeight,
+      writable: true,
+      configurable: true,
+    })
+    Object.defineProperty(container, 'clientHeight', {
+      value: clientHeight,
+      writable: true,
+      configurable: true,
+    })
+  }
+
+  it('restores saved scrollTop on mount (clamped to current max)', async () => {
+    localStorage.setItem('kanban-row-scroll-item_test', '1234')
+
+    const harness = mountVerticalHarness()
+    setVerticalGeometry(harness.container, { scrollHeight: 5000, clientHeight: 500 })
+
+    await waitForRestore()
+
+    expect(harness.container.scrollTop).toBe(1234)
+    // The horizontal axis is untouched.
+    expect(harness.container.scrollLeft).toBe(0)
+    harness.wrapper.unmount()
+  })
+
+  it('clamps the restored scrollTop to scrollHeight - clientHeight', async () => {
+    localStorage.setItem('kanban-row-scroll-item_test', '9999')
+
+    const harness = mountVerticalHarness()
+    setVerticalGeometry(harness.container, { scrollHeight: 5000, clientHeight: 500 })
+
+    await waitForRestore()
+
+    expect(harness.container.scrollTop).toBe(4500)
+    harness.wrapper.unmount()
+  })
+
+  it('skips the restore when the content fits (max <= 0)', async () => {
+    localStorage.setItem('kanban-row-scroll-item_test', '800')
+
+    const harness = mountVerticalHarness()
+    setVerticalGeometry(harness.container, { scrollHeight: 400, clientHeight: 500 })
+
+    await waitForRestore()
+
+    expect(harness.container.scrollTop).toBe(0)
+    harness.wrapper.unmount()
+  })
+
+  it('persists scrollTop on scrollend', async () => {
+    const harness = mountVerticalHarness()
+    setVerticalGeometry(harness.container, { scrollHeight: 5000, clientHeight: 500 })
+    await waitForRestore()
+
+    harness.container.scrollTop = 777
+    harness.container.dispatchEvent(new Event('scrollend'))
+    await flushPromises()
+
+    expect(localStorage.getItem('kanban-row-scroll-item_test')).toBe('777')
+    harness.wrapper.unmount()
+  })
+
+  it('flushes the pending debounced write on unmount', async () => {
+    const harness = mountVerticalHarness()
+    setVerticalGeometry(harness.container, { scrollHeight: 5000, clientHeight: 500 })
+    await waitForRestore()
+
+    vi.useFakeTimers()
+
+    harness.container.scrollTop = 321
+    harness.container.dispatchEvent(new Event('scroll'))
+    // Unmount BEFORE the 250 ms debounce fires.
+    harness.wrapper.unmount()
+
+    expect(localStorage.getItem('kanban-row-scroll-item_test')).toBe('321')
+    vi.useRealTimers()
+  })
+
+  it('does not read the horizontal key when axis is y', async () => {
+    // A stale horizontal value must not leak into the vertical restore.
+    localStorage.setItem('kanban-row-scroll-item_test', '0')
+    localStorage.setItem('kanban-scroll-item_test', '9999')
+
+    const harness = mountVerticalHarness()
+    setVerticalGeometry(harness.container, { scrollHeight: 5000, clientHeight: 500 })
+
+    await waitForRestore()
+
+    expect(harness.container.scrollTop).toBe(0)
+    harness.wrapper.unmount()
   })
 })

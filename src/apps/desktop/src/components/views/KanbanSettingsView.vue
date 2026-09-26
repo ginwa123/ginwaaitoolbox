@@ -39,6 +39,7 @@ import AgentKnowledgeDialog from '../dialogs/AgentKnowledgeDialog.vue'
 import AgentKnowledgeDetailDialog from '../dialogs/AgentKnowledgeDetailDialog.vue'
 import AgentSystemPromptDialog from '../dialogs/AgentSystemPromptDialog.vue'
 import { useWorkspacesStore } from '../../stores/workspaces'
+import { buildAppUrl } from '../../helpers/appUrl'
 import * as api from '../../api'
 import { buildToggle } from '../../stores/agentToolToggle'
 
@@ -55,9 +56,7 @@ const workspacesStore = useWorkspacesStore()
 const emit = defineEmits<{
   close: []
   addColumn: [name: string, description: string]
-  editColumn: [
-    payload: { columnId: string; name: string; description: string },
-  ]
+  editColumn: [payload: { columnId: string; name: string; description: string }]
   deleteColumn: [columnId: string]
   renameItem: [name: string]
   copySpec: []
@@ -81,9 +80,7 @@ const settingsMode = computed<SettingsMode>({
     const readSection = (v: unknown): SettingsMode | null => {
       const s = Array.isArray(v) ? v[0] : v
       if (s === 'tools' || s === 'knowledge' || s === 'memories') return 'agent'
-      return (VALID_TABS as readonly string[]).includes(s ?? '')
-        ? (s as SettingsMode)
-        : null
+      return (VALID_TABS as readonly string[]).includes(s ?? '') ? (s as SettingsMode) : null
     }
     // Canonical param first.
     const fromSection = readSection(route.query.section)
@@ -292,8 +289,10 @@ async function handleKanbanKnowledgeSave(
   } catch (e) {
     kanbanKnowledgeDetailError.value =
       e instanceof api.ApiError && e.body
-        ? tryParseErrorBody(e.body) ?? e.message
-        : e instanceof Error ? e.message : 'Failed to update knowledge'
+        ? (tryParseErrorBody(e.body) ?? e.message)
+        : e instanceof Error
+          ? e.message
+          : 'Failed to update knowledge'
   } finally {
     kanbanKnowledgeDetailBusy.value = false
   }
@@ -341,27 +340,36 @@ async function handleKanbanSystemPromptCreate(title: string, content: string) {
   } catch (e) {
     kanbanSystemPromptError.value =
       e instanceof api.ApiError && e.body
-        ? tryParseErrorBody(e.body) ?? e.message
-        : e instanceof Error ? e.message : 'Failed to add system prompt'
+        ? (tryParseErrorBody(e.body) ?? e.message)
+        : e instanceof Error
+          ? e.message
+          : 'Failed to add system prompt'
   } finally {
     kanbanSystemPromptBusy.value = false
   }
 }
 
-async function handleKanbanSystemPromptSave(promptId: string, updates: { title: string; content: string }) {
+async function handleKanbanSystemPromptSave(
+  promptId: string,
+  updates: { title: string; content: string },
+) {
   const kanbanId = item.value?.id
   if (!kanbanId) return
   kanbanSystemPromptBusy.value = true
   kanbanSystemPromptError.value = null
   try {
     const updated = await api.updateAgentKanbanSystemPrompt(kanbanId, promptId, updates)
-    kanbanSystemPrompts.value = kanbanSystemPrompts.value.map((p) => (p.id === promptId ? updated : p))
+    kanbanSystemPrompts.value = kanbanSystemPrompts.value.map((p) =>
+      p.id === promptId ? updated : p,
+    )
     closeKanbanSystemPromptDialog()
   } catch (e) {
     kanbanSystemPromptError.value =
       e instanceof api.ApiError && e.body
-        ? tryParseErrorBody(e.body) ?? e.message
-        : e instanceof Error ? e.message : 'Failed to update system prompt'
+        ? (tryParseErrorBody(e.body) ?? e.message)
+        : e instanceof Error
+          ? e.message
+          : 'Failed to update system prompt'
   } finally {
     kanbanSystemPromptBusy.value = false
   }
@@ -430,7 +438,8 @@ async function handleKanbanToggleToolsBulk(toolNames: string[], enabled: boolean
     })
     const results = await Promise.all(ops)
     const failures = results.filter((r) => !r.ok)
-    if (failures.length > 0) console.error('[KanbanSettingsView] bulk toggle: some tools failed:', failures)
+    if (failures.length > 0)
+      console.error('[KanbanSettingsView] bulk toggle: some tools failed:', failures)
     const data = await api.getAgentKanban(workspaceId.value, kanbanId)
     kanbanTools.value = data?.tools ?? kanbanTools.value
     if (kanbanKnowledge.value.length === 0 && kanbanSystemPrompts.value.length === 0) {
@@ -503,10 +512,22 @@ const goBack = () => {
   const wsId = workspaceId.value
   const itId = itemId.value
   if (wsId && itId) {
-    router.replace({
-      path: '/app',
-      query: { view: 'workspace', workspaceId: wsId, itemId: itId },
-    })
+    // Preserve the board's sub-state (`?sorts=`, `?layout=`, `?detail=`, …)
+    // instead of rebuilding the query from scratch. Dropping `sorts` reset
+    // every column to the default sort after a visit to board settings, and
+    // dropping `layout` lost row mode.
+    const sub: Record<string, string> = {}
+    for (const [k, v] of Object.entries(route.query)) {
+      if (typeof v === 'string') sub[k] = v
+      else if (Array.isArray(v)) {
+        const first = v.find((x): x is string => typeof x === 'string')
+        if (first !== undefined) sub[k] = first
+      }
+    }
+    // The settings page's own params must not leak back onto the board.
+    delete sub.tab
+    delete sub.section
+    void router.replace(buildAppUrl({ workspaceId: wsId, projectId: itId, query: sub }))
   } else {
     router.replace({ path: '/app' })
   }
@@ -533,9 +554,7 @@ watch(
 // Sorted copy — mirrors KanbanView's sortedColumns computed so a
 // re-render during a pending reorder still looks sensible.
 function sortedColumns() {
-  return (item.value?.kanban_columns ?? [])
-    .slice()
-    .sort((a, b) => a.position - b.position)
+  return (item.value?.kanban_columns ?? []).slice().sort((a, b) => a.position - b.position)
 }
 </script>
 
@@ -582,12 +601,7 @@ function sortedColumns() {
           title="Back to kanban"
           data-testid="kanban-settings-page-back"
         >
-          <svg
-            class="w-5 h-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path
               stroke-linecap="round"
               stroke-linejoin="round"
@@ -664,10 +678,7 @@ function sortedColumns() {
           "
           data-testid="kanban-settings-page-add-form"
         >
-          <h4
-            class="text-xs font-semibold mb-2"
-            style="color: var(--semantic-text-dim)"
-          >
+          <h4 class="text-xs font-semibold mb-2" style="color: var(--semantic-text-dim)">
             Add a new column
           </h4>
           <div class="flex gap-2 mb-2">
@@ -725,11 +736,7 @@ function sortedColumns() {
           >
             No columns yet. Add one above to get started.
           </div>
-          <ul
-            v-else
-            class="space-y-2"
-            data-testid="kanban-settings-page-column-list"
-          >
+          <ul v-else class="space-y-2" data-testid="kanban-settings-page-column-list">
             <li
               v-for="col in sortedColumns()"
               :key="col.id"
@@ -820,11 +827,9 @@ function sortedColumns() {
             <span aria-hidden="true">📋</span>
             <span class="ml-1">Copy spec from…</span>
           </button>
-          <p
-            class="text-[11px] mt-2 italic"
-            style="color: var(--semantic-text-dim)"
-          >
-            Bulk-copy column names + descriptions from another kanban in this workspace. Tasks are not copied.
+          <p class="text-[11px] mt-2 italic" style="color: var(--semantic-text-dim)">
+            Bulk-copy column names + descriptions from another kanban in this workspace. Tasks are
+            not copied.
           </p>
         </div>
       </template>
@@ -857,22 +862,23 @@ function sortedColumns() {
           <template #right-extra>
             <div
               class="shrink-0 rounded-xl p-4"
-              style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
+              style="
+                background-color: var(--semantic-card-bg);
+                border: 1px solid var(--color-border);
+              "
               data-testid="kanban-settings-page-agent-memories-section"
             >
-              <div
-                v-if="item.path"
-                data-testid="kanban-settings-page-agent-memories"
-              >
-                <WorkspaceItemMemoriesView
-                  :cwd="item.path"
-                  :item-name="item.name"
-                />
+              <div v-if="item.path" data-testid="kanban-settings-page-agent-memories">
+                <WorkspaceItemMemoriesView :cwd="item.path" :item-name="item.name" />
               </div>
               <div
                 v-else
                 class="text-xs text-center py-6 px-4 rounded-lg"
-                style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);"
+                style="
+                  color: var(--semantic-text-dim);
+                  background-color: var(--semantic-sidebar-bg);
+                  border: 1px dashed var(--color-border);
+                "
                 data-testid="kanban-settings-page-agent-memories-no-path"
               >
                 <div class="text-lg mb-1" aria-hidden="true">📁</div>
@@ -912,7 +918,14 @@ function sortedColumns() {
     />
     <AgentKnowledgeDetailDialog
       :show="kanbanKnowledgeDetailOpen"
-      :row="kanbanKnowledgeDetailRow ? { ...kanbanKnowledgeDetailRow, agent_id: kanbanKnowledgeDetailRow.kanban_id } as unknown as api.AgentKnowledgeRow : null"
+      :row="
+        kanbanKnowledgeDetailRow
+          ? ({
+              ...kanbanKnowledgeDetailRow,
+              agent_id: kanbanKnowledgeDetailRow.kanban_id,
+            } as unknown as api.AgentKnowledgeRow)
+          : null
+      "
       :busy="kanbanKnowledgeDetailBusy"
       :error="kanbanKnowledgeDetailError"
       @close="closeKanbanKnowledgeDetailDialog"
@@ -920,7 +933,14 @@ function sortedColumns() {
     />
     <AgentSystemPromptDialog
       :show="kanbanSystemPromptDialogOpen"
-      :row="kanbanSystemPromptRow ? { ...kanbanSystemPromptRow, agent_id: kanbanSystemPromptRow.kanban_id } as unknown as api.AgentSystemPromptRow : null"
+      :row="
+        kanbanSystemPromptRow
+          ? ({
+              ...kanbanSystemPromptRow,
+              agent_id: kanbanSystemPromptRow.kanban_id,
+            } as unknown as api.AgentSystemPromptRow)
+          : null
+      "
       :busy="kanbanSystemPromptBusy"
       :error="kanbanSystemPromptError"
       @close="closeKanbanSystemPromptDialog"
