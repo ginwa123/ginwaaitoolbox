@@ -10,7 +10,36 @@ enum class ChatPinReason {
 
     /** The reader asked for a turn by sending one. */
     TURN_SENT,
+
+    /** The reader pressed the transcript's "take me to the newest turn" control. */
+    READER_JUMPED,
 }
+
+/**
+ * The distance reading that means "nothing has been measured yet".
+ *
+ * A cold open lays the list out before it has any row to report, and a list with
+ * no rows has no bottom — so an unmeasured layout is not a distance of zero and
+ * must not be treated as one either. A control computed from it would appear
+ * over a transcript that has not drawn a single turn.
+ *
+ * Outside the range any real reading can take, so it is unreachable by
+ * arithmetic accident: a measured distance is either zero or positive, because
+ * the content's bottom is clamped against the viewport's before it is
+ * subtracted.
+ */
+const val DISTANCE_UNMEASURED: Int = Int.MIN_VALUE
+
+/**
+ * The furthest reading there is: the end of the transcript is not on screen.
+ *
+ * A `LazyColumn` does not know how tall its content is — that is the whole
+ * bargain of virtualizing it — so the distance to the end is not a number that
+ * can always be computed. When the last item has not been composed there is
+ * nothing to subtract, and the honest answer is not "a little bit away" but
+ * "somewhere below, by an amount nobody has measured".
+ */
+const val DISTANCE_FAR: Int = Int.MAX_VALUE
 
 /**
  * Where the reader was when a backwards page was requested.
@@ -88,6 +117,34 @@ object ChatScrollPolicy {
 
         else -> ChatScrollAction.Hold
     }
+
+    /**
+     * Whether the transcript should offer an explicit "take me to the newest
+     * turn" control.
+     *
+     * **Measured in pixels, not in items.** The obvious rule — "the last group
+     * is visible" — reads as *at the bottom* for a streaming answer taller than
+     * the screen, because the newest group is on screen the whole time it is
+     * being read. A reader who had scrolled most of the way up a long answer
+     * would never see the control, and the affordance would be missing exactly
+     * where it is most wanted. Distance in pixels is the question the reader is
+     * actually asking.
+     *
+     * [bandPx] is the "still there, more or less" band. Zero is what a
+     * transcript parked on its newest turn reports, and a reader a line or two
+     * above it reports a small *positive* distance — offering the control there
+     * would make it flicker on and off under a slow drag instead of appearing
+     * when a reader has actually left.
+     *
+     * The only reading that is not offered the control is [DISTANCE_UNMEASURED]:
+     * a layout that has measured nothing is not far from the bottom, it is
+     * *unknown*, and a control computed from it appears over a transcript that
+     * has not drawn anything. Everything else is a real distance and compares
+     * against the band — [DISTANCE_FAR] included, because "the end is not on
+     * screen" is a real answer and the furthest one.
+     */
+    fun shouldOfferJumpToNewest(distanceFromBottomPx: Int, bandPx: Int): Boolean =
+        distanceFromBottomPx != DISTANCE_UNMEASURED && distanceFromBottomPx > bandPx
 }
 
 /**
@@ -180,6 +237,27 @@ class ChatScrollState {
         isFollowingNewest = true
         pendingAnchor = null
         return ChatScrollAction.PinToNewest(ChatPinReason.TURN_SENT)
+    }
+
+    /**
+     * The reader pressed the "take me to the newest turn" control.
+     *
+     * The same two effects as [onTurnSent] — re-arm following and drop the
+     * anchor — for the same reason in both cases: the reader has said where they
+     * want to be, and every other opinion the transcript holds is now stale.
+     *
+     * Dropping the anchor is the part that is easy to miss and is what a
+     * reviewer should look for. A backwards page is often already in flight
+     * when the reader gives up on reading history, and its anchor is armed
+     * *before* the request goes out. Replayed on arrival it would put the
+     * reader straight back where they just pressed the button to leave, which
+     * reads as the button not working. With the anchor gone, the page still
+     * prepends and the follow flag lands them on the newest turn afterwards.
+     */
+    fun onReaderJumpedToNewest(): ChatScrollAction {
+        isFollowingNewest = true
+        pendingAnchor = null
+        return ChatScrollAction.PinToNewest(ChatPinReason.READER_JUMPED)
     }
 
     /**
