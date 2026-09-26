@@ -47,7 +47,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.ui.NalarAccent
@@ -508,7 +507,7 @@ private fun MessageRow(
 
         MessageChrome.BUBBLE -> UserMessageBubble(message)
 
-        MessageChrome.PARAGRAPH -> AssistantMessageParagraph(message)
+        MessageChrome.PARAGRAPH -> AssistantMessageParagraph(message, toolExpansion)
     }
 }
 
@@ -558,9 +557,17 @@ private fun UserMessageBubble(message: ChatMessage) {
  * The width cap goes with the box for the same reason: it existed to stop a
  * bubble from spanning a tablet, and prose that runs to the margin is what the
  * web does (`flex-1 w-full max-w-full`).
+ *
+ * The [ReasoningBlock] goes above the answer rather than being inlined into it,
+ * because that is the order the web draws it in: the reasoning is the context
+ * the reply follows from, so it reads first, not as a footnote under the thing
+ * it explains.
  */
 @Composable
-private fun AssistantMessageParagraph(message: ChatMessage) {
+private fun AssistantMessageParagraph(
+    message: ChatMessage,
+    toolExpansion: ToolExpansion,
+) {
     val contentColor = if (message.isError) NalarError else NalarText
 
     Column(
@@ -590,6 +597,10 @@ private fun AssistantMessageParagraph(message: ChatMessage) {
                 .fillMaxWidth()
                 .padding(start = if (message.isError) 8.dp else 0.dp),
         ) {
+            // Inside the diagnostic rule, not outside it. A reasoning turn that
+            // is *also* a loop diagnostic is still one row, and a rule that
+            // stops at the answer would leave the fold above it unmarked.
+            ReasoningBlock(message = message, expansion = toolExpansion)
             MessageBody(message, contentColor)
         }
 
@@ -618,18 +629,15 @@ private fun StreamingHint(isStreaming: Boolean) {
  * `{{ text }}` in a `whitespace-pre-wrap` bubble — a question the reader typed
  * has to come back looking exactly as it was sent, and parsing their `**` and
  * `_` would change their own words back at them.
+ *
+ * Reasoning is *not* drawn here. It used to be, inline above the text, and
+ * sharing it was the wrong half of the arrangement: the block is a fold, and a
+ * fold is a separate control with its own tap target and its own open/closed
+ * state, so it belongs to the assistant paragraph that owns the row rather than
+ * to a body the reader's bubble also calls. See [ReasoningBlock].
  */
 @Composable
 private fun MessageBody(message: ChatMessage, contentColor: Color) {
-    if (message.reasoningContent.isNotBlank()) {
-        Text(
-            text = message.reasoningContent,
-            style = MaterialTheme.typography.bodySmall,
-            color = NalarDim,
-            fontFamily = FontFamily.Monospace,
-        )
-        Spacer(Modifier.height(6.dp))
-    }
     if (message.hasRenderableContent) {
         if (message.isUser) {
             Text(

@@ -148,6 +148,37 @@ Keystore round-trip per write costs more than the exposure is worth on a device
 that is already full-disk-encrypted. The session cookie, which is a credential,
 stays under the Keystore.
 
+### Reasoning is folded away
+
+A thinking model's chain of thought arrives on the turn as `reasoning_content`
+and is drawn by `ReasoningBlock` as a **collapsed "Thought" fold**, above the
+answer. It is the web's `<details class="assistant-reasoning">`
+(`ChatView.vue`), and the two are kept word-for-word in step on purpose — the
+label, the order, and the default. `ChatView`'s instrumented tests cover the
+default, both toggle directions, and that two turns' folds are independent.
+
+The default is the load-bearing part. A thinking model emits reasoning for
+*every* turn, so a run of them expanded pushes the answer the reader actually
+came for off the bottom of the screen, and rendered flat — which is how this
+shipped the first time — a long trace is a wall of monospace with nothing to tap
+past it.
+
+Two details that are easy to get wrong:
+
+- **The state is `ToolExpansion`'s, not a local `remember`.** The row is
+  re-created every time it is scrolled out of the viewport and back, so a
+  locally-remembered `expanded` re-folds the moment the reader scrolls away and
+  returns. `rememberToolExpansion()` is hoisted above the `LazyColumn` for
+  exactly this reason.
+- **The key is namespaced, `reasoning-<messageId>`.** A tool card is filed under
+  its `ToolCardModel.id`, which is the message id *verbatim*, so a bare id here
+  would share one slot with that turn's tool card — opening the reasoning would
+  open the card, and closing either closed both.
+
+It is drawn inside the diagnostic rule rather than outside it: a turn that is
+both a reasoning turn and a loop diagnostic is still one row, and a rule that
+stopped at the answer would leave the fold above it unmarked.
+
 ## Recents
 
 The drawer's **Recent** list is paged. It reads 30 rows from
