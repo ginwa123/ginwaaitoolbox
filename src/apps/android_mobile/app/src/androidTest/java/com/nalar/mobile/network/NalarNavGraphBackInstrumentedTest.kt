@@ -146,7 +146,7 @@ private fun TestNavGraph(navController: NavHostController) {
         onUseAnotherAccount = {},
         navController = navController,
         homeState = HomeUiState(isLoading = false),
-        chatState = ChatUiState(sessionId = "sess_1", isLoading = false),
+        chatState = { ChatUiState(sessionId = "sess_1", isLoading = false) },
         // Nothing saved: the back stack is what this file is about, and a
         // position that resumed would navigate out from under the test.
         positionStore = NoLastPosition,

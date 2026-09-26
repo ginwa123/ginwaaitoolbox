@@ -61,6 +61,32 @@ private val FENCED_DOCUMENT = Regex(
 )
 
 /**
+ * Every wrapper above needs a `<`, and the document fence needs the turn to open
+ * with one. A turn carrying neither cannot be an envelope, so the unwrap is a
+ * no-op on it and this answers the question without touching the regexes.
+ *
+ * `indexOf` rather than `contains` because it stops at the first `<` and the
+ * overwhelming majority of an assistant transcript has none at all — a plain
+ * markdown answer is the common case, not the exception. One native scan for
+ * it, against seven regex passes over the whole string.
+ */
+private fun canCarryEnvelope(trimmed: String): Boolean =
+    trimmed.indexOf('<') >= 0 || trimmed.startsWith("```")
+
+/**
+ * [pattern].replace, but only when there is something to replace.
+ *
+ * `Matcher.replaceAll` allocates a full-length `StringBuilder` and a
+ * full-length `String` *even when it matches nothing*, so the seven
+ * unconditional `replace` calls this replaces cost roughly nine full-length
+ * copies on a turn with no envelope at all. [ChatMessage.hasVisibleContent]
+ * runs this once per row of every group, on the main thread, every time the
+ * transcript changes — which on a long session is a few hundred rows a frame.
+ */
+private fun String.withoutIfPresent(pattern: Regex, replacement: String): String =
+    if (pattern.containsMatchIn(this)) pattern.replace(this, replacement) else this
+
+/**
  * The content a renderer should actually show.
  *
  * Never throws and never returns null — a helper this deep in the transcript
@@ -70,20 +96,25 @@ private val FENCED_DOCUMENT = Regex(
 fun stripContentEnvelope(content: String): String {
     val trimmed = content.trim()
     if (trimmed.isEmpty()) return ""
+    if (!canCarryEnvelope(trimmed)) return trimmed
 
     val hasThink = THINK_BLOCK.containsMatchIn(trimmed)
     val hasWrapper = hasAnyWrapper(trimmed)
     if (hasThink && !hasWrapper) return trimmed
 
-    var result = trimmed
-    if (hasThink) result = THINK_BLOCK.replace(result, "")
-    result = OPEN_PLAIN.replace(result, "").let { CLOSE_PLAIN.replace(it, "") }
-    result = OPEN_MARKDOWN.replace(result, "").let { CLOSE_MARKDOWN.replace(it, "") }
-    result = OPEN_HTML.replace(result, "").let { CLOSE_HTML.replace(it, "") }
+    val result = trimmed
+        .withoutIfPresent(THINK_BLOCK, "")
+        .withoutIfPresent(OPEN_PLAIN, "")
+        .withoutIfPresent(CLOSE_PLAIN, "")
+        .withoutIfPresent(OPEN_MARKDOWN, "")
+        .withoutIfPresent(CLOSE_MARKDOWN, "")
+        .withoutIfPresent(OPEN_HTML, "")
+        .withoutIfPresent(CLOSE_HTML, "")
+        .trim()
     // Named group, not `$1`: the language alternation is non-capturing precisely
     // so the body is the only group, and a stray `$1` here replaces the answer
     // with the word "markdown".
-    return FENCED_DOCUMENT.replace(result.trim(), "\${body}").trim()
+    return result.withoutIfPresent(FENCED_DOCUMENT, "\${body}").trim()
 }
 
 private fun hasAnyWrapper(text: String): Boolean =

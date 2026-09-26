@@ -44,6 +44,19 @@ class ChatViewModelCacheTest {
                 io.advanceUntilIdle()
             }
         }
+
+        /**
+         * Everything queued *right now*, and nothing they queue in turn.
+         *
+         * The one move that can see the gap between "the cache has been read"
+         * and "the fetch has been applied": `advanceUntilIdle` on the IO
+         * scheduler would run the fetch as well, and the frame under test is
+         * the one before that.
+         */
+        fun step() {
+            io.runCurrent()
+            main.runCurrent()
+        }
     }
 
     private fun cacheTest(body: suspend TestScope.(Schedulers) -> Unit) = runTest {
@@ -183,10 +196,80 @@ class ChatViewModelCacheTest {
 
         model.openSession("sess_1")
 
-        // Undrained: this is the first frame, before the fetch runs.
+        // Main alone: the prime is background work, so driving the UI scheduler
+        // must not paint it. It used to paint here — a blocking 400-row Room
+        // read and 400 `JSONObject` parses inside the tap handler, which is the
+        // freeze this is the regression test for.
+        s.main.advanceUntilIdle()
+        assertTrue(
+            "the cache prime must not run on the caller's thread",
+            model.uiState.value.messages.isEmpty(),
+        )
+
+        // One step: the cache read has returned and been published, and the
+        // fetch is still in flight.
+        s.step()
         val state = model.uiState.value
         assertEquals(listOf("from disk"), state.messages.map { it.content })
         assertTrue("still loading behind the painted rows", state.isLoading)
+    }
+
+    @Test
+    fun `a live frame that lands before the cache prime is not rolled back`() = cacheTest { s ->
+        // The prime is background work now, so it can finish after something
+        // newer is already on screen. The cache is by definition older, and
+        // publishing it then would put a stale turn back in the transcript —
+        // the one thing paint-from-cache must never do.
+        val cache = InMemoryChatCache().apply {
+            writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "stale")))
+        }
+        val stream = FakeEventStream()
+        val model = model(s.ioDispatcher, cache, stream = stream)
+
+        model.openSession("sess_1")
+        // The cache read is in flight. A turn completes while it is there.
+        s.main.advanceUntilIdle()
+        stream.emit(
+            ChatStreamEvent.Full(
+                "sess_1",
+                ChatMessage(
+                    id = "m9",
+                    role = ChatMessage.ROLE_ASSISTANT,
+                    content = "the live answer",
+                    createdAtEpochMillis = nanoBase / 1_000_000L + 300L,
+                    sortKeyNanos = nanoBase + 300L,
+                ),
+            ),
+        )
+        s.drain()
+
+        assertEquals(
+            listOf("the live answer"),
+            model.uiState.value.messages.map { it.content },
+        )
+    }
+
+    @Test
+    fun `opening a second session drops the first session's prime`() = cacheTest { s ->
+        val cache = InMemoryChatCache().apply {
+            writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "first chat")))
+            writeMessages(
+                "user_a",
+                "sess_2",
+                listOf(cachedRow("m9", 100L, content = "second chat")),
+            )
+        }
+        val model = model(s.ioDispatcher, cache)
+
+        model.openSession("sess_1")
+        model.openSession("sess_2")
+        s.drain()
+
+        assertEquals("sess_2", model.uiState.value.sessionId)
+        assertEquals(
+            listOf("second chat"),
+            model.uiState.value.messages.map { it.content },
+        )
     }
 
     @Test

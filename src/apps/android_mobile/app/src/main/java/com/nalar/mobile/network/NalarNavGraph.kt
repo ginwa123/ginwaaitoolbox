@@ -176,7 +176,22 @@ fun NalarNavGraph(
     modifier: Modifier = Modifier,
     navController: NavHostController = rememberNavController(),
     homeState: HomeUiState,
-    chatState: ChatUiState,
+    /**
+     * The chat transcript, *read on demand* rather than handed in as a value.
+     *
+     * A `ChatUiState` parameter is a `StateFlow` sample taken at the top of
+     * the tree, and every emission of it — every stream delta, every page, every
+     * keystroke in the composer's draft — then recomposes the whole
+     * `NalarNavGraph`: the drawer, the `NavHost` builder, and every composed
+     * destination. The transcript is the only thing that changed, and it is the
+     * one thing that is already virtualized.
+     *
+     * A lambda reads the flow *inside* the chat destination, so only that
+     * composable observes it. It is a provider rather than a `StateFlow` so the
+     * graph still has no opinion about where the value comes from, and so a
+     * test can hand over a fixed state the same way it always did.
+     */
+    chatState: () -> ChatUiState,
     /**
      * The position the last run left behind. Read once per launch and never
      * written from here — a persisted position that the app edits as it resumes
@@ -334,6 +349,7 @@ fun NalarNavGraph(
             ),
         ) { backStackEntry ->
             val sessionId = backStackEntry.arguments?.getString(NalarRoutes.ARG_SESSION_ID).orEmpty()
+            val chatState = chatState()
             // The id in the route is the truth. When it disagrees with what is
             // loaded — a deep link, or a session that failed to open — the route
             // wins, or the screen would show the previous chat under this one's

@@ -10,9 +10,10 @@ import androidx.room.Transaction
  * The transcript cache's SQL.
  *
  * Every method here is **blocking** on purpose. Room runs a blocking DAO call
- * on the caller's thread, which is what makes `primeFromCache` able to paint
- * the first frame without a coroutine hop; the callers that write do so from
- * `Dispatchers.IO`. See `NalarCacheDatabase` for why that is the trade.
+ * on the caller's thread, and every caller that reaches one — the transcript
+ * prime included — does so inside a `Dispatchers.IO` hop. See
+ * `NalarCacheDatabase` for why the reads are allowed to be main-thread-legal
+ * at all.
  *
  * There are no `suspend` functions and no `Flow`. A cache that is written
  * exactly once per page and read exactly once per mount has no observer worth
