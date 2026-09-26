@@ -21,12 +21,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -43,10 +45,12 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
+import com.nalar.mobile.ui.NalarBackgroundRaised
 import com.nalar.mobile.ui.NalarBorder
 import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarField
@@ -64,11 +68,10 @@ fun RecentsSidebar(
     modifier: Modifier = Modifier,
     nowEpochMillis: Long = System.currentTimeMillis(),
     onNavigate: () -> Unit = {},
+    isLoading: Boolean = false,
+    errorMessage: String? = null,
+    onRetry: () -> Unit = {},
 ) {
-    val visibleChats = selectedWorkspaceId
-        ?.let { workspaceId -> recentChatsForWorkspace(chats, workspaceId) }
-        .orEmpty()
-
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -77,12 +80,53 @@ fun RecentsSidebar(
     ) {
         Spacer(Modifier.height(12.dp))
 
+        if (workspaces.isEmpty()) {
+            // No workspace means no scope, so there is nothing to scope chats
+            // to. Loading, failed and genuinely-empty are three different
+            // stories and the user needs to be able to tell them apart.
+            when {
+                isLoading -> SidebarPlaceholder(
+                    modifier = Modifier.weight(1f),
+                    testTag = "sidebar_loading",
+                    title = "Loading workspaces",
+                    detail = "Fetching your workspaces from Nalar.",
+                    showSpinner = true,
+                )
+
+                errorMessage != null -> SidebarError(
+                    modifier = Modifier.weight(1f),
+                    testTag = "sidebar_error",
+                    message = errorMessage,
+                    onRetry = onRetry,
+                )
+
+                else -> SidebarPlaceholder(
+                    modifier = Modifier.weight(1f),
+                    testTag = "sidebar_no_workspaces",
+                    title = "No workspaces yet",
+                    detail = "Create a workspace on the web app and it will show up here.",
+                )
+            }
+            return@Column
+        }
+
         WorkspaceDropdown(
             workspaces = workspaces,
             selectedWorkspaceId = selectedWorkspaceId,
             onWorkspaceSelected = onWorkspaceSelected,
             onNavigate = onNavigate,
         )
+
+        // Rows survived a failed refresh. Say so — a stale list that looks live
+        // is its own kind of lie.
+        if (errorMessage != null && !isLoading) {
+            Spacer(Modifier.height(10.dp))
+            StaleDataNotice(
+                modifier = Modifier.testTag("sidebar_stale_notice"),
+                message = errorMessage,
+                onRetry = onRetry,
+            )
+        }
 
         Spacer(Modifier.height(24.dp))
 
@@ -97,10 +141,31 @@ fun RecentsSidebar(
 
         Spacer(Modifier.height(8.dp))
 
+        val visibleChats = selectedWorkspaceId
+            ?.let { workspaceId -> recentChatsForWorkspace(chats, workspaceId) }
+            .orEmpty()
+
         if (visibleChats.isEmpty()) {
-            EmptyChats(
-                modifier = Modifier.weight(1f),
-            )
+            when {
+                isLoading -> SidebarPlaceholder(
+                    modifier = Modifier.weight(1f),
+                    testTag = "chats_loading",
+                    title = "Loading chats",
+                    detail = "Fetching the most recent chats in this workspace.",
+                    showSpinner = true,
+                )
+
+                errorMessage != null -> SidebarError(
+                    modifier = Modifier.weight(1f),
+                    testTag = "chats_error",
+                    message = errorMessage,
+                    onRetry = onRetry,
+                )
+
+                else -> EmptyChats(
+                    modifier = Modifier.weight(1f),
+                )
+            }
         } else {
             LazyColumn(
                 modifier = Modifier
@@ -141,7 +206,7 @@ private fun WorkspaceDropdown(
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val selectedWorkspace = workspaces.firstOrNull { it.id == selectedWorkspaceId }
-    val selectedName = selectedWorkspace?.name ?: "Select workspace"
+    val selectedName = selectedWorkspace?.displayName ?: "Select workspace"
 
     Box(modifier = Modifier.fillMaxWidth()) {
         Surface(
@@ -205,7 +270,7 @@ private fun WorkspaceDropdown(
                     DropdownMenuItem(
                         text = {
                             Text(
-                                text = workspace.name,
+                                text = workspace.displayName,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -249,8 +314,10 @@ private fun ChatRow(
             .semantics(mergeDescendants = true) {
                 contentDescription = buildString {
                     append(chat.displayTitle)
-                    append(", ")
-                    append(formatRelativeTimeForAccessibility(chat.updatedAtEpochMillis, nowEpochMillis))
+                    if (chat.hasTimestamp) {
+                        append(", ")
+                        append(formatRelativeTimeForAccessibility(chat.updatedAtEpochMillis, nowEpochMillis))
+                    }
                 }
             }
             .selectable(
@@ -282,11 +349,15 @@ private fun ChatRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    text = formatRelativeTime(chat.updatedAtEpochMillis, nowEpochMillis),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = NalarMuted,
-                )
+                // A session with no parseable timestamp gets no time pill
+                // rather than a fabricated one.
+                if (chat.hasTimestamp) {
+                    Text(
+                        text = formatRelativeTime(chat.updatedAtEpochMillis, nowEpochMillis),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = NalarMuted,
+                    )
+                }
             }
 
             if (selected) {
@@ -302,26 +373,126 @@ private fun ChatRow(
 }
 
 @Composable
-private fun EmptyChats(modifier: Modifier = Modifier) {
-    Box(
+private fun StaleDataNotice(
+    message: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
         modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = NalarBackgroundRaised,
+        contentColor = NalarDim,
+        border = BorderStroke(1.dp, NalarBorder),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Showing saved data · $message",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = NalarDim,
+            )
+            TextButton(
+                onClick = onRetry,
+                modifier = Modifier.testTag("sidebar_stale_retry"),
+            ) {
+                Text(text = "Retry", color = NalarAccent)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SidebarPlaceholder(
+    title: String,
+    detail: String,
+    testTag: String,
+    modifier: Modifier = Modifier,
+    showSpinner: Boolean = false,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(testTag),
         contentAlignment = Alignment.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(horizontal = 24.dp),
         ) {
+            if (showSpinner) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    strokeWidth = 2.dp,
+                    color = NalarMuted,
+                )
+            }
             Text(
-                text = "No recent chats",
+                text = title,
                 style = MaterialTheme.typography.titleMedium,
                 color = NalarMuted,
+                textAlign = TextAlign.Center,
             )
             Text(
-                text = "Chats in this workspace will appear here.",
+                text = detail,
                 style = MaterialTheme.typography.bodyMedium,
                 color = NalarDim,
+                textAlign = TextAlign.Center,
             )
         }
     }
+}
+
+@Composable
+private fun SidebarError(
+    message: String,
+    onRetry: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag(testTag),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 24.dp),
+        ) {
+            Text(
+                text = "Could not load your sidebar",
+                style = MaterialTheme.typography.titleMedium,
+                color = NalarMuted,
+                textAlign = TextAlign.Center,
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium,
+                color = NalarDim,
+                textAlign = TextAlign.Center,
+            )
+            TextButton(
+                onClick = onRetry,
+                modifier = Modifier.testTag("sidebar_retry"),
+            ) {
+                Text(text = "Retry", color = NalarAccent)
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyChats(modifier: Modifier = Modifier) {
+    SidebarPlaceholder(
+        modifier = modifier,
+        testTag = "chats_empty",
+        title = "No recent chats",
+        detail = "Chats in this workspace will appear here.",
+    )
 }

@@ -15,10 +15,7 @@ import com.nalar.mobile.auth.AuthUiState
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
-import com.nalar.mobile.recents.ChatSummary
-import com.nalar.mobile.recents.PreviewChats
-import com.nalar.mobile.recents.PreviewWorkspaces
-import com.nalar.mobile.recents.WorkspaceOption
+import com.nalar.mobile.recents.HomeUiState
 import com.nalar.mobile.shell.MobileHomeScreen
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,8 +43,10 @@ fun NalarNavGraph(
     onUseAnotherAccount: () -> Unit,
     modifier: Modifier = Modifier,
     navController: NavHostController = rememberNavController(),
-    workspaces: List<WorkspaceOption> = PreviewWorkspaces,
-    chats: List<ChatSummary> = PreviewChats,
+    homeState: HomeUiState,
+    onSelectWorkspace: (String) -> Unit,
+    onSelectChat: (String) -> Unit,
+    onRetryHome: () -> Unit,
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -61,6 +60,8 @@ fun NalarNavGraph(
             when (authState.phase) {
                 SessionPhase.Restoring -> AuthRestoringScreen()
 
+                // `onRetrySession` bypasses the /me cache: the user pressed "Try
+                // again" to re-check, so it has to reach the network.
                 SessionPhase.NeedsRetry -> AuthRestoringScreen(
                     errorMessage = authState.errorMessage,
                     onRetry = onRetrySession,
@@ -77,9 +78,16 @@ fun NalarNavGraph(
                 )
 
                 SessionPhase.Authenticated -> MobileHomeScreen(
-                    workspaces = workspaces,
-                    chats = chats,
+                    workspaces = homeState.workspaces,
+                    chats = homeState.chats,
+                    initialWorkspaceId = homeState.selectedWorkspaceId,
+                    initialChatId = homeState.selectedChatId,
+                    onWorkspaceSelected = onSelectWorkspace,
+                    onChatSelected = onSelectChat,
                     onOpenNetworkInspector = openInspector,
+                    isLoading = homeState.isLoading,
+                    errorMessage = homeState.errorMessage,
+                    onRetry = onRetryHome,
                 )
             }
         }

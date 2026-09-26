@@ -98,6 +98,8 @@ class AuthClient(
     private val sessionStore: SessionStore,
     baseUrl: String = AuthConfig.BASE_URL,
     httpTransport: AuthTransport? = null,
+    private val meCache: AuthMeCache? = null,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
     private val transport: AuthTransport = httpTransport ?: HttpsAuthTransport(baseUrl)
 
@@ -128,6 +130,10 @@ class AuthClient(
 
         return try {
             sessionStore.save(sessionCookie)
+            // The new cookie fingerprints to a different cache namespace, but
+            // clearing also drops the pre-login verdict, which is the one the
+            // web calls out specifically.
+            meCache?.clear()
             AuthResult.Authenticated(user)
         } catch (_: Exception) {
             runCatching { sessionStore.clear() }
@@ -135,12 +141,36 @@ class AuthClient(
         }
     }
 
-    fun restoreSession(): AuthResult {
+    /**
+     * Resolves the current session.
+     *
+     * A fresh (sub-TTL) cache entry answers without a network call at all.
+     * [forceRefresh] skips the cache, which is what the "Try again" button on
+     * the retry screen needs — the user pressed it precisely to re-check, so
+     * replaying a cached answer would make the button inert.
+     */
+    fun restoreSession(forceRefresh: Boolean = false): AuthResult {
         val sessionCookie = try {
             sessionStore.read()
         } catch (_: Exception) {
             return AuthResult.Unavailable(SESSION_ERROR_MESSAGE)
         }
+
+        // No cookie means nothing to attribute a cached identity to; `/me`
+        // would answer unauthenticated anyway.
+        val fingerprint = sessionCookie?.let { AuthMeCacheCodec.fingerprint(it) }
+
+        if (!forceRefresh && fingerprint != null) {
+            val cached = meCache?.read(fingerprint)
+            if (cached != null && cached.isFresh(nowMillis(), AuthMeCacheCodec.TTL_MILLIS)) {
+                val fromCache = interpretMe(cached.body)
+                if (fromCache.isServableFromCache()) return fromCache
+                // A cached body we cannot make a decision from is a MISS, not an
+                // answer. Falling through here is what stops a corrupt entry from
+                // signing the user out.
+            }
+        }
+
         val response = try {
             transport.get(
                 path = AuthConfig.ME_PATH,
@@ -153,13 +183,30 @@ class AuthClient(
         }
 
         if (response.statusCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            // The cookie is dead. Anything cached against it is now a lie.
+            meCache?.clear()
             return clearSessionOrUnavailable()
         }
         if (response.statusCode !in 200..299) {
             return AuthResult.Unavailable(SESSION_ERROR_MESSAGE)
         }
 
-        val me = parseMe(response.body)
+        // Only 2xx is cached: Android's recovery path is a retry button, and a
+        // cached error status would make that button do nothing.
+        if (fingerprint != null) {
+            meCache?.write(fingerprint, response.body, nowMillis())
+        }
+
+        return interpretMe(response.body)
+    }
+
+    /**
+     * The one place a `/me` body becomes an [AuthResult]. The cached and the
+     * network path both go through it, so a cached identity cannot be judged by
+     * different rules than a live one.
+     */
+    private fun interpretMe(body: String): AuthResult {
+        val me = parseMe(body)
             ?: return AuthResult.Unavailable(SESSION_ERROR_MESSAGE)
         if (!me.authEnabled) {
             return AuthResult.AuthDisabled
@@ -167,6 +214,9 @@ class AuthClient(
         if (me.authenticated && me.user != null) {
             return AuthResult.Authenticated(me.user)
         }
+        // A 2xx body that still says "not signed in" — do not leave a cached
+        // copy of it behind, or the next launch re-reads the same verdict.
+        meCache?.clear()
         return clearSessionOrUnavailable()
     }
 
@@ -190,6 +240,9 @@ class AuthClient(
                 // Local logout must still succeed when the server is unreachable.
             }
         }
+        // Do this first: once the cookie is gone there is no fingerprint, so
+        // the entry would otherwise be orphaned rather than erased.
+        meCache?.clear()
         return try {
             sessionStore.clear()
             AuthResult.NoSession
@@ -204,6 +257,14 @@ class AuthClient(
     } catch (_: Exception) {
         AuthResult.Unavailable(SESSION_ERROR_MESSAGE)
     }
+
+    /**
+     * True for the two answers worth replaying from cache: a resolved identity,
+     * or auth being off. Anything else — unparseable, or a body that says "not
+     * signed in" — must be re-checked against the network rather than acted on.
+     */
+    private fun AuthResult.isServableFromCache(): Boolean =
+        this is AuthResult.Authenticated || this is AuthResult.AuthDisabled
 
     private fun networkErrorMessage(): String =
         "Could not reach ${AuthConfig.BASE_URL}. Check your connection."
