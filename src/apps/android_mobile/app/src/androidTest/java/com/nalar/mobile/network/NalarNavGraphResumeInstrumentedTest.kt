@@ -65,7 +65,8 @@ class NalarNavGraphResumeInstrumentedTest {
             NalarRoutes.chat("sess_c"),
             controller.currentDestination?.route,
         )
-        composeTestRule.onNodeWithTag("chat_back").assertIsDisplayed()
+        // The chat's way out is the hamburger's drawer, not an arrow.
+        composeTestRule.onNodeWithTag("chat_drawer_menu").assertIsDisplayed()
     }
 
     @Test
@@ -97,7 +98,10 @@ class NalarNavGraphResumeInstrumentedTest {
     fun backFromAResumedChatReturnsToTheShell() {
         launch(LastPosition(workspaceId = "ws_b", sessionId = "sess_c"))
 
-        composeTestRule.onNodeWithTag("chat_back").performClick()
+        // Through the drawer, which is where the chat's way home now lives.
+        composeTestRule.onNodeWithTag("chat_drawer_menu").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("chat_all_chats").performClick()
         composeTestRule.waitForIdle()
 
         // A `popUpTo` here would drop the shell and put the user on the recovery

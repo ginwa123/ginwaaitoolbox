@@ -48,7 +48,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.recents.ChatSummary
-import com.nalar.mobile.recents.RecentsSidebar
 import com.nalar.mobile.recents.WorkspaceOption
 import com.nalar.mobile.recents.formatRelativeTime
 import com.nalar.mobile.recents.recentChatsForWorkspace
@@ -156,8 +155,12 @@ fun MobileHomeScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     val closeDrawer: () -> Unit = {
-        coroutineScope.launch {
-            drawerState.close()
+        // A permanent drawer has no sheet to close, so asking anyway would
+        // animate a drawer that was never open on every chat tap.
+        if (drawerState.isOpen) {
+            coroutineScope.launch {
+                drawerState.close()
+            }
         }
     }
     val selectedWorkspace = workspaces.firstOrNull { it.id == selectedWorkspaceId }
@@ -195,13 +198,14 @@ fun MobileHomeScreen(
                         drawerContainerColor = NalarBackground,
                         drawerContentColor = NalarText,
                     ) {
-                        RecentsSidebar(
+                        RecentsDrawerContent(
                             workspaces = workspaces,
                             chats = chats,
                             selectedWorkspaceId = selectedWorkspaceId,
                             selectedChatId = selectedChatId,
                             onWorkspaceSelected = selectWorkspace,
                             onChatSelected = selectChat,
+                            onOpenChat = closeDrawer,
                             isLoading = isLoading,
                             errorMessage = errorMessage,
                             onRetry = onRetry,
@@ -235,7 +239,7 @@ fun MobileHomeScreen(
                         drawerContainerColor = NalarBackground,
                         drawerContentColor = NalarText,
                     ) {
-                        RecentsSidebar(
+                        RecentsDrawerContent(
                             workspaces = workspaces,
                             chats = chats,
                             selectedWorkspaceId = selectedWorkspaceId,

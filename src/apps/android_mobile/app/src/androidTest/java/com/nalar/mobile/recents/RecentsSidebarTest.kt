@@ -332,7 +332,7 @@ class RecentsSidebarTest {
         // the trigger and only reaching the end can arm it.
         assertEquals(0, loadMoreCalls)
 
-        composeTestRule.onNodeWithTag("chat_message_list")
+        composeTestRule.onNodeWithTag("sidebar_chat_list")
             .performScrollToIndex(55)
         composeTestRule.waitForIdle()
 

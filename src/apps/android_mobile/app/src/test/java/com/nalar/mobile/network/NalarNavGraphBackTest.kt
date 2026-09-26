@@ -52,10 +52,21 @@ class NalarNavGraphBackTest {
                 .findAll(source)
                 .count(),
         )
+        // There is more than one place that pops to the shell now — the chat
+        // route's drawer switches chats in place as well as `goBack` rebuilding
+        // onto it — so the invariant is about how each one pops, not how many
+        // there are. An inclusive pop of the shell is the blank window.
         assertEquals(
+            "popping the shell inclusively is the blank-screen defect: the shell " +
+                "is the one entry that has to survive",
+            0,
+            Regex("""popUpTo\(NalarRoutes\.SHELL\)\s*\{\s*inclusive\s*=\s*true""")
+                .findAll(source)
+                .count(),
+        )
+        assertTrue(
             "the shell must stay reachable as the floor of the back stack",
-            1,
-            Regex("""popUpTo\(NalarRoutes\.SHELL\)""").findAll(source).count(),
+            source.contains("popUpTo(NalarRoutes.SHELL) { inclusive = false }"),
         )
     }
 

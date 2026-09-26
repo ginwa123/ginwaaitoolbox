@@ -326,7 +326,12 @@ private fun SidebarBody(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .testTag("chat_message_list")
+                    // Not the transcript's `chat_message_list`. The chat route
+                    // composes this drawer *and* the transcript at once — a
+                    // closed sheet stays in the tree — so a shared tag made
+                    // every `onNodeWithTag` on either list fail on "multiple
+                    // nodes", which is two lists that cannot be told apart.
+                    .testTag("sidebar_chat_list")
                     .selectableGroup(),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {

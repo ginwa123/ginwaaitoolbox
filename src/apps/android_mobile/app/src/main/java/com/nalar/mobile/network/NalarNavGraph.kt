@@ -46,7 +46,10 @@ import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.HomeUiState
+import com.nalar.mobile.shell.BackToChatsRow
 import com.nalar.mobile.shell.MobileHomeScreen
+import com.nalar.mobile.shell.RecentsDrawerContent
+import com.nalar.mobile.shell.chatDrawerSelectedChatId
 import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
@@ -213,8 +216,26 @@ fun NalarNavGraph(
     // A `nalar://` link or a `popUpTo(SHELL)` navigation can leave a leaf as the
     // only destination on the back stack. The back arrow there used to call the
     // inclusive `popBackStack()`, which emptied the back stack and left `NavHost`
-    // drawing nothing at all. See [BackAction].
+    // drawing nothing at all. See [BackAction]. The chat's own way out is now
+    // the drawer's "All chats" row, which lands here.
     val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
+
+    // A chat picked from the chat route's drawer *replaces* the one on screen
+    // rather than stacking on it. Pushing would make system Back walk back
+    // through every chat opened this session, and the reader is switching
+    // between chats, not moving through a history of them.
+    //
+    // On a deep-linked chat the shell is not underneath, so the popUpTo finds
+    // nothing and the new chat lands on top of the old one. Back then returns
+    // to the chat that was open, which is a route onwards rather than a dead
+    // end — and "All chats" still reaches the shell.
+    val switchChat: (String) -> Unit = { chatId ->
+        onOpenSession(chatId)
+        navController.navigate(NalarRoutes.chat(chatId)) {
+            popUpTo(NalarRoutes.SHELL) { inclusive = false }
+            launchSingleTop = true
+        }
+    }
 
     // Signing out is app-wide, but only the shell reads the auth phase — the
     // chat route would happily keep painting a transcript the user can no
@@ -333,13 +354,63 @@ fun NalarNavGraph(
                 // has not finished opening yet still has to report the run it
                 // is about to show.
                 isRunning = sessionId in runningSessionIds,
-                onBack = goBack,
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,
                 onStop = onStopChatRun,
                 onLoadOlder = onLoadOlderChatMessages,
                 onDismissError = onDismissChatError,
                 onAnswer = onAnswerChatQuestion,
+                // The hamburger opens the same sidebar the shell shows — a
+                // workspace's chats, a workspace picker and sign-out — because a
+                // reader in a chat is far more often on their way to a
+                // *different* chat than on their way back to the list.
+                //
+                // `onOpenChat` is the drawer's own signal that a chat was
+                // picked, so closing it hangs off that rather than off the
+                // row's click: the sidebar fires both, and wiring only one
+                // leaves the sheet open on top of the transcript the reader
+                // just asked for.
+                drawerContent = { dismissDrawer ->
+                    RecentsDrawerContent(
+                        workspaces = homeState.workspaces,
+                        chats = homeState.chats,
+                        selectedWorkspaceId = homeState.selectedWorkspaceId,
+                        // The route's session, not the list's memory: a deep link
+                        // opens a chat the sidebar never marked as selected.
+                        selectedChatId = chatDrawerSelectedChatId(sessionId, homeState.selectedChatId),
+                        onWorkspaceSelected = onSelectWorkspace,
+                        onChatSelected = { chatId ->
+                            onSelectChat(chatId)
+                            switchChat(chatId)
+                        },
+                        onOpenChat = dismissDrawer,
+                        // The chat has no back arrow to leave by, and a deep-linked
+                        // one has nothing beneath it for the system Back button to
+                        // pop, so the drawer carries the route home itself.
+                        header = {
+                            BackToChatsRow(
+                                onClick = {
+                                    dismissDrawer()
+                                    goBack()
+                                },
+                            )
+                        },
+                        isLoading = homeState.isLoading,
+                        errorMessage = homeState.errorMessage,
+                        onRetry = onRetryHome,
+                        isLoadingMore = homeState.isLoadingMoreChats,
+                        hasMoreChats = homeState.hasMoreChats,
+                        onLoadMore = onLoadMoreChats,
+                        // The same set the shell's drawer shows it in: a chat
+                        // busy in the background is busy in both copies of the
+                        // list, and this is the one the reader is looking at.
+                        runningSessionIds = runningSessionIds,
+                        isAuthEnabled = authState.isAuthEnabled,
+                        signedInEmail = authState.userEmail,
+                        isLoggingOut = authState.isLoggingOut,
+                        onLogout = signOut,
+                    )
+                },
             )
         }
 
