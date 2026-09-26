@@ -94,6 +94,37 @@ class ChatClient(
     }
 
     /**
+     * Answers a pending `ask_user` question, which is what resumes the run.
+     *
+     * The reply carries the new status rather than the rewritten tool row, so
+     * the caller refetches the transcript: the authoritative row arrives over
+     * SSE, and rewriting the card optimistically would fight that echo.
+     */
+    fun answerQuestion(
+        sessionId: String,
+        questionId: String? = null,
+        toolCallId: String? = null,
+        answer: String? = null,
+        skip: Boolean = false,
+    ): ChatResult<Unit> {
+        val response = try {
+            transport.post(
+                path = ChatApi.answerPath(sessionId),
+                body = ChatApi.answerQuestionBody(
+                    questionId = questionId,
+                    toolCallId = toolCallId,
+                    answer = answer,
+                    skip = skip,
+                ),
+                headers = authenticatedHeaders(json = true),
+            )
+        } catch (_: Exception) {
+            return ChatResult.Unavailable(unreachableMessage())
+        }
+        return interpretWrite(response, "The answer could not be sent. Try again.")
+    }
+
+    /**
      * The in-flight partial text for a run that is still going.
      *
      * There is no SSE replay to re-attach from, so a reconnect or a process

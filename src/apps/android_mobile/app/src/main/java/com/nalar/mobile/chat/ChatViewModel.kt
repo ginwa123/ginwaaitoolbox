@@ -57,6 +57,7 @@ class ChatViewModel(
     private var olderJob: Job? = null
     private var sendJob: Job? = null
     private var stopJob: Job? = null
+    private var answerJob: Job? = null
 
     /**
      * Ids delivered live over SSE in this session view. A REST response skips
@@ -65,6 +66,22 @@ class ChatViewModel(
      * finished tool result into a spinner.
      */
     private val liveMessageIds = mutableSetOf<String>()
+
+    /**
+     * Sub-agent pings seen so far, keyed by the spawning `tool_call_id`.
+     *
+     * The backend keys its own progress map the same way, so two concurrent
+     * fan-outs never cross-contaminate — and neither do they here. Cleared on
+     * every session change for the same reason: the map is only meaningful
+     * within one run.
+     */
+    private val subAgentBatches = mutableMapOf<String, MutableSet<SubAgentPing>>()
+
+    /** One sub-agent's latest known lifecycle state, keyed within its batch. */
+    private data class SubAgentPing(
+        val key: String,
+        val status: String,
+    )
 
     /** Cursor for the next *older* page, from the server's `has_more`. */
     private var olderCursor: String? = null
@@ -97,6 +114,7 @@ class ChatViewModel(
             // Blank rather than keep: the old transcript belongs to someone else.
             _uiState.value = ChatUiState()
             liveMessageIds.clear()
+            subAgentBatches.clear()
             olderCursor = null
         }
     }
@@ -119,11 +137,13 @@ class ChatViewModel(
         olderJob?.cancel()
         sendJob?.cancel()
         stopJob?.cancel()
+        answerJob?.cancel()
         // A stream that is already up would keep delivering the PREVIOUS
         // chat's events into the handlers captured for it, and this chat would
         // sit there showing "connected" while never receiving a turn.
         stopEventStream()
         liveMessageIds.clear()
+        subAgentBatches.clear()
         olderCursor = null
         hasConnectedStreamOnce = false
 
@@ -438,6 +458,52 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Settles a pending `ask_user` question.
+     *
+     * `ask_user` ends the run, so an unanswered question is a chat that is
+     * stopped rather than one that is waiting — the composer would queue a turn
+     * behind a run that is not going to continue. Answering is therefore the
+     * only way out, which is why the card carries the affordance rather than
+     * leaving the reader to discover the desktop client.
+     */
+    fun answerQuestion(
+        questionId: String?,
+        toolCallId: String,
+        answer: String? = null,
+        skip: Boolean = false,
+    ) {
+        val sessionId = _uiState.value.sessionId ?: return
+        if (answer.isNullOrBlank() && !skip) return
+        val requestGeneration = generation
+        answerJob?.cancel()
+        answerJob = viewModelScope.launch {
+            val result = withContext(ioDispatcher) {
+                client.answerQuestion(
+                    sessionId = sessionId,
+                    questionId = questionId,
+                    toolCallId = toolCallId,
+                    answer = answer,
+                    skip = skip,
+                )
+            }
+            if (requestGeneration != generation) return@launch
+            when (result) {
+                is ChatResult.Loaded -> {
+                    // The rewritten tool row arrives over SSE; refetching too
+                    // covers the case where the stream is down, which is exactly
+                    // when the reader most needs the answer to have landed.
+                    revalidate(sessionId, requestGeneration)
+                }
+
+                is ChatResult.SignedOut -> expireSession()
+                is ChatResult.Rejected,
+                is ChatResult.Unavailable,
+                -> _uiState.update { it.copy(errorMessage = messageFor(result)) }
+            }
+        }
+    }
+
     fun clearError() {
         _uiState.update { it.copy(errorMessage = null) }
     }
@@ -452,12 +518,14 @@ class ChatViewModel(
         stopEventStream()
         userId = null
         liveMessageIds.clear()
+        subAgentBatches.clear()
         olderCursor = null
         _uiState.value = ChatUiState()
         loadJob?.cancel()
         olderJob?.cancel()
         sendJob?.cancel()
         stopJob?.cancel()
+        answerJob?.cancel()
         cache.clear()
     }
 
@@ -510,6 +578,12 @@ class ChatViewModel(
 
             is ChatStreamEvent.Full ->
                 if (event.sessionId == sessionId) upsertFullMessage(sessionId, event)
+
+            // A fan-out that reports nothing for two minutes looks like a hang.
+            // These never become turns, so the state they drive is a separate
+            // line in the header rather than a row in the transcript.
+            is ChatStreamEvent.SubAgentProgress ->
+                if (event.sessionId == sessionId) recordSubAgentProgress(event)
 
             is ChatStreamEvent.SessionChanged ->
                 if (event.sessionId == sessionId) revalidate(sessionId, generation)
@@ -616,6 +690,51 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Folds one sub-agent lifecycle ping into the header counters.
+     *
+     * The running count is *derived* by replaying the batch rather than by
+     * incrementing and decrementing. A `completed` for an agent whose `launched`
+     * ping was missed — which is exactly what a reconnect in the middle of a
+     * fan-out produces — would otherwise decrement a count that was never
+     * incremented and drive it below zero.
+     */
+    private fun recordSubAgentProgress(event: ChatStreamEvent.SubAgentProgress) {
+        // A ping with no `agent_name` still happened, and still has to count.
+        // Keying the batch on the name alone collapsed every nameless ping onto
+        // one entry, so an N-agent fan-out reported "1 of N" the whole way
+        // through — wrong in both directions at once, which is the only kind of
+        // wrong that tells the reader nothing.
+        val key = event.agentName.ifBlank { "#${event.agentIndex}" }
+        val batch = subAgentBatches.getOrPut(event.toolCallId) { mutableSetOf() }
+        batch.removeIf { it.key == key }
+        batch.add(SubAgentPing(key = key, status = event.status))
+
+        val launched = batch.size
+        val finished = batch.count { it.status != ChatStreamEvent.SubAgentProgress.STATUS_LAUNCHED }
+        val failed = batch.count { it.status == ChatStreamEvent.SubAgentProgress.STATUS_FAILED }
+
+        // A batch the backend never told us the size of is pruned once every
+        // member it *did* report has finished, so a session that runs a hundred
+        // fan-outs does not retain a hundred sets.
+        val complete = finished > 0 && (
+            finished == launched &&
+                (event.totalAgents <= 0 || finished >= event.totalAgents)
+            )
+
+        _uiState.update { state ->
+            state.copy(
+                subAgentsTotal = maxOf(event.totalAgents, launched),
+                subAgentsRunning = (launched - finished).coerceAtLeast(0),
+                subAgentsFailed = failed,
+            )
+        }
+        if (complete) {
+            subAgentBatches.remove(event.toolCallId)
+            _uiState.update { it.copy(subAgentsRunning = 0) }
+        }
+    }
+
     private fun messageFor(result: ChatResult<*>): String = when (result) {
         is ChatResult.Rejected -> result.message
         is ChatResult.Unavailable -> result.message
@@ -646,6 +765,9 @@ class ChatViewModel(
         .put("tool_call_id", message.toolCallId)
         .put("image_url", message.imageUrls.joinToString("|"))
         .put("video_url", message.videoUrls.joinToString("|"))
+        .put("diffview_before", message.diffviewBefore)
+        .put("diffview_after", message.diffviewAfter)
+        .put("tool_calls_json", message.toolCallsJson)
 
     private fun expireSession() {
         _uiState.update {

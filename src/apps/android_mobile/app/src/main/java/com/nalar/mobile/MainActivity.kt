@@ -84,6 +84,14 @@ class MainActivity : ComponentActivity() {
                     onStopChatRun = chatViewModel::stopRun,
                     onLoadOlderChatMessages = chatViewModel::loadOlderMessages,
                     onDismissChatError = chatViewModel::clearError,
+                    onAnswerChatQuestion = {
+                        chatViewModel.answerQuestion(
+                            questionId = it.questionId,
+                            toolCallId = it.toolCallId,
+                            answer = it.answer,
+                            skip = it.skip,
+                        )
+                    },
                 )
             }
         }

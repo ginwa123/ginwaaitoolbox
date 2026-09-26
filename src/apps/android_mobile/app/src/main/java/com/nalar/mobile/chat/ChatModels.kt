@@ -26,6 +26,24 @@ data class ChatMessage(
     val finishReason: String = "",
     val imageUrls: List<String> = emptyList(),
     val videoUrls: List<String> = emptyList(),
+    /**
+     * The two sides of a file edit, present only on a completed tool result.
+     *
+     * The backend stores them next to the row rather than inside the envelope,
+     * so a `text_replace` card has two possible sources for a diff and this
+     * pair is the one that survives a cache round-trip and an SSE re-emit.
+     */
+    val diffviewBefore: String = "",
+    val diffviewAfter: String = "",
+    /**
+     * The tool calls an assistant turn declared, as a JSON *string* holding an
+     * OpenAI-style array.
+     *
+     * An assistant turn that only calls tools carries an empty [content], so
+     * without this the row has nothing to render and either disappears or shows
+     * an empty bubble labelled with a comma-joined list of tool names.
+     */
+    val toolCallsJson: String = "",
     /** The agentic-loop diagnostic frame, which is not a chat turn. */
     val isError: Boolean = false,
     /**
@@ -37,6 +55,23 @@ data class ChatMessage(
 ) {
     val isUser: Boolean get() = role == ROLE_USER
 
+    /**
+     * An assistant turn whose whole content is "I am going to call these tools".
+     *
+     * Such a row has an empty [content] and a `tool_name` holding a
+     * comma-joined list of every tool in the batch, so nothing about it looks
+     * like a single tool. It is rendered as its own summary row rather than as a
+     * tool card, which is what the web does with the same data.
+     */
+    val isToolCallTurn: Boolean
+        get() = role == ROLE_ASSISTANT &&
+            finishReason == FINISH_REASON_TOOL_CALLS &&
+            toolCallsJson.isNotBlank()
+
+    /** True when either side of a file edit is present. */
+    val hasDiff: Boolean
+        get() = diffviewBefore.isNotEmpty() || diffviewAfter.isNotEmpty()
+
     /** True when there is something to draw, so an empty row is never rendered. */
     val hasVisibleContent: Boolean
         get() = content.isNotBlank() ||
@@ -44,6 +79,8 @@ data class ChatMessage(
             toolName.isNotBlank() ||
             imageUrls.isNotEmpty() ||
             videoUrls.isNotEmpty() ||
+            hasDiff ||
+            isToolCallTurn ||
             isError
 
     companion object {
@@ -51,6 +88,18 @@ data class ChatMessage(
         const val ROLE_ASSISTANT = "assistant"
         const val ROLE_SYSTEM = "system"
         const val ROLE_TOOL = "tool"
+
+        /** The only `finish_reason` that means "this turn declared tool calls". */
+        const val FINISH_REASON_TOOL_CALLS = "tool_calls"
+
+        /** The `finish_reason` on a tool row, both its placeholder and its result. */
+        const val FINISH_REASON_TOOL = "tool"
+
+        /**
+         * The synthetic role the backend uses for sub-agent lifecycle pings. It
+         * is not a turn: the row is never persisted and its content is empty.
+         */
+        const val ROLE_SUBAGENT_PROGRESS = "subagent_progress"
 
         /**
          * Reserved prefix for the placeholder the stream appends to. The web
@@ -107,6 +156,16 @@ data class ChatUiState(
      * looks broken.
      */
     val queuedCount: Int = 0,
+    /**
+     * Sub-agents launched but not yet reported finished.
+     *
+     * Bounded by the newest spawn: the backend keys progress by `tool_call_id`,
+     * so a second fan-out is a separate set, and merging them would show the
+     * first batch still running while the second one is on screen.
+     */
+    val subAgentsRunning: Int = 0,
+    val subAgentsTotal: Int = 0,
+    val subAgentsFailed: Int = 0,
 ) {
     /**
      * Rows are on screen and the revalidation failed. A chat that blanks

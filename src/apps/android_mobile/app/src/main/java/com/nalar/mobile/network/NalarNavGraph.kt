@@ -16,6 +16,7 @@ import com.nalar.mobile.auth.AuthUiState
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatScreen
 import com.nalar.mobile.chat.ChatUiState
+import com.nalar.mobile.chat.QuestionAnswer
 import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
@@ -92,6 +93,7 @@ fun NalarNavGraph(
     onStopChatRun: () -> Unit,
     onLoadOlderChatMessages: () -> Unit,
     onDismissChatError: () -> Unit,
+    onAnswerChatQuestion: (QuestionAnswer) -> Unit,
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -179,6 +181,7 @@ fun NalarNavGraph(
                 onStop = onStopChatRun,
                 onLoadOlder = onLoadOlderChatMessages,
                 onDismissError = onDismissChatError,
+                onAnswer = onAnswerChatQuestion,
             )
         }
 
