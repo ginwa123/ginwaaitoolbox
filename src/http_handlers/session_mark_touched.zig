@@ -43,6 +43,7 @@ const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 const llm_history = ai_mod.llm_history;
 const on_event_sent = ai_mod.on_event_sent;
+const auth_common = @import("auth_common.zig");
 
 pub const MarkSessionTouchedError = error{
     SessionIdRequired,
@@ -174,6 +175,23 @@ pub fn sessionMarkTouchedHandler(
             .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = message }),
         });
     };
+
+    // Claim an ownerless row created by ensureSessionExists above. Without
+    // this, a brand-new chat opened in auth-on mode leaves its session row
+    // in the shared bucket (visible to every user). Only claims ownerless
+    // rows, so a real owner is never overwritten.
+    if (di.auth_enabled) {
+        const stamp_owner = auth_common.resolveRequestUserId(allocator, di.db, di.auth_enabled, req.headers) catch null;
+        defer if (stamp_owner) |o| allocator.free(o);
+        if (stamp_owner) |o| {
+            if (!auth_common.isSharedOwner(o)) {
+                _ = di.db.exec(allocator,
+                    "UPDATE sessions SET user_id = ? WHERE id = ? AND (user_id IS NULL OR user_id = '' OR user_id = 'user_system')",
+                    &[_][]const u8{ o, session_id },
+                ) catch {};
+            }
+        }
+    }
 
     return res.jsonResponse(.{ .status_code = 200, .data = data });
 }

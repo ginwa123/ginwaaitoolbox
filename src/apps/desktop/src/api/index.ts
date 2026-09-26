@@ -1618,6 +1618,10 @@ export async function updateSession(
 // POST /api/llm/session/:session_id/touched — stamp the human-touch
 // column when the user opens a chat (clears the amber stale-dot).
 // Contract: body {}, response { success, session_id }.
+// Silent: the caller (ChatsList fireSessionTouched) already logs failures
+// via console.error and retries by clearing its once-per-lifetime guard.
+// A toast here would spam "Session not found" on every New Chat open
+// while the session row is still being lazy-created.
 export async function markSessionTouched(
   sessionId: string,
 ): Promise<{ success: boolean; session_id: string }> {
@@ -1626,6 +1630,7 @@ export async function markSessionTouched(
     {
       method: 'POST',
       body: {},
+      silent: true,
     },
   )
 }
