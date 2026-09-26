@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { createApp, nextTick, ref } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
+import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import * as api from '../api'
 import ChatView from '../components/views/ChatView.vue'
@@ -114,7 +115,7 @@ const getPlanEmptyEnvelope = (): unknown => ({ empty: true })
 // mount is fast and stable (parity with profileCascade.spec.ts).
 // ────────────────────────────────────────────────────────────────────────
 
-function installChatViewMocks(opts: { messages: Message[] }) {
+function installChatViewMocks(opts: { messages: Message[]; sessionId: string }) {
   vi.spyOn(api, 'getChatHistory').mockResolvedValue({
     messages: opts.messages,
     has_more: false,
@@ -126,7 +127,7 @@ function installChatViewMocks(opts: { messages: Message[] }) {
   })
   vi.spyOn(api, 'getQueuedMessages').mockResolvedValue({ messages: [], count: 0 })
   vi.spyOn(api, 'getSession').mockResolvedValue({
-    sessionId: 's_test_001',
+    sessionId: opts.sessionId,
     sessionName: '',
     createdAt: '2026-08-19 00:00:00',
     agent: '',
@@ -146,20 +147,48 @@ function installChatViewMocks(opts: { messages: Message[] }) {
   vi.spyOn(api, 'getNalarConfig').mockResolvedValue({ profiles: {} })
 }
 
-async function mountChatViewWithMessages() {
+/**
+ * ChatView reads `route.query` and calls `router.replace` (diff deep-linking),
+ * so the mount needs a real router — without one `useRoute()` returns
+ * undefined and the render throws. Catch-all route keeps the path opaque.
+ */
+async function makeRouter(): Promise<Router> {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/:pathMatch(.*)*', name: 'catch-all', component: { template: '<div/>' } }],
+  })
+  await router.push('/app')
+  await router.isReady()
+  return router
+}
+
+let mountSeq = 0
+
+/**
+ * Each call mounts a FRESH session id on purpose: ChatView primes its
+ * messages from the IndexedDB-backed `chatEngineDb` cache keyed by session
+ * id, so reusing one id made test N+1 paint test N's rows instead of the
+ * freshly-mocked `getChatHistory` response.
+ */
+async function mountChatViewWithMessages(messages: Message[]) {
+  const chatId = `s_plan_${++mountSeq}`
+  installChatViewMocks({ messages, sessionId: chatId })
+
   const processingState = ref<Record<string, boolean>>({})
+  const router = await makeRouter()
 
   // Use a per-test container so multiple mounts don't bleed DOM
   // into each other. attachTo: document.body would persist the
   // previous test's stub across cases.
   const container = document.createElement('div')
-  container.id = 'chatview-test-container'
+  container.id = `chatview-test-container-${mountSeq}`
   document.body.appendChild(container)
 
   const wrapper = mount(ChatView, {
-    props: { chatId: 's_test_001', chatName: 'Test Chat' },
+    props: { chatId, chatName: 'Test Chat' },
     attachTo: container,
     global: {
+      plugins: [router],
       provide: { processingState },
     },
   })
@@ -195,7 +224,7 @@ beforeEach(() => {
 afterEach(() => {
   // Tear down any leftover container elements from the previous
   // mount so the next test starts with a clean DOM.
-  document.querySelectorAll('#chatview-test-container').forEach((el) => el.remove())
+  document.querySelectorAll('[id^="chatview-test-container-"]').forEach((el) => el.remove())
   __resetSseBus()
   vueApp = null
   sseBusGlobalClient = null
@@ -208,8 +237,7 @@ afterEach(() => {
 
 describe('ChatView tool dispatcher — update_plan + get_plan', () => {
   it('routes an update_plan tool result to the <UpdatePlan> component', async () => {
-    installChatViewMocks({
-      messages: [
+    await mountChatViewWithMessages([
         {
           id: 'm_user',
           role: 'user',
@@ -237,10 +265,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
           tool_name: 'update_plan',
           tool_call_id: 'tc1',
         },
-      ],
-    })
-
-    await mountChatViewWithMessages()
+      ])
 
     const stub = document.querySelector('.update-plan-stub')
     expect(stub).not.toBeNull()
@@ -252,8 +277,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
   })
 
   it('routes a get_plan tool result (with plan body) to the <GetPlan> component', async () => {
-    installChatViewMocks({
-      messages: [
+    await mountChatViewWithMessages([
         {
           id: 'm_user',
           role: 'user',
@@ -281,10 +305,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
           tool_name: 'get_plan',
           tool_call_id: 'tc1',
         },
-      ],
-    })
-
-    await mountChatViewWithMessages()
+      ])
 
     const stub = document.querySelector('.get-plan-stub')
     expect(stub).not.toBeNull()
@@ -298,8 +319,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
   it('routes a get_plan {empty:true} result to the <GetPlan> component too', async () => {
     // The empty/no-plan sentinel still belongs to get_plan — the
     // dispatcher must not skip it.
-    installChatViewMocks({
-      messages: [
+    await mountChatViewWithMessages([
         {
           id: 'm_asst',
           role: 'assistant',
@@ -318,10 +338,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
           tool_name: 'get_plan',
           tool_call_id: 'tc1',
         },
-      ],
-    })
-
-    await mountChatViewWithMessages()
+      ])
 
     const stub = document.querySelector('.get-plan-stub')
     expect(stub).not.toBeNull()
@@ -332,8 +349,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
     // The agent often chains update_plan → get_plan within a single
     // turn (or across adjacent turns). The dispatcher must handle
     // both messages with their respective components.
-    installChatViewMocks({
-      messages: [
+    await mountChatViewWithMessages([
         {
           id: 'm_update_plan',
           role: 'tool',
@@ -353,10 +369,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
           tool_name: 'get_plan',
           tool_call_id: 'tc2',
         },
-      ],
-    })
-
-    await mountChatViewWithMessages()
+      ])
 
     const updateStub = document.querySelector('.update-plan-stub')
     const getStub = document.querySelector('.get-plan-stub')
@@ -372,8 +385,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
     // A read_file tool result must dispatch to its own component,
     // not bleed into the plan tools. This guards against future
     // dispatcher refactors that might widen the v-else-if branch.
-    installChatViewMocks({
-      messages: [
+    await mountChatViewWithMessages([
         {
           id: 'm_read_file',
           role: 'tool',
@@ -385,10 +397,7 @@ describe('ChatView tool dispatcher — update_plan + get_plan', () => {
           tool_name: 'read_file',
           tool_call_id: 'tc1',
         },
-      ],
-    })
-
-    await mountChatViewWithMessages()
+      ])
 
     expect(document.querySelector('.update-plan-stub')).toBeNull()
     expect(document.querySelector('.get-plan-stub')).toBeNull()
