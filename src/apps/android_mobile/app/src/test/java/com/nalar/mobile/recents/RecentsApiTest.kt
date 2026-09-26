@@ -73,7 +73,7 @@ class RecentsApiTest {
     }
 
     @Test
-    fun parseChatsPrefersLastHumanTouchedOverUpdatedAt() {
+    fun parseChatsKeepsTheOrderKeyAndTheLabelKeyApart() {
         val body = sessionJson(
             lastHumanTouched = "2026-09-26 05:07:34",
             updated = "2026-09-26 05:12:37",
@@ -81,13 +81,19 @@ class RecentsApiTest {
 
         val chat = RecentsApi.parseChats(body, "ws_1").single()
 
-        // An unattended run keeps moving updated_at; the human-touched stamp is
-        // what the sidebar should show.
-        assertEquals(1_790_399_254_000L, chat.updatedAtEpochMillis)
+        // The ORDER key is plain `updated_at` — the column the server was
+        // asked to sort by. If this ever becomes the human-touch stamp, a
+        // running session stops floating to the top of the list.
+        assertEquals(1_790_399_557_000L, chat.updatedAtEpochMillis)
+        // The LABEL key is the human's own last visit, so the pill does not
+        // claim the human just came back while the agent works.
+        assertEquals(1_790_399_254_000L, chat.lastHumanTouchedAtEpochMillis)
     }
 
     @Test
-    fun parseChatsFallsBackToUpdatedAtWhenHumanTouchedIsEmpty() {
+    fun parseChatsLabelsFallBackToUpdatedAtWhenHumanTouchedIsEmpty() {
+        // Pre-Migration-082 rows ship an empty `last_human_touched_at`. The
+        // desktop falls back to `updated_at`; so must the label.
         val body = sessionJson(
             lastHumanTouched = "",
             updated = "2026-09-26 05:12:37",
@@ -95,6 +101,7 @@ class RecentsApiTest {
 
         val chat = RecentsApi.parseChats(body, "ws_1").single()
 
+        assertEquals(1_790_399_557_000L, chat.lastHumanTouchedAtEpochMillis)
         assertEquals(1_790_399_557_000L, chat.updatedAtEpochMillis)
     }
 
@@ -110,6 +117,7 @@ class RecentsApiTest {
 
         assertTrue(chat.hasTimestamp)
         // Never the epoch: a "56y" label on a chat from last week is a lie.
+        assertEquals(1_789_891_200_000L, chat.lastHumanTouchedAtEpochMillis)
         assertEquals(1_789_891_200_000L, chat.updatedAtEpochMillis)
     }
 
@@ -124,6 +132,7 @@ class RecentsApiTest {
         val chat = RecentsApi.parseChats(body, "ws_1").single()
 
         assertEquals(RecentsApi.UNKNOWN_TIMESTAMP, chat.updatedAtEpochMillis)
+        assertEquals(RecentsApi.UNKNOWN_TIMESTAMP, chat.lastHumanTouchedAtEpochMillis)
         assertEquals(false, chat.hasTimestamp)
     }
 
@@ -350,6 +359,41 @@ class RecentsApiTest {
         val current = listOf(ChatSummary("task_1", "ws_1", "Only", 1_000L))
 
         assertEquals(current, RecentsApi.mergeChatsById(current, emptyList()))
+    }
+
+    @Test
+    fun aRunningSessionLandsAtTheTopOfTheParsedAndSortedList() {
+        // The end-to-end guard for the reported bug, and the only one that
+        // spans both halves: the parser decides what goes into the order key,
+        // and the comparator sorts on it. Either half alone is untestable
+        // against the symptom.
+        //
+        // `task_running` is the session the agent is working on — the newest
+        // `updated_at`, and the human has not been there since 04:00. The
+        // desktop puts it at the top of Recent for exactly that reason.
+        val body = """
+            {"sessions":[
+              {"session_id":"task_running","session_name":"Agent is working",
+               "updated_at":"2026-09-26 05:12:37","last_human_touched_at":"2026-09-26 04:00:00"},
+              {"session_id":"task_you_were_here","session_name":"You were here",
+               "updated_at":"2026-09-26 04:30:00","last_human_touched_at":"2026-09-26 04:30:00"}
+            ],"total":2,"has_more":false,"next_cursor":null}
+        """.trimIndent()
+
+        val ordered = recentChatsForWorkspace(
+            RecentsApi.parseChats(body, "ws_1"),
+            "ws_1",
+        )
+
+        // Order follows `updated_at`; the human-touch stamp must not demote a
+        // session that is genuinely the most active one.
+        assertEquals(listOf("task_running", "task_you_were_here"), ordered.map { it.id })
+        // …while the pill still tells the truth about the human: last there
+        // 05:12 minus 04:00 is 1h12m, which the compact label rounds to 1h.
+        assertEquals(
+            "1h",
+            formatRelativeTime(ordered.first().lastHumanTouchedAtEpochMillis, 1_790_399_557_000L),
+        )
     }
 
     private fun sessionJson(
