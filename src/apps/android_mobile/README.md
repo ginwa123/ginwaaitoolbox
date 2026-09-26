@@ -36,6 +36,34 @@ Android Studio can open `src/apps/android_mobile` as a standalone project.
 Install an Android SDK containing platform 35 and build tools when using a fresh
 machine.
 
+## Continuous integration
+
+Pull requests run the JVM unit tests in the `android-unit-test` job of
+`.github/workflows/ci.yml`. That suite is the 74 tests across the eight files
+in `app/src/test`, and it needs no emulator: they are plain JVM tests with no
+Robolectric and no Android framework classes. The job installs platform 35 and
+build tools, runs `testDebugUnitTest`, and uploads the HTML report and the raw
+JUnit XML as an artifact, so a failure is readable in the run summary instead
+of only as a red check.
+
+Two details are worth knowing before you reproduce that run by hand:
+
+- **JDK 17 is required, and the failure mode is unhelpful.** Android Gradle
+  Plugin 8.7.3 rejects a newer JDK and aborts with a bare version number and
+  no stack trace — a machine defaulting to JDK 27 prints `27` under
+  "What went wrong". Check `java -version` first, or point `JAVA_HOME` at a
+  JDK 17 installation.
+- **`testDebugUnitTest`, not `test`.** The aggregate `test` task also runs
+  `testReleaseUnitTest`, which compiles and executes the same tests a second
+  time for the release variant. CI uses the debug task to keep runs short.
+
+The instrumented tests in `app/src/androidTest` are not part of that job. They
+need a booted emulator, so they stay a local-only step:
+
+```bash
+./gradlew connectedDebugAndroidTest
+```
+
 ## Current behavior
 
 The Android app authenticates against `https://agent.ginwa.site` through

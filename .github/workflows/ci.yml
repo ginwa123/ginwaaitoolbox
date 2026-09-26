@@ -2024,3 +2024,77 @@ jobs:
           fi
           rm -f /tmp/functional-test-ui-start.$$
 
+  android-unit-test:
+    # Kotlin/JVM unit tests for the native Android client in
+    # src/apps/android_mobile: 74 tests across 8 files under app/src/test.
+    # They are pure JVM (no Robolectric, no Android framework classes), so
+    # no emulator or device is needed and the whole suite runs in ~1 min.
+    #
+    # The instrumented suite in app/src/androidTest is deliberately NOT
+    # wired up here. Those 7 files need a booted emulator, which would mean
+    # a system-image download and an emulator boot on every run. Track that
+    # separately once an emulator image is cached on a runner.
+    #
+    # Runner: ubuntu-latest, not one of the self-hosted labels the Zig
+    # backend jobs use. The GitHub-hosted image already ships the Android
+    # SDK and JDK 17, so this job needs no runner provisioning at all.
+    name: android-unit-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: src/apps/android_mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        # This pin is load-bearing, not cosmetic. AGP 8.7.3 only accepts
+        # JDK 17; on a newer JDK the build aborts with a bare `27` and no
+        # stack trace (reproduced on the dev box, whose default JDK is 27).
+        # Temurin matches the "JDK 17" line in the Android README.
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        # Caches the Gradle distribution and the dependency cache across
+        # runs. Without it each run re-downloads the wrapper plus the whole
+        # AndroidX/Compose dependency graph.
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        # Installs cmdline-tools and exports ANDROID_HOME. The project's
+        # local.properties is gitignored, so on CI the SDK location can
+        # only come from the environment.
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        # platforms;android-35 matches compileSdk = 35 in
+        # app/build.gradle.kts. build-tools is pinned to the API 35
+        # revision so the job does not drift with the runner image.
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Run unit tests
+        # testDebugUnitTest, not the aggregate `test` task: `test` also
+        # runs testReleaseUnitTest, which compiles and executes the same 74
+        # tests a second time for no extra coverage.
+        run: ./gradlew testDebugUnitTest --console=plain
+
+      - name: Upload test report
+        # if: always() so a failing run still publishes the HTML report and
+        # the raw JUnit XML instead of leaving only a red check.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-unit-test-report
+          # Paths are workspace-root relative: `defaults.run` only applies
+          # to `run` steps, not to `with:` inputs.
+          path: |
+            src/apps/android_mobile/app/build/reports/tests/testDebugUnitTest/
+            src/apps/android_mobile/app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
+          retention-days: 7
