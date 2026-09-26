@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -101,6 +102,15 @@ fun RecentsSidebar(
     isLoadingMore: Boolean = false,
     hasMoreChats: Boolean = false,
     onLoadMore: () -> Unit = {},
+    /**
+     * False when the server runs without `--auth`. There is no session to end
+     * then, so the sign-out footer is hidden — the same gate the desktop
+     * sidebar's `v-if="authEnabled"` applies.
+     */
+    isAuthEnabled: Boolean = false,
+    signedInEmail: String? = null,
+    isLoggingOut: Boolean = false,
+    onLogout: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -110,6 +120,69 @@ fun RecentsSidebar(
     ) {
         Spacer(Modifier.height(12.dp))
 
+        SidebarBody(
+            modifier = Modifier.weight(1f),
+            workspaces = workspaces,
+            chats = chats,
+            selectedWorkspaceId = selectedWorkspaceId,
+            selectedChatId = selectedChatId,
+            onWorkspaceSelected = onWorkspaceSelected,
+            onChatSelected = onChatSelected,
+            nowEpochMillis = nowEpochMillis,
+            onOpenChat = onOpenChat,
+            isLoading = isLoading,
+            errorMessage = errorMessage,
+            onRetry = onRetry,
+            isLoadingMore = isLoadingMore,
+            hasMoreChats = hasMoreChats,
+            onLoadMore = onLoadMore,
+        )
+
+        // Deliberately outside the body. The "no workspaces" story is an early
+        // return in there, and that is exactly the state in which the user would
+        // otherwise have no route back to signing in.
+        if (isAuthEnabled) {
+            AccountFooter(
+                email = signedInEmail,
+                isLoggingOut = isLoggingOut,
+                onLogout = onLogout,
+            )
+        }
+    }
+}
+
+/**
+ * The workspace picker, the stale-data notice and the recents list.
+ *
+ * Split out for one reason: [RecentsSidebar] needs an account footer below it
+ * that no branch of this may swallow.
+ */
+@Composable
+private fun SidebarBody(
+    workspaces: List<WorkspaceOption>,
+    chats: List<ChatSummary>,
+    selectedWorkspaceId: String?,
+    selectedChatId: String?,
+    onWorkspaceSelected: (String) -> Unit,
+    onChatSelected: (String) -> Unit,
+    nowEpochMillis: Long,
+    /**
+     * Leave the sidebar because a chat was opened — a chat is a destination.
+     *
+     * Same name as the public parameter and for the same reason: a filter has
+     * nowhere to navigate to, and naming this one `onNavigate` is what invited
+     * the workspace dropdown to call it.
+     */
+    onOpenChat: () -> Unit,
+    isLoading: Boolean,
+    errorMessage: String?,
+    onRetry: () -> Unit,
+    isLoadingMore: Boolean,
+    hasMoreChats: Boolean,
+    onLoadMore: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier) {
         if (workspaces.isEmpty()) {
             // No workspace means no scope, so there is nothing to scope chats
             // to. Loading, failed and genuinely-empty are three different
@@ -268,6 +341,69 @@ fun RecentsSidebar(
                 }
             }
         }
+    }
+}
+
+/**
+ * Who is signed in, and the one control that ends it.
+ *
+ * The account line comes first on purpose: "Log out" is unambiguous as a verb
+ * and easy to tap by accident next to the recents list, and naming the account
+ * is what turns an accidental read into a deliberate one. The button says
+ * "Logging out…" and refuses further presses while the call is in flight, so a
+ * slow network cannot produce two sign-outs.
+ */
+@Composable
+private fun AccountFooter(
+    email: String?,
+    isLoggingOut: Boolean,
+    onLogout: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        HorizontalDivider(
+            modifier = Modifier.testTag("sidebar_account_divider"),
+            color = NalarBorder,
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            text = "SIGNED IN AS",
+            modifier = Modifier.padding(horizontal = 8.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = NalarDim,
+        )
+
+        Text(
+            text = email?.takeIf { it.isNotBlank() } ?: "Your account",
+            modifier = Modifier
+                .padding(horizontal = 8.dp)
+                .testTag("sidebar_account_email"),
+            style = MaterialTheme.typography.bodyMedium,
+            color = NalarText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+
+        Spacer(Modifier.height(4.dp))
+
+        TextButton(
+            onClick = onLogout,
+            enabled = !isLoggingOut,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("sidebar_logout"),
+        ) {
+            Text(
+                text = if (isLoggingOut) "Logging out…" else "Log out",
+                color = NalarDim,
+            )
+        }
+
+        Spacer(Modifier.height(4.dp))
     }
 }
 

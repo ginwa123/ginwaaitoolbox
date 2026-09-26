@@ -1796,11 +1796,14 @@ export async function getChats(
       next_cursor: data.next_cursor || null,
       total: data.total || 0,
     }
-  } catch {
-    // Return empty sessions when LLM backend unavailable (apiFetch
-    // also fires a toast notification on non-2xx; the empty-array
-    // fallback ensures the UI doesn't crash while the user sees
-    // the error).
+  } catch (e) {
+    // The empty-list shape is a deliberate contract (callers render an
+    // empty section instead of crashing), but it is indistinguishable
+    // from "this scope has no sessions" — so a swallowed transport
+    // failure used to blank a populated sidebar with nothing in the
+    // console to explain it. Log the reason; the caller decides whether
+    // an empty page is believable (see ChatsList's empty-refresh guard).
+    console.error('getChats failed; returning an empty list', e)
     return { sessions: [], has_more: false, next_cursor: null, total: 0 }
   }
 }

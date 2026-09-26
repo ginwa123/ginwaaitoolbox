@@ -1,17 +1,20 @@
 package com.nalar.mobile.auth
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The pure half of the `/me` cache: key derivation, freshness and the envelope.
+ * The pure half of the `/me` cache: the key derivation and the freshness rule.
  *
  * The fingerprint is the load-bearing piece — it decides whose cached identity
- * a given cookie can reach — so it is driven directly rather than left to the
- * Android storage layer.
+ * a given cookie can reach, and it is now the primary key of `cached_auth_me`
+ * rather than a prefix of one — so it is driven directly rather than left to
+ * the storage layer. The envelope tests are gone: a row has a column per field,
+ * so there is no shape left to misparse.
  */
 class AuthMeCacheCodecTest {
 
@@ -38,7 +41,9 @@ class AuthMeCacheCodecTest {
     fun theFingerprintDoesNotLeakTheCookie() {
         val fingerprint = AuthMeCacheCodec.fingerprint("super-secret-session-cookie")!!
 
-        // A bearer credential must never become part of a storage key.
+        // A bearer credential must never become part of a storage key — and it
+        // is now a column value, not just a filename component, so a database
+        // dump would carry it just as far.
         assertTrue(fingerprint, !fingerprint.contains("secret"))
         assertTrue(fingerprint, !fingerprint.contains("super"))
         assertEquals(32, fingerprint.length) // 16 bytes, hex
@@ -51,49 +56,6 @@ class AuthMeCacheCodecTest {
     }
 
     @Test
-    fun aBlankFingerprintCannotBecomeAKey() {
-        // Without a cookie there is nothing to attribute an identity to, so
-        // there must be no key to read or write.
-        assertNull(AuthMeCacheCodec.key(""))
-        assertNull(AuthMeCacheCodec.key("   "))
-    }
-
-    @Test
-    fun keysAreDistinctPerFingerprint() {
-        val a = AuthMeCacheCodec.key(AuthMeCacheCodec.fingerprint("tok-a")!!)!!
-        val b = AuthMeCacheCodec.key(AuthMeCacheCodec.fingerprint("tok-b")!!)!!
-
-        assertNotEquals(a, b)
-        assertTrue(a, a.startsWith("me::c:"))
-    }
-
-    @Test
-    fun theEnvelopeRoundTrips() {
-        val body = """{"authenticated":true,"auth_enabled":true,"user":{"id":"u1","email":"a@b.c"}}"""
-
-        val decoded = AuthMeCacheCodec.decode(AuthMeCacheCodec.encode(body, 1_000L))!!
-
-        assertEquals(body, decoded.body)
-        assertEquals(1_000L, decoded.storedAtEpochMillis)
-    }
-
-    @Test
-    fun corruptEnvelopesDecodeAsAMiss() {
-        listOf(
-            null,
-            "",
-            "   ",
-            "not json",
-            "[]",
-            // Envelope with no body, or with a timestamp that never happened.
-            """{"at":1000}""",
-            """{"body":"x"}""",
-        ).forEach { payload ->
-            assertNull("should miss on: $payload", AuthMeCacheCodec.decode(payload))
-        }
-    }
-
-    @Test
     fun freshnessHoldsExactlyUpToTheTtlBoundary() {
         val entry = CachedAuthMe(body = "{}", storedAtEpochMillis = 10_000L)
         val ttl = AuthMeCacheCodec.TTL_MILLIS
@@ -101,8 +63,8 @@ class AuthMeCacheCodecTest {
         assertTrue(entry.isFresh(10_000L, ttl))
         assertTrue(entry.isFresh(10_000L + ttl - 1, ttl))
         // At exactly the TTL the answer is no longer trustworthy, so it is a miss.
-        assertEquals(false, entry.isFresh(10_000L + ttl, ttl))
-        assertEquals(false, entry.isFresh(10_000L + ttl + 1, ttl))
+        assertFalse(entry.isFresh(10_000L + ttl, ttl))
+        assertFalse(entry.isFresh(10_000L + ttl + 1, ttl))
     }
 
     @Test

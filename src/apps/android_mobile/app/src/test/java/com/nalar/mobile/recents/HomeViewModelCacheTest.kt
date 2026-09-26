@@ -3,6 +3,7 @@ package com.nalar.mobile.recents
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.InMemoryRecentsCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -84,32 +85,6 @@ class HomeViewModelCacheTest {
         }
     }
 
-    private class FakeCache : RecentsCache {
-        val workspaces = mutableMapOf<String, List<WorkspaceOption>>()
-        val chats = mutableMapOf<String, List<ChatSummary>>()
-        var cleared = false
-
-        override fun readWorkspaces(userId: String?): List<WorkspaceOption>? =
-            RecentsCacheCodec.workspacesKey(userId)?.let { workspaces[it] }
-
-        override fun writeWorkspaces(userId: String?, value: List<WorkspaceOption>) {
-            RecentsCacheCodec.workspacesKey(userId)?.let { workspaces[it] = value }
-        }
-
-        override fun readChats(userId: String?, workspaceId: String): List<ChatSummary>? =
-            RecentsCacheCodec.chatsKey(userId, workspaceId)?.let { chats[it] }
-
-        override fun writeChats(userId: String?, workspaceId: String, value: List<ChatSummary>) {
-            RecentsCacheCodec.chatsKey(userId, workspaceId)?.let { chats[it] = value }
-        }
-
-        override fun clear() {
-            cleared = true
-            workspaces.clear()
-            chats.clear()
-        }
-    }
-
     private fun model(
         ioDispatcher: CoroutineDispatcher,
         cache: RecentsCache,
@@ -125,7 +100,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun aCachedSidebarPaintsBeforeTheNetworkReturns() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         cache.writeWorkspaces("user_a", listOf(WorkspaceOption("ws_1", "Cached One")))
         cache.writeChats("user_a", "ws_1", listOf(chat("ws_1", "cached-chat")))
 
@@ -141,7 +116,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun aSuccessfulFetchReplacesTheCachedRows() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         cache.writeWorkspaces("user_a", listOf(WorkspaceOption("ws_1", "Cached One")))
         cache.writeChats("user_a", "ws_1", listOf(chat("ws_1", "stale-chat")))
 
@@ -164,7 +139,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun switchingWorkspacePaintsThatWorkspacesCachedRecents() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         cache.writeChats("user_a", "ws_2", listOf(chat("ws_2", "two-cached-chat")))
 
         val model = model(
@@ -190,7 +165,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun aFailedRefreshKeepsCachedRowsAndFlagsThemStale() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         cache.writeWorkspaces("user_a", listOf(WorkspaceOption("ws_1", "Cached One")))
         cache.writeChats("user_a", "ws_1", listOf(chat("ws_1", "cached-chat")))
 
@@ -208,7 +183,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun aFirstLaunchWithNoCacheAndNoNetworkIsAnHonestErrorNotAnEmptyList() = cacheTest { s ->
-        val model = model(s.ioDispatcher, FakeCache(), FakeTransport(offline = true))
+        val model = model(s.ioDispatcher, InMemoryRecentsCache(), FakeTransport(offline = true))
         model.onUserChanged("user_a")
         s.drain()
 
@@ -224,7 +199,7 @@ class HomeViewModelCacheTest {
     fun aGenuinelyEmptyAccountIsAnEmptyStateNotAnError() = cacheTest { s ->
         val model = model(
             s.ioDispatcher,
-            FakeCache(),
+            InMemoryRecentsCache(),
             FakeTransport(workspaces = """{"workspaces":[]}"""),
         )
         model.onUserChanged("user_a")
@@ -237,7 +212,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun signingOutPurgesEveryNamespaceSoTheNextAccountInheritsNothing() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         cache.writeWorkspaces("user_a", listOf(WorkspaceOption("ws_1", "A's secret")))
 
         val model = model(s.ioDispatcher, cache)
@@ -254,7 +229,7 @@ class HomeViewModelCacheTest {
 
     @Test
     fun changingAccountClearsTheOtherAccountsRowsBeforeAnyFetch() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         cache.writeWorkspaces("user_a", listOf(WorkspaceOption("ws_a", "A's workspace")))
 
         val model = model(s.ioDispatcher, cache)

@@ -464,7 +464,7 @@ class HomeViewModel(
                             HttpsAuthTransport(AuthConfig.BASE_URL),
                         ),
                     ),
-                    cache = KeystoreRecentsCache(application),
+                    cache = RoomRecentsCache(application),
                 )
             }
         }

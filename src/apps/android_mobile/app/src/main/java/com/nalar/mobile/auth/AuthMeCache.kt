@@ -1,9 +1,12 @@
 package com.nalar.mobile.auth
 
 import android.content.Context
-import com.nalar.mobile.storage.EncryptedPrefs
+import com.nalar.mobile.cache.AuthMeCacheDao
+import com.nalar.mobile.cache.CachedAuthMeEntity
+import com.nalar.mobile.cache.NalarCacheDatabase
+import com.nalar.mobile.storage.KeystoreSealingCipher
+import com.nalar.mobile.storage.SealingCipher
 import java.security.MessageDigest
-import org.json.JSONObject
 
 /**
  * A 30s-TTL cache for `GET /api/auth/me`, mirroring `helpers/authMe.ts`.
@@ -52,9 +55,13 @@ data class CachedAuthMe(
 }
 
 /**
- * The pure half: key derivation, freshness and the envelope format. No Android
- * dependency, so the parts that can silently serve the wrong identity are the
- * parts the unit tests drive.
+ * The pure half: the key derivation and the freshness rule. No Android
+ * dependency, so the two things that can silently serve the wrong identity —
+ * deriving one account's namespace from another's cookie, and calling a stale
+ * answer fresh — are the two the unit tests drive.
+ *
+ * The envelope format is gone: a row has a column per field, so there is no
+ * JSON shape left to get wrong and no decode step to fail.
  */
 object AuthMeCacheCodec {
     /**
@@ -64,13 +71,17 @@ object AuthMeCacheCodec {
      */
     const val TTL_MILLIS = 30_000L
 
-    private const val KEY_PREFIX = "me::c:"
+    private const val FINGERPRINT_BYTES = 16
 
     /**
      * A truncated SHA-256 of the session cookie. The cookie itself is a bearer
      * credential and must never become part of a storage key; a hash gives a
      * stable, non-reversible namespace so one account's cached identity is not
      * addressable with another account's cookie.
+     *
+     * This is the primary key of `cached_auth_me` now rather than a key prefix,
+     * which is the whole difference the move made: there is no longer a string
+     * in which a user id could be confused with a separator.
      */
     fun fingerprint(sessionCookie: String): String? {
         if (sessionCookie.isBlank()) return null
@@ -79,58 +90,70 @@ object AuthMeCacheCodec {
         return digest.take(FINGERPRINT_BYTES)
             .joinToString("") { byte -> "%02x".format(byte) }
     }
-
-    fun key(cookieFingerprint: String): String? =
-        cookieFingerprint
-            .takeIf { it.isNotBlank() }
-            ?.let { "$KEY_PREFIX$it" }
-
-    fun encode(body: String, storedAtEpochMillis: Long): String = JSONObject()
-        .put("body", body)
-        .put("at", storedAtEpochMillis)
-        .toString()
-
-    /** Null on any unrecognizable payload, so a corrupt entry reads as a miss. */
-    fun decode(payload: String?): CachedAuthMe? {
-        if (payload.isNullOrBlank()) return null
-        return try {
-            val json = JSONObject(payload)
-            val body = json.optString("body")
-            val at = json.optLong("at", Long.MIN_VALUE)
-            // A body we could not store, or a timestamp that never happened,
-            // means the envelope is not ours.
-            if (body.isEmpty() || at == Long.MIN_VALUE) null else CachedAuthMe(body, at)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private const val FINGERPRINT_BYTES = 16
 }
 
-class KeystoreAuthMeCache(context: Context) : AuthMeCache {
-    private val prefs = EncryptedPrefs(
-        context = context,
-        preferencesName = PREFERENCES_NAME,
-        keyAlias = KEY_ALIAS,
+/**
+ * [AuthMeCache] on Room: one row per cookie fingerprint, body sealed with a
+ * Keystore key.
+ *
+ * The body is sealed whole, unlike the sidebar's per-column sealing, because
+ * nothing in this table is filtered or sorted on — it is looked up by one
+ * primary key and returned. There is no reason to leave any part of it in the
+ * clear.
+ */
+class RoomAuthMeCache(
+    private val dao: AuthMeCacheDao,
+    private val cipher: SealingCipher,
+) : AuthMeCache {
+
+    constructor(context: Context) : this(
+        dao = NalarCacheDatabase.get(context).authMeCacheDao(),
+        cipher = KeystoreSealingCipher(KEY_ALIAS),
     )
 
     override fun read(cookieFingerprint: String): CachedAuthMe? {
-        val key = AuthMeCacheCodec.key(cookieFingerprint) ?: return null
-        return AuthMeCacheCodec.decode(prefs.get(key))
+        val fingerprint = cookieFingerprint.orNull() ?: return null
+        return quietly(null) {
+            val row = dao.find(fingerprint) ?: return@quietly null
+            val body = cipher.open(row.bodySealed)
+            if (body == null) {
+                // Written under a retired key alias, or a GCM tag that no
+                // longer verifies. Drop it rather than re-attempting the same
+                // failing decryption on every launch.
+                dao.delete(fingerprint)
+                return@quietly null
+            }
+            CachedAuthMe(body = body, storedAtEpochMillis = row.storedAtEpochMillis)
+        }
     }
 
     override fun write(cookieFingerprint: String, responseBody: String, nowEpochMillis: Long) {
-        val key = AuthMeCacheCodec.key(cookieFingerprint) ?: return
-        prefs.put(key, AuthMeCacheCodec.encode(responseBody, nowEpochMillis))
+        val fingerprint = cookieFingerprint.orNull() ?: return
+        val sealed = quietly(null) { cipher.seal(responseBody) } ?: return
+        quietly(Unit) {
+            dao.put(
+                CachedAuthMeEntity(
+                    cookieFingerprint = fingerprint,
+                    bodySealed = sealed,
+                    storedAtEpochMillis = nowEpochMillis,
+                ),
+            )
+        }
     }
 
-    override fun clear() = prefs.clear()
+    override fun clear() = quietly(Unit) { dao.deleteAll() }
+
+    private inline fun <T> quietly(fallback: T, block: () -> T): T = try {
+        block()
+    } catch (_: Exception) {
+        fallback
+    }
 
     private companion object {
-        const val PREFERENCES_NAME = "nalar_auth_me"
         // Distinct from the session-cookie and sidebar-cache aliases: this holds
         // an identity, which is a third kind of thing to rotate independently.
         const val KEY_ALIAS = "nalar_auth_me_key_v1"
     }
 }
+
+private fun String?.orNull(): String? = this?.takeIf { it.isNotBlank() }
