@@ -2,6 +2,7 @@ package com.nalar.mobile.testing
 
 import com.nalar.mobile.chat.CachedChatMessage
 import com.nalar.mobile.chat.ChatCache
+import com.nalar.mobile.chat.ChatOlderPage
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.RecentsCache
 import com.nalar.mobile.recents.WorkspaceOption
@@ -29,6 +30,7 @@ import com.nalar.mobile.storage.LastPositionStore
 class InMemoryChatCache : ChatCache {
     private val rows = mutableMapOf<String, MutableMap<String, CachedChatMessage>>()
     private val cursors = mutableMapOf<String, String>()
+    private val olderPages = mutableMapOf<String, ChatOlderPage>()
 
     var cleared = false
         private set
@@ -65,10 +67,19 @@ class InMemoryChatCache : ChatCache {
         if (cursor.isNullOrBlank()) cursors.remove(key) else cursors[key] = cursor
     }
 
+    override fun readOlderPage(userId: String?, sessionId: String): ChatOlderPage? =
+        olderPages[key(userId, sessionId)]
+
+    override fun writeOlderPage(userId: String?, sessionId: String, page: ChatOlderPage?) {
+        val key = key(userId, sessionId) ?: return
+        if (page == null) olderPages.remove(key) else olderPages[key] = page
+    }
+
     override fun clear() {
         cleared = true
         rows.clear()
         cursors.clear()
+        olderPages.clear()
     }
 
     private fun key(userId: String?, sessionId: String): String? {

@@ -4,6 +4,7 @@ import android.content.Context
 import com.nalar.mobile.cache.CachedMessageEntity
 import com.nalar.mobile.cache.ChatCacheDao
 import com.nalar.mobile.cache.ChatCursorEntity
+import com.nalar.mobile.cache.ChatOlderPageEntity
 import com.nalar.mobile.cache.NalarCacheDatabase
 import org.json.JSONObject
 
@@ -25,6 +26,21 @@ data class CachedChatMessage(
     val role: String,
     val content: String,
     val raw: String,
+)
+
+/**
+ * Where a session's older history starts, and whether the server said there is
+ * more above it.
+ *
+ * Stored whole rather than as a bare cursor because the cursor alone cannot arm
+ * scroll-to-top. A cursor says where to start asking; `hasMore` says whether to
+ * offer the reader the chance at all, and only the server knows that. Re-derive
+ * it as `true` on every open and every fully-cached chat grows a permanent
+ * "scroll for earlier messages" row that never leads anywhere.
+ */
+data class ChatOlderPage(
+    val cursor: String,
+    val hasMore: Boolean,
 )
 
 /**
@@ -65,6 +81,20 @@ interface ChatCache {
     fun readCursor(userId: String?, sessionId: String): String?
 
     fun writeCursor(userId: String?, sessionId: String, cursor: String?)
+
+    /**
+     * The session's older boundary, or null when this device has never fetched a
+     * descending page for it.
+     *
+     * Separate from [readCursor] on purpose: the tail cursor is a *sync* cursor
+     * and the older page is a *paging* cursor, they are written from opposite
+     * ends of a response, and deriving one from the other is what made a
+     * returning chat stop paging backwards for good.
+     */
+    fun readOlderPage(userId: String?, sessionId: String): ChatOlderPage?
+
+    /** A null [page] drops the boundary — the server said there is nothing older. */
+    fun writeOlderPage(userId: String?, sessionId: String, page: ChatOlderPage?)
 
     /** Drops every cached transcript and cursor, for every user. */
     fun clear()
@@ -218,6 +248,35 @@ class RoomChatCache(
                 dao.deleteCursor(user, session)
             } else {
                 dao.putCursor(ChatCursorEntity(userId = user, sessionId = session, cursor = cursor))
+            }
+        }
+    }
+
+    override fun readOlderPage(userId: String?, sessionId: String): ChatOlderPage? {
+        val user = userId.orNull() ?: return null
+        val session = sessionId.orNull() ?: return null
+        return quietly(null) {
+            dao.olderPageFor(user, session)?.let { row ->
+                ChatOlderPage(cursor = row.cursor, hasMore = row.hasMore)
+            }
+        }
+    }
+
+    override fun writeOlderPage(userId: String?, sessionId: String, page: ChatOlderPage?) {
+        val user = userId.orNull() ?: return
+        val session = sessionId.orNull() ?: return
+        quietly(Unit) {
+            if (page == null) {
+                dao.deleteOlderPage(user, session)
+            } else {
+                dao.putOlderPage(
+                    ChatOlderPageEntity(
+                        userId = user,
+                        sessionId = session,
+                        cursor = page.cursor,
+                        hasMore = page.hasMore,
+                    ),
+                )
             }
         }
     }

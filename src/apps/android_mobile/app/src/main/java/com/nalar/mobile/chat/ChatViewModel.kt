@@ -61,6 +61,7 @@ class ChatViewModel(
     private var userId: String? = null
     private var loadJob: Job? = null
     private var cachePrimeJob: Job? = null
+    private var olderPagePrimeJob: Job? = null
     private var olderJob: Job? = null
     private var sendJob: Job? = null
     private var stopJob: Job? = null
@@ -92,6 +93,18 @@ class ChatViewModel(
 
     /** Cursor for the next *older* page, from the server's `has_more`. */
     private var olderCursor: String? = null
+
+    /**
+     * Whether a full descending page has already answered the older-page
+     * question for the chat now open.
+     *
+     * Not the same question as "is [olderCursor] set", because the answer to
+     * *this* one is sometimes "there is nothing older" — and that answer has no
+     * cursor to show for itself. Without the flag, a restored cursor from a
+     * previous chat could arrive after a fresh page had said there was nothing
+     * and quietly re-arm scroll-back against a transcript that is complete.
+     */
+    private var olderPageIsSettled: Boolean = false
 
     /**
      * Bumped on every session change so a fetch that finishes late can tell it
@@ -141,6 +154,7 @@ class ChatViewModel(
             liveMessageIds.clear()
             subAgentBatches.clear()
             olderCursor = null
+            olderPageIsSettled = false
             hasFreshContent = false
         }
     }
@@ -169,6 +183,7 @@ class ChatViewModel(
         val requestGeneration = generation
         loadJob?.cancel()
         olderJob?.cancel()
+        olderPagePrimeJob?.cancel()
         sendJob?.cancel()
         stopJob?.cancel()
         answerJob?.cancel()
@@ -179,6 +194,7 @@ class ChatViewModel(
         liveMessageIds.clear()
         subAgentBatches.clear()
         olderCursor = null
+        olderPageIsSettled = false
         hasConnectedStreamOnce = false
         hasFreshContent = false
 
@@ -213,9 +229,46 @@ class ChatViewModel(
             }
         }
 
+        restoreOlderPage(sessionId, requestGeneration)
+
         startEventStream(sessionId)
         revalidate(sessionId, requestGeneration)
         reattachInFlightTurn(sessionId, requestGeneration)
+    }
+
+    /**
+     * Puts the *older* paging boundary back, the way the transcript cache puts
+     * the messages back.
+     *
+     * Without it, `hasMoreOlder` and [olderCursor] survive only inside the
+     * view model instance, and the second open of a chat is a different one:
+     * [revalidate] finds a stored *tail* cursor, takes the warm ascending path,
+     * and the descending page that carried `next_cursor` and `has_more` is never
+     * asked for again. The sentinel row that arms scroll-to-top is therefore
+     * never rendered, [loadOlderMessages] returns on a null cursor, and a
+     * long chat silently stops at the newest few hundred messages for the rest
+     * of the app's life. The tail cursor and the older boundary are two
+     * independent facts and the warm path can only answer for one of them.
+     *
+     * Skipped when a full descending page has already answered for this chat —
+     * that one is authoritative, because the server has just produced it rather
+     * than remembered it.
+     */
+    private fun restoreOlderPage(sessionId: String, requestGeneration: Int) {
+        olderPagePrimeJob?.cancel()
+        olderPagePrimeJob = viewModelScope.launch {
+            val restored = withContext(ioDispatcher) { cache.readOlderPage(userId, sessionId) }
+            if (requestGeneration != generation) return@launch
+            if (olderPageIsSettled) return@launch
+            olderCursor = restored?.cursor
+            _uiState.update { state ->
+                if (state.sessionId != sessionId) {
+                    state
+                } else {
+                    state.copy(hasMoreOlder = restored?.hasMore == true)
+                }
+            }
+        }
     }
 
     /**
@@ -353,6 +406,7 @@ class ChatViewModel(
         }
         if (isFullReload) {
             olderCursor = page.nextCursor
+            olderPageIsSettled = true
             _uiState.update { it.copy(hasMoreOlder = page.hasMore) }
         }
 
@@ -371,6 +425,17 @@ class ChatViewModel(
                         userId,
                         sessionId,
                         ChatCacheCodec.newestCursor(rows, page.nextCursor, previous),
+                    )
+                }
+                // Only a *full descending* page carries a boundary. A warm tail
+                // fetch is short by definition, so its `next_cursor`/`has_more`
+                // describe the delta, not the transcript, and persisting them
+                // would point scroll-back at the newest row.
+                if (isFullReload) {
+                    cache.writeOlderPage(
+                        userId,
+                        sessionId,
+                        page.nextCursor?.let { ChatOlderPage(cursor = it, hasMore = page.hasMore) },
                     )
                 }
             }
@@ -436,9 +501,16 @@ class ChatViewModel(
                     // An empty page means we reached the start of the transcript;
                     // holding the old cursor would re-request it forever.
                     olderCursor = result.value.nextCursor?.takeIf { older.isNotEmpty() }
+                    olderPageIsSettled = true
 
-                    if (older.isNotEmpty()) {
-                        withContext(ioDispatcher) {
+                    // The boundary moved, so the one on disk is stale. Leaving
+                    // it is not a smaller problem than the warm open it feeds:
+                    // a reader who paged back to the start of a long chat and
+                    // then reopened it would be shown a cursor that re-requests
+                    // the page they have already read.
+                    val moved = olderCursor?.let { ChatOlderPage(it, result.value.hasMore) }
+                    withContext(ioDispatcher) {
+                        if (older.isNotEmpty()) {
                             cache.writeMessages(
                                 userId,
                                 sessionId,
@@ -447,6 +519,7 @@ class ChatViewModel(
                                 },
                             )
                         }
+                        cache.writeOlderPage(userId, sessionId, moved)
                     }
                 }
             }
@@ -515,7 +588,20 @@ class ChatViewModel(
             if (requestGeneration != generation) return@launch
             when (result) {
                 is ChatResult.SignedOut -> expireSession()
-                is ChatResult.Loaded -> Unit
+                // Cleared on the way out, not left to the frames that will
+                // follow. A stop does not always produce a final chunk or a
+                // completed row — the turn it interrupts is precisely the one
+                // that never finishes — so waiting for one leaves the header
+                // reading "Working…" with a Stop button against a run that is
+                // already gone, and the only thing that clears it is opening
+                // another chat.
+                is ChatResult.Loaded -> _uiState.update {
+                    it.copy(
+                        isStreaming = false,
+                        messages = it.messages.map { message -> message.copy(isStreaming = false) },
+                    )
+                }
+
                 is ChatResult.Rejected,
                 is ChatResult.Unavailable,
                 -> _uiState.update { it.copy(errorMessage = messageFor(result)) }
@@ -585,9 +671,11 @@ class ChatViewModel(
         liveMessageIds.clear()
         subAgentBatches.clear()
         olderCursor = null
+        olderPageIsSettled = false
         _uiState.value = ChatUiState()
         hasFreshContent = false
         cachePrimeJob?.cancel()
+        olderPagePrimeJob?.cancel()
         loadJob?.cancel()
         olderJob?.cancel()
         sendJob?.cancel()
@@ -598,6 +686,7 @@ class ChatViewModel(
 
     override fun onCleared() {
         cachePrimeJob?.cancel()
+        olderPagePrimeJob?.cancel()
         stopEventStream()
         super.onCleared()
     }
