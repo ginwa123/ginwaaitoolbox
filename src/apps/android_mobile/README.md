@@ -116,6 +116,50 @@ The `LaunchedEffect` that performs the scroll is also the only one that may: a
 prepend, an append and an open are all answered by the same decision, so they
 cannot fight over the scroll position.
 
+### A reader in history can get back to the end
+
+The follow rule is a courtesy, not a claim on where the reader is — which leaves
+them in history with no way back to the live tail except dragging for it. A
+floating control appears when they are away from the newest turn and takes them
+there in one tap.
+
+It is an overlay on the transcript's viewport rather than a row in the list, so
+it costs the `LazyColumn` no item, and it composes nothing at all while hidden
+— a control that is always on screen is a control that does nothing, and a reader
+who has learned to distrust it will not tap it when it matters.
+
+Two things about it are not obvious:
+
+- **It measures pixels, not items.** The obvious rule — "is the last group
+  visible?" — answers *yes* for a reader who has scrolled most of the way up a
+  single answer taller than the screen, because that answer is the last visible
+  item for the whole time it is being read. The control would be missing exactly
+  where it is most wanted. Two more shapes the reading has to get right, both of
+  which produce a plausible-looking wrong number: a transcript that does not fill
+  the viewport parks its last row near the top, so the raw difference is most of
+  the screen's height for a reader who has not moved; and the bottom-most
+  *visible* row is the row straddling the screen's edge, not the newest turn, so
+  its overhang says nothing about how many turns are below it. A `LazyColumn`
+  cannot measure a turn it has not composed, so for anything still below the fold
+  the reading is `DISTANCE_FAR` rather than a guess.
+- **The tap goes through the scroll policy, not straight to `scrollToItem`.** It
+  re-arms the follow flag, so the next streamed delta keeps the reader at the
+  end rather than finding the flag still `false` and putting them back in
+  history. It also drops an in-flight backwards-page anchor: the page is armed
+  before its request goes out, and replaying it on arrival would drop the reader
+  straight back where they just pressed the button to leave.
+
+The tap lands on the *end* of the newest turn, which the auto-scroll does not do
+and must not: auto-scroll aligns the newest turn's top with the viewport's top,
+because a streaming answer grows downward in front of the reader who is reading
+it from the start. For a button labelled "jump to the newest message" that
+leaves the reader where they already were whenever the newest turn is itself
+taller than the screen.
+
+Both halves are covered where they can be tested without a device:
+`ChatScrollPolicyTest` for the decision and the interactions, and
+`ChatScrollGeometryTest` for the distance the decision is made on.
+
 ### The transcript is cached
 
 `ChatCache` is the Android mirror of the web's `ChatEngineDb` (IndexedDB

@@ -18,10 +18,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListLayoutInfo
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -37,6 +39,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -46,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
@@ -62,6 +66,7 @@ import com.nalar.mobile.ui.NalarText
 import com.nalar.mobile.ui.NalarTheme
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /** Top-visible index that arms the older page, matching the web's load-more band. */
 private const val LOAD_OLDER_INDEX_THRESHOLD = 2
@@ -70,6 +75,76 @@ private const val LOAD_OLDER_INDEX_THRESHOLD = 2
 private const val LOAD_OLDER_KEY = "__load_older__"
 
 private const val CONTENT_TYPE_SENTINEL = "sentinel"
+
+/**
+ * How close to the end counts as being at it.
+ *
+ * A transcript parked on its newest turn measures zero (the geometry clamps
+ * content that is not below the fold), so this band is not about the end
+ * position — it is about a reader one or two lines above it. Without it the
+ * control flickers on and off under a slow drag; with it, it appears once a
+ * reader has genuinely left the end rather than every time they twitch.
+ */
+private val JUMP_TO_NEWEST_BAND = 24.dp
+
+/**
+ * How far the bottom of the transcript is below the bottom of the viewport, in
+ * pixels: zero at the end, larger the further away, [DISTANCE_FAR] when the end
+ * is not on screen at all, [DISTANCE_UNMEASURED] when nothing has been laid out.
+ *
+ * **Pixels rather than item indices.** The index reading answers a different
+ * question: a single answer taller than the screen keeps its group as the last
+ * visible item for the whole time it is being read, so "is the newest turn on
+ * screen" answers yes to a reader who has scrolled most of the way up it. See
+ * [ChatScrollPolicy.shouldOfferJumpToNewest].
+ *
+ * Two things this cannot be naively computed from `visibleItemsInfo`, and both
+ * of them were wrong before they were written down:
+ *
+ * 1. **`lastOrNull()` is the row straddling the viewport's bottom edge, not the
+ *    last row in the list.** Subtracting only that row gives a number bounded by
+ *    one row's height, which resets at every row boundary — the control would
+ *    flicker on and off however far the reader had actually gone, and vanish at
+ *    their resting position. A `LazyColumn` cannot tell us how far the end is
+ *    when the end has not been composed, so it does not pretend to: any turn
+ *    still below the fold is [DISTANCE_FAR].
+ * 2. **A transcript that does not fill the viewport** — a two-turn chat, a fresh
+ *    one — parks its last row near the *top* of the screen, so the raw
+ *    difference between the two is most of the screen's height and reads as "a
+ *    long way from the end" for a reader who has not moved. Content that is not
+ *    below the fold is zero.
+ */
+internal fun LazyListLayoutInfo.distanceFromBottomPx(): Int {
+    if (totalItemsCount == 0) return DISTANCE_UNMEASURED
+    val lastVisible = visibleItemsInfo.lastOrNull() ?: return DISTANCE_UNMEASURED
+    if (lastVisible.index != totalItemsCount - 1) return DISTANCE_FAR
+    val contentBottom = lastVisible.offset + lastVisible.size
+    if (contentBottom <= viewportEndOffset) return 0
+    return contentBottom - viewportEndOffset
+}
+
+/**
+ * How far into the last turn the viewport must be scrolled for the very end of
+ * the transcript — trailing content padding included — to be on screen. Zero when
+ * landing on the turn's top already achieves that.
+ *
+ * An *absolute* offset into the item, which is what `scrollToItem` takes, and
+ * never negative: `LazyListState` rejects a negative scroll offset outright, so
+ * a turn too short to need one has to clamp to zero rather than ask for one.
+ *
+ * The geometry: scrolling by `x` leaves the turn's top `x` above the viewport's
+ * top, so its bottom — plus the trailing padding, which is part of the end —
+ * lands on the viewport's bottom edge when
+ * `-x + lastItemSize + afterContentPadding == viewportEndOffset`. The same
+ * [viewportEndOffset] frame as [distanceFromBottomPx], deliberately, so the
+ * offset that reaches the end and the reading that says the reader has arrived
+ * cannot disagree.
+ */
+internal fun scrollOffsetToShowTheEndOf(
+    lastItemSize: Int,
+    viewportEndOffset: Int,
+    afterContentPadding: Int,
+): Int = (lastItemSize + afterContentPadding - viewportEndOffset).coerceAtLeast(0)
 
 /**
  * Leading-edge rule that marks an unboxed diagnostic row, matching the web's
@@ -197,6 +272,41 @@ fun ChatView(
         listState.scrollToItem(groups.lastIndex + sentinelOffset)
     }
 
+    /**
+     * The end of the transcript, for a reader who *asked* to be put there.
+     *
+     * [pinToNewest] aligns the newest turn's top with the viewport's top, which
+     * is the right answer while a reply is streaming — the reader is reading
+     * the answer from the start and it grows downward in front of them. It is
+     * the wrong answer for a button labelled "jump to the newest message": when
+     * that turn is itself taller than the screen, aligning its top leaves the
+     * reader exactly where they already were, and the control visibly does
+     * nothing.
+     *
+     * So the last turn is landed on, and only then — once it has been measured
+     * — checked for the case where landing on it is not the same as reaching
+     * its end. Two scrolls, because the item's height is only known after the
+     * list has composed it, and a reader eighty turns up the transcript has not
+     * composed it yet.
+     */
+    suspend fun scrollToNewestEdge() {
+        if (groups.isEmpty()) return
+        awaitMeasuredItems()
+        val index = groups.lastIndex + sentinelOffset
+        listState.scrollToItem(index)
+        val layout = listState.layoutInfo
+        val landed = layout.visibleItemsInfo.lastOrNull() ?: return
+        if (landed.index != index) return
+        val intoTheTurn = scrollOffsetToShowTheEndOf(
+            lastItemSize = landed.size,
+            viewportEndOffset = layout.viewportEndOffset,
+            afterContentPadding = layout.afterContentPadding,
+        )
+        if (intoTheTurn > 0) {
+            listState.scrollToItem(index, intoTheTurn)
+        }
+    }
+
     suspend fun restoreAnchor(action: ChatScrollAction.RestoreAnchor) {
         val groupIndex = groups.indexOfFirst { it.key == action.key }
         if (groupIndex < 0) {
@@ -210,6 +320,86 @@ fun ChatView(
         // half scrolled past, and re-anchoring it by its top edge walks them a
         // little further up on every page they pull.
         listState.scrollToItem(groupIndex + sentinelOffset, action.offset)
+    }
+
+    /**
+     * Performs a decision the *transcript* asked for — a content change, a turn
+     * sent.
+     *
+     * The only code in this composable that moves the viewport on its own
+     * initiative, so a prepend, an append and an open cannot fight over the
+     * scroll position. The reader's jump control is the one exception, and it is
+     * an exception with a reason: it goes through the same policy, but lands on
+     * the *end* of the newest turn rather than its top. See [jumpToNewest].
+     */
+    suspend fun applyScroll(action: ChatScrollAction) {
+        when (action) {
+            ChatScrollAction.Hold -> Unit
+            is ChatScrollAction.PinToNewest -> pinToNewest()
+            is ChatScrollAction.RestoreAnchor -> restoreAnchor(action)
+        }
+    }
+
+    /**
+     * Whether the transcript is offering to take the reader to the newest turn.
+     *
+     * Snapshot state rather than a field on [chatScroll], because that class is
+     * deliberately free of Compose and a composable that reads a plain `var`
+     * would never learn the value changed.
+     */
+    var offerJumpToNewest by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val jumpBandPx = with(density) { JUMP_TO_NEWEST_BAND.roundToPx() }
+
+    /**
+     * The reader pressed the jump control.
+     *
+     * The decision is taken by the policy class first, so a press and an
+     * arriving delta are answered by the same bookkeeping — see
+     * [applyScroll]. What the press does *not* do is go through
+     * [ChatScrollAction.PinToNewest]'s auto-scroll path: a reader who asked to
+     * be put at the newest message means the end of it, which is
+     * [scrollToNewestEdge] rather than [pinToNewest].
+     */
+    fun jumpToNewest() {
+        // Decided by the policy first, so a press carries the same bookkeeping
+        // an arriving delta does: re-arm following, and drop an in-flight
+        // backwards-page anchor that would otherwise put the reader back in
+        // history the moment that page lands.
+        when (val action = chatScroll.onReaderJumpedToNewest()) {
+            ChatScrollAction.Hold -> Unit
+            is ChatScrollAction.PinToNewest -> scope.launch { scrollToNewestEdge() }
+            // Unreachable today — a jump has nothing to anchor to — but a
+            // compiler-checked `when` beats an `else` that would drop a future
+            // decision on the floor.
+            is ChatScrollAction.RestoreAnchor -> scope.launch { applyScroll(action) }
+        }
+    }
+
+    /**
+     * Whether the jump control should be on screen.
+     *
+     * Deliberately *not* keyed on [ChatScrollState.isFollowingNewest], which is
+     * the other signal that the reader has left the end. That flag is an index
+     * question — "is the last group visible" — and it is the right question for
+     * deciding whether a new turn may pull the viewport. It is the wrong
+     * question for this: a single answer taller than the screen keeps its group
+     * visible the whole time it is being read, so a reader who had scrolled a
+     * long way up one would be told they were at the bottom and never be offered
+     * the control. The control measures pixels; the flag counts rows. Where they
+     * disagree, the pixel reading is the honest one, and it is the one a reader
+     * can see.
+     */
+    LaunchedEffect(listState, jumpBandPx, state.sessionId) {
+        snapshotFlow { listState.layoutInfo.distanceFromBottomPx() }
+            .distinctUntilChanged()
+            .collect { distancePx ->
+                offerJumpToNewest = ChatScrollPolicy.shouldOfferJumpToNewest(
+                    distanceFromBottomPx = distancePx,
+                    bandPx = jumpBandPx,
+                )
+            }
     }
 
     // A new chat re-arms the backwards-page latch, so opening a transcript
@@ -291,19 +481,14 @@ fun ChatView(
         state.hasMoreOlder,
         tailSignature,
     ) {
-        when (val action = chatScroll.onContentChanged(state.sessionId, groups.size)) {
-            ChatScrollAction.Hold -> Unit
-            is ChatScrollAction.PinToNewest -> pinToNewest()
-            is ChatScrollAction.RestoreAnchor -> restoreAnchor(action)
-        }
+        applyScroll(chatScroll.onContentChanged(state.sessionId, groups.size))
     }
 
     // Sending is an explicit "take me to the newest turn" — the reader is
     // looking at history, but the turn they just asked for lands at the end.
     LaunchedEffect(state.isSending) {
         if (state.isSending) {
-            chatScroll.onTurnSent()
-            pinToNewest()
+            applyScroll(chatScroll.onTurnSent())
         }
     }
 
@@ -370,6 +555,19 @@ fun ChatView(
                     )
                 }
             }
+
+            // Over the transcript, not in it. The control reports where the
+            // reader is in the list, so it belongs to the list's viewport — and
+            // as an overlay it costs the transcript no row, which matters in a
+            // `LazyColumn` where a permanent item would be composed and measured
+            // on every frame of every drag.
+            JumpToNewestButton(
+                visible = offerJumpToNewest,
+                onClick = { jumpToNewest() },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 12.dp),
+            )
         }
 
         ChatComposer(
@@ -378,6 +576,72 @@ fun ChatView(
             onDraftChanged = onDraftChanged,
             onSend = onSend,
         )
+    }
+}
+
+/**
+ * The transcript's "take me to the newest turn" control.
+ *
+ * Shown only while something is below the fold, so it is never a button that
+ * does nothing. That is the whole design constraint: a permanently mounted jump
+ * control on a chat that is already at the bottom is a control that lies about
+ * where the reader is, and a reader who has learned to distrust it will not tap
+ * it when it matters.
+ *
+ * "Below the fold" is literal, and it includes a case worth naming: a newest
+ * turn that is itself taller than the screen. The auto-scroll lands on such a
+ * turn's *top*, so the control is offered from the moment such a chat is opened,
+ * and what it does is skip to the end of the answer rather than to the first
+ * line of it. That is the honest reading of "there is more below you" and it is
+ * what every phone chat does with a very long last message — but it is not the
+ * same as "the reader scrolled away", and the two are documented separately in
+ * [ChatScrollPolicy.shouldOfferJumpToNewest] so nobody later reads this as
+ * promising the control only appears after a gesture.
+ *
+ * `AnimatedVisibility` rather than an `if`, because the control arrives and
+ * leaves during a drag and snapping it in mid-gesture is startling. It also
+ * composes nothing at all while hidden, which is what lets a test assert the
+ * control is *absent* — `assertDoesNotExist` — instead of merely transparent.
+ *
+ * A filled circle with a border rather than a bare icon, because it floats over
+ * message text: the reader needs to see where the control is before they commit
+ * a thumb to it, and an icon on an assistant's paragraph is invisible.
+ */
+@Composable
+private fun JumpToNewestButton(
+    visible: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+    ) {
+        Surface(
+            modifier = Modifier
+                // 48dp, not a tighter 40. M3's `IconButton` is a 40dp state
+                // layer inside a 48dp minimum touch target, so the target is the
+                // larger of the two — and fixing the surface below 48 would cap
+                // it, taking the control under the size a thumb can be trusted
+                // to hit.
+                .size(48.dp)
+                .clip(CircleShape)
+                .testTag("chat_jump_to_newest"),
+            color = NalarBackgroundRaised,
+            shape = CircleShape,
+            border = BorderStroke(1.dp, NalarBorder),
+        ) {
+            IconButton(
+                onClick = onClick,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.ArrowDownward,
+                    contentDescription = "Jump to the newest message",
+                    tint = NalarAccent,
+                )
+            }
+        }
     }
 }
 

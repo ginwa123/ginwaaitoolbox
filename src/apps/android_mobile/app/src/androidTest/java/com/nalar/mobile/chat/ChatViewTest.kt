@@ -14,7 +14,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.test.swipeUp
+import androidx.compose.ui.test.swipeDown
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -408,23 +408,35 @@ class ChatViewTest {
         )
         compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
 
-        compose.onNodeWithTag("chat_message_list").performTouchInput { swipeUp() }
+        // `swipeDown`, so the reader actually goes back into history. The old
+        // `swipeUp` here dragged the content up, which a transcript already
+        // parked on its newest turn cannot do — so the reader never left, the
+        // follow flag stayed armed, and this test asserted that a new turn is
+        // not pinned while passing with it very much pinned.
+        compose.onNodeWithTag("chat_message_list").performTouchInput { swipeDown() }
         compose.waitForIdle()
-        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+        // The precondition, asserted: the newest turn is off screen.
+        compose.onNodeWithTag("chat_message_m80").assertDoesNotExist()
 
         compose.runOnIdle {
             state.value = state.value.copy(
                 messages = state.value.messages + message(
                     id = "brandNew",
-                    role = ChatMessage.ROLE_ASSISTANT,
+                    role = ChatMessage.ROLE_USER,
                     content = "a turn that lands while the reader is reading history",
                 ),
             )
         }
         compose.waitForIdle()
 
+        // `brandNew` is a reader turn appended to a transcript ending in an
+        // assistant turn, so it is a group of its own and can only be on screen
+        // if the viewport was moved to it. An assistant turn would have been
+        // folded into m80's group, which sits at the end either way, so that
+        // assertion would have held whether or not anything was pinned — and
+        // `m1`, seventy rows above the reader, is not composed either way and
+        // said nothing at all.
         compose.onNodeWithTag("chat_message_brandNew").assertDoesNotExist()
-        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
     }
 
     // --- Composer -----------------------------------------------------------
@@ -686,6 +698,174 @@ class ChatViewTest {
             right("chat_message_u1").value,
             TOLERANCE,
         )
+    }
+
+    // --- The jump back to the newest turn -----------------------------------
+
+    /**
+     * An answer long enough to fill several viewports on its own.
+     *
+     * The shape that breaks an index-based version of the control: this is one
+     * list item, so it is the *last visible item* the whole time the reader is
+     * anywhere inside it, and "is the newest turn on screen" answers yes for a
+     * reader who has scrolled most of the way up it.
+     */
+    private fun oneTallAnswer(lines: Int = 300): List<ChatMessage> = listOf(
+        message("tall", ChatMessage.ROLE_ASSISTANT, (1..lines).joinToString("\n") { "line $it" }),
+    )
+
+    @Test
+    fun noJumpIsOfferedWhileTheTranscriptSitsOnItsNewestTurn() {
+        // A control that is always on screen is a control that does nothing, and
+        // a reader who has learned to distrust it will not tap it when it
+        // matters. `assertDoesNotExist` rather than "is not displayed": the
+        // control is not composed at all while hidden, so a reader's touch can
+        // never land on it.
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = longConversation()))
+
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+    }
+
+    @Test
+    fun noJumpIsOfferedOnATranscriptThatFitsTheViewport() {
+        // Nothing is below the fold, so there is nowhere to jump to. Offering it
+        // would be an affordance for scrolling that no scroll can do.
+        renderList(
+            ChatUiState(
+                sessionId = "s",
+                isLoading = false,
+                messages = listOf(
+                    message("u1", ChatMessage.ROLE_USER, "a question"),
+                    message("a1", ChatMessage.ROLE_ASSISTANT, "a short answer"),
+                ),
+            ),
+        )
+
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+    }
+
+    @Test
+    fun noJumpIsOfferedOnAnEmptyOrLoadingTranscript() {
+        // No rows means no measured layout, which is *unknown* rather than
+        // "far from the end". Reading it as far puts a jump control over the
+        // "No messages yet" placeholder.
+        renderList(ChatUiState(sessionId = "s", isLoading = true))
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = emptyList()))
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+    }
+
+    @Test
+    fun aJumpAppearsOnceTheReaderHasScrolledIntoHistory() {
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = longConversation()))
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+
+        intoHistory()
+        compose.onNodeWithTag("chat_jump_to_newest").assertIsDisplayed()
+    }
+
+    @Test
+    fun aJumpAppearsInsideASingleAnswerTallerThanTheScreen() {
+        // The case the pixel measurement exists for. One list item, so the
+        // newest turn is on screen for the whole time the reader is inside it —
+        // an index rule would keep the control hidden from the reader who wants
+        // it most.
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = oneTallAnswer()))
+
+        // No gesture needed, and none possible: this is a single list item
+        // already at scroll position 0, so there is no "back into history" to
+        // perform. Opening the chat parks the reader at the top of the answer
+        // with all of it below them, which is precisely the reading an
+        // index-based rule would have called "at the bottom".
+        compose.onNodeWithTag("chat_jump_to_newest").assertIsDisplayed()
+    }
+
+    @Test
+    fun pressingTheJumpInsideAnAnswerTallerThanTheScreenReachesItsEnd() {
+        // The one thing `scrollToNewestEdge` exists to do, and the reason it is
+        // not the auto-scroll's `scrollToItem`: landing on a turn taller than the
+        // screen leaves the reader at its *top*, so a jump that reused it would
+        // be a visible no-op. The control withdrawing is the observable proof
+        // that the viewport reached the end rather than staying where it was.
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = oneTallAnswer()))
+        compose.onNodeWithTag("chat_jump_to_newest").assertIsDisplayed()
+
+        compose.onNodeWithTag("chat_jump_to_newest").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+    }
+
+    @Test
+    fun pressingTheJumpLandsOnTheNewestTurnAndTakesItAway() {
+        renderList(ChatUiState(sessionId = "s", isLoading = false, messages = longConversation()))
+        compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
+
+        intoHistory()
+        // The precondition, asserted: the reader really is in history, so the
+        // jump below has somewhere to travel from.
+        compose.onNodeWithTag("chat_message_m80").assertDoesNotExist()
+        compose.onNodeWithTag("chat_jump_to_newest").assertIsDisplayed().performClick()
+        compose.waitForIdle()
+
+        // A real arrival, not a render: m80 is composed and m1 is not, so the
+        // viewport genuinely moved rather than merely being repainted.
+        compose.onNodeWithTag("chat_message_m80").assertIsDisplayed()
+        compose.onNodeWithTag("chat_message_m1").assertDoesNotExist()
+        // And the control withdraws once the reader is where it said it would
+        // take them, rather than sitting there offering the same jump again.
+        compose.onNodeWithTag("chat_jump_to_newest").assertDoesNotExist()
+    }
+
+    @Test
+    fun aTurnThatArrivesAfterAJumpStillFollowsTheReader() {
+        // The reason the jump goes through the scroll policy rather than
+        // straight to `scrollToItem`. A scroll that did not re-arm the follow
+        // flag would look like it worked, and then the next streamed delta would
+        // find the flag still false and leave the new turn off screen.
+        //
+        // The new turn is a *reader* turn on purpose. An assistant turn
+        // appended to a transcript that ends in an assistant turn is folded
+        // into the same group, and that group is on screen at the end of the
+        // transcript whether or not anything was pinned — so the assertion would
+        // hold even with the follow flag left `false`. A reader turn is its own
+        // group, so it can only be on screen because the viewport was moved.
+        val state = renderSwitchable(
+            ChatUiState(sessionId = "s", isLoading = false, messages = longConversation()),
+        )
+        intoHistory()
+        compose.onNodeWithTag("chat_jump_to_newest").performClick()
+        compose.waitForIdle()
+
+        compose.runOnIdle {
+            state.value = state.value.copy(
+                messages = state.value.messages + message(
+                    id = "afterJump",
+                    role = ChatMessage.ROLE_USER,
+                    content = "a turn that lands after the reader jumped back to the end",
+                ),
+            )
+        }
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("chat_message_afterJump").assertIsDisplayed()
+    }
+
+    /**
+     * Puts the reader a long way into history, and waits for the fling to land.
+     *
+     * **`swipeDown`, not `swipeUp`.** The names describe the finger, not the
+     * list: `swipeUp` drags the content *up*, which scrolls a `LazyColumn`
+     * forward toward the newest turn — and a transcript already parked on its
+     * newest turn cannot move that way at all, so a "scroll into history"
+     * written as `swipeUp()` silently does nothing and every assertion after it
+     * passes for the wrong reason. `swipeDown` drags the content down, which is
+     * what actually walks a reader back through the transcript.
+     */
+    private fun intoHistory() {
+        compose.onNodeWithTag("chat_message_list").performTouchInput { swipeDown() }
+        compose.waitForIdle()
     }
 
     // --- Geometry helpers ---------------------------------------------------

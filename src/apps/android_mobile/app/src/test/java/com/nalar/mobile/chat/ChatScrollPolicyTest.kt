@@ -296,4 +296,162 @@ class ChatScrollPolicyTest {
 
         assertEquals(ChatScrollAction.PinToNewest(ChatPinReason.NEWER_CONTENT), action)
     }
+
+    // --- Offering the reader a way back to the end --------------------------
+
+    /**
+     * The band the control uses, in pixels. Stand-in for the composable's 24dp
+     * so these cases read as distances rather than as densities.
+     */
+    private val band = 24
+
+    @Test
+    fun aTranscriptParkedOnItsNewestTurnOffersNoJump() {
+        // A control that is always there is a control that does nothing, and a
+        // reader who has learned to distrust it will not tap it when it matters.
+        assertFalse(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = 0,
+                bandPx = band,
+            ),
+        )
+    }
+
+    @Test
+    fun aReaderInsideThePaddingBandIsStillAtTheEnd() {
+        // Zero is a transcript parked on its newest turn, and a reader a line or
+        // two above it reads a small positive distance. Offering the control
+        // there would make it flicker on and off under a slow drag.
+        assertFalse(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = 12,
+                bandPx = band,
+            ),
+        )
+    }
+
+    @Test
+    fun aReaderWhoHasLeftTheEndIsOfferedAJump() {
+        assertTrue(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = 500,
+                bandPx = band,
+            ),
+        )
+    }
+
+    @Test
+    fun aReaderScrolledUpInsideOneTallAnswerIsStillOfferedAJump() {
+        // Why the distance is measured in pixels. A single assistant turn taller
+        // than the screen is *the last visible item* for the whole time it is
+        // being read, so an index rule reports "at the bottom" to a reader who
+        // has scrolled most of the way up it — and the control they need most is
+        // the one that never appears.
+        assertTrue(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = 900,
+                bandPx = band,
+            ),
+        )
+    }
+
+    @Test
+    fun aTranscriptWhoseEndIsNotOnScreenIsOfferedAJump() {
+        // `DISTANCE_FAR` is a real answer and the furthest one, not a synonym
+        // for "unknown". A `LazyColumn` cannot measure a turn it has not
+        // composed, so the distance to the end is uncomputable there — and
+        // refusing to offer the control for want of a number would hide it from
+        // every reader more than a screen from the newest turn.
+        assertTrue(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = DISTANCE_FAR,
+                bandPx = band,
+            ),
+        )
+    }
+
+    @Test
+    fun anUnmeasuredLayoutOffersNoJump() {
+        // A cold open lays the list out before the first row arrives. "Unknown"
+        // is not "far from the end", and reading it as far would put a jump
+        // control over an empty transcript.
+        //
+        // The sentinel is asserted as well as the behaviour, because *which*
+        // value it is is a contract with the geometry: a measured distance is
+        // never negative, so the sentinel has to be a value no layout produces.
+        assertTrue(
+            "the unmeasured sentinel must be negative, and no reading is",
+            DISTANCE_UNMEASURED < 0,
+        )
+        assertFalse(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = DISTANCE_UNMEASURED,
+                bandPx = band,
+            ),
+        )
+    }
+
+    @Test
+    fun aJumpTakesTheReaderToTheNewestTurn() {
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+        assertFalse("precondition: the reader is in history", scroll.isFollowingNewest)
+
+        val action = scroll.onReaderJumpedToNewest()
+
+        assertEquals(ChatScrollAction.PinToNewest(ChatPinReason.READER_JUMPED), action)
+        assertTrue(scroll.isFollowingNewest)
+    }
+
+    @Test
+    fun aJumpKeepsTheTranscriptFollowingTheStream() {
+        // The reason the jump goes through the policy rather than straight to
+        // `scrollToItem`. Scrolling without re-arming the follow flag leaves the
+        // next streamed delta to find `false` there and pin the reader straight
+        // back to history — a control that appears to work and then undoes
+        // itself a second later.
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+        scroll.onReaderJumpedToNewest()
+
+        val action = scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+
+        assertEquals(ChatScrollAction.PinToNewest(ChatPinReason.NEWER_CONTENT), action)
+    }
+
+    @Test
+    fun aJumpDiscardsAnOlderPageAnchorThatIsStillInFlight() {
+        // The subtle one. A backwards page is armed *before* its request goes
+        // out, so the reader can easily give up on history and press the button
+        // while it is in flight. Replaying that anchor on arrival puts them
+        // straight back where they just pressed the button to leave, which reads
+        // as the button not working.
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.armOlderPage(ChatScrollAnchor(key = "m7", offset = -8))
+        scroll.onViewportMoved(lastVisibleIndex = 1, totalItems = 10, isScrolling = true)
+        scroll.onReaderJumpedToNewest()
+
+        val action = scroll.onContentChanged(sessionId = "s1", groupCount = 20)
+
+        assertEquals(ChatScrollAction.PinToNewest(ChatPinReason.NEWER_CONTENT), action)
+    }
+
+    @Test
+    fun anEmptyTranscriptIsNeverOfferedAJump() {
+        // Nothing measured is [DISTANCE_UNMEASURED], and there is no newest turn
+        // to take anybody to.
+        assertEquals(
+            ChatScrollAction.Hold,
+            ChatScrollState().onContentChanged(sessionId = "s1", groupCount = 0),
+        )
+        assertFalse(
+            ChatScrollPolicy.shouldOfferJumpToNewest(
+                distanceFromBottomPx = DISTANCE_UNMEASURED,
+                bandPx = band,
+            ),
+        )
+    }
 }
