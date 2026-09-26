@@ -209,7 +209,7 @@ fun MobileHomeScreen(
                             selectedChatId = selectedChatId,
                             onWorkspaceSelected = selectWorkspace,
                             onChatSelected = selectChat,
-                            onNavigate = closeDrawer,
+                            onOpenChat = closeDrawer,
                             isLoading = isLoading,
                             errorMessage = errorMessage,
                             onRetry = onRetry,

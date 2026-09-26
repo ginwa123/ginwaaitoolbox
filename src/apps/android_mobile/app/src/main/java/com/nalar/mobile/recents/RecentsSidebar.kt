@@ -87,7 +87,14 @@ fun RecentsSidebar(
     onChatSelected: (String) -> Unit,
     modifier: Modifier = Modifier,
     nowEpochMillis: Long = System.currentTimeMillis(),
-    onNavigate: () -> Unit = {},
+    /**
+     * Leave the sidebar because a chat was opened — a chat is a destination.
+     *
+     * Switching the workspace is not, so it must not fire this: the whole
+     * point of picking a workspace is to then pick a chat inside it, and
+     * dismissing the drawer throws that second tap away.
+     */
+    onOpenChat: () -> Unit = {},
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onRetry: () -> Unit = {},
@@ -137,7 +144,6 @@ fun RecentsSidebar(
             workspaces = workspaces,
             selectedWorkspaceId = selectedWorkspaceId,
             onWorkspaceSelected = onWorkspaceSelected,
-            onNavigate = onNavigate,
         )
 
         // Rows survived a failed refresh. Say so — a stale list that looks live
@@ -247,7 +253,7 @@ fun RecentsSidebar(
                         nowEpochMillis = nowEpochMillis,
                         onClick = {
                             onChatSelected(chat.id)
-                            onNavigate()
+                            onOpenChat()
                         },
                     )
                 }
@@ -320,7 +326,6 @@ private fun WorkspaceDropdown(
     workspaces: List<WorkspaceOption>,
     selectedWorkspaceId: String?,
     onWorkspaceSelected: (String) -> Unit,
-    onNavigate: () -> Unit,
 ) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val selectedWorkspace = workspaces.firstOrNull { it.id == selectedWorkspaceId }
@@ -394,9 +399,12 @@ private fun WorkspaceDropdown(
                             )
                         },
                         onClick = {
+                            // Only the dropdown closes here. Dismissing the
+                            // drawer as well would dump the user back on the
+                            // main content with the new workspace's chats
+                            // hidden behind the menu button they just used.
                             expanded = false
                             onWorkspaceSelected(workspace.id)
-                            onNavigate()
                         },
                         trailingIcon = if (isSelected) {
                             {
