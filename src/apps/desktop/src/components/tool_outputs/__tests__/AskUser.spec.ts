@@ -264,6 +264,137 @@ describe('AskUser — rendering', () => {
   })
 })
 
+describe('AskUser — markdown in the question', () => {
+  it('renders the markdown the model actually writes instead of its syntax', () => {
+    // The reported bug: `ask_user.zig` documents `question` as
+    // "Markdown allowed" and the model writes `**bold**` + `` `code` ``,
+    // but the card interpolated it as literal text — the whole question
+    // was one wall of asterisks and backticks.
+    const wrapper = mountCard(
+      pendingData({
+        question:
+          'How literal should the `linux` ↔ `mac` mirror be?\n\n' +
+          '- **Option 1 — Full 1:1 (recommended)**\n' +
+          '- **Option 2 — Mirror only real roles**',
+      }),
+    )
+
+    const q = wrapper.find('[data-testid="ask-user-question"]')
+    expect(q.exists()).toBe(true)
+    expect(q.findAll('strong')).toHaveLength(2)
+    expect(q.findAll('code')).toHaveLength(2)
+    expect(q.findAll('li')).toHaveLength(2)
+    // The syntax characters are gone from the pixels…
+    expect(q.text()).not.toContain('**')
+    expect(q.text()).not.toContain('`')
+    // …but the words the model wrote are all still there.
+    expect(q.text()).toContain('Option 1 — Full 1:1 (recommended)')
+    expect(q.text()).toContain('linux')
+    wrapper.unmount()
+  })
+
+  it('carries the markdown-content class so the global styles apply', () => {
+    const wrapper = mountCard(pendingData({ question: 'Which **scope**?' }))
+    const q = wrapper.find('[data-testid="ask-user-question"]')
+    expect(q.classes()).toContain('markdown-content')
+    wrapper.unmount()
+  })
+
+  it('renders a markdown header in the question', () => {
+    const wrapper = mountCard(pendingData({ question: '# Mirror scope\n\nWhich one?' }))
+    const q = wrapper.find('[data-testid="ask-user-question"]')
+    expect(q.find('h1').exists()).toBe(true)
+    expect(q.text()).toContain('Mirror scope')
+    wrapper.unmount()
+  })
+
+  it('keeps raw HTML in the question as text, never as a node', () => {
+    // A question often quotes a file the model just read. `<img
+    // src=x onerror=…>` from that file must not become a live element.
+    const wrapper = mountCard(
+      pendingData({ question: 'Is <img src=x onerror="alert(1)"> deployed?' }),
+    )
+    const q = wrapper.find('[data-testid="ask-user-question"]')
+    expect(q.find('img').exists()).toBe(false)
+    expect(q.text()).toContain('<img src=x onerror="alert(1)">')
+    wrapper.unmount()
+  })
+
+  it('strips markdown out of the header pill, which stays one line of text', () => {
+    const wrapper = mountCard(pendingData({ header: '**Mirror** scope' }))
+    expect(wrapper.find('[data-testid="tool-card-primary"]').text()).toBe('Mirror scope')
+    wrapper.unmount()
+  })
+
+  it('strips markdown out of an option label but POSTs the raw option string', async () => {
+    // The label is for the human; the answer is for the model. They must
+    // not drift — the model must get back exactly what it wrote.
+    mockedAnswer.mockResolvedValue({ success: true, status: 'answered' })
+    const raw = '**Option 1 — Full 1:1** (all `9` names)'
+    const wrapper = mountCard(pendingData({ options: [raw, 'plain'], recommended: raw }))
+
+    expect(wrapper.find('[data-testid="ask-user-option-0"]').text()).toContain(
+      'Option 1 — Full 1:1 (all 9 names)',
+    )
+    expect(wrapper.find('[data-testid="ask-user-option-0"]').text()).not.toContain('**')
+
+    await wrapper.find('[data-testid="ask-user-option-0"]').trigger('click')
+    await wrapper.find('[data-testid="ask-user-send"]').trigger('click')
+    await flush()
+    expect(mockedAnswer).toHaveBeenCalledWith('sess_1', {
+      question_id: 'q_1789509583247',
+      answer: raw,
+    })
+    wrapper.unmount()
+  })
+
+  it('strips markdown out of the resolved answer chip', () => {
+    const wrapper = mountCard(
+      resolvedData('answered', { answer: '**staging**, but skip `087`', answers_count: 1 }),
+    )
+    const chip = wrapper.find('[data-testid="ask-user-answer-chip"]')
+    expect(chip.text()).toContain('staging, but skip 087')
+    expect(chip.text()).not.toContain('**')
+    expect(chip.text()).not.toContain('`')
+    wrapper.unmount()
+  })
+
+  it('renders no question host at all when the model sent no question', () => {
+    // `v-if` and `v-html` share one element here; this pins that the
+    // markdown host is absent (not just empty) without a question.
+    const data = pendingData()
+    delete data.question
+    const wrapper = mountCard(data)
+    expect(wrapper.find('[data-testid="ask-user-question"]').exists()).toBe(false)
+    // The card is still answerable — the shape fields are what matter.
+    expect(wrapper.find('[data-testid="ask-user-option-0"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('falls back to the truncated question when the model sent no header', () => {
+    const wrapper = mountCard(
+      pendingData({ header: '', question: '**Which** `linux` mirror should I build?' }),
+    )
+    const primary = wrapper.find('[data-testid="tool-card-primary"]').text()
+    expect(primary).toBe('Which linux mirror should I build?')
+    // Under 60 chars, so no ellipsis; the truncation branch is exercised
+    // by the long-question case below.
+    expect(primary).not.toContain('**')
+
+    const long = mountCard(
+      pendingData({
+        header: '',
+        question:
+          '**Which** `linux` mirror should I build, given that `linux/window.zig` is the only file with real divergence?',
+      }),
+    )
+    expect(long.find('[data-testid="tool-card-primary"]').text()).toMatch(/…$/)
+    expect(long.find('[data-testid="tool-card-primary"]').text().length).toBeLessThanOrEqual(61)
+    wrapper.unmount()
+    long.unmount()
+  })
+})
+
 describe('AskUser — the wire body', () => {
   it('POSTs question_id + the picked option for a single-select question', async () => {
     mockedAnswer.mockResolvedValue({ success: true, status: 'answered', answer: 'production' })
