@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
                     chatState = chatState,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,
+                    onLoadMoreChats = homeViewModel::loadMoreChats,
                     onRetryHome = homeViewModel::refresh,
                     onOpenSession = chatViewModel::openSession,
                     onChatDraftChanged = chatViewModel::onDraftChanged,
@@ -83,6 +84,14 @@ class MainActivity : ComponentActivity() {
                     onStopChatRun = chatViewModel::stopRun,
                     onLoadOlderChatMessages = chatViewModel::loadOlderMessages,
                     onDismissChatError = chatViewModel::clearError,
+                    onAnswerChatQuestion = {
+                        chatViewModel.answerQuestion(
+                            questionId = it.questionId,
+                            toolCallId = it.toolCallId,
+                            answer = it.answer,
+                            skip = it.skip,
+                        )
+                    },
                 )
             }
         }

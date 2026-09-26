@@ -118,6 +118,30 @@ sealed interface ChatStreamEvent {
     /** The canonical, complete row. Upsert by [ChatMessage.id]. */
     data class Full(val sessionId: String, val message: ChatMessage) : ChatStreamEvent
 
+    /**
+     * A sub-agent was launched, finished or failed.
+     *
+     * Synthetic and never persisted: the backend emits these on the `llm_full`
+     * channel with `role: "subagent_progress"` and an empty body. They are the
+     * only live signal that a fan-out is progressing — the `spawn_sub_agent`
+     * result row does not arrive until every sub-agent is already done — so
+     * dropping them makes a two-minute fan-out look like a hang.
+     */
+    data class SubAgentProgress(
+        val sessionId: String,
+        val toolCallId: String,
+        val agentName: String,
+        val status: String,
+        val agentIndex: Int,
+        val totalAgents: Int,
+    ) : ChatStreamEvent {
+        companion object {
+            const val STATUS_LAUNCHED = "launched"
+            const val STATUS_COMPLETED = "completed"
+            const val STATUS_FAILED = "failed"
+        }
+    }
+
     data class SessionChanged(
         val sessionId: String,
         val action: String,
@@ -198,11 +222,11 @@ private fun decodeChatFrameUnsafe(frame: SseFrame): ChatStreamEvent? {
 
                 "chunk_final" -> ChatStreamEvent.ChunkFinished(
                     sessionId = sessionId,
-                    totalTokens = if (payload.isNull("total_tokens")) {
-                        null
-                    } else {
-                        payload.optInt("total_tokens")
-                    },
+                    // Nested under `usage`, not top level. Reading it from the
+                    // top level yields null on every turn — and the old fixture
+                    // that put it there is the only reason the bug was green.
+                    totalTokens = payload.optNullableObject("usage")
+                        ?.let { if (it.isNull("total_tokens")) null else it.optInt("total_tokens") },
                 )
 
                 else -> null
@@ -211,10 +235,24 @@ private fun decodeChatFrameUnsafe(frame: SseFrame): ChatStreamEvent? {
 
         "llm_full" -> {
             val sessionId = payload.optNullableString("session_id").orEmpty()
-            // `is_error` marks an agentic-loop diagnostic (a retry notice, a
-            // TooManyRetries), not a chat turn. It renders as an error card and
-            // is never written to the transcript.
-            if (payload.optBoolean("is_error", false)) {
+            // Sub-agent lifecycle pings ride this same channel, distinguished
+            // only by a synthetic role. They must be routed before the generic
+            // row handling: their content is empty and they are never
+            // persisted, so treating one as a turn writes a phantom row into
+            // the transcript that the next revalidate then has to erase.
+            if (payload.optNullableString("role") == ChatMessage.ROLE_SUBAGENT_PROGRESS) {
+                ChatStreamEvent.SubAgentProgress(
+                    sessionId = sessionId,
+                    toolCallId = payload.optNullableString("tool_call_id").orEmpty(),
+                    agentName = payload.optNullableString("agent_name").orEmpty(),
+                    status = payload.optNullableString("status").orEmpty(),
+                    agentIndex = payload.optInt("agent_index", 0),
+                    totalAgents = payload.optInt("total_agents", 0),
+                )
+            } else if (payload.optBoolean("is_error", false)) {
+                // `is_error` marks an agentic-loop diagnostic (a retry notice, a
+                // TooManyRetries), not a chat turn. It renders as an error card
+                // and is never written to the transcript.
                 ChatStreamEvent.Failed(
                     payload.optNullableString("content")
                         ?: "The agent reported an error.",

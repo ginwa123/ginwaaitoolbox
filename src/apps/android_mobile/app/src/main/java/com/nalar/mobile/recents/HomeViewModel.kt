@@ -30,6 +30,16 @@ data class HomeUiState(
     val chats: List<ChatSummary> = emptyList(),
     val selectedChatId: String? = null,
     val errorMessage: String? = null,
+    /**
+     * A *later* page is in flight. Kept apart from [isLoading] on purpose: the
+     * first page blanks the list with a spinner, a later page must not — the
+     * rows already on screen are real and stay put while the next page loads.
+     */
+    val isLoadingMoreChats: Boolean = false,
+    /** Whether the server says another page exists. False ends the scroll. */
+    val hasMoreChats: Boolean = false,
+    /** Full filtered row count for the selected workspace; 0 when unreported. */
+    val chatsTotal: Int = 0,
 ) {
     /** Nothing to show and nothing wrong — the account genuinely has no workspaces. */
     val isEmpty: Boolean
@@ -41,6 +51,24 @@ data class HomeUiState(
      */
     val isShowingStaleData: Boolean
         get() = errorMessage != null && workspaces.isNotEmpty()
+
+    /**
+     * The scroll should keep asking. True whenever there is something left to
+     * fetch, so the sidebar and the ViewModel agree on when to stop — the
+
+     * alternative is two independent notions of "done" that drift.
+     *
+     * [chatsTotal] is a belt-and-braces check on top of the server's own
+     * `has_more`: once the list physically holds as many rows as the server
+     * said exist, there is nothing left to ask for even if `has_more` still
+     * says otherwise. A non-positive [chatsTotal] means the server did not
+     * report a count, in which case only `has_more` can say.
+     */
+    val canLoadMoreChats: Boolean
+        get() = hasMoreChats && !isLoadingMoreChats && !isLoading && !hasReachedTotal
+
+    private val hasReachedTotal: Boolean
+        get() = chatsTotal > 0 && chats.size >= chatsTotal
 }
 
 /**
@@ -69,6 +97,29 @@ class HomeViewModel(
     private var hasStarted = false
     private var workspacesJob: Job? = null
     private var chatsJob: Job? = null
+
+    /**
+     * A later page's fetch. Deliberately a *separate* job from [chatsJob]: a
+     * refresh must be able to cancel page 1 without a stale load-more landing
+     * on top of it, and the two have to be cancellable independently.
+     */
+    private var moreChatsJob: Job? = null
+
+    /**
+     * The server's resume value for the next page, held here rather than in
+     * [HomeUiState] because it is protocol, not view state: nothing renders it
+     * and a rotation must not be able to perturb it.
+     */
+    private var chatsCursor: String? = null
+
+    /**
+     * Bumped whenever the recents list is replaced from scratch. A page that
+     * was in flight for the previous generation is dropped on arrival rather
+     * than merged into a list it no longer belongs to — the same guard the
+     * workspace-id check gives for a slow response, but covering the harder
+     * case where the same workspace is reloaded underneath the user.
+     */
+    private var chatsGeneration = 0
 
     /**
      * The single entry point. Driven by the auth state: every change of account
@@ -173,6 +224,12 @@ class HomeViewModel(
                 selectedChatId = null,
                 isLoading = true,
                 errorMessage = null,
+                // The cursor belongs to the workspace we are leaving. Carrying
+                // it over would page the new workspace from a position in the
+                // old one's history.
+                isLoadingMoreChats = false,
+                hasMoreChats = false,
+                chatsTotal = 0,
             )
         }
         loadChats(workspaceId)
@@ -210,10 +267,25 @@ class HomeViewModel(
      * would be permanently stale, and there is deliberately no TTL to catch
      * that. The web relies on every call site remembering to follow up; making
      * it structural here means no caller can get it wrong.
+     *
+     * This is page 1. Everything it learns about pagination (the cursor and
+     * whether another page exists) is recorded here so [loadMoreChats] has a
+     * correct starting point, and a full reload deliberately discards any pages
+     * the user had already scrolled in.
      */
     private fun loadChats(workspaceId: String) {
         primeChatsFromCache(workspaceId)
 
+        // A page-1 reload invalidates both the cursor and any page in flight:
+        // that page was cut from a list which no longer exists.
+        chatsGeneration++
+        moreChatsJob?.cancel()
+        chatsCursor = null
+        _uiState.update {
+            it.copy(isLoadingMoreChats = false, hasMoreChats = false, chatsTotal = 0)
+        }
+
+        val generation = chatsGeneration
         chatsJob?.cancel()
         chatsJob = viewModelScope.launch {
             when (val result = withContext(ioDispatcher) { client.loadChats(workspaceId) }) {
@@ -230,13 +302,15 @@ class HomeViewModel(
                 }
 
                 is RecentsResult.Loaded -> {
-                    val chats = result.value
+                    val page = result.value
+                    val chats = page.chats
                     val id = userId
                     if (id != null) {
                         withContext(ioDispatcher) {
                             cache.writeChats(id, workspaceId, chats)
                         }
                     }
+                    if (generation != chatsGeneration) return@launch
                     _uiState.update { state ->
                         if (state.selectedWorkspaceId != workspaceId) {
                             state
@@ -247,7 +321,101 @@ class HomeViewModel(
                                 selectedChatId = state.selectedChatId
                                     ?.takeIf { chatId -> chats.any { it.id == chatId } }
                                     ?: chats.firstOrNull()?.id,
+                                hasMoreChats = page.hasMore,
+                                chatsTotal = page.total,
                             )
+                        }
+                    }
+                    // Set only after the state applied, so the scroll can never
+                    // fire against a cursor the list does not match.
+                    chatsCursor = page.nextCursor
+                }
+            }
+        }
+    }
+
+    /**
+     * Append the next page of recents. Called by the sidebar when the user
+     * reaches the bottom of the list.
+     *
+     * A no-op in every state where asking again would be wrong — already
+     * loading, nothing left, a first page still in flight — because the scroll
+     * fires on *position*, and a short page that does not fill the viewport
+     * leaves the trigger armed on every recomposition. The guard is what turns
+     * that into a bounded sequence of fetches instead of a request storm.
+     */
+    fun loadMoreChats() {
+        val state = _uiState.value
+        if (!state.canLoadMoreChats) return
+        val workspaceId = state.selectedWorkspaceId ?: return
+        // An empty list means page 1 has not landed yet; paging from here would
+        // append onto nothing.
+        if (state.chats.isEmpty()) return
+        val cursor = chatsCursor ?: return
+
+        val generation = chatsGeneration
+        moreChatsJob?.cancel()
+        moreChatsJob = viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingMoreChats = true) }
+
+            val result = withContext(ioDispatcher) {
+                client.loadChats(workspaceId = workspaceId, cursor = cursor)
+            }
+            if (generation != chatsGeneration) return@launch
+            // The workspace changed (or the list was reloaded) while the request
+            // was out. Dropping it is correct: merging would splice another
+            // workspace's rows into this one, or resurrect rows just deleted by
+            // the reload.
+            if (_uiState.value.selectedWorkspaceId != workspaceId) return@launch
+
+            when (result) {
+                is RecentsResult.SignedOut -> {
+                    _uiState.update { it.copy(isLoadingMoreChats = false) }
+                    expireSession()
+                }
+
+                is RecentsResult.Unavailable -> _uiState.update { current ->
+                    // Keep the rows we already have and keep `hasMore` true, so
+                    // scrolling again retries the same page. Blanking the
+                    // sidebar, or silently ending the list, would both be
+                    // worse than a page that did not arrive.
+                    current.copy(isLoadingMoreChats = false)
+                }
+
+                is RecentsResult.Loaded -> {
+                    val page = result.value
+                    val known = _uiState.value.chats
+                    val fresh = page.chats.filterNot { chat -> known.any { it.id == chat.id } }
+
+                    _uiState.update { current ->
+                        current.copy(
+                            isLoadingMoreChats = false,
+                            chats = RecentsApi.mergeChatsById(current.chats, page.chats),
+                            // A page that added nothing new means the cursor is
+                            // not advancing — either the end of the list or a
+                            // server that keeps replaying rows. Either way,
+                            // continuing would loop on the same page forever.
+                            hasMoreChats = page.hasMore && fresh.isNotEmpty(),
+                        )
+                    }
+
+                    // An empty page must not advance the cursor: holding the old
+                    // one is what lets a retry re-request the same window.
+                    if (fresh.isNotEmpty()) {
+                        chatsCursor = page.nextCursor
+                    } else {
+                        chatsCursor = null
+                    }
+
+                    if (page.chats.isNotEmpty()) {
+                        val id = userId
+                        if (id != null) {
+                            // Write the *merged* list, not this page: the cache
+                            // is what a cold boot paints, and writing only the
+                            // page would replace the rows above it.
+                            withContext(ioDispatcher) {
+                                cache.writeChats(id, workspaceId, _uiState.value.chats)
+                            }
                         }
                     }
                 }
@@ -266,6 +434,11 @@ class HomeViewModel(
         _uiState.value = HomeUiState()
         workspacesJob?.cancel()
         chatsJob?.cancel()
+        // A page in flight belongs to the session that just ended; letting it
+        // land would repopulate a sidebar for an account that is signed out.
+        moreChatsJob?.cancel()
+        chatsCursor = null
+        chatsGeneration++
         cache.clear()
     }
 

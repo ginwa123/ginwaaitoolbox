@@ -33,9 +33,17 @@ class RecentsClient(
         parse = RecentsApi::parseWorkspaces,
     )
 
-    fun loadChats(workspaceId: String): RecentsResult<List<ChatSummary>> = get(
-        path = RecentsApi.chatsPath(workspaceId),
-        parse = { body -> RecentsApi.parseChats(body, workspaceId) },
+    /**
+     * One page of recents for [workspaceId]. Pass the previous page's
+     * `nextCursor` to get the next one; leave it null for the first page.
+     */
+    fun loadChats(
+        workspaceId: String,
+        cursor: String? = null,
+        limit: Int = RecentsApi.CHATS_PAGE_LIMIT,
+    ): RecentsResult<ChatsPage> = get(
+        path = RecentsApi.chatsPath(workspaceId, cursor, limit),
+        parse = { body -> RecentsApi.parseChatsPage(body, workspaceId) },
     )
 
     private fun <T> get(

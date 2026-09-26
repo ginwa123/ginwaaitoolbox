@@ -113,9 +113,14 @@ fun ChatView(
     onSend: () -> Unit = {},
     onLoadOlder: () -> Unit = {},
     onDismissError: () -> Unit = {},
+    onAnswer: (QuestionAnswer) -> Unit = {},
 ) {
     val groups = remember(state.messages) { groupMessages(state.messages) }
     val listState = rememberLazyListState()
+    // Owned here, above the `LazyColumn`, because the per-card open/closed
+    // state has to outlive the item being scrolled out of the viewport — a card
+    // remembered inside the item would reset every time it is recycled.
+    val toolExpansion = rememberToolExpansion()
 
     /**
      * The "earlier messages" row occupies index 0 when it is present, so a
@@ -330,7 +335,7 @@ fun ChatView(
                     key = { index -> groups[index].key },
                     contentType = { index -> groups[index].role },
                 ) { index ->
-                    ChatMessageGroupRow(groups[index])
+                    ChatMessageGroupRow(groups[index], toolExpansion, onAnswer)
                 }
             }
 
@@ -423,7 +428,11 @@ private fun LoadOlderSentinel(isLoading: Boolean) {
 }
 
 @Composable
-private fun ChatMessageGroupRow(group: ChatMessageGroup) {
+private fun ChatMessageGroupRow(
+    group: ChatMessageGroup,
+    toolExpansion: ToolExpansion,
+    onAnswer: (QuestionAnswer) -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -432,8 +441,48 @@ private fun ChatMessageGroupRow(group: ChatMessageGroup) {
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         group.messages.forEach { message ->
-            MessageBubble(message)
+            MessageRow(message, toolExpansion, onAnswer)
         }
+    }
+}
+
+/**
+ * One row, dispatched on what it is rather than what it looks like.
+ *
+ * Three kinds share the transcript: a chat bubble, an assistant turn that only
+ * declares tool calls, and a tool result. Deciding that here rather than at the
+ * call site is what keeps a tool row from ever being drawn as a bubble — which
+ * is what it did before, showing a label above a wall of raw JSON.
+ */
+@Composable
+private fun MessageRow(
+    message: ChatMessage,
+    toolExpansion: ToolExpansion,
+    onAnswer: (QuestionAnswer) -> Unit,
+) {
+    when {
+        message.role == ChatMessage.ROLE_TOOL -> {
+            // Parsed once per distinct row, not once per recomposition: a
+            // streaming turn re-renders its card on every appended delta.
+            val model = remember(message) { ToolCard.from(message) }
+            ToolCardView(
+                model = model,
+                expanded = toolExpansion.isExpanded(model.id, model.defaultsExpanded),
+                onToggle = { toolExpansion.toggle(model.id, model.defaultsExpanded) },
+                onAnswer = onAnswer,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("chat_tool_${message.id}"),
+            )
+        }
+
+        message.isToolCallTurn -> ToolCallSummaryRow(
+            message = message,
+            expansion = toolExpansion,
+            modifier = Modifier.testTag("chat_tool_calls_${message.id}"),
+        )
+
+        else -> MessageBubble(message)
     }
 }
 
@@ -447,17 +496,6 @@ private fun MessageBubble(message: ChatMessage) {
         modifier = Modifier.widthIn(max = 460.dp),
         horizontalAlignment = if (message.isUser) Alignment.End else Alignment.Start,
     ) {
-        // The tool name is the row's label, so a run of tool cards reads as a
-        // sequence rather than as a wall of identical bubbles.
-        if (message.toolName.isNotBlank()) {
-            Text(
-                text = message.toolName,
-                style = MaterialTheme.typography.labelSmall,
-                color = NalarDim,
-                modifier = Modifier.padding(horizontal = 4.dp),
-            )
-        }
-
         Surface(
             modifier = Modifier.testTag("chat_message_${message.id}"),
             color = container,

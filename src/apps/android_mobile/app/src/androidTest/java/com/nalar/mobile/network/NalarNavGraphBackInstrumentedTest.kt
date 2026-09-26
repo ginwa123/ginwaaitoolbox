@@ -139,6 +139,7 @@ private fun TestNavGraph(navController: NavHostController) {
         chatState = ChatUiState(sessionId = "sess_1", isLoading = false),
         onSelectWorkspace = {},
         onSelectChat = {},
+        onLoadMoreChats = {},
         onRetryHome = {},
         onOpenSession = {},
         onChatDraftChanged = {},
@@ -146,5 +147,6 @@ private fun TestNavGraph(navController: NavHostController) {
         onStopChatRun = {},
         onLoadOlderChatMessages = {},
         onDismissChatError = {},
+        onAnswerChatQuestion = {},
     )
 }

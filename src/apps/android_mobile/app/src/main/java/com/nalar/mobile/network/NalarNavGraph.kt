@@ -38,6 +38,7 @@ import com.nalar.mobile.auth.AuthUiState
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatScreen
 import com.nalar.mobile.chat.ChatUiState
+import com.nalar.mobile.chat.QuestionAnswer
 import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
@@ -92,18 +93,18 @@ internal enum class BackAction {
     PopPrevious,
 
     /**
-     * Nothing but the graph sits underneath — a deep link that arrived without
-     * `FLAG_ACTIVITY_NEW_TASK` and so never pushed the shell. Rebuild onto the
-     * shell rather than leave `NavHost` with nothing to draw.
+     * Nothing but the graph sits underneath — a `popUpTo(SHELL)` navigation, or a
+     * deep link that never pushed the shell. Rebuild onto the shell rather than
+     * leave `NavHost` with nothing to draw.
      */
     ReturnToShell,
 }
 
 /**
  * [hasDestinationBelow] is "is there a non-graph entry under the current one",
- * which is false both on the shell and on a deep-linked leaf with no shell
- * beneath it. The two want different answers, so the caller has to tell them
- * apart; see [goBackToPreviousOrShell].
+ * which is false both on the shell and on a leaf with no shell beneath it. The
+ * two want different answers, so the caller has to tell them apart; see
+ * [goBackToPreviousOrShell].
  */
 internal fun backActionFor(hasDestinationBelow: Boolean): BackAction =
     if (hasDestinationBelow) BackAction.PopPrevious else BackAction.ReturnToShell
@@ -171,6 +172,7 @@ fun NalarNavGraph(
     chatState: ChatUiState,
     onSelectWorkspace: (String) -> Unit,
     onSelectChat: (String) -> Unit,
+    onLoadMoreChats: () -> Unit,
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -178,16 +180,15 @@ fun NalarNavGraph(
     onStopChatRun: () -> Unit,
     onLoadOlderChatMessages: () -> Unit,
     onDismissChatError: () -> Unit,
+    onAnswerChatQuestion: (QuestionAnswer) -> Unit,
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
 
-    // A `nalar://` link that reaches the activity without
-    // `FLAG_ACTIVITY_NEW_TASK` is handled by `handleDeepLink`'s "another app's
-    // task" branch, which navigates with `popUpTo(graph, inclusive = true)` and so
-    // never pushes the shell: the deep-linked leaf is the only destination. The
-    // back arrow there used to call the inclusive `popBackStack()`, which emptied
-    // the back stack and left `NavHost` drawing nothing at all. See [BackAction].
+    // A `nalar://` link or a `popUpTo(SHELL)` navigation can leave a leaf as the
+    // only destination on the back stack. The back arrow there used to call the
+    // inclusive `popBackStack()`, which emptied the back stack and left `NavHost`
+    // drawing nothing at all. See [BackAction].
     val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
 
     // `NavHost` emits nothing at all when the controller has no destination, and
@@ -201,124 +202,124 @@ fun NalarNavGraph(
             .fillMaxSize()
             .background(NalarBackground),
     ) {
-        NavHost(
-            navController = navController,
-            startDestination = NalarRoutes.SHELL,
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            composable(NalarRoutes.SHELL) {
-                when (authState.phase) {
-                    SessionPhase.Restoring -> AuthRestoringScreen()
+    NavHost(
+        navController = navController,
+        startDestination = NalarRoutes.SHELL,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        composable(NalarRoutes.SHELL) {
+            when (authState.phase) {
+                SessionPhase.Restoring -> AuthRestoringScreen()
 
-                    // `onRetrySession` bypasses the /me cache: the user pressed
-                    // "Try again" to re-check, so it has to reach the network.
-                    SessionPhase.NeedsRetry -> AuthRestoringScreen(
-                        errorMessage = authState.errorMessage,
-                        onRetry = onRetrySession,
-                        onUseAnotherAccount = onUseAnotherAccount,
-                    )
+                // `onRetrySession` bypasses the /me cache: the user pressed "Try
+                // again" to re-check, so it has to reach the network.
+                SessionPhase.NeedsRetry -> AuthRestoringScreen(
+                    errorMessage = authState.errorMessage,
+                    onRetry = onRetrySession,
+                    onUseAnotherAccount = onUseAnotherAccount,
+                )
 
-                    SessionPhase.NeedsLogin -> LoginScreen(
-                        authError = authState.errorMessage,
-                        isAuthenticating = authState.isAuthenticating,
-                        onSignIn = { credentials: LoginCredentials ->
-                            onSignIn(credentials.email, credentials.password)
-                        },
-                        onOpenNetworkInspector = openInspector,
-                    )
+                SessionPhase.NeedsLogin -> LoginScreen(
+                    authError = authState.errorMessage,
+                    isAuthenticating = authState.isAuthenticating,
+                    onSignIn = { credentials: LoginCredentials ->
+                        onSignIn(credentials.email, credentials.password)
+                    },
+                    onOpenNetworkInspector = openInspector,
+                )
 
-                    SessionPhase.Authenticated -> MobileHomeScreen(
-                        workspaces = homeState.workspaces,
-                        chats = homeState.chats,
-                        initialWorkspaceId = homeState.selectedWorkspaceId,
-                        initialChatId = homeState.selectedChatId,
-                        onWorkspaceSelected = onSelectWorkspace,
-                        onChatSelected = onSelectChat,
-                        onOpenChat = { sessionId ->
-                            // Open the session before navigating: the route stays
-                            // on the back stack, so returning to it must not show
-                            // an empty transcript waiting on a load that never ran.
-                            onOpenSession(sessionId)
-                            navController.navigate(NalarRoutes.chat(sessionId))
-                        },
-                        onOpenNetworkInspector = openInspector,
-                        isLoading = homeState.isLoading,
-                        errorMessage = homeState.errorMessage,
-                        onRetry = onRetryHome,
-                    )
-                }
-            }
-
-            composable(
-                route = NalarRoutes.CHAT,
-                arguments = listOf(
-                    navArgument(NalarRoutes.ARG_SESSION_ID) { type = NavType.StringType },
-                ),
-                deepLinks = listOf(
-                    navDeepLink { uriPattern = "nalar://chat/{sessionId}" },
-                ),
-            ) { backStackEntry ->
-                val sessionId = backStackEntry.arguments
-                    ?.getString(NalarRoutes.ARG_SESSION_ID)
-                    .orEmpty()
-                // The id in the route is the truth. When it disagrees with what is
-                // loaded — a deep link, or a session that failed to open — the route
-                // wins, or the screen would show the previous chat under this one's
-                // title.
-                // Opening a session is a side effect, so it belongs in an effect —
-                // running it in the composition body would re-open on every
-                // recomposition and on every Back-and-forth through this route.
-                LaunchedEffect(sessionId) {
-                    if (sessionId.isNotBlank() && chatState.sessionId != sessionId) {
+                SessionPhase.Authenticated -> MobileHomeScreen(
+                    workspaces = homeState.workspaces,
+                    chats = homeState.chats,
+                    initialWorkspaceId = homeState.selectedWorkspaceId,
+                    initialChatId = homeState.selectedChatId,
+                    onWorkspaceSelected = onSelectWorkspace,
+                    onChatSelected = onSelectChat,
+                    onOpenChat = { sessionId ->
+                        // Open the session before navigating: the route stays
+                        // on the back stack, so returning to it must not show
+                        // an empty transcript waiting on a load that never ran.
                         onOpenSession(sessionId)
-                    }
-                }
-
-                ChatScreen(
-                    state = chatState,
-                    chatTitle = chatTitleFor(sessionId, homeState.chats),
-                    onBack = goBack,
-                    onDraftChanged = onChatDraftChanged,
-                    onSend = onSendChatMessage,
-                    onStop = onStopChatRun,
-                    onLoadOlder = onLoadOlderChatMessages,
-                    onDismissError = onDismissChatError,
-                )
-            }
-
-            composable(
-                route = NalarRoutes.NETWORK,
-                deepLinks = listOf(navDeepLink { uriPattern = "nalar://network" }),
-            ) {
-                NetworkInspectorScreen(
-                    onBack = goBack,
-                    onOpenRecord = { recordId ->
-                        navController.navigate(NalarRoutes.recordDetail(recordId))
+                        navController.navigate(NalarRoutes.chat(sessionId))
                     },
-                )
-            }
-
-            composable(
-                route = NalarRoutes.RECORD_DETAIL,
-                arguments = listOf(
-                    navArgument(NalarRoutes.ARG_RECORD_ID) { type = NavType.LongType },
-                ),
-                deepLinks = listOf(
-                    navDeepLink { uriPattern = "nalar://network/record/{recordId}" },
-                ),
-            ) { backStackEntry ->
-                val recordId = backStackEntry.arguments?.getLong(NalarRoutes.ARG_RECORD_ID)
-                NetworkRecordDetailScreen(
-                    recordId = recordId,
-                    onBack = goBack,
-                    onReplay = { entry ->
-                        coroutineScope.launch {
-                            withContext(Dispatchers.IO) { replayNetworkEntry(entry) }
-                        }
-                    },
+                    onOpenNetworkInspector = openInspector,
+                    isLoading = homeState.isLoading,
+                    errorMessage = homeState.errorMessage,
+                    onRetry = onRetryHome,
+                    isLoadingMoreChats = homeState.isLoadingMoreChats,
+                    hasMoreChats = homeState.hasMoreChats,
+                    onLoadMoreChats = onLoadMoreChats,
                 )
             }
         }
+
+        composable(
+            route = NalarRoutes.CHAT,
+            arguments = listOf(
+                navArgument(NalarRoutes.ARG_SESSION_ID) { type = NavType.StringType },
+            ),
+            deepLinks = listOf(
+                navDeepLink { uriPattern = "nalar://chat/{sessionId}" },
+            ),
+        ) { backStackEntry ->
+            val sessionId = backStackEntry.arguments?.getString(NalarRoutes.ARG_SESSION_ID).orEmpty()
+            // The id in the route is the truth. When it disagrees with what is
+            // loaded — a deep link, or a session that failed to open — the route
+            // wins, or the screen would show the previous chat under this one's
+            // title.
+            // Opening a session is a side effect, so it belongs in an effect —
+            // running it in the composition body would re-open on every
+            // recomposition and on every Back-and-forth through this route.
+            LaunchedEffect(sessionId) {
+                if (sessionId.isNotBlank() && chatState.sessionId != sessionId) {
+                    onOpenSession(sessionId)
+                }
+            }
+
+            ChatScreen(
+                state = chatState,
+                chatTitle = chatTitleFor(sessionId, homeState.chats),
+                onBack = goBack,
+                onDraftChanged = onChatDraftChanged,
+                onSend = onSendChatMessage,
+                onStop = onStopChatRun,
+                onLoadOlder = onLoadOlderChatMessages,
+                onDismissError = onDismissChatError,
+                onAnswer = onAnswerChatQuestion,
+            )
+        }
+
+        composable(
+            route = NalarRoutes.NETWORK,
+            deepLinks = listOf(navDeepLink { uriPattern = "nalar://network" }),
+        ) {
+            NetworkInspectorScreen(
+                onBack = goBack,
+                onOpenRecord = { recordId -> navController.navigate(NalarRoutes.recordDetail(recordId)) },
+            )
+        }
+
+        composable(
+            route = NalarRoutes.RECORD_DETAIL,
+            arguments = listOf(
+                navArgument(NalarRoutes.ARG_RECORD_ID) { type = NavType.LongType },
+            ),
+            deepLinks = listOf(
+                navDeepLink { uriPattern = "nalar://network/record/{recordId}" },
+            ),
+        ) { backStackEntry ->
+            val recordId = backStackEntry.arguments?.getLong(NalarRoutes.ARG_RECORD_ID)
+            NetworkRecordDetailScreen(
+                recordId = recordId,
+                onBack = goBack,
+                onReplay = { entry ->
+                    coroutineScope.launch {
+                        withContext(Dispatchers.IO) { replayNetworkEntry(entry) }
+                    }
+                },
+            )
+        }
+    }
 
         if (visibleDestinations.isEmpty()) {
             NavigationLostScreen(onReturnHome = goBack)

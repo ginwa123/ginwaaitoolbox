@@ -8,11 +8,13 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nalar.mobile.shell.MobileDrawerLayout
 import com.nalar.mobile.shell.MobileHomeScreen
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -134,6 +136,96 @@ class RecentsSidebarTest {
         composeTestRule.onNodeWithTag("sidebar_open_menu").assertDoesNotExist()
         composeTestRule.onNodeWithTag("workspace_dropdown").assertIsDisplayed()
         composeTestRule.onNodeWithTag("chat_row_chat-a1").assertIsDisplayed()
+    }
+
+    @Test
+    fun theFooterReportsTheEndOfTheListOnlyOnceTheServerHasSaidSo() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    hasMoreChats = true,
+                )
+            }
+        }
+
+        // While more may exist, claiming "you're all caught up" and then having
+        // to walk it back would be a lie the user reads first.
+        composeTestRule.onNodeWithTag("chats_list_footer").assertIsDisplayed()
+        composeTestRule.onNodeWithText("No older chats").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("chats_load_more_hint").assertIsDisplayed()
+    }
+
+    @Test
+    fun anExhaustedListSaysSoAtTheEnd() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    hasMoreChats = false,
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("No older chats").assertIsDisplayed()
+    }
+
+    @Test
+    fun aPageInFlightShowsASpinnerInsteadOfTheEndMarker() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    isLoadingMoreChats = true,
+                    hasMoreChats = true,
+                )
+            }
+        }
+
+        // The rows already on screen are real; the footer has to say "working"
+        // rather than "done" or "nothing here".
+        composeTestRule.onNodeWithTag("chats_load_more_spinner").assertIsDisplayed()
+        composeTestRule.onNodeWithText("No older chats").assertDoesNotExist()
+    }
+
+    @Test
+    fun reachingTheBottomAsksForTheNextPage() {
+        var loadMoreCalls = 0
+        val manyChats = (1..60).map { index ->
+            ChatSummary(
+                id = "chat-$index",
+                workspaceId = "workspace-a",
+                title = "Chat $index",
+                updatedAtEpochMillis = now - index * 60_000L,
+            )
+        }
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = manyChats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    hasMoreChats = true,
+                    onLoadMoreChats = { loadMoreCalls++ },
+                )
+            }
+        }
+
+        // 60 rows cannot fit a phone viewport, so the list starts well clear of
+        // the trigger and only reaching the end can arm it.
+        assertEquals(0, loadMoreCalls)
+
+        composeTestRule.onNodeWithTag("chat_message_list")
+            .performScrollToIndex(55)
+        composeTestRule.waitForIdle()
+
+        assertTrue("scrolling to the end must page", loadMoreCalls >= 1)
     }
 
     private fun showModalScreen(
