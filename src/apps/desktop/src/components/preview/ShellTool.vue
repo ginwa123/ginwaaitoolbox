@@ -88,9 +88,23 @@ const hasStderr = computed(() => {
   return stderr.value && stderr.value.trim() !== '' && stderr.value.trim() !== 'No errors.'
 })
 
+// The envelope's error string. EVERY tool result carries one - a failed
+// command, a rejected argument, a tool name that does not exist. It used to
+// be computed by `normalized` and then read by nobody, so a call that never
+// ran (success:false, data:null) rendered as a card with a name, a command
+// and no body at all: indistinguishable from a command that ran and printed
+// nothing. That is how a dead `bash` call got read as "the shell is flaky".
+const envelopeError = computed((): string | null => {
+  const err = normalized.value.error
+  if (typeof err !== 'string') return null
+  const trimmed = err.trim()
+  return trimmed === '' ? null : trimmed
+})
+const hasEnvelopeError = computed(() => envelopeError.value !== null)
+
 // Status for styling
 const hasWarning = computed(() => isSelf.value || isTimeout.value)
-const hasError = computed(() => exitCode.value !== null && exitCode.value !== 0)
+const hasError = computed(() => hasEnvelopeError.value || (exitCode.value !== null && exitCode.value !== 0))
 
 const toggle = () => {
   if (!hasWarning.value && !hasError.value && !isTruncated.value) {
@@ -118,6 +132,13 @@ const copyStderr = async (e: Event) => {
   e.stopPropagation()
   if (stderr.value) {
     await navigator.clipboard.writeText(stderr.value)
+  }
+}
+
+const copyError = async (e: Event) => {
+  e.stopPropagation()
+  if (envelopeError.value) {
+    await navigator.clipboard.writeText(envelopeError.value)
   }
 }
 </script>
@@ -173,6 +194,12 @@ const copyStderr = async (e: Event) => {
         self-kill
       </span>
 
+      <!-- Failed badge - a success:false envelope with no exit code to show.
+           Without it the card carried no failure signal at all in the header. -->
+      <span v-if="hasEnvelopeError" data-testid="shell-tool-failed" class="text-red-500 text-[0.65rem]">
+        failed
+      </span>
+
       <!-- Toggle indicator -->
       <button
         class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
@@ -186,8 +213,25 @@ const copyStderr = async (e: Event) => {
       </span>
     </div>
 
-      <!-- Expanded content -->
-      <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
+      <!-- Expanded content. A failed envelope forces this open: the card's
+           whole body IS the error, so leaving it collapsed behind a "+" is
+           what made the failure read as "nothing happened". -->
+      <div v-if="isExpanded || hasEnvelopeError" class="border-t border-[var(--color-border)]">
+        <!-- Envelope error - shown for ANY success:false result, including a
+             tool that never ran at all. -->
+        <div v-if="hasEnvelopeError" data-testid="shell-tool-error" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
+          <div class="px-2 py-0.5 text-[0.65rem] text-red-600 font-medium bg-black/[0.02] flex items-center gap-2">
+            <span>error</span>
+            <button
+              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-red-500 cursor-pointer text-xs"
+              @click="copyError"
+              title="Copy error"
+            >
+              ⎘
+            </button>
+          </div>
+          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ envelopeError }}</pre>
+        </div>
         <!-- stdout section -->
         <div v-if="stdout" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
           <div class="px-2 py-0.5 text-[0.65rem] text-blue-600 font-medium bg-black/[0.02] flex items-center gap-2">

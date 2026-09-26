@@ -365,6 +365,70 @@ pub fn isKnownToolName(name: []const u8) bool {
     return false;
 }
 
+// =====================================================================
+// Deprecated tool names → current registry entry.
+//
+// `bash` and `pwsh` were merged into `command` on 2026-09-04 (the exec
+// shims in tools_exec_bash.zig / tools_exec_pwsh.zig delegate to
+// execCommand to this day). Models do not forget that rename: they were
+// trained on the Claude-style `bash` tool and keep emitting it, and an
+// unknown-name miss used to resolve to a bare `continue` in handle_tool's
+// Phase 3 — the call never ran, the placeholder stayed `data:null`, and
+// the shell card renders `error` nowhere, so a dead tool call looked
+// exactly like a flaky shell.
+//
+// DISPATCH-ONLY on purpose. `UNIFIED_TOOL_REGISTRY` is the single
+// ADVERTISED list handed to the LLM; a compat entry there would teach the
+// stale name straight back. These pairs are consulted only once a call has
+// already been emitted, to make it run instead of fail.
+// =====================================================================
+pub const TOOL_NAME_ALIASES = [_]struct { alias: []const u8, target: []const u8 }{
+    .{ .alias = "bash", .target = "command" },
+    .{ .alias = "pwsh", .target = "command" },
+    .{ .alias = "run_command", .target = "command" },
+};
+
+/// Canonical registry name for a possibly-deprecated tool name, or null
+/// when the name needs no translation. Never returns a name outside
+/// `UNIFIED_TOOL_REGISTRY` (enforced by the test below).
+pub fn resolveToolAlias(name: []const u8) ?[]const u8 {
+    for (TOOL_NAME_ALIASES) |pair| {
+        if (std.mem.eql(u8, name, pair.alias)) return pair.target;
+    }
+    return null;
+}
+
+/// True when the name can be dispatched: a registry name, or an alias of
+/// one. This is the gate handle_tool uses to decide whether to run a call —
+/// it must stay alias-aware or a `bash` call is silently dropped again.
+pub fn isDispatchableToolName(name: []const u8) bool {
+    if (isKnownToolName(name)) return true;
+    const target = resolveToolAlias(name) orelse return false;
+    return isKnownToolName(target);
+}
+
+test "every tool alias points at a real registry entry" {
+    try std.testing.expect(TOOL_NAME_ALIASES.len > 0);
+    for (TOOL_NAME_ALIASES) |pair| {
+        try std.testing.expect(isKnownToolName(pair.target));
+        // An alias must never shadow a live registry name — otherwise the
+        // alias table would silently rename a working tool.
+        try std.testing.expect(!isKnownToolName(pair.alias));
+        try std.testing.expectEqualStrings(pair.target, resolveToolAlias(pair.alias).?);
+    }
+}
+
+test "shell aliases from the pre-2026-09-04 merge resolve to command" {
+    for ([_][]const u8{ "bash", "pwsh", "run_command" }) |stale| {
+        try std.testing.expectEqualStrings("command", resolveToolAlias(stale).?);
+        try std.testing.expect(isDispatchableToolName(stale));
+    }
+    // `command` itself is untouched, and a name nobody ever had is not
+    // dispatchable.
+    try std.testing.expectEqual(@as(?[]const u8, null), resolveToolAlias("command"));
+    try std.testing.expect(!isDispatchableToolName("definitely_not_a_tool"));
+}
+
 /// Filter a config-derived list to registry names, deduplicated,
 /// preserving input order. Hand-edited configs may name tools that no
 /// longer exist — they are skipped here (and ignored downstream by
