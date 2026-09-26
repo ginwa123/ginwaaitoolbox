@@ -293,6 +293,17 @@ fun NalarNavGraph(
         }
     }
 
+    // Whether the resume has answered, as something Compose can see.
+    //
+    // **`ResumePlan` is not observable**, and that is the whole reason this is a
+    // separate piece of state rather than a read of `plan.isDecided` during
+    // composition. The plan latches its answer from inside the effect below —
+    // mutating a plain object, which invalidates nothing. The gate would go on
+    // rendering the value it last composed, so an answered "there is nothing to
+    // open" would leave it up for ever, on every launch that has no chat to
+    // resume. So the answer is copied into state every time the plan is asked.
+    var resumeDecided by remember { mutableStateOf(false) }
+
     // The chat this launch navigated to, if it navigated to one. Set once, by
     // the resume, and the difference between "this launch still has a screen to
     // build" and "this launch is the shell".
@@ -320,10 +331,21 @@ fun NalarNavGraph(
         authState = authState,
         homeState = homeState,
         navController = navController,
+        // Read from the hoisted destination, not from
+        // `navController.currentDestination` inside the effect. Those are the
+        // same value a frame later, but the *first* run of that effect happens
+        // before `NavHost` has set the graph, so the current destination is
+        // still null and `sessionToResume` — which only resumes on the shell —
+        // answers "not on the shell" and the resume is skipped for good. Nothing
+        // else in the key list changes afterwards to bring it back, so the app
+        // sat on the shell (or, once there was a gate, behind it) for ever.
+        currentRoute = currentRoute,
         plan = plan,
         onSelectChat = onSelectChat,
         onOpenSession = onOpenSession,
         onResumed = { sessionId -> resumedSessionId = sessionId },
+        // Every consultation, answered or not — see [resumeDecided].
+        onPlanConsulted = { resumeDecided = it },
     )
 
     // Auth answering `/api/auth/me` is not the app being ready. This is the
@@ -332,7 +354,7 @@ fun NalarNavGraph(
     val gateIsUp = launchGateIsUp(
         authPhase = authState.phase,
         currentRoute = currentRoute,
-        resumeDecided = plan?.isDecided == true,
+        resumeDecided = resumeDecided,
         resumedSessionId = resumedSessionId,
         transcriptSettled = transcriptSettled,
     )
@@ -578,6 +600,19 @@ private fun ResumeLastPosition(
      * effect is deciding "here is the chat" is a one-frame hole in the launch.
      */
     plan: ResumePlan?,
+    /**
+     * The current destination, hoisted from `currentBackStackEntryAsState`.
+     *
+     * **A key of the effect below, not a value it reads for itself.** The
+     * destination is null for the frame or two before `NavHost` sets the graph,
+     * and the effect's first run lands in that window. Reading
+     * `navController.currentDestination` there is the same null the policy would
+     * reject, and because the destination is in no other key, the effect never
+     * runs again and the resume is dropped for the rest of the launch. Hoisting
+     * it puts the arrival of the start destination into the key list, so the
+     * question is re-asked the moment there is somewhere to ask it from.
+     */
+    currentRoute: String?,
     onSelectChat: (String) -> Unit,
     onOpenSession: (String) -> Unit,
     /**
@@ -586,9 +621,20 @@ private fun ResumeLastPosition(
      * a fact the next composable has to act on rather than one it can re-derive.
      */
     onResumed: (String) -> Unit,
+    /**
+     * Called every time the plan is asked, with whether it has answered.
+     *
+     * Not only when it answers: `ResumePlan` latches its own decision and is
+     * not observable, so nothing would tell the gate that the answer changed.
+     * Every consultation reports, because a report that only arrived *with* an
+     * answer would leave "there is nothing to resume" invisible to the one
+     * thing waiting on it.
+     */
+    onPlanConsulted: (Boolean) -> Unit,
 ) {
     LaunchedEffect(
         authState.phase,
+        currentRoute,
         homeState.selectedWorkspaceId,
         homeState.chats,
         homeState.isLoading,
@@ -596,12 +642,15 @@ private fun ResumeLastPosition(
     ) {
         val sessionId = sessionToResume(
             authPhase = authState.phase,
-            currentRoute = navController.currentDestination?.route,
+            currentRoute = currentRoute,
             plan = plan,
             chats = homeState.chats,
             selectedWorkspaceId = homeState.selectedWorkspaceId,
             isLoading = homeState.isLoading,
-        ) ?: return@LaunchedEffect
+        )
+        // Read *after* the question, because `resolveSession` is what latches.
+        onPlanConsulted(plan?.isDecided == true)
+        if (sessionId == null) return@LaunchedEffect
 
         // The session is opened before the navigation for the same reason the
         // sidebar's own `onOpenChat` is: the route stays on the back stack, so

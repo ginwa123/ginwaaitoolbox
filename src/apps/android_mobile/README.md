@@ -652,10 +652,39 @@ opened is composed, measured and scrolled underneath, which is the only way the
 frame the reader finally sees is a frame the transcript is already at the end
 of — and it swallows touches, because a tap landing on a chat row behind it
 would be a position the user chose while the app was still restoring the
-previous one. `LaunchGateTest` walks the whole sequence on the JVM;
-`NalarNavGraphResumeInstrumentedTest` asserts both halves against a real
-`NavHost` — the chat stays behind the gate while its first page is in flight,
-and the gate is gone once it lands.
+previous one. `LaunchGateTest` walks the whole sequence on the JVM, and
+`NalarNavGraphLaunchGateTest` asserts the rendered outcome against a real
+`NavHost`: the chat stays behind the gate while its first page is in flight, and
+the gate is gone once it lands.
+
+### Two things the gate needed that the pure function could not tell it
+
+Both were found by rendering the graph, not by reasoning about it, which is the
+argument for having a rendered test at all.
+
+**The plan is not observable.** `ResumePlan` latches its own answer, and latching
+a field of a plain object invalidates nothing. The gate read `plan.isDecided`
+during composition, so a decision that arrived afterwards never reached it, and
+every launch with nothing to resume sat behind the gate for ever. The answer is
+now copied into state on *every* consultation of the plan — not only the ones
+that answer, because "nothing to resume" is the answer the gate is waiting for.
+
+**The resume effect ran before the graph existed.** It read
+`navController.currentDestination` from inside its own body, and the first run
+lands in the frame or two before `NavHost` has set the graph, so the destination
+was null, `sessionToResume` rejected it as "not on the shell", and the resume was
+dropped for the rest of the launch. The destination is hoisted and put in the
+effect's key list, so the question is re-asked the moment there is a destination
+to ask it from.
+
+### The gate is tested on the JVM, not on an emulator
+
+`NalarNavGraphLaunchGateTest` runs the real graph under `RobolectricTestRunner`
+with `createComposeRule`, so it is part of `testDebugUnitTest` — the task CI
+runs, on a machine with no device attached. It used to be an instrumented test,
+which meant the only assertions covering the gate had never been run on any
+machine that did not have an emulator to hand. That is how the two bugs above
+survived a green build.
 
 ### What is stored, and what is not
 

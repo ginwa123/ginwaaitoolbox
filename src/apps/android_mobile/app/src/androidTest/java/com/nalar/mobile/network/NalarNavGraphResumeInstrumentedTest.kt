@@ -2,6 +2,7 @@ package com.nalar.mobile.network
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
@@ -61,10 +62,12 @@ class NalarNavGraphResumeInstrumentedTest {
     fun aRelaunchOpensTheSavedChat() {
         launch(LastPosition(workspaceId = "ws_b", sessionId = "sess_c"))
 
-        assertEquals(
-            NalarRoutes.chat("sess_c"),
-            controller.currentDestination?.route,
-        )
+        // The title bar, not `currentDestination.route`: a destination's route
+        // is the *pattern* it was declared with, so it reads `chat/{sessionId}`
+        // for every chat the app has ever opened and cannot tell two resumes
+        // apart. The title is looked up in the same list the route resolves the
+        // session against.
+        composeTestRule.onNodeWithTag("chat_title").assertTextEquals("Chat sess_c")
         // The chat's way out is the hamburger's drawer, not an arrow.
         composeTestRule.onNodeWithTag("chat_drawer_menu").assertIsDisplayed()
     }
@@ -175,7 +178,7 @@ class NalarNavGraphResumeInstrumentedTest {
         // being underneath says the resume pushed a route rather than replacing
         // the whole stack, which would have left the user with nowhere to go.
         assertEquals(1, opened.size)
-        assertEquals(NalarRoutes.chat("sess_c"), controller.currentDestination?.route)
+        composeTestRule.onNodeWithTag("chat_title").assertTextEquals("Chat sess_c")
         assertTrue(
             "the shell must still be under the chat",
             controller.previousBackStackEntry?.destination?.route == NalarRoutes.SHELL,
@@ -205,7 +208,7 @@ class NalarNavGraphResumeInstrumentedTest {
 
         // The navigation has already happened. Only the *showing* is held, which
         // is what lets the transcript load behind the gate at all.
-        assertEquals(NalarRoutes.chat("sess_c"), controller.currentDestination?.route)
+        composeTestRule.onNodeWithTag("chat_title").assertTextEquals("Chat sess_c")
         composeTestRule.onNodeWithTag("launch_gate").assertIsDisplayed()
     }
 
