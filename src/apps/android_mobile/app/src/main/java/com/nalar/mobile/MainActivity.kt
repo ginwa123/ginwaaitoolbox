@@ -6,11 +6,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
 import com.nalar.mobile.network.NalarNavGraph
+import com.nalar.mobile.recents.HomeViewModel
 import com.nalar.mobile.ui.NalarTheme
 
 class MainActivity : ComponentActivity() {
@@ -22,14 +24,32 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             NalarTheme {
-                val viewModel: AuthViewModel = viewModel()
-                val uiState by viewModel.uiState.collectAsState()
+                val application = application
+                val authViewModel: AuthViewModel = viewModel()
+                val authState by authViewModel.uiState.collectAsState()
+
+                val homeViewModel: HomeViewModel = viewModel(
+                    factory = HomeViewModel.factory(application),
+                )
+                val homeState by homeViewModel.uiState.collectAsState()
+
+                // A 401 on any sidebar call means the saved cookie is dead;
+                // signing out is the only outcome a retry cannot fix.
+                LaunchedEffect(homeViewModel) {
+                    homeViewModel.sessionExpired.collect {
+                        authViewModel.useAnotherAccount()
+                    }
+                }
 
                 NalarNavGraph(
-                    authState = uiState,
-                    onSignIn = viewModel::login,
-                    onRetrySession = viewModel::restoreSession,
-                    onUseAnotherAccount = viewModel::useAnotherAccount,
+                    authState = authState,
+                    onSignIn = authViewModel::login,
+                    onRetrySession = authViewModel::restoreSession,
+                    onUseAnotherAccount = authViewModel::useAnotherAccount,
+                    homeState = homeState,
+                    onSelectWorkspace = homeViewModel::selectWorkspace,
+                    onSelectChat = homeViewModel::selectChat,
+                    onRetryHome = homeViewModel::refresh,
                 )
             }
         }

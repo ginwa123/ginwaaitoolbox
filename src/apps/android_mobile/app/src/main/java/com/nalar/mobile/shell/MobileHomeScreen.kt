@@ -47,8 +47,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.recents.ChatSummary
-import com.nalar.mobile.recents.PreviewChats
-import com.nalar.mobile.recents.PreviewWorkspaces
 import com.nalar.mobile.recents.RecentsSidebar
 import com.nalar.mobile.recents.WorkspaceOption
 import com.nalar.mobile.recents.formatRelativeTime
@@ -82,6 +80,9 @@ fun MobileHomeScreen(
     onChatSelected: (String) -> Unit = {},
     onOpenNetworkInspector: () -> Unit = {},
     drawerLayout: MobileDrawerLayout = MobileDrawerLayout.Auto,
+    isLoading: Boolean = false,
+    errorMessage: String? = null,
+    onRetry: () -> Unit = {},
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
         ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
@@ -162,12 +163,15 @@ fun MobileHomeScreen(
                             selectedChatId = selectedChatId,
                             onWorkspaceSelected = selectWorkspace,
                             onChatSelected = selectChat,
+                            isLoading = isLoading,
+                            errorMessage = errorMessage,
+                            onRetry = onRetry,
                         )
                     }
                 },
             ) {
                 HomeContent(
-                    workspaceName = selectedWorkspace?.name ?: "No workspace",
+                    workspaceName = selectedWorkspace?.displayName ?: "No workspace",
                     selectedChat = selectedChat,
                     showNavigationMenu = false,
                     onOpenNavigationMenu = {},
@@ -192,12 +196,15 @@ fun MobileHomeScreen(
                             onWorkspaceSelected = selectWorkspace,
                             onChatSelected = selectChat,
                             onNavigate = closeDrawer,
+                            isLoading = isLoading,
+                            errorMessage = errorMessage,
+                            onRetry = onRetry,
                         )
                     }
                 },
             ) {
                 HomeContent(
-                    workspaceName = selectedWorkspace?.name ?: "No workspace",
+                    workspaceName = selectedWorkspace?.displayName ?: "No workspace",
                     selectedChat = selectedChat,
                     showNavigationMenu = true,
                     onOpenNavigationMenu = {
@@ -320,14 +327,18 @@ private fun HomeContent(
                     )
                     Text(
                         text = selectedChat?.let { chat ->
-                            formatRelativeTime(chat.updatedAtEpochMillis, System.currentTimeMillis())
+                            if (chat.hasTimestamp) {
+                                formatRelativeTime(chat.updatedAtEpochMillis, System.currentTimeMillis())
+                            } else {
+                                "No timestamp for this chat yet."
+                            }
                         } ?: "Choose a workspace to see its recent chats.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = NalarMuted,
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "Android preview · chat content is not connected yet.",
+                        text = "Chat messages are not connected yet — the sidebar above is live.",
                         style = MaterialTheme.typography.labelMedium,
                         color = NalarDim,
                         textAlign = TextAlign.Center,
@@ -341,10 +352,20 @@ private fun HomeContent(
 @Preview(showBackground = true, widthDp = 390, heightDp = 844)
 @Composable
 private fun MobileHomeScreenPreview() {
+    // The fixtures live here rather than in a shared `Preview*` top-level so
+    // nothing outside the IDE's preview renderer can reach them — that shared
+    // indirection is how demo data ended up as the app's default parameter.
+    val previewNow = System.currentTimeMillis()
     NalarTheme {
         MobileHomeScreen(
-            workspaces = PreviewWorkspaces,
-            chats = PreviewChats,
+            workspaces = listOf(
+                WorkspaceOption("ws-preview", "Preview workspace"),
+                WorkspaceOption("ws-other", "Another workspace"),
+            ),
+            chats = listOf(
+                ChatSummary("chat-preview-1", "ws-preview", "Preview chat", previewNow - 5L * 60_000L),
+                ChatSummary("chat-preview-2", "ws-preview", "Second preview chat", previewNow - 3L * 60L * 60_000L),
+            ),
         )
     }
 }

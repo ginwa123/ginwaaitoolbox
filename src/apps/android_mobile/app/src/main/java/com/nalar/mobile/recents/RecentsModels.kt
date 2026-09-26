@@ -7,7 +7,10 @@ private const val MILLIS_PER_DAY = 24L * MILLIS_PER_HOUR
 data class WorkspaceOption(
     val id: String,
     val name: String,
-)
+) {
+    val displayName: String
+        get() = name.trim().ifEmpty { "Untitled workspace" }
+}
 
 data class ChatSummary(
     val id: String,
@@ -17,6 +20,15 @@ data class ChatSummary(
 ) {
     val displayTitle: String
         get() = title.trim().ifEmpty { "New Chat" }
+
+    /**
+     * False when the backend sent no parseable timestamp at all (a legacy
+     * session whose `created_at`/`updated_at` are empty strings). The row is
+     * still shown, just without a relative label — rendering the epoch instead
+     * would claim the chat is decades old.
+     */
+    val hasTimestamp: Boolean
+        get() = updatedAtEpochMillis > 0L
 }
 
 fun recentChatsForWorkspace(
