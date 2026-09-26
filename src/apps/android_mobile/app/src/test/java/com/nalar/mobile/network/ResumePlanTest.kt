@@ -4,7 +4,9 @@ import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.storage.LastPosition
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -117,6 +119,50 @@ class ResumePlanTest {
         assertNull(
             plan(session = null).resolveSession(chats(CHATS), "ws_b", settled = true),
         )
+    }
+
+    @Test
+    fun `the question is open until it has been answered`() {
+        // The launch gate waits on this. It cannot read the return value to
+        // tell "still asking" from "answered, and there is nothing to open" —
+        // both are null — so it reads `isDecided` instead, and every one of
+        // these states is a different reason the gate is or is not up.
+        val plan = plan(session = "sess_c")
+        assertFalse(plan.isDecided)
+        assertNull(plan.resolveSession(chats(CHATS), "ws_b", settled = false))
+        assertFalse("a list still in flight is not an answer", plan.isDecided)
+        assertNull(plan.resolveSession(emptyList(), "ws_b", settled = true))
+        assertFalse("a workspace with no chats yet is not an answer", plan.isDecided)
+        assertEquals("sess_c", plan.resolveSession(chats(CHATS), "ws_b", settled = true))
+        assertTrue(plan.isDecided)
+    }
+
+    @Test
+    fun `an answer of nothing is still an answer`() {
+        // The case the gate exists for on a first launch: there is no chat to
+        // open, so the shell is the launch. Reading the return value as the
+        // answer would block a first launch behind a splash for ever.
+        val noSavedChat = plan(session = null)
+        assertNull(noSavedChat.resolveSession(chats(CHATS), "ws_b", settled = true))
+        assertTrue(noSavedChat.isDecided)
+
+        val deleted = plan(session = "sess_deleted")
+        assertNull(deleted.resolveSession(chats(CHATS), "ws_b", settled = true))
+        assertTrue(deleted.isDecided)
+    }
+
+    @Test
+    fun `an answer stays an answer`() {
+        val plan = plan(session = "sess_c")
+        plan.resolveSession(chats(CHATS), "ws_b", settled = true)
+        assertTrue(plan.isDecided)
+
+        // Every later reading is noise: a refresh, a trip through the inspector,
+        // a recomposition. None of them may reopen the question, because the
+        // gate would go back up over a screen the reader is using.
+        plan.resolveSession(chats(CHATS), "ws_b", settled = false)
+        plan.resolveSession(emptyList(), "ws_b", settled = true)
+        assertTrue(plan.isDecided)
     }
 
     private fun plan(session: String?) = ResumePlan(

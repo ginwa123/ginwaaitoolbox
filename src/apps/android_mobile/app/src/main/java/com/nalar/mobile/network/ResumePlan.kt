@@ -45,6 +45,21 @@ internal class ResumePlan(private val saved: LastPosition) {
     private var sessionResolved = false
 
     /**
+     * Whether the question has been answered — a chat to open, or a decision
+     * that there is none.
+     *
+     * The gate that holds a launch screen over the shell needs exactly this
+     * distinction, and it is not derivable from the return value: an unanswered
+     * plan and an answered one that found nothing to resume both return null,
+     * and only the second is a reason to stop waiting. Rule 3 in
+     * [sessionToResume] covers why the question can stay open indefinitely
+     * (the app is not on the shell) and why an empty chat list is not an answer
+     * to it.
+     */
+    val isDecided: Boolean
+        get() = sessionResolved
+
+    /**
      * The chat to open, or null while the question is still open.
      *
      * Only the shell may resume, and that rule is the caller's to keep: a

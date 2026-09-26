@@ -182,6 +182,87 @@ class NalarNavGraphResumeInstrumentedTest {
         )
     }
 
+    @Test
+    fun theChatStaysBehindTheGateUntilItsTranscriptLands() {
+        // A cold open: the route is on the back stack and the first page has
+        // not arrived. The reader must not see it yet, because the frame it
+        // would see is the top of an empty list and the frame after it is the
+        // bottom of a full one — the three-second drift in its shortest form.
+        composeTestRule.setContent {
+            NalarTheme {
+                controller = rememberNavController()
+                ResumeGraph(
+                    navController = controller,
+                    homeState = settledHome(),
+                    positionStore = FixedLastPosition(
+                        LastPosition(workspaceId = "ws_b", sessionId = "sess_c"),
+                    ),
+                    chatState = { ChatUiState(sessionId = "sess_c", isLoading = true) },
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // The navigation has already happened. Only the *showing* is held, which
+        // is what lets the transcript load behind the gate at all.
+        assertEquals(NalarRoutes.chat("sess_c"), controller.currentDestination?.route)
+        composeTestRule.onNodeWithTag("launch_gate").assertIsDisplayed()
+    }
+
+    @Test
+    fun theGateLiftsOnceTheResumedTranscriptHasLanded() {
+        // The other half of the pair, and the one a test written only for the
+        // gate being up would pass without: a gate that never lifts is a splash
+        // with no way out of it.
+        composeTestRule.setContent {
+            NalarTheme {
+                controller = rememberNavController()
+                ResumeGraph(
+                    navController = controller,
+                    homeState = settledHome(),
+                    positionStore = FixedLastPosition(
+                        LastPosition(workspaceId = "ws_b", sessionId = "sess_c"),
+                    ),
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("launch_gate").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("chat_drawer_menu").assertIsDisplayed()
+    }
+
+    @Test
+    fun aFirstLaunchRevealsTheShellWithoutAnyChat() {
+        // Nothing to resume is an answer, not a wait. If "no saved chat" left
+        // the gate up, every first launch would be a splash with no exit.
+        launch(LastPosition())
+
+        composeTestRule.onNodeWithTag("launch_gate").assertDoesNotExist()
+    }
+
+    @Test
+    fun aSignInScreenIsNeverCovered() {
+        // The gate blocks by being opaque, and a gate over the sign-in form is
+        // an app nobody can get into.
+        composeTestRule.setContent {
+            NalarTheme {
+                controller = rememberNavController()
+                ResumeGraph(
+                    navController = controller,
+                    homeState = settledHome(),
+                    positionStore = FixedLastPosition(
+                        LastPosition(workspaceId = "ws_b", sessionId = "sess_c"),
+                    ),
+                    authState = AuthUiState(phase = SessionPhase.NeedsLogin),
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("launch_gate").assertDoesNotExist()
+    }
+
     private fun settledHome(chats: List<ChatSummary> = listOf(chat("sess_a"), chat("sess_c"))) =
         HomeUiState(
             isLoading = false,
@@ -210,6 +291,18 @@ private fun ResumeGraph(
         userId = "user_1",
     ),
     onOpenSession: (String) -> Unit = {},
+    /**
+     * The transcript the chat route paints.
+     *
+     * The default is the state a real open reaches within a frame or two —
+     * opened, loaded, nothing to scroll because the cached transcript is empty.
+     * It carries the route's session id because that is what a real
+     * `ChatViewModel` does: the resume calls `onOpenSession` *before* it
+     * navigates, so the first frame the route composes with already belongs to
+     * the chat it is showing. A state with no session id is a shape production
+     * never produces, and the launch gate reads it as "not settled yet".
+     */
+    chatState: () -> ChatUiState = { ChatUiState(sessionId = "sess_c", isLoading = false) },
 ) {
     NalarNavGraph(
         authState = authState,
@@ -218,7 +311,7 @@ private fun ResumeGraph(
         onUseAnotherAccount = {},
         navController = navController,
         homeState = homeState,
-        chatState = { ChatUiState(isLoading = false) },
+        chatState = chatState,
         positionStore = positionStore,
         onSelectWorkspace = {},
         onSelectChat = {},

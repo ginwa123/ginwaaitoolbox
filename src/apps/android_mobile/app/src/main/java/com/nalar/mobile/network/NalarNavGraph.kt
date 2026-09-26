@@ -33,6 +33,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
@@ -268,14 +269,72 @@ fun NalarNavGraph(
     // substitute for [goBack] — it is what turns any future way into that state
     // into one tap instead of a dead window.
     val visibleDestinations by navController.visibleEntries.collectAsState()
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = currentBackStackEntry?.destination?.route
+
+    // The launch's own state, hoisted here because two different things need it:
+    // the effect below that resumes, and the gate that decides whether any of
+    // this is on screen yet. It is state *over time* — read on IO, answered
+    // when a list lands, confirmed when a transcript has been scrolled — and
+    // the third of those is reported by a composable several frames away.
+    //
+    // `plan` is null for the first frames of a launch. That is its own state,
+    // neither decided nor undecided: the read is on IO, and "not read yet" is
+    // not "there is nothing to resume".
+    var plan by remember(authState.userId) { mutableStateOf<ResumePlan?>(null) }
+    // Re-read when the account changes, not on every recomposition: the store is
+    // keyed by account, and a plan built for the previous one would resume the
+    // previous one's chat.
+    LaunchedEffect(authState.userId) {
+        // Off the main thread: this is a launch path, and the first screen is not
+        // up yet, so there is nothing to drop a frame for.
+        plan = withContext(Dispatchers.IO) {
+            ResumePlan(positionStore.read(authState.userId))
+        }
+    }
+
+    // The chat this launch navigated to, if it navigated to one. Set once, by
+    // the resume, and the difference between "this launch still has a screen to
+    // build" and "this launch is the shell".
+    var resumedSessionId by remember { mutableStateOf<String?>(null) }
+
+    // The resumed transcript has been put where the reader left it.
+    //
+    // **One-way, and the latch is the point.** `ChatView` reports it for the
+    // session it is showing, and a reader who has already landed in a chat and
+    // switched to another one would otherwise put a launch gate back over a
+    // screen they are using — a worse bug than the drift it was added to stop.
+    // A launch reveals; it does not re-close.
+    var transcriptSettled by remember { mutableStateOf(false) }
+    val onTranscriptSettled: (String?) -> Unit = { sessionId ->
+        // Matched, not just recorded: a report about the chat that was open
+        // before the resume — or about no chat at all, which is what a stale
+        // state paints on the route's first frame — must not pass for the
+        // resumed one settling.
+        if (sessionId != null && sessionId == resumedSessionId) {
+            transcriptSettled = true
+        }
+    }
 
     ResumeLastPosition(
         authState = authState,
         homeState = homeState,
         navController = navController,
-        positionStore = positionStore,
+        plan = plan,
         onSelectChat = onSelectChat,
         onOpenSession = onOpenSession,
+        onResumed = { sessionId -> resumedSessionId = sessionId },
+    )
+
+    // Auth answering `/api/auth/me` is not the app being ready. This is the
+    // difference, and the whole reason the shell used to be on screen for three
+    // seconds before the chat the reader had left appeared over it.
+    val gateIsUp = launchGateIsUp(
+        authPhase = authState.phase,
+        currentRoute = currentRoute,
+        resumeDecided = plan?.isDecided == true,
+        resumedSessionId = resumedSessionId,
+        transcriptSettled = transcriptSettled,
     )
 
     Box(
@@ -366,6 +425,11 @@ fun NalarNavGraph(
             ChatScreen(
                 state = chatState,
                 chatTitle = chatTitleFor(sessionId, homeState.chats),
+                // The only signal that the launch has somewhere to show. The
+                // graph holds a gate over the whole route until the transcript
+                // has been scrolled to where the reader left it — see
+                // [launchGateIsUp] — and this is the report that lifts it.
+                onTranscriptSettled = onTranscriptSettled,
                 // The route's id, not `chatState.sessionId`: a deep link that
                 // has not finished opening yet still has to report the run it
                 // is about to show.
@@ -465,6 +529,21 @@ fun NalarNavGraph(
         if (visibleDestinations.isEmpty()) {
             NavigationLostScreen(onReturnHome = goBack)
         }
+
+        // Over the graph, and *after* the recovery screen, so a dead back stack
+        // keeps the one button that fixes it. A gate over `NavigationLostScreen`
+        // would turn "the app lost track of where it was" into a splash with no
+        // way out, which is the one thing that screen is not allowed to become.
+        //
+        // It covers the `NavHost` rather than replacing it, and that ordering is
+        // the fix rather than a detail of the layout: the chat the resume just
+        // navigated to is composed, measured and scrolled underneath this, so
+        // the frame the reader finally sees is the frame the transcript is
+        // already standing at the end of. Drawing nothing here instead would
+        // move that work to *after* the reveal, which is the drift.
+        if (gateIsUp && visibleDestinations.isNotEmpty()) {
+            LaunchGateScreen()
+        }
     }
 }
 
@@ -492,22 +571,22 @@ private fun ResumeLastPosition(
     authState: AuthUiState,
     homeState: HomeUiState,
     navController: NavHostController,
-    positionStore: LastPositionStore,
+    /**
+     * Hoisted, because the launch gate above reads whether it has answered.
+     * Passing it in rather than building it here is what lets the two be
+     * answered from the same frame — the gate deciding "still asking" while the
+     * effect is deciding "here is the chat" is a one-frame hole in the launch.
+     */
+    plan: ResumePlan?,
     onSelectChat: (String) -> Unit,
     onOpenSession: (String) -> Unit,
+    /**
+     * The chat that was navigated to, handed up so the gate can wait for its
+     * transcript. A `LaunchedEffect` cannot return a value, and a session id is
+     * a fact the next composable has to act on rather than one it can re-derive.
+     */
+    onResumed: (String) -> Unit,
 ) {
-    // Re-read when the account changes, not on every recomposition: the store is
-    // keyed by account, and a plan built for the previous one would resume the
-    // previous one's chat.
-    var plan by remember(authState.userId) { mutableStateOf<ResumePlan?>(null) }
-    LaunchedEffect(authState.userId) {
-        // Off the main thread: this is a launch path, and the first screen is not
-        // up yet, so there is nothing to drop a frame for.
-        plan = withContext(Dispatchers.IO) {
-            ResumePlan(positionStore.read(authState.userId))
-        }
-    }
-
     LaunchedEffect(
         authState.phase,
         homeState.selectedWorkspaceId,
@@ -530,6 +609,10 @@ private fun ResumeLastPosition(
         // that never ran.
         onSelectChat(sessionId)
         onOpenSession(sessionId)
+        // Before the navigation, so the frame the gate lifts in already knows
+        // which transcript it is waiting for. Reversed, the gate would read a
+        // null id on its first pass and keep waiting.
+        onResumed(sessionId)
         navController.navigate(NalarRoutes.chat(sessionId))
     }
 }
