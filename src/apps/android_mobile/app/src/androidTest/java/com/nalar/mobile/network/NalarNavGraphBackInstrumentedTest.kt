@@ -32,8 +32,10 @@ import org.junit.runner.RunWith
  * and the activity stayed resumed, so the reader got a window with no content,
  * no way out, and a Back button that quit the app.
  *
- * These tests put the real `NavHost` into that state and assert that a back
- * affordance leaves something on screen.
+ * These tests put the real `NavHost` into that state and assert that an in-app
+ * affordance leaves something on screen. On the chat route that affordance is no
+ * longer a back arrow — it is the hamburger's drawer, whose "All chats" row
+ * leads out — so the route has to be driven the way a reader drives it.
  */
 @RunWith(AndroidJUnit4::class)
 class NalarNavGraphBackInstrumentedTest {
@@ -66,13 +68,20 @@ class NalarNavGraphBackInstrumentedTest {
         )
     }
 
+    /** The chat's way out now that its top bar has no arrow: the drawer's row. */
+    private fun leaveChatThroughItsDrawer() {
+        composeTestRule.onNodeWithTag("chat_drawer_menu").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("chat_all_chats").performClick()
+        composeTestRule.waitForIdle()
+    }
+
     @Test
-    fun theChatBackArrowLeavesTheShellOnScreenFromASingleDestinationStack() {
+    fun theChatDrawersAllChatsRowLeavesTheShellOnScreenFromASingleDestinationStack() {
         setUpGraph()
         navigateToDeepLinkedLeaf()
 
-        composeTestRule.onNodeWithTag("chat_back").performClick()
-        composeTestRule.waitForIdle()
+        leaveChatThroughItsDrawer()
 
         composeTestRule.onNodeWithTag("home_screen").assertIsDisplayed()
     }
@@ -94,13 +103,12 @@ class NalarNavGraphBackInstrumentedTest {
     }
 
     @Test
-    fun poppingFromTheNormalStackStillReturnsToTheShell() {
+    fun leavingTheChatThroughItsDrawerStillReturnsToTheShell() {
         setUpGraph()
         composeTestRule.runOnUiThread { controller.navigate(NalarRoutes.chat("sess_1")) }
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithTag("chat_back").performClick()
-        composeTestRule.waitForIdle()
+        leaveChatThroughItsDrawer()
 
         composeTestRule.onNodeWithTag("home_screen").assertIsDisplayed()
     }

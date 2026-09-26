@@ -57,6 +57,13 @@ offers retry and account-switch recovery without deleting the saved cookie.
 
 ## Drawer
 
+There are two of them, and they are the same drawer: the shell's own, and the
+one the chat route's hamburger opens. `RecentsDrawerContent` is what both draw,
+so the workspace picker, the recents list and the sign-out footer cannot drift
+apart between them. The screen owns the sheet and the swipe; the route supplies
+the content, because what a screen does *with* a chat is navigation and
+navigation belongs to the graph.
+
 The two taps inside the drawer are not the same kind of gesture, so they do not
 do the same thing to the drawer:
 
@@ -68,9 +75,33 @@ do the same thing to the drawer:
   away the tap the user was in the middle of. Only the dropdown itself
   dismisses.
 
+From the shell a chat is *pushed*; from inside a chat it *replaces* the one on
+screen (`popUpTo(SHELL)` non-inclusive). A reader switching between chats is
+not moving through a history of them, and a back stack with one chat entry per
+chat opened this session makes system Back walk back through all of them.
+
 The callback that leaves the drawer is named `onOpenChat` rather than the
 earlier `onNavigate` for exactly this reason: `onNavigate` invited the second
 caller, and a filter has nowhere to navigate to.
+
+### The chat's top bar leads with a hamburger, not a back arrow
+
+An arrow can only offer one way out. A drawer offers the whole workspace —
+switch to the chat next to this one, pick another workspace, sign out — which is
+what a reader in a chat is usually there for, and offering it from a bar costs
+one gesture rather than a trip out of the transcript and back.
+
+What the arrow offered, the drawer still has to offer: `BackToChatsRow` sits at
+the top of the chat's drawer. A chat opened from `nalar://chat/…` is the *only*
+entry on the back stack, so without that row there is no in-app route to the
+shell at all and system Back just closes the app — the dead end described
+below, moved rather than created.
+
+One consequence worth naming: the drawer's list is composed even while it is
+closed, so the chat route holds a transcript *and* a recents list in the tree at
+once. That is why the two `LazyColumn`s carry different test tags
+(`chat_message_list` and `sidebar_chat_list`) — one tag for both would make
+every `onNodeWithTag` on either list fail on "multiple nodes".
 
 ## Chat
 
@@ -443,6 +474,12 @@ recovery screen whenever `visibleEntries` is empty, so any future way into that
 state costs one tap instead of a dead window. `NavControllerBackStackTest` drives
 a real `NavController` through both paths on a device; `NalarNavGraphBackTest`
 keeps the rule and the shape of the fix honest on the JVM, where CI runs it.
+
+The chat route reaches the same rule through its drawer rather than an arrow —
+`All chats` calls `goBackToPreviousOrShell` like every other way out. The
+system Back button cannot cause the blank window, but on a deep-linked chat it
+has nothing to pop either, so "only an in-app back button finds it" is now
+"only the drawer's first row finds it".
 
 ### Deep links
 

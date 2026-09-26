@@ -15,6 +15,10 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
+import com.nalar.mobile.recents.ChatSummary
+import com.nalar.mobile.recents.WorkspaceOption
+import com.nalar.mobile.shell.BackToChatsRow
+import com.nalar.mobile.shell.RecentsDrawerContent
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -117,11 +121,32 @@ class ChatViewTest {
                 ChatScreen(
                     state = state,
                     chatTitle = "Test chat",
-                    onBack = {},
                     onDraftChanged = onDraftChanged,
                     onSend = onSend,
                     onStop = onStop,
                     onLoadOlder = onLoadOlder,
+                    // The transcript tests are not about the drawer, and an
+                    // empty one would still be a real one. `ChatDrawerTest`
+                    // drives this slot with the production sidebar.
+                    drawerContent = { dismissDrawer ->
+                        RecentsDrawerContent(
+                            workspaces = listOf(WorkspaceOption("workspace-a", "Workspace A")),
+                            chats = listOf(
+                                ChatSummary(
+                                    id = "chat-1",
+                                    workspaceId = "workspace-a",
+                                    title = "Test chat",
+                                    updatedAtEpochMillis = 1_800_000_000_000L,
+                                ),
+                            ),
+                            selectedWorkspaceId = "workspace-a",
+                            selectedChatId = state.sessionId,
+                            onWorkspaceSelected = {},
+                            onChatSelected = {},
+                            onOpenChat = dismissDrawer,
+                            header = { BackToChatsRow(onClick = dismissDrawer) },
+                        )
+                    },
                 )
             }
         }
