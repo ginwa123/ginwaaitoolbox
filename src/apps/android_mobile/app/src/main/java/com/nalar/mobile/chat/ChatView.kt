@@ -43,6 +43,8 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -68,6 +70,12 @@ private const val LOAD_OLDER_INDEX_THRESHOLD = 2
 private const val LOAD_OLDER_KEY = "__load_older__"
 
 private const val CONTENT_TYPE_SENTINEL = "sentinel"
+
+/**
+ * Leading-edge rule that marks an unboxed diagnostic row, matching the web's
+ * `.chat-tool-card` `border-left: 2px solid`.
+ */
+private val ruleWidth = 2.dp
 
 /**
  * One sample of where the viewport is and whether the reader is driving it.
@@ -438,7 +446,9 @@ private fun ChatMessageGroupRow(
             .fillMaxWidth()
             .testTag("chat_group_${group.role}"),
         horizontalAlignment = if (group.isUser) Alignment.End else Alignment.Start,
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        // A boxed bubble brings its own separation; a flat paragraph does not,
+        // so the gap carries it. See `groupGapDp`.
+        verticalArrangement = Arrangement.spacedBy(groupGapDp(group).dp),
     ) {
         // Inside the group, not beside it. A tool call and the output that
         // answers it are one thing to look at, so the header for the calls
@@ -464,10 +474,10 @@ private fun ChatMessageGroupRow(
 /**
  * One row, dispatched on what it is rather than what it looks like.
  *
- * Two kinds share the transcript: a chat bubble and a tool result. Deciding
- * that here rather than at the call site is what keeps a tool row from ever
- * being drawn as a bubble — which is what it did before, showing a label above
- * a wall of raw JSON.
+ * Three kinds share the transcript: the reader's own bubble, the assistant's
+ * paragraph, and a tool result. Deciding that here rather than at the call site
+ * is what keeps a tool row from ever being drawn as a bubble — which is what it
+ * did before, showing a label above a wall of raw JSON.
  *
  * A bare `tool_calls` declaration is *not* a third kind. [groupMessages] folds
  * it into the run that answers it and leaves what is left in
@@ -480,8 +490,8 @@ private fun MessageRow(
     toolExpansion: ToolExpansion,
     onAnswer: (QuestionAnswer) -> Unit,
 ) {
-    when {
-        message.role == ChatMessage.ROLE_TOOL -> {
+    when (messageChrome(message)) {
+        MessageChrome.TOOL_CARD -> {
             // Parsed once per distinct row, not once per recomposition: a
             // streaming turn re-renders its card on every appended delta.
             val model = remember(message) { ToolCard.from(message) }
@@ -496,90 +506,164 @@ private fun MessageRow(
             )
         }
 
-        else -> MessageBubble(message)
+        MessageChrome.BUBBLE -> UserMessageBubble(message)
+
+        MessageChrome.PARAGRAPH -> AssistantMessageParagraph(message)
     }
 }
 
+/**
+ * The reader's own turn — the one row that is a bubble.
+ *
+ * Tinted, outlined, rounded, right-aligned, and capped so a one-word "ok" does
+ * not stretch a slab across the screen. This is the web's `max-w-[90%] w-fit
+ * ml-auto` on a blue fill, and it is the only reason a reader can pick their own
+ * questions out of a long transcript at a glance.
+ */
 @Composable
-private fun MessageBubble(message: ChatMessage) {
-    val isError = message.isError
-    val container = if (isError || message.isUser) NalarBackgroundRaised else NalarField
-    val contentColor = if (isError) NalarError else NalarText
+private fun UserMessageBubble(message: ChatMessage) {
+    val contentColor = if (message.isError) NalarError else NalarText
 
     Column(
         modifier = Modifier.widthIn(max = 460.dp),
-        horizontalAlignment = if (message.isUser) Alignment.End else Alignment.Start,
+        horizontalAlignment = Alignment.End,
     ) {
         Surface(
             modifier = Modifier.testTag("chat_message_${message.id}"),
-            color = container,
+            color = NalarBackgroundRaised,
             contentColor = contentColor,
             shape = RoundedCornerShape(14.dp),
             border = BorderStroke(1.dp, NalarBorder),
         ) {
             Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                if (message.reasoningContent.isNotBlank()) {
-                    Text(
-                        text = message.reasoningContent,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = NalarDim,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                }
-                if (message.hasRenderableContent) {
-                    // Markdown for the assistant, verbatim for the reader.
-                    // The web makes the same split: an assistant turn is
-                    // `marked.parse`d into `.markdown-content`, a user turn is
-                    // plain `{{ text }}` in a `whitespace-pre-wrap` bubble. A
-                    // question the reader typed must come back looking exactly
-                    // as it was sent, so parsing their `**` and `_` would
-                    // change their own words back at them.
-                    if (message.isUser) {
-                        Text(
-                            text = message.content,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = contentColor,
-                            modifier = Modifier.testTag("chat_body_${message.id}"),
-                        )
-                    } else {
-                        MarkdownText(
-                            source = message.content,
-                            color = contentColor,
-                            modifier = Modifier.testTag("chat_body_${message.id}"),
-                        )
-                    }
-                }
-                if (message.imageUrls.isNotEmpty() || message.videoUrls.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = buildString {
-                            if (message.imageUrls.isNotEmpty()) {
-                                append("${message.imageUrls.size} image(s)")
-                            }
-                            if (message.videoUrls.isNotEmpty()) {
-                                if (isNotEmpty()) append(" · ")
-                                append("${message.videoUrls.size} video(s)")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = NalarDim,
-                        // The bytes are data URLs held in a cache row; a real
-                        // image loader renders them, this is the count.
-                        modifier = Modifier.testTag("chat_attachments"),
-                    )
-                }
+                MessageBody(message, contentColor)
             }
         }
 
-        if (message.isStreaming) {
+        StreamingHint(isStreaming = message.isStreaming)
+    }
+}
+
+/**
+ * Everything the assistant says, as a paragraph.
+ *
+ * No `Surface`, so no fill, no outline, no corner radius and none of the 12/10
+ * dp bubble padding — the page background runs through behind the answer. That
+ * is the whole point: a long assistant turn and the tool cards interleaved with
+ * it then share one measure, so the transcript reads as a document instead of
+ * alternating full-width prose with inset boxes. The web made this same call in
+ * 2026-08-23 ("paragraph mode"), and the two are kept in step deliberately —
+ * see `MessageChrome` for the rule.
+ *
+ * The width cap goes with the box for the same reason: it existed to stop a
+ * bubble from spanning a tablet, and prose that runs to the margin is what the
+ * web does (`flex-1 w-full max-w-full`).
+ */
+@Composable
+private fun AssistantMessageParagraph(message: ChatMessage) {
+    val contentColor = if (message.isError) NalarError else NalarText
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("chat_message_${message.id}"),
+        horizontalAlignment = Alignment.Start,
+    ) {
+        /**
+         * An agentic-loop diagnostic frame carries prose like any other
+         * assistant turn, so it gets no box either — but it still has to be
+         * findable, and unboxed red text on a dark page is not. A 2dp rule down
+         * the leading edge marks the row without wrapping it, which is the
+         * web's `.chat-tool-card` marker (`border-left: 2px solid`, recoloured
+         * for the error variant) used on the same page.
+         */
+        val diagnosticRule = if (message.isError) {
+            Modifier.drawBehind {
+                drawRect(color = NalarError, size = Size(ruleWidth.toPx(), size.height))
+            }
+        } else {
+            Modifier
+        }
+
+        Column(
+            modifier = diagnosticRule
+                .fillMaxWidth()
+                .padding(start = if (message.isError) 8.dp else 0.dp),
+        ) {
+            MessageBody(message, contentColor)
+        }
+
+        StreamingHint(isStreaming = message.isStreaming)
+    }
+}
+
+/** The "still arriving" note, hung below the row it belongs to, never inside it. */
+@Composable
+private fun StreamingHint(isStreaming: Boolean) {
+    if (!isStreaming) return
+    Text(
+        text = "streaming…",
+        style = MaterialTheme.typography.labelSmall,
+        color = NalarDim,
+        modifier = Modifier.padding(horizontal = 4.dp),
+    )
+}
+
+/**
+ * The content of a turn, with no frame around it.
+ *
+ * Shared by the bubble and the paragraph so the two cannot drift apart. The
+ * web draws the same split in the *content* as in the chrome: an assistant
+ * turn is `marked.parse`d into `.markdown-content`, a reader turn is plain
+ * `{{ text }}` in a `whitespace-pre-wrap` bubble — a question the reader typed
+ * has to come back looking exactly as it was sent, and parsing their `**` and
+ * `_` would change their own words back at them.
+ */
+@Composable
+private fun MessageBody(message: ChatMessage, contentColor: Color) {
+    if (message.reasoningContent.isNotBlank()) {
+        Text(
+            text = message.reasoningContent,
+            style = MaterialTheme.typography.bodySmall,
+            color = NalarDim,
+            fontFamily = FontFamily.Monospace,
+        )
+        Spacer(Modifier.height(6.dp))
+    }
+    if (message.hasRenderableContent) {
+        if (message.isUser) {
             Text(
-                text = "streaming…",
-                style = MaterialTheme.typography.labelSmall,
-                color = NalarDim,
-                modifier = Modifier.padding(horizontal = 4.dp),
+                text = message.content,
+                style = MaterialTheme.typography.bodyMedium,
+                color = contentColor,
+                modifier = Modifier.testTag("chat_body_${message.id}"),
+            )
+        } else {
+            MarkdownText(
+                source = message.content,
+                color = contentColor,
+                modifier = Modifier.testTag("chat_body_${message.id}"),
             )
         }
+    }
+    if (message.imageUrls.isNotEmpty() || message.videoUrls.isNotEmpty()) {
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = buildString {
+                if (message.imageUrls.isNotEmpty()) {
+                    append("${message.imageUrls.size} image(s)")
+                }
+                if (message.videoUrls.isNotEmpty()) {
+                    if (isNotEmpty()) append(" · ")
+                    append("${message.videoUrls.size} video(s)")
+                }
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = NalarDim,
+            // The bytes are data URLs held in a cache row; a real image loader
+            // renders them, this is the count.
+            modifier = Modifier.testTag("chat_attachments"),
+        )
     }
 }
 

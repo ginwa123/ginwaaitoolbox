@@ -128,6 +128,17 @@ data class ChatMessage(
         const val ROLE_SYSTEM = "system"
         const val ROLE_TOOL = "tool"
 
+        /**
+         * Every role the wire can deliver a persisted turn under.
+         *
+         * Nothing dispatches off this list, so it is not a lookup table — it
+         * exists so a test can assert the role -> frame mapping is complete.
+         * Adding a role constant above without adding it here leaves the
+         * renderer free to fall through to whatever its last branch was; adding
+         * it here makes that a failing test instead of a quiet ship.
+         */
+        fun knownRoles(): List<String> = listOf(ROLE_USER, ROLE_ASSISTANT, ROLE_SYSTEM, ROLE_TOOL)
+
         /** The only `finish_reason` that means "this turn declared tool calls". */
         const val FINISH_REASON_TOOL_CALLS = "tool_calls"
 
