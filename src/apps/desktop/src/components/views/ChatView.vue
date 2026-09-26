@@ -78,6 +78,7 @@ import LoadMemory from '../tool_outputs/LoadMemory.vue'
 import UpdatePlan from '../tool_outputs/UpdatePlan.vue'
 import GetPlan from '../tool_outputs/GetPlan.vue'
 import ListSubAgent from '../tool_outputs/ListSubAgent.vue'
+import UsedTools from '../tool_outputs/UsedTools.vue'
 import PresentFiles from '../tool_outputs/PresentFiles.vue'
 import ReadWorkspaceSession from '../tool_outputs/ReadWorkspaceSession.vue'
 import McpTool from '../tool_outputs/McpTool.vue'
@@ -3320,21 +3321,21 @@ const persistSseFullRowLocally = (
     void runSyncVoid(
       chatEngineDb.putLocal(sid, [
         toChatMessage(sid, {
-        id: messageId,
-        role,
-        content: event.content || '',
-        created_at: createdAt,
-        tool_name: event.tool_name,
-        diffview_before: event.diffview_before,
-        diffview_after: event.diffview_after,
-        image_url: event.image_url,
-        video_url: event.video_url,
-        finish_reason: event.finish_reason,
-        tool_calls_json: event.tool_calls_json,
-        tool_call_id: event.tool_call_id,
-        is_input: event.is_input,
-        is_output: event.is_output,
-        reasoning_content: event.reasoning_content || undefined,
+          id: messageId,
+          role,
+          content: event.content || '',
+          created_at: createdAt,
+          tool_name: event.tool_name,
+          diffview_before: event.diffview_before,
+          diffview_after: event.diffview_after,
+          image_url: event.image_url,
+          video_url: event.video_url,
+          finish_reason: event.finish_reason,
+          tool_calls_json: event.tool_calls_json,
+          tool_call_id: event.tool_call_id,
+          is_input: event.is_input,
+          is_output: event.is_output,
+          reasoning_content: event.reasoning_content || undefined,
         }),
       ]),
       'messages.putLocal',
@@ -4741,6 +4742,15 @@ const compactSession = async () => {
                             v-else-if="msg.tool_name === 'list_sub_agent'"
                             :message="msg"
                           />
+                          <!--
+                            `used_tools` is the "what do I already have"
+                            counterpart to `search_tool` ("what else exists").
+                            Its payload is a flat name/description list, so it
+                            renders as a dedicated card instead of dumping
+                            `{"count":10,"tools":[…]}` into the generic
+                            fallback.
+                          -->
+                          <UsedTools v-else-if="msg.tool_name === 'used_tools'" :message="msg" />
                           <!--
                             `present_files` renders one inline-preview
                             section per file (images full-width, html in
