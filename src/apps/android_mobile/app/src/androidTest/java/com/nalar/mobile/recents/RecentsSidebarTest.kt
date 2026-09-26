@@ -2,6 +2,7 @@ package com.nalar.mobile.recents
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertIsNotSelected
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -49,7 +50,7 @@ class RecentsSidebarTest {
     }
 
     @Test
-    fun workspaceSelectionScopesRecentsAndClosesDrawer() {
+    fun workspaceSelectionScopesRecentsAndKeepsTheDrawerOpen() {
         var selectedWorkspaceId: String? = null
         showModalScreen(
             onWorkspaceSelected = { selectedWorkspaceId = it },
@@ -61,13 +62,22 @@ class RecentsSidebarTest {
         composeTestRule.waitForIdle()
 
         assertEquals("workspace-b", selectedWorkspaceId)
-        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
-        composeTestRule.onNodeWithTag("home_chat_title").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Router regression").assertIsDisplayed()
 
-        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        // Picking a workspace is a filter, not a destination. Closing the
+        // drawer here hides the chats the user just asked to see, and makes
+        // them reopen the menu to reach the row they were about to tap.
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("workspace_menu").assertDoesNotExist()
         composeTestRule.onNodeWithTag("chat_row_chat-b1").assertIsDisplayed()
         composeTestRule.onNodeWithTag("chat_row_chat-a1").assertDoesNotExist()
+
+        // Still in the drawer, so the chat is one tap away — no second trip
+        // through the menu button.
+        composeTestRule.onNodeWithTag("chat_row_chat-b1").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
+        composeTestRule.onNodeWithText("Router regression").assertIsDisplayed()
     }
 
     @Test
@@ -226,6 +236,131 @@ class RecentsSidebarTest {
         composeTestRule.waitForIdle()
 
         assertTrue("scrolling to the end must page", loadMoreCalls >= 1)
+    }
+
+    @Test
+    fun theSidebarNamesTheAccountAndOffersToEndTheSession() {
+        var logoutCalls = 0
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    isAuthEnabled = true,
+                    signedInEmail = "ada@example.com",
+                    onLogout = { logoutCalls++ },
+                )
+            }
+        }
+
+        // The account line is what turns "Log out" from a label into a
+        // decision: the user can see whose session they are about to end.
+        composeTestRule.onNodeWithTag("sidebar_account_email")
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("ada@example.com").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("sidebar_logout").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, logoutCalls)
+    }
+
+    @Test
+    fun anOpenServerShowsNoSignOutRow() {
+        // `auth_enabled=false`: the server is running without --auth, so there
+        // is no session. A row that did nothing but clear caches would be a
+        // control that lies about what it controls.
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    isAuthEnabled = false,
+                    signedInEmail = null,
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("sidebar_logout").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sidebar_account_divider").assertDoesNotExist()
+    }
+
+    @Test
+    fun aSignOutInFlightDisablesTheRowAndSaysSo() {
+        // Two presses would be two POSTs and two cache purges; the label has to
+        // admit the wait or the button looks broken on a slow connection.
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    isAuthEnabled = true,
+                    signedInEmail = "ada@example.com",
+                    isLoggingOut = true,
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("sidebar_logout").assertIsNotEnabled()
+        composeTestRule.onNodeWithText("Logging out…").assertIsDisplayed()
+    }
+
+    @Test
+    fun theSignOutRowSurvivesTheNoWorkspacesState() {
+        // The branch that matters most: with no workspaces there is nothing to
+        // navigate to, so hiding the only route back to signing in would strand
+        // the user on a screen with no controls at all.
+        var logoutCalls = 0
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = emptyList(),
+                    chats = emptyList(),
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    isAuthEnabled = true,
+                    signedInEmail = "ada@example.com",
+                    onLogout = { logoutCalls++ },
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("sidebar_no_workspaces").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("sidebar_logout").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, logoutCalls)
+    }
+
+    @Test
+    fun theSignOutRowIsReachableFromTheModalDrawerToo() {
+        // The phone layout is the one people actually use, and it renders the
+        // sidebar through a different call site than the wide layout.
+        var logoutCalls = 0
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Modal,
+                    isAuthEnabled = true,
+                    signedInEmail = "ada@example.com",
+                    onLogout = { logoutCalls++ },
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("sidebar_logout").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("sidebar_logout").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, logoutCalls)
     }
 
     private fun showModalScreen(
