@@ -25,6 +25,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -110,6 +111,7 @@ fun LoginScreen(
     onSignIn: (LoginCredentials) -> Unit = {},
     authError: String? = null,
     isAuthenticating: Boolean = false,
+    onOpenNetworkInspector: () -> Unit = {},
 ) {
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
@@ -137,6 +139,23 @@ fun LoginScreen(
             .imePadding(),
     ) {
         DecorativeBackground(Modifier.matchParentSize())
+
+        // Reachable before sign-in on purpose: "why did my POST fail?" is the
+        // moment an inspector is most needed, and that POST is the login itself.
+        IconButton(
+            onClick = onOpenNetworkInspector,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .statusBarsPadding()
+                .padding(end = 12.dp, top = 4.dp)
+                .testTag("login_open_network_inspector"),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Insights,
+                contentDescription = "Open network inspector",
+                tint = NalarDim,
+            )
+        }
 
         Column(
             modifier = Modifier

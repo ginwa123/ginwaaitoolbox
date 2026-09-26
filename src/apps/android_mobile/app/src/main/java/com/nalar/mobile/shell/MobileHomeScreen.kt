@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
@@ -79,6 +80,7 @@ fun MobileHomeScreen(
     initialChatId: String? = null,
     onWorkspaceSelected: (String) -> Unit = {},
     onChatSelected: (String) -> Unit = {},
+    onOpenNetworkInspector: () -> Unit = {},
     drawerLayout: MobileDrawerLayout = MobileDrawerLayout.Auto,
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
@@ -169,6 +171,7 @@ fun MobileHomeScreen(
                     selectedChat = selectedChat,
                     showNavigationMenu = false,
                     onOpenNavigationMenu = {},
+                    onOpenNetworkInspector = onOpenNetworkInspector,
                 )
             }
         } else {
@@ -202,6 +205,7 @@ fun MobileHomeScreen(
                             drawerState.open()
                         }
                     },
+                    onOpenNetworkInspector = onOpenNetworkInspector,
                 )
             }
         }
@@ -214,6 +218,7 @@ private fun HomeContent(
     selectedChat: ChatSummary?,
     showNavigationMenu: Boolean,
     onOpenNavigationMenu: () -> Unit,
+    onOpenNetworkInspector: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Scaffold(
@@ -250,6 +255,18 @@ private fun HomeContent(
                                 contentDescription = "Open navigation menu",
                             )
                         }
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = onOpenNetworkInspector,
+                        modifier = Modifier.testTag("home_open_network_inspector"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Insights,
+                            contentDescription = "Open network inspector",
+                            tint = NalarMuted,
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(

@@ -3,6 +3,7 @@ package com.nalar.mobile.auth
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.nalar.mobile.network.RecordingAuthTransport
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,6 +29,9 @@ data class AuthUiState(
 class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val client = AuthClient(
         sessionStore = SessionCookieStore(application),
+        // Recording wraps the real transport so the inspector shows the same
+        // bytes the auth flow sent, including a rejected sign-in.
+        httpTransport = RecordingAuthTransport(HttpsAuthTransport(AuthConfig.BASE_URL)),
     )
     private val _uiState = MutableStateFlow(AuthUiState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
