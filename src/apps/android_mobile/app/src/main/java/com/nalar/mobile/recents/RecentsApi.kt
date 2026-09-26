@@ -237,10 +237,6 @@ object RecentsApi {
         }
     }
 
-    /** `JSONObject.optString` renders an explicit null as the text "null". */
-    private fun JSONObject.stringField(name: String): String =
-        if (isNull(name)) "" else optString(name).trim()
-
     private fun encodeQueryValue(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
 
@@ -259,3 +255,12 @@ object RecentsApi {
      */
     const val UNKNOWN_TIMESTAMP = 0L
 }
+
+/**
+ * `JSONObject.optString` renders an explicit null as the four-character text
+ * `"null"`, and does not trim. Top-level and `internal` so the projects client
+ * reads the wire the same way rather than re-deriving it — a second
+ * implementation is a second set of bugs.
+ */
+internal fun JSONObject.stringField(name: String): String =
+    if (isNull(name)) "" else optString(name).trim()

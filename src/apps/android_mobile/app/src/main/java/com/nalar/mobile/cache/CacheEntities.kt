@@ -131,3 +131,61 @@ data class CachedAuthMeEntity(
     @ColumnInfo(name = "body_sealed") val bodySealed: String,
     @ColumnInfo(name = "stored_at_epoch_millis") val storedAtEpochMillis: Long,
 )
+
+/**
+ * One `workspace_items` row, in the order the server sent it.
+ *
+ * Same shape and same reasoning as [CachedWorkspaceEntity] one level down: the
+ * user id is *in the primary key*, so a row written for one account is
+ * physically unreachable by a query for another, and [position] is what keeps
+ * the drawer from re-sorting the list alphabetically under a user who never
+ * asked for that.
+ */
+@Entity(
+    tableName = "cached_projects",
+    primaryKeys = ["user_id", "workspace_id", "project_id"],
+    indices = [Index(value = ["user_id", "workspace_id", "position"])],
+)
+data class CachedProjectEntity(
+    @ColumnInfo(name = "user_id") val userId: String,
+    @ColumnInfo(name = "workspace_id") val workspaceId: String,
+    @ColumnInfo(name = "project_id") val projectId: String,
+    val position: Int,
+    /**
+     * NOT sealed, unlike the name beside it. `item_type` is a closed vocabulary
+     * (`kanban` / `agent` / `routine` / `design` / `folder`) that reveals nothing
+     * about what the user is working on, and keeping it readable means the
+     * glyph decision needs no decrypt.
+     */
+    val itemType: String,
+    /** Sealed: a project name is user content on a device that may be shared. */
+    @ColumnInfo(name = "name_sealed") val nameSealed: String,
+)
+
+/**
+ * One project's chat row, in the order the server sent it.
+ *
+ * The task id is the session id (the backend's own join, `http_response.zig`),
+ * so [chatId] is what the chat route takes and nothing has to be translated
+ * between a cached row and a navigation argument.
+ */
+@Entity(
+    tableName = "cached_project_chats",
+    primaryKeys = ["user_id", "workspace_id", "project_id", "chat_id"],
+    indices = [Index(value = ["user_id", "workspace_id", "project_id", "position"])],
+)
+data class CachedProjectChatEntity(
+    @ColumnInfo(name = "user_id") val userId: String,
+    @ColumnInfo(name = "workspace_id") val workspaceId: String,
+    @ColumnInfo(name = "project_id") val projectId: String,
+    @ColumnInfo(name = "chat_id") val chatId: String,
+    val position: Int,
+    /**
+     * In the clear for the same reason a recents row's is: it is the sort key,
+     * and sealing it would mean decrypting every row to order them. It reveals
+     * when you last worked, not what you worked on.
+     */
+    @ColumnInfo(name = "updated_at_epoch_millis") val updatedAtEpochMillis: Long,
+    /** Sealed: a chat title is the single most identifying string in the app. */
+    @ColumnInfo(name = "name_sealed") val nameSealed: String,
+)

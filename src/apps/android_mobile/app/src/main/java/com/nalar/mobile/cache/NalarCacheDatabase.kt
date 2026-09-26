@@ -45,9 +45,17 @@ import androidx.room.RoomDatabase
         CachedWorkspaceEntity::class,
         CachedChatSummaryEntity::class,
         CachedAuthMeEntity::class,
+        CachedProjectEntity::class,
+        CachedProjectChatEntity::class,
     ],
-    version = 1,
-    // Nothing to export yet, because nothing needs migrating: see below.
+    // 2 adds the two projects tables. Bumped because the schema changed, not
+    // because the data is worth migrating: `fallbackToDestructiveMigration` below
+    // is the right answer for a cache (everything here is a copy of something
+    // the server still holds, and every paint is followed by a live fetch), so
+    // the cost of the bump is one empty sidebar and one spinner on the first
+    // launch after the upgrade. Leaving it at 1 would fail Room's identity
+    // check outright and crash on open.
+    version = 2,
     exportSchema = false,
 )
 abstract class NalarCacheDatabase : RoomDatabase() {
@@ -57,6 +65,8 @@ abstract class NalarCacheDatabase : RoomDatabase() {
     abstract fun recentsCacheDao(): RecentsCacheDao
 
     abstract fun authMeCacheDao(): AuthMeCacheDao
+
+    abstract fun projectsCacheDao(): ProjectsCacheDao
 
     companion object {
         const val NAME = "nalar_cache.db"

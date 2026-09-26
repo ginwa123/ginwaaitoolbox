@@ -10,6 +10,12 @@ import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.network.RecordingAuthTransport
+import com.nalar.mobile.projects.ProjectsApi
+import com.nalar.mobile.projects.ProjectsCache
+import com.nalar.mobile.projects.ProjectChatsPage
+import com.nalar.mobile.projects.ProjectsClient
+import com.nalar.mobile.projects.RoomProjectsCache
+import com.nalar.mobile.projects.ProjectSummary
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
 import kotlinx.coroutines.CoroutineDispatcher
@@ -42,7 +48,66 @@ data class HomeUiState(
     val hasMoreChats: Boolean = false,
     /** Full filtered row count for the selected workspace; 0 when unreported. */
     val chatsTotal: Int = 0,
+    // ── Projects (the sidebar's Projects section) ──────────────────────────
+    /**
+     * Whether the Projects section is unfolded. Expanded by default, matching
+     * the desktop's `sidebarStore.projectsExpanded` — a section that has to be
+     * opened before it is useful is a section most people never open.
+     */
+    val isProjectsExpanded: Boolean = true,
+    val projects: List<ProjectSummary> = emptyList(),
+    val isLoadingProjects: Boolean = false,
+    /**
+     * The projects fetch failed while rows are on screen. Kept separate from
+     * [errorMessage] — that one is the recents/workspace refresh, and the two
+     * can fail independently. A stale project list is worth showing; a stale
+     * project list that replaced the recents error would be a lie about which
+     * list is broken.
+     */
+    val projectsError: String? = null,
+    /** Which project rows are unfolded. View-model state, not composable state. */
+    val expandedProjectIds: Set<String> = emptySet(),
+    /** One page per expanded project, keyed by project id. See [ProjectChatsPage]. */
+    val projectChats: Map<String, ProjectChatsPage> = emptyMap(),
+    /** Which projects have a later page in flight. */
+    val isLoadingMoreProjectChats: Set<String> = emptySet(),
 ) {
+    fun isProjectExpanded(itemId: String): Boolean = itemId in expandedProjectIds
+
+    fun projectChatsFor(itemId: String): ProjectChatsPage? = projectChats[itemId]
+
+    /**
+     * The scroll should keep asking for another page of this project.
+     *
+     * Mirrors [canLoadMoreChats]'s shape: the ViewModel owns the decision and
+     * the UI just reports position, so there is only one notion of "done" and
+     * the two cannot drift.
+     */
+    fun canLoadMoreProjectChats(itemId: String): Boolean {
+        val page = projectChats[itemId] ?: return false
+        return page.hasMore &&
+            itemId !in isLoadingMoreProjectChats &&
+            !isLoadingProjects &&
+            page.chats.isNotEmpty()
+    }
+
+    /**
+     * Whether the drawer should offer "See all chats" under this project.
+     *
+     * Only when the drawer is actually hiding something. A project with three
+     * chats shows no button, because the drawer already showed all three and
+     * the button would be a detour to the same three rows.
+     *
+     * Note what is *not* here: a count. The tasks endpoint's `count` is the
+     * length of the page just returned, not a filtered total, so no total is
+     * knowable without paging the whole list — per project, per refresh. A
+     * button reading "See all 47 chats" when there are 312 is a worse lie than
+     * no number.
+     */
+    fun shouldOfferSeeAllChats(itemId: String): Boolean {
+        val page = projectChats[itemId] ?: return false
+        return page.chats.size > ProjectsApi.DRAWER_PREVIEW_ROWS || page.hasMore
+    }
     /** Nothing to show and nothing wrong — the account genuinely has no workspaces. */
     val isEmpty: Boolean
         get() = !isLoading && errorMessage == null && workspaces.isEmpty()
@@ -85,6 +150,21 @@ data class HomeUiState(
 class HomeViewModel(
     private val client: RecentsClient,
     private val cache: RecentsCache,
+    /**
+     * A second client, not a widened [RecentsClient]. `RecentsApi`'s own KDoc
+     * scopes it to "the sidebar's two endpoints", and its error strings say
+     * "sidebar" in them — a projects failure reusing them would tell the user
+     * the wrong list is broken. See [ProjectsClient].
+     */
+    private val projectsClient: ProjectsClient,
+    /**
+     * Separate from [cache] on purpose. `RecentsCache`'s KDoc scopes it to
+     * exactly two endpoints and says adding a third "should be a deliberate
+     * change to this interface, not a side effect of some new caller". This is
+     * that deliberate change, so it gets its own interface and the existing
+     * warning stays true.
+     */
+    private val projectsCache: ProjectsCache,
     /**
      * Where the position outlives the process. Injected rather than reached for
      * so the seed on the first launch, and the two writes a user action causes,
@@ -140,6 +220,37 @@ class HomeViewModel(
      * case where the same workspace is reloaded underneath the user.
      */
     private var chatsGeneration = 0
+
+    // ── Projects ───────────────────────────────────────────────────────────
+    private var projectsJob: Job? = null
+
+    /**
+     * Per-project resume values, held here rather than in [HomeUiState] for the
+     * same reason [chatsCursor] is: it is protocol, not view state. Nothing
+     * renders it and a rotation must not be able to perturb it.
+     */
+    private val projectCursors = mutableMapOf<String, String>()
+
+    /** A later page per project. Separate job per project, like [moreChatsJob]. */
+    private val moreProjectChatsJobs = mutableMapOf<String, Job>()
+
+    /**
+     * Per-project generation counter, bumped whenever a project's page 1 is
+     * replaced from scratch.
+     *
+     * One counter for the whole list is not enough here the way [chatsGeneration]
+     * is for chats: a page in flight for project A must not be dropped because
+     * project B was refetched, but it *must* be dropped if A itself was — and
+     * the drawer now has two independent scrollers reaching for the same map
+     * (the inline preview and the project-chats screen), so a "See all" tap can
+     * hand A to the screen while a drawer-initiated fetch is still in the air.
+     * Without this, that late page lands on top of a list it no longer belongs
+     * to.
+     */
+    private val projectGenerations = mutableMapOf<String, Int>()
+
+    /** A page-1 reload invalidates every project, so one job for the section. */
+    private var projectsGeneration = 0
 
     /**
      * The single entry point. Driven by the auth state: every change of account
@@ -211,6 +322,10 @@ class HomeViewModel(
                         withContext(ioDispatcher) { cache.writeWorkspaces(id, workspaces) }
                     }
                     if (selected != null) loadChats(selected)
+                    // After loadChats, so the section's state clears and paints
+                    // behind the recents it belongs to rather than in front of
+                    // a spinner the reader is still waiting on.
+                    if (selected != null) loadProjects(selected)
                 }
             }
         }
@@ -262,9 +377,18 @@ class HomeViewModel(
                 isLoadingMoreChats = false,
                 hasMoreChats = false,
                 chatsTotal = 0,
+                // The same rule for the same reason: the old workspace's
+                // projects, and which of them were unfolded, belong to the
+                // workspace we are leaving.
+                isLoadingProjects = false,
+                projectsError = null,
+                expandedProjectIds = emptySet(),
+                projectChats = emptyMap(),
+                isLoadingMoreProjectChats = emptySet(),
             )
         }
         loadChats(workspaceId)
+        loadProjects(workspaceId)
         // After the state, not before: a tap that lands somewhere the app cannot
         // recover from must not leave a position behind that the next launch
         // would try to resume.
@@ -476,6 +600,299 @@ class HomeViewModel(
         }
     }
 
+    // ── Projects ───────────────────────────────────────────────────────────
+
+    /**
+     * Paint one workspace's projects, then revalidate — the same
+     * cache-then-revalidate shape as [loadChats], and deliberately in one
+     * function so a cache paint with no live fetch behind it cannot be written
+     * by a future caller.
+     *
+     * A section reload invalidates every project's expanded state and every
+     * page, because the set of projects itself may have changed: a project that
+     * was deleted on the server must not survive as an expandable row.
+     */
+    private fun loadProjects(workspaceId: String) {
+        primeProjectsFromCache(workspaceId)
+
+        projectsGeneration++
+        moreProjectChatsJobs.values.forEach { it.cancel() }
+        moreProjectChatsJobs.clear()
+        projectCursors.clear()
+        projectGenerations.clear()
+        _uiState.update {
+            it.copy(
+                isLoadingProjects = true,
+                projectsError = null,
+                expandedProjectIds = emptySet(),
+                projectChats = emptyMap(),
+                isLoadingMoreProjectChats = emptySet(),
+            )
+        }
+
+        val generation = projectsGeneration
+        projectsJob?.cancel()
+        projectsJob = viewModelScope.launch {
+            when (val result = withContext(ioDispatcher) { projectsClient.loadProjects(workspaceId) }) {
+                is RecentsResult.SignedOut -> expireSession()
+
+                is RecentsResult.Unavailable -> _uiState.update { state ->
+                    // A slow response for a workspace the user has already left
+                    // must not land under the new one.
+                    if (state.selectedWorkspaceId != workspaceId) {
+                        state
+                    } else {
+                        state.copy(isLoadingProjects = false, projectsError = result.message)
+                    }
+                }
+
+                is RecentsResult.Loaded -> {
+                    val projects = result.value
+                    if (generation != projectsGeneration) return@launch
+                    _uiState.update { state ->
+                        if (state.selectedWorkspaceId != workspaceId) {
+                            state
+                        } else {
+                            state.copy(
+                                isLoadingProjects = false,
+                                projects = projects,
+                                projectsError = null,
+                            )
+                        }
+                    }
+                    val id = userId
+                    if (id != null) {
+                        withContext(ioDispatcher) {
+                            projectsCache.writeProjects(id, workspaceId, projects)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Paints cached projects synchronously, before the network call. */
+    private fun primeProjectsFromCache(workspaceId: String) {
+        val cached = projectsCache.readProjects(userId, workspaceId) ?: return
+        if (cached.isEmpty()) return
+
+        _uiState.update { state ->
+            // A paint for a workspace the user already left is not ours to apply.
+            if (state.selectedWorkspaceId != workspaceId) {
+                state
+            } else {
+                state.copy(projects = cached)
+            }
+        }
+    }
+
+    /** Fold the whole section away, or unfold it. The state lives here, not in a composable. */
+    fun toggleProjectsSection() {
+        _uiState.update { it.copy(isProjectsExpanded = !it.isProjectsExpanded) }
+    }
+
+    /**
+     * Fold one project open or shut.
+     *
+     * Opening fetches page 1 **once**. A second open replays from
+     * [HomeUiState.projectChats] and does not refetch, because the drawer's
+     * whole point is to be instantaneous to open.
+     */
+    fun toggleProjectExpanded(itemId: String) {
+        val wasExpanded = _uiState.value.isProjectExpanded(itemId)
+        _uiState.update { state ->
+            state.copy(
+                expandedProjectIds = if (wasExpanded) {
+                    state.expandedProjectIds - itemId
+                } else {
+                    state.expandedProjectIds + itemId
+                },
+            )
+        }
+        if (wasExpanded) return
+        ensureProjectChatsLoaded(itemId)
+    }
+
+    /**
+     * Fetch page 1 for [itemId] if it is not already held.
+     *
+     * This is the seam that makes "See all chats" free: the drawer expands a
+     * project (which calls this), the reader taps through to the project-chats
+     * screen (which calls it again), and the second call is a no-op because the
+     * first one already put the page in [HomeUiState.projectChats].
+     *
+     * A deep link into `nalar://project/…` with nothing cached falls through to
+     * a real fetch, which is the case that actually needs it.
+     */
+    fun ensureProjectChatsLoaded(itemId: String) {
+        val state = _uiState.value
+        val workspaceId = state.selectedWorkspaceId ?: return
+        // A page already held — from the cache, from the drawer, or from the
+        // screen itself. Refetching here would be the second request the
+        // shared-ViewModel decision exists to avoid.
+        if (state.projectChats.containsKey(itemId)) return
+        if (state.isLoadingMoreProjectChats.contains(itemId)) return
+
+        val generation = (projectGenerations[itemId] ?: 0) + 1
+        projectGenerations[itemId] = generation
+        projectCursors.remove(itemId)
+
+        moreProjectChatsJobs.remove(itemId)?.cancel()
+        moreProjectChatsJobs[itemId] = viewModelScope.launch {
+            when (
+                val result = withContext(ioDispatcher) {
+                    projectsClient.loadProjectChats(workspaceId, itemId)
+                }
+            ) {
+                is RecentsResult.SignedOut -> expireSession()
+
+                is RecentsResult.Unavailable -> _uiState.update { current ->
+                    current.copy(
+                        isLoadingMoreProjectChats = current.isLoadingMoreProjectChats - itemId,
+                    )
+                }
+
+                is RecentsResult.Loaded -> {
+                    val page = result.value
+                    if (projectGenerations[itemId] != generation) return@launch
+                    if (_uiState.value.selectedWorkspaceId != workspaceId) return@launch
+
+                    _uiState.update { current ->
+                        current.copy(
+                            projectChats = current.projectChats + (itemId to page),
+                            isLoadingMoreProjectChats = current.isLoadingMoreProjectChats - itemId,
+                        )
+                    }
+                    // Set only after the state applied, so a scroll can never
+                    // fire against a cursor the list does not match.
+                    projectCursors[itemId] = page.nextCursor.orEmpty()
+
+                    if (page.chats.isNotEmpty()) {
+                        val id = userId
+                        if (id != null) {
+                            withContext(ioDispatcher) {
+                                projectsCache.writeProjectChats(
+                                    id,
+                                    workspaceId,
+                                    itemId,
+                                    page.chats,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Append the next page of one project's chats. Called when the reader
+     * reaches the bottom — of the project-chats screen, or of a project unfolded
+     * inline in the drawer.
+     *
+     * A no-op wherever asking again would be wrong, for the reason
+     * [loadMoreChats] gives: the scroll fires on *position*, and a short page
+     * that does not fill the viewport leaves the trigger armed on every
+     * recomposition.
+     */
+    fun loadMoreProjectChats(itemId: String) {
+        val state = _uiState.value
+        if (!state.canLoadMoreProjectChats(itemId)) return
+        val workspaceId = state.selectedWorkspaceId ?: return
+        val cursor = projectCursors[itemId]?.takeIf { it.isNotBlank() } ?: return
+
+        val generation = projectGenerations[itemId] ?: return
+
+        moreProjectChatsJobs.remove(itemId)?.cancel()
+        moreProjectChatsJobs[itemId] = viewModelScope.launch {
+            _uiState.update { it.copy(isLoadingMoreProjectChats = it.isLoadingMoreProjectChats + itemId) }
+
+            val result = withContext(ioDispatcher) {
+                projectsClient.loadProjectChats(
+                    workspaceId = workspaceId,
+                    itemId = itemId,
+                    cursor = cursor,
+                )
+            }
+            if (projectGenerations[itemId] != generation) return@launch
+            if (_uiState.value.selectedWorkspaceId != workspaceId) return@launch
+
+            when (result) {
+                is RecentsResult.SignedOut -> {
+                    _uiState.update { it.copy(isLoadingMoreProjectChats = it.isLoadingMoreProjectChats - itemId) }
+                    expireSession()
+                }
+
+                is RecentsResult.Unavailable -> _uiState.update { current ->
+                    // Keep the rows we already have and keep `hasMore` true, so
+                    // scrolling again retries the same page. Blanking the list,
+                    // or silently ending it, would both be worse than a page
+                    // that did not arrive.
+                    current.copy(isLoadingMoreProjectChats = current.isLoadingMoreProjectChats - itemId)
+                }
+
+                is RecentsResult.Loaded -> {
+                    val page = result.value
+                    val known = _uiState.value.projectChats[itemId]?.chats.orEmpty()
+                    val fresh = page.chats.filterNot { chat -> known.any { it.id == chat.id } }
+
+                    _uiState.update { current ->
+                        val existing = current.projectChats[itemId]
+                        current.copy(
+                            projectChats = current.projectChats + (
+                                itemId to ProjectChatsPage(
+                                    chats = ProjectsApi.mergeProjectChatsById(
+                                        existing?.chats.orEmpty(),
+                                        page.chats,
+                                    ),
+                                    // A page that added nothing new means the
+                                    // cursor is not advancing. Continuing would
+                                    // loop on the same page forever.
+                                    hasMore = page.hasMore && fresh.isNotEmpty(),
+                                    nextCursor = page.nextCursor,
+                                )
+                                ),
+                            isLoadingMoreProjectChats = current.isLoadingMoreProjectChats - itemId,
+                        )
+                    }
+
+                    // An empty page must not advance the cursor: holding the old
+                    // one is what lets a retry re-request the same window.
+                    if (fresh.isNotEmpty()) {
+                        projectCursors[itemId] = page.nextCursor.orEmpty()
+                    } else {
+                        projectCursors.remove(itemId)
+                    }
+
+                    if (page.chats.isNotEmpty()) {
+                        val id = userId
+                        if (id != null) {
+                            withContext(ioDispatcher) {
+                                projectsCache.writeProjectChats(
+                                    id,
+                                    workspaceId,
+                                    itemId,
+                                    _uiState.value.projectChats[itemId]?.chats.orEmpty(),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Drop every project, expanded or paged, on sign-out. */
+    private fun clearProjects() {
+        projectsJob?.cancel()
+        moreProjectChatsJobs.values.forEach { it.cancel() }
+        moreProjectChatsJobs.clear()
+        projectCursors.clear()
+        projectGenerations.clear()
+        projectsGeneration++
+        projectsCache.clear()
+    }
+
     /**
      * Sign-out. The cached rows are purged rather than left namespaced: the
      * user asked to switch accounts, the device may be shared, and rebuilding
@@ -492,6 +909,7 @@ class HomeViewModel(
         moreChatsJob?.cancel()
         chatsCursor = null
         chatsGeneration++
+        clearProjects()
         // The saved position goes with the rows. Keeping it would be the same
         // leak with a smaller payload: the next account to sign in on this device
         // would open straight into the previous one's chat.
@@ -533,6 +951,16 @@ class HomeViewModel(
                         ),
                     ),
                     cache = RoomRecentsCache(application),
+                    // Recorded like the recents calls, so the inspector shows
+                    // the exact bytes the drawer sent for the project endpoints
+                    // too — for free, by construction.
+                    projectsClient = ProjectsClient(
+                        sessionStore = SessionCookieStore(application),
+                        httpTransport = RecordingAuthTransport(
+                            HttpsAuthTransport(AuthConfig.BASE_URL),
+                        ),
+                    ),
+                    projectsCache = RoomProjectsCache(application),
                     positionStore = positionStore,
                 )
             }
