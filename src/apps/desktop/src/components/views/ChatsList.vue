@@ -455,6 +455,47 @@ const sortNavItemsForDisplay = () => {
   })
 }
 
+// Empty-refresh resilience.
+//
+// `api.getChats` swallows every transport failure — a rejected fetch, the
+// 15s `apiFetch` timeout aborting a slow request, a non-2xx — and resolves
+// `{ sessions: [], total: 0 }`. At this call site "the request failed" is
+// therefore indistinguishable from "this workspace has no chats".
+// Painting that empty page over a populated list is what made RECENT go
+// blank and STAY blank: only a scope change or a session SSE event reloads
+// the list, and a plain streaming chat fires neither.
+//
+// So an empty page that lands on top of painted rows is treated as a failed
+// refresh: keep the rows, say so in the console, and revalidate on a bounded
+// backoff. The backoff budget is finite so a genuinely emptied workspace
+// (last chat deleted) still converges to an empty list — that path splices
+// the row locally first, so `navItems` is already empty and never takes the
+// keep-the-rows branch below.
+const LOAD_RETRY_DELAYS_MS = [1_000, 3_000, 8_000, 20_000]
+let loadRetryTimer: ReturnType<typeof setTimeout> | undefined
+let loadRetryAttempt = 0
+
+const clearLoadRetry = () => {
+  if (loadRetryTimer !== undefined) {
+    clearTimeout(loadRetryTimer)
+    loadRetryTimer = undefined
+  }
+  loadRetryAttempt = 0
+}
+
+const scheduleLoadRetry = (ctx: string) => {
+  if (loadRetryTimer !== undefined) return // one in flight
+  if (loadRetryAttempt >= LOAD_RETRY_DELAYS_MS.length) return // budget spent
+  const delay = LOAD_RETRY_DELAYS_MS[loadRetryAttempt] as number
+  loadRetryAttempt += 1
+  loadRetryTimer = setTimeout(() => {
+    loadRetryTimer = undefined
+    // Scope moved on while we waited — that watcher owns the load now.
+    if (sessionCacheKey() !== ctx) return
+    void loadChats()
+  }, delay)
+}
+
 const loadChats = async () => {
   chatsLoading.value = true
   chatsNextCursor.value = null
@@ -478,20 +519,33 @@ const loadChats = async () => {
     }
     const delta = await runSyncEffect(sessionEngineDb.loadDelta(ctx, 30), 'sessions.loadDelta')
     if (delta && isCurrentCtx()) {
-      navItems.value = delta.items.map((r) => toNavItem(r.raw))
+      const rows = delta.items.map((r) => toNavItem(r.raw))
+      if (rows.length === 0 && navItems.value.length > 0) {
+        // Failed refresh wearing a successful response's clothes. Keep
+        // what the user can see and try again shortly.
+        console.error(
+          `[ChatsList] refresh for ${ctx} returned no sessions; keeping ${navItems.value.length} painted row(s) and retrying`,
+        )
+        scheduleLoadRetry(ctx)
+        return
+      }
+      navItems.value = rows
       sortNavItemsForDisplay()
       chatsHasMore.value = delta.hasMore
       chatsNextCursor.value = delta.nextCursor
       chatsTotal.value = delta.total
+      clearLoadRetry()
       restoreActiveFromUrl()
     } else if (cached.length === 0 && isCurrentCtx()) {
-      // Cold miss + network failure: keep the empty fallback so the
-      // UI doesn't crash while the apiFetch toast shows the error.
+      // Cold miss + a delta that never arrived: the list is already empty,
+      // so there is nothing to protect — leave it empty and let the
+      // apiFetch toast carry the reason.
       navItems.value = []
     }
   } catch (err) {
+    // A thrown load must not blank painted rows either — same reasoning as
+    // the empty-page guard above. The console entry is the diagnosis.
     console.error('Failed to load chats:', err)
-    navItems.value = []
   } finally {
     console.log(
       '[ChatsList] loadChats finished, chatsLoading:',
@@ -606,6 +660,12 @@ watch(scopedWorkspaceId, () => {
   navItems.value = []
   chatsNextCursor.value = null
   chatsHasMore.value = false
+  // The old workspace's total is a lie for the new scope: it drives the
+  // scroller's `loadMore` gate (`items.length < totalCount`), so a stale
+  // value from a bigger workspace makes the list page past its end.
+  chatsTotal.value = 0
+  // A pending retry belongs to the scope that scheduled it.
+  clearLoadRetry()
   loadChats()
 })
 
@@ -774,6 +834,8 @@ onUnmounted(() => {
     clearTimeout(sseReloadTimer)
     sseReloadTimer = undefined
   }
+  // A retry firing after unmount would reload a list nobody is looking at.
+  clearLoadRetry()
 })
 
 onMounted(async () => {
