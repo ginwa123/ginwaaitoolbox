@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.role
@@ -103,6 +104,17 @@ fun RecentsSidebar(
     hasMoreChats: Boolean = false,
     onLoadMore: () -> Unit = {},
     /**
+     * Session ids with a live worker, so a chat the user is not in can still be
+     * seen to be busy.
+     *
+     * Not derivable from anything on this screen: `isLoading` is about this
+     * fetch, and a chat that was already running when the list loaded looks
+     * identical to an idle one. The set is app-wide — see
+     * `com.nalar.mobile.worker.RunningSessionsStore` — and defaulted so previews
+     * and tests need no running worker to render a row.
+     */
+    runningSessionIds: Set<String> = emptySet(),
+    /**
      * False when the server runs without `--auth`. There is no session to end
      * then, so the sign-out footer is hidden — the same gate the desktop
      * sidebar's `v-if="authEnabled"` applies.
@@ -136,6 +148,7 @@ fun RecentsSidebar(
             isLoadingMore = isLoadingMore,
             hasMoreChats = hasMoreChats,
             onLoadMore = onLoadMore,
+            runningSessionIds = runningSessionIds,
         )
 
         // Deliberately outside the body. The "no workspaces" story is an early
@@ -180,6 +193,7 @@ private fun SidebarBody(
     isLoadingMore: Boolean,
     hasMoreChats: Boolean,
     onLoadMore: () -> Unit,
+    runningSessionIds: Set<String>,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -323,6 +337,7 @@ private fun SidebarBody(
                     ChatRow(
                         chat = chat,
                         selected = chat.id == selectedChatId,
+                        isRunning = chat.id in runningSessionIds,
                         nowEpochMillis = nowEpochMillis,
                         onClick = {
                             onChatSelected(chat.id)
@@ -566,6 +581,7 @@ private fun WorkspaceDropdown(
 private fun ChatRow(
     chat: ChatSummary,
     selected: Boolean,
+    isRunning: Boolean,
     nowEpochMillis: Long,
     onClick: () -> Unit,
 ) {
@@ -580,6 +596,12 @@ private fun ChatRow(
                         append(", ")
                         append(formatRelativeTimeForAccessibility(chat.updatedAtEpochMillis, nowEpochMillis))
                     }
+                    // Spoken as part of the row rather than left to the spinner.
+                    // A bare "progress indicator" tells a screen-reader user
+                    // that something is animating, not *which* chat is busy —
+                    // and this row's own description is the only place that
+                    // answer can live.
+                    if (isRunning) append(", agent is working")
                 }
             }
             .selectable(
@@ -622,13 +644,39 @@ private fun ChatRow(
                 }
             }
 
-            if (selected) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = 10.dp)
-                        .size(7.dp)
-                        .background(NalarAccent, CircleShape),
-                )
+            // One trailing slot for both markers, so they cannot overlap and so
+            // the selected dot keeps the position it already had.
+            Row(
+                modifier = Modifier.padding(start = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (selected) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .background(NalarAccent, CircleShape),
+                    )
+                }
+                if (isRunning) {
+                    // Gaps rather than a fixed offset: the running spinner is
+                    // the only marker on an unselected row and the one that
+                    // matters most, so it is not pushed away from the title for
+                    // the sake of a dot the user is not looking for.
+                    Spacer(Modifier.size(if (selected) 6.dp else 0.dp))
+                    CircularProgressIndicator(
+                        modifier = Modifier
+                            // Cleared *before* the tag: `clearAndSetSemantics`
+                            // discards everything a preceding modifier set, and
+                            // the row above merges descendants, so an
+                            // un-cleared progress node would be announced as a
+                            // second, meaningless thing inside the row.
+                            .clearAndSetSemantics { }
+                            .size(14.dp)
+                            .testTag("chat_row_running_${chat.id}"),
+                        strokeWidth = 2.dp,
+                        color = NalarAccent,
+                    )
+                }
             }
         }
     }

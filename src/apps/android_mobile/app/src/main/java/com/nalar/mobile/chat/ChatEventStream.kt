@@ -162,6 +162,29 @@ sealed interface ChatStreamEvent {
     }
 
     /**
+     * A worker was registered, heart-beat, or removed.
+     *
+     * The backend's definition of "the agent is working on this session", and
+     * the only signal that covers a run this screen did not start: a chat
+     * opened mid-run has no chunks of its own yet, and a multi-step loop goes
+     * quiet between turns while the worker is very much still going.
+     *
+     * [sessionId] is already resolved from `session_id` *or* `id`, because the
+     * heartbeat and delete paths send an empty `session_id` and carry the
+     * session in the `id` slot — see [decodeChatFrame].
+     */
+    data class WorkerChanged(
+        val sessionId: String,
+        val action: String,
+    ) : ChatStreamEvent {
+        companion object {
+            const val ACTION_CREATED = "created"
+            const val ACTION_UPDATED = "updated"
+            const val ACTION_DELETED = "deleted"
+        }
+    }
+
+    /**
      * The stream was rejected. The backend cannot answer 401 here — the
      * `text/event-stream` response is already committed by the time auth runs —
      * so an unauthenticated client gets `auth_error` and a clean close, which
@@ -285,6 +308,25 @@ private fun decodeChatFrameUnsafe(frame: SseFrame): ChatStreamEvent? {
             sessionId = payload.optNullableString("session_id").orEmpty(),
             action = if (frame.event == "queue_queued") "queued" else "deleted",
         )
+
+        "worker_created", "worker_updated", "worker_deleted" -> {
+            // The emitters disagree about which id field to fill.
+            // `updateWorker` (the upsert behind `created`/`updated`) sends
+            // both, but `updateWorkerActivityWithDescription` and all three
+            // delete emitters send `session_id: ""` and put the session in
+            // `id`. Reading `session_id` alone means a `deleted` removes
+            // nothing and the spinner stays lit for a run that has finished.
+            val sessionId = payload.optNullableString("session_id").orEmpty()
+                .ifEmpty { payload.optNullableString("id").orEmpty() }
+            if (sessionId.isEmpty()) {
+                null
+            } else {
+                ChatStreamEvent.WorkerChanged(
+                    sessionId = sessionId,
+                    action = frame.event.removePrefix("worker_"),
+                )
+            }
+        }
 
         else -> null
     }

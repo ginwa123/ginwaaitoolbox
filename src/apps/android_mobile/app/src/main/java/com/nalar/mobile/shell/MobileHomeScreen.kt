@@ -94,6 +94,12 @@ fun MobileHomeScreen(
     hasMoreChats: Boolean = false,
     onLoadMoreChats: () -> Unit = {},
     /**
+     * Session ids with a live worker. Hoisted all the way down to each row, and
+     * app-wide rather than per-view, because the shell and the chat are
+     * separate routes and a run belongs to neither of them.
+     */
+    runningSessionIds: Set<String> = emptySet(),
+    /**
      * The signed-in account, and the one action that ends it. Defaults keep the
      * screen renderable in previews and tests with no session to describe.
      */
@@ -202,6 +208,7 @@ fun MobileHomeScreen(
                             isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
                             onLoadMore = onLoadMoreChats,
+                            runningSessionIds = runningSessionIds,
                             isAuthEnabled = isAuthEnabled,
                             signedInEmail = signedInEmail,
                             isLoggingOut = isLoggingOut,
@@ -242,6 +249,7 @@ fun MobileHomeScreen(
                             isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
                             onLoadMore = onLoadMoreChats,
+                            runningSessionIds = runningSessionIds,
                             isAuthEnabled = isAuthEnabled,
                             signedInEmail = signedInEmail,
                             isLoggingOut = isLoggingOut,
