@@ -1,7 +1,7 @@
 package com.nalar.mobile.chat
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +26,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -41,6 +43,13 @@ import com.nalar.mobile.ui.NalarMuted
 import com.nalar.mobile.ui.NalarText
 import org.json.JSONArray
 import java.util.Locale
+
+/**
+ * Width of the card's leading rule. The web's `.chat-tool-card` is
+ * `border-left: 2px`; 2dp is the same weight once the transcript is scaled for
+ * a phone's density.
+ */
+private val TOOL_CARD_RULE_WIDTH = 2.dp
 
 /**
  * A tool row, rendered.
@@ -67,13 +76,25 @@ fun ToolCardView(
     val hasBody = model.body !is ToolBody.Empty
     val expandable = hasBody || hasArguments
 
+    val ruleColor by animateColorAsState(
+        targetValue = CardRuleColor(model),
+        label = "tool-card-rule",
+    )
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            // The web's "paragraph mode": no box, just a left rule that colours
-            // on error. A dozen boxed cards in a row read as a wall.
-            .border(1.dp, CardBorderColor(model), RoundedCornerShape(6.dp))
+            // The web's "paragraph mode" (ChatView.vue's `.chat-tool-card`):
+            // `border: none`, a 2px left rule that recolours on error, and
+            // `border-radius: 0`. A dozen boxed cards in a row read as a wall.
+            // Compose has no `border-left`, so the rule is drawn as a 2dp rect
+            // pinned to the leading edge rather than a four-sided stroke.
+            .drawBehind {
+                drawRect(
+                    color = ruleColor,
+                    size = Size(TOOL_CARD_RULE_WIDTH.toPx(), size.height),
+                )
+            }
             .testTag("tool_card_${model.kind.name.lowercase(Locale.ROOT)}"),
     ) {
         ToolCardHeader(
@@ -110,9 +131,16 @@ fun ToolCardView(
     }
 }
 
-/** The left rule recolours on failure, exactly as the web's card border does. */
-@Composable
-private fun CardBorderColor(model: ToolCardModel): Color = when {
+/**
+ * The left rule's colour, and with the box gone the card's only error channel.
+ * Mirrors the web, where a failing card binds `border-red-500/50` and that class
+ * recolours the `border-left` rather than drawing a frame.
+ *
+ * Not `@Composable` on purpose: a colour is a value, and keeping it a plain
+ * function is what lets `ToolCardFrameTest` assert the three-way split on the
+ * JVM instead of only grepping the source.
+ */
+internal fun CardRuleColor(model: ToolCardModel): Color = when {
     model.pending -> NalarDim
     model.success -> NalarBorder
     else -> Color(0xFF6B3A38)
