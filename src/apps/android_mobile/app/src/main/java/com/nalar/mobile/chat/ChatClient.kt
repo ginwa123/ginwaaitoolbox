@@ -5,6 +5,7 @@ import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.worker.WorkerApi
 import org.json.JSONObject
 import java.net.HttpURLConnection
 
@@ -135,6 +136,24 @@ class ChatClient(
     fun loadStreamSnapshot(sessionId: String): ChatResult<String> = get(
         path = ChatApi.streamSnapshotPath(sessionId),
         parse = { body -> JSONObject(body).optNullableString("content").orEmpty() },
+    )
+
+    /**
+     * The sessions with a live worker, as a bootstrap for [WorkerApi.eventsPath].
+     *
+     * The stream carries no replay, so a run that was already going when the app
+     * opened produces no event at all — the list is the only way to learn about
+     * it, and the only way to un-learn a run that stopped while the socket was
+     * down.
+     *
+     * It answers with the *rows*, not a boolean per session: the backend
+     * hardcodes `status: "running"` and `is_running: true` for everything it
+     * returns, so [WorkerApi.parseRunningSessionIds] projects presence down to
+     * the set of ids rather than trusting a field that is always true.
+     */
+    fun loadRunningSessions(): ChatResult<Set<String>> = get(
+        path = WorkerApi.workersPath(),
+        parse = WorkerApi::parseRunningSessionIds,
     )
 
     private fun <T> get(

@@ -187,6 +187,15 @@ fun NalarNavGraph(
      * the caller is expected to point both at the same action.
      */
     onLogout: () -> Unit = {},
+    /**
+     * Session ids with a live worker, for the two places that can say so: the
+     * sidebar row and the chat header.
+     *
+     * One hoisted set for both because they are on different routes and would
+     * otherwise each need their own copy of the same fact. Defaulted so a graph
+     * rendered with inert data needs no worker behind it.
+     */
+    runningSessionIds: Set<String> = emptySet(),
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -266,6 +275,7 @@ fun NalarNavGraph(
                     isLoadingMoreChats = homeState.isLoadingMoreChats,
                     hasMoreChats = homeState.hasMoreChats,
                     onLoadMoreChats = onLoadMoreChats,
+                    runningSessionIds = runningSessionIds,
                     isAuthEnabled = authState.isAuthEnabled,
                     signedInEmail = authState.userEmail,
                     isLoggingOut = authState.isLoggingOut,
@@ -300,6 +310,10 @@ fun NalarNavGraph(
             ChatScreen(
                 state = chatState,
                 chatTitle = chatTitleFor(sessionId, homeState.chats),
+                // The route's id, not `chatState.sessionId`: a deep link that
+                // has not finished opening yet still has to report the run it
+                // is about to show.
+                isRunning = sessionId in runningSessionIds,
                 onBack = goBack,
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,

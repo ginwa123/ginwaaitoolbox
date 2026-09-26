@@ -49,6 +49,16 @@ class HttpChatEventStream(
     private val sessionStore: SessionStore,
     baseUrl: String = AuthConfig.BASE_URL,
     private val reconnectDelayMillis: Long = DEFAULT_RECONNECT_DELAY_MILLIS,
+    /**
+     * Which `channels=` set to subscribe to.
+     *
+     * Everything above the socket is channel-agnostic — same parse, same
+     * reconnect, same dispatch — so the only per-subscriber difference is which
+     * events the server is asked for. An unknown token terminates the stream
+     * outright, so this is spelled out at each call site rather than assembled
+     * from a set.
+     */
+    private val path: String = ChatApi.eventsPath(),
 ) : ChatEventStream {
     private val normalizedBaseUrl = baseUrl.trimEnd('/')
     private val lock = Any()
@@ -179,7 +189,7 @@ class HttpChatEventStream(
     }
 
     private fun open(): HttpsURLConnection {
-        val connection = URL(normalizedBaseUrl + ChatApi.eventsPath())
+        val connection = URL(normalizedBaseUrl + path)
             .openConnection() as HttpsURLConnection
         connection.requestMethod = "GET"
         connection.connectTimeout = CONNECT_TIMEOUT_MILLIS

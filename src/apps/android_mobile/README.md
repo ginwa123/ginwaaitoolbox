@@ -88,6 +88,40 @@ of the message. A run in progress when the chat is opened is re-attached from
 `GET /api/llm/session/{id}/stream`, because the backend writes a turn to
 `llm_history` only once it completes.
 
+### "Is the agent working?" is a separate question from "is a delta arriving?"
+
+A spinner appears beside every chat the backend currently has a worker for —
+in the sidebar row and in the chat header — and the two are driven by
+different signals, deliberately.
+
+`ChatUiState.isStreaming` is per-*delta*: it goes true on an `llm_chunk` and
+false on `chunk_final`. A tool run emits a chunk, finishes the turn, runs a
+tool for thirty seconds in silence, and only then emits the next chunk — so
+`isStreaming` alone makes one long run look like several separate stalls.
+Whether a *worker* is registered is the backend's own answer to "is the agent
+working on this session", and it holds across the gaps.
+
+Two sources, because neither alone is right:
+
+- **`GET /api/events?channels=workers`** on its own connection, carrying
+  `worker_created` / `worker_updated` / `worker_deleted`. It is a second
+  subscription rather than an extra channel on the chat stream because
+  `ChatViewModel.openSession` is what starts that one — the sidebar is on
+  screen precisely when no chat is open, and a stream that was never opened
+  reports "nothing is running" at exactly the moment the user is scanning the
+  list for what is running.
+- **`GET /api/workers`**, re-read on every (re)connect. The server keeps no
+  replay buffer, so a run that started or stopped while the socket was down
+  left no event to apply and the list is the only thing that can correct it.
+  It *replaces* the set rather than merging, or every run that stopped during
+  an outage would stay lit forever.
+
+The set lives in `RunningSessionsStore`, a process-wide singleton rather than
+ViewModel state, because the sidebar and the chat are separate routes and are
+never composed together. A failed resync leaves the set as it was: a spinner
+that clears because the network blipped is the same lie as one that never
+lights up.
+
 ### The transcript list is virtualized
 
 `ChatView` renders the transcript in a `LazyColumn` — Compose's `RecyclerView` —

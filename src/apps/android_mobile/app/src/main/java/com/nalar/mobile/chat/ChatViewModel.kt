@@ -603,6 +603,14 @@ class ChatViewModel(
             is ChatStreamEvent.Failed -> _uiState.update {
                 it.copy(errorMessage = event.message, isStreaming = false)
             }
+
+            // Worker liveness is not this screen's state. It is kept for the
+            // whole app in `RunningSessionsStore`, because the chat stream does
+            // not exist until a chat is opened and the sidebar is on screen
+            // precisely when no chat is open. `WorkerActivityViewModel` owns it
+            // off its own `workers` subscription, so nothing here needs this
+            // branch to do anything.
+            is ChatStreamEvent.WorkerChanged -> Unit
         }
     }
 

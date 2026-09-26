@@ -111,6 +111,7 @@ class ChatViewTest {
         onSend: () -> Unit = {},
         onStop: () -> Unit = {},
         onLoadOlder: () -> Unit = {},
+        isRunning: Boolean = false,
     ) {
         compose.setContent {
             NalarTheme {
@@ -122,6 +123,7 @@ class ChatViewTest {
                     onSend = onSend,
                     onStop = onStop,
                     onLoadOlder = onLoadOlder,
+                    isRunning = isRunning,
                 )
             }
         }
@@ -489,6 +491,34 @@ class ChatViewTest {
 
         renderScreen(ChatUiState(sessionId = "s", isLoading = false, isLive = false))
         compose.onNodeWithText("Reconnecting…").assertExists()
+    }
+
+    @Test
+    fun theHeaderSpinnerFollowsWorkerLivenessNotTheDeltaStream() {
+        // The case that matters: a live stream, no chunks between turns. The
+        // agent is mid tool-run and `isStreaming` is false, so the only thing
+        // that can say so is the worker flag.
+        renderScreen(
+            ChatUiState(sessionId = "s", isLoading = false, isLive = true),
+            isRunning = true,
+        )
+        compose.onNodeWithTag("chat_running_spinner").assertExists()
+        compose.onNodeWithTag("chat_live_dot").assertExists()
+
+        renderScreen(ChatUiState(sessionId = "s", isLoading = false, isLive = true))
+        compose.onNodeWithTag("chat_running_spinner").assertDoesNotExist()
+    }
+
+    @Test
+    fun aRunningWorkerWithNoChunksStillShowsNoStopButton() {
+        // Pinned so the spinner is never mistaken for the streaming flag: the
+        // stop control stays on `isStreaming`, which only flips on real deltas.
+        renderScreen(
+            ChatUiState(sessionId = "s", isLoading = false, isLive = true, isStreaming = false),
+            isRunning = true,
+        )
+        compose.onNodeWithTag("chat_running_spinner").assertExists()
+        compose.onNodeWithTag("chat_stop").assertDoesNotExist()
     }
 
     @Test

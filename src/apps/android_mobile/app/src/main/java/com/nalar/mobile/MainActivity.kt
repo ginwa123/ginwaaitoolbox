@@ -15,6 +15,7 @@ import com.nalar.mobile.chat.ChatViewModel
 import com.nalar.mobile.network.NalarNavGraph
 import com.nalar.mobile.recents.HomeViewModel
 import com.nalar.mobile.ui.NalarTheme
+import com.nalar.mobile.worker.WorkerActivityViewModel
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -40,6 +41,15 @@ class MainActivity : ComponentActivity() {
                 )
                 val chatState by chatViewModel.uiState.collectAsState()
 
+                // Which sessions have a live worker. Its own ViewModel, and its
+                // own `workers` subscription, because the chat stream only exists
+                // while a chat is open — and the sidebar is on screen precisely
+                // when one is not.
+                val workerViewModel: WorkerActivityViewModel = viewModel(
+                    factory = WorkerActivityViewModel.factory(application),
+                )
+                val runningSessionIds by workerViewModel.runningSessionIds.collectAsState()
+
                 // One sign-out, three entry points: the sidebar's "Log out", the
                 // retry screen's "Sign in", and a 401 from either cache. They are
                 // the same action, so they must purge the account-scoped caches
@@ -48,15 +58,20 @@ class MainActivity : ComponentActivity() {
                 val signOut: () -> Unit = {
                     homeViewModel.onSignedOut()
                     chatViewModel.onSignedOut()
+                    workerViewModel.onSignedOut()
                     authViewModel.logout()
                 }
 
-                // The signed-in account namespaces both caches. Reacting to it
-                // here (rather than inside a ViewModel's init) means the first
-                // paint is already scoped to the right account.
+                // The signed-in account namespaces both caches and gates the
+                // worker subscription, whose handshake is a cookie the server
+                // answers once and never retries. Reacting to it here (rather
+                // than inside a ViewModel's init) means the first paint is
+                // already scoped to the right account, and signing out stops
+                // the stream and drops the ids.
                 LaunchedEffect(authState.userId) {
                     homeViewModel.onUserChanged(authState.userId)
                     chatViewModel.onUserChanged(authState.userId)
+                    workerViewModel.onUserChanged(authState.userId)
                 }
 
                 // A 401 on any call means the saved cookie is dead; signing out
@@ -98,6 +113,7 @@ class MainActivity : ComponentActivity() {
                             skip = it.skip,
                         )
                     },
+                    runningSessionIds = runningSessionIds,
                 )
             }
         }
