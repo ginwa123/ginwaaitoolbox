@@ -2028,18 +2028,26 @@ jobs:
     # Kotlin/JVM unit tests for the native Android client in
     # src/apps/android_mobile: 74 tests across 8 files under app/src/test.
     # They are pure JVM (no Robolectric, no Android framework classes), so
-    # no emulator or device is needed and the whole suite runs in ~1 min.
+    # no emulator or device is needed. A full cold run of the test task
+    # itself is ~2m40s; the SDK setup ahead of it adds most of the rest.
     #
     # The instrumented suite in app/src/androidTest is deliberately NOT
     # wired up here. Those 7 files need a booted emulator, which would mean
     # a system-image download and an emulator boot on every run. Track that
     # separately once an emulator image is cached on a runner.
     #
-    # Runner: ubuntu-latest, not one of the self-hosted labels the Zig
-    # backend jobs use. The GitHub-hosted image already ships the Android
-    # SDK and JDK 17, so this job needs no runner provisioning at all.
+    # Runner: a GitHub-hosted Ubuntu label, not one of the self-hosted
+    # labels the Zig backend jobs use. The hosted image already ships the
+    # Android SDK and JDK 17, so this job needs no runner provisioning —
+    # the self-hosted Linux box has neither a verified SDK nor a JDK 17
+    # (its default is 27, which AGP rejects).
     name: android-unit-test
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: that label migrates to Ubuntu 26 on
+    # 2026-10-19 (actions/runner-images#14748), and an untested image bump
+    # should not be able to turn this job red. The Android SDK the runner
+    # ships is a moving target anyway, which is why the packages this job
+    # needs are installed explicitly below.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
@@ -2089,8 +2097,16 @@ jobs:
       - name: Upload test report
         # if: always() so a failing run still publishes the HTML report and
         # the raw JUnit XML instead of leaving only a red check.
+        #
+        # continue-on-error because artifact storage is an account-level
+        # quota this repo does not control, and the account is currently
+        # over it — uploading returned "Failed to CreateArtifact: Artifact
+        # storage quota has been hit" and turned an otherwise green run
+        # red. The report is a diagnostic convenience; the gate is the test
+        # step above, whose output is in the log either way.
         if: always()
-        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        uses: actions/upload-artifact@v5
         with:
           name: android-unit-test-report
           # Paths are workspace-root relative: `defaults.run` only applies
