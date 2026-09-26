@@ -104,28 +104,63 @@ def _get_task(
     return r.json()["task"]
 
 
+def _get_task_media(
+    harness: FunctionalHarness, workspace_id: str, kanban_id: str, task_id: str
+) -> dict[str, Any]:
+    """The lazy media payload (media-flags change).
+
+    Task create/get responses deliberately carry only the
+    `is_have_image` / `is_have_video` flags so board fetches stay small;
+    the full `||`-delimited strings live behind this route
+    (`src/http_handlers/tasks_media.zig`, registered at main.zig:790).
+    """
+    r = harness.http(
+        "GET",
+        f"/api/workspaces/{workspace_id}/items/{kanban_id}/tasks/{task_id}/media",
+        expect=200,
+    )
+    return r.json()
+
+
 # ─── Task create with video_urls ───────────────────────────────────────────
 
 
 def test_create_task_with_mp4_echoes_video_urls(harness: FunctionalHarness):
+    """Create with a video → the flag is set and `/media` round-trips it."""
     ws = _create_workspace(harness)
     kb = _create_kanban(harness, ws)
     resp = _create_task(
         harness, ws, kb, {"mode": "create", "name": "clip", "video_urls": MP4}
     )
-    assert resp["task"]["video_urls"] == MP4, resp
-    row = _get_task(harness, ws, kb, resp["task"]["id"])
-    assert row["video_urls"] == MP4, row
+    task = resp["task"]
+    # The create response carries the flag, not the payload — asserting
+    # `task["video_urls"]` here is what broke when the media-flags change
+    # moved the full string to the lazy /media route.
+    assert task["is_have_video"] is True, resp
+    assert "video_urls" not in task, (
+        f"create response should stay flag-only, got: {sorted(task)}"
+    )
+    media = _get_task_media(harness, ws, kb, task["id"])
+    assert media["video_urls"] == MP4, media
+    # GET-by-id keeps the same flag-only contract.
+    row = _get_task(harness, ws, kb, task["id"])
+    assert row["is_have_video"] is True, row
+    assert "video_urls" not in row, (
+        f"task GET should stay flag-only, got: {sorted(row)}"
+    )
 
 
 def test_create_task_with_multiple_video_mimes(harness: FunctionalHarness):
+    """Three data URLs join with `||` and survive the round-trip intact."""
     ws = _create_workspace(harness)
     kb = _create_kanban(harness, ws)
     joined = "||".join([MP4, WEBM, MOV])
     resp = _create_task(
         harness, ws, kb, {"mode": "create", "name": "clips", "video_urls": joined}
     )
-    assert resp["task"]["video_urls"] == joined, resp
+    assert resp["task"]["is_have_video"] is True, resp
+    media = _get_task_media(harness, ws, kb, resp["task"]["id"])
+    assert media["video_urls"] == joined, media
 
 
 def test_create_task_rejects_image_mime_in_video_urls(harness: FunctionalHarness):
@@ -156,17 +191,22 @@ def test_create_task_rejects_disallowed_video_mime(harness: FunctionalHarness):
 
 
 def test_update_task_sets_and_clears_video_urls(harness: FunctionalHarness):
+    """PUT sets the payload, PUT "" clears it, and the flag tracks both."""
     ws = _create_workspace(harness)
     kb = _create_kanban(harness, ws)
     resp = _create_task(harness, ws, kb, {"mode": "create", "name": "patchme"})
     tid = resp["task"]["id"]
+    assert _get_task_media(harness, ws, kb, tid)["video_urls"] == ""
+    assert _get_task(harness, ws, kb, tid)["is_have_video"] is False
 
     _update_task(harness, ws, kb, tid, {"video_urls": MP4})
-    assert _get_task(harness, ws, kb, tid)["video_urls"] == MP4
+    assert _get_task_media(harness, ws, kb, tid)["video_urls"] == MP4
+    assert _get_task(harness, ws, kb, tid)["is_have_video"] is True
 
     # Empty string clears (SQL '' literal — must NOT 500 on NOT NULL).
     _update_task(harness, ws, kb, tid, {"video_urls": ""})
-    assert _get_task(harness, ws, kb, tid)["video_urls"] == ""
+    assert _get_task_media(harness, ws, kb, tid)["video_urls"] == ""
+    assert _get_task(harness, ws, kb, tid)["is_have_video"] is False
 
 
 def test_update_task_rejects_http_url_in_video_urls(harness: FunctionalHarness):
