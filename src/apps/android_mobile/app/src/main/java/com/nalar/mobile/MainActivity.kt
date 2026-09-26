@@ -33,6 +33,13 @@ class MainActivity : ComponentActivity() {
                 )
                 val homeState by homeViewModel.uiState.collectAsState()
 
+                // The signed-in account namespaces the sidebar cache. Reacting
+                // to it here (rather than inside the ViewModel's init) means the
+                // first paint is already scoped to the right account.
+                LaunchedEffect(authState.userId) {
+                    homeViewModel.onUserChanged(authState.userId)
+                }
+
                 // A 401 on any sidebar call means the saved cookie is dead;
                 // signing out is the only outcome a retry cannot fix.
                 LaunchedEffect(homeViewModel) {
@@ -45,7 +52,12 @@ class MainActivity : ComponentActivity() {
                     authState = authState,
                     onSignIn = authViewModel::login,
                     onRetrySession = authViewModel::restoreSession,
-                    onUseAnotherAccount = authViewModel::useAnotherAccount,
+                    onUseAnotherAccount = {
+                        // Purge before the cookie goes, so no cached row from the
+                        // outgoing account can be painted after it.
+                        homeViewModel.onSignedOut()
+                        authViewModel.useAnotherAccount()
+                    },
                     homeState = homeState,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,

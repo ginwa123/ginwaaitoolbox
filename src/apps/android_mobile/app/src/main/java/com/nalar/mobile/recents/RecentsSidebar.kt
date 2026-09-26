@@ -50,6 +50,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
+import com.nalar.mobile.ui.NalarBackgroundRaised
 import com.nalar.mobile.ui.NalarBorder
 import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarField
@@ -115,6 +116,17 @@ fun RecentsSidebar(
             onWorkspaceSelected = onWorkspaceSelected,
             onNavigate = onNavigate,
         )
+
+        // Rows survived a failed refresh. Say so — a stale list that looks live
+        // is its own kind of lie.
+        if (errorMessage != null && !isLoading) {
+            Spacer(Modifier.height(10.dp))
+            StaleDataNotice(
+                modifier = Modifier.testTag("sidebar_stale_notice"),
+                message = errorMessage,
+                onRetry = onRetry,
+            )
+        }
 
         Spacer(Modifier.height(24.dp))
 
@@ -355,6 +367,39 @@ private fun ChatRow(
                         .size(7.dp)
                         .background(NalarAccent, CircleShape),
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StaleDataNotice(
+    message: String,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(10.dp),
+        color = NalarBackgroundRaised,
+        contentColor = NalarDim,
+        border = BorderStroke(1.dp, NalarBorder),
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Showing saved data · $message",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.labelMedium,
+                color = NalarDim,
+            )
+            TextButton(
+                onClick = onRetry,
+                modifier = Modifier.testTag("sidebar_stale_retry"),
+            ) {
+                Text(text = "Retry", color = NalarAccent)
             }
         }
     }

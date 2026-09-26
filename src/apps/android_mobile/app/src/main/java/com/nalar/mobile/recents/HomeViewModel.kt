@@ -33,15 +33,27 @@ data class HomeUiState(
     /** Nothing to show and nothing wrong — the account genuinely has no workspaces. */
     val isEmpty: Boolean
         get() = !isLoading && errorMessage == null && workspaces.isEmpty()
+
+    /**
+     * Rows are on screen but the last refresh failed. The sidebar keeps showing
+     * the data and says so, rather than blanking a working list.
+     */
+    val isShowingStaleData: Boolean
+        get() = errorMessage != null && workspaces.isNotEmpty()
 }
 
 /**
  * Owns the sidebar's real data. There is no preview fallback here on purpose:
  * a list that quietly renders demo rows is indistinguishable from a working
  * one, which is exactly how the mock survived review.
+ *
+ * Cached rows are painted first and then revalidated — the same
+ * stale-while-revalidate shape the desktop's `workspacesCache` uses, and
+ * deliberately with no TTL, because every paint is followed by a live fetch.
  */
 class HomeViewModel(
     private val client: RecentsClient,
+    private val cache: RecentsCache,
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
@@ -49,24 +61,40 @@ class HomeViewModel(
     private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val sessionExpired: SharedFlow<Unit> = _sessionExpired.asSharedFlow()
 
+    private var userId: String? = null
+    private var hasStarted = false
     private var workspacesJob: Job? = null
     private var chatsJob: Job? = null
 
-    init {
+    /**
+     * The single entry point. Driven by the auth state: every change of account
+     * re-scopes the cache and reloads, so no rows ever painted for the previous
+     * account survive into the new one's session.
+     */
+    fun onUserChanged(newUserId: String?) {
+        if (hasStarted && newUserId == userId) return
+        hasStarted = true
+
+        val accountChanged = newUserId != userId
+        userId = newUserId
+        if (accountChanged) {
+            // Blank rather than keep: the old rows belong to someone else.
+            _uiState.value = HomeUiState()
+        }
         refresh()
     }
 
     fun refresh() {
+        primeFromCache()
+
         workspacesJob?.cancel()
         workspacesJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
-
             when (val result = withContext(Dispatchers.IO) { client.loadWorkspaces() }) {
                 is RecentsResult.SignedOut -> expireSession()
 
                 is RecentsResult.Unavailable -> _uiState.update {
-                    // Keep the existing list on screen: a stale sidebar beats a
-                    // blank one when the network blips.
+                    // Keep whatever is on screen — cached or not. A stale sidebar
+                    // beats a blank one when the network blips.
                     it.copy(isLoading = false, errorMessage = result.message)
                 }
 
@@ -79,15 +107,63 @@ class HomeViewModel(
                         ?.id
                         ?: workspaces.firstOrNull()?.id
 
-                    _uiState.value = HomeUiState(
-                        isLoading = false,
-                        workspaces = workspaces,
-                        selectedWorkspaceId = selected,
-                    )
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            workspaces = workspaces,
+                            selectedWorkspaceId = selected,
+                            errorMessage = null,
+                        )
+                    }
+
+                    val id = userId
+                    if (id != null) {
+                        withContext(Dispatchers.IO) { cache.writeWorkspaces(id, workspaces) }
+                    }
                     if (selected != null) loadChats(selected)
                 }
             }
         }
+    }
+
+    /** Paints the last-known list synchronously, before any network call. */
+    private fun primeFromCache() {
+        val id = userId
+        val cachedWorkspaces = cache.readWorkspaces(id).orEmpty()
+
+        if (cachedWorkspaces.isEmpty()) {
+            // A genuine first launch has nothing to paint; the spinner is honest.
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            return
+        }
+
+        val current = _uiState.value
+        val selectedWorkspaceId = cachedWorkspaces
+            .firstOrNull { it.id == current.selectedWorkspaceId }
+            ?.id
+            ?: cachedWorkspaces.firstOrNull()?.id
+
+        var primed = current.copy(
+            isLoading = true,
+            workspaces = cachedWorkspaces,
+            selectedWorkspaceId = selectedWorkspaceId,
+            errorMessage = null,
+        )
+
+        selectedWorkspaceId?.let { workspaceId ->
+            val cachedChats = cache.readChats(id, workspaceId)
+                ?.filter { chat -> chat.workspaceId == workspaceId }
+            if (cachedChats != null) {
+                primed = primed.copy(
+                    chats = cachedChats,
+                    selectedChatId = current.selectedChatId
+                        ?.takeIf { chatId -> cachedChats.any { it.id == chatId } }
+                        ?: cachedChats.firstOrNull()?.id,
+                )
+            }
+        }
+
+        _uiState.value = primed
     }
 
     fun selectWorkspace(workspaceId: String) {
@@ -126,22 +202,44 @@ class HomeViewModel(
                     }
                 }
 
-                is RecentsResult.Loaded -> _uiState.update { state ->
-                    if (state.selectedWorkspaceId != workspaceId) {
-                        state
-                    } else {
-                        val chats = result.value
-                        state.copy(
-                            isLoading = false,
-                            chats = chats,
-                            selectedChatId = state.selectedChatId
-                                ?.takeIf { id -> chats.any { it.id == id } }
-                                ?: chats.firstOrNull()?.id,
-                        )
+                is RecentsResult.Loaded -> {
+                    val chats = result.value
+                    val id = userId
+                    if (id != null) {
+                        withContext(Dispatchers.IO) {
+                            cache.writeChats(id, workspaceId, chats)
+                        }
+                    }
+                    _uiState.update { state ->
+                        if (state.selectedWorkspaceId != workspaceId) {
+                            state
+                        } else {
+                            state.copy(
+                                isLoading = false,
+                                chats = chats,
+                                selectedChatId = state.selectedChatId
+                                    ?.takeIf { chatId -> chats.any { it.id == chatId } }
+                                    ?: chats.firstOrNull()?.id,
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Sign-out. The cached rows are purged rather than left namespaced: the
+     * user asked to switch accounts, the device may be shared, and rebuilding
+     * the list costs one request.
+     */
+    fun onSignedOut() {
+        userId = null
+        hasStarted = false
+        _uiState.value = HomeUiState()
+        workspacesJob?.cancel()
+        chatsJob?.cancel()
+        cache.clear()
     }
 
     /**
@@ -158,7 +256,7 @@ class HomeViewModel(
         fun factory(application: Application): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 HomeViewModel(
-                    RecentsClient(
+                    client = RecentsClient(
                         sessionStore = SessionCookieStore(application),
                         // Recorded like auth, so the inspector shows the exact
                         // bytes the sidebar sent.
@@ -166,6 +264,7 @@ class HomeViewModel(
                             HttpsAuthTransport(AuthConfig.BASE_URL),
                         ),
                     ),
+                    cache = KeystoreRecentsCache(application),
                 )
             }
         }

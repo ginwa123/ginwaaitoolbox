@@ -24,6 +24,12 @@ data class AuthUiState(
     val phase: SessionPhase = SessionPhase.Restoring,
     val isAuthenticating: Boolean = false,
     val errorMessage: String? = null,
+    /**
+     * The signed-in account, or null when auth is off / no one is signed in.
+     * The sidebar cache is namespaced by this: `useAnotherAccount()` leaves the
+     * cached rows on disk, so without it the next account would inherit them.
+     */
+    val userId: String? = null,
 )
 
 class AuthViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,9 +54,13 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 client.restoreSession()
             }
             _uiState.value = when (result) {
-                is AuthResult.Authenticated,
-                AuthResult.AuthDisabled,
-                -> AuthUiState(phase = SessionPhase.Authenticated)
+                is AuthResult.Authenticated -> AuthUiState(
+                    phase = SessionPhase.Authenticated,
+                    userId = result.user.id.takeIf { id -> id.isNotBlank() },
+                )
+
+                AuthResult.AuthDisabled -> AuthUiState(phase = SessionPhase.Authenticated)
+
                 AuthResult.NoSession -> AuthUiState(phase = SessionPhase.NeedsLogin)
                 is AuthResult.Rejected -> AuthUiState(
                     phase = SessionPhase.NeedsLogin,
@@ -73,9 +83,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 client.login(email = email, password = password)
             }
             _uiState.value = when (result) {
-                is AuthResult.Authenticated,
-                AuthResult.AuthDisabled,
-                -> AuthUiState(phase = SessionPhase.Authenticated)
+                is AuthResult.Authenticated -> AuthUiState(
+                    phase = SessionPhase.Authenticated,
+                    userId = result.user.id.takeIf { id -> id.isNotBlank() },
+                )
+
+                AuthResult.AuthDisabled -> AuthUiState(phase = SessionPhase.Authenticated)
                 is AuthResult.Rejected -> AuthUiState(
                     phase = SessionPhase.NeedsLogin,
                     errorMessage = result.message,
