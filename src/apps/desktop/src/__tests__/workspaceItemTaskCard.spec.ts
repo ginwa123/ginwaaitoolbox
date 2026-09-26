@@ -29,7 +29,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { ref, type Ref } from 'vue'
+import { ref, nextTick, type Ref } from 'vue'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -37,10 +37,7 @@ import WorkspaceItemTaskCard from '../components/workspace/WorkspaceItemTaskCard
 import type { Task } from '../stores/workspaces'
 import { makeLocalStorageStub } from './helpers'
 
-function mountCard(
-  task: Task,
-  props: Partial<{ dropIndicator: 'above' | 'below' | null }> = {},
-) {
+function mountCard(task: Task, props: Partial<{ dropIndicator: 'above' | 'below' | null }> = {}) {
   const processingState: Ref<Record<string, boolean>> = ref({})
   const wrapper = mount(WorkspaceItemTaskCard, {
     props: {
@@ -106,9 +103,30 @@ describe('WorkspaceItemTaskCard data-attribute contract', () => {
     expect(wrapper.text()).toContain('Alpha')
   })
 
-  it('renders the pin toggle button', () => {
+  // The hover action strip (pin / rename / details / delete) was removed
+  // in favour of the card's right-click context menu. These assert the
+  // strip stays gone — a regression that re-adds a button costs ~100px of
+  // a 280px column and truncates the task name back to ~150px.
+  //
+  // Plan: docs/superpowers/plans/2026-09-25-kanban-card-context-menu-move-to-column.md
+  it('renders NO hover action buttons in the top row', () => {
     wrapper = mountCard({ id: 't1', name: 'Alpha' })
-    expect(wrapper.find('[data-testid="task-pin-toggle"]').exists()).toBe(true)
+    // The two that carried a test id...
+    expect(wrapper.find('[data-testid="task-pin-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="view-task-detail-btn"]').exists()).toBe(false)
+    // ...and the rename / delete buttons, which never had one. The top
+    // row is the first child div; its only <button> descendants would
+    // be the action strip.
+    const topRow = wrapper.find('[data-task-id="t1"]').element.children[0] as HTMLElement
+    expect(topRow.querySelectorAll('button').length).toBe(0)
+  })
+
+  it('keeps the pin INDICATOR (state, not an action) when pinned', async () => {
+    wrapper = mountCard({ id: 't1', name: 'Alpha', is_pinned: true })
+    await nextTick()
+    expect(wrapper.find('[data-testid="task-pin-indicator"]').exists()).toBe(true)
+    // The pin toggle is gone; the indicator is not.
+    expect(wrapper.find('[data-testid="task-pin-toggle"]').exists()).toBe(false)
   })
 
   it('emits selectTask when clicked', async () => {
@@ -334,9 +352,7 @@ describe('WorkspaceItemTaskCard card-ux-v3 (Jira-style type accent)', () => {
 
   function rootStyleFor(task: Task, dropIndicator?: 'above' | 'below' | null) {
     const props = dropIndicator !== undefined ? { dropIndicator } : {}
-    return mountCard(task, props)
-      .find('[data-task-id]')
-      .attributes('style') ?? ''
+    return mountCard(task, props).find('[data-task-id]').attributes('style') ?? ''
   }
 
   it('legacy routine card has NO violet accent (deleted Migration 084)', () => {
@@ -398,13 +414,7 @@ describe('WorkspaceItemTaskCard card-ux-v3 (Jira-style type accent)', () => {
  * shape instead.
  */
 describe('WorkspaceItem.vue — task component invariant', () => {
-  const SIDEBAR_PATH = resolve(
-    __dirname,
-    '..',
-    'components',
-    'workspace',
-    'WorkspaceItem.vue',
-  )
+  const SIDEBAR_PATH = resolve(__dirname, '..', 'components', 'workspace', 'WorkspaceItem.vue')
 
   it('does not import <WorkspaceItemTaskCard> (Card is kanban-only)', () => {
     const source = readFileSync(SIDEBAR_PATH, 'utf8')

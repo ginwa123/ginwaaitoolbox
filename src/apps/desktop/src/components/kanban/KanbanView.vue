@@ -189,7 +189,9 @@ const loadColumnsAndTasks = async () => {
     void nextTick(() => {
       for (const entry of urlEntries) {
         const col = columnRefs.value[entry.columnId] as
-          { setSortMode?: (s: string, d: string) => void } | null | undefined
+          | { setSortMode?: (s: string, d: string) => void }
+          | null
+          | undefined
         if (col && typeof col.setSortMode === 'function') {
           col.setSortMode(entry.sortBy, entry.direction)
         }
@@ -1594,6 +1596,7 @@ const handleCreateTaskSave = async (payload: {
             :workspace-id="workspaceId"
             :item-id="itemId || item.id"
             :cwd="item.path || ''"
+            :columns="sortedColumns"
             @move-task="(payload) => emit('moveTask', payload)"
             @rename-column="(payload) => emit('renameColumn', payload)"
             @delete-column="(columnId) => emit('deleteColumn', columnId)"
