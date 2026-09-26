@@ -54,6 +54,12 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.nalar.mobile.projects.ProjectChatRow
+import com.nalar.mobile.projects.ProjectRow
+import com.nalar.mobile.projects.ProjectsActions
+import com.nalar.mobile.projects.ProjectsSectionHeader
+import com.nalar.mobile.projects.ProjectsState
+import com.nalar.mobile.projects.SeeAllChatsRow
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarBackgroundRaised
@@ -77,7 +83,20 @@ private const val LOAD_MORE_INDEX_THRESHOLD = 2
 /** Reserved key for the footer row, which is not a chat. */
 private const val LOAD_MORE_KEY = "__chats_footer__"
 
+/** Reserved key for the recents list's own loading/error/empty row. */
+private const val CHATS_STATE_KEY = "__chats_state__"
+
+private const val PROJECTS_HEADER_KEY = "__projects_header__"
+
 private const val CONTENT_TYPE_SENTINEL = "sentinel"
+
+private const val CONTENT_TYPE_CHAT = "chat"
+
+private const val CONTENT_TYPE_STATE = "state"
+
+private const val CONTENT_TYPE_PROJECTS_HEADER = "projects-header"
+
+private const val CONTENT_TYPE_PROJECT = "project"
 
 @Composable
 fun RecentsSidebar(
@@ -139,6 +158,15 @@ fun RecentsSidebar(
     signedInEmail: String? = null,
     isLoggingOut: Boolean = false,
     onLogout: () -> Unit = {},
+    /**
+     * The Projects section, and the four things a reader can do to it.
+     *
+     * Two holders rather than eight more parameters: this composable already
+     * takes twenty-two, and these eight fields are only ever read together, so
+     * a caller passing half of them is a caller with a half-rendered section.
+     */
+    projects: ProjectsState = ProjectsState.Empty,
+    projectActions: ProjectsActions = ProjectsActions.None,
 ) {
     Column(
         modifier = modifier
@@ -165,6 +193,8 @@ fun RecentsSidebar(
             hasMoreChats = hasMoreChats,
             onLoadMore = onLoadMore,
             runningSessionIds = runningSessionIds,
+            projects = projects,
+            projectActions = projectActions,
         )
 
         // Deliberately outside the body. The "no workspaces" story is an early
@@ -210,6 +240,8 @@ private fun SidebarBody(
     hasMoreChats: Boolean,
     onLoadMore: () -> Unit,
     runningSessionIds: Set<String>,
+    projects: ProjectsState,
+    projectActions: ProjectsActions,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -262,98 +294,114 @@ private fun SidebarBody(
 
         Spacer(Modifier.height(24.dp))
 
-        Text(
-            text = "Recent",
-            modifier = Modifier
-                .padding(horizontal = 8.dp)
-                .semantics { heading() },
-            style = MaterialTheme.typography.labelLarge,
-            color = NalarDim,
-        )
-
-        Spacer(Modifier.height(8.dp))
-
         val visibleChats = selectedWorkspaceId
             ?.let { workspaceId -> recentChatsForWorkspace(chats, workspaceId) }
             .orEmpty()
 
-        if (visibleChats.isEmpty()) {
-            when {
-                isLoading -> SidebarPlaceholder(
-                    modifier = Modifier.weight(1f),
-                    testTag = "chats_loading",
-                    title = "Loading chats",
-                    detail = "Fetching the most recent chats in this workspace.",
-                    showSpinner = true,
-                )
+        val listState = rememberLazyListState()
 
-                errorMessage != null -> SidebarError(
-                    modifier = Modifier.weight(1f),
-                    testTag = "chats_error",
-                    message = errorMessage,
-                    onRetry = onRetry,
-                )
+        // A workspace switch shows a different set of rows at the same indices,
+        // so the old scroll offset would land the user mid-list in a workspace
+        // they have not looked at yet.
+        LaunchedEffect(selectedWorkspaceId) {
+            listState.scrollToItem(0)
+        }
 
-                else -> EmptyChats(
-                    modifier = Modifier.weight(1f),
-                )
-            }
+        // Index of the recents footer, which is the last row belonging to the
+        // chat list. Everything after it is the Projects section.
+        //
+        // Null when the recents list rendered no rows at all — then there is no
+        // footer, and the Projects header is index 0. Without this the paging
+        // trigger would arm on the header and page the chat list from a row
+        // that is not in it.
+        val chatRegionEnd: Int? = if (visibleChats.isEmpty()) {
+            null
         } else {
-            val listState = rememberLazyListState()
+            visibleChats.size
+        }
 
-            // A workspace switch shows a different set of rows at the same
-            // indices, so the old scroll offset would land the user mid-list in
-            // a workspace they have not looked at yet.
-            LaunchedEffect(selectedWorkspaceId) {
-                listState.scrollToItem(0)
+        // One page per approach to the end of the *chat* region.
+        //
+        // The latch is what keeps a short page from becoming a request storm:
+        // if the new page does not fill the viewport, the trigger is still
+        // armed on the very next layout, and without this the sidebar would
+        // re-fire until it happened to overflow. The ViewModel's in-flight
+        // guard covers concurrent calls; this one covers the sequential ones,
+        // which are the common case.
+        var loadMoreLatched by remember { mutableStateOf(true) }
+
+        LaunchedEffect(listState, visibleChats.size, hasMoreChats, isLoadingMore, chatRegionEnd) {
+            snapshotFlow {
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                val end = chatRegionEnd
+                // Only a real overflow can be scrolled; an unlaid-out list
+                // reports 0/0 and would otherwise arm on the first frame.
+                //
+                // Scoped to the chat region on purpose. One scroller now holds
+                // both lists, so the old "last index is near totalItemsCount"
+                // test would fire every time the reader scrolled to the bottom
+                // of the *Projects* section — paging chats they are not even
+                // looking at, forever.
+                info.totalItemsCount > 0 &&
+                    end != null &&
+                    last >= end - LOAD_MORE_INDEX_THRESHOLD &&
+                    last <= end
             }
-
-            // One page per approach to the bottom.
-            //
-            // The latch is what keeps a short page from becoming a request
-            // storm: if the new page does not fill the viewport, the trigger is
-            // still armed on the very next layout, and without this the sidebar
-            // would re-fire until it happened to overflow. The ViewModel's
-            // in-flight guard covers concurrent calls; this one covers the
-            // sequential ones, which are the common case.
-            var loadMoreLatched by remember { mutableStateOf(true) }
-
-            LaunchedEffect(listState, visibleChats.size, hasMoreChats, isLoadingMore) {
-                snapshotFlow {
-                    val info = listState.layoutInfo
-                    val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
-                    // Only a real overflow can be scrolled; an unlaid-out list
-                    // reports 0/0 and would otherwise arm on the first frame.
-                    info.totalItemsCount > 0 && last >= info.totalItemsCount - 1 - LOAD_MORE_INDEX_THRESHOLD
-                }
-                    .distinctUntilChanged()
-                    .collect { nearBottom ->
-                        if (!nearBottom) {
-                            loadMoreLatched = false
-                        } else if (!loadMoreLatched) {
-                            loadMoreLatched = true
-                            onLoadMore()
-                        }
+                .distinctUntilChanged()
+                .collect { nearEndOfChats ->
+                    if (!nearEndOfChats) {
+                        loadMoreLatched = false
+                    } else if (!loadMoreLatched) {
+                        loadMoreLatched = true
+                        onLoadMore()
                     }
-            }
+                }
+        }
 
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    // Not the transcript's `chat_message_list`. The chat route
-                    // composes this drawer *and* the transcript at once — a
-                    // closed sheet stays in the tree — so a shared tag made
-                    // every `onNodeWithTag` on either list fail on "multiple
-                    // nodes", which is two lists that cannot be told apart.
-                    .testTag("sidebar_chat_list")
-                    .selectableGroup(),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                // Not the transcript's `chat_message_list`. The chat route
+                // composes this drawer *and* the transcript at once — a
+                // closed sheet stays in the tree — so a shared tag made
+                // every `onNodeWithTag` on either list fail on "multiple
+                // nodes", which is two lists that cannot be told apart.
+                .testTag("sidebar_chat_list")
+                .selectableGroup(),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            if (visibleChats.isEmpty()) {
+                // A row in the list, not a weighted placeholder beside it.
+                // The Projects section has to stay reachable while the recents
+                // are loading, empty or broken — a weighted placeholder would
+                // take the whole remaining height and push Projects off-screen
+                // exactly when the reader most wants somewhere else to go.
+                item(key = CHATS_STATE_KEY, contentType = CONTENT_TYPE_STATE) {
+                    when {
+                        isLoading -> SidebarPlaceholder(
+                            testTag = "chats_loading",
+                            title = "Loading chats",
+                            detail = "Fetching the most recent chats in this workspace.",
+                            showSpinner = true,
+                        )
+
+                        errorMessage != null -> SidebarError(
+                            testTag = "chats_error",
+                            message = errorMessage,
+                            onRetry = onRetry,
+                        )
+
+                        else -> EmptyChats()
+                    }
+                }
+            } else {
                 items(
                     items = visibleChats,
                     key = { chat -> chat.id },
+                    contentType = { CONTENT_TYPE_CHAT },
                 ) { chat ->
                     ChatRow(
                         chat = chat,
@@ -374,6 +422,108 @@ private fun SidebarBody(
                         // the user reads first and then has to watch retracted.
                         hasReachedEnd = !hasMoreChats,
                     )
+                }
+            }
+
+            // ── Projects ──────────────────────────────────────────────────
+            item(key = PROJECTS_HEADER_KEY, contentType = CONTENT_TYPE_PROJECTS_HEADER) {
+                Spacer(Modifier.height(20.dp))
+                ProjectsSectionHeader(
+                    projectCount = projects.items.size,
+                    expanded = projects.expanded,
+                    onClick = projectActions.onToggleSection,
+                )
+            }
+
+            if (!projects.expanded) return@LazyColumn
+
+            if (projects.isEmpty && !projects.isLoading && projects.errorMessage == null) {
+                item(key = "projects_empty", contentType = CONTENT_TYPE_STATE) {
+                    SidebarPlaceholder(
+                        testTag = "projects_empty",
+                        title = "No projects yet",
+                        // Vue's copy points at the "+" it has and this does not
+                        // have, so it would send the reader looking for a
+                        // button that is not on this screen.
+                        detail = "Create one on the web app and it will show up here.",
+                    )
+                }
+                return@LazyColumn
+            }
+
+            if (projects.isLoading && projects.items.isEmpty()) {
+                item(key = "projects_loading", contentType = CONTENT_TYPE_STATE) {
+                    SidebarPlaceholder(
+                        testTag = "projects_loading",
+                        title = "Loading projects",
+                        detail = "Fetching the projects in this workspace.",
+                        showSpinner = true,
+                    )
+                }
+                return@LazyColumn
+            }
+
+            if (projects.errorMessage != null && projects.items.isEmpty()) {
+                item(key = "projects_error", contentType = CONTENT_TYPE_STATE) {
+                    SidebarError(
+                        testTag = "projects_error",
+                        message = projects.errorMessage,
+                        onRetry = projectActions.onRetry,
+                    )
+                }
+                return@LazyColumn
+            }
+
+            items(
+                items = projects.items,
+                key = { project -> project.id },
+                contentType = { CONTENT_TYPE_PROJECT },
+            ) { project ->
+                val expanded = projects.isProjectExpanded(project.id)
+                Column {
+                    ProjectRow(
+                        project = project,
+                        expanded = expanded,
+                        onClick = { projectActions.onToggleItem(project.id) },
+                    )
+
+                    if (expanded) {
+                        val preview = projects.previewFor(project.id)
+                        Column(
+                            modifier = Modifier
+                                .padding(start = 12.dp)
+                                .padding(start = 12.dp),
+                        ) {
+                            preview.forEach { chat ->
+                                ProjectChatRow(
+                                    chat = chat,
+                                    selected = chat.id == selectedChatId,
+                                    isRunning = chat.id in runningSessionIds,
+                                    nowEpochMillis = nowEpochMillis,
+                                    onClick = {
+                                        onChatSelected(chat.id)
+                                        // A chat is a destination, and this row
+                                        // opens the identical one the Recent
+                                        // list opens — the task id IS the
+                                        // session id.
+                                        onOpenChat()
+                                    },
+                                )
+                            }
+
+                            if (projects.shouldOfferSeeAllChats(project.id)) {
+                                SeeAllChatsRow(
+                                    projectId = project.id,
+                                    onClick = {
+                                        projectActions.onOpenAllChats(
+                                            project.workspaceId.ifEmpty { selectedWorkspaceId.orEmpty() },
+                                            project.id,
+                                        )
+                                    },
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -451,8 +601,15 @@ private fun AccountFooter(
  * item count is stable across a page append — otherwise appending shifts every
  * index and the scroll watcher re-evaluates mid-animation.
  */
+/**
+ * The recents list's footer, reused verbatim by the project-chats screen.
+ *
+ * `internal` rather than `private` because the project screen pages the same
+ * way and needs the same three states — spinner, "more to come", "no more" —
+ * and a second copy of that wording is a second thing to forget to update.
+ */
 @Composable
-private fun ChatListFooter(
+internal fun ChatListFooter(
     isLoading: Boolean,
     hasReachedEnd: Boolean,
     modifier: Modifier = Modifier,
@@ -748,7 +905,7 @@ private fun StaleDataNotice(
 }
 
 @Composable
-private fun SidebarPlaceholder(
+internal fun SidebarPlaceholder(
     title: String,
     detail: String,
     testTag: String,

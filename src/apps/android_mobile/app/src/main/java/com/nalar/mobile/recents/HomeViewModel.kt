@@ -686,6 +686,18 @@ class HomeViewModel(
         }
     }
 
+    /**
+     * Re-fetch just this section, for its own error surface's Retry.
+     *
+     * Not [refresh]: that re-runs the workspace fetch, and a projects
+     * failure while the recents are perfectly fine would then be reported
+     * against a list the reader never had a problem with.
+     */
+    fun retryProjects() {
+        val workspaceId = _uiState.value.selectedWorkspaceId ?: return
+        loadProjects(workspaceId)
+    }
+
     /** Fold the whole section away, or unfold it. The state lives here, not in a composable. */
     fun toggleProjectsSection() {
         _uiState.update { it.copy(isProjectsExpanded = !it.isProjectsExpanded) }

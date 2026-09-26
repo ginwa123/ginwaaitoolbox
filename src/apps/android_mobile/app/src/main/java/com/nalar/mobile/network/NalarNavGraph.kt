@@ -1,5 +1,8 @@
 package com.nalar.mobile.network
 
+import com.nalar.mobile.projects.ProjectChatsScreen
+import com.nalar.mobile.projects.ProjectsActions
+import com.nalar.mobile.projects.ProjectsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -73,9 +76,33 @@ object NalarRoutes {
     const val RECORD_DETAIL = "network/record/{recordId}"
     const val ARG_RECORD_ID = "recordId"
 
+    /**
+     * One project's chats, full-screen.
+     *
+     * Two ids, not one, and that is forced by the wire rather than chosen: every
+     * item endpoint in the backend is nested under
+     * `/api/workspaces/:workspace_id/items/…` — including the read one — so
+     * there is no endpoint anywhere that resolves a project from its id alone.
+     * A short `nalar://project/{itemId}` would arrive on a *cold process* with
+     * no `HomeViewModel` state to resolve the workspace from, and the only way
+     * to learn it would be the every-workspace-every-task fetch. `chat` gets
+     * away with one id because
+     * `GET /api/llm/session/{id}/messages?limit=1` genuinely needs nothing but
+     * the session id. One id where the wire allows one, two where it does not.
+     *
+     * Registered as a *sibling* of [CHAT], not nested under it: a project is
+     * not a chat, and nesting would make Back from one mean "pop the other".
+     */
+    const val PROJECT = "project/{workspaceId}/{itemId}"
+    const val ARG_WORKSPACE_ID = "workspaceId"
+    const val ARG_ITEM_ID = "itemId"
+
     fun chat(sessionId: String): String = "chat/${UriEncoding.encode(sessionId)}"
 
     fun recordDetail(recordId: Long): String = "network/record/$recordId"
+
+    fun project(workspaceId: String, itemId: String): String =
+        "project/${UriEncoding.encode(workspaceId)}/${UriEncoding.encode(itemId)}"
 }
 
 /**
@@ -201,6 +228,17 @@ fun NalarNavGraph(
     onSelectWorkspace: (String) -> Unit,
     onSelectChat: (String) -> Unit,
     onLoadMoreChats: () -> Unit,
+    /**
+     * The four project actions the drawer and the project screen share.
+     *
+     * Passed in rather than reached for, so a graph rendered with inert data in
+     * a test needs no `HomeViewModel` behind it.
+     */
+    onToggleProjectsSection: () -> Unit = {},
+    onToggleProjectExpanded: (String) -> Unit = {},
+    onEnsureProjectChatsLoaded: (String) -> Unit = {},
+    onLoadMoreProjectChats: (String) -> Unit = {},
+    onRetryProjects: () -> Unit = {},
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -234,6 +272,38 @@ fun NalarNavGraph(
     // drawing nothing at all. See [BackAction]. The chat's own way out is now
     // the drawer's "All chats" row, which lands here.
     val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
+
+    // Built once, here, and handed to both drawers and the project screen.
+    //
+    // The holder exists so the wiring is a single expression the reader can
+    // check against the four actions above: three that stay in the drawer
+    // (reshape the list in place) and one that leaves it (a destination). The
+    // split is the whole drawer contract, and naming the actions in one place
+    // is what keeps a fourth caller from being added without a decision about
+    // which side of that line it falls on.
+    val projectActions = ProjectsActions(
+        onToggleSection = onToggleProjectsSection,
+        onToggleItem = onToggleProjectExpanded,
+        onOpenAllChats = { workspaceId, itemId ->
+            navController.navigate(NalarRoutes.project(workspaceId, itemId))
+        },
+        onRetry = onRetryProjects,
+    )
+
+    // Rebuilt from the state on every emission rather than held, so it cannot
+    // fall one frame behind the rows it describes. It is a value class over
+    // immutable data, so Compose treats an unchanged list as unchanged and skips
+    // recomposing every row below it.
+    val projectState = remember(homeState) {
+        ProjectsState(
+            expanded = homeState.isProjectsExpanded,
+            items = homeState.projects,
+            expandedItemIds = homeState.expandedProjectIds,
+            chats = homeState.projectChats,
+            isLoading = homeState.isLoadingProjects,
+            errorMessage = homeState.projectsError,
+        )
+    }
 
     // A chat picked from the chat route's drawer *replaces* the one on screen
     // rather than stacking on it. Pushing would make system Back walk back
@@ -425,8 +495,63 @@ fun NalarNavGraph(
                         signedInEmail = authState.userEmail,
                         isLoggingOut = authState.isLoggingOut,
                         onLogout = signOut,
+                        projects = projectState,
+                        projectActions = projectActions,
                     )
                 },
+            )
+        }
+
+        composable(
+            route = NalarRoutes.PROJECT,
+            arguments = listOf(
+                navArgument(NalarRoutes.ARG_WORKSPACE_ID) { type = NavType.StringType },
+                navArgument(NalarRoutes.ARG_ITEM_ID) { type = NavType.StringType },
+            ),
+            deepLinks = listOf(
+                navDeepLink { uriPattern = "nalar://project/{workspaceId}/{itemId}" },
+            ),
+        ) { backStackEntry ->
+            val itemId = backStackEntry.arguments?.getString(NalarRoutes.ARG_ITEM_ID).orEmpty()
+
+            // Same rule as the chat route, same reason: this route sits on the
+            // back stack, so returning to it must not find a project whose
+            // chats were never asked for. An effect, not the composition body —
+            // in the body it would re-fetch on every recomposition.
+            LaunchedEffect(itemId) {
+                if (itemId.isNotBlank()) onEnsureProjectChatsLoaded(itemId)
+            }
+
+            ProjectChatsScreen(
+                // The route's ids, not the loaded list's memory: a deep link
+                // names a project the drawer never touched.
+                projectName = homeState.projects
+                    .firstOrNull { it.id == itemId }
+                    ?.displayName
+                    ?: "Project",
+                // A narrow slice, not the whole `HomeUiState`. Sharing the
+                // state with the drawer is what makes "See all" free — one
+                // fetch instead of two — but handing the whole object to this
+                // screen would recompose its `LazyColumn` on every unrelated
+                // emission, including a recents page the reader is not looking
+                // at. A slice whose `List` reference is unchanged does not
+                // rebuild.
+                page = homeState.projectChats[itemId],
+                selectedChatId = homeState.selectedChatId,
+                runningSessionIds = runningSessionIds,
+                isLoading = itemId in homeState.isLoadingMoreProjectChats ||
+                    (homeState.isLoadingProjects && homeState.projectChats[itemId] == null),
+                onChatSelected = onSelectChat,
+                onOpenChat = { sessionId ->
+                    // The shell's own `onOpenChat` navigates normally, because
+                    // there is no project list under it. Here there is: pushing
+                    // the chat normally would make Back return to this project,
+                    // which is where the reader came from.
+                    onOpenSession(sessionId)
+                    navController.navigate(NalarRoutes.chat(sessionId))
+                },
+                onLoadMore = { onLoadMoreProjectChats(itemId) },
+                onBack = goBack,
             )
         }
 

@@ -2,6 +2,8 @@
 
 package com.nalar.mobile.shell
 
+import com.nalar.mobile.projects.ProjectsActions
+import com.nalar.mobile.projects.ProjectsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -107,6 +109,17 @@ fun MobileHomeScreen(
     signedInEmail: String? = null,
     isLoggingOut: Boolean = false,
     onLogout: () -> Unit = {},
+    /**
+     * The Projects section, forwarded to both drawers.
+     *
+     * Two holders rather than eight more parameters, and threaded through
+     * this one composable rather than into the two call sites below: the
+     * shell's permanent drawer and the phone's modal drawer are the same
+     * drawer, and a Projects section that only reached one of them would
+     * look broken rather than absent.
+     */
+    projects: ProjectsState = ProjectsState.Empty,
+    projectActions: ProjectsActions = ProjectsActions.None,
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
         ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
@@ -218,6 +231,8 @@ fun MobileHomeScreen(
                             signedInEmail = signedInEmail,
                             isLoggingOut = isLoggingOut,
                             onLogout = onLogout,
+                            projects = projects,
+                            projectActions = projectActions,
                         )
                     }
                 },
@@ -259,6 +274,8 @@ fun MobileHomeScreen(
                             signedInEmail = signedInEmail,
                             isLoggingOut = isLoggingOut,
                             onLogout = onLogout,
+                            projects = projects,
+                            projectActions = projectActions,
                         )
                     }
                 },
