@@ -106,6 +106,60 @@ that true rather than nominal, and each is covered by a test:
 A scroll to the top prepends the previous page and re-anchors on the message
 the reader was looking at, by key and by the pixel row they had it at.
 
+### A turn that is a document is drawn, not printed
+
+An assistant turn is not always an answer. Asked for a page, the model hands
+back HTML — wrapped in `<html>…</html>`, or fenced in ```` ```html ````, or
+bare — and the transcript used to show the reader the *source* of it: a
+`web-framework-html-benchmark` turn arrived as a wall of literal
+`<style>bmw-wrap{font-family:ui-sans-system…`. `ChatView.vue` has rendered
+these as live sandboxed iframes since 2026-08-23 (`extractHtmlBlocks` +
+`buildHtmlSrcdoc`); the Android transcript had no equivalent step, and
+`stripContentEnvelope` peeled the `<html>` wrapper off on the way to
+`Markdown.parse`, so by then there was nothing left to recognise.
+
+`HtmlResponse.segments` asks the question of the **raw** content first and cuts
+the turn into prose and documents. Prose runs still go to `MarkdownText`; a
+document run goes to a `WebView` frame, which is the phone's equivalent of the
+web's `sandbox="allow-scripts"` iframe. Three details are load-bearing:
+
+- **The height is reported, not guessed.** A `WebView` has no intrinsic height,
+  so a frame inside a `LazyColumn` is unmeasurable until the document says how
+  tall it is. A script appended to every frame posts
+  `documentElement.scrollHeight` back through a `@JavascriptInterface` hook.
+- **A document is only drawn once it has finished.** While a turn is still
+  streaming it stays prose and streams in as text. This is a deliberate
+  departure from the web, which swaps a streaming iframe for a sandboxed one:
+  on a phone a `WebView` is a real `View` with a real JS engine, and reloading
+  it per delta is a re-layout and a re-parse per frame. The frame is built
+  once, at the end.
+- **A fragment gets the transcript's theme, forced.** The model writes for a
+  light page — it has no idea the transcript is dark — so `pre`/`code`/table
+  cells get `!important` backgrounds and ink over whatever the payload wrote.
+  GitHub's light `background:#f6f8fa` on every `<pre>` is a real payload from
+  this project, and an inline style otherwise beats the shell at a measured
+  1.57:1. A *whole* document passes through untouched apart from the
+  no-scrollbar rule; rewriting its own `head` is how a working page stops
+  working.
+
+JavaScript stays on — it is what reports the height, and much of what the
+model produces is not a page without it — and everything it could reach is
+taken away instead. Every scheme other than `data:` and `about:` is answered
+with an empty body by `shouldInterceptRequest`; file and content access are
+off; navigation is suppressed. The model's own `<style>` and `<script>` are
+deliberately *not* stripped: sanitising the page into a mangled approximation
+is a different product, and the boundaries above are the ones that matter.
+
+At most `HtmlResponse.MAX_LIVE_FRAMES` documents in one turn get a live frame;
+the rest fall back to their own source. A turn is capped because a `LazyColumn`
+composing more live `WebView`s than that is a memory cliff on a phone.
+
+`hasRenderableContent` counts a document as drawable. It could not before:
+`<html><body>…</body></html>` strips to a body with nothing in it, so the gate
+that keeps empty envelopes out of the transcript threw the rendered page out
+with them — the answer drew perfectly well and `groupMessages` had no row to
+draw it in.
+
 ### The transcript follows the newest turn
 
 Opening a chat lands on its newest turn, and the viewport stays there while a

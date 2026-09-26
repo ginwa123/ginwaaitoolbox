@@ -118,9 +118,24 @@ data class ChatMessage(
      * string and draws as nothing once the envelope is off, so gating
      * visibility on raw `content` is how a visible-but-empty bubble gets into
      * the transcript. The web pins the same thing in `hasVisibleContent`.
+     *
+     * A *document* turn is the case this has to be told about separately.
+     * `<html><body><h1>Report</h1></body></html>` strips down to a body with
+     * nothing in it, so a turn whose whole content is a rendered page looked
+     * empty here and [groupMessages] dropped it — the answer was rendered
+     * perfectly well and the transcript simply did not have the row. The
+     * envelope is not what decides whether there is something to draw; what
+     * decides it is whether anything survives the envelope *or* a document
+     * came off it.
+     *
+     * The same `isStreaming` reading the renderer uses: a document still
+     * arriving is prose, and prose is already drawable, so a streaming turn
+     * is never at risk here.
      */
     val hasRenderableContent: Boolean
-        get() = content.isNotBlank() && Markdown.hasContent(content)
+        get() = content.isNotBlank() &&
+            (HtmlResponse.isHtmlTurn(content, isComplete = !isStreaming) ||
+                Markdown.hasContent(content))
 
     companion object {
         const val ROLE_USER = "user"
