@@ -129,7 +129,7 @@ fun RecentsSidebar(
             onWorkspaceSelected = onWorkspaceSelected,
             onChatSelected = onChatSelected,
             nowEpochMillis = nowEpochMillis,
-            onNavigate = onNavigate,
+            onOpenChat = onOpenChat,
             isLoading = isLoading,
             errorMessage = errorMessage,
             onRetry = onRetry,
@@ -166,7 +166,14 @@ private fun SidebarBody(
     onWorkspaceSelected: (String) -> Unit,
     onChatSelected: (String) -> Unit,
     nowEpochMillis: Long,
-    onNavigate: () -> Unit,
+    /**
+     * Leave the sidebar because a chat was opened — a chat is a destination.
+     *
+     * Same name as the public parameter and for the same reason: a filter has
+     * nowhere to navigate to, and naming this one `onNavigate` is what invited
+     * the workspace dropdown to call it.
+     */
+    onOpenChat: () -> Unit,
     isLoading: Boolean,
     errorMessage: String?,
     onRetry: () -> Unit,
