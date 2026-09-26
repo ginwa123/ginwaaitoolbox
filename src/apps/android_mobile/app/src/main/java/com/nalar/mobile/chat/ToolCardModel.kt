@@ -354,6 +354,14 @@ sealed interface ToolBody {
         val path: String = "",
         val bytes: Long = 0L,
         val label: String = "",
+        /**
+         * The tool reports it (`{"path":…,"bytes":…,"mime":…,"label":…}`) and
+         * it is the only thing that says whether a file can be previewed
+         * inline, so dropping it left the card unable to tell a screenshot
+         * from a zip. Defaults to empty because the field is absent on older
+         * rows already in the offline cache.
+         */
+        val mime: String = "",
     )
 
     data class PresentFiles(
@@ -776,6 +784,7 @@ object ToolCard {
                         path = file.string("path"),
                         bytes = file.opt("bytes").toLongOrZero(),
                         label = file.string("label"),
+                        mime = file.string("mime"),
                     )
                 },
             )

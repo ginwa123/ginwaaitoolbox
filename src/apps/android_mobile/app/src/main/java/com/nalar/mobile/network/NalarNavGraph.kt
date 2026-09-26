@@ -19,7 +19,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -47,6 +50,7 @@ import com.nalar.mobile.shell.BackToChatsRow
 import com.nalar.mobile.shell.MobileHomeScreen
 import com.nalar.mobile.shell.RecentsDrawerContent
 import com.nalar.mobile.shell.chatDrawerSelectedChatId
+import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarMuted
@@ -173,6 +177,12 @@ fun NalarNavGraph(
     navController: NavHostController = rememberNavController(),
     homeState: HomeUiState,
     chatState: ChatUiState,
+    /**
+     * The position the last run left behind. Read once per launch and never
+     * written from here — a persisted position that the app edits as it resumes
+     * is a position it can no longer be sure about.
+     */
+    positionStore: LastPositionStore,
     onSelectWorkspace: (String) -> Unit,
     onSelectChat: (String) -> Unit,
     onLoadMoreChats: () -> Unit,
@@ -190,6 +200,15 @@ fun NalarNavGraph(
      * the caller is expected to point both at the same action.
      */
     onLogout: () -> Unit = {},
+    /**
+     * Session ids with a live worker, for the two places that can say so: the
+     * sidebar row and the chat header.
+     *
+     * One hoisted set for both because they are on different routes and would
+     * otherwise each need their own copy of the same fact. Defaulted so a graph
+     * rendered with inert data needs no worker behind it.
+     */
+    runningSessionIds: Set<String> = emptySet(),
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -234,6 +253,15 @@ fun NalarNavGraph(
     // substitute for [goBack] — it is what turns any future way into that state
     // into one tap instead of a dead window.
     val visibleDestinations by navController.visibleEntries.collectAsState()
+
+    ResumeLastPosition(
+        authState = authState,
+        homeState = homeState,
+        navController = navController,
+        positionStore = positionStore,
+        onSelectChat = onSelectChat,
+        onOpenSession = onOpenSession,
+    )
 
     Box(
         modifier = modifier
@@ -287,6 +315,7 @@ fun NalarNavGraph(
                     isLoadingMoreChats = homeState.isLoadingMoreChats,
                     hasMoreChats = homeState.hasMoreChats,
                     onLoadMoreChats = onLoadMoreChats,
+                    runningSessionIds = runningSessionIds,
                     isAuthEnabled = authState.isAuthEnabled,
                     signedInEmail = authState.userEmail,
                     isLoggingOut = authState.isLoggingOut,
@@ -321,6 +350,10 @@ fun NalarNavGraph(
             ChatScreen(
                 state = chatState,
                 chatTitle = chatTitleFor(sessionId, homeState.chats),
+                // The route's id, not `chatState.sessionId`: a deep link that
+                // has not finished opening yet still has to report the run it
+                // is about to show.
+                isRunning = sessionId in runningSessionIds,
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,
                 onStop = onStopChatRun,
@@ -368,6 +401,10 @@ fun NalarNavGraph(
                         isLoadingMore = homeState.isLoadingMoreChats,
                         hasMoreChats = homeState.hasMoreChats,
                         onLoadMore = onLoadMoreChats,
+                        // The same set the shell's drawer shows it in: a chat
+                        // busy in the background is busy in both copies of the
+                        // list, and this is the one the reader is looking at.
+                        runningSessionIds = runningSessionIds,
                         isAuthEnabled = authState.isAuthEnabled,
                         signedInEmail = authState.userEmail,
                         isLoggingOut = authState.isLoggingOut,
@@ -412,6 +449,72 @@ fun NalarNavGraph(
         if (visibleDestinations.isEmpty()) {
             NavigationLostScreen(onReturnHome = goBack)
         }
+    }
+}
+
+/**
+ * Reopens the chat the user was last in, when the app was closed and opened
+ * again.
+ *
+ * The workspace half of the position is not here — `HomeViewModel` applies it
+ * before its first fetch, so the drawer opens on the right workspace without a
+ * wasted request. Only the chat is a route, and a route needs a destination to
+ * navigate to, so it is navigated to from here.
+ *
+ * All of the policy is in [sessionToResume]; what is left here is reading the
+ * current values and acting on the answer. That split is deliberate — the
+ * conditions (authenticated, on the shell, the list settled, the chat still
+ * there) are what is easy to get subtly wrong, and none of them can be asserted
+ * from inside a composable.
+ *
+ * The auth phase is a *key* of the effect, not just a value it reads: the
+ * sidebar's data often settles while the phase is still `Restoring`, and an
+ * effect that only re-ran on the data would never revisit that answer.
+ */
+@Composable
+private fun ResumeLastPosition(
+    authState: AuthUiState,
+    homeState: HomeUiState,
+    navController: NavHostController,
+    positionStore: LastPositionStore,
+    onSelectChat: (String) -> Unit,
+    onOpenSession: (String) -> Unit,
+) {
+    // Re-read when the account changes, not on every recomposition: the store is
+    // keyed by account, and a plan built for the previous one would resume the
+    // previous one's chat.
+    var plan by remember(authState.userId) { mutableStateOf<ResumePlan?>(null) }
+    LaunchedEffect(authState.userId) {
+        // Off the main thread: this is a launch path, and the first screen is not
+        // up yet, so there is nothing to drop a frame for.
+        plan = withContext(Dispatchers.IO) {
+            ResumePlan(positionStore.read(authState.userId))
+        }
+    }
+
+    LaunchedEffect(
+        authState.phase,
+        homeState.selectedWorkspaceId,
+        homeState.chats,
+        homeState.isLoading,
+        plan,
+    ) {
+        val sessionId = sessionToResume(
+            authPhase = authState.phase,
+            currentRoute = navController.currentDestination?.route,
+            plan = plan,
+            chats = homeState.chats,
+            selectedWorkspaceId = homeState.selectedWorkspaceId,
+            isLoading = homeState.isLoading,
+        ) ?: return@LaunchedEffect
+
+        // The session is opened before the navigation for the same reason the
+        // sidebar's own `onOpenChat` is: the route stays on the back stack, so
+        // returning to it must not show an empty transcript waiting on a load
+        // that never ran.
+        onSelectChat(sessionId)
+        onOpenSession(sessionId)
+        navController.navigate(NalarRoutes.chat(sessionId))
     }
 }
 

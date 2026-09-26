@@ -10,6 +10,8 @@ import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.network.RecordingAuthTransport
+import com.nalar.mobile.storage.LastPosition
+import com.nalar.mobile.storage.LastPositionStore
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,6 +85,12 @@ data class HomeUiState(
 class HomeViewModel(
     private val client: RecentsClient,
     private val cache: RecentsCache,
+    /**
+     * Where the position outlives the process. Injected rather than reached for
+     * so the seed on the first launch, and the two writes a user action causes,
+     * are observable in a test without a device.
+     */
+    private val positionStore: LastPositionStore,
     // Injected so tests can drive the fetch on the same scheduler as the paint;
     // `advanceUntilIdle` cannot wait on the real IO pool.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -97,6 +105,18 @@ class HomeViewModel(
     private var hasStarted = false
     private var workspacesJob: Job? = null
     private var chatsJob: Job? = null
+
+    /**
+     * The workspace the last run ended on, read once per launch.
+     *
+     * It is a *seed*, not a selection: the two lists this ViewModel paints can
+     * arrive with and without that workspace in them, and the live list is what
+     * decides — a workspace deleted on the server must not survive in a store
+     * the app keeps consulting. So it is spent the moment the authoritative list
+     * has been weighed (see [selectWorkspaceId]), which is also why a refresh
+     * later in the session cannot resurrect it.
+     */
+    private var resumeWorkspaceSeed: String? = null
 
     /**
      * A later page's fetch. Deliberately a *separate* job from [chatsJob]: a
@@ -132,6 +152,12 @@ class HomeViewModel(
 
         val accountChanged = newUserId != userId
         userId = newUserId
+        // Read before the first paint, not after: the drawer has to open on the
+        // workspace the user left, and a seed applied once the list is already on
+        // screen is a visible jump plus a wasted fetch for the wrong workspace.
+        // Synchronous, because `SharedPreferences` is already in memory and this
+        // runs once per launch, not per frame.
+        resumeWorkspaceSeed = positionStore.read(newUserId).workspaceId
         if (accountChanged) {
             // Blank rather than keep: the old rows belong to someone else.
             _uiState.value = HomeUiState()
@@ -161,10 +187,15 @@ class HomeViewModel(
                     val workspaces = result.value
                     // Hold the current selection across a refresh so the drawer
                     // does not jump back to the top on every pull-to-refresh.
-                    val selected = workspaces
-                        .firstOrNull { it.id == _uiState.value.selectedWorkspaceId }
-                        ?.id
-                        ?: workspaces.firstOrNull()?.id
+                    val selected = selectWorkspaceId(
+                        workspaces = workspaces,
+                        currentSelection = _uiState.value.selectedWorkspaceId,
+                        resumeSeed = resumeWorkspaceSeed,
+                    )
+                    // The live list has now had its say on the seed: either it was
+                    // applied just above, or the workspace is gone. Consulting it
+                    // again on a later refresh would resurrect a dead id.
+                    resumeWorkspaceSeed = null
 
                     _uiState.update {
                         it.copy(
@@ -200,10 +231,11 @@ class HomeViewModel(
         }
 
         val current = _uiState.value
-        val selected = cachedWorkspaces
-            .firstOrNull { it.id == current.selectedWorkspaceId }
-            ?.id
-            ?: cachedWorkspaces.firstOrNull()?.id
+        val selected = selectWorkspaceId(
+            workspaces = cachedWorkspaces,
+            currentSelection = current.selectedWorkspaceId,
+            resumeSeed = resumeWorkspaceSeed,
+        )
 
         _uiState.value = current.copy(
             isLoading = true,
@@ -233,10 +265,31 @@ class HomeViewModel(
             )
         }
         loadChats(workspaceId)
+        // After the state, not before: a tap that lands somewhere the app cannot
+        // recover from must not leave a position behind that the next launch
+        // would try to resume.
+        positionStore.saveWorkspace(userId, workspaceId)
     }
 
+    /**
+     * The user is now in this chat, which is the other half of the position. Both
+     * halves are written together because a session id only means anything next to
+     * the workspace it was opened from, and the workspace may have moved on since
+     * the last write.
+     *
+     * A blank id is not a position, so it is not written; the caller is
+     * highlighting a row, and an empty one is not a row.
+     */
     fun selectChat(chatId: String) {
+        if (chatId.isBlank()) return
         _uiState.update { it.copy(selectedChatId = chatId) }
+        positionStore.save(
+            userId,
+            LastPosition(
+                workspaceId = _uiState.value.selectedWorkspaceId,
+                sessionId = chatId,
+            ),
+        )
     }
 
     /**
@@ -439,7 +492,12 @@ class HomeViewModel(
         moreChatsJob?.cancel()
         chatsCursor = null
         chatsGeneration++
+        // The saved position goes with the rows. Keeping it would be the same
+        // leak with a smaller payload: the next account to sign in on this device
+        // would open straight into the previous one's chat.
+        resumeWorkspaceSeed = null
         cache.clear()
+        positionStore.clear()
     }
 
     /**
@@ -453,7 +511,17 @@ class HomeViewModel(
     }
 
     companion object {
-        fun factory(application: Application): ViewModelProvider.Factory = viewModelFactory {
+        /**
+         * [positionStore] is passed in rather than built here so the caller
+         * controls its lifetime: `MainActivity` holds one instance for the whole
+         * process, and the nav graph reads the same one to decide what to resume.
+         * Two instances of a store over one preference file would be two caches
+         * disagreeing about the same two keys.
+         */
+        fun factory(
+            application: Application,
+            positionStore: LastPositionStore,
+        ): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 HomeViewModel(
                     client = RecentsClient(
@@ -465,8 +533,39 @@ class HomeViewModel(
                         ),
                     ),
                     cache = RoomRecentsCache(application),
+                    positionStore = positionStore,
                 )
             }
         }
     }
 }
+
+/**
+ * Which workspace the drawer should show, in the one precedence that decides.
+ *
+ * Three candidates, in order, and the order is the whole point:
+ *
+ * 1. **The current selection**, so a pull-to-refresh or a background revalidate
+ *    does not move the user out of the workspace they are reading. This is also
+ *    what a workspace the user just tapped looks like, which is why a tap is
+ *    never overridden by the seed below.
+ * 2. **The saved position**, the workspace the previous run ended on. It only
+ *    applies when the current selection is not in the list at all — the first
+ *    launch, before anything has been chosen — and only if the workspace is
+ *    *still there*. A workspace deleted on the server fails the second test and
+ *    falls through, so a stale id cannot put the user in a room that is not
+ *    there any more.
+ * 3. **The first workspace**, so the drawer always has a target once any
+ *    workspace exists. The desktop's `activeWorkspace` getter has the same
+ *    fallback chain, and reaches it through the same question.
+ *
+ * Top level and free of Compose so the precedence can be asserted directly,
+ * rather than inferred from which workspace a rendered drawer happened to show.
+ */
+internal fun selectWorkspaceId(
+    workspaces: List<WorkspaceOption>,
+    currentSelection: String?,
+    resumeSeed: String?,
+): String? = workspaces.firstOrNull { it.id == currentSelection }?.id
+    ?: workspaces.firstOrNull { it.id == resumeSeed }?.id
+    ?: workspaces.firstOrNull()?.id

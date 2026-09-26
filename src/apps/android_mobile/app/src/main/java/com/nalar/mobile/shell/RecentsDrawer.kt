@@ -64,6 +64,12 @@ fun RecentsDrawerContent(
     isLoadingMore: Boolean = false,
     hasMoreChats: Boolean = false,
     onLoadMore: () -> Unit = {},
+    /**
+     * Forwarded, not interpreted: the set is app-wide and the row that draws
+     * the busy dot lives in the sidebar. Swallowing it here would silently drop
+     * the indicator from whichever drawer forgot to pass it.
+     */
+    runningSessionIds: Set<String> = emptySet(),
     isAuthEnabled: Boolean = false,
     signedInEmail: String? = null,
     isLoggingOut: Boolean = false,
@@ -95,6 +101,7 @@ fun RecentsDrawerContent(
             isLoadingMore = isLoadingMore,
             hasMoreChats = hasMoreChats,
             onLoadMore = onLoadMore,
+            runningSessionIds = runningSessionIds,
             isAuthEnabled = isAuthEnabled,
             signedInEmail = signedInEmail,
             isLoggingOut = isLoggingOut,

@@ -1,5 +1,10 @@
 package com.nalar.mobile.recents
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertContentDescriptionContains
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -211,6 +216,93 @@ class RecentsSidebarTest {
         // rather than "done" or "nothing here".
         composeTestRule.onNodeWithTag("chats_load_more_spinner").assertIsDisplayed()
         composeTestRule.onNodeWithText("No older chats").assertDoesNotExist()
+    }
+
+    @Test
+    fun onlyTheRunningChatSpins() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = setOf("chat-a2"),
+                )
+            }
+        }
+
+        // chat-a1 is the selected row and idle; chat-a2 is the one with a live
+        // worker. Both markers share one trailing slot, so this also pins that
+        // the selected dot did not push the spinner off the row.
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a2").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a1").assertDoesNotExist()
+    }
+
+    @Test
+    fun aSelectedRowKeepsItsDotWhileItIsAlsoRunning() {
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    initialChatId = "chat-a1",
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = setOf("chat-a1", "chat-a2"),
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("chat_row_chat-a1").assertIsSelected()
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a2").assertIsDisplayed()
+    }
+
+    @Test
+    fun theSpinnerFollowsTheSetRatherThanBeingSticky() {
+        val running = androidx.compose.runtime.mutableStateOf(setOf("chat-a2"))
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = running.value,
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a2").assertIsDisplayed()
+
+        // The stop arrives as a worker_deleted frame and a resync, both of which
+        // land here. A spinner that only knows how to appear is the bug.
+        composeTestRule.runOnIdle { running.value = emptySet() }
+        composeTestRule.onNodeWithTag("chat_row_running_chat-a2").assertDoesNotExist()
+    }
+
+    @Test
+    fun aRunningRowSaysSoInItsOwnDescription() {
+        // The spinner is decorative and carries no semantics, so the row's
+        // merged description is the only place the fact reaches a screen reader.
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = chats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    runningSessionIds = setOf("chat-a2"),
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("chat_row_chat-a2")
+            .assertContentDescriptionContains("agent is working")
+        // Exactly one row, so the idle rows did not inherit the phrase.
+        composeTestRule.onAllNodes(describesARunningAgent).assertCountEquals(1)
+    }
+
+    private val describesARunningAgent = SemanticsMatcher("describes a running agent") { node ->
+        node.config
+            .getOrNull(SemanticsProperties.ContentDescription)
+            ?.any { it.contains("agent is working") } == true
     }
 
     @Test

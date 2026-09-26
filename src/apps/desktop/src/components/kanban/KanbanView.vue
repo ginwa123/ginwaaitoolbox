@@ -58,6 +58,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import KanbanColumn from './KanbanColumn.vue'
 import KanbanRowView from './KanbanRowView.vue'
+import type { KanbanRowDensity } from './KanbanTaskRow.vue'
 import KanbanSearchInput from './KanbanSearchInput.vue'
 import KanbanTaskDetail from './KanbanTaskDetail.vue'
 import { buildTaskCreateMessage } from './buildTaskCreateMessage'
@@ -386,6 +387,39 @@ const setLayout = (next: KanbanLayout) => {
 const kanbanRowsContainer = ref<HTMLElement | null>(null)
 const kanbanRowScrollStorageKey = computed(() => `kanban-row-scroll-${effectiveItemId.value}`)
 useKanbanScrollRestore(kanbanRowsContainer, kanbanRowScrollStorageKey, 'y')
+
+// ─── Row-mode density (comfortable | compact) ─────────────────────────────
+//
+// The two-line row (name + metadata) is right for most columns but a lot
+// of scrolling for a 100+ row group like `merged`. Compact drops the
+// metadata line back to a single scannable line.
+//
+// This is a density preference, not a view switch, so it is localStorage
+// only — it does NOT go in the URL (same reasoning as group collapse
+// below). It applies to row mode only, so it is inert in column mode
+// and the toggle is hidden there.
+const DENSITY_STORAGE_KEY = 'nalar-kanban-row-density'
+
+const readStoredDensity = (): KanbanRowDensity | null => {
+  try {
+    const v = localStorage.getItem(DENSITY_STORAGE_KEY)
+    return v === 'compact' || v === 'comfortable' ? v : null
+  } catch {
+    return null
+  }
+}
+
+const rowDensity = ref<KanbanRowDensity>(readStoredDensity() ?? 'comfortable')
+
+const setRowDensity = (next: KanbanRowDensity) => {
+  if (rowDensity.value === next) return
+  rowDensity.value = next
+  try {
+    localStorage.setItem(DENSITY_STORAGE_KEY, next)
+  } catch {
+    // Persistence is best-effort; the in-memory state still works.
+  }
+}
 
 // ─── Row-mode group collapse ──────────────────────────────────────────────
 //
@@ -1470,6 +1504,34 @@ const handleCreateTaskSave = async (payload: {
           </button>
         </div>
 
+        <!-- Density toggle — Comfortable (two-line record: name +
+             metadata) vs Compact (single line). The two-line row is
+             right for most columns but a lot of scrolling for a 100+
+             row group like `merged`, so this is the escape hatch.
+             localStorage-backed, not URL-backed: it is a density
+             preference, like group collapse, not a distinct view.
+             Only meaningful in row mode, so it is hidden in columns. -->
+        <button
+          v-if="layout === 'rows'"
+          type="button"
+          class="px-2 py-1 text-xs rounded shrink-0 cursor-pointer transition-colors"
+          style="border: 1px solid var(--color-border); color: var(--semantic-text-muted)"
+          :data-testid="`kanban-view-${item.id}-density-toggle`"
+          :title="
+            rowDensity === 'comfortable'
+              ? 'Comfortable rows — name plus metadata. Switch to compact for single-line rows.'
+              : 'Compact rows — single line, no metadata. Switch to comfortable for name plus metadata.'
+          "
+          :aria-label="
+            rowDensity === 'comfortable' ? 'Row density: comfortable' : 'Row density: compact'
+          "
+          :aria-pressed="rowDensity === 'compact'"
+          @click="setRowDensity(rowDensity === 'comfortable' ? 'compact' : 'comfortable')"
+        >
+          <span aria-hidden="true">{{ rowDensity === 'comfortable' ? '☰' : '≡' }}</span>
+          <span class="ml-1">{{ rowDensity === 'comfortable' ? 'Comfortable' : 'Compact' }}</span>
+        </button>
+
         <!-- NEW (plan: 2026-08-06-kanban-add-task-button-placement). One
            global + Add task button (replaces per-column footer add
            buttons — see KanbanColumn.vue cleanup). Opens the create
@@ -1632,6 +1694,7 @@ const handleCreateTaskSave = async (payload: {
           :item-id="itemId || item.id"
           :cwd="item.path || ''"
           :collapsed-ids="collapsedColumnIds"
+          :density="rowDensity"
           :run-all-busy-by-column="runAllBusyByColumn"
           @toggle-collapse="toggleColumnCollapsed"
           @rename-column="(payload) => emit('renameColumn', payload)"

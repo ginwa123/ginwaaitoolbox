@@ -9,12 +9,15 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
 import com.nalar.mobile.chat.ChatViewModel
 import com.nalar.mobile.network.NalarNavGraph
 import com.nalar.mobile.recents.HomeViewModel
+import com.nalar.mobile.storage.PrefsLastPositionStore
 import com.nalar.mobile.ui.NalarTheme
+import com.nalar.mobile.worker.WorkerActivityViewModel
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -30,8 +33,14 @@ class MainActivity : ComponentActivity() {
                 val authViewModel: AuthViewModel = viewModel()
                 val authState by authViewModel.uiState.collectAsState()
 
+                // One store for the process. The ViewModel writes the position
+                // the user just moved to; the nav graph reads it back to decide
+                // what a relaunch should reopen. Two instances would be two views
+                // of the same two preference keys.
+                val positionStore = remember { PrefsLastPositionStore(application) }
+
                 val homeViewModel: HomeViewModel = viewModel(
-                    factory = HomeViewModel.factory(application),
+                    factory = HomeViewModel.factory(application, positionStore),
                 )
                 val homeState by homeViewModel.uiState.collectAsState()
 
@@ -39,6 +48,15 @@ class MainActivity : ComponentActivity() {
                     factory = ChatViewModel.factory(application),
                 )
                 val chatState by chatViewModel.uiState.collectAsState()
+
+                // Which sessions have a live worker. Its own ViewModel, and its
+                // own `workers` subscription, because the chat stream only exists
+                // while a chat is open — and the sidebar is on screen precisely
+                // when one is not.
+                val workerViewModel: WorkerActivityViewModel = viewModel(
+                    factory = WorkerActivityViewModel.factory(application),
+                )
+                val runningSessionIds by workerViewModel.runningSessionIds.collectAsState()
 
                 // One sign-out, three entry points: the sidebar's "Log out", the
                 // retry screen's "Sign in", and a 401 from either cache. They are
@@ -48,15 +66,20 @@ class MainActivity : ComponentActivity() {
                 val signOut: () -> Unit = {
                     homeViewModel.onSignedOut()
                     chatViewModel.onSignedOut()
+                    workerViewModel.onSignedOut()
                     authViewModel.logout()
                 }
 
-                // The signed-in account namespaces both caches. Reacting to it
-                // here (rather than inside a ViewModel's init) means the first
-                // paint is already scoped to the right account.
+                // The signed-in account namespaces both caches and gates the
+                // worker subscription, whose handshake is a cookie the server
+                // answers once and never retries. Reacting to it here (rather
+                // than inside a ViewModel's init) means the first paint is
+                // already scoped to the right account, and signing out stops
+                // the stream and drops the ids.
                 LaunchedEffect(authState.userId) {
                     homeViewModel.onUserChanged(authState.userId)
                     chatViewModel.onUserChanged(authState.userId)
+                    workerViewModel.onUserChanged(authState.userId)
                 }
 
                 // A 401 on any call means the saved cookie is dead; signing out
@@ -80,6 +103,7 @@ class MainActivity : ComponentActivity() {
                     onLogout = signOut,
                     homeState = homeState,
                     chatState = chatState,
+                    positionStore = positionStore,
                     onSelectWorkspace = homeViewModel::selectWorkspace,
                     onSelectChat = homeViewModel::selectChat,
                     onLoadMoreChats = homeViewModel::loadMoreChats,
@@ -98,6 +122,7 @@ class MainActivity : ComponentActivity() {
                             skip = it.skip,
                         )
                     },
+                    runningSessionIds = runningSessionIds,
                 )
             }
         }

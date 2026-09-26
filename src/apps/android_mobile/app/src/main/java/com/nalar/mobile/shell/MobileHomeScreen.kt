@@ -93,6 +93,12 @@ fun MobileHomeScreen(
     hasMoreChats: Boolean = false,
     onLoadMoreChats: () -> Unit = {},
     /**
+     * Session ids with a live worker. Hoisted all the way down to each row, and
+     * app-wide rather than per-view, because the shell and the chat are
+     * separate routes and a run belongs to neither of them.
+     */
+    runningSessionIds: Set<String> = emptySet(),
+    /**
      * The signed-in account, and the one action that ends it. Defaults keep the
      * screen renderable in previews and tests with no session to describe.
      */
@@ -126,9 +132,23 @@ fun MobileHomeScreen(
         }
     }
 
-    LaunchedEffect(scopedChats, selectedChatId) {
-        if (scopedChats.none { it.id == selectedChatId }) {
-            selectedChatId = scopedChats.firstOrNull()?.id
+    LaunchedEffect(scopedChats, selectedChatId, initialChatId) {
+        // Already on a real row: nothing to decide. Reached on every refresh and
+        // every tap, and short-circuiting is what stops a revalidation from
+        // moving the highlight off the chat the user is reading.
+        if (selectedChatId != null && scopedChats.any { it.id == selectedChatId }) {
+            return@LaunchedEffect
+        }
+        // `initialChatId` is a *request*, not a seed. It arrives after the first
+        // composition — the chat list is still loading then, so an id read at
+        // construction time is either null or cannot be checked — and honouring
+        // it only at construction is what lets the app resume a chat the drawer
+        // does not highlight.
+        val requested = initialChatId
+        selectedChatId = if (requested != null && scopedChats.any { it.id == requested }) {
+            requested
+        } else {
+            scopedChats.firstOrNull()?.id
         }
     }
 
@@ -192,6 +212,7 @@ fun MobileHomeScreen(
                             isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
                             onLoadMore = onLoadMoreChats,
+                            runningSessionIds = runningSessionIds,
                             isAuthEnabled = isAuthEnabled,
                             signedInEmail = signedInEmail,
                             isLoggingOut = isLoggingOut,
@@ -232,6 +253,7 @@ fun MobileHomeScreen(
                             isLoadingMore = isLoadingMoreChats,
                             hasMoreChats = hasMoreChats,
                             onLoadMore = onLoadMoreChats,
+                            runningSessionIds = runningSessionIds,
                             isAuthEnabled = isAuthEnabled,
                             signedInEmail = signedInEmail,
                             isLoggingOut = isLoggingOut,

@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -30,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -85,6 +87,14 @@ fun ChatScreen(
     onDismissError: () -> Unit = {},
     onAnswer: (QuestionAnswer) -> Unit = {},
     /**
+     * Whether a worker is registered for this session — the backend's own
+     * definition of "the agent is working", and the one that holds between
+     * turns. `state.isStreaming` is per-*delta*: it drops on `chunk_final` and
+     * only returns with the next chunk, so a long tool run reads as a series of
+     * separate silent pauses. This does not.
+     */
+    isRunning: Boolean = false,
+    /**
      * What the hamburger opens, and the only way out of the chat into the rest
      * of the app.
      *
@@ -138,6 +148,7 @@ fun ChatScreen(
                                 subAgentsRunning = state.subAgentsRunning,
                                 subAgentsTotal = state.subAgentsTotal,
                                 subAgentsFailed = state.subAgentsFailed,
+                                isRunning = isRunning,
                             )
                         }
                     },
@@ -202,6 +213,7 @@ private fun ChatStatusLine(
     subAgentsRunning: Int,
     subAgentsTotal: Int,
     subAgentsFailed: Int,
+    isRunning: Boolean = false,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
@@ -241,6 +253,20 @@ private fun ChatStatusLine(
             color = if (queuedCount > 0) NalarMuted else NalarDim,
             modifier = Modifier.testTag("chat_live_label"),
         )
+        // Trailing, after the label rather than before it: the label is prose
+        // that has to keep its position so the two lines of the top bar do not
+        // dance, and a spinner is decoration on top of whatever it says.
+        if (isRunning) {
+            Spacer(Modifier.size(6.dp))
+            CircularProgressIndicator(
+                modifier = Modifier
+                    .clearAndSetSemantics { }
+                    .size(10.dp)
+                    .testTag("chat_running_spinner"),
+                strokeWidth = 1.5.dp,
+                color = NalarAccent,
+            )
+        }
     }
 }
 

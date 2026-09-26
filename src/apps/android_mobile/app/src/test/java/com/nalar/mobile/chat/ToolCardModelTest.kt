@@ -527,6 +527,41 @@ class ToolCardModelTest {
         assertEquals("r", body.files[0].label)
     }
 
+    /**
+     * The mime used to be dropped here, which is why a screenshot and a zip
+     * rendered identically: nothing downstream could tell them apart. It is
+     * the only field that says whether a file can be previewed.
+     */
+    @Test
+    fun `present_files keeps the mime so the card can classify the file`() {
+        val body = ToolCard.from(
+            toolRow(
+                "present_files",
+                """{"status":"presented","count":1,
+                   "files":[{"path":"/shot.png","bytes":48211,
+                   "mime":"image/png","label":"shot"}],"error":null}""",
+            ),
+        ).body as ToolBody.PresentFiles
+
+        assertEquals("image/png", body.files[0].mime)
+    }
+
+    /** A row cached before the field existed still parses. */
+    @Test
+    fun `present_files tolerates a file with no mime`() {
+        val body = ToolCard.from(
+            toolRow(
+                "present_files",
+                """{"status":"presented","count":1,
+                   "files":[{"path":"/old.txt","bytes":12,"label":"old"}],
+                   "error":null}""",
+            ),
+        ).body as ToolBody.PresentFiles
+
+        assertEquals("", body.files[0].mime)
+        assertEquals("/old.txt", body.files[0].path)
+    }
+
     @Test
     fun `set_git_worktree keeps the path and branch`() {
         val body = ToolCard.from(

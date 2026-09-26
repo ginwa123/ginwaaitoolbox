@@ -399,9 +399,89 @@ class ChatStreamEventTest {
 
     @Test
     fun `an event this screen does not act on is dropped, not an error`() {
-        assertNull(decodeChatFrame(frame("worker_created", """{"id":"w1"}""")))
         assertNull(decodeChatFrame(frame("kanban_task", """{"id":"t1"}""")))
+        assertNull(decodeChatFrame(frame("background_process_created", """{"id":"b1"}""")))
     }
+
+    @Test
+    fun `a worker_created frame names the session it started`() {
+        val created = decodeChatFrame(
+            frame(
+                "worker_created",
+                """{"action":"created","id":"sess_1","session_id":"sess_1",
+                   "last_activity_description":"running tool: exec_read"}""",
+            ),
+        ) as ChatStreamEvent.WorkerChanged
+
+        assertEquals("sess_1", created.sessionId)
+        assertEquals(ChatStreamEvent.WorkerChanged.ACTION_CREATED, created.action)
+    }
+
+    @Test
+    fun `a worker_deleted frame falls back to id because session_id is empty`() {
+        // All three delete emitters send `"session_id": ""` and put the session
+        // in `id`. Reading `session_id` alone removes nothing, and a spinner
+        // that cannot be turned off is worse than no spinner.
+        val deleted = decodeChatFrame(
+            frame("worker_deleted", """{"action":"deleted","id":"sess_7","session_id":""}"""),
+        ) as ChatStreamEvent.WorkerChanged
+
+        assertEquals("sess_7", deleted.sessionId)
+        assertEquals(ChatStreamEvent.WorkerChanged.ACTION_DELETED, deleted.action)
+    }
+
+    @Test
+    fun `a worker_updated frame resolves from session_id when the upsert sent it`() {
+        // The two `updated` emitters differ: `updateWorker` sends both fields,
+        // `updateWorkerActivityWithDescription` sends only `id`. The preferred
+        // field wins when present, so the two produce the same session.
+        val populated = decodeChatFrame(
+            frame("worker_updated", """{"action":"updated","id":"sess_7","session_id":"sess_7"}"""),
+        ) as ChatStreamEvent.WorkerChanged
+        val bare = decodeChatFrame(
+            frame("worker_updated", """{"action":"updated","id":"sess_7","session_id":""}"""),
+        ) as ChatStreamEvent.WorkerChanged
+
+        assertEquals("sess_7", populated.sessionId)
+        assertEquals("sess_7", bare.sessionId)
+        assertEquals(ChatStreamEvent.WorkerChanged.ACTION_UPDATED, populated.action)
+    }
+
+    @Test
+    fun `a worker frame with no id at all is dropped`() {
+        assertNull(
+            decodeChatFrame(frame("worker_created", """{"action":"created","session_id":""}""")),
+        )
+    }
+
+    @Test
+    fun `a worker frame survives the backend's pretty-printed payload`() {
+        // The server serialises with indent_4, so the frame parser joins the
+        // data lines back with newlines before this sees them.
+        val payload = listOf(
+            "event: worker_created",
+            "data: {",
+            "data:     " + Q + "action" + Q + ": " + Q + "created" + Q + ",",
+            "data:     " + Q + "id" + Q + ": " + Q + "sess_3" + Q + ",",
+            "data:     " + Q + "session_id" + Q + ": " + Q + "sess_3" + Q + ",",
+            "data:     " + Q + "last_activity_description" + Q + ": " + Q + "running tool" + Q,
+            "data: }",
+            "",
+        ).joinToString("\n")
+
+        val parser = SseFrameParser()
+        val frame = parser.let { p ->
+            var result: SseFrame? = null
+            payload.split("\n").forEach { line -> result = result ?: p.accept(line) }
+            result
+        }
+
+        val created = decodeChatFrame(frame!!) as ChatStreamEvent.WorkerChanged
+        assertEquals("sess_3", created.sessionId)
+    }
+
+    /** A double quote, spelled so the raw string above need not escape it. */
+    private val Q = "\""
 
     @Test
     fun `an unparseable payload is dropped without killing the stream`() {

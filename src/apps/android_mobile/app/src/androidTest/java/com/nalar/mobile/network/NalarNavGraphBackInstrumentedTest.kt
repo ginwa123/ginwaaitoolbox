@@ -13,6 +13,8 @@ import com.nalar.mobile.auth.AuthUiState
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatUiState
 import com.nalar.mobile.recents.HomeUiState
+import com.nalar.mobile.storage.LastPosition
+import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertFalse
 import org.junit.Rule
@@ -145,6 +147,9 @@ private fun TestNavGraph(navController: NavHostController) {
         navController = navController,
         homeState = HomeUiState(isLoading = false),
         chatState = ChatUiState(sessionId = "sess_1", isLoading = false),
+        // Nothing saved: the back stack is what this file is about, and a
+        // position that resumed would navigate out from under the test.
+        positionStore = NoLastPosition,
         onSelectWorkspace = {},
         onSelectChat = {},
         onLoadMoreChats = {},
@@ -157,4 +162,26 @@ private fun TestNavGraph(navController: NavHostController) {
         onDismissChatError = {},
         onAnswerChatQuestion = {},
     )
+}
+
+/**
+ * A store with nothing in it: a first launch.
+ *
+ * Defined here rather than shared with the JVM tests because `src/test` is not on
+ * the instrumented classpath. Every test that composes the graph needs one, and
+ * only the resume tests care what it holds.
+ */
+internal object NoLastPosition : LastPositionStore {
+    override fun read(userId: String?): LastPosition = LastPosition()
+    override fun save(userId: String?, position: LastPosition) = Unit
+    override fun saveWorkspace(userId: String?, workspaceId: String) = Unit
+    override fun clear() = Unit
+}
+
+/** A store that always reports the same saved position. */
+internal class FixedLastPosition(private val position: LastPosition) : LastPositionStore {
+    override fun read(userId: String?): LastPosition = position
+    override fun save(userId: String?, position: LastPosition) = Unit
+    override fun saveWorkspace(userId: String?, workspaceId: String) = Unit
+    override fun clear() = Unit
 }

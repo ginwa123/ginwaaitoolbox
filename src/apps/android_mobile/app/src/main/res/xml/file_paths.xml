@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What `ExternalFileOpener` is allowed to share, and nothing else.
+
+  Scoped to the one subdirectory it writes to, and to a name rather than a
+  bare `path="."`: a broad FileProvider path turns "a presented file is opened
+  in a viewer" into "any file this app can read is opened in a viewer", which is
+  the whole ballgame. `cacheDir` is excluded from the backup rules already, so
+  a cached preview cannot ride along in a backup either.
+-->
+<paths>
+    <cache-path
+        name="presented"
+        path="presented/" />
+</paths>

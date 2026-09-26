@@ -5,6 +5,8 @@ import com.nalar.mobile.chat.ChatCache
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.RecentsCache
 import com.nalar.mobile.recents.WorkspaceOption
+import com.nalar.mobile.storage.LastPosition
+import com.nalar.mobile.storage.LastPositionStore
 
 /**
  * In-memory stand-ins for the three caches, for the ViewModel tests.
@@ -109,5 +111,64 @@ class InMemoryRecentsCache : RecentsCache {
         val user = userKey(userId) ?: return null
         if (workspaceId.isBlank()) return null
         return "$user::$workspaceId"
+    }
+}
+
+/**
+ * The last-position store, in memory.
+ *
+ * It reproduces the rules [com.nalar.mobile.storage.PrefsLastPositionStore]
+ * makes that a caller can actually depend on — the per-account namespace
+ * (including the unscoped one a server without `--auth` lands in) and the fact
+ * that a workspace switch drops the session — and it records `clear` so a
+ * sign-out test can see the position went with the rows.
+ *
+ * `PrefsLastPositionStoreTest` is what proves the real store keeps the same
+ * promises against a real `SharedPreferences`.
+ */
+class InMemoryLastPositionStore(
+    seedUserId: String? = null,
+    initial: LastPosition = LastPosition(),
+) : LastPositionStore {
+    private val positions = mutableMapOf<String, LastPosition>()
+
+    /** Every write, in order, so a test can assert *what* moved and to where. */
+    val writes = mutableListOf<LastPosition>()
+
+    var cleared = false
+        private set
+
+    init {
+        if (!initial.isEmpty) positions[scope(seedUserId)] = initial
+    }
+
+    override fun read(userId: String?): LastPosition = positions[scope(userId)] ?: LastPosition()
+
+    override fun save(userId: String?, position: LastPosition) {
+        val current = read(userId)
+        val merged = LastPosition(
+            workspaceId = position.workspaceId ?: current.workspaceId,
+            sessionId = position.sessionId ?: current.sessionId,
+        )
+        positions[scope(userId)] = merged
+        writes += merged
+    }
+
+    override fun saveWorkspace(userId: String?, workspaceId: String) {
+        if (workspaceId.isBlank()) return
+        val position = LastPosition(workspaceId = workspaceId)
+        positions[scope(userId)] = position
+        writes += position
+    }
+
+    override fun clear() {
+        cleared = true
+        positions.clear()
+    }
+
+    private fun scope(userId: String?): String = userId?.takeIf { it.isNotBlank() } ?: UNSCOPED
+
+    private companion object {
+        const val UNSCOPED = "unscoped"
     }
 }

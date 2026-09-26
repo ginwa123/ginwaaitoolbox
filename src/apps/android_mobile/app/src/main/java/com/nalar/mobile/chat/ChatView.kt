@@ -527,7 +527,7 @@ fun ChatView(
                     key = { index -> groups[index].key },
                     contentType = { index -> groups[index].role },
                 ) { index ->
-                    ChatMessageGroupRow(groups[index], toolExpansion, onAnswer)
+                    ChatMessageGroupRow(groups[index], toolExpansion, onAnswer, state.sessionId.orEmpty())
                 }
             }
 
@@ -703,6 +703,7 @@ private fun ChatMessageGroupRow(
     group: ChatMessageGroup,
     toolExpansion: ToolExpansion,
     onAnswer: (QuestionAnswer) -> Unit,
+    sessionId: String,
 ) {
     Column(
         modifier = Modifier
@@ -729,7 +730,7 @@ private fun ChatMessageGroupRow(
             )
         }
         group.messages.forEach { message ->
-            MessageRow(message, toolExpansion, onAnswer)
+            MessageRow(message, toolExpansion, onAnswer, sessionId)
         }
     }
 }
@@ -752,6 +753,7 @@ private fun MessageRow(
     message: ChatMessage,
     toolExpansion: ToolExpansion,
     onAnswer: (QuestionAnswer) -> Unit,
+    sessionId: String,
 ) {
     when (messageChrome(message)) {
         MessageChrome.TOOL_CARD -> {
@@ -766,6 +768,7 @@ private fun MessageRow(
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("chat_tool_${message.id}"),
+                sessionId = sessionId,
             )
         }
 
@@ -894,6 +897,13 @@ private fun StreamingHint(isStreaming: Boolean) {
  * has to come back looking exactly as it was sent, and parsing their `**` and
  * `_` would change their own words back at them.
  *
+ * An assistant turn that is a *document* takes a third path, and it has to
+ * be taken before the markdown renderer rather than after: `stripContentEnvelope`
+ * peels the `<html>`/`</html>` wrapper off, so by the time `Markdown.parse`
+ * has the string there is nothing left to recognise and the page arrives as
+ * one literal paragraph. The question is therefore asked of the raw content
+ * first, and only a turn that is not a document goes on to markdown.
+ *
  * Reasoning is *not* drawn here. It used to be, inline above the text, and
  * sharing it was the wrong half of the arrangement: the block is a fold, and a
  * fold is a separate control with its own tap target and its own open/closed
@@ -911,11 +921,28 @@ private fun MessageBody(message: ChatMessage, contentColor: Color) {
                 modifier = Modifier.testTag("chat_body_${message.id}"),
             )
         } else {
-            MarkdownText(
-                source = message.content,
-                color = contentColor,
-                modifier = Modifier.testTag("chat_body_${message.id}"),
-            )
+            // Once per distinct content, not once per recomposition: a
+            // streaming turn re-runs this on every appended delta, and the
+            // split walks the whole answer. The completeness of the turn is
+            // part of the question — a document still arriving is prose, so its
+            // frame is built once at the end rather than rebuilt per delta.
+            val isDocument = remember(message.content, message.isStreaming) {
+                HtmlResponse.isHtmlTurn(message.content, isComplete = !message.isStreaming)
+            }
+            if (isDocument) {
+                HtmlResponseText(
+                    source = message.content,
+                    color = contentColor,
+                    isComplete = !message.isStreaming,
+                    modifier = Modifier.testTag("chat_body_${message.id}"),
+                )
+            } else {
+                MarkdownText(
+                    source = message.content,
+                    color = contentColor,
+                    modifier = Modifier.testTag("chat_body_${message.id}"),
+                )
+            }
         }
     }
     if (message.imageUrls.isNotEmpty() || message.videoUrls.isNotEmpty()) {

@@ -46,6 +46,7 @@ import {
   fetchPrConflictCached,
   branchUrlFromPrUrl,
 } from '../../helpers/prStatusCache'
+import { formatTaskTimestamp as formatRelativeTime } from '../../helpers/formatTaskTimestamp'
 
 // Kanban task tags palette (Migration 067 — plan
 // docs/superpowers/plans/2026-07-28-kanban-task-tags.md). Same 6
@@ -381,53 +382,10 @@ const cardBoxShadow = computed<string>(() => {
   return layers.join(', ')
 })
 
-// Human-readable "time since" formatter for the meta row. Accepts:
-//   - a JS Date instance
-//   - an ISO datetime string (the most common backend wire format)
-//   - a unix-ms number
-// Returns '' for null/undefined inputs so the template can guard
-// with v-if and avoid rendering an empty pill.
-function formatRelativeTime(input: Date | string | number | null | undefined): string {
-  if (input === null || input === undefined) return ''
-  let d: Date
-  if (input instanceof Date) {
-    d = input
-  } else if (typeof input === 'string') {
-    // Tolerate the "YYYY-MM-DD HH:MM:SS" format the backend uses for
-    // routine.next_run_at by replacing the space with 'T' and adding
-    // an explicit 'Z' (UTC). For ISO strings ('...Z' / '...+00:00')
-    // the Date ctor handles them natively.
-    const normalized = input.includes('T') ? input : input.replace(' ', 'T')
-    d = new Date(
-      normalized.endsWith('Z') || /[+-]\d{2}:?\d{2}$/.test(normalized)
-        ? normalized
-        : normalized + 'Z',
-    )
-  } else {
-    d = new Date(input)
-  }
-  const ms = Date.now() - d.getTime()
-  if (Number.isNaN(ms)) return ''
-  const abs = Math.abs(ms)
-  // Future timestamps render as "in X" — defensive; the canonical
-  // input is `updatedAt` which should always be past. Future values
-  // are still rendered consistently instead of throwing.
-  const sign = ms < 0 ? '-' : ''
-  if (abs < 45_000) return 'just now' // <45s rounds to "just now"
-  const min = Math.floor(abs / 60_000)
-  if (min < 60) return `${sign}${min}m ago`
-  const hr = Math.floor(min / 60)
-  if (hr < 24) return `${sign}${hr}h ago`
-  const day = Math.floor(hr / 24)
-  if (day === 1) return `${sign}yesterday`
-  if (day < 7) return `${sign}${day}d ago`
-  if (day < 30) return `${sign}${Math.floor(day / 7)}w ago`
-  // Older than ~a month: show an absolute date so the user has a
-  // stable reference. toLocaleDateString respects the browser's
-  // locale; pinned to en-US short for the kanban (consistent across
-  // teammates, no surprise formats like "5/7/26" vs "7 May").
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
+// The "time since" formatter for the meta row now lives in
+// helpers/formatTaskTimestamp.ts, shared with the row-mode row
+// (KanbanTaskRow.vue) so a card and its row-mode twin can never disagree
+// on what "2h ago" means.
 
 // The most-recent update timestamp available. Falls back to
 // `createdAt` when `updatedAt` is missing. Returns null when neither

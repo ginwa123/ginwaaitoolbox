@@ -1,7 +1,7 @@
 package com.nalar.mobile.chat
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -26,6 +26,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
@@ -43,6 +45,13 @@ import org.json.JSONArray
 import java.util.Locale
 
 /**
+ * Width of the card's leading rule. The web's `.chat-tool-card` is
+ * `border-left: 2px`; 2dp is the same weight once the transcript is scaled for
+ * a phone's density.
+ */
+private val TOOL_CARD_RULE_WIDTH = 2.dp
+
+/**
  * A tool row, rendered.
  *
  * The dispatch is a `when` over [ToolCardModel.kind] rather than a chain of
@@ -57,6 +66,13 @@ fun ToolCardView(
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
     onAnswer: (QuestionAnswer) -> Unit = {},
+    /**
+     * Which chat this row belongs to. Only `present_files` needs it, and only
+     * to scope its download to this session's working directory — but the
+     * endpoint requires it, so it has to reach the card. Empty means "no
+     * session", which the file client refuses rather than guessing.
+     */
+    sessionId: String = "",
 ) {
     // A card with neither a body nor any arguments has nothing to reveal, so
     // its header is a label rather than a button. A *placeholder* row is in
@@ -67,13 +83,25 @@ fun ToolCardView(
     val hasBody = model.body !is ToolBody.Empty
     val expandable = hasBody || hasArguments
 
+    val ruleColor by animateColorAsState(
+        targetValue = CardRuleColor(model),
+        label = "tool-card-rule",
+    )
+
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(6.dp))
-            // The web's "paragraph mode": no box, just a left rule that colours
-            // on error. A dozen boxed cards in a row read as a wall.
-            .border(1.dp, CardBorderColor(model), RoundedCornerShape(6.dp))
+            // The web's "paragraph mode" (ChatView.vue's `.chat-tool-card`):
+            // `border: none`, a 2px left rule that recolours on error, and
+            // `border-radius: 0`. A dozen boxed cards in a row read as a wall.
+            // Compose has no `border-left`, so the rule is drawn as a 2dp rect
+            // pinned to the leading edge rather than a four-sided stroke.
+            .drawBehind {
+                drawRect(
+                    color = ruleColor,
+                    size = Size(TOOL_CARD_RULE_WIDTH.toPx(), size.height),
+                )
+            }
             .testTag("tool_card_${model.kind.name.lowercase(Locale.ROOT)}"),
     ) {
         ToolCardHeader(
@@ -94,7 +122,7 @@ fun ToolCardView(
                 if (error != null) {
                     ToolErrorRow(message = error)
                 } else {
-                    ToolBodyFor(model, onAnswer)
+                    ToolBodyFor(model, onAnswer, sessionId)
                 }
             }
         }
@@ -110,16 +138,27 @@ fun ToolCardView(
     }
 }
 
-/** The left rule recolours on failure, exactly as the web's card border does. */
-@Composable
-private fun CardBorderColor(model: ToolCardModel): Color = when {
+/**
+ * The left rule's colour, and with the box gone the card's only error channel.
+ * Mirrors the web, where a failing card binds `border-red-500/50` and that class
+ * recolours the `border-left` rather than drawing a frame.
+ *
+ * Not `@Composable` on purpose: a colour is a value, and keeping it a plain
+ * function is what lets `ToolCardFrameTest` assert the three-way split on the
+ * JVM instead of only grepping the source.
+ */
+internal fun CardRuleColor(model: ToolCardModel): Color = when {
     model.pending -> NalarDim
     model.success -> NalarBorder
     else -> Color(0xFF6B3A38)
 }
 
 @Composable
-private fun ToolBodyFor(model: ToolCardModel, onAnswer: (QuestionAnswer) -> Unit) {
+private fun ToolBodyFor(
+    model: ToolCardModel,
+    onAnswer: (QuestionAnswer) -> Unit,
+    sessionId: String,
+) {
     when (val body = model.body) {
         is ToolBody.ReadFile -> ReadFileBody(body)
         is ToolBody.WriteFile -> WriteFileBody(body)
@@ -140,7 +179,7 @@ private fun ToolBodyFor(model: ToolCardModel, onAnswer: (QuestionAnswer) -> Unit
         is ToolBody.SkillMutation -> SkillMutationBody(body)
         is ToolBody.KanbanMove -> KanbanMoveBody(body)
         is ToolBody.KanbanList -> KanbanListBody(body)
-        is ToolBody.PresentFiles -> PresentFilesBody(body)
+        is ToolBody.PresentFiles -> PresentFilesBody(body, sessionId)
         is ToolBody.GenerateImage -> GenerateImageBody(body)
         is ToolBody.Worktree -> WorktreeBody(body)
         is ToolBody.SessionReader -> SessionReaderBody(body)
@@ -918,19 +957,21 @@ private fun KanbanListBody(body: ToolBody.KanbanList) {
     }
 }
 
+/**
+ * One [PresentFileCard] per file.
+ *
+ * This used to be a `label → path · size` text row per file, which is the
+ * reason `present_files` looked broken on the phone: the tool's whole promise
+ * is "here is a file, look at it", and a path is not a file. The card now
+ * fetches the bytes and draws them — a screenshot as a picture, a README as
+ * markdown, a PDF as a row with an Open button — matching
+ * `PresentFiles.vue`, which has fetched `GET /api/files/download` this whole
+ * time.
+ */
 @Composable
-private fun PresentFilesBody(body: ToolBody.PresentFiles) {
+private fun PresentFilesBody(body: ToolBody.PresentFiles, sessionId: String) {
     body.files.forEach { file ->
-        ToolKeyValue(
-            key = file.label.ifEmpty { file.path.substringAfterLast('/') },
-            value = buildString {
-                append(file.path)
-                if (file.bytes > 0) {
-                    append("  ·  ")
-                    append(formatBytes(file.bytes))
-                }
-            },
-        )
+        PresentFileCard(file = file, sessionId = sessionId)
     }
     if (body.files.isEmpty()) {
         Text(

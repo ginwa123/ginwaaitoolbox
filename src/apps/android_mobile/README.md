@@ -119,6 +119,40 @@ of the message. A run in progress when the chat is opened is re-attached from
 `GET /api/llm/session/{id}/stream`, because the backend writes a turn to
 `llm_history` only once it completes.
 
+### "Is the agent working?" is a separate question from "is a delta arriving?"
+
+A spinner appears beside every chat the backend currently has a worker for —
+in the sidebar row and in the chat header — and the two are driven by
+different signals, deliberately.
+
+`ChatUiState.isStreaming` is per-*delta*: it goes true on an `llm_chunk` and
+false on `chunk_final`. A tool run emits a chunk, finishes the turn, runs a
+tool for thirty seconds in silence, and only then emits the next chunk — so
+`isStreaming` alone makes one long run look like several separate stalls.
+Whether a *worker* is registered is the backend's own answer to "is the agent
+working on this session", and it holds across the gaps.
+
+Two sources, because neither alone is right:
+
+- **`GET /api/events?channels=workers`** on its own connection, carrying
+  `worker_created` / `worker_updated` / `worker_deleted`. It is a second
+  subscription rather than an extra channel on the chat stream because
+  `ChatViewModel.openSession` is what starts that one — the sidebar is on
+  screen precisely when no chat is open, and a stream that was never opened
+  reports "nothing is running" at exactly the moment the user is scanning the
+  list for what is running.
+- **`GET /api/workers`**, re-read on every (re)connect. The server keeps no
+  replay buffer, so a run that started or stopped while the socket was down
+  left no event to apply and the list is the only thing that can correct it.
+  It *replaces* the set rather than merging, or every run that stopped during
+  an outage would stay lit forever.
+
+The set lives in `RunningSessionsStore`, a process-wide singleton rather than
+ViewModel state, because the sidebar and the chat are separate routes and are
+never composed together. A failed resync leaves the set as it was: a spinner
+that clears because the network blipped is the same lie as one that never
+lights up.
+
 ### The transcript list is virtualized
 
 `ChatView` renders the transcript in a `LazyColumn` — Compose's `RecyclerView` —
@@ -136,6 +170,60 @@ that true rather than nominal, and each is covered by a test:
 
 A scroll to the top prepends the previous page and re-anchors on the message
 the reader was looking at, by key and by the pixel row they had it at.
+
+### A turn that is a document is drawn, not printed
+
+An assistant turn is not always an answer. Asked for a page, the model hands
+back HTML — wrapped in `<html>…</html>`, or fenced in ```` ```html ````, or
+bare — and the transcript used to show the reader the *source* of it: a
+`web-framework-html-benchmark` turn arrived as a wall of literal
+`<style>bmw-wrap{font-family:ui-sans-system…`. `ChatView.vue` has rendered
+these as live sandboxed iframes since 2026-08-23 (`extractHtmlBlocks` +
+`buildHtmlSrcdoc`); the Android transcript had no equivalent step, and
+`stripContentEnvelope` peeled the `<html>` wrapper off on the way to
+`Markdown.parse`, so by then there was nothing left to recognise.
+
+`HtmlResponse.segments` asks the question of the **raw** content first and cuts
+the turn into prose and documents. Prose runs still go to `MarkdownText`; a
+document run goes to a `WebView` frame, which is the phone's equivalent of the
+web's `sandbox="allow-scripts"` iframe. Three details are load-bearing:
+
+- **The height is reported, not guessed.** A `WebView` has no intrinsic height,
+  so a frame inside a `LazyColumn` is unmeasurable until the document says how
+  tall it is. A script appended to every frame posts
+  `documentElement.scrollHeight` back through a `@JavascriptInterface` hook.
+- **A document is only drawn once it has finished.** While a turn is still
+  streaming it stays prose and streams in as text. This is a deliberate
+  departure from the web, which swaps a streaming iframe for a sandboxed one:
+  on a phone a `WebView` is a real `View` with a real JS engine, and reloading
+  it per delta is a re-layout and a re-parse per frame. The frame is built
+  once, at the end.
+- **A fragment gets the transcript's theme, forced.** The model writes for a
+  light page — it has no idea the transcript is dark — so `pre`/`code`/table
+  cells get `!important` backgrounds and ink over whatever the payload wrote.
+  GitHub's light `background:#f6f8fa` on every `<pre>` is a real payload from
+  this project, and an inline style otherwise beats the shell at a measured
+  1.57:1. A *whole* document passes through untouched apart from the
+  no-scrollbar rule; rewriting its own `head` is how a working page stops
+  working.
+
+JavaScript stays on — it is what reports the height, and much of what the
+model produces is not a page without it — and everything it could reach is
+taken away instead. Every scheme other than `data:` and `about:` is answered
+with an empty body by `shouldInterceptRequest`; file and content access are
+off; navigation is suppressed. The model's own `<style>` and `<script>` are
+deliberately *not* stripped: sanitising the page into a mangled approximation
+is a different product, and the boundaries above are the ones that matter.
+
+At most `HtmlResponse.MAX_LIVE_FRAMES` documents in one turn get a live frame;
+the rest fall back to their own source. A turn is capped because a `LazyColumn`
+composing more live `WebView`s than that is a memory cliff on a phone.
+
+`hasRenderableContent` counts a document as drawable. It could not before:
+`<html><body>…</body></html>` strips to a body with nothing in it, so the gate
+that keeps empty envelopes out of the transcript threw the rendered page out
+with them — the answer drew perfectly well and `groupMessages` had no row to
+draw it in.
 
 ### The transcript follows the newest turn
 
@@ -487,3 +575,62 @@ The inspector, its record detail and each chat are navigation routes, so they
 survive process death and system Back. `nalar://network` opens the list,
 `nalar://network/record/{id}` opens one captured record, and
 `nalar://chat/{sessionId}` opens a chat directly.
+
+## The app reopens where you left it
+
+Close the app on workspace B with session C open, open it again, and it is back
+on workspace B with session C. The desktop has always done this
+(`nalar-active-workspace` and `active-chat-id` in `localStorage`); the phone
+needed somewhere to keep the same two ids.
+
+**Why it is not the back stack.** `rememberNavController` does restore a saved
+back stack, but only when the process comes back *with* its saved instance
+state. The case that needs the position store is the other one: the app is
+closed, the controller starts empty at the shell, and the chat is gone from the
+screen even though the server still has it. Nothing in the nav layer recovers
+that, so `PrefsLastPositionStore` holds the two ids across process death.
+
+**The two halves are applied in two different places, on purpose.** A workspace
+is drawer state, so `HomeViewModel` reads the saved id while it is still choosing
+which list to paint — before its first fetch. That costs nothing: the drawer
+opens on the right workspace, the recents request goes to the right workspace,
+and nothing jumps once the live list lands. A chat is a route, and a route needs
+a destination to navigate to, so `NalarNavGraph` navigates to it once the list
+has settled.
+
+**The precedence is the desktop's**: what the user just chose beats what was
+saved, and what was saved beats the first item. A `nalar://` deep link or a back
+stack restored from saved instance state is a choice made a moment ago, so the
+resume only runs while the shell is the current destination. A saved id that
+the server no longer has falls back instead of dead-ending — the chat is not
+opened onto a route whose session is gone, and the shell, which is where the app
+would have opened anyway, is the truthful answer.
+
+**The policy is four conditions in two pure functions** — `sessionToResume` and
+`ResumePlan` — with the composable left holding no rules of its own, the same
+split `goBackToPreviousOrShell` makes for Back. `SessionToResumeTest` and
+`ResumePlanTest` assert the rule on the JVM; `HomeViewModelPositionTest`
+asserts the workspace seed and the writes; `NalarNavGraphResumeInstrumentedTest`
+drives the real `NavHost`, which is the only way to prove the `navigate()`
+happens once and leaves the shell underneath it.
+
+### What is stored, and what is not
+
+The store is per account, and sign-out clears it along with the caches — the
+next person to sign in on a shared device must not open straight into the
+previous person's transcript. A server running without `--auth` leaves
+`AuthUiState.userId` null, because there is no account to attribute anything to;
+that case gets one well-known namespace instead of a miss, which is deliberately
+looser than `RecentsCache`. Refusing to persist there would lose a cache the
+next fetch rebuilds; refusing to persist a position would switch this feature off
+for every self-hosted install.
+
+The value is two opaque ids. It is not sealed under a Keystore key the way chat
+titles are: the same `RoomRecentsCache` leaves its id columns in the clear,
+because `ORDER BY` cannot run on ciphertext, and a 22-character session id is not
+user prose. What the pointer refers to — the titles — is sealed.
+
+Writes use `commit()` rather than `apply()`, and they happen on user actions
+rather than per frame. The whole feature turns on a write surviving the process,
+and `apply()` only guarantees reaching memory; a force-stop in the same instant
+the user taps a chat is exactly the case the store exists for.
