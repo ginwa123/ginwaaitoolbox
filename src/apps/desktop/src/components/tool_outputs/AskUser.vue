@@ -33,6 +33,19 @@
   `tool_calls_json` (that lives on the assistant row). One source means the
   pending card renders identically live and after a page reload.
 
+  MARKDOWN (`question`, `header`, `options`, `answer` may all carry it —
+  `ask_user.zig`'s schema says "Markdown allowed" and the model writes it
+  that way, e.g. `**Option 1 — Full 1:1**` + `` `linux/window.zig` ``):
+
+    `question`  → rendered as markdown (`renderMarkdownHtml` + `v-html`
+                  inside `.markdown-content`), the same trust model the
+                  chat transcript already uses for assistant text.
+    `header`    → stripped to plain text: the header pill is ONE line.
+    `options`   → stripped for the label only. `buildBody` still POSTs the
+                  RAW option string, so the model receives back exactly
+                  what it wrote.
+    `answer`    → stripped for the chip only, same raw-value rule.
+
   Plan: docs/superpowers/plans/2026-09-16-agent-tool-ask-user.md
   Wireframe: docs/wireframes/ask-user-tool.html
 -->
@@ -41,6 +54,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { tryUnwrapToolOutput } from '../../helpers/unwrapToolOutput'
+import { renderMarkdownHtml, stripMarkdownSyntax } from '../../helpers/markdown'
 import { answerAskUser } from '../../api'
 
 interface Props {
@@ -383,9 +397,33 @@ function onKeydown(event: KeyboardEvent): void {
 
 const waiting = computed(() => state.value === 'pending')
 
+/**
+ * The question is model-authored MARKDOWN — `ask_user.zig`'s schema says
+ * "Markdown allowed" — so it renders as markdown, not as `{{ text }}`.
+ * Before this, a question like
+ *
+ *   **Option 1 — Full 1:1 (recommended)** … `linux/window.zig` …
+ *
+ * reached the card as one wall of asterisks and backticks. Scoped CSS
+ * below keeps the global `.markdown-content` typography at card scale.
+ */
+const questionHtml = computed(() => renderMarkdownHtml(parsed.value.question))
+
+/** Option labels: markdown stripped, so `**bold**` never shows literally. */
+const optionLabels = computed<string[]>(() =>
+  options.value.map((option) => stripMarkdownSyntax(option)),
+)
+
+/**
+ * The one-line `primary` and the resolved answer chip must stay TEXT —
+ * the header pill is a single truncated line, and the answer chip's text
+ * is the very string POSTed back to the model. Strip the syntax, keep the
+ * words, and keep `options` / `answer` themselves raw for the wire.
+ */
 const primary = computed(() => {
-  if (parsed.value.header) return parsed.value.header
-  const q = parsed.value.question
+  const header = stripMarkdownSyntax(parsed.value.header)
+  if (header) return header
+  const q = stripMarkdownSyntax(parsed.value.question)
   if (q.length > 0) return q.length > 60 ? `${q.slice(0, 60)}…` : q
   return 'ask_user'
 })
@@ -405,7 +443,14 @@ const rightMeta = computed(() => {
   }
 })
 
-const answerChip = computed(() => answers.value.join(' · '))
+/**
+ * Display-only. `answers` stays raw because `buildBody` POSTs the raw
+ * answer value; the chip just drops markdown syntax so a picked
+ * `**Option 1**` does not read as asterisks next to its own "✓".
+ */
+const answerChip = computed(() =>
+  answers.value.map((answer) => stripMarkdownSyntax(answer)).join(' · '),
+)
 
 onMounted(() => {
   if (waiting.value) {
@@ -459,14 +504,19 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
     </div>
 
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
-      <!-- Question text (every state) -->
+      <!-- Question text (every state). Markdown: the model's `question`
+           field is documented as markdown-capable, and the model writes it
+           that way — bold the option headlines, `code` the file paths, a
+           list when the context is long. `v-html` + `.markdown-content`,
+           the same contract as the chat transcript; the scoped rules at the
+           bottom of this file keep the type at card scale. -->
       <div
         v-if="parsed.question"
-        class="px-2 py-2 font-sans text-sm"
+        class="markdown-content ask-user-question px-2 py-2 font-sans text-sm"
         style="color: var(--semantic-text)"
-      >
-        {{ parsed.question }}
-      </div>
+        data-testid="ask-user-question"
+        v-html="questionHtml"
+      />
 
       <!-- Invalid / failed call -->
       <div v-if="state === 'invalid'" class="px-2 pb-2 font-sans text-xs text-red-500">
@@ -494,7 +544,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
               {{ index + 1 }}
             </span>
             <span class="flex-1 font-sans text-[0.8rem]" style="color: var(--semantic-text)">
-              {{ option }}
+              {{ optionLabels[index] ?? option }}
             </span>
             <span
               v-if="option === parsed.recommended"
@@ -618,3 +668,84 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
     <ToolParameters :parameters="props.parameters ?? '{}'" />
   </div>
 </template>
+
+<style scoped>
+/*
+ * The question renders through the global `.markdown-content` rules, which
+ * are tuned for the chat transcript: an `h1` there is 1.5rem and a `<p>`
+ * carries 0.75rem of bottom margin. Both are wrong inside a `text-xs` card
+ * next to a row of option buttons — the question would dwarf the answer
+ * surface. These overrides pull the whole scale down to card size and cap
+ * a pasted code block so the Send row stays on screen.
+ *
+ * `:deep()` is required: the elements come from `v-html`, so they carry no
+ * scoped-style attribute of this component.
+ */
+.ask-user-question :deep(p) {
+  margin-bottom: 0.4rem;
+}
+
+.ask-user-question :deep(p:last-child) {
+  margin-bottom: 0;
+}
+
+.ask-user-question :deep(ul),
+.ask-user-question :deep(ol) {
+  margin-bottom: 0.4rem;
+  padding-left: 1.1rem;
+}
+
+.ask-user-question :deep(li) {
+  margin-bottom: 0.15rem;
+}
+
+.ask-user-question :deep(h1),
+.ask-user-question :deep(h2),
+.ask-user-question :deep(h3),
+.ask-user-question :deep(h4),
+.ask-user-question :deep(h5),
+.ask-user-question :deep(h6) {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-top: 0.35rem;
+  margin-bottom: 0.25rem;
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.ask-user-question :deep(h1:first-child),
+.ask-user-question :deep(h2:first-child),
+.ask-user-question :deep(h3:first-child) {
+  margin-top: 0;
+}
+
+.ask-user-question :deep(blockquote) {
+  margin: 0.3rem 0;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.8rem;
+}
+
+/* A question is prose, not a diff — but the model does quote file lists,
+ * and an unbounded <pre> would push Send off the card. */
+.ask-user-question :deep(pre) {
+  max-height: 11rem;
+  overflow: auto;
+  font-size: 0.7rem;
+  padding: 0.4rem 0.5rem;
+}
+
+.ask-user-question :deep(code) {
+  font-size: 0.85em;
+}
+
+.ask-user-question :deep(table) {
+  display: block;
+  overflow-x: auto;
+  font-size: 0.8rem;
+}
+
+.ask-user-question :deep(a) {
+  color: inherit;
+  text-decoration: underline;
+}
+</style>

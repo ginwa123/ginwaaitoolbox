@@ -126,13 +126,16 @@ const openInEditorClick = (e: Event) => {
       class="flex-1 min-w-0 truncate text-left text-xs"
       :class="primaryClass"
       :title="primaryTitle ?? primary ?? ''"
-    >{{ primary || 'unknown' }}</span>
+      data-testid="tool-card-primary"
+      >{{ primary || 'unknown' }}</span
+    >
     <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-xs">{{ rightMeta }}</span>
     <span
       v-if="running"
       data-testid="tool-card-running"
       class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
-    >running…</span>
+      >running…</span
+    >
     <span class="text-xs font-semibold" :class="success ? 'text-green-500' : 'text-red-500'">
       {{ success ? '✓' : '✗' }}
     </span>
@@ -141,7 +144,9 @@ const openInEditorClick = (e: Event) => {
       class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
       :title="`Copy ${toolName}`"
       @click="copyToClipboard"
-    >⎘</button>
+    >
+      ⎘
+    </button>
     <button
       v-if="canOpenInEditor"
       class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 transition-opacity"
@@ -149,7 +154,12 @@ const openInEditorClick = (e: Event) => {
       @click="openInEditorClick"
     >
       <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+        />
       </svg>
     </button>
     <span v-if="expandable" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
