@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -30,10 +31,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -56,6 +60,22 @@ import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarField
 import com.nalar.mobile.ui.NalarMuted
 import com.nalar.mobile.ui.NalarText
+import kotlinx.coroutines.flow.distinctUntilChanged
+
+/**
+ * How many rows from the end of the list arm the next page.
+ *
+ * A band rather than "the last row" so the fetch is already in flight by the
+ * time the user reaches the end, rather than starting from a standstill with
+ * the list visibly stopped. Two is about one screen of rows on a phone, which
+ * is enough to cover the latency without paging pages the user never sees.
+ */
+private const val LOAD_MORE_INDEX_THRESHOLD = 2
+
+/** Reserved key for the footer row, which is not a chat. */
+private const val LOAD_MORE_KEY = "__chats_footer__"
+
+private const val CONTENT_TYPE_SENTINEL = "sentinel"
 
 @Composable
 fun RecentsSidebar(
@@ -71,6 +91,9 @@ fun RecentsSidebar(
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onRetry: () -> Unit = {},
+    isLoadingMore: Boolean = false,
+    hasMoreChats: Boolean = false,
+    onLoadMore: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -167,10 +190,50 @@ fun RecentsSidebar(
                 )
             }
         } else {
+            val listState = rememberLazyListState()
+
+            // A workspace switch shows a different set of rows at the same
+            // indices, so the old scroll offset would land the user mid-list in
+            // a workspace they have not looked at yet.
+            LaunchedEffect(selectedWorkspaceId) {
+                listState.scrollToItem(0)
+            }
+
+            // One page per approach to the bottom.
+            //
+            // The latch is what keeps a short page from becoming a request
+            // storm: if the new page does not fill the viewport, the trigger is
+            // still armed on the very next layout, and without this the sidebar
+            // would re-fire until it happened to overflow. The ViewModel's
+            // in-flight guard covers concurrent calls; this one covers the
+            // sequential ones, which are the common case.
+            var loadMoreLatched by remember { mutableStateOf(true) }
+
+            LaunchedEffect(listState, visibleChats.size, hasMoreChats, isLoadingMore) {
+                snapshotFlow {
+                    val info = listState.layoutInfo
+                    val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                    // Only a real overflow can be scrolled; an unlaid-out list
+                    // reports 0/0 and would otherwise arm on the first frame.
+                    info.totalItemsCount > 0 && last >= info.totalItemsCount - 1 - LOAD_MORE_INDEX_THRESHOLD
+                }
+                    .distinctUntilChanged()
+                    .collect { nearBottom ->
+                        if (!nearBottom) {
+                            loadMoreLatched = false
+                        } else if (!loadMoreLatched) {
+                            loadMoreLatched = true
+                            onLoadMore()
+                        }
+                    }
+            }
+
             LazyColumn(
+                state = listState,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
+                    .testTag("chat_message_list")
                     .selectableGroup(),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
@@ -189,10 +252,65 @@ fun RecentsSidebar(
                     )
                 }
 
-                item {
-                    Spacer(Modifier.height(12.dp))
+                item(key = LOAD_MORE_KEY, contentType = CONTENT_TYPE_SENTINEL) {
+                    ChatListFooter(
+                        isLoading = isLoadingMore,
+                        // Claiming the end while more may still exist is a lie
+                        // the user reads first and then has to watch retracted.
+                        hasReachedEnd = !hasMoreChats,
+                    )
                 }
             }
+        }
+    }
+}
+
+/**
+ * The row under the last chat: a spinner while the next page is in flight, and
+ * an end-of-list marker only once the server has said there is nothing more.
+ *
+ * It is always present, rather than shown conditionally, so the list's total
+ * item count is stable across a page append — otherwise appending shifts every
+ * index and the scroll watcher re-evaluates mid-animation.
+ */
+@Composable
+private fun ChatListFooter(
+    isLoading: Boolean,
+    hasReachedEnd: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(56.dp)
+            .testTag("chats_list_footer"),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            isLoading -> CircularProgressIndicator(
+                modifier = Modifier
+                    .size(18.dp)
+                    .testTag("chats_load_more_spinner"),
+                strokeWidth = 2.dp,
+                color = NalarMuted,
+            )
+
+            hasReachedEnd -> Text(
+                text = "No older chats",
+                modifier = Modifier.testTag("chats_list_end"),
+                style = MaterialTheme.typography.labelSmall,
+                color = NalarDim,
+            )
+
+            // More may exist and nothing is in flight. Naming the behaviour
+            // makes an automatic load readable rather than surprising, and gives
+            // the row something to assert on.
+            else -> Text(
+                text = "Scroll for older chats",
+                modifier = Modifier.testTag("chats_load_more_hint"),
+                style = MaterialTheme.typography.labelSmall,
+                color = NalarDim,
+            )
         }
     }
 }

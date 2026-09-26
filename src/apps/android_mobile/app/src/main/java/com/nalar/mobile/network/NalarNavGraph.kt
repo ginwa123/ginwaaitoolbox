@@ -84,6 +84,7 @@ fun NalarNavGraph(
     chatState: ChatUiState,
     onSelectWorkspace: (String) -> Unit,
     onSelectChat: (String) -> Unit,
+    onLoadMoreChats: () -> Unit,
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -139,6 +140,9 @@ fun NalarNavGraph(
                     isLoading = homeState.isLoading,
                     errorMessage = homeState.errorMessage,
                     onRetry = onRetryHome,
+                    isLoadingMoreChats = homeState.isLoadingMoreChats,
+                    hasMoreChats = homeState.hasMoreChats,
+                    onLoadMoreChats = onLoadMoreChats,
                 )
             }
         }

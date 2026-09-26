@@ -213,6 +213,145 @@ class RecentsApiTest {
         assertNull(RecentsApi.parseTimestampEpochMillis("2026-13-01 00:00:00"))
     }
 
+    @Test
+    fun chatsPathCarriesTheCursorSoTheNextPageCanBeAskedFor() {
+        val path = RecentsApi.chatsPath("ws_1", cursor = "2026-09-26 05:12:37")
+
+        // The space has to be encoded or the query parser truncates the cursor
+        // at the first space and pages from the wrong position.
+        assertTrue(path, path.contains("cursor=2026-09-26+05%3A12%3A37"))
+    }
+
+    @Test
+    fun chatsPathOmitsTheCursorForTheFirstPageAndForABlankOne() {
+        // A blank cursor is indistinguishable from "no cursor" to the server,
+        // which would restart the list at page 1 and re-serve what is on screen.
+        assertTrue(!RecentsApi.chatsPath("ws_1").contains("cursor="))
+        assertTrue(!RecentsApi.chatsPath("ws_1", cursor = null).contains("cursor="))
+        assertTrue(!RecentsApi.chatsPath("ws_1", cursor = "   ").contains("cursor="))
+    }
+
+    @Test
+    fun chatsPathClampsThePageSize() {
+        val path = RecentsApi.chatsPath("ws_1", limit = 0)
+
+        // limit=0 would be parsed server-side as a fallback to 50, which is not
+        // what the caller asked for and not something to discover at runtime.
+        assertTrue(path, path.contains("&limit=1&"))
+    }
+
+    @Test
+    fun parseChatsPageReadsTheScrollStateFromTheRealEnvelope() {
+        val body = """
+            {"sessions":[
+              {"session_id":"task_1","session_name":"Newest","updated_at":"2026-09-26 05:12:37"},
+              {"session_id":"task_2","session_name":"Older","updated_at":"2026-09-25 09:00:00"}
+            ],"total":57,"has_more":true,"next_cursor":"2026-09-25 09:00:00"}
+        """.trimIndent()
+
+        val page = RecentsApi.parseChatsPage(body, "ws_1")
+
+        assertEquals(listOf("task_1", "task_2"), page.chats.map { it.id })
+        assertTrue(page.hasMore)
+        assertEquals("2026-09-25 09:00:00", page.nextCursor)
+        assertEquals(57, page.total)
+    }
+
+    @Test
+    fun parseChatsPageStopsOnTotalEvenWhenTheServerStillSaysHasMore() {
+        // `has_more` is `len == limit`, so a final page that happens to be
+        // exactly full reports true. Without the `total` backstop the sidebar
+        // would spend one more round-trip to be told the same thing.
+        val body = """
+            {"sessions":[
+              {"session_id":"task_1","updated_at":"2026-09-26 05:12:37"},
+              {"session_id":"task_2","updated_at":"2026-09-25 09:00:00"}
+            ],"total":2,"has_more":true,"next_cursor":"2026-09-25 09:00:00"}
+        """.trimIndent()
+
+        val page = RecentsApi.parseChatsPage(body, "ws_1")
+
+        assertEquals(false, page.hasMore)
+    }
+
+    @Test
+    fun parseChatsPageStillTrustsHasMoreWhenTheServerSendsNoTotal() {
+        // An older server that omits `total` reports 0. Reading that as "we have
+        // them all" would silently truncate every list to its first page.
+        val body = """
+            {"sessions":[{"session_id":"task_1","updated_at":"2026-09-26 05:12:37"}],
+             "has_more":true,"next_cursor":"2026-09-26 05:12:37"}
+        """.trimIndent()
+
+        val page = RecentsApi.parseChatsPage(body, "ws_1")
+
+        assertTrue(page.hasMore)
+        assertEquals(0, page.total)
+    }
+
+    @Test
+    fun parseChatsPageTreatsABlankOrNullCursorAsAbsent() {
+        // A blank cursor would be dropped from the query, which silently
+        // restarts the list at page 1 — duplicates instead of older chats.
+        assertNull(
+            RecentsApi.parseChatsPage(
+                """{"sessions":[],"total":0,"has_more":false,"next_cursor":"  "}""",
+                "ws_1",
+            ).nextCursor,
+        )
+        assertNull(
+            RecentsApi.parseChatsPage(
+                """{"sessions":[],"total":0,"has_more":false,"next_cursor":null}""",
+                "ws_1",
+            ).nextCursor,
+        )
+    }
+
+    @Test
+    fun parseChatsPageKeepsACursorEvenWhenItIsTheLastPage() {
+        // The server emits `next_cursor` whenever the page was non-empty, so a
+        // non-null cursor says nothing about there being more. `has_more` is
+        // the only terminator and this pins that they are read independently.
+        val body = """
+            {"sessions":[{"session_id":"task_1","updated_at":"2026-09-26 05:12:37"}],
+             "total":1,"has_more":false,"next_cursor":"2026-09-26 05:12:37"}
+        """.trimIndent()
+
+        val page = RecentsApi.parseChatsPage(body, "ws_1")
+
+        assertEquals(false, page.hasMore)
+        assertEquals("2026-09-26 05:12:37", page.nextCursor)
+    }
+
+    @Test
+    fun mergeChatsByIdDropsRowsTheSidebarAlreadyShows() {
+        // A session touched between pages moves up the ordering, so a page
+        // boundary can legitimately hand back a row already on screen. Two rows
+        // for one chat would both be selectable and look like a rendering bug.
+        val current = listOf(
+            ChatSummary("task_1", "ws_1", "First", 2_000L),
+            ChatSummary("task_2", "ws_1", "Second", 1_000L),
+        )
+        val incoming = listOf(
+            ChatSummary("task_2", "ws_1", "Second, renamed", 1_000L),
+            ChatSummary("task_3", "ws_1", "Third", 500L),
+        )
+
+        val merged = RecentsApi.mergeChatsById(current, incoming)
+
+        assertEquals(listOf("task_1", "task_2", "task_3"), merged.map { it.id })
+        // A same-id row is replaced, not skipped: a renamed chat must show the
+        // new name, and the merge must not leave two competing rows.
+        assertEquals("Second, renamed", merged[1].title)
+    }
+
+    @Test
+    fun mergeChatsByIdWithNothingIncomingReturnsTheSameRows() {
+        val current = listOf(ChatSummary("task_1", "ws_1", "Only", 1_000L))
+
+        assertEquals(current, RecentsApi.mergeChatsById(current, emptyList()))
+    }
+
     private fun sessionJson(
         sessionName: String = "A chat",
         created: String = "2026-09-26 05:07:34",
