@@ -38,7 +38,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         // Recording wraps the real transport so the inspector shows the same
         // bytes the auth flow sent, including a rejected sign-in.
         httpTransport = RecordingAuthTransport(HttpsAuthTransport(AuthConfig.BASE_URL)),
-        meCache = KeystoreAuthMeCache(application),
+        meCache = RoomAuthMeCache(application),
     )
     private val _uiState = MutableStateFlow(AuthUiState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()

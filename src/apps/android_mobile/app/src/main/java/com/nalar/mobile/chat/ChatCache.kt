@@ -1,9 +1,11 @@
 package com.nalar.mobile.chat
 
 import android.content.Context
-import org.json.JSONArray
+import com.nalar.mobile.cache.CachedMessageEntity
+import com.nalar.mobile.cache.ChatCacheDao
+import com.nalar.mobile.cache.ChatCursorEntity
+import com.nalar.mobile.cache.NalarCacheDatabase
 import org.json.JSONObject
-import java.io.File
 
 /**
  * One cached transcript row.
@@ -69,33 +71,16 @@ interface ChatCache {
 }
 
 /**
- * The pure half of the cache — key namespacing, the `raw` envelope, the
- * monotonic cursor rule and JSON round-tripping — with no Android dependency so
- * it can be exercised on the JVM. The bugs that matter live here, so this is
- * what the unit tests drive.
+ * The pure half of the cache — building a row from a wire object and the
+ * monotonic cursor rule — with no Android dependency so it can be exercised on
+ * the JVM. Everything that used to live here and was about *storage* (key
+ * namespacing, JSON envelopes, merge and sort in Kotlin) is now SQL, in
+ * `com.nalar.mobile.cache`.
+ *
+ * What is left is the two rules that are still the caller's to make: which
+ * fields to hoist out of the payload, and when the tail cursor may move.
  */
 object ChatCacheCodec {
-    private const val KEY_SEPARATOR = "::"
-    private const val CACHE_VERSION = 1
-
-    /**
-     * `chats::u:<userId>::s:<sessionId>` / `chats-cursor::u:<userId>::s:<sessionId>`.
-     *
-     * The user id is part of the physical key, which is what makes
-     * [ChatCache.clear] the only way to reach another namespace. The `:v1`
-     * suffix is the versioned-key convention the web uses for its localStorage
-     * caches: bumping it invalidates a shape this code can no longer read.
-     */
-    fun messagesKey(userId: String?, sessionId: String): String? {
-        val user = userId?.takeIf { it.isNotBlank() } ?: return null
-        if (sessionId.isBlank()) return null
-        return "chats${KEY_SEPARATOR}v$CACHE_VERSION${KEY_SEPARATOR}u:$user${KEY_SEPARATOR}s:$sessionId"
-    }
-
-    fun cursorKey(userId: String?, sessionId: String): String? {
-        val messages = messagesKey(userId, sessionId) ?: return null
-        return "chats-cursor$messages"
-    }
 
     /**
      * Builds a cache row from a wire object, hoisting the two fields the cache
@@ -123,6 +108,11 @@ object ChatCacheCodec {
      * the next mount. Advance to the newest received row instead, never regress
      * below the previous cursor, and let an empty delta keep what is already
      * there. The web's `newestCursor` states the same rule.
+     *
+     * This is a pure function of three arguments precisely because the
+     * read-modify-write it drives is not: the caller has to read the stored
+     * cursor, decide, and write it back, and the rule is the part that can be
+     * wrong.
      */
     fun newestCursor(
         items: List<CachedChatMessage>,
@@ -137,111 +127,59 @@ object ChatCacheCodec {
         }
         return best?.toString() ?: nextCursor ?: previousCursor
     }
-
-    fun encodeMessages(messages: List<CachedChatMessage>): String {
-        val array = JSONArray()
-        messages.forEach { message ->
-            array.put(
-                JSONObject()
-                    .put("id", message.id)
-                    .put("sortKey", message.sortKeyNanos)
-                    .put("session_id", message.sessionId)
-                    .put("role", message.role)
-                    .put("content", message.content)
-                    .put("raw", message.raw),
-            )
-        }
-        return JSONObject()
-            .put("version", CACHE_VERSION)
-            .put("messages", array)
-            .toString()
-    }
-
-    /** Null on any unrecognizable payload, so a foreign entry reads as a miss. */
-    fun decodeMessages(payload: String?): List<CachedChatMessage>? {
-        val array = try {
-            JSONObject(payload.orEmpty()).optJSONArray("messages")
-        } catch (_: Exception) {
-            null
-        } ?: return null
-
-        val out = ArrayList<CachedChatMessage>(array.length())
-        for (index in 0 until array.length()) {
-            val entry = array.optJSONObject(index) ?: return null
-            val id = entry.optString("id").trim()
-            if (id.isEmpty()) return null
-            val raw = entry.optString("raw")
-            if (raw.isBlank()) return null
-            out.add(
-                CachedChatMessage(
-                    id = id,
-                    sortKeyNanos = entry.optLong("sortKey", 0L),
-                    sessionId = entry.optString("session_id"),
-                    role = entry.optString("role"),
-                    content = entry.optString("content"),
-                    raw = raw,
-                ),
-            )
-        }
-        return out
-    }
-
-    /** Newest first, mirroring the IndexedDB read order. */
-    fun sortNewestFirst(messages: List<CachedChatMessage>): List<CachedChatMessage> =
-        messages.sortedWith(
-            compareByDescending<CachedChatMessage> { it.sortKeyNanos }.thenByDescending { it.id },
-        )
-
-    /** Same-id incoming row replaces the cached one, order preserved. */
-    fun mergeReplacing(
-        cached: List<CachedChatMessage>,
-        incoming: List<CachedChatMessage>,
-    ): List<CachedChatMessage> {
-        if (incoming.isEmpty()) return cached
-        val byId = LinkedHashMap<String, CachedChatMessage>(cached.size + incoming.size)
-        cached.forEach { byId[it.id] = it }
-        incoming.forEach { byId[it.id] = it }
-        return byId.values.toList()
-    }
 }
 
 /**
- * [ChatCache] on plain files, one JSON document per session.
+ * [ChatCache] on Room, one row per message.
  *
- * Files rather than [android.content.SharedPreferences] because a long
- * transcript outgrows a preferences value, and files rather than Room because
- * the whole document is rewritten on every write-through anyway — a row store
- * would buy nothing and would add a dependency and a migration to manage.
+ * What the file-backed version had to do by hand, and where each of those now
+ * lives:
  *
- * The payload is not encrypted with the Keystore the way the sidebar's is.
- * Unlike a workspace list, a transcript is bulk user content written on every
- * streamed frame, and Keystore round-trips that per write cost more than the
- * exposure is worth on a device that is already full-disk-encrypted. The
- * session cookie, which is a *credential*, stays under the Keystore.
+ * - **Namespacing.** A key string built from `userId` and `sessionId` became
+ *   the composite primary key, so a partition is a `WHERE` clause and a
+ *   namespace cannot be escaped.
+ * - **Newest-first with a limit.** `sortNewestFirst(...).take(n)` in Kotlin
+ *   became `ORDER BY sort_key_nanos DESC, message_id DESC LIMIT :n` in SQLite,
+ *   which no longer parses every row to answer "give me 400".
+ * - **Write-through merge.** Read the document, merge in Kotlin, rewrite the
+ *   whole thing under a lock became `INSERT … ON CONFLICT REPLACE` per row, so
+ *   a kill mid-write can no longer leave a half-document that reads as a
+ *   corrupt transcript forever.
+ * - **Atomic rename.** The temp-file-then-rename dance is SQLite's job.
+ *
+ * The payload is not sealed with the Keystore. Unlike a workspace list, a
+ * transcript is bulk user content written on every streamed frame, and a
+ * Keystore round-trip per write costs more than the exposure is worth on a
+ * device that is already full-disk-encrypted. The session cookie, which is a
+ * *credential*, stays under the Keystore.
  */
-class FileChatCache(context: Context) : ChatCache {
-    private val root = File(context.applicationContext.filesDir, DIRECTORY_NAME)
+class RoomChatCache(
+    private val dao: ChatCacheDao,
+    private val retainedRowsPerSession: Int = RETAINED_ROWS_PER_SESSION,
+) : ChatCache {
 
-    /**
-     * Serializes every read-modify-write of a transcript document.
-     *
-     * There are three concurrent writers — the tail revalidate, the older-page
-     * fetch, and the write-through that follows every streamed turn — and each
-     * does read → merge → rewrite. Unsynchronized, two of them read the same
-     * `existing`, each merges only its own row, and the loser's row is gone.
-     * It does not come back on the next load either, because that row is
-     * filtered out of every page as already-seen-live.
-     */
-    private val lock = Any()
+    constructor(context: Context) : this(NalarCacheDatabase.get(context).chatCacheDao())
 
     override fun readMessages(
         userId: String?,
         sessionId: String,
         limit: Int,
     ): List<CachedChatMessage>? {
-        val key = ChatCacheCodec.messagesKey(userId, sessionId) ?: return null
-        val rows = ChatCacheCodec.decodeMessages(readText(key)) ?: return null
-        return ChatCacheCodec.sortNewestFirst(rows).take(limit.coerceAtLeast(1))
+        val user = userId.orNull() ?: return null
+        val session = sessionId.orNull() ?: return null
+        return quietly(null) {
+            val rows = dao.newestFirst(
+                userId = user,
+                sessionId = session,
+                limit = limit.coerceAtLeast(1),
+            )
+            // No rows is a miss, and it is the *only* miss a read can have now.
+            // The file version could also hold a decoded-empty document; it
+            // never did in practice, because `writeMessages` refused an empty
+            // list, and `ChatViewModel.primeFromCache` cannot tell the two
+            // apart.
+            if (rows.isEmpty()) null else rows.map { it.toCachedMessage() }
+        }
     }
 
     override fun writeMessages(
@@ -249,90 +187,104 @@ class FileChatCache(context: Context) : ChatCache {
         sessionId: String,
         messages: List<CachedChatMessage>,
     ) {
+        val user = userId.orNull() ?: return
+        val session = sessionId.orNull() ?: return
+        // An empty write is a no-op rather than a purge. "The page came back
+        // empty" is a normal tail-fetch answer, and treating it as "this
+        // session now has no messages" would blank the transcript the moment
+        // the user reaches the top of it.
         if (messages.isEmpty()) return
-        val key = ChatCacheCodec.messagesKey(userId, sessionId) ?: return
-        synchronized(lock) {
-            val existing = ChatCacheCodec.decodeMessages(readText(key)).orEmpty()
-            val merged = ChatCacheCodec.mergeReplacing(existing, messages)
-            writeText(key, ChatCacheCodec.encodeMessages(merged))
+        quietly(Unit) {
+            dao.writeThrough(
+                userId = user,
+                sessionId = session,
+                rows = messages.map { it.toEntity(user, session) },
+                keep = retainedRowsPerSession,
+            )
         }
     }
 
     override fun readCursor(userId: String?, sessionId: String): String? {
-        val key = ChatCacheCodec.cursorKey(userId, sessionId) ?: return null
-        return readText(key)?.trim()?.takeIf { it.isNotEmpty() }
+        val user = userId.orNull() ?: return null
+        val session = sessionId.orNull() ?: return null
+        return quietly(null) { dao.cursorFor(user, session) }
     }
 
     override fun writeCursor(userId: String?, sessionId: String, cursor: String?) {
-        val key = ChatCacheCodec.cursorKey(userId, sessionId) ?: return
-        if (cursor.isNullOrBlank()) {
-            deleteText(key)
-        } else {
-            writeText(key, cursor)
-        }
-    }
-
-    override fun clear() {
-        synchronized(lock) {
-            try {
-                root.deleteRecursively()
-            } catch (_: Exception) {
-                // Sign-out already cleared the transcript from memory; a file we
-                // cannot delete is not worth failing the sign-out over.
+        val user = userId.orNull() ?: return
+        val session = sessionId.orNull() ?: return
+        quietly(Unit) {
+            if (cursor.isNullOrBlank()) {
+                dao.deleteCursor(user, session)
+            } else {
+                dao.putCursor(ChatCursorEntity(userId = user, sessionId = session, cursor = cursor))
             }
         }
     }
 
-    private fun readText(key: String): String? = try {
-        val file = File(root, fileNameFor(key))
-        if (file.isFile) file.readText() else null
-    } catch (_: Exception) {
-        // A truncated write, a revoked key, a full disk. All of them are a miss.
-        null
-    }
-
-    private fun writeText(key: String, value: String) {
-        try {
-            if (!root.isDirectory && !root.mkdirs()) return
-            val file = File(root, fileNameFor(key))
-            // Write to a sibling and rename, so a kill mid-write cannot leave a
-            // half-document that would read as a corrupt transcript forever.
-            val temp = File(root, "${file.name}.tmp")
-            temp.writeText(value)
-            if (!temp.renameTo(file)) {
-                file.writeText(value)
-                temp.delete()
-            }
-        } catch (_: Exception) {
-            // The live fetch still works; only the next launch's instant paint is lost.
-        }
-    }
-
-    private fun deleteText(key: String) {
-        runCatching { File(root, fileNameFor(key)).delete() }
-    }
+    override fun clear() = quietly(Unit) { dao.clearAll() }
 
     /**
-     * The key contains `:` and would be a legal but unreadable filename, and a
-     * user id inside a path is a user id on disk. A hash of the full key keeps
-     * namespaces apart and keeps the id out of the path; the readable tail is
-     * only there so a directory listing is diagnosable.
+     * Runs a cache operation and reports a miss instead of throwing.
+     *
+     * Every SQLite failure this cache can hit — a full disk, a file the system
+     * will not let it open, a row written by a version whose schema is gone —
+     * is a reason the *next* launch paints a spinner. None of them is a reason
+     * the app fails, and the contract says so.
      */
-    private fun fileNameFor(key: String): String {
-        val isCursor = key.startsWith(CURSOR_KEY_PREFIX)
-        val prefix = if (isCursor) CURSOR_KEY_PREFIX else MESSAGE_KEY_PREFIX
-        val readableTail = key.removePrefix(prefix)
-            .replace(NON_FILENAME_CHARS, "_")
-            .takeLast(MAX_READABLE_TAIL)
-        val extension = if (isCursor) "cursor" else "json"
-        return "${key.hashCode().toUInt().toString(16)}_$readableTail.$extension"
+    private inline fun <T> quietly(fallback: T, block: () -> T): T = try {
+        block()
+    } catch (_: Exception) {
+        fallback
     }
 
-    private companion object {
-        const val DIRECTORY_NAME = "nalar_chat_cache"
-        const val MESSAGE_KEY_PREFIX = "chats"
-        const val CURSOR_KEY_PREFIX = "chats-cursor"
-        const val MAX_READABLE_TAIL = 40
-        val NON_FILENAME_CHARS = Regex("[^A-Za-z0-9._-]")
+    companion object {
+        /**
+         * How many rows one session may keep on the device.
+         *
+         * Deliberately larger than `ChatViewModel.CACHED_MESSAGE_LIMIT` (400),
+         * which is the width of the paint-from-cache window. Holding five
+         * windows means a reader who scrolled back a few hundred turns still
+         * finds that history after a restart, while a session that grows
+         * without bound still stops: a row store does not rewrite itself, so
+         * without a ceiling "open a long session" would be a slow disk leak.
+         */
+        const val RETAINED_ROWS_PER_SESSION = 2_000
     }
 }
+
+/** A null or blank identity cannot address a partition, so it is not a partition. */
+private fun String?.orNull(): String? = this?.takeIf { it.isNotBlank() }
+
+private fun CachedMessageEntity.toCachedMessage(): CachedChatMessage = CachedChatMessage(
+    id = messageId,
+    sortKeyNanos = sortKeyNanos,
+    sessionId = sessionId,
+    role = role,
+    content = content,
+    raw = raw,
+)
+
+/**
+ * Both partition columns come from the *call*, not from the row.
+ *
+ * `CachedChatMessage` carries its own `sessionId`, and the two would normally
+ * agree — `ChatViewModel` builds every row with `toCachedMessage(sessionId, …)`
+ * for the session it is writing. "Normally" is the whole problem: if they ever
+ * disagreed, the row would be written into a partition the caller never reads,
+ * where it would sit forever consuming the retention budget and never appear.
+ * Deriving both from the call makes that unrepresentable, and it keeps the
+ * entity's key columns identical to the `WHERE` clause that will find them.
+ */
+private fun CachedChatMessage.toEntity(
+    userId: String,
+    sessionId: String,
+): CachedMessageEntity = CachedMessageEntity(
+    userId = userId,
+    sessionId = sessionId,
+    messageId = id,
+    sortKeyNanos = sortKeyNanos,
+    role = role,
+    content = content,
+    raw = raw,
+)

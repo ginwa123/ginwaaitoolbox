@@ -11,6 +11,7 @@ does not embed the web app and does not start or manage a Nalar server.
 - Kotlin 2.0.21
 - Jetpack Compose Material 3
 - Android Navigation Compose
+- Room 2.6.1 (the offline caches), with KSP 2.0.21-1.0.28
 - Android Gradle Plugin 8.7.3
 - Minimum SDK 26, target/compile SDK 35
 - JDK 17 (or a newer JDK supported by the pinned Android Gradle Plugin)
@@ -25,6 +26,11 @@ cd src/apps/android_mobile
 ./gradlew test
 ./gradlew assembleDebug
 ```
+
+The unit tests include the cache DAO tests, which open a real SQLite file
+through Robolectric rather than a mock. Robolectric downloads its Android
+runtime jars on the first run, so the first `./gradlew test` on a cold machine
+needs network access.
 
 An emulator or device is required for instrumentation tests:
 
@@ -138,15 +144,111 @@ the tail, then write through.
 - **No TTL**, matching the web. That is only safe because every paint is
   immediately followed by a live fetch, which `ChatViewModel.openSession`
   enforces by having prime and revalidate in one function.
-- **Fail-silent throughout.** A corrupt payload, a truncated write or a full disk
-  degrades to a plain cache miss; a broken cache is never the reason the app
-  fails.
 
-Unlike the sidebar's cache, the transcript is *not* sealed with the Android
-Keystore: it is bulk user content rewritten on every streamed frame, and a
-Keystore round-trip per write costs more than the exposure is worth on a device
-that is already full-disk-encrypted. The session cookie, which is a credential,
-stays under the Keystore.
+All three caches — this one and the sidebar's and the `/me` one — are backed by
+the same Room database; the storage rules are in "The offline caches" below.
+
+## The offline caches
+
+Three things are cached so a cold boot or an offline launch paints real content
+instead of a spinner, and all three live in **one Room database**
+(`nalar_cache.db`) as five tables:
+
+| Table                  | Holds                                       | Namespaced by          |
+| ---------------------- | ------------------------------------------- | ---------------------- |
+| `cached_messages`      | transcript rows, whole server object in `raw` | user + session       |
+| `chat_cursors`         | the newest `created_at` seen, per session    | user + session         |
+| `cached_workspaces`    | the workspace drawer                         | user                   |
+| `cached_chat_summaries`| the recents list for one workspace           | user + workspace       |
+| `cached_auth_me`       | the last `GET /api/auth/me` response         | cookie fingerprint     |
+
+Each cache keeps its own interface — `ChatCache`, `RecentsCache`, `AuthMeCache`
+— and the ViewModels were not touched to make this change. Only the store behind
+each interface moved.
+
+### Why this is SQL and not a keyed blob
+
+Every one of these was a hand-built key over a JSON document, and every one of
+the ways that can go wrong is now a property of the schema instead of of some
+string-formatting convention:
+
+- **Per-user isolation** is a column of the primary key. The old keys were
+  `chats::u:<userId>::s:<sessionId>`, so a user id containing the separator
+  could address a neighbour's partition. A column has no separators to contain,
+  and `DELETE FROM cached_workspaces` is a complete, provable purge on
+  sign-out.
+- **Order** is a `position` column. A JSON array carried the server's order for
+  free; rows do not, and a table with no `ORDER BY` returns rows in whatever
+  order SQLite finds cheapest. Without that column the drawer would re-sort
+  itself alphabetically the day somebody added an index.
+- **Newest-first with a cap** is `ORDER BY sort_key_nanos DESC, message_id DESC
+  LIMIT :n`, so "the newest 400 turns" is a `LIMIT`ed index lookup instead of
+  parsing every row to sort and then throw most of them away. The `message_id`
+  tie-break is what makes a transcript whose timestamps collide paint in the
+  same order on every launch.
+- **Write-through merge** is `INSERT … ON CONFLICT REPLACE` against the primary
+  key, inside a transaction with the retention trim. The file cache had to read
+  the whole document, merge in Kotlin and rewrite it under a lock; a kill
+  mid-write could leave a half-document that then read as a corrupt transcript
+  forever.
+- **Replace-not-merge** for a sidebar list is `DELETE` + `INSERT` in one
+  transaction, so a chat deleted upstream stays deleted.
+
+The one rule the database cannot express is **retention**: a row store does not
+rewrite itself, so a reader who scrolled through a long session would otherwise
+leave a row per turn on the device forever. `RoomChatCache` keeps the newest
+2 000 rows per session, which is several times the 400-row paint window, so
+back-scrolled history survives a restart while a runaway session still stops.
+
+### Encryption at rest, and what it costs
+
+The sidebar's workspace names and chat titles, and the whole cached `/me` body,
+are sealed with AES-GCM under an Android Keystore key, under aliases separate
+from the session cookie's. Ids, positions and timestamps stay in the clear,
+because `ORDER BY position` and `LIMIT` cannot run on ciphertext — they say what
+the app knows, not what the user typed. The transcript's `raw` payload is not
+sealed at all, for the reason below.
+
+SQLCipher would have covered every column for free, and was rejected: its native
+library cannot load on the JVM, so the DAO tests that this move is *for* —
+ordering, replace-not-merge, isolation — would all have had to become
+instrumentation tests that nobody runs without a device. Per-column sealing keeps
+the file a plain SQLite database that Robolectric opens for real, and confines
+the untestable part to the ~40 lines of `SealingCipher`. Its key is read from the
+Keystore once per process rather than per row, which is what keeps 30 chat
+titles from costing 30 Keystore daemon hops on the first frame.
+
+Every cache operation is fail-silent: a full disk, a revoked key, a row written
+under a retired alias or a GCM tag that no longer verifies all degrade to a
+plain cache miss, and an unopenable row drops its own partition rather than
+painting half a sidebar. A broken cache is never the reason the app fails.
+
+### Why the queries run on the main thread
+
+`NalarCacheDatabase` is built with `allowMainThreadQueries()`, which is a
+deliberate exception to Room's default and worth being explicit about. The
+cache-priming reads are synchronous because the first frame has to carry real
+rows: `HomeViewModel` primes the sidebar and `ChatViewModel` the transcript
+inside the same call that starts the fetch, so a coroutine hop would put a
+spinner over data already on disk. And the call site is not new — the store it
+replaced was `EncryptedPrefs`, which did a Keystore AES-GCM decrypt of a blob on
+that same main thread. A `LIMIT`ed index-backed point query is cheaper than
+what it replaced. Every query is in `ChatCacheDao` / `RecentsCacheDao` /
+`AuthMeCacheDao` and each is a point lookup on the primary-key prefix, so the
+claim is checkable in one sitting. Writes are unaffected: every caller already
+wraps them in `Dispatchers.IO` before reaching a cache.
+
+A schema bump drops the tables rather than migrating them. That is the one
+database class where it is the right answer: everything in here is a copy of
+something the server still holds, every paint is immediately followed by a live
+fetch, and the cost is one empty sidebar and one spinner on the first launch
+after an upgrade.
+
+The transcript is not sealed with the Keystore, unlike the sidebar's titles: it
+is bulk user content rewritten on every streamed frame, and a Keystore
+round-trip per write costs more than the exposure is worth on a device that is
+already full-disk-encrypted. The session cookie, which is a *credential*, stays
+under the Keystore.
 
 ## Recents
 
