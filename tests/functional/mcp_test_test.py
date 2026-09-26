@@ -328,10 +328,22 @@ def test_mcp_test_stdio_diagnostic_on_child_death() -> None:
         elapsed = time.monotonic() - start
 
         assert result.get("ok") is False, f"expected failure, got: {result}"
-        # The user-facing error is the standard recv-failed message.
-        assert result.get("error") == "failed to receive response from MCP server", (
-            f"unexpected error message: {result.get('error')!r}"
-        )
+        # Both the write and the read leg can legitimately lose the race
+        # against a child that is already dead: the pipe may be closed
+        # before the request goes out (SendFailed) or after it lands but
+        # before the reply is read (RecvFailed). mcp_test.zig maps both to
+        # a user-facing message, and which one surfaces depends on how far
+        # the probe got — so accept either and keep asserting the part
+        # that is actually a contract: the failure names the MCP server.
+        # Pinning the single recv message here made this test fail ~1 run
+        # in 3 on a loaded box (run 2 of 3: 'failed to send request to
+        # MCP server' vs the expected 'failed to receive response from
+        # MCP server'). The assertions below already accept the same
+        # both-paths ambiguity in `details`.
+        assert result.get("error") in (
+            "failed to receive response from MCP server",
+            "failed to send request to MCP server",
+        ), f"unexpected error message: {result.get('error')!r}"
 
         # The DIAGNOSTIC details should now include the per-attempt
         # trace so we can see WHY on CI without ssh'ing in. The format

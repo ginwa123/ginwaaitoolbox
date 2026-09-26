@@ -102,9 +102,55 @@ def test_get_task_by_id_returns_full_task(harness: FunctionalHarness):
     # response exactly as in the list response.
     assert "tags" in task
     assert "is_auto_retry_until_stop" in task
-    assert "image_urls" in task
     assert "kanban_column_id" in task
     assert "needs_human_review" in task
+    # media-flags change: the task body is flag-only. The full
+    # `||`-delimited strings moved to the lazy
+    # `GET .../tasks/:task_id/media` route so a board fetch of 50 tasks
+    # does not carry 50 sets of base64 data URLs. Assert the flags ARE
+    # here and the payload is NOT — that is the contract, and it is what
+    # this test was silently violating with `assert "image_urls" in task`.
+    assert "is_have_image" in task
+    assert "is_have_video" in task
+    assert "image_urls" not in task, sorted(task)
+    assert "video_urls" not in task, sorted(task)
+
+
+def test_get_task_media_endpoint_returns_lazy_payloads(
+    harness: FunctionalHarness,
+):
+    """The lazy `/media` route carries the full strings the task body dropped."""
+    ws_id = _create_workspace(harness)
+    kanban_id = _create_kanban(harness, ws_id)
+
+    created = _create_task(harness, ws_id, kanban_id, name="my task")
+    task_id = created["task"]["id"]
+
+    r = harness.http(
+        "GET",
+        f"/api/workspaces/{ws_id}/items/{kanban_id}/tasks/{task_id}/media",
+        expect=200,
+    )
+    media = r.json()
+    assert set(media) == {"image_urls", "video_urls"}, media
+    # No media was ever attached, so both are the empty string — not null
+    # and not a 404. A task row must always exist before the media route
+    # is asked about it.
+    assert media["image_urls"] == "", media
+    assert media["video_urls"] == "", media
+
+
+def test_get_task_media_unknown_id_returns_404(harness: FunctionalHarness):
+    """`/media` for a task that does not exist → 404, same as the task route."""
+    ws_id = _create_workspace(harness)
+    kanban_id = _create_kanban(harness, ws_id)
+
+    body = harness.http(
+        "GET",
+        f"/api/workspaces/{ws_id}/items/{kanban_id}/tasks/task_does_not_exist/media",
+        expect=404,
+    ).json()
+    assert "task not found" in body.get("error", ""), f"got: {body!r}"
 
 
 # ─── Test 2: unknown task → 404 ────────────────────────────────────────────
