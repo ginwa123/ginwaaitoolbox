@@ -101,6 +101,33 @@ class RoomRecentsCacheTest {
     }
 
     @Test
+    fun bothTimestampsSurviveTheRoundTrip() {
+        // A recents row carries two clocks — the order key (`updated_at`) and
+        // the label key (`last_human_touched_at`) — and for a session the agent
+        // is working on they are different values. Persisting only one would
+        // make every cold-boot row claim the agent's last activity was the
+        // human's, so the second column is pinned here.
+        cache.writeChats(
+            USER,
+            WORKSPACE,
+            listOf(
+                ChatSummary(
+                    id = "task_running",
+                    workspaceId = WORKSPACE,
+                    title = "Agent is working",
+                    updatedAtEpochMillis = 9_000L,
+                    lastHumanTouchedAtEpochMillis = 100L,
+                ),
+            ),
+        )
+
+        val row = cache.readChats(USER, WORKSPACE)?.single()
+
+        assertEquals(9_000L, row?.updatedAtEpochMillis)
+        assertEquals(100L, row?.lastHumanTouchedAtEpochMillis)
+    }
+
+    @Test
     fun aRewriteReplacesTheOrderRatherThanAppendingToIt() {
         cache.writeChats(
             USER,

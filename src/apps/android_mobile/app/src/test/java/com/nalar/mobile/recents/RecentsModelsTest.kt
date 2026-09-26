@@ -30,6 +30,64 @@ class RecentsModelsTest {
     }
 
     @Test
+    fun aRunningSessionOrdersFirstEvenThoughTheHumanTouchedItLongestAgo() {
+        // The reported behaviour: on the desktop the session the agent is
+        // working on sits at the top of Recent, because the list is ordered by
+        // `updated_at` — the column that keeps moving while a run is in
+        // flight. This row's human-touch stamp is the OLDEST of the three, so
+        // ordering by the label key would bury it at the bottom. That was the
+        // bug: the sidebar folded both timestamps into one field and sorted on
+        // the label.
+        val running = ChatSummary(
+            id = "chat-running",
+            workspaceId = "workspace-a",
+            title = "Agent is working on this",
+            updatedAtEpochMillis = 9_000L,
+            lastHumanTouchedAtEpochMillis = 100L,
+        )
+        val chats = listOf(
+            running,
+            ChatSummary("chat-human-recent", "workspace-a", "You were here", 4_000L, 4_000L),
+            ChatSummary("chat-middle", "workspace-a", "Neither", 6_000L, 6_000L),
+        )
+
+        val result = recentChatsForWorkspace(chats, "workspace-a")
+
+        assertEquals(listOf("chat-running", "chat-middle", "chat-human-recent"), result.map { it.id })
+    }
+
+    @Test
+    fun aRunningSessionKeepsTheHumansOwnTimeInItsLabel() {
+        // Same row, seen from the other side: topping the list must not make
+        // the pill lie. The agent has been working for 2 minutes; the human
+        // was last here 3 hours ago. The pill says 3h.
+        val now = 10_000_000_000L
+        val running = ChatSummary(
+            id = "chat-running",
+            workspaceId = "workspace-a",
+            title = "Agent is working on this",
+            updatedAtEpochMillis = now - 2L * 60_000L,
+            lastHumanTouchedAtEpochMillis = now - 3L * 60L * 60_000L,
+        )
+
+        assertEquals("2m", formatRelativeTime(running.updatedAtEpochMillis, now))
+        assertEquals("3h", formatRelativeTime(running.lastHumanTouchedAtEpochMillis, now))
+    }
+
+    @Test
+    fun hasTimestampReadsTheLabelKeyNotTheOrderKey() {
+        // A hand-built row whose label key is missing gets no pill rather than
+        // a fabricated "56y" — the order key is a perfectly good sort value but
+        // it is not what the pill is allowed to claim is true about the human.
+        val unlabelled = ChatSummary("chat-1", "workspace-a", "Legacy", 5_000L, 0L)
+
+        assertEquals(false, unlabelled.hasTimestamp)
+        // Still ordered, never dropped: no label is a presentation problem, an
+        // invisible session is a data problem.
+        assertEquals(listOf("chat-1"), recentChatsForWorkspace(listOf(unlabelled), "workspace-a").map { it.id })
+    }
+
+    @Test
     fun blankChatTitleFallsBackToNewChat() {
         val chat = ChatSummary("chat-1", "workspace-a", "   ", 300L)
 

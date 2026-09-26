@@ -387,7 +387,14 @@ private fun HomeContent(
                     Text(
                         text = selectedChat?.let { chat ->
                             if (chat.hasTimestamp) {
-                                formatRelativeTime(chat.updatedAtEpochMillis, System.currentTimeMillis())
+                                // Human-touch key, matching the sidebar pill.
+                                // The order key is what put the row at the top
+                                // of the list; it moves while the agent works
+                                // and says nothing about the human.
+                                formatRelativeTime(
+                                    chat.lastHumanTouchedAtEpochMillis,
+                                    System.currentTimeMillis(),
+                                )
                             } else {
                                 "No timestamp for this chat yet."
                             }

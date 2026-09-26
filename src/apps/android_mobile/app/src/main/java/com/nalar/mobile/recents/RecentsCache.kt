@@ -155,6 +155,7 @@ class RoomRecentsCache(
                                 workspaceId = row.workspaceId,
                                 title = titles[index].orEmpty(),
                                 updatedAtEpochMillis = row.updatedAtEpochMillis,
+                                lastHumanTouchedAtEpochMillis = row.lastHumanTouchedAtEpochMillis,
                             )
                         }
                     }
@@ -213,6 +214,7 @@ class RoomRecentsCache(
                     chatId = chat.id,
                     position = index,
                     updatedAtEpochMillis = chat.updatedAtEpochMillis,
+                    lastHumanTouchedAtEpochMillis = chat.lastHumanTouchedAtEpochMillis,
                     titleSealed = sealed,
                 ),
             )

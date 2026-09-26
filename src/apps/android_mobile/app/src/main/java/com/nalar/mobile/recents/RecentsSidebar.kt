@@ -599,7 +599,16 @@ private fun ChatRow(
                     append(chat.displayTitle)
                     if (chat.hasTimestamp) {
                         append(", ")
-                        append(formatRelativeTimeForAccessibility(chat.updatedAtEpochMillis, nowEpochMillis))
+                        // The label key, not the order key: this row can be at
+                        // the top of the list because the *agent* is working it,
+                        // and "updated just now" would be a claim about the
+                        // human that is not true.
+                        append(
+                            formatRelativeTimeForAccessibility(
+                                chat.lastHumanTouchedAtEpochMillis,
+                                nowEpochMillis,
+                            ),
+                        )
                     }
                     // Spoken as part of the row rather than left to the spinner.
                     // A bare "progress indicator" tells a screen-reader user
@@ -639,10 +648,12 @@ private fun ChatRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 // A session with no parseable timestamp gets no time pill
-                // rather than a fabricated one.
+                // rather than a fabricated one. The pill reads the human-touch
+                // key, so a running session at the top of the list still says
+                // when the human was last actually there.
                 if (chat.hasTimestamp) {
                     Text(
-                        text = formatRelativeTime(chat.updatedAtEpochMillis, nowEpochMillis),
+                        text = formatRelativeTime(chat.lastHumanTouchedAtEpochMillis, nowEpochMillis),
                         style = MaterialTheme.typography.labelMedium,
                         color = NalarMuted,
                     )

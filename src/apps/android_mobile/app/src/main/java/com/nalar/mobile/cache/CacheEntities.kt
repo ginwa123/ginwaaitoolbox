@@ -97,6 +97,11 @@ data class CachedWorkspaceEntity(
  * `updated_at` stays in the clear even though it is user data: it is the sort
  * key, and sealing it would mean decrypting every row to order them. It reveals
  * when you last worked, not what you worked on.
+ *
+ * `last_human_touched_at` is stored the same way and for the same reason —
+ * it is the row's *label* key, so a cold boot paints the same relative times
+ * the network paint would. Persisting only the order key would make every
+ * cached row claim the agent's last activity was yours.
  */
 @Entity(
     tableName = "cached_chat_summaries",
@@ -109,6 +114,8 @@ data class CachedChatSummaryEntity(
     @ColumnInfo(name = "chat_id") val chatId: String,
     val position: Int,
     @ColumnInfo(name = "updated_at_epoch_millis") val updatedAtEpochMillis: Long,
+    @ColumnInfo(name = "last_human_touched_at_epoch_millis")
+    val lastHumanTouchedAtEpochMillis: Long,
     /** Sealed: a chat title is the single most identifying string in the app. */
     @ColumnInfo(name = "title_sealed") val titleSealed: String,
 )

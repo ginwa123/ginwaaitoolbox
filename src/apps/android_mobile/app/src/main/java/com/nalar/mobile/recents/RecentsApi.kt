@@ -121,7 +121,14 @@ object RecentsApi {
                         // so the id we asked with is the only one available.
                         workspaceId = workspaceId,
                         title = session.stringField("session_name"),
-                        updatedAtEpochMillis = sessionTimestampMillis(session),
+                        // Two answers, deliberately: the page is ordered by
+                        // `updated_at` (that is what `sort_by=updated_at` asked
+                        // the server for), while the pill shows the human's own
+                        // last visit. Keeping them apart is what lets a running
+                        // session sit at the top of the list without its label
+                        // pretending the human just came back to it.
+                        updatedAtEpochMillis = sessionOrderTimestampMillis(session),
+                        lastHumanTouchedAtEpochMillis = sessionLabelTimestampMillis(session),
                     ),
                 )
             }
@@ -165,18 +172,33 @@ object RecentsApi {
     }
 
     /**
-     * `last_human_touched_at` is the stamp the human actually last saw the
-     * chat, so it sorts/renders ahead of `updated_at` (which keeps moving while
-     * an unattended run works). It is an empty string for rows predating
-     * Migration 082, hence the fallbacks. Both are SQLite UTC strings, so the
-     * missing stamp degrades to `updated_at` then `created_at` rather than to
-     * "1970", which would read as `56y` in the sidebar.
+     * The **order** key: plain `updated_at`, then `created_at`.
+     *
+     * This is the column the server was asked to sort by
+     * (`sort_by=updated_at&direction=desc`), so honouring it is what keeps a
+     * running session — the one with the most recent `updated_at` because the
+     * agent keeps touching it — at the top of Recent, exactly as the desktop
+     * sidebar does. `last_human_touched_at` is deliberately NOT consulted: a
+     * session the human walked away from an hour ago but the agent is still
+     * working on is the newest row, not the oldest.
      */
-    private fun sessionTimestampMillis(session: JSONObject): Long =
-        parseTimestampEpochMillis(session.stringField("last_human_touched_at"))
-            ?: parseTimestampEpochMillis(session.stringField("updated_at"))
+    private fun sessionOrderTimestampMillis(session: JSONObject): Long =
+        parseTimestampEpochMillis(session.stringField("updated_at"))
             ?: parseTimestampEpochMillis(session.stringField("created_at"))
             ?: UNKNOWN_TIMESTAMP
+
+    /**
+     * The **label** key: `last_human_touched_at`, then `updated_at`, then
+     * `created_at` — the desktop's `last_human_touched_at || updated_at`, with
+     * a `created_at` leg so a legacy row never renders the epoch (which would
+     * read as `56y` in the sidebar).
+     *
+     * `last_human_touched_at` is an empty string for rows predating Migration
+     * 082, hence the fallbacks.
+     */
+    private fun sessionLabelTimestampMillis(session: JSONObject): Long =
+        parseTimestampEpochMillis(session.stringField("last_human_touched_at"))
+            ?: sessionOrderTimestampMillis(session)
 
     /**
      * Parses the two timestamp shapes the backend emits into epoch millis, or
