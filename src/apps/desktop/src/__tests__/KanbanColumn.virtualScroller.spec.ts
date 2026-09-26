@@ -27,7 +27,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { nextTick, ref, type Ref } from 'vue'
 
 import KanbanColumn from '../components/kanban/KanbanColumn.vue'
@@ -204,11 +204,12 @@ describe('KanbanColumn — VirtualScroller integration', () => {
       cursor: 'cursor_abc',
     })
 
-    // Let the auto-fetch watcher's immediate run + its async fetch
-    // complete (mock resolves synchronously but reactivity needs an
-    // extra tick for isLoading → false to propagate).
-    await nextTick()
-    await nextTick()
+    // Let the auto-fetch watcher's immediate run + its async fetch settle.
+    // `flushPromises` rather than a fixed tick count: the mount path primes
+    // the local task cache through Effect, which takes more microtask hops
+    // than the direct api call it replaced. The assertion below is about
+    // reaching getTasks, not about how many ticks that takes.
+    await flushPromises()
 
     // Spy on api.getTasks (set up in beforeEach) so we can verify the
     // @load-more path forwards the columnId correctly. The auto-fetch
@@ -258,7 +259,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
       hasMore: true,
       cursor: 'cursor_1',
     })
-    await nextTick()
+    await flushPromises()
 
     const scroller = wrapper.findComponent({ name: 'VirtualScroller' })
     // Drive the scrollability event with `true` (scrollable).
@@ -277,7 +278,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
       hasMore: true,
       cursor: 'cursor_1',
     })
-    await nextTick()
+    await flushPromises()
 
     const scroller = wrapper.findComponent({ name: 'VirtualScroller' })
     scroller.vm.$emit('scrollabilityChange', false)
@@ -295,7 +296,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
       hasMore: true,
       cursor: 'cursor_1',
     })
-    await nextTick()
+    await flushPromises()
 
     const scroller = wrapper.findComponent({ name: 'VirtualScroller' })
     scroller.vm.$emit('scrollabilityChange', false)
@@ -307,7 +308,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
     await wrapper
       .find(`[data-testid="kanban-column-${COL_TODO}-load-more"]`)
       .trigger('click')
-    await nextTick()
+    await flushPromises()
 
     expect(getTasksSpy.mock.calls.length).toBeGreaterThan(callsBefore)
     const lastCall = getTasksSpy.mock.calls[getTasksSpy.mock.calls.length - 1]!
@@ -322,7 +323,7 @@ describe('KanbanColumn — VirtualScroller integration', () => {
       hasMore: false,
       cursor: null,
     })
-    await nextTick()
+    await flushPromises()
 
     const scroller = wrapper.findComponent({ name: 'VirtualScroller' })
     scroller.vm.$emit('scrollabilityChange', false)

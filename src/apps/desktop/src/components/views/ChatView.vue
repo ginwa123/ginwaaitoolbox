@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Re
 import { marked } from 'marked'
 import * as api from '../../api'
 import { chatEngineDb, newestCursor, toChatMessage } from '../../sync/ChatEngineDb'
+import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../../sync/runtime'
 import { useChatScrollRestore } from '../../composables/useChatScrollRestore'
 import {
   stripThinkingTags,
@@ -2043,7 +2044,11 @@ const fetchOlderPage = async (cursor: string | null): Promise<BufferedOlderPage>
     const oldest = messages.value[0]
     if (oldest) {
       const beforeKey = oldest.timestamp ? oldest.timestamp.getTime() * 1e6 : 0
-      const cached = await chatEngineDb.loadOlderFromCache(sessionId.value, beforeKey, PAGE_SIZE)
+      const cached = await runSyncEffectOr(
+        chatEngineDb.loadOlderFromCache(sessionId.value, beforeKey, PAGE_SIZE),
+        [],
+        'messages.loadOlderFromCache',
+      )
       if (cached.length > 0) {
         return {
           fetchedWithCursor: cursor,
@@ -2609,9 +2614,17 @@ const loadChatHistory = async () => {
   // through to the full-load path below unchanged.
   try {
     const sid = sessionId.value
-    const cached = await chatEngineDb.primeFromCache(sid, PAGE_SIZE)
+    const cached = await runSyncEffectOr(
+      chatEngineDb.primeFromCache(sid, PAGE_SIZE),
+      [],
+      'messages.primeFromCache',
+    )
     if (cached.length > 0 && sessionId.value === sid) {
-      const storedCursor = await chatEngineDb.getCursor(sid)
+      const storedCursor = await runSyncEffectOr(
+        chatEngineDb.getCursor(sid),
+        null,
+        'messages.getCursor',
+      )
       isInitialLoad = true
       try {
         const liveMessagesAtPaint = currentLiveMessages()
@@ -2630,7 +2643,10 @@ const loadChatHistory = async () => {
       await nextTick()
       scrollToBottom(true, 'cached-mount')
       try {
-        const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE, liveMessageIds)
+        const delta = await runSyncEffect(
+          chatEngineDb.loadDelta(sid, PAGE_SIZE, liveMessageIds),
+          'messages.loadDelta',
+        )
         if (delta && sessionId.value === sid) {
           applyDeltaExtra(delta.extra)
           if (delta.items.length > 0) {
@@ -2714,14 +2730,17 @@ const loadChatHistory = async () => {
         const sid = sessionId.value
         const allRows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
         const rows = allRows.filter((row) => !liveMessageIds.has(row.id))
-        await chatEngineDb.putLocal(sid, rows)
+        await runSyncVoid(chatEngineDb.putLocal(sid, rows), 'messages.putLocal')
         // Sync cursor must be the newest row, not the pagination cursor:
         // the backend omits next_cursor when has_more is false (wiping the
         // cursor to null), and on a full page it points at the oldest row
         // (re-fetching the same page next mount). Either way the next mount
         // degrades to a full desc limit=1000 load.
         if (rows.length === allRows.length) {
-          await chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null))
+          await runSyncVoid(
+            chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null)),
+            'messages.setCursor',
+          )
         }
       } catch {
         // Ignore — cache is advisory on write.
@@ -3298,8 +3317,9 @@ const persistSseFullRowLocally = (
     const createdAt = Number.isFinite(Number(evtSec))
       ? Number(evtSec)
       : Math.floor(timestamp.getTime() / 1000)
-    void chatEngineDb.putLocal(sid, [
-      toChatMessage(sid, {
+    void runSyncVoid(
+      chatEngineDb.putLocal(sid, [
+        toChatMessage(sid, {
         id: messageId,
         role,
         content: event.content || '',
@@ -3315,8 +3335,10 @@ const persistSseFullRowLocally = (
         is_input: event.is_input,
         is_output: event.is_output,
         reasoning_content: event.reasoning_content || undefined,
-      }),
-    ])
+        }),
+      ]),
+      'messages.putLocal',
+    )
   } catch {
     // Cache writes are advisory; the live message is already updated.
   }
@@ -3715,7 +3737,10 @@ const connectSse = () => {
             await loadChatHistory()
             return
           }
-          const delta = await chatEngineDb.loadDelta(sid, PAGE_SIZE, liveMessageIds)
+          const delta = await runSyncEffect(
+            chatEngineDb.loadDelta(sid, PAGE_SIZE, liveMessageIds),
+            'messages.loadDelta',
+          )
           if (!delta || sessionId.value !== sid) return
           applyDeltaExtra(delta.extra)
           if (delta.items.length > 0) {

@@ -8,6 +8,7 @@ import { readWorkspacesCache } from '../helpers/workspacesCache'
 import { userScopedKey, isIdentityResolved } from '../helpers/userScope'
 import { readTaskMediaCache, writeTaskMediaCache } from '../helpers/taskMediaCache'
 import { TaskEngineDb, type TaskRequest } from '../sync/TaskEngineDb'
+import { runSyncEffect, runSyncEffectOr, runSyncVoid } from '../sync/runtime'
 import type { DesignElement, DesignPage } from '../api'
 
 export interface KanbanColumn {
@@ -676,7 +677,10 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     task: Task,
     columnId?: string,
   ): Promise<void> {
-    await taskEngineDb.putTaskInContexts(taskCacheContexts(workspaceId, itemId, columnId), task)
+    await runSyncVoid(
+      taskEngineDb.putTaskInContexts(taskCacheContexts(workspaceId, itemId, columnId), task),
+      'tasks.putTaskInContexts',
+    )
   }
 
   // Evict one task from every cache context it could live in (the
@@ -689,7 +693,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     columnId?: string,
   ): Promise<void> {
     for (const request of taskCacheContexts(workspaceId, itemId, columnId)) {
-      await taskEngineDb.removeTask(request, taskId)
+      await runSyncVoid(taskEngineDb.removeTask(request, taskId), 'tasks.removeTask')
     }
   }
 
@@ -703,7 +707,11 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     direction?: 'asc' | 'desc',
   ): Promise<Task[]> {
     const request = taskRequest(workspaceId, itemId, columnId, q, sortBy, direction)
-    const rows = await taskEngineDb.primeFromCache(request, limit)
+    const rows = await runSyncEffectOr(
+      taskEngineDb.primeFromCache(request, limit),
+      [],
+      'tasks.primeFromCache',
+    )
     return rows.map((row) => normalizeTaskTags(row.raw))
   }
 
@@ -717,7 +725,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     direction?: 'asc' | 'desc',
   ): Promise<{ tasks: Task[]; has_more: boolean; next_cursor: string | null } | null> {
     const request = taskRequest(workspaceId, itemId, columnId, q, sortBy, direction)
-    const delta = await taskEngineDb.loadDelta(request, limit)
+    const delta = await runSyncEffect(taskEngineDb.loadDelta(request, limit), 'tasks.loadDelta')
     if (!delta) return null
     return {
       tasks: delta.items.map((row) => normalizeTaskTags(row.raw)),
@@ -3637,13 +3645,16 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         seenIds.add(t.id)
         item.tasks.push(t)
       }
-      await taskEngineDb.putLocal(
-        taskRequest(workspaceId, itemId, columnId, activeQ, activeSort, activeDirection),
-        tasks.map((task) => ({
-          id: task.id,
-          sortKey: (task as unknown as { updated_at?: unknown }).updated_at as string,
-          raw: task,
-        })),
+      await runSyncVoid(
+        taskEngineDb.putLocal(
+          taskRequest(workspaceId, itemId, columnId, activeQ, activeSort, activeDirection),
+          tasks.map((task) => ({
+            id: task.id,
+            sortKey: (task as unknown as { updated_at?: unknown }).updated_at as string,
+            raw: task,
+          })),
+        ),
+        'tasks.putLocal',
       )
       // Update this column's pagination state with the new cursor +
       // hasMore. The backend tells us if THIS column has more pages.

@@ -1,20 +1,32 @@
 /**
- * Generic IndexedDB wrapper for the sync engine.
+ * `IndexedDbStoreLive` — the production `SyncStore` Layer.
  *
- * Uses a dynamic `import('idb')` so SSR/tests without IndexedDB fall back to
- * an in-memory Map instead of crashing at module load. All methods are
- * best-effort safe: IDB failures reject and the engine catches them.
+ * One service, one database connection, three object stores. The previous
+ * shape gave every engine its own `IndexedDbStore` instance, so the same
+ * `nalar-sync` file was opened three times (once per engine) with the
+ * object-store name baked into the instance. Passing the store name per
+ * call removes that duplication.
+ *
+ * The adapter keeps an in-memory mirror of everything it writes, exactly as
+ * before, so a browser with IndexedDB disabled (or a rejected open) still
+ * serves reads. It is now honest about failures though: an IndexedDB error
+ * surfaces as `SyncStorageError` on the error channel instead of being
+ * swallowed into a silent empty result, and the engine decides whether to
+ * degrade. That decision previously lived in a bare `catch {}`.
  */
-import type { Syncable, SyncStore } from './SyncEngine'
+import { Effect, Layer } from 'effect'
+import { SyncStorageError } from './SyncError'
+import { SyncStore, type SyncStoreShape, sortNewestFirst } from './SyncStore'
+import type { Syncable } from './SyncTypes'
 import { getCurrentUserId } from '../helpers/userScope'
 
 const DB_NAME = 'nalar-sync'
 
 /**
- * Per-user database name (plan 2026-09-25, W5).
+ * Per-user database name.
  *
- * The sync cache holds full message bodies, so one shared database means B
- * inherits A's cached chats. Splitting the DATABASE (rather than adding a
+ * The sync cache holds full message bodies, so one shared database means
+ * B inherits A's cached chats. Splitting the DATABASE (rather than adding a
  * `userId` to every key path) needs no schema or key migration and makes a
  * cross-user read impossible by construction — the other user's rows are in
  * a different database.
@@ -26,25 +38,33 @@ function dbName(): string {
   const userId = getCurrentUserId()
   return userId ? `${DB_NAME}:${userId}` : DB_NAME
 }
+
 // v2 added sessions; v3 adds the task-list cache.
 const DB_VERSION = 3
 const KNOWN_STORES = ['messages', 'sessions', 'tasks']
 const TASK_STORE_KEY_PATH: string[] = ['ctx', 'id']
+/** Every store sorts on the engine's normalised `sortKey` field. */
+const SORT_KEY_PATH = 'sortKey'
+
+/** Object stores whose primary key is the row id alone. */
+const keyPathFor = (store: string): string | string[] =>
+  store === 'tasks' ? TASK_STORE_KEY_PATH : 'id'
 
 type IdbModule = typeof import('idb')
 
-export class IndexedDbStore<T extends Syncable> implements SyncStore<T> {
-  private dbPromise: Promise<import('idb').IDBPDatabase> | null = null
-  private mem = new Map<string, T[]>()
-  private memCursors = new Map<string, string | null>()
-  private idbFailed = false
+/**
+ * Builds the live `SyncStore`. Exported separately from the Layer so specs
+ * can drive the adapter with a stubbed `idb` module.
+ */
+export const makeIndexedDbSyncStore = (): SyncStoreShape => {
+  let dbPromise: Promise<import('idb').IDBPDatabase> | null = null
+  let idbFailed = false
+  const mem = new Map<string, Syncable[]>()
+  const memCursors = new Map<string, string | null>()
 
-  constructor(
-    private storeName: string,
-    private sortKeyPath: string = 'sortKey',
-  ) {}
+  const cell = (store: string, key: string): string => `${store} ${key}`
 
-  private async idb(): Promise<IdbModule | null> {
+  const idb = async (): Promise<IdbModule | null> => {
     if (typeof indexedDB === 'undefined') return null
     try {
       return await import('idb')
@@ -53,155 +73,186 @@ export class IndexedDbStore<T extends Syncable> implements SyncStore<T> {
     }
   }
 
-  private async db(): Promise<import('idb').IDBPDatabase | null> {
-    if (this.idbFailed || typeof indexedDB === 'undefined') return null
-    if (!this.dbPromise) {
-      const mod = await this.idb()
+  const db = async (): Promise<import('idb').IDBPDatabase | null> => {
+    if (idbFailed || typeof indexedDB === 'undefined') return null
+    if (!dbPromise) {
+      const mod = await idb()
       if (!mod) return null
-      const sortKeyPath = this.sortKeyPath
-      this.dbPromise = mod.openDB(dbName(), DB_VERSION, {
-        upgrade(db) {
+      dbPromise = mod.openDB(dbName(), DB_VERSION, {
+        upgrade(idbDb) {
           for (const name of KNOWN_STORES) {
-            if (db.objectStoreNames.contains(name)) continue
-            const keyPath = name === 'tasks' ? TASK_STORE_KEY_PATH : 'id'
-            const store = db.createObjectStore(name, { keyPath })
-            store.createIndex('by_ctx_sort', ['ctx', sortKeyPath])
+            if (idbDb.objectStoreNames.contains(name)) continue
+            const store = idbDb.createObjectStore(name, { keyPath: keyPathFor(name) })
+            store.createIndex('by_ctx_sort', ['ctx', SORT_KEY_PATH])
           }
-          if (!db.objectStoreNames.contains('sync_state')) {
-            db.createObjectStore('sync_state', { keyPath: 'key' })
+          if (!idbDb.objectStoreNames.contains('sync_state')) {
+            idbDb.createObjectStore('sync_state', { keyPath: 'key' })
           }
         },
       })
-      this.dbPromise.catch(() => {
-        this.idbFailed = true
-        this.dbPromise = null
+      dbPromise.catch(() => {
+        idbFailed = true
+        dbPromise = null
       })
     }
     try {
-      return await this.dbPromise
+      return await dbPromise
     } catch {
-      this.idbFailed = true
-      this.dbPromise = null
+      idbFailed = true
+      dbPromise = null
       return null
     }
   }
 
-  async getAll(key: string, limit: number): Promise<T[]> {
-    const memRows = (this.mem.get(key) ?? []).slice()
-    if (typeof indexedDB === 'undefined') {
-      return this.sortNewestFirst(memRows).slice(0, limit)
-    }
-    const db = await this.db()
-    if (!db) return this.sortNewestFirst(memRows).slice(0, limit)
-    try {
-      const tx = db.transaction(this.storeName, 'readonly')
-      const index = tx.store.index('by_ctx_sort')
-      const rows = await index.getAll(IDBKeyRange.bound([key, -Infinity], [key, Infinity]))
-      return this.sortNewestFirst(rows as T[]).slice(0, limit)
-    } catch {
-      return this.sortNewestFirst(memRows).slice(0, limit)
-    }
-  }
-
-  async putAll(storeKey: string, items: T[]): Promise<void> {
-    const stamped = items.map((item) => ({ ...item, ctx: storeKey }))
-    const byId = new Map((this.mem.get(storeKey) ?? []).map((item) => [item.id, item]))
-    for (const item of stamped) byId.set(item.id, item as T)
-    this.mem.set(storeKey, [...byId.values()])
-
-    const db = await this.db()
-    if (!db) return
-    const tx = db.transaction(this.storeName, 'readwrite')
-    for (const item of stamped) await tx.store.put(item)
-    await tx.done
-  }
-
-  async remove(storeKey: string, id: string): Promise<void> {
-    const key = this.storeName === 'tasks' ? [storeKey, id] : id
-    const current = this.mem.get(storeKey) ?? []
-    this.mem.set(
-      storeKey,
-      current.filter((item) => item.id !== id),
-    )
-    const db = await this.db()
-    if (!db) return
-    try {
-      await db.delete(this.storeName, key)
-    } catch {
-      // Memory copy already updated.
-    }
-  }
-
-  async getOlder(storeKey: string, beforeSortKey: string | number, limit: number): Promise<T[]> {
-    const db = await this.db()
-    if (!db) {
-      return this.sortNewestFirst(
-        (this.mem.get(storeKey) ?? []).filter(
-          (item) => (item.sortKey as string | number) < beforeSortKey,
-        ),
-      ).slice(0, limit)
-    }
-    try {
-      const tx = db.transaction(this.storeName, 'readonly')
-      const index = tx.store.index('by_ctx_sort')
-      const rows = await index.getAll(
-        IDBKeyRange.bound([storeKey, -Infinity], [storeKey, beforeSortKey as never], false, true),
-      )
-      return this.sortNewestFirst(rows as T[]).slice(0, limit)
-    } catch {
-      return []
-    }
-  }
-
-  async getCursor(key: string): Promise<string | null> {
-    const db = await this.db()
-    if (!db) return this.memCursors.get(key) ?? null
-    try {
-      const row = await db.get('sync_state', `${this.storeName}:${key}`)
-      return ((row as { cursor?: string | null } | undefined)?.cursor ?? null) as string | null
-    } catch {
-      return this.memCursors.get(key) ?? null
-    }
-  }
-
-  async setCursor(key: string, cursor: string | null): Promise<void> {
-    this.memCursors.set(key, cursor)
-    const db = await this.db()
-    if (!db) return
-    try {
-      await db.put('sync_state', { key: `${this.storeName}:${key}`, cursor })
-    } catch {
-      // Memory copy already updated.
-    }
-  }
-
-  async clear(key: string): Promise<void> {
-    this.mem.delete(key)
-    this.memCursors.delete(key)
-    const db = await this.db()
-    if (!db) return
-    try {
-      const tx = db.transaction(this.storeName, 'readwrite')
-      const index = tx.store.index('by_ctx_sort')
-      let cursor = await index.openCursor(IDBKeyRange.bound([key, -Infinity], [key, Infinity]))
-      while (cursor) {
-        await cursor.delete()
-        cursor = await cursor.continue()
-      }
-      await tx.done
-      await db.delete('sync_state', `${this.storeName}:${key}`)
-    } catch {
-      // Best-effort.
-    }
-  }
-
-  /** Newest-first by sortKey desc; handles string|number sortKeys. */
-  private sortNewestFirst(rows: T[]): T[] {
-    return rows.slice().sort((a, b) => {
-      const ak = a.sortKey as string | number
-      const bk = b.sortKey as string | number
-      if (typeof ak === 'number' && typeof bk === 'number') return bk - ak
-      return String(bk) < String(ak) ? -1 : String(bk) > String(ak) ? 1 : 0
+  /**
+   * Wraps an IndexedDB operation so a rejection becomes a typed
+   * `SyncStorageError` instead of an unhandled promise rejection.
+   */
+  const attempt = <A>(
+    store: string,
+    op: string,
+    body: () => Promise<A>,
+  ): Effect.Effect<A, SyncStorageError> =>
+    Effect.tryPromise({
+      try: body,
+      catch: (e) =>
+        new SyncStorageError({
+          op,
+          store,
+          reason: e instanceof Error ? e.message : String(e),
+        }),
     })
+
+  return {
+    getAll: <T extends Syncable>(store: string, key: string, limit: number) => {
+      const memRows = (mem.get(cell(store, key)) ?? []).slice()
+      if (typeof indexedDB === 'undefined') {
+        return Effect.succeed(sortNewestFirst(memRows).slice(0, limit) as T[])
+      }
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return yield* Effect.succeed(sortNewestFirst(memRows).slice(0, limit) as T[])
+        const rows = yield* attempt(store, 'getAll', async () => {
+          const tx = handle.transaction(store, 'readonly')
+          const index = tx.store.index('by_ctx_sort')
+          return (await index.getAll(IDBKeyRange.bound([key, -Infinity], [key, Infinity]))) as T[]
+        })
+        return sortNewestFirst(rows).slice(0, limit) as T[]
+      })
+    },
+
+    putAll: <T extends Syncable>(store: string, key: string, items: ReadonlyArray<T>) => {
+      const stamped = items.map((item) => ({ ...item, ctx: key }))
+      const c = cell(store, key)
+      const byId = new Map((mem.get(c) ?? []).map((r) => [r.id, r]))
+      for (const item of stamped) byId.set(item.id, item as unknown as Syncable)
+      mem.set(c, [...byId.values()])
+      if (typeof indexedDB === 'undefined') return Effect.void
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return
+        yield* attempt(store, 'putAll', async () => {
+          const tx = handle.transaction(store, 'readwrite')
+          for (const item of stamped) await tx.store.put(item)
+          await tx.done
+        })
+      })
+    },
+
+    remove: (store: string, key: string, id: string) => {
+      const primaryKey = store === 'tasks' ? [key, id] : id
+      const c = cell(store, key)
+      mem.set(
+        c,
+        (mem.get(c) ?? []).filter((r) => r.id !== id),
+      )
+      if (typeof indexedDB === 'undefined') return Effect.void
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return
+        yield* attempt(store, 'remove', async () => {
+          await handle.delete(store, primaryKey as never)
+        })
+      })
+    },
+
+    getOlder: <T extends Syncable>(
+      store: string,
+      key: string,
+      beforeSortKey: string | number,
+      limit: number,
+    ) => {
+      const fromMem = (): T[] =>
+        sortNewestFirst(
+          (mem.get(cell(store, key)) ?? []).filter((r) => r.sortKey < beforeSortKey),
+        ).slice(0, limit) as T[]
+      if (typeof indexedDB === 'undefined') return Effect.succeed(fromMem())
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return yield* Effect.succeed(fromMem())
+        const rows = yield* attempt(store, 'getOlder', async () => {
+          const tx = handle.transaction(store, 'readonly')
+          const index = tx.store.index('by_ctx_sort')
+          return (await index.getAll(
+            IDBKeyRange.bound([key, -Infinity], [key, beforeSortKey as never], false, true),
+          )) as T[]
+        })
+        return sortNewestFirst(rows).slice(0, limit) as T[]
+      })
+    },
+
+    getCursor: (store: string, key: string) => {
+      const c = cell(store, key)
+      if (typeof indexedDB === 'undefined') return Effect.succeed(memCursors.get(c) ?? null)
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return yield* Effect.succeed(memCursors.get(c) ?? null)
+        const row = yield* attempt(store, 'getCursor', () =>
+          handle.get('sync_state', `${store}:${key}`),
+        )
+        return ((row as { cursor?: string | null } | undefined)?.cursor ?? null) as string | null
+      })
+    },
+
+    setCursor: (store: string, key: string, cursor: string | null) => {
+      const c = cell(store, key)
+      memCursors.set(c, cursor)
+      if (typeof indexedDB === 'undefined') return Effect.void
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return
+        yield* attempt(store, 'setCursor', async () => {
+          await handle.put('sync_state', { key: `${store}:${key}`, cursor })
+        })
+      })
+    },
+
+    clear: (store: string, key: string) => {
+      const c = cell(store, key)
+      mem.delete(c)
+      memCursors.delete(c)
+      if (typeof indexedDB === 'undefined') return Effect.void
+      return Effect.gen(function* () {
+        const handle = yield* Effect.promise(db)
+        if (!handle) return
+        yield* attempt(store, 'clear', async () => {
+          const tx = handle.transaction(store, 'readwrite')
+          const index = tx.store.index('by_ctx_sort')
+          let cursor = await index.openCursor(IDBKeyRange.bound([key, -Infinity], [key, Infinity]))
+          while (cursor) {
+            await cursor.delete()
+            cursor = await cursor.continue()
+          }
+          await tx.done
+          await handle.delete('sync_state', `${store}:${key}`)
+        })
+      })
+    },
   }
 }
+
+/** Production layer: the IndexedDB-backed local cache. */
+export const IndexedDbStoreLive: Layer.Layer<SyncStore> = Layer.sync(
+  SyncStore,
+  makeIndexedDbSyncStore,
+)

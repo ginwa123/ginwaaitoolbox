@@ -15,10 +15,14 @@
  * cursors stay component-local (chatsNextCursor); no sync cursor is
  * persisted.
  */
+import { Effect } from 'effect'
 import * as api from '../api'
 import type { Chat } from '../api'
-import { BaseSyncEngine, type SyncDelta } from './SyncEngine'
-import { IndexedDbStore } from './IndexedDbStore'
+import { BaseSyncEngine } from './SyncEngine'
+import { SyncRemoteError, type SyncError } from './SyncError'
+import type { SyncStoreShape } from './SyncStore'
+import { makeIndexedDbSyncStore } from './IndexedDbStore'
+import type { SyncDelta } from './SyncTypes'
 
 /** Full server row for one session (branch, timestamps, model...). */
 export type SessionRawRow = Chat
@@ -51,25 +55,15 @@ export interface SessionDelta extends SyncDelta<SessionRow> {
 }
 
 export class SessionEngineDb extends BaseSyncEngine<SessionRow, SessionCtx> {
-  private store: IndexedDbStore<SessionRow> | null = null
-
   constructor(
     // Namespace indirection (NOT a bare `getChats` import): the property
     // is read at call time so `vi.spyOn(api, 'getChats')` — the seam
     // every ChatsList spec uses — intercepts engine fetches too.
     private fetchFn: typeof api.getChats = (...args) => api.getChats(...args),
     storeName = 'sessions',
+    store: SyncStoreShape = makeIndexedDbSyncStore(),
   ) {
-    super()
-    try {
-      this.store = new IndexedDbStore<SessionRow>(storeName, 'sortKey')
-    } catch {
-      this.store = null
-    }
-  }
-
-  protected storeOrNull(): IndexedDbStore<SessionRow> | null {
-    return this.store
+    super(storeName, store)
   }
 
   /** Newest-first: larger `updated_at` sorts earlier (ISO strings compare lexicographically). */
@@ -82,13 +76,12 @@ export class SessionEngineDb extends BaseSyncEngine<SessionRow, SessionCtx> {
     return item.sortKey || null
   }
 
-  protected async fetchDelta(
+  protected fetchDelta(
     cursor: string | null,
     limit: number,
     ctx: SessionCtx,
-  ): Promise<SyncDelta<SessionRow>> {
-    const delta = await this.fetchDeltaPage(cursor, limit, ctx)
-    return delta
+  ): Effect.Effect<SyncDelta<SessionRow>, SyncRemoteError> {
+    return this.fetchDeltaPage(cursor, limit, ctx)
   }
 
   /**
@@ -97,44 +90,54 @@ export class SessionEngineDb extends BaseSyncEngine<SessionRow, SessionCtx> {
    * list desc and let the caller merge by id. `_cursor` is accepted for
    * the base-class contract and ignored.
    */
-  async fetchDeltaPage(
+  fetchDeltaPage(
     _cursor: string | null,
     limit: number,
     ctx: SessionCtx,
-  ): Promise<SessionDelta> {
+  ): Effect.Effect<SessionDelta, SyncRemoteError> {
     const workspaceId = ctx === 'all' ? undefined : ctx
-    const data = await this.fetchFn('updated_at', 'desc', limit, undefined, workspaceId)
-    const items: SessionRow[] = (data.sessions ?? []).map(toSessionRow)
-    return {
-      items,
-      nextCursor: data.next_cursor ?? null,
-      hasMore: data.has_more ?? false,
-      cursorToSave: data.next_cursor ?? null,
-      total: data.total ?? items.length,
-    }
+    return Effect.tryPromise({
+      try: () => this.fetchFn('updated_at', 'desc', limit, undefined, workspaceId),
+      catch: (e) =>
+        new SyncRemoteError({
+          op: 'sessions.fetchDelta',
+          reason: e instanceof Error ? e.message : String(e),
+        }),
+    }).pipe(
+      Effect.map((data): SessionDelta => {
+        const items: SessionRow[] = (data.sessions ?? []).map(toSessionRow)
+        return {
+          items,
+          nextCursor: data.next_cursor ?? null,
+          hasMore: data.has_more ?? false,
+          cursorToSave: data.next_cursor ?? null,
+          total: data.total ?? items.length,
+        }
+      }),
+    )
   }
 
   /**
    * Background refresh for a cached mount: fetch page 1, persist it.
-   * Never throws — IDB/network failure keeps the painted cache.
+   *
+   * Now honest about failure — a rejected fetch surfaces as
+   * `SyncRemoteError` instead of the old `catch { return null }`, so a
+   * caller can tell "no new sessions" from "the sidebar could not refresh".
    */
-  async loadDelta(ctx: SessionCtx, limit: number): Promise<SessionDelta | null> {
-    try {
-      const delta = await this.fetchDeltaPage(null, limit, ctx)
-      await this.putLocal(ctx, delta.items)
+  loadDelta(ctx: SessionCtx, limit: number): Effect.Effect<SessionDelta, SyncError> {
+    // A generator's `this` is its own, so capture the engine outside.
+    // oxlint-disable-next-line typescript-eslint/no-this-alias -- see SyncEngine.syncOnMount
+    const engine = this
+    return Effect.gen(function* () {
+      const delta = yield* engine.fetchDeltaPage(null, limit, ctx)
+      yield* engine.putLocal(ctx, delta.items)
       return delta
-    } catch {
-      return null
-    }
+    })
   }
 
-  /** Evict one session (SSE `deleted` / removeChat). Never throws. */
-  async removeSession(ctx: SessionCtx, id: string): Promise<void> {
-    try {
-      await this.removeLocal(ctx, id)
-    } catch {
-      // Best-effort.
-    }
+  /** Evict one session (SSE `deleted` / removeChat). Never fails. */
+  removeSession(ctx: SessionCtx, id: string): Effect.Effect<void> {
+    return this.removeLocal(ctx, id)
   }
 }
 

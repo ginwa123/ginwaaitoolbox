@@ -12,6 +12,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { createApp, type App as VueApp, nextTick, ref } from 'vue'
+import { Effect } from 'effect'
 
 import ChatsList from '../components/views/ChatsList.vue'
 import { sessionEngineDb } from '../sync/SessionEngineDb'
@@ -99,7 +100,7 @@ describe('ChatsList local-first + no delete X', () => {
     __setSseBusGlobalClient(makeStubClient('connecting'))
     mockGetChats.mockReset()
     // Unscoped in tests (no active workspace) → cache ctx 'all'.
-    await sessionEngineDb.clear('all')
+    await Effect.runPromise(sessionEngineDb.clear('all'))
   })
 
   afterEach(() => {
@@ -124,9 +125,11 @@ describe('ChatsList local-first + no delete X', () => {
   })
 
   it('paints cached rows instantly while the delta is in flight', async () => {
-    await sessionEngineDb.putLocal('all', [
-      toSessionRow(sess('cached-1', 'Cached chat', '2026-09-19 10:00:00')),
-    ])
+    await Effect.runPromise(
+      sessionEngineDb.putLocal('all', [
+        toSessionRow(sess('cached-1', 'Cached chat', '2026-09-19 10:00:00')),
+      ]),
+    )
     let resolveDelta!: (v: {
       sessions: Chat[]
       has_more: boolean
