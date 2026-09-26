@@ -1,9 +1,31 @@
 package com.nalar.mobile.network
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.navigation.NavGraph
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -22,6 +44,10 @@ import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.HomeUiState
 import com.nalar.mobile.shell.MobileHomeScreen
+import com.nalar.mobile.ui.NalarAccent
+import com.nalar.mobile.ui.NalarBackground
+import com.nalar.mobile.ui.NalarMuted
+import com.nalar.mobile.ui.NalarText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -43,6 +69,67 @@ object NalarRoutes {
     fun chat(sessionId: String): String = "chat/${UriEncoding.encode(sessionId)}"
 
     fun recordDetail(recordId: Long): String = "network/record/$recordId"
+}
+
+/**
+ * What one back action should do.
+ *
+ * The distinction is not a nicety. `NavController.popBackStack()` with no
+ * argument is **inclusive** — it pops the current destination *and* stops at the
+ * graph, and `dispatchOnDestinationChanged()` then drops that graph from the top
+ * of the queue as well. At a one-destination depth that single call therefore
+ * leaves the controller with no destination at all, reports `false` while doing
+ * it, and `NavHost` renders *nothing* for an empty back stack: no destination,
+ * no screen, nothing to press, just the theme's window background. Checking the
+ * return value is not a defence, because the damage is already done by the time
+ * the call returns.
+ *
+ * The system Back button cannot cause this: `updateOnBackPressedCallbackEnabled`
+ * keeps the callback disabled while `destinationCountOnBackStack <= 1`. Only an
+ * app-initiated pop reaches that depth, which is what the back arrows here are.
+ */
+internal enum class BackAction {
+    /** A real destination sits under this one, so pop back onto it. */
+    PopPrevious,
+
+    /**
+     * Nothing but the graph sits underneath — a `popUpTo(SHELL)` navigation, or a
+     * deep link that never pushed the shell. Rebuild onto the shell rather than
+     * leave `NavHost` with nothing to draw.
+     */
+    ReturnToShell,
+}
+
+/**
+ * [hasDestinationBelow] is "is there a non-graph entry under the current one",
+ * which is false both on the shell and on a leaf with no shell beneath it. The
+ * two want different answers, so the caller has to tell them apart; see
+ * [goBackToPreviousOrShell].
+ */
+internal fun backActionFor(hasDestinationBelow: Boolean): BackAction =
+    if (hasDestinationBelow) BackAction.PopPrevious else BackAction.ReturnToShell
+
+/**
+ * One back action, for an app with a single activity.
+ *
+ * Top level and free of Compose so it can be driven against a real
+ * `NavController` on a device: the whole defect is a property of the controller,
+ * not of how the screens are drawn.
+ */
+internal fun NavHostController.goBackToPreviousOrShell() {
+    val below = previousBackStackEntry?.destination
+    when (backActionFor(below != null && below !is NavGraph)) {
+        BackAction.PopPrevious -> popBackStack()
+
+        // Non-inclusive: the shell is the one entry that must survive. When it is
+        // not on the stack the library logs and skips the pop, and the shell is
+        // pushed on top — the user lands on the home screen either way instead of
+        // on nothing.
+        BackAction.ReturnToShell -> navigate(NalarRoutes.SHELL) {
+            popUpTo(NalarRoutes.SHELL) { inclusive = false }
+            launchSingleTop = true
+        }
+    }
 }
 
 /**
@@ -98,10 +185,27 @@ fun NalarNavGraph(
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
 
+    // A `nalar://` link or a `popUpTo(SHELL)` navigation can leave a leaf as the
+    // only destination on the back stack. The back arrow there used to call the
+    // inclusive `popBackStack()`, which emptied the back stack and left `NavHost`
+    // drawing nothing at all. See [BackAction].
+    val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
+
+    // `NavHost` emits nothing at all when the controller has no destination, and
+    // the window then shows only the theme's background. This guard is not a
+    // substitute for [goBack] — it is what turns any future way into that state
+    // into one tap instead of a dead window.
+    val visibleDestinations by navController.visibleEntries.collectAsState()
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(NalarBackground),
+    ) {
     NavHost(
         navController = navController,
         startDestination = NalarRoutes.SHELL,
-        modifier = modifier,
+        modifier = Modifier.fillMaxSize(),
     ) {
         composable(NalarRoutes.SHELL) {
             when (authState.phase) {
@@ -175,7 +279,7 @@ fun NalarNavGraph(
             ChatScreen(
                 state = chatState,
                 chatTitle = chatTitleFor(sessionId, homeState.chats),
-                onBack = { navController.popBackStack() },
+                onBack = goBack,
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,
                 onStop = onStopChatRun,
@@ -190,7 +294,7 @@ fun NalarNavGraph(
             deepLinks = listOf(navDeepLink { uriPattern = "nalar://network" }),
         ) {
             NetworkInspectorScreen(
-                onBack = { navController.popBackStack() },
+                onBack = goBack,
                 onOpenRecord = { recordId -> navController.navigate(NalarRoutes.recordDetail(recordId)) },
             )
         }
@@ -207,13 +311,70 @@ fun NalarNavGraph(
             val recordId = backStackEntry.arguments?.getLong(NalarRoutes.ARG_RECORD_ID)
             NetworkRecordDetailScreen(
                 recordId = recordId,
-                onBack = { navController.popBackStack() },
+                onBack = goBack,
                 onReplay = { entry ->
                     coroutineScope.launch {
                         withContext(Dispatchers.IO) { replayNetworkEntry(entry) }
                     }
                 },
             )
+        }
+    }
+
+        if (visibleDestinations.isEmpty()) {
+            NavigationLostScreen(onReturnHome = goBack)
+        }
+    }
+}
+
+/**
+ * The app is showing no destination at all.
+ *
+ * A `NavHost` with an empty back stack composes nothing, so without this the
+ * window keeps the theme's background and the reader has no way out: Back exits
+ * the app because there is no entry to pop. The reason is never worth making the
+ * reader guess at, so it is stated and one tap is offered.
+ */
+@Composable
+internal fun NavigationLostScreen(
+    onReturnHome: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .background(NalarBackground)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(24.dp)
+            .testTag("navigation_lost"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "This screen is not available",
+            style = MaterialTheme.typography.titleMedium,
+            color = NalarText,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = "The app lost track of where it was. Nothing is missing from your chats.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = NalarMuted,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(
+            onClick = onReturnHome,
+            modifier = Modifier.testTag("navigation_lost_home"),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = NalarAccent,
+                contentColor = NalarBackground,
+            ),
+        ) {
+            Text(text = "Back to chats")
         }
     }
 }

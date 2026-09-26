@@ -231,6 +231,25 @@ it would pin a record open for the life of the session.
   record, so its result lands back in the list.
 - Recording is on by default and can be paused from the inspector's top bar.
 
+### Back never dead-ends the app
+
+Every back affordance goes through one function, `goBackToPreviousOrShell`.
+It exists because the obvious spelling is a trap: `NavController.popBackStack()`
+with no argument is **inclusive**, and `dispatchOnDestinationChanged()` drops any
+graph left on top of the queue. At a one-destination depth that single call
+leaves the controller with no destination at all and reports `false` while doing
+it — and `NavHost` renders *nothing* for an empty back stack, so the window keeps
+the theme's background with no way out. System Back cannot cause this (the
+library keeps its callback disabled while `destinationCountOnBackStack <= 1`),
+which is why only an in-app back button finds it.
+
+So the rule is stated rather than assumed: pop only when a real destination sits
+underneath, and otherwise go to the shell. On top of that the graph renders a
+recovery screen whenever `visibleEntries` is empty, so any future way into that
+state costs one tap instead of a dead window. `NavControllerBackStackTest` drives
+a real `NavController` through both paths on a device; `NalarNavGraphBackTest`
+keeps the rule and the shape of the fix honest on the JVM, where CI runs it.
+
 ### Deep links
 
 The inspector, its record detail and each chat are navigation routes, so they

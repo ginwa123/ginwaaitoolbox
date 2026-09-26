@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The window background, not a screen. `Theme.Nalar` inherits
+      `Theme.Material`'s `@android:color/background_material` (#ff303030), which
+      is a *lighter* grey than the app's own background and is what shows through
+      whenever the content view has nothing to draw — a splash frame, or a frame
+      before the first composition. Keeping it identical to NalarBackground means
+      those frames are the app's colour rather than a different grey, so a
+      transition never reads as a different screen.
+    -->
+    <color name="nalar_background">#181616</color>
+</resources>
