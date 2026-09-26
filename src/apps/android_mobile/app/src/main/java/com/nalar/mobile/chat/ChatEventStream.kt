@@ -259,10 +259,12 @@ private fun decodeChatFrameUnsafe(frame: SseFrame): ChatStreamEvent? {
                 )
             } else {
                 val message = ChatApi.toChatMessage(payload)
-                if (message == null || !message.hasVisibleContent) {
+                if (message == null || !message.isRealTurn) {
                     // Accepting a contentless row used to silently drop every
                     // tool result and image-only echo. Anything with a finish
-                    // reason or a tool identity is a real turn.
+                    // reason or a tool identity is a real turn — including a
+                    // call declaration, which draws nothing once its result has
+                    // landed but is the only trace of a call still in flight.
                     null
                 } else {
                     ChatStreamEvent.Full(sessionId, message)

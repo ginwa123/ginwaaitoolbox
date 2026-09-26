@@ -221,8 +221,16 @@ class ToolCardViewTest {
         compose.onNodeWithText("c", substring = true).assertIsDisplayed()
     }
 
+    /**
+     * A call with no result yet is the only thing drawing that call, so it gets
+     * a header — and nothing else. No bubble: the row says "I am going to call
+     * this", which is not something worth a message.
+     *
+     * The paired half is in `ChatViewTest`: once the result lands, this header
+     * disappears, because the card already shows the same call.
+     */
     @Test
-    fun anAssistantToolCallTurnRendersAsASummary() {
+    fun anUnansweredToolCallRendersAsASummary() {
         render(
             ChatUiState(
                 sessionId = "s",

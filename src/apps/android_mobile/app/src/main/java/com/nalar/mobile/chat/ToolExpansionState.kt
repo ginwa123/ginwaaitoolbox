@@ -19,7 +19,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -93,22 +92,28 @@ class ToolExpansion(initial: Map<String, Boolean> = emptyMap()) {
 }
 
 /**
- * The assistant row that only declares tool calls.
+ * The header for tool calls that no card has answered yet.
  *
- * Such a turn has an empty body and a `tool_name` holding every tool in the
- * batch, comma-joined. Rendering it as a tool card would be wrong twice over:
- * there is no result yet, and that name is not a tool. The web collapses these
- * into one "TOOLS" pill for the same reason.
+ * It is a header rather than a row of its own, and that is the whole change:
+ * the call and its output are one thing the reader looks at, so this draws at
+ * the top of the run it belongs to instead of as a separate list item above
+ * it. [groupMessages] decides which calls land here — by the time a call has a
+ * result card on screen, it is not in the list, because the card already shows
+ * the call's name and arguments and a second line repeating them is the noise.
+ *
+ * What is left is the live window: a call declared a moment ago whose `tool`
+ * row has not landed. Those have nothing else drawing them, so the header is
+ * the only thing keeping a running tool call from being invisible.
  */
 @Composable
 fun ToolCallSummaryRow(
-    message: ChatMessage,
+    calls: List<ToolCallEntry>,
     expansion: ToolExpansion,
+    id: String,
     modifier: Modifier = Modifier,
 ) {
-    val calls = remember(message.toolCallsJson) { ToolCalls.parse(message.toolCallsJson) }
     if (calls.isEmpty()) return
-    val expanded = expansion.isExpanded(message.id)
+    val expanded = expansion.isExpanded(id)
 
     Column(
         modifier = modifier
@@ -120,7 +125,7 @@ fun ToolCallSummaryRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expansion.toggle(message.id) }
+                .clickable { expansion.toggle(id) }
                 .padding(horizontal = 8.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

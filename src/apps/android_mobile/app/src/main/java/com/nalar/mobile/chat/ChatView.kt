@@ -440,6 +440,21 @@ private fun ChatMessageGroupRow(
         horizontalAlignment = if (group.isUser) Alignment.End else Alignment.Start,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
+        // Inside the group, not beside it. A tool call and the output that
+        // answers it are one thing to look at, so the header for the calls
+        // still in flight is the first line of the run rather than a list item
+        // of its own. Empty unless [groupMessages] found a call with no card.
+        if (group.unpairedToolCalls.isNotEmpty()) {
+            ToolCallSummaryRow(
+                calls = group.unpairedToolCalls,
+                expansion = toolExpansion,
+                // Namespaced: `group.key` is the first tool message's id, which
+                // is also that card's expansion key, and sharing it would make
+                // opening the header open the first card too.
+                id = "tool-calls-${group.key}",
+                modifier = Modifier.testTag("chat_tool_calls_${group.key}"),
+            )
+        }
         group.messages.forEach { message ->
             MessageRow(message, toolExpansion, onAnswer)
         }
@@ -449,10 +464,15 @@ private fun ChatMessageGroupRow(
 /**
  * One row, dispatched on what it is rather than what it looks like.
  *
- * Three kinds share the transcript: a chat bubble, an assistant turn that only
- * declares tool calls, and a tool result. Deciding that here rather than at the
- * call site is what keeps a tool row from ever being drawn as a bubble — which
- * is what it did before, showing a label above a wall of raw JSON.
+ * Two kinds share the transcript: a chat bubble and a tool result. Deciding
+ * that here rather than at the call site is what keeps a tool row from ever
+ * being drawn as a bubble — which is what it did before, showing a label above
+ * a wall of raw JSON.
+ *
+ * A bare `tool_calls` declaration is *not* a third kind. [groupMessages] folds
+ * it into the run that answers it and leaves what is left in
+ * [ChatMessageGroup.unpairedToolCalls], so there is nothing here for it to
+ * dispatch to.
  */
 @Composable
 private fun MessageRow(
@@ -475,12 +495,6 @@ private fun MessageRow(
                     .testTag("chat_tool_${message.id}"),
             )
         }
-
-        message.isToolCallTurn -> ToolCallSummaryRow(
-            message = message,
-            expansion = toolExpansion,
-            modifier = Modifier.testTag("chat_tool_calls_${message.id}"),
-        )
 
         else -> MessageBubble(message)
     }
@@ -513,12 +527,28 @@ private fun MessageBubble(message: ChatMessage) {
                     )
                     Spacer(Modifier.height(6.dp))
                 }
-                if (message.content.isNotBlank()) {
-                    Text(
-                        text = message.content,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = contentColor,
-                    )
+                if (message.hasRenderableContent) {
+                    // Markdown for the assistant, verbatim for the reader.
+                    // The web makes the same split: an assistant turn is
+                    // `marked.parse`d into `.markdown-content`, a user turn is
+                    // plain `{{ text }}` in a `whitespace-pre-wrap` bubble. A
+                    // question the reader typed must come back looking exactly
+                    // as it was sent, so parsing their `**` and `_` would
+                    // change their own words back at them.
+                    if (message.isUser) {
+                        Text(
+                            text = message.content,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = contentColor,
+                            modifier = Modifier.testTag("chat_body_${message.id}"),
+                        )
+                    } else {
+                        MarkdownText(
+                            source = message.content,
+                            color = contentColor,
+                            modifier = Modifier.testTag("chat_body_${message.id}"),
+                        )
+                    }
                 }
                 if (message.imageUrls.isNotEmpty() || message.videoUrls.isNotEmpty()) {
                     Spacer(Modifier.height(6.dp))
