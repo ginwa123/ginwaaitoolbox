@@ -3,6 +3,7 @@ package com.nalar.mobile.chat
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.InMemoryChatCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -99,40 +100,6 @@ class ChatViewModelCacheTest {
         }
     }
 
-    /**
-     * A cache that honours the real keying, so the tests exercise the same
-     * user-isolation rule the file-backed one does.
-     */
-    private class FakeCache : ChatCache {
-        private val rows = mutableMapOf<String, MutableMap<String, CachedChatMessage>>()
-        private val cursors = mutableMapOf<String, String>()
-        var cleared = false
-
-        override fun readMessages(userId: String?, sessionId: String, limit: Int) =
-            ChatCacheCodec.messagesKey(userId, sessionId)?.let { rows[it] }?.values?.toList()
-                ?.let { ChatCacheCodec.sortNewestFirst(it).take(limit) }
-
-        override fun writeMessages(userId: String?, sessionId: String, messages: List<CachedChatMessage>) {
-            val key = ChatCacheCodec.messagesKey(userId, sessionId) ?: return
-            val bucket = rows.getOrPut(key) { mutableMapOf() }
-            messages.forEach { bucket[it.id] = it }
-        }
-
-        override fun readCursor(userId: String?, sessionId: String) =
-            ChatCacheCodec.cursorKey(userId, sessionId)?.let { cursors[it] }
-
-        override fun writeCursor(userId: String?, sessionId: String, cursor: String?) {
-            val key = ChatCacheCodec.cursorKey(userId, sessionId) ?: return
-            if (cursor.isNullOrBlank()) cursors.remove(key) else cursors[key] = cursor
-        }
-
-        override fun clear() {
-            cleared = true
-            rows.clear()
-            cursors.clear()
-        }
-    }
-
     private class FakeEventStream : ChatEventStream {
         var onEvent: ((ChatStreamEvent) -> Unit)? = null
         var onState: ((ChatStreamState) -> Unit)? = null
@@ -158,7 +125,7 @@ class ChatViewModelCacheTest {
 
     private fun model(
         ioDispatcher: CoroutineDispatcher,
-        cache: ChatCache = FakeCache(),
+        cache: ChatCache = InMemoryChatCache(),
         transport: AuthTransport = FakeTransport(),
         stream: FakeEventStream = FakeEventStream(),
     ) = ChatViewModel(
@@ -209,7 +176,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a cached transcript paints before the network returns`() = cacheTest { s ->
-        val cache = FakeCache().apply {
+        val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "from disk")))
         }
         val model = model(s.ioDispatcher, cache)
@@ -224,7 +191,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a fresh fetch replaces the cached rows and is written through`() = cacheTest { s ->
-        val cache = FakeCache().apply {
+        val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "stale")))
         }
         val model = model(
@@ -252,7 +219,7 @@ class ChatViewModelCacheTest {
     fun `a cold start asks for the newest page, a warm one for the tail only`() = cacheTest { s ->
         val transport = FakeTransport(messages = page())
 
-        model(s.ioDispatcher, FakeCache(), transport).openSession("sess_1")
+        model(s.ioDispatcher, InMemoryChatCache(), transport).openSession("sess_1")
         s.drain()
         assertTrue(
             transport.requestedPaths.messagesRequest(),
@@ -260,7 +227,7 @@ class ChatViewModelCacheTest {
         )
 
         // Second open with a stored cursor: only what is new since it.
-        val warm = FakeCache().apply {
+        val warm = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L)))
             writeCursor("user_a", "sess_1", "${nanoBase + 100L}")
         }
@@ -278,7 +245,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a failed revalidation keeps the cached rows and flags them stale`() = cacheTest { s ->
-        val cache = FakeCache().apply {
+        val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "from disk")))
         }
         val model = model(s.ioDispatcher, cache, FakeTransport(offline = true))
@@ -295,7 +262,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a first launch with no cache and no network is an honest error`() = cacheTest { s ->
-        val model = model(s.ioDispatcher, FakeCache(), FakeTransport(offline = true))
+        val model = model(s.ioDispatcher, InMemoryChatCache(), FakeTransport(offline = true))
 
         model.openSession("sess_1")
         s.drain()
@@ -310,7 +277,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a genuinely empty chat is an empty state, not an error`() = cacheTest { s ->
-        val model = model(s.ioDispatcher, FakeCache(), FakeTransport(messages = page()))
+        val model = model(s.ioDispatcher, InMemoryChatCache(), FakeTransport(messages = page()))
 
         model.openSession("sess_1")
         s.drain()
@@ -323,7 +290,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a blank identity never reads a cache at all`() = cacheTest { s ->
-        val cache = FakeCache().apply {
+        val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "A's secret")))
         }
         val model = model(s.ioDispatcher, cache, stream = FakeEventStream())
@@ -339,7 +306,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `changing account clears the previous transcript before any fetch`() = cacheTest { s ->
-        val cache = FakeCache().apply {
+        val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "A's secret")))
         }
         val model = model(s.ioDispatcher, cache)
@@ -356,7 +323,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `signing out purges every namespace so the next account inherits nothing`() = cacheTest { s ->
-        val cache = FakeCache().apply {
+        val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L)))
         }
         val stream = FakeEventStream()
@@ -414,7 +381,7 @@ class ChatViewModelCacheTest {
             messages = page(wire("m1", 100L), wire("m2", 200L), hasMore = true, nextCursor = "100"),
         )
         val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, FakeCache(), transport, stream)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
         model.openSession("sess_1")
         s.drain()
         assertTrue("the first load is a full one", model.uiState.value.hasMoreOlder)
@@ -457,7 +424,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a full frame replaces the streaming placeholder and lands in the cache`() = cacheTest { s ->
-        val cache = FakeCache()
+        val cache = InMemoryChatCache()
         val stream = FakeEventStream()
         val model = model(s.ioDispatcher, cache, stream = stream)
         model.openSession("sess_1")
@@ -488,7 +455,7 @@ class ChatViewModelCacheTest {
     fun `a reconnect refetches because the server has no replay`() = cacheTest { s ->
         val transport = FakeTransport(messages = page(wire("m1", 100L)))
         val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, FakeCache(), transport, stream)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
         model.openSession("sess_1")
         s.drain()
         val afterFirstLoad = transport.requestedPaths.size
@@ -513,7 +480,7 @@ class ChatViewModelCacheTest {
     fun `a live row is not rolled back by a rest response that started earlier`() = cacheTest { s ->
         val transport = FakeTransport(messages = page())
         val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, FakeCache(), transport, stream)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
         model.openSession("sess_1")
 
         // The tool's completed row arrives live while the fetch is in flight,
@@ -562,7 +529,7 @@ class ChatViewModelCacheTest {
     fun `sending does not insert an optimistic bubble`() = cacheTest { s ->
         val transport = FakeTransport(messages = page())
         val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, FakeCache(), transport, stream)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
         model.openSession("sess_1")
         s.drain()
 
@@ -583,7 +550,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `a failed send keeps the draft so a retry is one tap`() = cacheTest { s ->
-        val model = model(s.ioDispatcher, FakeCache(), FakeTransport(sendStatus = 400))
+        val model = model(s.ioDispatcher, InMemoryChatCache(), FakeTransport(sendStatus = 400))
         model.openSession("sess_1")
         s.drain()
 
@@ -599,7 +566,7 @@ class ChatViewModelCacheTest {
     @Test
     fun `a send to a chat that is not open does nothing`() = cacheTest { s ->
         val transport = FakeTransport()
-        val model = model(s.ioDispatcher, FakeCache(), transport)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport)
         model.onDraftChanged("stray")
 
         model.sendMessage()
@@ -614,7 +581,7 @@ class ChatViewModelCacheTest {
         // open mid-run otherwise stops one message short of the live answer.
         val model = model(
             s.ioDispatcher,
-            FakeCache(),
+            InMemoryChatCache(),
             FakeTransport(
                 messages = page(wire("m1", 100L)),
                 streamSnapshot = """{"active":true,"content":"half an ans"}""",
@@ -634,7 +601,7 @@ class ChatViewModelCacheTest {
     fun `an idle server contributes no placeholder`() = cacheTest { s ->
         val model = model(
             s.ioDispatcher,
-            FakeCache(),
+            InMemoryChatCache(),
             FakeTransport(
                 messages = page(wire("m1", 100L)),
                 streamSnapshot = """{"active":false,"content":""}""",
@@ -653,7 +620,7 @@ class ChatViewModelCacheTest {
         val stream = FakeEventStream()
         val model = model(
             s.ioDispatcher,
-            FakeCache(),
+            InMemoryChatCache(),
             FakeTransport(
                 messages = page(wire("m1", 100L)),
                 streamSnapshot = """{"active":true,"content":"stale snapshot"}""",
@@ -680,7 +647,7 @@ class ChatViewModelCacheTest {
                 nextCursor = "500",
             ),
         )
-        val model = model(s.ioDispatcher, FakeCache(), transport)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport)
         model.openSession("sess_1")
         s.drain()
         assertTrue(model.uiState.value.hasMoreOlder)
@@ -704,7 +671,7 @@ class ChatViewModelCacheTest {
     @Test
     fun `paging is not retried once the server says there is no more`() = cacheTest { s ->
         val transport = FakeTransport(messages = page(wire("m1", 100L)))
-        val model = model(s.ioDispatcher, FakeCache(), transport)
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport)
         model.openSession("sess_1")
         s.drain()
 

@@ -1,9 +1,12 @@
 package com.nalar.mobile.recents
 
 import android.content.Context
-import com.nalar.mobile.storage.EncryptedPrefs
-import org.json.JSONArray
-import org.json.JSONObject
+import com.nalar.mobile.cache.CachedChatSummaryEntity
+import com.nalar.mobile.cache.CachedWorkspaceEntity
+import com.nalar.mobile.cache.NalarCacheDatabase
+import com.nalar.mobile.cache.RecentsCacheDao
+import com.nalar.mobile.storage.KeystoreSealingCipher
+import com.nalar.mobile.storage.SealingCipher
 
 /**
  * Last-known sidebar data, so a cold boot or an offline launch paints real rows
@@ -26,10 +29,12 @@ import org.json.JSONObject
  * 2. **Partitioned per workspace.** Recents are scoped server-side, so the cache
  *    is keyed the same way. Painting workspace A's rows under workspace B's name
  *    is the failure this prevents.
- * 3. **Encrypted at rest.** Chat titles are user content and
- *    SharedPreferences are plaintext on disk. This mirrors
- *    [com.nalar.mobile.auth.SessionCookieStore], under its own key alias so the
- *    two can be rotated independently.
+ * 3. **Encrypted at rest.** Chat titles are user content and a SQLite file is
+ *    plaintext on disk, so the title column is sealed with a Keystore AES-GCM
+ *    key under its own alias. This mirrors
+ *    [com.nalar.mobile.auth.SessionCookieStore], so a suspected cache leak and
+ *    a suspected credential leak stay separate investigations that can be
+ *    rotated separately.
  *
  * Every operation is fail-silent: a corrupt payload, an undecryptable entry or
  * a Keystore that refuses to open degrades to a plain cache miss. A broken
@@ -40,10 +45,19 @@ import org.json.JSONObject
  * [HomeViewModel] enforces by construction, not by convention.
  */
 interface RecentsCache {
+    /**
+     * A null or blank `userId` is a miss, never an unscoped read. That is
+     * stricter than the desktop's `userScopedKey`, which falls back to an
+     * UNSCOPED key when identity is unresolved; on a phone that fallback is
+     * precisely the case where one account's rows leak to the next, so callers
+     * cannot opt into it.
+     */
     fun readWorkspaces(userId: String?): List<WorkspaceOption>?
+
     fun writeWorkspaces(userId: String?, workspaces: List<WorkspaceOption>)
 
     fun readChats(userId: String?, workspaceId: String): List<ChatSummary>?
+
     fun writeChats(userId: String?, workspaceId: String, chats: List<ChatSummary>)
 
     /** Drops every cached entry for every user. Called on sign-out. */
@@ -51,147 +65,177 @@ interface RecentsCache {
 }
 
 /**
- * The pure half of the cache: key namespacing and JSON round-tripping, with no
- * Android dependency so it can be exercised on the JVM. The bugs that matter
- * live here — user isolation, corrupt-payload handling, rows without ids — so
- * this is what the unit tests drive.
+ * [RecentsCache] on Room, one row per workspace and per chat, sealed with a
+ * Keystore key wherever the content is user text.
+ *
+ * ### What SQL took over
+ *
+ * The old store keyed each list by a hand-built string
+ * (`chats::u:<userId>::w:<workspaceId>`) and held a JSON array as the value.
+ * Both of the ways that could go wrong are now structural:
+ *
+ * - **Isolation** is the primary key. A user id is a column, so it cannot be
+ *   confused with a separator, spliced into a neighbour's namespace, or reach
+ *   another partition by any spelling of it.
+ * - **Order** is a `position` column. A JSON array carried its order for free;
+ *   rows do not, and `ORDER BY name` would have re-sorted the drawer into
+ *   alphabetical order under a user who never asked for it.
+ *
+ * ### What sealing costs, stated plainly
+ *
+ * Only `name` and `title` are sealed. The id, position and timestamp columns
+ * stay in the clear because the query needs them — `ORDER BY position` cannot
+ * run on ciphertext. A read therefore decrypts one column per row, which is
+ * the price of keeping the database a plain SQLite file the JVM tests can open
+ * for real; `SealingCipher` explains why SQLCipher was not used instead.
  */
-object RecentsCacheCodec {
-    private const val KEY_SEPARATOR = "::"
+class RoomRecentsCache(
+    private val dao: RecentsCacheDao,
+    private val cipher: SealingCipher,
+) : RecentsCache {
+
+    constructor(context: Context) : this(
+        dao = NalarCacheDatabase.get(context).recentsCacheDao(),
+        cipher = KeystoreSealingCipher(KEY_ALIAS),
+    )
+
+    override fun readWorkspaces(userId: String?): List<WorkspaceOption>? {
+        val user = userId.orNull() ?: return null
+        return quietly(null) {
+            val rows = dao.workspacesFor(user)
+            when {
+                // Nothing cached. A row store cannot tell "never fetched" from
+                // "this account has no workspaces", and `HomeViewModel` cannot
+                // either: it treats both as "nothing to paint, go and fetch",
+                // and the fetch is what decides which of the two it was.
+                rows.isEmpty() -> null
+
+                // One unopenable row invalidates the whole list, exactly as one
+                // undecryptable preference did before. A half-readable drawer
+                // would paint a subset of the user's workspaces and call it
+                // truth; a miss shows the loading state until the fetch lands.
+                else -> {
+                    val names = rows.map { cipher.open(it.nameSealed) }
+                    if (names.any { it == null }) {
+                        dao.deleteWorkspacesFor(user)
+                        null
+                    } else {
+                        rows.mapIndexed { index, row ->
+                            WorkspaceOption(id = row.workspaceId, name = names[index].orEmpty())
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun writeWorkspaces(userId: String?, workspaces: List<WorkspaceOption>) {
+        val user = userId.orNull() ?: return
+        val rows = quietly(null) { workspaces.toEntities(user) } ?: return
+        quietly(Unit) { dao.replaceWorkspaces(user, rows) }
+    }
+
+    override fun readChats(userId: String?, workspaceId: String): List<ChatSummary>? {
+        val user = userId.orNull() ?: return null
+        val workspace = workspaceId.orNull() ?: return null
+        return quietly(null) {
+            val rows = dao.chatsFor(user, workspace)
+            when {
+                rows.isEmpty() -> null
+
+                else -> {
+                    val titles = rows.map { cipher.open(it.titleSealed) }
+                    if (titles.any { it == null }) {
+                        dao.deleteChatsFor(user, workspace)
+                        null
+                    } else {
+                        rows.mapIndexed { index, row ->
+                            ChatSummary(
+                                id = row.chatId,
+                                workspaceId = row.workspaceId,
+                                title = titles[index].orEmpty(),
+                                updatedAtEpochMillis = row.updatedAtEpochMillis,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    override fun writeChats(userId: String?, workspaceId: String, chats: List<ChatSummary>) {
+        val user = userId.orNull() ?: return
+        val workspace = workspaceId.orNull() ?: return
+        val rows = quietly(null) { chats.toEntities(user, workspace) } ?: return
+        quietly(Unit) { dao.replaceChats(user, workspace, rows) }
+    }
+
+    override fun clear() = quietly(Unit) { dao.clearAll() }
 
     /**
-     * `workspaces::u:<userId>` / `chats::u:<userId>::w:<workspaceId>`.
+     * Sealing, all-or-nothing.
      *
-     * The user id is part of the physical key, which is what makes
-     * [RecentsCache.clear] the only way to reach another namespace.
+     * A list where one row failed to seal would paint a workspace under its
+     * real name next to one under a blank, and the correction would then depend
+     * on the user noticing rather than on the next fetch. Half a list is worse
+     * than none, so one failure drops the whole write.
      *
-     * Returns null for a null or blank `userId` so the no-identity case cannot
-     * be expressed as a key at all. This is stricter than the desktop's
-     * `userScopedKey`, which falls back to an UNSCOPED key when identity is
-     * unresolved; on a phone that fallback is precisely the case where one
-     * account's rows leak to the next, so callers cannot opt into it.
+     * Returns null rather than throwing: the caller turns that into "skip this
+     * write", which is the fail-silent contract above.
      */
-    fun workspacesKey(userId: String?): String? =
-        userId
-            ?.takeIf { it.isNotBlank() }
-            ?.let { "workspaces${KEY_SEPARATOR}u:$it" }
-
-    fun chatsKey(userId: String?, workspaceId: String): String? {
-        val id = userId?.takeIf { it.isNotBlank() } ?: return null
-        if (workspaceId.isBlank()) return null
-        return "chats${KEY_SEPARATOR}u:$id${KEY_SEPARATOR}w:$workspaceId"
-    }
-
-    fun encodeWorkspaces(workspaces: List<WorkspaceOption>): String {
-        val array = JSONArray()
-        workspaces.forEach { workspace ->
-            array.put(
-                JSONObject()
-                    .put("id", workspace.id)
-                    .put("name", workspace.name),
-            )
-        }
-        return JSONObject().put("workspaces", array).toString()
-    }
-
-    /** Null on any unrecognizable payload, so a foreign entry reads as a miss. */
-    fun decodeWorkspaces(payload: String?): List<WorkspaceOption>? {
-        val array = try {
-            JSONObject(payload.orEmpty()).optJSONArray("workspaces")
-        } catch (_: Exception) {
-            null
-        } ?: return null
-
-        val out = ArrayList<WorkspaceOption>(array.length())
-        for (index in 0 until array.length()) {
-            val entry = array.optJSONObject(index) ?: return null
-            val id = entry.optString("id").trim()
-            // A row without an id cannot be selected, so the whole payload is
-            // suspect rather than half-trustworthy.
-            if (id.isEmpty()) return null
-            out.add(WorkspaceOption(id = id, name = entry.optString("name").trim()))
-        }
-        return out
-    }
-
-    fun encodeChats(chats: List<ChatSummary>): String {
-        val array = JSONArray()
-        chats.forEach { chat ->
-            array.put(
-                JSONObject()
-                    .put("id", chat.id)
-                    .put("workspaceId", chat.workspaceId)
-                    .put("title", chat.title)
-                    .put("updatedAt", chat.updatedAtEpochMillis),
-            )
-        }
-        return JSONObject().put("chats", array).toString()
-    }
-
-    fun decodeChats(payload: String?): List<ChatSummary>? {
-        val array = try {
-            JSONObject(payload.orEmpty()).optJSONArray("chats")
-        } catch (_: Exception) {
-            null
-        } ?: return null
-
-        val out = ArrayList<ChatSummary>(array.length())
-        for (index in 0 until array.length()) {
-            val entry = array.optJSONObject(index) ?: return null
-            val id = entry.optString("id").trim()
-            if (id.isEmpty()) return null
-            val workspaceId = entry.optString("workspaceId").trim()
-            if (workspaceId.isEmpty()) return null
-            val updatedAt = entry.optLong("updatedAt", RecentsApi.UNKNOWN_TIMESTAMP)
+    private fun List<WorkspaceOption>.toEntities(userId: String): List<CachedWorkspaceEntity>? {
+        val out = ArrayList<CachedWorkspaceEntity>(size)
+        forEachIndexed { index, workspace ->
+            val sealed = cipher.seal(workspace.name) ?: return null
             out.add(
-                ChatSummary(
-                    id = id,
-                    workspaceId = workspaceId,
-                    title = entry.optString("title"),
-                    updatedAtEpochMillis = updatedAt,
+                CachedWorkspaceEntity(
+                    userId = userId,
+                    workspaceId = workspace.id,
+                    position = index,
+                    nameSealed = sealed,
                 ),
             )
         }
         return out
     }
-}
 
-/**
- * [RecentsCache] on SharedPreferences, with every value sealed under AES-GCM
- * through the Android Keystore. Shares [EncryptedPrefs] with the session cookie
- * so the crypto lives in one place, but under its own key alias.
- */
-class KeystoreRecentsCache(context: Context) : RecentsCache {
-    private val prefs = EncryptedPrefs(
-        context = context,
-        preferencesName = PREFERENCES_NAME,
-        keyAlias = KEY_ALIAS,
-    )
-
-    override fun readWorkspaces(userId: String?): List<WorkspaceOption>? {
-        val key = RecentsCacheCodec.workspacesKey(userId) ?: return null
-        return RecentsCacheCodec.decodeWorkspaces(prefs.get(key))
+    private fun List<ChatSummary>.toEntities(
+        userId: String,
+        workspaceId: String,
+    ): List<CachedChatSummaryEntity>? {
+        val out = ArrayList<CachedChatSummaryEntity>(size)
+        forEachIndexed { index, chat ->
+            val sealed = cipher.seal(chat.title) ?: return null
+            out.add(
+                CachedChatSummaryEntity(
+                    userId = userId,
+                    workspaceId = workspaceId,
+                    chatId = chat.id,
+                    position = index,
+                    updatedAtEpochMillis = chat.updatedAtEpochMillis,
+                    titleSealed = sealed,
+                ),
+            )
+        }
+        return out
     }
 
-    override fun writeWorkspaces(userId: String?, workspaces: List<WorkspaceOption>) {
-        val key = RecentsCacheCodec.workspacesKey(userId) ?: return
-        prefs.put(key, RecentsCacheCodec.encodeWorkspaces(workspaces))
+    private inline fun <T> quietly(fallback: T, block: () -> T): T = try {
+        block()
+    } catch (_: Exception) {
+        fallback
     }
-
-    override fun readChats(userId: String?, workspaceId: String): List<ChatSummary>? {
-        val key = RecentsCacheCodec.chatsKey(userId, workspaceId) ?: return null
-        return RecentsCacheCodec.decodeChats(prefs.get(key))
-    }
-
-    override fun writeChats(userId: String?, workspaceId: String, chats: List<ChatSummary>) {
-        val key = RecentsCacheCodec.chatsKey(userId, workspaceId) ?: return
-        prefs.put(key, RecentsCacheCodec.encodeChats(chats))
-    }
-
-    override fun clear() = prefs.clear()
 
     private companion object {
-        const val PREFERENCES_NAME = "nalar_recents"
+        /**
+         * Distinct from the session cookie's and the `/me` cache's aliases:
+         * chat titles are a third kind of thing to rotate independently, and
+         * the value of keeping the old SharedPreferences store's alias is that
+         * an upgrade rotates nothing.
+         */
         const val KEY_ALIAS = "nalar_cache_key_v1"
     }
 }
+
+/** A null or blank identity cannot address a partition, so it is not a partition. */
+private fun String?.orNull(): String? = this?.takeIf { it.isNotBlank() }

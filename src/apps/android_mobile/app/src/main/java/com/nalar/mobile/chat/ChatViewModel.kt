@@ -798,7 +798,7 @@ class ChatViewModel(
                             HttpsAuthTransport(AuthConfig.BASE_URL),
                         ),
                     ),
-                    cache = FileChatCache(application),
+                    cache = RoomChatCache(application),
                     eventStream = HttpChatEventStream(sessionStore),
                 )
             }

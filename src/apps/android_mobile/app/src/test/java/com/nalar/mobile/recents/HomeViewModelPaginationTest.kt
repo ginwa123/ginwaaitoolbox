@@ -3,6 +3,7 @@ package com.nalar.mobile.recents
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.InMemoryRecentsCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -115,31 +116,10 @@ class HomeViewModelPaginationTest {
             path.substringAfter("workspace_id=", "").substringBefore("&")
     }
 
-    private class FakeCache : RecentsCache {
-        val chats = mutableMapOf<String, List<ChatSummary>>()
-        var cleared = false
-
-        override fun readWorkspaces(userId: String?): List<WorkspaceOption>? = null
-
-        override fun writeWorkspaces(userId: String?, value: List<WorkspaceOption>) = Unit
-
-        override fun readChats(userId: String?, workspaceId: String): List<ChatSummary>? =
-            RecentsCacheCodec.chatsKey(userId, workspaceId)?.let { chats[it] }
-
-        override fun writeChats(userId: String?, workspaceId: String, value: List<ChatSummary>) {
-            RecentsCacheCodec.chatsKey(userId, workspaceId)?.let { chats[it] = value }
-        }
-
-        override fun clear() {
-            cleared = true
-            chats.clear()
-        }
-    }
-
     private fun model(
         ioDispatcher: CoroutineDispatcher,
         transport: PagedTransport,
-        cache: RecentsCache = FakeCache(),
+        cache: RecentsCache = InMemoryRecentsCache(),
     ) = HomeViewModel(
         client = RecentsClient(MemorySessionStore(), httpTransport = transport),
         cache = cache,
@@ -416,7 +396,7 @@ class HomeViewModelPaginationTest {
                 "ws_1" to listOf(page(listOf("c1"), hasMore = true, nextCursor = "cur-1", total = 9)),
             ),
         )
-        val cache = FakeCache()
+        val cache = InMemoryRecentsCache()
         val model = model(s.ioDispatcher, transport, cache)
         model.onUserChanged("user_a")
         s.drain()
