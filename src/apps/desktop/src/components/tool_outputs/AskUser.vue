@@ -37,7 +37,8 @@
   Wireframe: docs/wireframes/ask-user-tool.html
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import { tryUnwrapToolOutput } from '../../helpers/unwrapToolOutput'
@@ -407,20 +408,13 @@ const rightMeta = computed(() => {
 
 const answerChip = computed(() => answers.value.join(' · '))
 
-onMounted(() => {
-  if (waiting.value) {
-    window.addEventListener('keydown', onKeydown)
-  }
-})
-
-watch(waiting, (isWaiting) => {
-  if (isWaiting) window.addEventListener('keydown', onKeydown)
-  else window.removeEventListener('keydown', onKeydown)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', onKeydown)
-})
+// The card owns the keyboard only while it is still asking a question, so
+// the target is a getter that yields null once the state leaves `pending`.
+// One call replaces three hand-maintained sites (an onMounted that added,
+// a watch that added and removed, and an onUnmounted that removed again)
+// whose add/remove pairs could drift apart; here the component scope is the
+// single owner of the window keydown handler.
+useEventListener(() => (waiting.value ? window : null), 'keydown', onKeydown)
 
 defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 </script>

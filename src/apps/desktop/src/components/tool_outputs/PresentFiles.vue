@@ -54,7 +54,8 @@
   ✗/✓ status indicators, expand/collapse `+`/`−` toggle.
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import ToolCardHeader from './_shared/ToolCardHeader.vue'
 import ToolParameters from './_shared/ToolParameters.vue'
 import ImagePreview from '../preview/ImagePreview.vue'
@@ -300,11 +301,7 @@ function onPresentHtmlResize(e: MessageEvent): void {
   frame.style.height = `${growFrameToContent(reported, 200)}px`
 }
 
-onMounted(() => {
-  if (typeof window !== 'undefined') {
-    window.addEventListener('message', onPresentHtmlResize)
-  }
-})
+useEventListener(window, 'message', onPresentHtmlResize)
 
 interface PdfState {
   status: 'loading' | 'ready' | 'error' | 'skipped'
@@ -339,9 +336,6 @@ async function fetchPdfFor(f: ParsedPresentFile): Promise<void> {
 }
 
 onUnmounted(() => {
-  if (typeof window !== 'undefined') {
-    window.removeEventListener('message', onPresentHtmlResize)
-  }
   for (const key of Object.keys(pdfByPath.value)) {
     const url = pdfByPath.value[key]?.url
     if (url) {

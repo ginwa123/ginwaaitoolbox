@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { inject, onMounted, onUnmounted, ref, type Ref } from 'vue'
+import { inject, ref, type Ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
@@ -132,13 +133,7 @@ const handleWorkspacesScroll = (e: Event) => {
   }
 }
 
-onMounted(() => {
-  document.addEventListener('click', handleClickOutside)
-})
-
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-})
+useEventListener(document, 'click', handleClickOutside)
 
 const toggleProjectsSection = () => {
   sidebarStore.toggleProjectsExpanded()

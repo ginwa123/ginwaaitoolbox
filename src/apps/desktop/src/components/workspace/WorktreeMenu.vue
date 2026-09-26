@@ -17,7 +17,8 @@
  * The menu closes itself after any action via the parent's v-if binding.
  * Disabled items stay visible but cannot be clicked.
  */
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
 const props = defineProps<{
@@ -46,13 +47,18 @@ const handleClickOutside = (e: MouseEvent) => {
   }
 }
 
-onMounted(() => {
-  // Add a tick delay so the click that opened the menu doesn't immediately close it
-  setTimeout(() => document.addEventListener('click', handleClickOutside), 0)
-})
-onUnmounted(() => {
-  document.removeEventListener('click', handleClickOutside)
-})
+// The component's existence IS the open state (ChatView renders it under
+// v-if), so the listener is bound for exactly the menu's lifetime and the
+// component scope owns teardown. A deferred setTimeout attach could not:
+// unmounting inside that same macrotask ran the removal first, then the
+// pending timer attached a listener nothing would ever remove, and every
+// later click in the app fired `close` on a dead component.
+//
+// The old tick delay existed to skip the click that opened the menu, but the
+// opening click never reaches document anyway: ChatView's trigger uses
+// @click.stop, and the v-if mount happens in a post-flush job, i.e. after
+// that click's propagation has already finished.
+useEventListener(document, 'click', handleClickOutside)
 
 const onCreatePr = () => {
   emit('create-pr')

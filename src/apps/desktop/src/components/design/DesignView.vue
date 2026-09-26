@@ -70,6 +70,7 @@
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import DesignElement from './DesignElement.vue'
 import LayersPanel from './LayersPanel.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
@@ -387,6 +388,36 @@ const saveSidebarWidth = (n: number): void => {
 const sidebarWidth = ref<number>(loadSidebarWidth())
 const isSidebarResizing = ref(false)
 
+// The move closure captures this gesture's startX/startWidth snapshot, so it
+// lives in a ref: useEventListener unrefs the handler on every
+// re-registration, so attach and detach always name the same closure
+// instance. The default is inert and never fires, because the target getters
+// below are null outside a gesture.
+const sidebarMoveHandler = ref<(e: MouseEvent) => void>(() => {})
+
+const endSidebarResize = (): void => {
+  isSidebarResizing.value = false
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  saveSidebarWidth(sidebarWidth.value)
+  sidebarMoveHandler.value = () => {}
+}
+
+// Gating both listeners on a target getter that yields null while no drag is
+// active hands their lifetime to the component scope, so unmounting mid-drag
+// detaches them (and lets the existing onUnmounted clear the body cursor)
+// instead of stranding them on `document`.
+useEventListener(
+  () => (isSidebarResizing.value ? document : null),
+  'mousemove',
+  sidebarMoveHandler,
+)
+useEventListener(
+  () => (isSidebarResizing.value ? document : null),
+  'mouseup',
+  endSidebarResize,
+)
+
 const startSidebarResize = (event: MouseEvent): void => {
   event.preventDefault()
   const startX = event.clientX
@@ -395,7 +426,7 @@ const startSidebarResize = (event: MouseEvent): void => {
   document.body.style.cursor = 'col-resize'
   document.body.style.userSelect = 'none'
 
-  const onMove = (e: MouseEvent): void => {
+  sidebarMoveHandler.value = (e: MouseEvent): void => {
     const dx = startX - e.clientX
     const next = Math.max(
       SIDEBAR_MIN_WIDTH,
@@ -403,16 +434,6 @@ const startSidebarResize = (event: MouseEvent): void => {
     )
     sidebarWidth.value = next
   }
-  const onUp = (): void => {
-    isSidebarResizing.value = false
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-    saveSidebarWidth(sidebarWidth.value)
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
-  }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
 }
 
 // ─── Vertical split between Layers and Properties (within sidebar) ─────
@@ -442,6 +463,29 @@ const saveLayersHeightRatio = (n: number): void => {
 const layersHeightRatio = ref<number>(loadLayersHeightRatio())
 const isLayersResizing = ref(false)
 
+// Same ref-per-gesture shape as the sidebar handle above; sidebarHeight is
+// snapshotted at gesture start, so the closure must be rebuilt per drag.
+const layersMoveHandler = ref<(e: MouseEvent) => void>(() => {})
+
+const endLayersResize = (): void => {
+  isLayersResizing.value = false
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  saveLayersHeightRatio(layersHeightRatio.value)
+  layersMoveHandler.value = () => {}
+}
+
+useEventListener(
+  () => (isLayersResizing.value ? document : null),
+  'mousemove',
+  layersMoveHandler,
+)
+useEventListener(
+  () => (isLayersResizing.value ? document : null),
+  'mouseup',
+  endLayersResize,
+)
+
 const startLayersResize = (event: MouseEvent): void => {
   event.preventDefault()
   const sidebarEl = (event.currentTarget as HTMLElement | null)?.parentElement
@@ -453,21 +497,11 @@ const startLayersResize = (event: MouseEvent): void => {
   document.body.style.cursor = 'row-resize'
   document.body.style.userSelect = 'none'
 
-  const onMove = (e: MouseEvent): void => {
+  layersMoveHandler.value = (e: MouseEvent): void => {
     const dy = e.clientY - startY
     const ratio = startRatio + dy / sidebarHeight
     layersHeightRatio.value = Math.max(0.15, Math.min(0.7, ratio))
   }
-  const onUp = (): void => {
-    isLayersResizing.value = false
-    document.body.style.cursor = ''
-    document.body.style.userSelect = ''
-    saveLayersHeightRatio(layersHeightRatio.value)
-    document.removeEventListener('mousemove', onMove)
-    document.removeEventListener('mouseup', onUp)
-  }
-  document.addEventListener('mousemove', onMove)
-  document.addEventListener('mouseup', onUp)
 }
 
 // ─── Add element dialog state ──────────────────────────────────────────

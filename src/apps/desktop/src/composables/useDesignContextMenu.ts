@@ -1,4 +1,5 @@
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
+import { computed, ref } from 'vue'
 
 export interface ContextMenuState {
   visible: boolean
@@ -58,21 +59,12 @@ export function useDesignContextMenu() {
     if (state.value.visible) close()
   }
 
-  onMounted(() => {
-    document.addEventListener('click', handleDocumentClick)
-    document.addEventListener('keydown', handleDocumentKeydown)
-    window.addEventListener('resize', handleWindowResize)
-    // Capture phase so we catch scroll inside any overflow container
-    // (e.g. the layers panel) before the scroll bubbles up.
-    window.addEventListener('scroll', handleWindowScroll, true)
-  })
-
-  onBeforeUnmount(() => {
-    document.removeEventListener('click', handleDocumentClick)
-    document.removeEventListener('keydown', handleDocumentKeydown)
-    window.removeEventListener('resize', handleWindowResize)
-    window.removeEventListener('scroll', handleWindowScroll, true)
-  })
+  useEventListener(document, 'click', handleDocumentClick)
+  useEventListener(document, 'keydown', handleDocumentKeydown)
+  useEventListener(window, 'resize', handleWindowResize)
+  // Capture phase so we catch scroll inside any overflow container
+  // (e.g. the layers panel) before the scroll bubbles up.
+  useEventListener(window, 'scroll', handleWindowScroll, true)
 
   return {
     open,

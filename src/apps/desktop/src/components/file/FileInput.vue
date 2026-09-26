@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import * as api from '../../api'
 import { getActivePinia } from 'pinia'
 import { useTabsStore } from '../../stores/tabs'
@@ -284,10 +285,11 @@ const handleNativeFileSelect = (event: Event) => {
 // the element-level filter because it reads the system clipboard directly,
 // which is what we want.
 const handlePaste = async (e: ClipboardEvent) => {
-  // Scope: this listener is attached at document level (see onMounted
-  // below), so we get every paste on the page. Only intercept paste when
-  // it originated in OUR textarea — sibling input components (other chat
-  // tabs, search fields, etc.) keep their native paste behavior.
+  // Scope: this listener is attached at document level (see the
+  // useEventListener call below), so we get every paste on the page.
+  // Only intercept paste when it originated in OUR textarea — sibling
+  // input components (other chat tabs, search fields, etc.) keep their
+  // native paste behavior.
   if (e.target !== chatTextareaRef.value) return
 
   const items = e.clipboardData?.items
@@ -378,8 +380,13 @@ const handlePaste = async (e: ClipboardEvent) => {
 // browser's own default-handler in the bubble phase, giving us the option
 // to preventDefault sync before the fallback async read decides whether
 // images were attached.
+
+// The bare `true` is the capture phase, not a truthy no-op: it has to
+// beat the browser's own paste handling, otherwise Ctrl+V image paste
+// stops working. See the block comment above handlePaste.
+useEventListener(document, 'paste', handlePaste, true)
+
 onMounted(() => {
-  document.addEventListener('paste', handlePaste, true)
   // Restore a draft from an earlier mount of this chat (tab switch), but
   // never clobber text the parent already put in the box.
   const bucket = draftBucket()
@@ -395,7 +402,6 @@ onBeforeUnmount(() => {
   // A fast tab switch can beat the 200 ms debounce — persist synchronously
   // so the text is already in the bucket when the next mount looks for it.
   if (draftTimer) flushDraft()
-  document.removeEventListener('paste', handlePaste, true)
   if (fileDebounceTimer) clearTimeout(fileDebounceTimer)
   if (fileSearchTimer) clearTimeout(fileSearchTimer)
   fileSearchAbort?.abort()

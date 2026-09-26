@@ -1,5 +1,6 @@
 <script setup lang="ts" generic="T">
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useTimeoutFn } from '@vueuse/core'
 
 import { computeLoadMoreThreshold } from './virtualScrollerThreshold'
 import { computeAnchorCompensation, type AnchorMeasurement } from './virtualScrollerScrollAnchor'
@@ -1330,6 +1331,25 @@ const remeasure = () => {
 }
 
 let ro: ResizeObserver | null = null
+// The container observer's follow-up measure and the first post-mount
+// measure each need a tick plus a settle delay. Holding them in
+// useTimeoutFn means the handle dies with the component, so a chat switch
+// (AppLayout re-keys ChatView) cannot leave measureItems running against
+// a detached scroller 50-100ms after teardown.
+const containerMeasureTimer = useTimeoutFn(
+  () => {
+    measureItems()
+  },
+  50,
+  { immediate: false },
+)
+const initialMeasureTimer = useTimeoutFn(
+  () => {
+    measureItems()
+  },
+  100,
+  { immediate: false },
+)
 // ── Idle content-size observer ─────────────────────────────────────────────
 // measureItems runs on scroll, remeasure(), and rendered-range change —
 // but NOT when an already-rendered item grows on its own: async image
@@ -1361,7 +1381,7 @@ onMounted(() => {
     containerHeight.value = containerRef.value.clientHeight
     ro = new ResizeObserver(() => {
       if (containerRef.value) containerHeight.value = containerRef.value.clientHeight
-      nextTick(() => setTimeout(measureItems, 50))
+      nextTick(() => containerMeasureTimer.start())
     })
     ro.observe(containerRef.value)
     const contentEl = containerRef.value.querySelector(
@@ -1390,7 +1410,7 @@ onMounted(() => {
       contentRO.observe(contentEl)
     }
   }
-  nextTick(() => setTimeout(measureItems, 100))
+  nextTick(() => initialMeasureTimer.start())
 })
 onUnmounted(() => {
   ro?.disconnect()

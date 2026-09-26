@@ -17,7 +17,8 @@
  * switches must create history entries — Back/Forward crosses
  * workspaces).
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import type { Workspace } from '../../stores/workspaces'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
 import { useContextMenu } from '../../composables/useContextMenu'
@@ -197,8 +198,7 @@ const onDocumentMouseDown = (event: MouseEvent) => {
   close()
 }
 
-onMounted(() => document.addEventListener('mousedown', onDocumentMouseDown))
-onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseDown))
+useEventListener(document, 'mousedown', onDocumentMouseDown)
 </script>
 
 <template>

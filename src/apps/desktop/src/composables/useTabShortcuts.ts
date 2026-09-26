@@ -14,6 +14,8 @@
  * teardown (no lifecycle coupling).
  */
 
+import { useEventListener } from '@vueuse/core'
+
 export type TabCommand = 'new' | 'close' | 'reopen' | 'next' | 'previous' | `select:${number}`
 
 export interface TabShortcutHandlers {
@@ -144,6 +146,9 @@ export function useTabShortcuts(options: TabShortcutOptions): () => void {
     event.preventDefault()
   }
 
-  target.addEventListener('keydown', onKeydown)
-  return () => target.removeEventListener('keydown', onKeydown)
+  // `useEventListener` returns the teardown this composable has always
+  // returned, so the `options.target` injection point used by the spec is
+  // unchanged. The explicit event type is needed because VueUse's
+  // listener parameter is contravariant and defaults to `Event`.
+  return useEventListener<'keydown', KeyboardEvent>(target, 'keydown', onKeydown)
 }

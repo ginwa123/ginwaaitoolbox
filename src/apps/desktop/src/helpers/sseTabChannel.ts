@@ -158,6 +158,7 @@ export function createTabChannel(opts: TabChannelOptions): TabChannel {
   let channel: TabChannelLike | null = null
   let onMessage: ((event: { data: unknown }) => void) | null = null
   let onVisibility: (() => void) | null = null
+  let onPageHide: (() => void) | null = null
 
   /**
    * Total ordering for leadership. A single NUMERIC rank is not enough: two tabs
@@ -444,9 +445,10 @@ export function createTabChannel(opts: TabChannelOptions): TabChannel {
         addEventListener?: (t: string, cb: () => void) => void
       }
       if (typeof w.addEventListener === 'function') {
-        w.addEventListener('pagehide', () => {
+        onPageHide = () => {
           if (leader) post({ k: 'down', tabId })
-        })
+        }
+        w.addEventListener('pagehide', onPageHide)
       }
     },
 
@@ -492,6 +494,13 @@ export function createTabChannel(opts: TabChannelOptions): TabChannel {
           ?.removeEventListener
         if (typeof remove === 'function') remove.call(d, 'visibilitychange', onVisibility)
       }
+      if (onPageHide) {
+        const w = globalThis as unknown as {
+          removeEventListener?: (t: string, cb: () => void) => void
+        }
+        const removePageHide = w.removeEventListener
+        if (typeof removePageHide === 'function') removePageHide.call(w, 'pagehide', onPageHide)
+      }
       try {
         channel?.close()
       } catch {
@@ -500,6 +509,7 @@ export function createTabChannel(opts: TabChannelOptions): TabChannel {
       channel = null
       onMessage = null
       onVisibility = null
+      onPageHide = null
       leader = false
     },
   }

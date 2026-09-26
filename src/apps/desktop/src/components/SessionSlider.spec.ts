@@ -78,11 +78,21 @@ describe('SessionSlider', () => {
     const wrapper = mountVisibleSpinner()
     await wrapper.vm.$nextTick()
 
-    expect(mediaQuery.addEventListener).toHaveBeenCalledWith('change', expect.any(Function))
+    // VueUse's useMediaQuery subscribes with `{ passive: true }` as the third
+    // argument, so match the full (event, handler, options) triple.
+    expect(mediaQuery.addEventListener).toHaveBeenCalledWith(
+      'change',
+      expect.any(Function),
+      expect.anything(),
+    )
     expect(wrapper.find('[data-testid="session-spinner-motion"]').exists()).toBe(false)
     expect(wrapper.find('.session-spinner__arc').exists()).toBe(true)
     wrapper.unmount()
-    expect(mediaQuery.removeEventListener).toHaveBeenCalledWith('change', expect.any(Function))
+    expect(mediaQuery.removeEventListener).toHaveBeenCalledWith(
+      'change',
+      expect.any(Function),
+      expect.anything(),
+    )
   })
 
   it('hides again when processingState[sessionId] flips back to false', async () => {

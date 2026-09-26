@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { useIntervalFn } from '@vueuse/core'
 import FolderExplorer from '../file/FolderExplorer.vue'
 import RightSideBarSkillList from './RightSideBarSkillList.vue'
 import GitCommits from '../git/GitCommits.vue'
@@ -171,19 +172,25 @@ const loadGitStatus = async () => {
 }
 
 // 30s git poll while a workspace is bound (ChatView.checkGitStatus precedent).
-let gitPoll: ReturnType<typeof setInterval> | null = null
+// `immediate: false` keeps the watcher's hand-rolled first load as the only
+// immediate call, so mount/tick timing is byte-for-byte the same as before.
+// The callback stays sync-returning (never awaited) so a slow fetch still
+// overlaps the next tick exactly as raw setInterval did. Scope dispose pauses
+// the timer, so stopGitPoll/startGitPoll keep their old names and call sites.
+const { pause: pauseGitPoll, resume: resumeGitPoll } = useIntervalFn(
+  () => {
+    if (props.cwd) void loadGitStatus()
+  },
+  30000,
+  { immediate: false },
+)
 const stopGitPoll = () => {
-  if (gitPoll) {
-    clearInterval(gitPoll)
-    gitPoll = null
-  }
+  pauseGitPoll()
 }
 const startGitPoll = () => {
   stopGitPoll()
   if (!props.cwd) return
-  gitPoll = setInterval(() => {
-    if (props.cwd) void loadGitStatus()
-  }, 30000)
+  resumeGitPoll()
 }
 
 // Watch for cwd changes

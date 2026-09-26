@@ -154,6 +154,7 @@ export interface DiffCommentSavePayload {
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
+import { useTimeoutFn } from "@vueuse/core";
 
 const props = defineProps<{
   filePath: string;
@@ -171,8 +172,23 @@ const emit = defineEmits<{
 const draft = ref("");
 const showSaved = ref(false);
 const showCopied = ref(false);
-let savedTimer: ReturnType<typeof setTimeout> | null = null;
-let copiedTimer: ReturnType<typeof setTimeout> | null = null;
+// start() clears the pending reset first, so a second flash restarts the
+// window rather than letting the first one cut the new one short. The
+// scope teardown drops a pending reset when the box unmounts mid-flash.
+const showSavedTimer = useTimeoutFn(
+  () => {
+    showSaved.value = false;
+  },
+  2000,
+  { immediate: false },
+);
+const showCopiedTimer = useTimeoutFn(
+  () => {
+    showCopied.value = false;
+  },
+  2000,
+  { immediate: false },
+);
 
 const draftKey = computed(() =>
   buildDraftKey(props.cwd, props.filePath, props.startLine, props.endLine),
@@ -209,16 +225,10 @@ function loadDraft(): void {
 function flash(kind: "saved" | "copied"): void {
   if (kind === "saved") {
     showSaved.value = true;
-    if (savedTimer) clearTimeout(savedTimer);
-    savedTimer = setTimeout(() => {
-      showSaved.value = false;
-    }, 2000);
+    showSavedTimer.start();
   } else {
     showCopied.value = true;
-    if (copiedTimer) clearTimeout(copiedTimer);
-    copiedTimer = setTimeout(() => {
-      showCopied.value = false;
-    }, 2000);
+    showCopiedTimer.start();
   }
 }
 

@@ -83,16 +83,8 @@
   for theme compatibility.
 -->
 <script setup lang="ts">
-import {
-  ref,
-  computed,
-  watch,
-  nextTick,
-  onMounted,
-  onBeforeUnmount,
-  onUnmounted,
-  inject,
-} from 'vue'
+import { ref, computed, watch, nextTick, inject } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import type { Task, KanbanColumn } from '../../stores/workspaces'
 import { useWorkspacesStore } from '../../stores/workspaces'
 import { useKanbanTagSuggestions } from '../../composables/useKanbanTagSuggestions'
@@ -617,8 +609,9 @@ const handleImagePopupKeydown = (e: KeyboardEvent) => {
     closeImagePopup()
   }
 }
-onMounted(() => document.addEventListener('keydown', handleImagePopupKeydown))
-onBeforeUnmount(() => document.removeEventListener('keydown', handleImagePopupKeydown))
+// Bound for the component's lifetime; the handler no-ops unless the
+// image popup is actually open, so an always-on binding is inert.
+useEventListener(document, 'keydown', handleImagePopupKeydown)
 
 // True when the dialog is rendering the create flow (rather than
 // edit-in-place). Drives header copy / icon, save-button text, the
@@ -745,23 +738,15 @@ watch(
   },
 )
 
-// NEW (plan: 2026-08-06-kanban-add-task-button-placement). Register
-// the click-outside listener for the column picker at mount,
-// deregister at unmount. Mirrors the profile picker's pattern (the
-// profile picker uses inline @click.stop on its dropdown to avoid
-// the same listener — both approaches are fine; the column picker
-// uses the document listener because the dropdown is a sibling of
-// the trigger button rather than a child).
-onMounted(() => {
-  document.addEventListener('click', handleDocumentClickColumn)
-  // NEW (Migration 070 — kanban-cwd-session-optional plan). Same
-  // pattern for the per-task cwd picker.
-  document.addEventListener('mousedown', handleDocumentClickCwd)
-})
-onUnmounted(() => {
-  document.removeEventListener('click', handleDocumentClickColumn)
-  document.removeEventListener('mousedown', handleDocumentClickCwd)
-})
+// Click-outside listener for the column picker. Mirrors the profile
+// picker's pattern (the profile picker uses inline @click.stop on its
+// dropdown to avoid the same listener — both approaches are fine; the
+// column picker uses the document listener because the dropdown is a
+// sibling of the trigger button rather than a child).
+useEventListener(document, 'click', handleDocumentClickColumn)
+// Migration 070 — kanban-cwd-session-optional plan. Same pattern
+// for the per-task cwd picker.
+useEventListener(document, 'mousedown', handleDocumentClickCwd)
 
 // Dirty tracking — the Save button enables only when the form is
 // ready to submit. Two semantics:

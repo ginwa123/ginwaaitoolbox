@@ -17,7 +17,8 @@
  * error yields an empty list and the widget degrades to a free-text
  * search box, so the user can still type a ref by hand.
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 
 import { listGitBranches, type GitBranchEntry } from '@/api'
 
@@ -156,10 +157,7 @@ const onDocumentMouseDown = (event: MouseEvent) => {
   if (rootRef.value && target && !rootRef.value.contains(target)) close()
 }
 
-onMounted(() => document.addEventListener('mousedown', onDocumentMouseDown))
-onBeforeUnmount(() =>
-  document.removeEventListener('mousedown', onDocumentMouseDown),
-)
+useEventListener(document, 'mousedown', onDocumentMouseDown)
 
 // A new project root invalidates the cache; the next open refetches.
 watch(

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useTimeoutFn } from '@vueuse/core'
 import { useRouter } from 'vue-router'
 import NalarSettings from '../NalarSettings.vue'
 import SkillsSettings from '../preview/SkillsSettings.vue'
@@ -13,11 +14,16 @@ const activeSettingsTab = ref('nalar')
 // Notification state
 const notification = ref<{ message: string; type: 'success' | 'error' } | null>(null)
 
+// start() clears a pending dismissal first, so a burst of notices still
+// shows the last one for a full 3s. The scope teardown drops the pending
+// dismissal when settings is closed before it fires.
+const dismissNotification = useTimeoutFn(() => {
+  notification.value = null
+}, 3000, { immediate: false })
+
 const showNotification = (message: string, type: 'success' | 'error') => {
   notification.value = { message, type }
-  setTimeout(() => {
-    notification.value = null
-  }, 3000)
+  dismissNotification.start()
 }
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.

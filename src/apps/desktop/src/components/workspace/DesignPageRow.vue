@@ -58,6 +58,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import type { DesignPage } from '../../api'
 import { useCurrentMainView } from '../../composables/useCurrentMainView'
 import OpenInNewTabMenu from '../shell/OpenInNewTabMenu.vue'
@@ -93,27 +94,17 @@ const isCurrentMainView = computed(
 // ⋮ menu state — mirrors the kanban-column ⋮ menu pattern
 // (kanban-sort-by plan, 2026-08-06). The dropdown closes when the
 // user clicks anywhere outside the menuRef container (document
-// mousedown handler attached on open, removed on close).
+// mousedown handler, bound only while the menu is open).
 const menuOpen = ref(false)
 const menuRef = ref<HTMLElement | null>(null)
 
 const toggleMenu = () => {
   menuOpen.value = !menuOpen.value
-  if (menuOpen.value) {
-    // Attach the document listener lazily so the menu works
-    // even when the component is mounted with menuOpen=false
-    // (the default). Removed on close to avoid leaking global
-    // listeners across the row list.
-    document.addEventListener('mousedown', handleClickOutside)
-  } else {
-    document.removeEventListener('mousedown', handleClickOutside)
-  }
 }
 
 const closeMenu = () => {
   if (menuOpen.value) {
     menuOpen.value = false
-    document.removeEventListener('mousedown', handleClickOutside)
   }
 }
 
@@ -124,6 +115,14 @@ const handleClickOutside = (event: MouseEvent) => {
     closeMenu()
   }
 }
+
+// The target is a getter, not `document`, because there is one row per
+// design page: an always-attached listener would stack a document mousedown
+// handler behind every row in the tree and fire it N times per click. The
+// getter returns null while the menu is closed, which detaches the handler,
+// and the component scope detaches it on unmount so a row deleted with its
+// menu open cannot leak the handler.
+useEventListener(() => (menuOpen.value ? document : null), 'mousedown', handleClickOutside)
 
 const handleSelect = (): void => {
   emit('selectPage', props.page)

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
+import { useIntervalFn } from '@vueuse/core'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
@@ -135,7 +136,6 @@ const prConflictsUrl = computed(() => {
 // hiding the badge.
 const prStatusError = ref('')
 let prSeq = 0
-let prPollTimer: number | undefined
 
 const prStatusIcon: Record<string, string> = { M: '📝', A: '➕', D: '🗑️', R: '🔄' }
 
@@ -627,18 +627,31 @@ watch(
   },
 )
 
+// Poll merge state while the PR tab is visible so a GitHub merge
+// flips the badge without a manual refresh. Status-only (cheap
+// `gh pr view`); the heavier diff refetches on explicit refresh.
+// `immediate: false` leaves the first load to onMounted's explicit loadTab,
+// so the initial paint and the poll still start together. The `showPr` gate
+// stays INSIDE the callback rather than becoming a pause: showPr flips with
+// tab/param changes that never unmount this panel, and a watcher-driven pause
+// would need extra flush-time care to avoid latching off across a fast
+// tab-away/tab-back. A no-op tick is cheaper than that race. Scope dispose
+// pauses the timer, and onUnmounted pauses it explicitly as well.
+const { pause: pausePrPoll, resume: resumePrPoll } = useIntervalFn(
+  () => {
+    if (showPr.value) void loadPrStatus()
+  },
+  30000,
+  { immediate: false },
+)
+
 onMounted(() => {
   void loadTab(activeTab.value, true)
-  // Poll merge state while the PR tab is visible so a GitHub merge
-  // flips the badge without a manual refresh. Status-only (cheap
-  // `gh pr view`); the heavier diff refetches on explicit refresh.
-  prPollTimer = window.setInterval(() => {
-    if (showPr.value) void loadPrStatus()
-  }, 30000)
+  resumePrPoll()
 })
 
 onUnmounted(() => {
-  if (prPollTimer !== undefined) window.clearInterval(prPollTimer)
+  pausePrPoll()
 })
 
 defineExpose({

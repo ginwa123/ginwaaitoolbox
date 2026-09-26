@@ -18,7 +18,8 @@
   rendered and the SVG becomes a static muted ring instead.
 -->
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, type Ref } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
+import { computed, inject, ref, type Ref } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -35,23 +36,7 @@ const processingState = inject<Ref<Record<string, boolean>>>(
 )
 
 const isVisible = computed(() => !!processingState.value[props.sessionId])
-const prefersReducedMotion = ref(false)
-let reducedMotionQuery: MediaQueryList | undefined
-
-const syncReducedMotion = () => {
-  prefersReducedMotion.value = reducedMotionQuery?.matches ?? false
-}
-
-onMounted(() => {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return
-  reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
-  syncReducedMotion()
-  reducedMotionQuery.addEventListener('change', syncReducedMotion)
-})
-
-onBeforeUnmount(() => {
-  reducedMotionQuery?.removeEventListener('change', syncReducedMotion)
-})
+const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)')
 </script>
 
 <template>

@@ -41,7 +41,8 @@
       pin-task           [workspaceId, itemId, taskId, isPinned]
 -->
 <script setup lang="ts">
-import { computed, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, ref, nextTick, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import KanbanCard from './KanbanCard.vue'
 import KanbanSortMenu from './KanbanSortMenu.vue'
 import { VirtualScroller } from '@/helpers'
@@ -470,14 +471,11 @@ const handleDocumentClick = (event: MouseEvent) => {
   }
 }
 
-onMounted(() => {
-  document.addEventListener('click', handleDocumentClick)
-  document.addEventListener('keydown', handleSortModalKeyDown)
-})
-onUnmounted(() => {
-  document.removeEventListener('click', handleDocumentClick)
-  document.removeEventListener('keydown', handleSortModalKeyDown)
-})
+// Both stay bound for the component's lifetime; each handler bails
+// out early while the menu / sort modal is closed, so a document-
+// level binding is inert until something is actually open.
+useEventListener(document, 'click', handleDocumentClick)
+useEventListener(document, 'keydown', handleSortModalKeyDown)
 
 // ─── Drag-and-drop state (drop zone) ───────────────────────────────────────
 //

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useTimeoutFn } from '@vueuse/core'
 import DiffCommentBox, {
   copyTextToClipboard,
   deleteSavedComment,
@@ -156,17 +157,23 @@ const deleteThread = (thread: SavedComment) => {
 }
 
 const copiedKey = ref<string | null>(null)
-let copiedTimer: ReturnType<typeof setTimeout> | null = null
+// start() clears any pending reset first, so copying a second thread
+// restarts the window instead of letting the first one expire early.
+// The scope teardown drops the pending reset if the row unmounts first.
+const resetCopiedKey = useTimeoutFn(
+  () => {
+    copiedKey.value = null
+  },
+  2000,
+  { immediate: false },
+)
 
 const copyThread = async (thread: SavedComment) => {
   await copyTextToClipboard(
     formatReviewComment(props.path, thread.start, thread.end, thread.context, thread.message),
   )
   copiedKey.value = threadKey(thread)
-  if (copiedTimer) clearTimeout(copiedTimer)
-  copiedTimer = setTimeout(() => {
-    copiedKey.value = null
-  }, 2000)
+  resetCopiedKey.start()
 }
 
 watch(

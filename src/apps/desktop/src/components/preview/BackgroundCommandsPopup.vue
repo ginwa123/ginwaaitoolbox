@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useIntervalFn } from '@vueuse/core'
 import {
   ApiError,
   getBackgroundProcessLog,
@@ -28,7 +29,6 @@ const logTotalBytes = ref<Record<number, number>>({})
 
 const runningCount = computed(() => processes.value.filter((p) => p.running).length)
 
-let logTimer: ReturnType<typeof setInterval> | null = null
 let offBg: (() => void) | null = null
 let offQueue: (() => void) | null = null
 let offResync: (() => void) | null = null
@@ -97,23 +97,38 @@ const fetchLog = async (pid: number): Promise<void> => {
   }
 }
 
-const stopLogTimer = (): void => {
-  if (logTimer) {
-    clearInterval(logTimer)
-    logTimer = null
-  }
-}
-
-const startLogTimer = (pid: number): void => {
-  stopLogTimer()
-  logTimer = setInterval(() => {
+// 2s tail poll for the expanded row's log. `immediate: false` keeps
+// toggleExpand's manual first fetch as the only immediate call, so its
+// fetch-then-startLogTimer ordering is preserved verbatim. This is the one
+// self-stopping poll: the callback halts itself once the process exits or
+// leaves the list, and useIntervalFn's pause() is that same self-stop, so
+// stopLogTimer stays a thin wrapper over it. The pid lives in a plain let
+// because the callback signature takes no arguments.
+let logPollPid: number | null = null
+const { pause: pauseLogTimer, resume: resumeLogTimer } = useIntervalFn(
+  () => {
+    const pid = logPollPid
+    if (pid === null) return
     const proc = findProcess(pid)
     if (!proc || !proc.running) {
       stopLogTimer()
       return
     }
     void fetchLog(pid)
-  }, LOG_POLL_MS)
+  },
+  LOG_POLL_MS,
+  { immediate: false },
+)
+
+const stopLogTimer = (): void => {
+  pauseLogTimer()
+  logPollPid = null
+}
+
+const startLogTimer = (pid: number): void => {
+  stopLogTimer()
+  logPollPid = pid
+  resumeLogTimer()
 }
 
 const toggleExpand = (pid: number): void => {

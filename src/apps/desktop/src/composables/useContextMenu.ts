@@ -1,4 +1,5 @@
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
+import { ref } from 'vue'
 
 /**
  * Position state + dismiss wiring for the "Open in new tab" context
@@ -25,24 +26,20 @@ export function useContextMenu() {
   const onPointerDown = (event: MouseEvent) => {
     if (!menuPos.value) return
     const target = event.target as HTMLElement | null
-    if (target && typeof target.closest === 'function' && target.closest('[data-testid="open-new-tab-menu"]')) return
+    if (
+      target &&
+      typeof target.closest === 'function' &&
+      target.closest('[data-testid="open-new-tab-menu"]')
+    )
+      return
     close()
   }
 
-  watch(menuPos, (opened) => {
-    if (opened) {
-      window.addEventListener('keydown', onKeydown)
-      window.addEventListener('mousedown', onPointerDown)
-      return
-    }
-    window.removeEventListener('keydown', onKeydown)
-    window.removeEventListener('mousedown', onPointerDown)
-  })
-
-  onBeforeUnmount(() => {
-    window.removeEventListener('keydown', onKeydown)
-    window.removeEventListener('mousedown', onPointerDown)
-  })
+  // Getter targets: the listeners only exist while the menu is open, so
+  // a closed menu costs nothing instead of seeing every window mousedown.
+  const whileOpen = () => (menuPos.value ? window : null)
+  useEventListener(whileOpen, 'keydown', onKeydown)
+  useEventListener(whileOpen, 'mousedown', onPointerDown)
 
   return { menuPos, openAt, close }
 }

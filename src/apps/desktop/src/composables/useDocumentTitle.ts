@@ -1,4 +1,5 @@
-import { watch } from 'vue'
+import { useTitle } from '@vueuse/core'
+import { computed } from 'vue'
 import { useNavigationStore } from '../stores/navigation'
 import { useWorkspacesStore } from '../stores/workspaces'
 import { useCurrentMainView } from './useCurrentMainView'
@@ -20,22 +21,17 @@ export function useDocumentTitle(): void {
   const workspacesStore = useWorkspacesStore()
   const currentMainView = useCurrentMainView()
 
-  watch(
-    () => ({
-      kind: currentMainView.value.kind,
-      chatName: navigationStore.activeChatName,
-      taskName: workspacesStore.activeTask?.name,
-      itemName: workspacesStore.activeWorkspaceItem?.name,
-    }),
-    ({ kind, chatName, taskName, itemName }) => {
-      let name = ''
-      if (kind === 'chat') {
-        name = chatName
-      } else if (kind === 'workspace') {
-        name = taskName || itemName || ''
-      }
-      document.title = name ? `${name} - Nalar` : BASE_TITLE
-    },
-    { immediate: true },
-  )
+  const name = computed(() => {
+    const kind = currentMainView.value.kind
+    if (kind === 'chat') return navigationStore.activeChatName
+    if (kind === 'workspace') {
+      return workspacesStore.activeTask?.name || workspacesStore.activeWorkspaceItem?.name || ''
+    }
+    return ''
+  })
+
+  // `restoreOnUnmount: false` keeps the previous contract: the title is
+  // only ever pushed on change, never snapped back when the owner unmounts
+  // (AppLayout remounts on every route change).
+  useTitle(() => (name.value ? `${name.value} - Nalar` : BASE_TITLE), { restoreOnUnmount: false })
 }

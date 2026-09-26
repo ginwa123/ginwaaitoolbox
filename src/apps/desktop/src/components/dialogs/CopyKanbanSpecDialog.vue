@@ -35,7 +35,8 @@
     (Chunk 4, Task 4.1)
 -->
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import { useWorkspacesStore, type WorkspaceItem } from '../../stores/workspaces'
 import * as api from '../../api'
 
@@ -153,7 +154,7 @@ const onDocumentClick = (e: MouseEvent) => {
 
 watch(
   () => props.show,
-  async (show) => {
+  (show) => {
     if (show) {
       sourceItemId.value = ''
       mode.value = 'replace'
@@ -164,17 +165,14 @@ watch(
         void loadSourceColumns(first.id)
       }
       sourceDropdownOpen.value = false
-      await nextTick()
-      document.addEventListener('click', onDocumentClick)
-    } else {
-      document.removeEventListener('click', onDocumentClick)
     }
   },
 )
 
-onBeforeUnmount(() => {
-  document.removeEventListener('click', onDocumentClick)
-})
+// The source dropdown can only be clicked while the dialog is open,
+// so the document listener is gated on `show` and a null target
+// detaches it — no add/remove pair, no unmount backstop needed.
+useEventListener(() => (props.show ? document : null), 'click', onDocumentClick)
 </script>
 
 <template>

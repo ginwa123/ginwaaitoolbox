@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import * as api from '../../api'
 
 const props = defineProps<{
@@ -153,10 +154,10 @@ const hideContextMenu = () => {
   contextMenu.value.visible = false
 }
 
-// Close context menu on click outside
-onMounted(() => {
-  document.addEventListener('click', hideContextMenu)
-})
+// Close context menu on click outside. useEventListener binds the
+// document handler to this component's scope, so it is detached when the
+// panel unmounts instead of accumulating one listener per mount.
+useEventListener(document, 'click', hideContextMenu)
 
 // Stage file (move from unstaged to staged)
 const stageFile = async (file: api.GitFileChange) => {

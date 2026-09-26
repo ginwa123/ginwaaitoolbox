@@ -253,4 +253,37 @@ describe('sseTabChannel — one connection per browser profile', () => {
     expect(hub.ofKind('beat').length).toBe(before)
     expect(hub.members(NAME)).toHaveLength(0)
   })
+
+  it('close() takes the pagehide listener back off globalThis', () => {
+    // The pagehide handler used to be an inline arrow, so nothing could
+    // remove it: every createTabChannel() that ever ran left one behind,
+    // and each one still fired a `down` post on teardown. Counted by
+    // wrapping the real global so we assert on identity, not on a spy.
+    const g = globalThis as unknown as {
+      addEventListener: (t: string, cb: unknown) => void
+      removeEventListener: (t: string, cb: unknown) => void
+    }
+    const originalAdd = g.addEventListener
+    const originalRemove = g.removeEventListener
+    const live = new Map<string, Set<unknown>>()
+    g.addEventListener = (t, cb) => {
+      if (!live.has(t)) live.set(t, new Set())
+      live.get(t)!.add(cb)
+    }
+    g.removeEventListener = (t, cb) => {
+      live.get(t)?.delete(cb)
+    }
+
+    try {
+      const a = makeTab(hub)
+      a.tab.start()
+      expect(live.get('pagehide')?.size).toBe(1)
+
+      a.tab.close()
+      expect(live.get('pagehide')?.size).toBe(0)
+    } finally {
+      g.addEventListener = originalAdd
+      g.removeEventListener = originalRemove
+    }
+  })
 })

@@ -24,6 +24,7 @@
  * `useDesignHandlers.updateElement`).
  */
 import { computed, type ComputedRef } from 'vue'
+import { useTimeoutFn } from '@vueuse/core'
 import { useDesignHistoryStore, type HistoryEntry } from '../stores/designHistory'
 import { useWorkspacesStore } from '../stores/workspaces'
 import type { DesignElement } from '../api'
@@ -112,22 +113,24 @@ export function useDesignHistory(pageId: ComputedRef<string>): UseDesignHistory 
   }
 
   // Debounced localStorage save. The 500ms window batches bursts
-  // of pushes (e.g. arrow-key nudge) into one write.
-  let saveTimer: ReturnType<typeof setTimeout> | null = null
+  // of pushes (e.g. arrow-key nudge) into one write; start() clears the
+  // pending window first, which is what keeps the batching behaviour.
+  // A save still pending when the owning scope is disposed is dropped
+  // rather than firing against a torn-down design page.
+  const debouncedSave = useTimeoutFn(() => {
+    const ws = workspacesStore.activeWorkspace
+    const itemId = workspacesStore.activeWorkspaceItemId
+    if (!ws || !itemId) return
+    historyStore.saveToStorage(
+      ws.id,
+      itemId,
+      pageId.value,
+      historyStore.getStack(pageId.value),
+    )
+  }, 500, { immediate: false })
+
   function scheduleSave(): void {
-    if (saveTimer) clearTimeout(saveTimer)
-    saveTimer = setTimeout(() => {
-      saveTimer = null
-      const ws = workspacesStore.activeWorkspace
-      const itemId = workspacesStore.activeWorkspaceItemId
-      if (!ws || !itemId) return
-      historyStore.saveToStorage(
-        ws.id,
-        itemId,
-        pageId.value,
-        historyStore.getStack(pageId.value),
-      )
-    }, 500)
+    debouncedSave.start()
   }
 
   function capturePreState(ids: string[]): void {

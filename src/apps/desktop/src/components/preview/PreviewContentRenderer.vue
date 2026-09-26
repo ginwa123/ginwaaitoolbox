@@ -42,7 +42,8 @@
 
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import { marked } from 'marked'
 import {
   PREVIEW_AUTO_RESIZE_SCRIPT,
@@ -91,17 +92,9 @@ function onIframeMessage(e: MessageEvent) {
   iframe.style.height = `${growFrameToContent(reported, MIN_IFRAME_HEIGHT)}px`
 }
 
-onMounted(() => {
-  if (typeof window !== 'undefined') {
-    window.addEventListener('message', onIframeMessage)
-  }
-})
-
-onUnmounted(() => {
-  if (typeof window !== 'undefined') {
-    window.removeEventListener('message', onIframeMessage)
-  }
-})
+// No `typeof window` guard: useEventListener filters a null/undefined
+// target out and binds nothing, so it is already inert off-browser.
+useEventListener(window, 'message', onIframeMessage)
 
 // ─── Auto-resize script (prepended to the iframe srcdoc) ────────────
 //

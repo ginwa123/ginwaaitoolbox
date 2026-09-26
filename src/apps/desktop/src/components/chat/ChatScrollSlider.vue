@@ -21,6 +21,7 @@
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useIntervalFn } from '@vueuse/core'
 import { computeThumbGeometry } from './chatScrollSlider'
 
 const props = defineProps<{
@@ -41,7 +42,6 @@ const ariaNow = computed(() => Math.round(scrollRatio.value * 100))
 
 let attachedEl: HTMLElement | null = null
 let rafId = 0
-let resolveTimer: ReturnType<typeof setInterval> | null = null
 let resizeObserver: ResizeObserver | null = null
 
 const readAndApply = (): void => {
@@ -192,17 +192,25 @@ const onThumbKeyDown = (e: KeyboardEvent): void => {
   }
 }
 
+// The scroller's containerRef resolves after mount and swaps on chat
+// switch — poll until attached, then keep polling cheaply so a swap
+// is picked up without host wiring. `immediate: false` keeps the single
+// manual ensureAttached() in onMounted as the only immediate call. Only the
+// poll is converted here: attach/detach and the ResizeObserver are untouched.
+const { pause: pauseResolvePoll, resume: resumeResolvePoll } = useIntervalFn(
+  ensureAttached,
+  500,
+  { immediate: false },
+)
+
 onMounted(() => {
   ensureAttached()
-  // The scroller's containerRef resolves after mount and swaps on chat
-  // switch — poll until attached, then keep polling cheaply so a swap
-  // is picked up without host wiring.
-  resolveTimer = setInterval(ensureAttached, 500)
+  resumeResolvePoll()
 })
 
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
-  if (resolveTimer) clearInterval(resolveTimer)
+  pauseResolvePoll()
   detach()
 })
 

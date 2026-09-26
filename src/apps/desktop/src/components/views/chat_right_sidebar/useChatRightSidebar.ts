@@ -1,4 +1,5 @@
-import { ref, watch, onMounted, onUnmounted } from 'vue'
+import { ref, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 
 const STORAGE_KEY_WIDTH = 'nalar-right-sidebar-width'
 const DEFAULT_WIDTH = 280
@@ -97,12 +98,7 @@ export function useChatRightSidebar(chatType: string) {
     }
   }
 
-  onMounted(() => {
-    window.addEventListener('keydown', onKeydown)
-  })
-  onUnmounted(() => {
-    window.removeEventListener('keydown', onKeydown)
-  })
+  useEventListener(window, 'keydown', onKeydown)
 
   // Reload persisted open state if the chat type changes (e.g. the
   // same ChatView instance is reused across routes in tests).

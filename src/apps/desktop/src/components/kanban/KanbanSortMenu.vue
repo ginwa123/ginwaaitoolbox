@@ -29,7 +29,8 @@
   Plan: docs/superpowers/plans/2026-08-06-kanban-sort-by.md Task 2
 -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 
 type SortField = 'position' | 'created_at' | 'updated_at' | 'name'
 type SortDirection = 'asc' | 'desc'
@@ -102,19 +103,21 @@ const handleKeyDown = (event: KeyboardEvent) => {
 }
 
 // Click-outside + Esc handlers are only needed when the trigger
-// flow is active. showTrigger=false skips both — the modal wrapper
-// owns its own backdrop + Esc close.
-onMounted(() => {
-  if (!props.showTrigger) return
-  document.addEventListener('click', handleDocumentClick)
-  document.addEventListener('keydown', handleKeyDown)
-})
-
-onUnmounted(() => {
-  if (!props.showTrigger) return
-  document.removeEventListener('click', handleDocumentClick)
-  document.removeEventListener('keydown', handleKeyDown)
-})
+// flow is active. A null target detaches, so showTrigger=false
+// listens to nothing — the modal wrapper owns its own backdrop
+// + Esc close. (The old add/remove pair could not express this
+// safely: the remove guard re-read a prop that was assumed to
+// still hold its mount-time value.)
+useEventListener(
+  () => (props.showTrigger ? document : null),
+  'click',
+  handleDocumentClick,
+)
+useEventListener(
+  () => (props.showTrigger ? document : null),
+  'keydown',
+  handleKeyDown,
+)
 
 // Trigger label: shows the current sort mode so the user can see
 // the active sort at a glance without opening the menu.

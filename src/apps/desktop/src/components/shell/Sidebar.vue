@@ -1,6 +1,7 @@
 <!-- eslint-disable vue/multi-word-component-names -->
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import { useRouter, useRoute } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -199,8 +200,6 @@ const startResize = (e: MouseEvent | TouchEvent) => {
   const clientX = 'touches' in e && e.touches[0] ? e.touches[0].clientX : (e as MouseEvent).clientX
   resizeStartX.value = clientX
   resizeStartWidth.value = sidebarWidth.value
-  document.addEventListener('mousemove', handleResize)
-  document.addEventListener('mouseup', stopResize)
   document.body.style.userSelect = 'none'
   document.body.style.cursor = 'col-resize'
 }
@@ -215,12 +214,19 @@ const handleResize = (e: MouseEvent | TouchEvent) => {
 
 const stopResize = () => {
   isResizing.value = false
-  document.removeEventListener('mousemove', handleResize)
-  document.removeEventListener('mouseup', stopResize)
   document.body.style.userSelect = ''
   document.body.style.cursor = ''
 }
 
+// Drag listeners live exactly as long as the gesture: a null target
+// detaches, so `isResizing` is the single switch for both the bind
+// and the unbind and there is no add/remove pair to keep in sync.
+const whileResizing = () => (isResizing.value ? document : null)
+useEventListener<'mousemove', MouseEvent | TouchEvent>(whileResizing, 'mousemove', handleResize)
+useEventListener(whileResizing, 'mouseup', stopResize)
+
+// Still needed for the body cursor/userSelect reset — the listeners
+// above unmount themselves with the component scope.
 onUnmounted(() => {
   stopResize()
 })
@@ -274,27 +280,21 @@ async function handleLogout() {
   }
 }
 
-if (typeof window !== 'undefined') {
-  refreshAuthState()
-  window.addEventListener('focus', refreshAuthState)
-  onUnmounted(() => window.removeEventListener('focus', refreshAuthState))
-}
+refreshAuthState()
+useEventListener(window, 'focus', refreshAuthState)
 
 // Sibling-tab identity change (plan 2026-09-25, W5): when another tab logs
 // out or switches user, `nalar-auth-me:v1` is rewritten/removed. The
 // `storage` event fires in THIS tab, so drop the previous user's scoped keys
 // here too — otherwise an already-open tab keeps painting A's cache after B
 // signed in next door.
-if (typeof window !== 'undefined') {
-  const onStorage = (e: StorageEvent) => {
-    if (e.key !== null && e.key !== 'nalar-auth-me:v1') return
-    setCurrentUserId(null)
-    purgeForeignScopedKeys()
-    refreshAuthState()
-  }
-  window.addEventListener('storage', onStorage)
-  onUnmounted(() => window.removeEventListener('storage', onStorage))
+const onStorage = (e: StorageEvent) => {
+  if (e.key !== null && e.key !== 'nalar-auth-me:v1') return
+  setCurrentUserId(null)
+  purgeForeignScopedKeys()
+  refreshAuthState()
 }
+useEventListener(window, 'storage', onStorage)
 // Handle navigation events from ChatsList component
 const handleChatsNavigate = (id: string, chatName?: string) => {
   if (id.startsWith('chat-')) {

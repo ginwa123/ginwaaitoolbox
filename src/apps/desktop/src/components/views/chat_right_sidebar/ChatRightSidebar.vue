@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import { useRouter, useRoute } from 'vue-router'
 import FolderExplorer from '../../file/FolderExplorer.vue'
 import SidebarDiffPanel from './SidebarDiffPanel.vue'
@@ -107,6 +108,25 @@ const onExplorerFileClick = (file: FolderEntry) => {
 
 const isResizing = ref(false)
 
+// The move closure captures this gesture's startX/startWidth/min/max
+// snapshot, so it lives in a ref: useEventListener unrefs the handler on
+// every re-registration, so attach and detach always name the same closure
+// instance. The default is an inert placeholder that never fires, because
+// the target getter below is null outside a gesture.
+const resizeMoveHandler = ref<(ev: MouseEvent) => void>(() => {})
+
+const stopResize = () => {
+  isResizing.value = false
+  resizeMoveHandler.value = () => {}
+}
+
+// Both listeners hang off a target getter that yields null while no gesture
+// is active, so the component scope owns their lifetime instead of a mouseup
+// that may never arrive — unmounting mid-drag detaches them rather than
+// stranding them on `window` forever.
+useEventListener(() => (isResizing.value ? window : null), 'mousemove', resizeMoveHandler)
+useEventListener(() => (isResizing.value ? window : null), 'mouseup', stopResize)
+
 const startResize = (e: MouseEvent) => {
   e.preventDefault()
   isResizing.value = true
@@ -115,17 +135,10 @@ const startResize = (e: MouseEvent) => {
   const min = props.minWidth ?? 200
   const max = props.maxWidth ?? 600
 
-  const onMove = (ev: MouseEvent) => {
+  resizeMoveHandler.value = (ev: MouseEvent) => {
     const next = startWidth - (ev.clientX - startX)
     emit('update:width', Math.max(min, Math.min(max, next)))
   }
-  const onUp = () => {
-    isResizing.value = false
-    window.removeEventListener('mousemove', onMove)
-    window.removeEventListener('mouseup', onUp)
-  }
-  window.addEventListener('mousemove', onMove)
-  window.addEventListener('mouseup', onUp)
 }
 
 const close = () => emit('update:open', false)

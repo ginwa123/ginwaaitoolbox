@@ -366,7 +366,7 @@ const tasks = computed<Task[]>(() => props.item.tasks ?? [])
 // ─── Search (kanban task search — Chunk 6) ────────────────────────────────
 //
 // The search input is a v-model'd ref. A 300ms trailing-edge debounce
-// (hand-rolled — @vueuse/core is not installed in this project) drives
+// (hand-rolled setTimeout, kept local to the component) drives
 // a refetch via workspacesStore.fetchKanbanTasks(q). Empty/whitespace
 // q is treated as "no filter" (passed as undefined so the backend
 // omits the SQL WHERE clause). Component-local state — closing and

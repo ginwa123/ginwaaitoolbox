@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, onUnmounted, nextTick, computed, inject, type Ref } from 'vue'
+import { useIntervalFn, useTimeoutFn } from '@vueuse/core'
 import { marked } from 'marked'
 import * as api from '../../api'
 import { chatEngineDb, newestCursor, toChatMessage } from '../../sync/ChatEngineDb'
@@ -576,17 +577,25 @@ const reviewCommentsForDiff = computed(() => {
 })
 
 const copiedAllReviews = ref(false)
-let copiedAllTimer: ReturnType<typeof setTimeout> | null = null
+// `immediate: false` keeps the indicator off until a copy actually happens;
+// the composable's scope dispose drops the pending reset on unmount, which
+// the bare setTimeout never did.
+const resetCopiedAllReviews = useTimeoutFn(
+  () => {
+    copiedAllReviews.value = false
+  },
+  2000,
+  { immediate: false },
+)
 
 async function copyAllReviewComments() {
   const body = reviewCommentsForDiff.value.map((e) => e.formatted).join('\n\n---\n\n')
   if (!body) return
   await copyTextToClipboard(body)
   copiedAllReviews.value = true
-  if (copiedAllTimer) clearTimeout(copiedAllTimer)
-  copiedAllTimer = setTimeout(() => {
-    copiedAllReviews.value = false
-  }, 2000)
+  // start() clears any pending reset before rescheduling, so rapid
+  // repeat copies still get one full 2s indicator window.
+  resetCopiedAllReviews.start()
 }
 
 // Sidebar file-row click (or header Open button): open the file in the
@@ -1392,7 +1401,6 @@ const handleFallbackJumpToLine = (line: number) => {
 // Git status state
 const gitStatus = ref<api.GitStatus | null>(null)
 let gitStatusSeq = 0
-let gitStatusPollInterval: ReturnType<typeof setInterval> | null = null
 // cwd the current `gitStatus` was fetched/painted for — gates the
 // cache-first paint so a 30s poll tick never repaints the localStorage
 // copy over a fresher in-memory value (only init / cwd switches do).
@@ -1431,17 +1439,25 @@ const checkGitStatus = async () => {
   }
 }
 
+// `immediate: false` + the hand-rolled first call preserves the original
+// contract exactly: paint once up front, then poll every 30s. The interval
+// callback is passed by reference (never awaited), so overlapping slow
+// fetches behave as they did under setInterval; the monotonic gitStatusSeq
+// guard is what drops the stale ones. Scope dispose stops the timer.
+const { pause: pauseGitStatusPoll, resume: resumeGitStatusPoll } = useIntervalFn(
+  checkGitStatus,
+  30000,
+  { immediate: false },
+)
+
 const startGitStatusPoll = () => {
   checkGitStatus()
-  if (gitStatusPollInterval) clearInterval(gitStatusPollInterval)
-  gitStatusPollInterval = setInterval(checkGitStatus, 30000)
+  pauseGitStatusPoll()
+  resumeGitStatusPoll()
 }
 
 const stopGitStatusPoll = () => {
-  if (gitStatusPollInterval) {
-    clearInterval(gitStatusPollInterval)
-    gitStatusPollInterval = null
-  }
+  pauseGitStatusPoll()
 }
 
 // Filter out empty messages for display (check stripped content).

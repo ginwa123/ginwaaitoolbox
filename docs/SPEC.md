@@ -312,7 +312,7 @@ A compact `<KanbanSearchInput>` renders in the kanban board header (to the left 
 
 **`tags` matching** uses substring on the JSON-encoded TEXT column (e.g. `["bug","urgent"]` matches `bug`). Substring `bug` also matches `["debug"]` and `["bugfix"]` — accepted as the typical kanban-search UX (Trello/Linear both do this). Strict `json_each`-based exact-tag match is deferred.
 
-**Frontend UX** — the input is debounced 300ms (hand-rolled `setTimeout`; `@vueuse/core` is not installed in this project). Cursor resets to `undefined` (page 1 of the filtered set) on every query change. Press `Esc` or click the ✕ clear button to reset. Component-local state — closing the kanban clears the query automatically.
+**Frontend UX** — the input is debounced 300ms (hand-rolled `setTimeout` kept local to the component). Cursor resets to `undefined` (page 1 of the filtered set) on every query change. Press `Esc` or click the ✕ clear button to reset. Component-local state — closing the kanban clears the query automatically.
 
 **Empty state** — a `No tasks match "..."` banner renders between the header and columns when `tasks.length === 0 && searchQuery.trim() !== ''`.
 

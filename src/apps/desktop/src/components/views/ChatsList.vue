@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, inject, onMounted, onUnmounted, nextTick, computed, type Ref } from 'vue'
+import { useEventListener } from '@vueuse/core'
 import { useRouter } from 'vue-router'
 import { useNavigationStore } from '../../stores/navigation'
 import { useWorkspacesStore } from '../../stores/workspaces'
@@ -316,8 +317,6 @@ const startChatsResize = (e: MouseEvent) => {
   isChatsResizing.value = true
   chatsResizeStartY.value = e.clientY
   chatsResizeStartPx.value = getChatsHeightPx()
-  document.addEventListener('mousemove', handleChatsResize, { passive: false })
-  document.addEventListener('mouseup', stopChatsResize)
   document.body.style.userSelect = 'none'
   document.body.style.cursor = 'row-resize'
 }
@@ -344,11 +343,21 @@ const handleChatsResize = (e: MouseEvent) => {
 
 const stopChatsResize = () => {
   isChatsResizing.value = false
-  document.removeEventListener('mousemove', handleChatsResize)
-  document.removeEventListener('mouseup', stopChatsResize)
   document.body.style.userSelect = ''
   document.body.style.cursor = ''
 }
+
+// Both handlers read only refs and the sidebar store, so neither needs a
+// per-gesture closure and both can be registered once. The target getter
+// returns null whenever no drag is active, which is what detaches them: the
+// component scope owns their lifetime, so unmounting mid-drag cannot strand
+// them on `document` (the exposed `cleanup` still reaches stopChatsResize).
+// `passive: false` is load-bearing — handleChatsResize calls preventDefault(),
+// which the browser would ignore on a passive listener.
+useEventListener(() => (isChatsResizing.value ? document : null), 'mousemove', handleChatsResize, {
+  passive: false,
+})
+useEventListener(() => (isChatsResizing.value ? document : null), 'mouseup', stopChatsResize)
 
 // Watch for local changes and sync to store
 watch(chatsSortDirection, (newVal) => {

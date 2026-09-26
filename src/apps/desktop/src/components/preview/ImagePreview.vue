@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, watch } from 'vue'
+import { useEventListener } from '@vueuse/core'
 
 /**
  * Full-screen image preview overlay.
@@ -52,18 +53,24 @@ watch(
   (open) => {
     if (open) {
       lockBodyScroll()
-      document.addEventListener('keydown', handleKeydown)
     } else {
       unlockBodyScroll()
-      document.removeEventListener('keydown', handleKeydown)
     }
   },
   { immediate: true },
 )
 
+// A null target detaches, so Escape is only bound while the preview
+// is open and the handler's stopPropagation cannot shadow an
+// ancestor's Escape handling while the overlay is closed.
+useEventListener(
+  () => (isOpen.value ? document : null),
+  'keydown',
+  handleKeydown,
+)
+
 onBeforeUnmount(() => {
   unlockBodyScroll()
-  document.removeEventListener('keydown', handleKeydown)
 })
 
 const onBackdropClick = () => {
