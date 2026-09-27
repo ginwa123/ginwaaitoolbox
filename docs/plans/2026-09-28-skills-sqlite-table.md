@@ -30,12 +30,13 @@ on a fresh machine.
 
 | Today | After |
 |---|---|
-| Global skills = files under `~/.config/nalar/skills/` | Global skills = rows with `scope='global'` |
+| Global skills = files under `~/.config/nalar/skills/` | Global skills = rows with `is_global = 1` |
 | Listing walks a directory tree, opens+stats every file, reads every file a **second** time to parse frontmatter | Listing is one indexed `SELECT` |
 | `use_skill({path: "/home/u/.config/nalar/skills/foo/SKILL.MD"})` — the model must copy an absolute path verbatim; the tool prompt spends 4 lines warning it not to construct one | `use_skill({skill_name: "foo"})` |
 | `add_skill`/`edit_skill` write a file; a second process could silently clobber it | Writes a row; the file mirror is best-effort |
 | `skill.path` is a real filesystem path the UI renders | `path` becomes **optional provenance** (`source_path`), may be `""` |
-| Skill name collisions across global/local are resolved by directory search order | Resolved explicitly by `scope` + `cwd` columns |
+| Skill name collisions across global/local are resolved by directory search order | Resolved explicitly by the `is_global` + `cwd` columns |
+| Frontmatter `tags:` is parsed by nothing, though the prompt tells the agent to consult skills by tag | A real `tags` column, parsed from the frontmatter and shown in `list_skills` |
 
 **Explicit non-goals** for this plan (each is a deliberate "no"):
 
@@ -43,8 +44,6 @@ on a fresh machine.
   Renaming requires a cross-table data migration; out of scope.
 - **No FTS5 / BM25 index.** `list_skills` stays a full list. If a search tool is
   wanted later it is additive.
-- **No `tags` column.** The old plan added one because its `search_skill` needed it.
-  With no search tool, nothing consumes tags. (See Open Question 3.)
 - **`session_skills` is untouched.** Its `content` snapshot is the compaction drift
   detector; only `use_skill`'s *internals* change, not its output envelope.
 
@@ -188,18 +187,19 @@ CREATE TABLE IF NOT EXISTS skills (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  tags        TEXT NOT NULL DEFAULT '',         -- '||'-joined, mirrors agent_memories.tags
   content     TEXT NOT NULL DEFAULT '',
-  scope       TEXT NOT NULL DEFAULT 'global',   -- 'global' | 'local'
-  cwd         TEXT NOT NULL DEFAULT '',         -- canonical abspath for local; '' for global
+  is_global   INTEGER NOT NULL DEFAULT 0,       -- 1 = global root, 0 = per-cwd; no FK, see below
+  cwd         TEXT NOT NULL DEFAULT '',         -- canonical abspath when is_global=0; '' when is_global=1
   source_path TEXT NOT NULL DEFAULT '',         -- provenance only; NEVER an LLM-facing handle
   created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_global_name
-  ON skills(name) WHERE scope = 'global';
+  ON skills(name) WHERE is_global = 1;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_local_cwd_name
-  ON skills(cwd, name) WHERE scope = 'local';
-CREATE INDEX IF NOT EXISTS idx_skills_scope_cwd ON skills(scope, cwd);
+  ON skills(cwd, name) WHERE is_global = 0;
+CREATE INDEX IF NOT EXISTS idx_skills_global ON skills(is_global, cwd);
 ```
 
 Rules copied from the repo's own conventions:
@@ -211,43 +211,93 @@ Rules copied from the repo's own conventions:
   (Migration 093's comment, `migration.zig:4958-4961`); a declared FK would be
   documentation only.
 - `NOT NULL DEFAULT ''` is fine **because every write site wraps free-text params in
-  `COALESCE(?, '')`** (see §4.4). A `DEFAULT` does not save you when the column is
+  `COALESCE(?, '')`** (see §4.5). A `DEFAULT` does not save you when the column is
   explicitly bound to `NULL`.
 
-### 4.2 Scope, not a boolean
+### 4.2 `is_global`, everywhere — one concept, no translation layer
 
-`scope` is `'global' | 'local'`, not `is_global: bool`, because:
+**Decision (locked 2026-09-28):** the wire and the tool inputs speak `is_global: bool`,
+and so does the column. There is deliberately **no `scope` TEXT enum** — one concept
+from the SQL to the JSON to the TypeScript, so there is no derivation function to get
+wrong and no second vocabulary for a reader to hold.
 
-- `use_skill` resolution is **local-first**; the result must say *which row* loaded.
-- The UI renders two sections and needs a stable key per row.
-- A boolean cannot express "local, and local to which cwd".
+A boolean is sufficient here because the row is fully addressed by
+`(is_global, cwd, name)`:
 
-Global rows always carry `cwd = ''`. Local rows always carry a **canonical**
-(absolute, symlink-resolved) cwd.
+| `is_global` | `cwd` | Meaning |
+|---|---|---|
+| `1` | `''` (invariant) | Global root — `$XDG_CONFIG_HOME/nalar/skills` or `$HOME/.config/nalar/skills` |
+| `0` | canonical abspath | Local to exactly that workspace |
 
-### 4.3 Where the SQL lives
+`use_skill`'s local-first resolution still says *which* row it loaded: it returns the
+`SkillRow`, and the row carries the `is_global` value it was found with. The UI's two
+sections are `is_global === 1` and `is_global === 0`. Two partial unique indexes (one
+per branch) give the same name in both scopes for free.
+
+**The `cwd=''` invariant is enforced in code, not by the schema** — `PRAGMA
+foreign_keys` is off project-wide (Migration 093's comment, `migration.zig:4958-4961`),
+so a CHECK constraint would be the only guard and this codebase does not use them for
+this. `upsertSkill` overwrites `cwd` with `''` whenever `is_global = true`; a unit
+test asserts it.
+
+### 4.3 `tags` — parse the frontmatter the prompt already assumes
+
+**Decision (locked 2026-09-28):** add the column. It has a real consumer even without
+`search_skill`: the agent's system prompt already instructs it to consult skills by
+tag, `parseYamlFrontmatter` returns only `{name, description}` today, and
+`list_skills` output goes straight into the LLM's context. Without the column, the
+documented-but-unimplemented capability stays documented and unimplemented forever.
+
+- `parseYamlFrontmatter` (`skills.zig:87-145`) gains `tags`, accepting **both**
+  frontmatter forms: `tags: [workflow, api, agent]` and a bare
+  `tags: workflow, api, agent`. Store `'||'`-joined, mirroring
+  `agent_memories.tags` — the same convention already in this repo.
+- `ParsedFrontmatter` becomes `{name, description, tags}`. Every existing caller that
+  does `defer freeParsedFrontmatter(allocator, fm)` still compiles; the one caller
+  that frees `.name`/`.description` by hand (`skill_tools.zig:266-280`) must free
+  `.tags` too. **This is the most likely place to leak** — `std.testing.allocator`
+  will catch it.
+- `add_skill` gains an optional `tags: []const u8` (comma-separated on input,
+  normalised to `'||'` on write). `edit_skill` gains optional `tags`.
+- `SkillInfo` / `Skill` / `SkillDetail` gain `tags`. The Zig JSON shape emits the
+  joined string; the frontend splits on `'||'` into a `string[]` for display.
+- The mirror writer (`buildSkillContent` / `buildEditSkillContent`,
+  `skill_tools.zig:~530` / `~700`) must emit a `tags:` frontmatter line, or the disk
+  mirror silently drops the tags on the next import. This is the one part of tags
+  that is genuinely easy to forget.
+
+### 4.4 Where the SQL lives
 
 New file **`src/agentic_loop/skills_db.zig`**, next to `agent_memories.zig` — the
 established home for a table's SQL. Public surface (thin CRUD, no JSON, no HTTP):
 
 ```zig
-pub const SkillRow = struct { id, name, description, content, scope, cwd, source_path: []const u8 };
+pub const SkillRow = struct {
+    id, name, description, tags, content, cwd, source_path: []const u8,
+    is_global: bool,
+};
 
-pub fn listSkills(alloc, db, scope: ?[]const u8, cwd: ?[]const u8) anyerror![]SkillRow
-pub fn getSkill(alloc, db, name, scope, cwd) anyerror!?SkillRow      // local-first when scope == null
-pub fn upsertSkill(alloc, db, input: UpsertSkillInput) anyerror![]u8  // returns id; INSERT OR IGNORE on conflict-handled paths
+// `is_global: null` means "resolve local-first, then global" — the use_skill rule.
+pub fn listSkills(alloc, db, is_global: ?bool, cwd: ?[]const u8) anyerror![]SkillRow
+pub fn getSkill(alloc, db, name, is_global: ?bool, cwd) anyerror!?SkillRow
+pub fn upsertSkill(alloc, db, input: UpsertSkillInput) anyerror![]u8  // returns id
 pub fn updateSkill(alloc, db, input: UpdateSkillInput) anyerror!SkillRow
-pub fn deleteSkill(alloc, db, name, scope, cwd) anyerror!bool
+pub fn deleteSkill(alloc, db, name, is_global: bool, cwd) anyerror!bool
 pub fn importFromDisk(alloc, io, db, environment, cwd) anyerror!void   // INSERT OR IGNORE, both roots
 pub fn freeSkillRows(alloc, rows) void
 ```
+
+`is_global` is an `INTEGER` in SQL, so every bind is stringified
+(`std.fmt.allocPrint(allocator, "{d}", .{@intFromBool(x)})`) and every read is
+`std.mem.eql(u8, row.values[i], "1")` — the codebase has no integer binding in
+`argv`. This is the `design_model.zig:179-187` idiom, not a new convention.
 
 `upsertSkill` follows `design_model.zig:126` `setDesignPage`: look up by the natural
 key first; UPDATE if present, INSERT otherwise, return the id either way. That makes
 `add_skill` idempotent on re-run without an `INSERT OR REPLACE`, which would clobber
 `created_at`.
 
-### 4.4 The three traps this plan must not walk into
+### 4.5 The three traps this plan must not walk into
 
 **(a) Empty slice → SQL NULL.** `SqliteBackend.exec` binds `arg.len == 0` as
 `sqlite3_bind_null`. `NOT NULL` then fails at runtime, not compile time. Every write
@@ -276,7 +326,7 @@ failure `tools_exec_skills.zig:21-24` warns about. One `canonicalCwd(io, path)`
 helper, used by the importer, `use_skill`, `add_skill`/`edit_skill`/`remove_skill`,
 and the HTTP query-param path.
 
-### 4.5 Import & export (Decision 1, inherited from the old plan)
+### 4.6 Import & export — the mirror stays
 
 - **Import at boot / first list.** `importFromDisk` walks the global root and
   `ctx.cwd`'s local root and `INSERT OR IGNORE`s each skill. It **never overwrites**
@@ -295,18 +345,18 @@ The importer needs a hook. Preferred: call it once from the same place the DB is
 opened and migrations run (`main.zig:220-226`), after `runMigrations()`. Fallback:
 lazily on the first `list_skills` per process, guarded by a `bool`.
 
-### 4.6 Tool contract changes
+### 4.7 Tool contract changes
 
 | Tool | Before | After |
 |---|---|---|
-| `list_skills` | `{cwd?}` → dir scan | `{cwd?}` → `listSkills(db, null, cwd)`; same `{global_skills, local_skills, cwd}` envelope |
-| `use_skill` | `{path, is_global}` | **`{skill_name, scope?}`** — `path` and `is_global` **deleted** |
-| `add_skill` | `{name, description, content, is_global}` | unchanged input; writes a row (+ mirror) |
-| `edit_skill` | `{skill_name, description?, content?, is_global}` | unchanged input; `is_global` → `scope` |
-| `remove_skill` | `{skill_name, session_id, is_global}` | unchanged input; `is_global` → `scope` |
+| `list_skills` | `{cwd?}` → dir scan | `{cwd?}` → `listSkills(db, null, cwd)`; same `{global_skills, local_skills, cwd}` envelope, each entry now also carries `tags` |
+| `use_skill` | `{path, is_global}` | **`{skill_name, is_global?}`** — `path` **deleted**; `is_global` becomes optional and defaults to local-first resolution |
+| `add_skill` | `{name, description, content, is_global}` | `{name, description, content, is_global, tags?}`; writes a row (+ mirror) |
+| `edit_skill` | `{skill_name, description?, content?, is_global}` | `{skill_name, description?, content?, tags?, is_global}`; row write, then mirror |
+| `remove_skill` | `{skill_name, session_id, is_global}` | unchanged input; deletes the row, best-effort `deleteTree` |
 
-`use_skill` breaking its input contract is deliberate. Keeping `path` as a fallback
-reintroduces a second source of truth, which is the entire thing being removed. An
+**Decision (locked 2026-09-28): no compatibility shim for `path`.** Keeping it would
+reintroduce a second source of truth, which is the entire thing this plan removes. An
 in-flight model calling `use_skill({path})` gets a validation error that names
 `skill_name` and self-heals in one turn. `UseSkillOutput`'s envelope
 (`{skill_name, content, loaded, error, available_skills}`) is **unchanged**, so
@@ -317,23 +367,28 @@ byte-identical.
 old plan): an oversized row returns `loaded: false` with the byte count rather than
 flooding the context.
 
-### 4.7 HTTP contract changes
+### 4.8 HTTP contract changes
 
-The three handlers keep their routes, methods, and top-level envelopes. Field-level
-changes:
+The three handlers keep their routes, methods, and top-level envelopes. **Decision
+(locked 2026-09-28): the wire speaks `is_global: boolean`, not a `scope` string** —
+`SkillDetail extends Skill` in `api/index.ts:2933-2936` keeps compiling untouched.
+The DB column is `is_global` too, so there is no translation layer (§4.2).
 
-- `GET /api/skills` → `{"global_skills":[{name,description,path?}], "local_skills":[...], "cwd":?}`.
+Field-level changes:
+
+- `GET /api/skills` → `{"global_skills":[{name,description,tags,path?}], "local_skills":[...], "cwd":?}`.
   `path` is populated from `source_path` and **may be `""`**; the TS type already has
   it optional.
-- `GET /api/skills/:name` → `{skill:{name,description,content,path,is_global}, error_message}`.
-  `is_global` is derived (`scope == 'global'`) so the existing TS `SkillDetail`
-  keeps compiling; `path` comes from `source_path` and may be `""`.
-- `DELETE /api/skills?name=…&is_global=…&cwd=…` → unchanged signature. **Required
-  behaviour change:** today the handler scans folders and matches by frontmatter
+- `GET /api/skills/:name` → `{skill:{name,description,tags,content,path,is_global}, error_message}`.
+  `is_global` is read straight off the row. `path` comes from `source_path` and may be `""`.
+- `DELETE /api/skills?name=…&is_global=…&cwd=…` → **signature unchanged**, which is
+  exactly why decision 2 is load-bearing: the frontend's existing `is_global` query
+  param keeps working with zero frontend change on this route. **One required
+  behaviour change remains:** today the handler scans folders and matches by frontmatter
   name, and *none* of its two frontend callers pass `cwd`
   (`SkillDetail.vue:77-79`; `SkillsSettings.vue:64-68` and `AppLayout.vue:2867-2871`
   both render `<SkillDetail>` without `:cwd`). With a table keyed on
-  `(scope, cwd, name)`, a local delete with no `cwd` is **unresolvable**. Plan:
+  `(is_global, cwd, name)`, a local delete with no `cwd` is **unresolvable**. Plan:
   keep returning `400 "cwd query parameter is required for local skill deletion"`
   when `is_global=false` and `cwd` is absent, and make `SkillDetail.vue` pass
   through the `cwd` it already receives as a prop (it has one, unused) — plus have
@@ -344,15 +399,15 @@ changes:
 found" → 404 and `deleteTree` failure → 500. With a row store, "row not found" → 404
 and the mirror `deleteTree` failure is logged, never surfaced.
 
-### 4.8 Frontend changes
+### 4.9 Frontend changes
 
 | File | Change |
 |---|---|
-| `src/apps/desktop/src/api/index.ts:2926-2985` | `Skill.path` documented as "may be empty (provenance, not a filesystem handle)"; add `scope?: 'global' \| 'local'` to `SkillDetail`; `deleteSkill` gains an optional `cwd` |
+| `src/apps/desktop/src/api/index.ts:2926-2985` | `Skill` gains `tags?: string`; `path` documented as "may be empty (provenance, not a filesystem handle)"; `SkillDetail` is **unchanged** (already has `is_global: boolean`); `deleteSkill` gains an optional `cwd` |
 | `.../components/shell/SkillDetail.vue:77-79` | pass `cwd` through on delete; `:145-152` — the "Path:" block is `v-if`-guarded, so it degrades; relabel to "Source:" or keep |
-| `.../components/tool_outputs/SkillList.vue:127-128`, `ListSkills.vue:134-135` | display-only `path`; already `v-if`-guarded |
-| `.../tool_outputs/_shared/toolOutputParser.ts:514-556` | `ParsedListSkills` / `SkillBlock` mark `path` nullable |
-| `AddSkill/EditSkill/RemoveSkill.vue:64,68` | their `Path:` line comes from the **tool payload**, so it changes in lockstep with §4.6 |
+| `.../components/tool_outputs/SkillList.vue:127-128`, `ListSkills.vue:134-135` | display-only `path`; already `v-if`-guarded; render `tags` as small chips under the description |
+| `.../tool_outputs/_shared/toolOutputParser.ts:514-556` | `ParsedListSkills` / `SkillBlock` mark `path` nullable, add `tags` |
+| `AddSkill/EditSkill/RemoveSkill.vue:64,68` | their `Path:` line comes from the **tool payload**, so it changes in lockstep with §4.7 |
 | `.../components/shell/RightSidebar.vue`, `RightSideBarSkillList.vue`, `stores/sidebar.ts:112-148` | **delete** — unmounted dead code (see §3.7) |
 
 **No OpenAPI/codegen artifact exists** — the api client is hand-written; there is no
@@ -380,29 +435,38 @@ Ordered so every task is independently testable and reviewable.
 - `test "Migration094 is registered in allMigrations"` — copy the guard shape at `migration.zig:6042-6048`.
 - `src/models/skill.zig` — copy `src/models/agent_knowledge.zig` (72 lines: `EntityId`, fields, `InitArgs`, `init`, `deinit`, `clone`).
 
-**Test:** in-memory `SqliteBackend.init(io, ":memory:")` + `Migration094…up(&db, alloc)`; assert the table exists, the partial unique indexes reject a duplicate global name and a duplicate `(cwd,name)`, and that the same name is legal in both scopes.
+**Test:** in-memory `SqliteBackend.init(io, ":memory:")` + `Migration094…up(&db, alloc)`; assert the table exists, the partial unique indexes reject a duplicate global name and a duplicate `(cwd,name)`, and that the same name is legal in both `is_global` branches.
 
 ### W2 — `skills_db.zig` (the repository)
 
-Full CRUD + `importFromDisk` per §4.3, with every free-text write wrapped in
+Full CRUD + `importFromDisk` per §4.4, with every free-text write wrapped in
 `COALESCE(?, '')`. Reads: `db.query` → `defer rows.deinit()` → `defer row.deinit(alloc)`
-→ `allocator.dupe` for anything that outlives the row.
+→ `allocator.dupe` for anything that outlives the row. `is_global` is stringified
+on bind and compared on read (§4.4).
+
+**Also in W2:** extend `parseYamlFrontmatter` (`skills.zig:87-145`) to parse `tags`
+per §4.3, and free the new field everywhere it is freed by hand. The importer reads
+tags off disk, so the column is populated from day one rather than only by the tools.
 
 **Tests (in-file, in-memory DB):**
 1. Round-trip create → read → update → delete.
-2. **`""` bind test** — write `description = ""` and `source_path = ""`, read back `""` (not NULL, not an error).
+2. **`""` bind test** — write `description = ""`, `tags = ""`, `source_path = ""`; read back `""` (not NULL, not an error).
 3. Empty-`name` guard returns a typed error instead of a NULL-comparison miss.
-4. local-first resolution when `scope == null` and both a global and a local row exist; global-only when only global exists.
-5. `importFromDisk` is `INSERT OR IGNORE`: seed a row, run the importer, assert the row is unchanged; then run with a new file, assert a row was added.
+4. Local-first resolution when `is_global == null` and both a global and a local row exist; global-only when only the global row exists.
+5. `importFromDisk` is `INSERT OR IGNORE`: seed a row, run the importer, assert the row is unchanged; then run with a new file, assert a row was added **with its frontmatter tags imported**.
 6. `canonicalCwd` — two different spellings of the same path (trailing slash, `/tmp/../tmp/x`) address the same row.
+7. **Tags round-trip both frontmatter forms** — `tags: [a, b]` and `tags: a, b` both normalise to `a||b`; a skill with no `tags:` line yields `""`, not a crash and not a phantom `[]`.
+8. `is_global = true` forces `cwd = ''` on write even if the caller supplied one.
 
 ### W3 — Swap the five tools
 
 - `skill_tools.zig`: `listAllSkills` reads the table (keep the `SkillsListData`
   envelope and the `listAllSkills` / `freeSkillsListData` / `toJson` names — the HTTP
   layer and the tests depend on them). `use_skill` takes `skill_name` + optional
-  `scope`, resolves via `skills_db.getSkill`, applies the 100 KB cap. `add_skill` /
-  `edit_skill` / `remove_skill` write rows first, mirror to disk second.
+  `is_global`, resolves via `skills_db.getSkill`, applies the 100 KB cap. `add_skill` /
+  `edit_skill` / `remove_skill` write rows first, mirror to disk second — and
+  `buildSkillContent` / `buildEditSkillContent` must emit the `tags:` frontmatter line
+  so the mirror does not silently drop them.
 - `tools_exec_skills.zig`: thread `ctx.db` into each call. `execUseSkill`'s
   `skill_save` return is unchanged.
 - `tools_equipped.zig`: no registry change (same five names, same order).
@@ -410,7 +474,10 @@ Full CRUD + `importFromDisk` per §4.3, with every free-text write wrapped in
 **Tests:** every existing `skill_tools.zig` test that builds a `SKILL.MD` on disk must
 be re-pointed at a seeded DB row — that is ~15 tests, and the diff is the honest
 measure of the behaviour change. Add: `use_skill` with a `path` argument returns the
-`skill_name`-naming validation error; oversized row → `loaded: false` + byte count.
+`skill_name`-naming validation error; oversized row → `loaded: false` + byte count;
+`add_skill` with `tags: "a, b"` persists `a||b` **and** the mirrored `SKILL.MD`
+contains a `tags:` line (the mirror round-trip is its own test — it is the one thing
+that fails silently).
 
 ### W4 — Swap the three HTTP handlers
 
@@ -425,7 +492,7 @@ replaced by an indexed lookup.
 
 ### W5 — Frontend
 
-Per §4.8. Also **delete** the two dead sidebar components and the dead
+Per §4.9. Also **delete** the two dead sidebar components and the dead
 `skillsGlobalExpanded`/`skillsLocalExpanded` store block — the skill viewer overlay
 is currently reachable only by hand-editing `?view=skill&skill=<name>`, so there is no
 live surface to preserve.
@@ -448,7 +515,11 @@ currently **untested** — all three skills HTTP functions have zero frontend co
 4. `GET /api/skills/<literal>` — a new literal sub-route (if W4 adds one) must not be
    shadowed by `:name`.
 5. An `add_skill` with an empty `description` persists as `""` and does not 500 —
-   the empty-slice→NULL trap over the real wire, not a unit test.
+   the empty-slice→NULL trap over the real wire, not a unit test. (`tags` is the
+   *most* likely empty string, since most skills carry no tags line — cover both.)
+6. `add_skill` with `tags: "a, b"` → `GET /api/skills` shows `a||b`; delete the row,
+   confirm the importer re-adds it **with its tags** from the mirrored `SKILL.MD`.
+   This is the end-to-end proof that the mirror writer emits a `tags:` line.
 
 **Why the functional harness and not `nohup … --port 8080` + curl:** the three failure
 modes above (route shadowing, empty-slice NULL collapsing mid-useCase, strict
@@ -482,7 +553,7 @@ reason: it silently breaks the git-tracked skill workflow).
 
 | # | Risk | Mitigation |
 |---|---|---|
-| R1 | `""` binds as NULL → `NOT NULL` violation at runtime | `COALESCE(?, '')` at every write; dedicated unit + functional test (§4.4a) |
+| R1 | `""` binds as NULL → `NOT NULL` violation at runtime | `COALESCE(?, '')` at every write; dedicated unit + functional test (§4.5(a)) |
 | R2 | cwd canonicalisation drift makes local skills invisible | one `canonicalCwd` helper; test with 3 path spellings |
 | R3 | A literal sub-route registered after `:name` is shadowed | register literals first; functional test |
 | R4 | `path` disappears from the UI/tool payload | every render site is `v-if`-guarded; decide "Path:" vs "Source:" explicitly in W5 |
@@ -493,19 +564,25 @@ reason: it silently breaks the git-tracked skill workflow).
 | R9 | Two duplicate `SkillInfo` types (`session_skills.zig:4` and `llm_history.zig:4249`) bridged by a copy loop at `on_event_sent.zig:305-317` | out of scope, but do not make it worse — if you touch either, touch both |
 | R10 | Deleting the dead sidebar components could surprise a user who deep-links `?view=skill` | the overlay is already unreachable by navigation; note it in the PR description |
 
-## 8. Open questions for the reviewer
+## 8. Decision log — all four resolved 2026-09-28
 
-1. **Does the filesystem mirror stay?** W4.5 keeps it (best-effort) so repo-tracked
-   skills keep working. The alternative — table-only, no mirror — is cleaner but
-   silently breaks anyone committing `.nalar/skills/` to a repo. **Default: keep the
-   mirror.**
-2. **`is_global` on the wire, or `scope`?** §4.7 proposes deriving `is_global` from
-   `scope` so `SkillDetail extends Skill` keeps compiling. The alternative is a
-   breaking TS change. **Default: derive `is_global`, also expose `scope`.**
-3. **Add `tags` now?** The frontmatter carries `tags:` and the prompt tells the agent
-   to consult by tag, but nothing parses it. A `tags TEXT NOT NULL DEFAULT ''` column
-   costs one migration line and one `parseYamlFrontmatter` extension, with no consumer
-   until a search tool lands. **Default: skip; add it with the search tool.**
-4. **Should `use_skill` keep accepting `path` for one release** as a compatibility
-   shim? **Default: no** — a fallback re-creates the dual source of truth this plan
-   removes.
+| # | Question | **Decided** | Consequence for this document |
+|---|---|---|---|
+| 1 | Does the filesystem mirror stay? | **Keep it** | §4.6 as written. The importer is `INSERT OR IGNORE` at boot; writes mirror to `<root>/<name>/SKILL.MD` best-effort. The trade-off is real and stated in §6: a repo that tracks `.nalar/skills/` keeps seeing changes, and hand-editing a `SKILL.MD` after the row exists no longer changes what the agent sees. |
+| 2 | `is_global` on the wire, or `scope`? | **`is_global`** | The `scope` TEXT enum is **gone** (§4.2). The column is `is_global INTEGER`, the tool inputs are `is_global: bool`, the wire is `is_global: boolean`, and `SkillDetail` in `api/index.ts:2933-2936` compiles **untouched**. The `DELETE /api/skills?...&is_global=…` query string also needs no change. The only cost is that an integer bind has to be stringified — an existing repo idiom (§4.4). |
+| 3 | Add a `tags` column now? | **Yes** | `tags TEXT NOT NULL DEFAULT ''` in the schema (§4.1), `'||'`-joined like `agent_memories.tags` (§4.3). `parseYamlFrontmatter` learns to parse both frontmatter forms; `add_skill`/`edit_skill` gain a `tags` input; the mirror writer gains a `tags:` line. The consumer is the LLM — the prompt already tells the agent to consult skills by tag, and `list_skills` output is the tool payload. |
+| 4 | Compat shim for `use_skill({path})`? | **No** | `path` is deleted with no fallback (§4.7). An in-flight model gets a validation error naming `skill_name` and self-heals in one turn. A fallback would re-create the dual source of truth this plan exists to remove. |
+
+**Net effect of decision 2 on blast radius:** the wire contract is *narrower* than
+first drafted — no `Skill`/`SkillDetail` type change at all, only additive `tags?`
+and the `deleteSkill(..., { cwd })` plumbing. The `path` field stays on the wire,
+sourced from `source_path`; the frontend already treats it as optional and `v-if`-
+guards every render site, so an empty value degrades silently rather than breaking.
+
+**Residual risk after these decisions** — none of the three traps in §4.5 are
+affected: empty-slice→NULL still applies (and now also to `tags`, which is the most
+likely field to be written empty, since most skills have no tags line); route order
+is unchanged; cwd canonicalisation is unchanged. The new surface introduced by
+decision 3 is the hand-free at `skill_tools.zig:266-280`, which `std.testing.allocator`
+will catch, and the mirror's `tags:` line, which fails silently — hence the dedicated
+mirror round-trip test in W3.
