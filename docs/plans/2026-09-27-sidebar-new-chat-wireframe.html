@@ -354,26 +354,57 @@
       <li><span class="dec dec-a">D9</span> A brand-new chat appears under the project immediately, and in <b>Recents after the first message</b> — exactly like the project <code>+</code> does today. Making it appear in Recents sooner would diverge the two entry points.</li>
       <li><span class="dec dec-a">D10</span> <b>Desktop and Android</b>, one backend. Neither client reimplements a create flow — each resolves an item and calls the one it already has.</li>
       <li><span class="dec dec-a">D11</span> <b>Create it if not found</b>, as the invariant: every workspace has a default, and the code that looks one up creates one on a miss. No surface may have a "no default project" branch.</li>
+      <li><span class="dec dec-a">D12</span> ✅ <b>The items <i>list</i> endpoint creates the default on a miss</b> — the read both clients already make. So neither client needs a "does it exist?" branch: the client code is a pure find, and a legacy workspace is healed the moment anyone opens it. Two obligations come with it, shown in §7.</li>
+      <li><span class="dec dec-a">D13</span> ✅ <b>The Android drawer closes on New Chat.</b> The per-project <code>+</code> deliberately stays open; a <i>top-level</i> action that leaves the drawer up while the chat loads behind it reads as a bug. One dismissal hook, threaded the way <code>onOpenAllChats</code> already is — fired <i>before</i> navigating, so it feels instant rather than like a flicker.</li>
     </ul>
   </div>
   <div class="panel" style="flex:1;min-width:300px">
-    <div class="cap">Needs your call before code</div>
+    <div class="cap">Still open</div>
     <ul>
-      <li><span class="dec dec-q">Q1</span> <b>Deleting the only default.</b> The index prevents <i>two</i>, not <i>zero</i>. Left alone, deleting it means the next lookup misses and re-creates one — the invariant working, but it <i>looks</i> like a bug to someone who just deleted a project. <b>I lean to refusing the delete (409)</b>, but the invariant genuinely tolerates either. This is the one that's truly 50/50.</li>
+      <li><span class="dec dec-q">Q1</span> <b>Deleting the only default.</b> The index prevents <i>two</i>, not <i>zero</i>. Left alone, deleting it means the next read misses and re-creates one — the invariant working, but it <i>looks</i> like a bug to someone who just deleted a project. <b>I lean to refusing the delete (409)</b>, but the invariant genuinely tolerates either. This is the one that's truly 50/50.</li>
       <li><span class="dec dec-q">Q2</span> Should <code>+ Add Item</code> offer a "Default" option? I propose <b>no</b> — the default is system-owned, not user-created.</li>
-      <li><span class="dec dec-q">Q3</span> Should the <b>Android drawer close</b> on New Chat? The per-project <code>+</code> deliberately stays open. A <i>top-level</i> New Chat that leaves the reader staring at a still-open drawer while the chat loads behind it is worse. I propose it <b>closes</b> — one dismissal hook, threaded the way <code>onOpenAllChats</code> already is.</li>
-      <li><span class="dec dec-q">Q4</span> Should the items <b>list</b> endpoint create the default as a side effect? That would hand both clients the default with zero client logic. <b>I recommend against it</b>: a GET that writes is a surprise, list latency then depends on whether a write is needed, and a read of a nonexistent workspace must not create anything. The client-side ensure costs ~5 lines each and keeps the read path pure.</li>
     </ul>
   </div>
 </div>
 
-<div class="note" style="margin-top:14px">
-  <b>How this gets verified.</b> Not by starting a server and curling it. A functional test
+<h2>7 — What D12 obliges the server to handle</h2>
+<div class="row">
+  <div class="panel" style="flex:1;min-width:300px">
+    <div class="cap">A GET that writes — what you buy</div>
+    <ul>
+      <li>The invariant is enforced in <b>one</b> place, on a read both clients already make.</li>
+      <li><b>Zero</b> client-side ensure logic and <b>zero</b> extra round trip — the client code collapses to a pure find.</li>
+      <li>A legacy workspace is <b>healed the moment anyone opens it</b>, with no data migration and no <code>$HOME</code> resolved at migration time.</li>
+    </ul>
+  </div>
+  <div class="panel" style="flex:1;min-width:300px">
+    <div class="cap">…and what it obliges us to get right</div>
+    <ul>
+      <li><b>The read must not fail because the write failed.</b> A caller who cannot write, an unwritable home, a lost race we could not recover — the list still returns 200 with what it found. One missing row beats a broken sidebar, and the very next read tries again.</li>
+      <li><b>An unknown workspace must create nothing.</b> This is the trap. The list handler does <b>not</b> 404 today — it just returns <code>[]</code> — so there is no existence check to lean on. Without an explicit probe, <code>GET /api/workspaces/does-not-exist/items</code> would create an <b>orphan</b> item row for a workspace that never existed.</li>
+      <li><b>A prefetch, monitor or crawler can now trigger a create.</b> Inherent to the choice. Nothing to do but know it.</li>
+    </ul>
+  </div>
+</div>
+<div class="note" style="margin-top:11px">
+  Both obligations get a test, and the orphan one gets a test <b>over the wire</b> — assert
+  <code>200 []</code> <i>and</i> that no workspace was invented. It is the single easiest way to get D12 wrong, which is
+  why it gets its own step in the plan rather than a footnote.
+</div>
+
+<h2>8 — How this gets verified</h2>
+<div class="note" style="margin-top:0">
+  <b>Not by starting a server and curling it.</b> A functional test
   (<code>tests/functional/sidebar_new_chat_default_project_test.py</code>) boots a fresh binary through
   <code>harness.py</code> on a free port in 8080–8199 — <b>never 8081</b> — with <code>HOME</code> pointed at an isolated
   tmpdir, then asserts that a new chat's resolved cwd is that tmpdir and not a <code>/tmp</code> sandbox. The whole feature
   is defined by <i>where the home directory lands</i>, and only a harness with a controlled <code>HOME</code> can assert that.
-  Unit tests cover the rest: the migration's indexes, the ensure() idempotence, and seven vitest cases for the button's states.
+  It also carries the two D12 wire tests: a legacy workspace with no items comes back <i>with</i> the default, and an unknown
+  workspace id comes back <code>200 []</code> having invented nothing.
+  <br><br>
+  Unit tests cover the rest: the migration's indexes, the ensure idempotence, eight vitest cases for the desktop button's
+  states, and the Android suite — where <code>ChatRegionEndIndexTest</code> must keep passing <b>untouched</b>, because a
+  failure there is the only thing that catches a row placed in the wrong container.
 </div>
 
 </body>
