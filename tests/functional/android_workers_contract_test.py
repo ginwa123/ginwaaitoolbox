@@ -19,6 +19,17 @@ pin:
      `WorkerApi.parseRunningSessionIds` projects the *presence* of a row down to
      the id set. Parse `is_running` instead and the client is right by accident
      until the backend stops hardcoding it.
+  3. "Presence" means presence *of a row that is not cancelled*. Stopping a run
+     does not delete its row -- `POST /api/llm/session/:session/stop` sets
+     `worker.cancelled = 1` and the loop reads it back to break out of itself --
+     so `GET /api/workers` filters `cancelled = 0` itself. Without that filter a
+     stopped run was reported as `status: "running"` and a phone keyed a spinner
+     on it for as long as the row lived, which is how a client could claim an
+     agent was working when nothing was. The filter itself is pinned by the
+     in-memory-SQLite tests in `src/http_handlers/worker_list.zig`; the reason
+     it cannot be re-derived from the wire here is that the stub LLM finishes a
+     run inside a millisecond, so there is no window in which a stop is
+     observable over HTTP.
 
 Run: pytest tests/functional/android_workers_contract_test.py
 """

@@ -882,8 +882,17 @@ class ChatViewModel(
             is ChatStreamState.Reconnecting,
             -> _uiState.update { it.copy(isLive = false) }
 
+            // Terminal, so this is the last word on the turn. The pump
+            // `return`s on a rejected handshake instead of retrying
+            // (HttpChatEventStream: a non-2xx handshake is reported and the
+            // pump exits), which means neither `chunk_final` nor `llm_full` is
+            // ever coming for a turn that is still flagged as streaming. Left
+            // set, `isChatWorking` keeps the Stop button and the "Working…"
+            // label on screen for a run that cannot report anything again — the
+            // same argument the `ChatStreamEvent.Failed` branch below makes for
+            // an `is_error` frame.
             is ChatStreamState.Failed -> _uiState.update {
-                it.copy(isLive = false, errorMessage = state.message)
+                it.copy(isLive = false, errorMessage = state.message, isStreaming = false)
             }
         }
     }

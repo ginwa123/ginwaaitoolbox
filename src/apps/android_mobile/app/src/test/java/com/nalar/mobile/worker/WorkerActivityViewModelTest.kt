@@ -17,6 +17,9 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -111,18 +114,26 @@ class WorkerActivityViewModelTest {
         }
     }
 
+    /**
+     * `resyncTicks` defaults to `emptyFlow()` here on purpose. The production
+     * default is a self-rescheduling `delay()` loop, and `advanceUntilIdle`
+     * never settles against one — every test in this file would hang. A test
+     * that is about the periodic beat passes its own finite flow instead.
+     */
     private fun model(
         ioDispatcher: CoroutineDispatcher,
         store: RunningSessionsStore = RunningSessionsStore(),
         stream: FakeEventStream = FakeEventStream(),
         transport: AuthTransport = FakeTransport { AuthHttpResponse(200, workerBody()) },
         nowMillis: () -> Long = { 1_789_451_234_000L },
+        resyncTicks: Flow<Unit> = emptyFlow(),
     ) = WorkerActivityViewModel(
         client = ChatClient(MemorySessionStore(), httpTransport = transport),
         store = store,
         eventStream = stream,
         ioDispatcher = ioDispatcher,
         nowMillis = nowMillis,
+        resyncTicks = resyncTicks,
     )
 
     @Test
@@ -390,5 +401,183 @@ class WorkerActivityViewModelTest {
         schedulers.drain()
 
         assertTrue(store.runningSessionIds.value.isEmpty())
+    }
+
+    @Test
+    fun `the periodic beat re-reads the list on a socket that never dropped`() = modelTest { schedulers ->
+        val store = RunningSessionsStore()
+        val stream = FakeEventStream()
+        var served = workerBody("task_1")
+        val transport = FakeTransport { AuthHttpResponse(200, served) }
+        val ticks = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+        var now = 1_789_451_234_000L
+        // The socket never leaves Live, so nothing else in this class would
+        // ever prompt a second fetch.
+        val model = model(
+            ioDispatcher = schedulers.ioDispatcher,
+            store = store,
+            stream = stream,
+            transport = transport,
+            nowMillis = { now },
+            resyncTicks = ticks,
+        )
+        model.onUserChanged("user_1")
+
+        stream.state(ChatStreamState.Live)
+        schedulers.drain()
+        assertEquals(setOf("task_1"), store.runningSessionIds.value)
+        assertEquals(1, transport.workerRequests)
+
+        // The run ends while the app is in the background: the server emits a
+        // `worker_deleted` this process never dispatches, and the socket stays
+        // up, so no reconnect ever comes to correct it.
+        served = workerBody()
+        now += WorkerActivityViewModel.RESYNC_INTERVAL_MILLIS
+        ticks.emit(Unit)
+        schedulers.drain()
+
+        assertEquals(2, transport.workerRequests)
+        assertTrue(store.runningSessionIds.value.isEmpty())
+    }
+
+    @Test
+    fun `no periodic beat means no extra requests`() = modelTest { schedulers ->
+        val transport = FakeTransport { AuthHttpResponse(200, workerBody("task_1")) }
+        val stream = FakeEventStream()
+        val model = model(schedulers.ioDispatcher, stream = stream, transport = transport)
+        model.onUserChanged("user_1")
+
+        stream.state(ChatStreamState.Live)
+        schedulers.drain()
+        // A slow user must not cost the server a request per second.
+        repeat(10) { schedulers.drain() }
+
+        assertEquals(1, transport.workerRequests)
+    }
+
+    @Test
+    fun `coming back to the app re-reads the list without waiting out the throttle`() = modelTest { schedulers ->
+        val store = RunningSessionsStore()
+        val stream = FakeEventStream()
+        var served = workerBody("task_1", "task_2")
+        val transport = FakeTransport { AuthHttpResponse(200, served) }
+        val model = model(schedulers.ioDispatcher, store, stream, transport)
+        model.onUserChanged("user_1")
+
+        stream.state(ChatStreamState.Live)
+        schedulers.drain()
+        assertEquals(1, transport.workerRequests)
+
+        served = workerBody("task_1")
+        // Inside the throttle window, which is exactly the situation: the socket
+        // was open the whole time the app was away.
+        model.onForeground()
+        schedulers.drain()
+
+        assertEquals(2, transport.workerRequests)
+        assertEquals(setOf("task_1"), store.runningSessionIds.value)
+    }
+
+    @Test
+    fun `coming back before sign-in does nothing`() = modelTest { schedulers ->
+        val transport = FakeTransport { AuthHttpResponse(200, workerBody("task_1")) }
+        val model = model(schedulers.ioDispatcher, transport = transport)
+
+        model.onForeground()
+        schedulers.drain()
+
+        // The transport is a cookie, and the subscription is not open yet.
+        assertEquals(0, transport.workerRequests)
+    }
+
+    @Test
+    fun `a cleared ViewModel drops the ids the process-wide store was holding`() = modelTest { schedulers ->
+        val store = RunningSessionsStore()
+        val stream = FakeEventStream()
+        val model = model(schedulers.ioDispatcher, store, stream)
+        model.onUserChanged("user_1")
+        // Cleared the way an Activity teardown clears it, without the route
+        // change that would also have stopped the stream.
+        model.onSignedOut()
+        store.replace(setOf("task_1"))
+        clearViewModel(model)
+
+        // `stop()` short-circuits when nothing is streaming, and the store is a
+        // singleton — so without the clear in `onCleared` the next Activity
+        // republishes a set from one that no longer exists.
+        assertTrue(store.runningSessionIds.value.isEmpty())
+    }
+
+    /**
+     * `onCleared` is a `ViewModel` lifecycle hook and therefore protected, and
+     * it is not worth widening to public purely so a test can reach it.
+     */
+    private fun clearViewModel(model: WorkerActivityViewModel) {
+        WorkerActivityViewModel::class.java
+            .getDeclaredMethod("onCleared")
+            .apply { isAccessible = true }
+            .invoke(model)
+    }
+
+    @Test
+    fun `switching accounts drops the previous account's ids`() = modelTest { schedulers ->
+        val store = RunningSessionsStore()
+        val stream = FakeEventStream()
+        val model = model(schedulers.ioDispatcher, store, stream)
+        model.onUserChanged("user_a")
+        store.replace(setOf("task_a"))
+
+        // No null in between: the auth state went straight from one account to
+        // the other. The ids are not account-scoped, so carrying them across
+        // shows A's busy markers against B's chats.
+        model.onUserChanged("user_b")
+
+        assertTrue(store.runningSessionIds.value.isEmpty())
+        assertEquals(2, stream.startCount)
+        assertEquals(1, stream.stopCount)
+    }
+
+    @Test
+    fun `repeating the same account does not resubscribe`() = modelTest { schedulers ->
+        val stream = FakeEventStream()
+        val model = model(schedulers.ioDispatcher, stream = stream)
+
+        model.onUserChanged("user_a")
+        model.onUserChanged("user_a")
+        model.onUserChanged("user_a")
+
+        assertEquals(1, stream.startCount)
+        assertEquals(0, stream.stopCount)
+    }
+
+    @Test
+    fun `signing out stops the periodic beat`() = modelTest { schedulers ->
+        val transport = FakeTransport { AuthHttpResponse(200, workerBody("task_1")) }
+        val stream = FakeEventStream()
+        val ticks = MutableSharedFlow<Unit>(extraBufferCapacity = 4)
+        var now = 1_789_451_234_000L
+        val model = model(
+            ioDispatcher = schedulers.ioDispatcher,
+            stream = stream,
+            transport = transport,
+            nowMillis = { now },
+            resyncTicks = ticks,
+        )
+        model.onUserChanged("user_1")
+        stream.state(ChatStreamState.Live)
+        schedulers.drain()
+        assertEquals(1, transport.workerRequests)
+
+        model.onSignedOut()
+        schedulers.drain()
+
+        now += WorkerActivityViewModel.RESYNC_INTERVAL_MILLIS
+        ticks.emit(Unit)
+        schedulers.drain()
+
+        // A beat that outlived the cookie would keep hitting an endpoint the
+        // user no longer has a right to be asking about.
+        assertEquals(1, transport.workerRequests)
+        assertTrue(model.runningSessionIds.value.isEmpty())
     }
 }

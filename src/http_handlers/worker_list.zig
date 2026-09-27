@@ -38,30 +38,69 @@ fn useCase(
     input: WorkerListInput,
     owner: []const u8,
 ) WorkerListError!WorkerListResult {
+    // Only the query string lives in the arena — it is dead the moment
+    // `db.query` returns. The rows and the JSON keep the caller's allocator
+    // because `WorkerInfo` borrows the row values and serialises them after
+    // the iterator has moved on.
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const q = arena.allocator();
+
     // Build query with optional session_id filter. SQL convention:
     // alias the table (`w`) so the column references stay
     // unambiguous when filters grow (see project memory
     // nalar-sql-alias-tables.md).
     const base_sql = "SELECT w.id, w.session_id, w.working_directory, w.last_activity_nano AS last_activity, w.last_activity_description, w.created_at FROM worker w";
+
+    // `cancelled = 0` is the whole reason a client can trust this list.
+    //
+    // `POST /api/llm/session/:session/stop` cannot delete the row: the loop
+    // reads `cancelled` back to break out of itself (`isWorkerCancelled` in
+    // `agentic_loop/workflow.zig`), and that helper answers `false` for a
+    // row that is not there, so deleting it would silently un-cancel the run
+    // the user just stopped. The row therefore outlives the stop request and
+    // arrives here, where `status`/`is_running` are hardcoded for every row
+    // returned — so a stopped run was reported as a live one to every client,
+    // and a phone that keys a spinner on the list kept spinning with nothing
+    // to clear it. `Worker.cancelled`'s own doc comment already specifies
+    // this filter; no code implemented it.
+    //
+    // The loop's `defer deleteWorker` still removes the row once the run
+    // actually winds down. This predicate covers the window in between, plus
+    // a row orphaned by a process that will never run its defer again.
+    var where_sql: []const u8 = "WHERE w.cancelled = 0";
+
+    if (input.session_id_filter != null) {
+        where_sql = try std.fmt.allocPrint(q, "{s} AND w.session_id = ?", .{where_sql});
+    }
     // Owner scope (plan 2026-09-25, W2.4). Skipped only for the shared/system
     // user, i.e. auth off, where the system user sees every worker.
-    const scoped = !auth_common.isSharedOwner(owner);
-    const query_sql = if (input.session_id_filter != null)
-        if (scoped)
-            try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? AND " ++ auth_common.ownerVisibilityClause("w") ++ " ORDER BY w.last_activity_nano DESC", .{base_sql})
-        else
-            try std.fmt.allocPrint(allocator, "{s} WHERE w.session_id = ? ORDER BY w.last_activity_nano DESC", .{base_sql})
-    else if (scoped)
-        try std.fmt.allocPrint(allocator, "{s} WHERE " ++ auth_common.ownerVisibilityClause("w") ++ " ORDER BY w.last_activity_nano DESC", .{base_sql})
-    else
-        try std.fmt.allocPrint(allocator, "{s} ORDER BY w.last_activity_nano DESC", .{base_sql});
+    if (!auth_common.isSharedOwner(owner)) {
+        where_sql = try std.fmt.allocPrint(
+            q,
+            "{s} AND " ++ auth_common.ownerVisibilityClause("w"),
+            .{where_sql},
+        );
+    }
 
+    const query_sql = try std.fmt.allocPrint(
+        q,
+        "{s} {s} ORDER BY w.last_activity_nano DESC",
+        .{ base_sql, where_sql },
+    );
+
+    // Bound exactly as before the `cancelled` predicate existed: the
+    // visibility clause contributes two `?` (one compared against the system
+    // sentinel, one bound to the owner) and the session filter one more.
     const query_params: []const []const u8 = if (input.session_id_filter) |sid|
-        if (scoped) &[_][]const u8{ sid, owner, owner } else &[_][]const u8{sid}
-    else if (scoped)
-        &[_][]const u8{ owner, owner }
+        if (auth_common.isSharedOwner(owner))
+            &[_][]const u8{sid}
+        else
+            &[_][]const u8{ sid, owner, owner }
+    else if (auth_common.isSharedOwner(owner))
+        &[_][]const u8{}
     else
-        &[_][]const u8{};
+        &[_][]const u8{ owner, owner };
 
     var rows = db.query(allocator, query_sql, query_params) catch return error.QueryFailed;
 
@@ -134,4 +173,206 @@ pub fn workerListHandler(
 
     _ = outcome.count;
     return res.jsonResponse(.{ .status_code = 200, .data = outcome.json });
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+//
+// Registered in `src/root.zig`'s `test { }` block — the same lazy-compilation
+// workaround `schedulers/cleanup_stale_worker.zig` uses. Without that import
+// these tests exist but `zig build test` never discovers them.
+
+const testing = std.testing;
+const sqlite = nalarcore.sqlite;
+
+/// Production shape of `worker` after migrations 019/020/075/093 + the
+/// `cancelled` column. `user_id` is read by the owner-visibility clause, so a
+/// table without it would not exercise the scoped query at all.
+fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER,
+        \\    last_activity_description TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    cancelled INTEGER DEFAULT 0,
+        \\    user_id TEXT
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn seedWorker(
+    db: *sqlite.SqliteBackend,
+    arena_alloc: std.mem.Allocator,
+    id: []const u8,
+    session_id: []const u8,
+    cancelled: []const u8,
+) !void {
+    try db.exec(arena_alloc,
+        \\INSERT INTO worker (id, session_id, working_directory, last_activity_nano, cancelled)
+        \\VALUES (?, ?, '/tmp', strftime('%s','now'), ?)
+    , &.{ id, session_id, cancelled });
+}
+
+/// `useCase` allocates its rows and its JSON from the allocator it is handed and
+/// never frees either, so the tests hand it an arena instead of
+/// `testing.allocator` — otherwise every test would fail on a leak that the
+/// production call path owns (a per-request arena, supplied by the caller).
+fn listAs(
+    db: *sqlite.SqliteBackend,
+    arena_alloc: std.mem.Allocator,
+    input: WorkerListInput,
+    owner: []const u8,
+) !WorkerListResult {
+    return useCase(arena_alloc, db, input, owner);
+}
+
+test "a worker row the user stopped is not listed as running" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try seedWorker(&s.db, a, "w_live", "s_live", "0");
+    try seedWorker(&s.db, a, "w_stopped", "s_stopped", "1");
+
+    // The shared owner sees every worker, so this is the unscoped listing the
+    // Android client's bootstrap actually reads.
+    const result = try listAs(&s.db, a, .{ .limit = 50, .session_id_filter = null }, "");
+
+    try testing.expectEqual(@as(u32, 1), result.count);
+    try testing.expect(std.mem.indexOf(u8, result.json, "s_live") != null);
+    try testing.expect(std.mem.indexOf(u8, result.json, "s_stopped") == null);
+}
+
+test "a session_id filter composes with the cancelled filter" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try seedWorker(&s.db, a, "w_a", "s_a", "0");
+    try seedWorker(&s.db, a, "w_a2", "s_a", "1");
+    try seedWorker(&s.db, a, "w_b", "s_b", "0");
+
+    const result = try listAs(
+        &s.db,
+        a,
+        .{ .limit = 50, .session_id_filter = "s_a" },
+        "",
+    );
+
+    // The live row for `s_a`; not its cancelled twin, and not `s_b`.
+    try testing.expectEqual(@as(u32, 1), result.count);
+    try testing.expect(std.mem.indexOf(u8, result.json, "w_a\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.json, "w_a2") == null);
+    try testing.expect(std.mem.indexOf(u8, result.json, "s_b") == null);
+}
+
+test "a real owner's listing excludes another owner's cancelled row and their live one" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try s.db.exec(a,
+        \\INSERT INTO worker (id, session_id, working_directory, last_activity_nano, cancelled, user_id)
+        \\VALUES ('w_mine', 's_mine', '/tmp', strftime('%s','now'), 0, 'user_a')
+    , &.{});
+    try s.db.exec(a,
+        \\INSERT INTO worker (id, session_id, working_directory, last_activity_nano, cancelled, user_id)
+        \\VALUES ('w_stopped_mine', 's_stopped_mine', '/tmp', strftime('%s','now'), 1, 'user_a')
+    , &.{});
+    try s.db.exec(a,
+        \\INSERT INTO worker (id, session_id, working_directory, last_activity_nano, cancelled, user_id)
+        \\VALUES ('w_theirs', 's_theirs', '/tmp', strftime('%s','now'), 0, 'user_b')
+    , &.{});
+
+    const result = try listAs(
+        &s.db,
+        a,
+        .{ .limit = 50, .session_id_filter = null },
+        "user_a",
+    );
+
+    try testing.expectEqual(@as(u32, 1), result.count);
+    try testing.expect(std.mem.indexOf(u8, result.json, "w_mine\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.json, "w_stopped_mine") == null);
+    try testing.expect(std.mem.indexOf(u8, result.json, "s_theirs") == null);
+}
+
+test "every listed row still reports itself as running (the Android parser's premise)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try seedWorker(&s.db, a, "w_live", "s_live", "0");
+
+    const result = try listAs(&s.db, a, .{ .limit = 50, .session_id_filter = null }, "");
+
+    // `WorkerApi.parseRunningSessionIds` projects the *presence* of a row down
+    // to the id set and never reads these two fields, precisely because they
+    // are literals. The moment that stops being true, this fails and the
+    // Kotlin has to be revisited rather than left quietly wrong.
+    try testing.expect(std.mem.indexOf(u8, result.json, "\"status\":\"running\"") != null);
+    try testing.expect(std.mem.indexOf(u8, result.json, "\"is_running\":true") != null);
+}
+
+test "limit caps the list, and the default is the server's own" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    try seedWorker(&s.db, a, "w_1", "s_1", "0");
+    try seedWorker(&s.db, a, "w_2", "s_2", "0");
+    try seedWorker(&s.db, a, "w_3", "s_3", "0");
+
+    const one = try listAs(&s.db, a, .{ .limit = 1, .session_id_filter = null }, "");
+    const many = try listAs(&s.db, a, .{ .limit = 50, .session_id_filter = null }, "");
+
+    try testing.expectEqual(@as(u32, 1), one.count);
+    try testing.expectEqual(@as(u32, 3), many.count);
+}
+
+test "a missing worker table surfaces as QueryFailed rather than an empty list" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    try s.db.exec(testing.allocator, "DROP TABLE worker", &.{});
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // An empty list on a broken table is the worst possible answer: every
+    // client would read it as "nothing is running" and clear its spinners.
+    try testing.expectError(
+        error.QueryFailed,
+        listAs(&s.db, arena.allocator(), .{ .limit = 50, .session_id_filter = null }, ""),
+    );
 }

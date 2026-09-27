@@ -47,26 +47,52 @@ pub fn updateWorker(obj: UpsertWorkerInput) !void {
     const exists = maybe_row != null;
 
     // Insert or update the worker.
+    //
+    // `cancelled` is named in BOTH halves deliberately.
+    //
+    // This upsert is how a run registers itself *and* how it heartbeats, and it
+    // is also what a *new* run does after the user stopped the previous one.
+    // `POST /api/llm/session/:session/stop` stops a run by setting
+    // `cancelled = 1` and leaving the row: the loop reads the flag back to
+    // break out of itself, and `isWorkerCancelled` answers `false` for a row
+    // that is not there, so deleting the row would un-cancel the run. The row
+    // survives, so without the reset below the next run is *born cancelled*:
+    // it upserts, `isWorkerCancelled` still reads 1, and the loop breaks on
+    // its first iteration check. The user sends a message and the agent does
+    // nothing, while the row keeps reporting the session as running to every
+    // client.
+    //
+    // Ordering is already safe, and this is why: `touchCheckpointWorkers` runs
+    // before the loop in `runAgenticMultiStepnew` and again at the top of every
+    // iteration, and both reach this function, while the `isWorkerCancelled`
+    // check sits after them in the same iteration. The flag is 0 by the time
+    // anything reads it.
+    //
+    // Named in the INSERT as well, so the upsert does not depend on the column
+    // default surviving a future migration.
     const worker_sql =
         \\INSERT INTO worker (
         \\    id,
         \\    session_id,
         \\    working_directory,
         \\    last_activity_nano,
-        \\    last_activity_description
+        \\    last_activity_description,
+        \\    cancelled
         \\)
         \\VALUES (
         \\    ?,
         \\    ?,
         \\    ?,
         \\    strftime('%s', 'now'),
-        \\    ''
+        \\    '',
+        \\    0
         \\)
         \\ON CONFLICT(id) DO UPDATE SET
         \\    session_id = excluded.session_id,
         \\    working_directory = excluded.working_directory,
         \\    last_activity_nano = excluded.last_activity_nano,
-        \\    last_activity_description = excluded.last_activity_description;
+        \\    last_activity_description = excluded.last_activity_description,
+        \\    cancelled = 0;
     ;
 
     try db.exec(
@@ -165,6 +191,7 @@ fn setupDb() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
         \\    working_directory TEXT,
         \\    last_activity_nano INTEGER,
         \\    last_activity_description TEXT,
+        \\    cancelled INTEGER DEFAULT 0,
         \\    user_id TEXT
         \\)
     , &.{});
@@ -316,3 +343,136 @@ test "updateWorker writes a non-empty last_activity_description (defensive: defa
     try testing.expectEqualStrings("", row.values[0]);
 }
 
+test "updateWorker clears a stop left by the previous run" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    // The stop endpoint leaves exactly this state behind: the row survives with
+    // the flag set, because the loop reads it back to break out of itself.
+    try s.db.exec(
+        testing.allocator,
+        "INSERT INTO worker (id, session_id, working_directory, last_activity_nano, cancelled) VALUES ('w_rerun', 's_rerun', '/old', 1, 1)",
+        &.{},
+    );
+
+    // `isWorkerCancelled` is the gate `runAgenticMultiStepnew` checks at the top
+    // of every iteration, so a flag that survives the upsert ends the new run
+    // before it does anything at all.
+    try testing.expect(isCancelled(&s.db, "w_rerun"));
+
+    try updateWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .worker_id = "w_rerun",
+        .session_id = "s_rerun",
+        .working_directory = "/new",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    try testing.expect(!isCancelled(&s.db, "w_rerun"));
+}
+
+test "updateWorker names cancelled on INSERT, so a default-less column still starts a run uncancelled" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    var db: sqlite.SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(threaded.io(), ":memory:");
+
+    // `cancelled INTEGER NOT NULL` with NO default. An INSERT that omitted the
+    // column fails the constraint outright, so this schema distinguishes "the
+    // upsert names `cancelled`" from "the column default happened to be 0".
+    // Migration 0xx added the column as `DEFAULT 0`, and nothing guarantees a
+    // later migration keeps it.
+    try db.exec(alloc,
+        \\CREATE TABLE worker (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT,
+        \\    working_directory TEXT,
+        \\    last_activity_nano INTEGER,
+        \\    last_activity_description TEXT,
+        \\    cancelled INTEGER NOT NULL,
+        \\    user_id TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT,
+        \\    status TEXT,
+        \\    cwd TEXT,
+        \\    created_at TEXT,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    updated_at TEXT
+        \\)
+    , &.{});
+
+    try updateWorker(.{
+        .allocator = alloc,
+        .db = &db,
+        .logger = null,
+        .worker_id = "w_nd",
+        .session_id = "s_nd",
+        .working_directory = "/x",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    try testing.expect(!isCancelled(&db, "w_nd"));
+}
+
+test "updateWorker ON CONFLICT still refreshes last_activity_nano (the heart-beat)" {
+    var s = try setupDb();
+    defer s.db.deinit();
+    defer s.threaded.deinit();
+
+    // The reset must not cost the heart-beat: `cleanup_stale_worker` reaps any
+    // row whose `last_activity_nano` is more than 600 s old, and this upsert is
+    // the only thing keeping a long run alive against that cron.
+    try s.db.exec(
+        testing.allocator,
+        "INSERT INTO worker (id, session_id, working_directory, last_activity_nano, cancelled) VALUES ('w_hb', 's_hb', '/x', 1, 0)",
+        &.{},
+    );
+
+    try updateWorker(.{
+        .allocator = testing.allocator,
+        .db = &s.db,
+        .logger = null,
+        .worker_id = "w_hb",
+        .session_id = "s_hb",
+        .working_directory = "/x",
+        .event_bus = null,
+        .is_emit_sse = false,
+    });
+
+    var q = try s.db.query(
+        testing.allocator,
+        "SELECT last_activity_nano FROM worker WHERE id = 'w_hb'",
+        &.{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.WorkerRowMissing;
+    defer row.deinit(testing.allocator);
+
+    const stamped = std.fmt.parseInt(i64, row.values[0], 10) catch 0;
+    try testing.expect(stamped > 1_600_000_000);
+}
+
+fn isCancelled(db: *sqlite.SqliteBackend, id: []const u8) bool {
+    var q = db.query(testing.allocator, "SELECT cancelled FROM worker WHERE id = ?", &.{id}) catch return false;
+    defer q.deinit();
+    const row = (q.next() catch return false) orelse return false;
+    defer row.deinit(testing.allocator);
+    const value = std.fmt.parseInt(i32, row.values[0], 10) catch 0;
+    return value == 1;
+}

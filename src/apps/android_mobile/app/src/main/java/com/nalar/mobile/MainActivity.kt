@@ -6,10 +6,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
 import com.nalar.mobile.chat.ChatUiState
@@ -90,6 +94,25 @@ class MainActivity : ComponentActivity() {
                     homeViewModel.onUserChanged(authState.userId)
                     chatViewModel.onUserChanged(authState.userId)
                     workerViewModel.onUserChanged(authState.userId)
+                }
+
+                // The workers socket is open for the whole process, so a run
+                // that ended while the app was backgrounded produced a
+                // `worker_deleted` this process never dispatched — and because
+                // the socket never dropped, no reconnect is coming to correct
+                // it. Coming back to the app is exactly when that stale set is
+                // most visible, so re-read the list on the way in. The periodic
+                // beat inside the ViewModel covers the same gap while the app is
+                // in use; this covers the moment the user looks at it.
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner, authState.userId) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_START) {
+                            workerViewModel.onForeground()
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
                 }
 
                 // A 401 on any call means the saved cookie is dead; signing out

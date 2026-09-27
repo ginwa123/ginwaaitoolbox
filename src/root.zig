@@ -1062,6 +1062,12 @@ test {
     // inside the test block so `zig build test` discovers the inline
     // tests (the `pub const` alone doesn't trigger discovery).
     _ = @import("schedulers/cleanup_stale_worker.zig");
+    // The `worker` table's two writers of record, and the listing both the
+    // desktop and the Android app derive "is running" from. Both have
+    // inline tests that `zig build test` cannot see on its own — the same
+    // lazy-compilation workaround as cleanup_stale_worker above.
+    _ = @import("agentic_loop/update_worker.zig");
+    _ = @import("http_handlers/worker_list.zig");
     // schedulers/cleanup_stale_background_process.zig has inline tests
     // (mirrors cleanup_stale_worker pattern). Re-imported here for the
     // same reason — see plan 2026-08-19-cleanup-stale-background-process.

@@ -19,7 +19,12 @@ import com.nalar.mobile.network.RecordingAuthTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -35,11 +40,15 @@ import kotlinx.coroutines.withContext
  * the list for what is running, so this subscribes to the `workers` channel on
  * its own connection instead.
  *
- * Two sources, because neither alone is correct. The stream keeps the set true
- * as runs start and stop; `GET /api/workers` re-runs on every (re)connect,
+ * Three sources, because no two of them are correct. The stream keeps the set
+ * true as runs start and stop; `GET /api/workers` re-runs on every (re)connect,
  * because the server keeps no replay buffer and a socket that dropped mid-run
- * has no way to be asked what it missed. The desktop's `fetchInitialWorkers`
- * does the same thing, throttle and all.
+ * has no way to be asked what it missed; and a periodic beat plus a
+ * foreground resync cover the case the other two both miss — a `worker_deleted`
+ * that was emitted while the app was backgrounded, which the stream never
+ * dispatches and the socket never re-opens to correct. The desktop's
+ * `fetchInitialWorkers` does the first two and neither of the others, which is
+ * why the desktop has the same stuck spinner.
  */
 class WorkerActivityViewModel(
     private val client: ChatClient,
@@ -49,12 +58,29 @@ class WorkerActivityViewModel(
     // stream callbacks; `advanceUntilIdle` cannot wait on the real IO pool.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val nowMillis: () -> Long = System::currentTimeMillis,
+    /**
+     * The periodic reconciliation beat, as a stream of ticks.
+     *
+     * Injected rather than hard-coded as a `while (isActive) { delay(...) }`
+     * loop for one reason: a self-rescheduling `delay()` never lets
+     * `kotlinx-coroutines-test`'s `advanceUntilIdle` settle, so a default here
+     * would hang every JVM test that constructs this class. A test passes
+     * `emptyFlow()` to switch the beat off, or a finite flow to drive it.
+     */
+    private val resyncTicks: Flow<Unit> = flow {
+        while (currentCoroutineContext().isActive) {
+            delay(RESYNC_INTERVAL_MILLIS)
+            emit(Unit)
+        }
+    },
 ) : ViewModel() {
     val runningSessionIds: StateFlow<Set<String>> = store.runningSessionIds
 
     private var resyncJob: Job? = null
+    private var tickJob: Job? = null
     private var streaming = false
     private var lastResyncAtMillis = 0L
+    private var currentUserId: String? = null
 
     /**
      * Starts the subscription, or tears it down when nobody is signed in.
@@ -68,13 +94,44 @@ class WorkerActivityViewModel(
     fun onUserChanged(newUserId: String?) {
         if (newUserId.isNullOrBlank()) {
             stop()
-        } else if (!streaming) {
-            start()
+            // Not reset by `stop()` itself, because `stop()` short-circuits
+            // when nothing is streaming.
+            currentUserId = null
+            return
         }
+        if (newUserId == currentUserId) {
+            if (!streaming) start()
+            return
+        }
+        // A *different* account is as much a teardown as a sign-out. The ids in
+        // the store are not account-scoped, so carrying them across the switch
+        // paints the outgoing account's "running" markers against the incoming
+        // account's chats.
+        stop()
+        currentUserId = newUserId
+        start()
     }
 
     /** Sign-out. The ids are not account-scoped, so they cannot outlive the cookie. */
-    fun onSignedOut() = stop()
+    fun onSignedOut() {
+        stop()
+        currentUserId = null
+    }
+
+    /**
+     * Re-reads the list on the way back into the app, ignoring the throttle.
+     *
+     * Coming back is the moment the set is most visible and least
+     * trustworthy: the workers socket was open the whole time the app was away,
+     * so a run that ended while it was backgrounded left no `worker_deleted`
+     * for this process to apply, and no reconnect is coming to correct it. The
+     * throttle exists to stop a flapping connection turning every retry into a
+     * request — it has nothing to say about a user who just opened the app.
+     */
+    fun onForeground() {
+        if (!streaming) return
+        resync(force = true)
+    }
 
     private fun start() {
         streaming = true
@@ -82,6 +139,10 @@ class WorkerActivityViewModel(
             onEvent = { event -> handleEvent(event) },
             onState = { state -> handleState(state) },
         )
+        tickJob?.cancel()
+        tickJob = viewModelScope.launch {
+            resyncTicks.collect { resync() }
+        }
     }
 
     private fun stop() {
@@ -89,13 +150,20 @@ class WorkerActivityViewModel(
         streaming = false
         resyncJob?.cancel()
         resyncJob = null
+        tickJob?.cancel()
+        tickJob = null
         eventStream.stop()
         lastResyncAtMillis = 0L
         store.clear()
     }
 
     override fun onCleared() {
-        eventStream.stop()
+        // `stop()` on its own is not enough: it returns early when nothing is
+        // streaming, and the store is a process-wide singleton, so an Activity
+        // destroyed while the process survives would leave its last set
+        // published for whatever Activity is created next.
+        stop()
+        store.clear()
         super.onCleared()
     }
 
@@ -119,11 +187,13 @@ class WorkerActivityViewModel(
      * Throttled because a flapping connection reaches `Live` on a two-second
      * backoff, and the resync is a real request. The throttle is not a
      * staleness budget, it is a rate limit: the first connect always fetches
-     * (the clock starts at zero) and only a rapid reconnect is skipped.
+     * (the clock starts at zero) and only a rapid reconnect is skipped. The
+     * interval is longer than the throttle, so the periodic beat is never the
+     * thing that gets skipped.
      */
-    private fun resync() {
+    private fun resync(force: Boolean = false) {
         val now = nowMillis()
-        if (now - lastResyncAtMillis < RESYNC_THROTTLE_MILLIS) return
+        if (!force && now - lastResyncAtMillis < RESYNC_THROTTLE_MILLIS) return
         lastResyncAtMillis = now
 
         resyncJob?.cancel()
@@ -146,6 +216,16 @@ class WorkerActivityViewModel(
     companion object {
         /** Matches the desktop's `lastWorkersFetchAt` guard. */
         const val RESYNC_THROTTLE_MILLIS = 10_000L
+
+        /**
+         * How often the set is re-read while nothing else has prompted it.
+         *
+         * Deliberately far above the throttle and far below the point where a
+         * stale spinner becomes the thing a user reports: a run that ended
+         * while the app was backgrounded is corrected within half a minute of
+         * the app being used again, without a reconnect that may never come.
+         */
+        const val RESYNC_INTERVAL_MILLIS = 30_000L
 
         fun factory(application: Application): ViewModelProvider.Factory = viewModelFactory {
             initializer {
