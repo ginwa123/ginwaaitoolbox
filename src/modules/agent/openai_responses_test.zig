@@ -1620,7 +1620,7 @@ test "buildJsonResponsesRequest: regression task_1788204837101_1 — reasoning_i
         },
         .{
             .role = .tool,
-            .content = "{\"tool\":\"bash\",\"parameters\":{\"command\":\"timeout 10 git checkout main\"},\"success\":true,\"data\":{\"command\":\"timeout 10 git checkout main\",\"stdout\":\"Already on 'main'\",\"stderr\":\"\",\"exit_code\":0,\"truncated\":false,\"timeout\":false,\"stdout_lines\":1,\"stderr_lines\":0,\"is_self\":false},\"error\":null,\"v\":1}",
+            .content = "{\"tool\":\"bash\",\"parameters\":{\"command\":\"timeout 10 git checkout main\"},\"success\":true,\"data\":{\"command\":\"timeout 10 git checkout main\",\"stdout\":\"Already on 'main'\",\"stderr\":\"\",\"exit_code\":0,\"truncated\":false,\"timeout\":false,\"stdout_lines\":1,\"stderr_lines\":0},\"error\":null,\"v\":1}",
             .tool_call_id = "call_01a05af8ce457620beb3a5990637e153",
             .tool_calls = null,
             .content_parts = null,

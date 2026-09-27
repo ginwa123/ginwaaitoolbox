@@ -13,8 +13,8 @@ import org.junit.Test
  * Every payload here is shaped like one the backend actually emits, taken from
  * the per-tool builders. The field names that look wrong in isolation —
  * `file_write` for a write path, `sub_agents` for an agent list, a *number* for
- * `glob`'s `truncated`, `is_self` for a self-kill — are the ones a client
- * guesses wrongly, so they are the ones asserted.
+ * `glob`'s `truncated` — are the ones a client guesses wrongly, so they are
+ * the ones asserted.
  */
 class ToolCardModelTest {
 
@@ -100,13 +100,13 @@ class ToolCardModelTest {
     // ─── shell family ───────────────────────────────────────────────────────
 
     @Test
-    fun `bash parses its nine-field payload`() {
+    fun `bash parses its eight-field payload`() {
         val model = ToolCard.from(
             toolRow(
                 "bash",
                 """{"command":"ls -la","stdout":"a\nb\n","stderr":"","exit_code":0,
                    "truncated":false,"timeout":false,"stdout_lines":2,
-                   "stderr_lines":0,"is_self":false}""",
+                   "stderr_lines":0}""",
             ),
         )
 
@@ -131,7 +131,7 @@ class ToolCardModelTest {
                 "bash",
                 """{"command":"false","stdout":"","stderr":"boom","exit_code":1,
                    "truncated":false,"timeout":false,"stdout_lines":0,
-                   "stderr_lines":1,"is_self":false}""",
+                   "stderr_lines":1}""",
             ),
         )
 
@@ -149,7 +149,7 @@ class ToolCardModelTest {
                 "bash",
                 """{"command":"ls","stdout":"a\n","stderr":"","exit_code":0,
                    "truncated":false,"timeout":false,"stdout_lines":1,
-                   "stderr_lines":0,"is_self":false}""",
+                   "stderr_lines":0}""",
             ),
         )
 
@@ -163,11 +163,11 @@ class ToolCardModelTest {
                 "bash",
                 """{"command":"sleep 9","stdout":"","stderr":"","exit_code":null,
                    "truncated":true,"timeout":true,"stdout_lines":0,
-                   "stderr_lines":0,"is_self":true}""",
+                   "stderr_lines":0}""",
             ),
         )
 
-        assertEquals("truncated · timeout · self-kill", model.rightMeta)
+        assertEquals("truncated · timeout", model.rightMeta)
     }
 
     /** The shell's stand-in for an empty stderr; showing it wastes a red block. */
@@ -179,26 +179,17 @@ class ToolCardModelTest {
     }
 
     @Test
-    fun `timeout and self-kill are warnings, not failures`() {
+    fun `a timeout is a warning, not a failure`() {
         val timedOut = ToolCard.from(
             toolRow(
                 "bash",
                 """{"command":"sleep 9","stdout":"","stderr":"","exit_code":null,
                    "truncated":false,"timeout":true,"stdout_lines":0,
-                   "stderr_lines":0,"is_self":false}""",
-            ),
-        )
-        val selfKill = ToolCard.from(
-            toolRow(
-                "bash",
-                """{"command":"kill $$","stdout":"","stderr":"","exit_code":143,
-                   "truncated":false,"timeout":false,"stdout_lines":0,
-                   "stderr_lines":0,"is_self":true}""",
+                   "stderr_lines":0}""",
             ),
         )
 
         assertTrue((timedOut.body as ToolBody.Shell).hasWarning)
-        assertTrue((selfKill.body as ToolBody.Shell).hasWarning)
     }
 
     /** `run_command` is the legacy alias; the web renames it to `bash`. */

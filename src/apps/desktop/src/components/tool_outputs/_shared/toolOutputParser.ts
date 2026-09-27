@@ -391,7 +391,6 @@ export interface ParsedBash {
   timedOut: boolean
   stdoutLines: number
   stderrLines: number
-  isSelf: boolean
 }
 
 export function parseBash(data: unknown): ParsedBash {
@@ -405,7 +404,6 @@ export function parseBash(data: unknown): ParsedBash {
     timedOut: boolField(o, 'timeout', false),
     stdoutLines: numOrNullField(o, 'stdout_lines') ?? 0,
     stderrLines: numOrNullField(o, 'stderr_lines') ?? 0,
-    isSelf: boolField(o, 'is_self', false),
   }
 }
 
@@ -425,9 +423,9 @@ export function parsePwsh(data: unknown): ParsedBash {
 
 /**
  * Parse a `command` (unified shell) tool result. Same JSON `data` shape as
- * bash — the unified `command` tool reuses the identical 9-field payload
+ * bash — the unified `command` tool reuses the identical 8-field payload
  * (`command`/`stdout`/`stderr`/`exit_code`/`truncated`/`timeout`/
- * `stdout_lines`/`stderr_lines`/`is_self`), only the `tool` wrapper
+ * `stdout_lines`/`stderr_lines`), only the `tool` wrapper
  * differs. Functionally an alias of `parseBash` so future payload
  * divergence is a one-line change here. Tests assert
  * `parseCommand(x) === parseBash(x)` to catch accidental drift.

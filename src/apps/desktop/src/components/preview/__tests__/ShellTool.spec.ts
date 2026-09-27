@@ -27,7 +27,6 @@ const completedEnvelope = {
   timeout: false,
   stdout_lines: 1,
   stderr_lines: 0,
-  is_self: false,
 }
 
 const emptyPlaceholder = ''

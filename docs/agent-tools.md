@@ -147,7 +147,7 @@ Uses the active profile's `api_key` and `base_url`. For OpenAI's hosted API this
 - Plan: `docs/superpowers/plans/2026-08-14-generate-image-tool.md`
 ## `pwsh`
 
-Same wire contract as [`bash`](#bash) — switching between them is a one-token change in the function-call name. The 8 input fields (`command`, `cwd`, `mandatory_timeout`, `max_output`, `stdin_data`, `background`, `max_lines`, `do_encoding`), the 3 required ones (`command`, `cwd`, `mandatory_timeout`), and the 9-tag XML output envelope (`<command>…</command> <stdout>…</stdout> <stderr>…</stderr> <exit_code>…</exit_code> <truncated>…</truncated> <timeout>…</timeout> <stdout_lines>…</stdout_lines> <stderr_lines>…</stderr_lines> <is_self>…</is_self>`) are identical to bash. Only the shell executable differs — `pwsh` runs PowerShell Core 7+ (or `powershell.exe` 5.1 on Windows).
+Same wire contract as [`bash`](#bash) — switching between them is a one-token change in the function-call name. The 8 input fields (`command`, `cwd`, `mandatory_timeout`, `max_output`, `stdin_data`, `background`, `max_lines`, `do_encoding`), the 3 required ones (`command`, `cwd`, `mandatory_timeout`), and the 8-field JSON output payload (`command`/`stdout`/`stderr`/`exit_code`/`truncated`/`timeout`/`stdout_lines`/`stderr_lines`) are identical to bash. Only the shell executable differs — `pwsh` runs PowerShell Core 7+ (or `powershell.exe` 5.1 on Windows).
 
 **Use this when:** the user is on a Windows host (or has PowerShell Core installed on Linux/macOS), the requested operation is .NET-specific, the user wrote PowerShell in their prompt, or the target script is in a `.ps1` file.
 

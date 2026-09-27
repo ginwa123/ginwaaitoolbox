@@ -12,7 +12,7 @@ import { normalizeToolContent, parseShell } from '../tool_outputs/_shared/toolOu
  * raw prop verbatim, so toolName 'command' shows `command`). The XML
  * envelope is identical across shells (per D2 + D10 in the
  * 2026-08-14-pwsh-tool plan; the unified `command` tool reuses the same
- * 9-tag envelope), so `parseShell(toolName, content)` dispatches to the
+ * 8-tag envelope), so `parseShell(toolName, content)` dispatches to the
  * right parser based on the tool name.
  *
  * Wire schema parity is locked via two tests:
@@ -39,7 +39,6 @@ const isTruncated = computed(() => parsed.value.truncated)
 const isTimeout = computed(() => parsed.value.timedOut)
 const stdoutLines = computed(() => parsed.value.stdoutLines)
 const stderrLines = computed(() => parsed.value.stderrLines)
-const isSelf = computed(() => parsed.value.isSelf)
 
 // Command from the `parameters` prop (tool-call args, not the result
 // envelope). `parameters` is XML like `<command>sleep 10</command>...`
@@ -103,7 +102,7 @@ const envelopeError = computed((): string | null => {
 const hasEnvelopeError = computed(() => envelopeError.value !== null)
 
 // Status for styling
-const hasWarning = computed(() => isSelf.value || isTimeout.value)
+const hasWarning = computed(() => isTimeout.value)
 const hasError = computed(() => hasEnvelopeError.value || (exitCode.value !== null && exitCode.value !== 0))
 
 const toggle = () => {
@@ -187,11 +186,6 @@ const copyError = async (e: Event) => {
       <!-- Timeout badge -->
       <span v-if="isTimeout" class="text-orange-500 text-[0.65rem]">
         timeout
-      </span>
-
-      <!-- Self-kill badge -->
-      <span v-if="isSelf" class="text-orange-500 text-[0.65rem]">
-        self-kill
       </span>
 
       <!-- Failed badge - a success:false envelope with no exit code to show.

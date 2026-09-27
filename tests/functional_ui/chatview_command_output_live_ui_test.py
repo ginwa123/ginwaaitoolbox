@@ -184,7 +184,6 @@ def test_command_stdout_updates_live_and_survives_reload(
             "timeout": False,
             "stdout_lines": 2,
             "stderr_lines": 0,
-            "is_self": False,
         }
     )
     _emit_until_text(h, _event(completed), card, STDOUT_MARKER)

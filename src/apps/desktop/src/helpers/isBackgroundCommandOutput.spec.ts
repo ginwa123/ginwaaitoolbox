@@ -104,7 +104,7 @@ describe('isBackgroundCommandOutput', () => {
     const content =
       '<command>echo hi</command><stdout>hi</stdout><stderr></stderr>' +
       '<exit_code>0</exit_code><truncated>false</truncated><timeout>false</timeout>' +
-      '<stdout_lines></stdout_lines><stderr_lines></stderr_lines><is_self>false</is_self>'
+      '<stdout_lines></stdout_lines><stderr_lines></stderr_lines>'
     expect(isBackgroundCommandOutput(content)).toBe(false)
     expect(parseBackgroundCommandOutput(content)).toBeNull()
   })
@@ -121,6 +121,5 @@ describe('isBackgroundCommandOutput', () => {
     expect(xml).toContain('<stdout>it&apos;s &lt;done&gt; &amp; &quot;dusted&quot;</stdout>')
     expect(xml).toContain('<stderr></stderr>')
     expect(xml).toContain('<truncated>true</truncated>')
-    expect(xml).toContain('<is_self>false</is_self>')
   })
 })
