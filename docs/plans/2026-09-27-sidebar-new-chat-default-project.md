@@ -1,10 +1,56 @@
 # Plan: **New Chat** in the sidebar (desktop) and the drawer (Android) — rooted at each workspace's default project
 
 **Task:** `task_1790528102260_4` — *add new menu on top left sidebar, name New Chat, the new chat will be create a new session, the session is workspace items agent mode, but every workspace will be have project default, project default root will home users*
-**Status:** 📋 **proposed** — Q1/Q2 still open; everything else decided
+**Status:** ✅ **implemented** on `worktree/add-new-menu-on-top-left-sidebar-name-new-chat-1790528098609` — Q1/Q2 answered ("okey": build the plan's recommendations), both reversible
 **Wireframe:** `docs/plans/2026-09-27-sidebar-new-chat-wireframe.html`
 **Worktree:** `.worktree/worktrees_agent_new_chat_sidebar`
 **Scope:** desktop (Vue) **+** Android (Kotlin) — one backend, two clients
+
+---
+
+## What implementation found that this plan did not
+
+Two things the plan predicted as *risks* turned out to be real, and one was
+only findable the way the plan said to verify.
+
+### 1. A pre-existing use-after-free in the cwd chain (fixed in `d943d1dd`)
+
+`resolveCwdFromTaskOrItem` (`session_create.zig`) returned `row.values[N]`
+while a `defer row.deinit(alloc)` freed those very slices on return. The caller
+received a dangling pointer, read whatever landed in the freed memory, found it
+was not an absolute path, and fell through to `createSandbox`.
+
+So **a session created against a project with a real `path` persisted a
+per-session temp dir as its cwd** — no error, no log line, and a value that
+looks completely plausible, because a sandbox path *is* a valid absolute path.
+The runtime `ctx.cwd` was resolved on a separate path and was often right, so
+the chat appeared to work while the stored row said something else.
+
+This is the strongest possible argument for the plan's insistence on the
+functional harness: a unit test of the handler cannot see a use-after-free in a
+sibling helper, and the symptom passes every structural assertion. The cwd test
+in §"The point of the whole thing" is what caught it.
+
+### 2. `zig build test` does not reach every file
+
+The test root never reached `workspace_items_get.zig`, so `zig build test` was
+**green while the executable did not compile** — four errors in
+`workspace_items_default.zig` (`SystemFolder` is
+`nalarcore.system_folder.SystemFolder`; `db.query`'s `argv` is
+`[]const []const u8` so `.{}` cannot infer a length; `WorkspaceItemGetResponse`
+has no `position`). Fixed in `d943d1dd`.
+
+**Build the binary before declaring a backend change done.** `zig build test`
+alone is not sufficient evidence that anything compiles.
+
+### 3. The invariant legitimately changes exact item counts
+
+Four existing functional tests asserted exact counts, and "a workspace with
+nothing in it" is no longer a reachable state. Each was updated to account for
+the default **by flag** rather than by a positional slice or a loosened bound —
+`workspace_items_test.py` is the instructive one, where a `[:7]` slice had
+started comparing the wrong seven ids the moment the reorder pushed the default
+off the top, and would have kept passing while testing nothing.
 
 ---
 
