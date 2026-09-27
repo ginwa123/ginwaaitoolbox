@@ -36,6 +36,13 @@ pub const ResponseFormatting = prompts.ResponseFormatting;
 pub const SearchToolRule = prompts.SearchToolRule;
 pub const ReadWorkspaceSessionToolRule = prompts.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = prompts.MemoryToolRule;
+// The agent's special tool (search the catalog for the tool a task needs) and
+// its special skills (load the skill a task needs). Both are appended
+// unconditionally by `buildMessages` — never gated on the tool list, so the
+// block stays byte-identical for every agent and the shared prompt-cache
+// prefix keeps hitting.
+pub const ProgressiveToolRule = prompts.ProgressiveToolRule;
+pub const SkillsToolRule = prompts.SkillsToolRule;
 
 // ---------------------------------------------------------------------------
 // Thin delegating re-exports for the two pure helpers that

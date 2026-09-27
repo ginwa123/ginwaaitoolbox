@@ -123,26 +123,77 @@ pub const ResponseFormatting =
 
 
 pub const ProgressiveToolRule =
-    \\## Progressive Tools (some tools are not loaded yet)
+    \\## Progressive Tool Search — your special tool, USE IT TO FINISH THE TASK
     \\
-    \\Not every tool is in your tool list. MCP server tools and built-in tools that
-    \\this agent does not have enabled are kept out of context until you ask for them.
+    \\**`search_tool` is your special tool. Search it to find the tool a task
+    \\needs — every task, not just the ones where you feel stuck.** Your tool
+    \\list is a starting set, not the whole world: MCP server tools and
+    \\built-in tools you do not have enabled are held in a catalog that stays
+    \\out of your context until you ask for them. The task in front of you may
+    \\already have a purpose-built tool waiting in that catalog, and the only
+    \\way to find out is to search before you improvise with `bash`.
     \\
-    \\**A missing capability is never a dead end — search for it:**
-    \\- `search_tool` — query the catalog of tools you do NOT currently have. Accepts
-    \\  `query` (name/description substring) and optional `server` (one MCP server).
-    \\- `view_tool` — read one candidate's full parameter schema. Read-only; inspect
-    \\  before committing.
-    \\- `use_tool` — enable a tool for this session. It becomes callable from your
-    \\  NEXT turn (the current turn's tool list was already sent), and the result
-    \\  includes the schema so you can write the call correctly right away.
+    \\**The loop — three calls, in this order:**
+    \\- `search_tool` — query the catalog of tools you do NOT currently have.
+    \\  `query` is a case-insensitive REGEX over tool names and descriptions
+    \\  (one pattern reaches a capability spelled several ways: `doc|docs|
+    \\  documentation`); pass `literal: true` for code-shaped text. `limit` /
+    \\  `offset` page a big catalog. `server` narrows to one MCP server.
+    \\- `view_tool` — read one candidate's full parameter schema. Read-only;
+    \\  inspect before committing.
+    \\- `use_tool` — enable a tool for this session. It becomes callable from
+    \\  your NEXT turn (the current turn's tool list was already sent), and the
+    \\  result includes the schema so you can write the call correctly right away.
+    \\
+    \\**When to search — these are blocking, not advisory:**
+    \\- Before hand-rolling something with `bash` (curl, psql, jq, git plumbing) —
+    \\  a dedicated tool probably exists and is more reliable than your one-liner.
+    \\- Before you tell the user (or yourself) "there's no tool for that" — you
+    \\  can only claim that after searching.
+    \\- Before you start a task whose first step needs a capability you do not
+    \\  have in your current tool list.
     \\
     \\**Rules:**
     \\- Never guess a tool name — `use_tool` rejects unknown names and writes nothing.
     \\- Never invent an argument name — call `view_tool` first if you are unsure.
     \\- Tools you already have are NOT listed by `search_tool`. Check your own tool list
-    \\  before concluding something is missing; if it is genuinely absent, search.
+    \\  first; search for what is genuinely absent.
     \\- `use_tool` affects THIS session only. It never changes the user's saved config.
+    \\
+    \\**Self-check:** "am I about to shell out to do something a catalog tool
+    \\already does?" If yes, `search_tool` first.
+;
+
+pub const SkillsToolRule =
+    \\## Skills — your special skills, LOAD THE ONE THE TASK NEEDS
+    \\
+    \\**Skills are your special skills: proven, reusable procedures you (or a past
+    \\session) wrote down so you do not rediscover them.** Before you work out
+    \\how to do a task, ask whether a skill already answers it. If one does,
+    \\load it and follow it — that is faster and more reliable than reasoning
+    \\from scratch, and it is what the user expects when they wrote the skill.
+    \\
+    \\**The loop — two calls, and no skills are pre-listed in this prompt:**
+    \\- `list_skills` — every installed skill (global `~/.config/nalar/skills/`
+    \\  + local `.nalar/skills/`) with its name, description and exact `path`.
+    \\  Nothing is pre-injected, so this call IS the discovery step.
+    \\- `use_skill` — load one skill's full instructions by the EXACT `path` from
+    \\  that result. The path is case-sensitive and ends in `SKILL.MD`; pass it
+    \\  verbatim. Never construct it from the skill name — `~` is not expanded
+    \\  and the layout is `<name>/SKILL.MD`, not `<name>.md`.
+    \\
+    \\**When to load — these are blocking, not advisory:**
+    \\- The task matches a skill's description → `use_skill` it BEFORE the first
+    \\  real tool call, not after you have already improvised a wrong approach.
+    \\- You are about to repeat a multi-step procedure for the second time in a
+    \\  session → the skill for it either exists (load it) or should (write it
+    \\  with `add_skill` once it works).
+    \\- You tried something twice and it failed → re-read the matching skill; it
+    \\  usually records the failure mode you just hit.
+    \\
+    \\**Self-check:** "is there a skill that covers this task, and have I loaded
+    \\it?" If the answer is yes and no, you are working blind. One `list_skills`
+    \\call is cheap — never guess at what a skill contains.
 ;
 
 pub const CrossProjectCwdRule =
