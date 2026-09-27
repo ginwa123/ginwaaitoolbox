@@ -66,7 +66,8 @@ const q = (testid: string) =>
 
 const clickItem = async (testid: string) => {
   const el = q(testid)
-  expect(el, `menu item ${testid} not found`).toBeTruthy()
+  if (!el) throw new Error(`menu item ${testid} not found`)
+  expect(el).toBeTruthy()
   el!.click()
   await nextTick()
 }
@@ -157,7 +158,8 @@ describe('WorkspaceItemTaskCard — context menu', () => {
     const confirmBtn = Array.from(document.body.querySelectorAll('button')).find(
       (b) => b.textContent?.trim() === 'Delete',
     ) as HTMLButtonElement | undefined
-    expect(confirmBtn, 'ConfirmDialog not shown').toBeTruthy()
+    if (!confirmBtn) throw new Error('ConfirmDialog not shown')
+    expect(confirmBtn).toBeTruthy()
     confirmBtn!.click()
     await nextTick()
 

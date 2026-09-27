@@ -76,7 +76,6 @@ describe('Kanban card async media — list first, thumbnails after', () => {
   it('patches thumbnails in the background after a flagged list lands', async () => {
     const store = seedBoard()
     vi.spyOn(api, 'getTasks').mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tasks: [
         {
           id: 'task_media_1',
@@ -85,6 +84,7 @@ describe('Kanban card async media — list first, thumbnails after', () => {
           kanban_position: 0,
           is_have_image: true,
         },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ] as any,
       has_more: false,
       next_cursor: null,
@@ -111,9 +111,9 @@ describe('Kanban card async media — list first, thumbnails after', () => {
   it('skips the media round-trip when no task is flagged', async () => {
     const store = seedBoard()
     vi.spyOn(api, 'getTasks').mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tasks: [
         { id: 'task_plain', name: 'plain', kanban_column_id: 'colA', kanban_position: 0 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ] as any,
       has_more: false,
       next_cursor: null,
@@ -134,7 +134,6 @@ describe('Kanban card async media — list first, thumbnails after', () => {
 
     const store = seedBoard()
     vi.spyOn(api, 'getTasks').mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tasks: [
         {
           id: 'task_media_1',
@@ -143,6 +142,7 @@ describe('Kanban card async media — list first, thumbnails after', () => {
           kanban_position: 0,
           is_have_image: true,
         },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ] as any,
       has_more: false,
       next_cursor: null,
@@ -175,7 +175,6 @@ describe('Kanban card async media — list first, thumbnails after', () => {
   it('write-through: a fresh fetch populates the cache for the next boot', async () => {
     const store = seedBoard()
     vi.spyOn(api, 'getTasks').mockResolvedValue({
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tasks: [
         {
           id: 'task_media_1',
@@ -184,6 +183,7 @@ describe('Kanban card async media — list first, thumbnails after', () => {
           kanban_position: 0,
           is_have_image: true,
         },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ] as any,
       has_more: false,
       next_cursor: null,
