@@ -19,6 +19,7 @@ import com.nalar.mobile.recents.HomeViewModel
 import com.nalar.mobile.storage.PrefsLastPositionStore
 import com.nalar.mobile.ui.NalarTheme
 import com.nalar.mobile.worker.WorkerActivityViewModel
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -48,11 +49,15 @@ class MainActivity : ComponentActivity() {
                 val chatViewModel: ChatViewModel = viewModel(
                     factory = ChatViewModel.factory(application),
                 )
-                // Deliberately not collected here. A `by collectAsState()` at
-                // the top of the tree would make every transcript emission
-                // recompose the whole nav graph; the chat route reads the flow
-                // itself, so only the transcript moves.
-                val chatState: () -> ChatUiState = { chatViewModel.uiState.value }
+                // Handed over as the flow, not sampled into a value or a
+                // `() -> ChatUiState` provider. A provider looked equivalent and
+                // subscribed nothing — `StateFlow.value` is not a snapshot read —
+                // so the chat route only ever repainted when some *other*
+                // collected state changed, and typing was the one interaction
+                // with nothing else changing behind it. The graph's chat
+                // destination collects this, so a draft keystroke recomposes the
+                // transcript and leaves the drawer and the `NavHost` alone.
+                val chatState: StateFlow<ChatUiState> = chatViewModel.uiState
 
                 // Which sessions have a live worker. Its own ViewModel, and its
                 // own `workers` subscription, because the chat stream only exists
@@ -123,6 +128,8 @@ class MainActivity : ComponentActivity() {
                     onChatDraftChanged = chatViewModel::onDraftChanged,
                     onSendChatMessage = chatViewModel::sendMessage,
                     onStopChatRun = chatViewModel::stopRun,
+                    onAttachChatImage = chatViewModel::attachImage,
+                    onRemoveChatAttachment = chatViewModel::removeAttachment,
                     onLoadOlderChatMessages = chatViewModel::loadOlderMessages,
                     onDismissChatError = chatViewModel::clearError,
                     onAnswerChatQuestion = {
