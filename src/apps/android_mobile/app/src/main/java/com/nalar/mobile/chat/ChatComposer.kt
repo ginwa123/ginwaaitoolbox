@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -32,6 +33,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.LowPriority
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -95,6 +97,27 @@ import com.nalar.mobile.ui.NalarText
  * reconnect — is the same lie told twice, and a reader who has learned to
  * distrust the composer distrusts the send button too.
  *
+ * ### Queue is a third control, and it sits *beside* the stop
+ *
+ * Sending a turn and queueing one are the same request — `POST /llm/session`
+ * with a `queue_message` — and the server decides which it is: a worker that
+ * is already live takes the message into `session_queue_messages` and drains
+ * it when it finishes (`workflow.zig:688` and the loop check at
+ * `workflow.zig:1565`), an idle one starts immediately. So the client never
+ * picks a different endpoint; it only changes *when* it will let the reader
+ * press send.
+ *
+ * That is what makes the queue button necessary and why it is not a second
+ * send: a reader watching a three-minute tool call has a follow-up in their
+ * head right now, and before this the only way to act on it was to stop the run
+ * and restart it — throwing away the work in progress. Queueing is the third
+ * verb, and it is neither of the other two, so it gets its own control rather
+ * than a long-press nobody will discover.
+ *
+ * It appears only while there is something to queue. A queue button over an
+ * empty box is a control that does nothing, which is the same lie this
+ * composer already refuses to tell about the model chip and the cwd expander.
+ *
  * ### Why `BasicTextField` and not `TextField`
  *
  * `TextField` draws its own container and indicator, and there is no way to
@@ -138,6 +161,17 @@ internal fun ChatComposer(
     onRemoveAttachment: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    /**
+     * Turns waiting behind the run, oldest first. Empty draws no strip at all.
+     *
+     * Not fetched here and not cached: the list is server state with no replay,
+     * so it is [ChatViewModel]'s to own and re-read when the panel opens.
+     */
+    queuedMessages: List<QueuedChatMessage> = emptyList(),
+    /** Re-read the queue — fired when the panel is opened, see [QueuedStrip]. */
+    onRefreshQueue: () -> Unit = {},
+    /** Put a waiting turn's text back in the box so it can be edited. */
+    onUseQueuedMessage: (QueuedChatMessage) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // Remembered so the lambdas are current without re-composing the field on
@@ -148,6 +182,8 @@ internal fun ChatComposer(
     val onRemoveNow by rememberUpdatedState(onRemoveAttachment)
     val onSendNow by rememberUpdatedState(onSend)
     val onStopNow by rememberUpdatedState(onStop)
+    val onRefreshQueueNow by rememberUpdatedState(onRefreshQueue)
+    val onUseQueuedNow by rememberUpdatedState(onUseQueuedMessage)
 
     val canSend = (draft.isNotBlank() || attachments.isNotEmpty()) && !isSending
 
@@ -174,6 +210,17 @@ internal fun ChatComposer(
                     attachments = attachments,
                     isAttaching = isAttaching,
                     onRemove = onRemoveNow,
+                )
+
+                // Above the text, and only when there is something in it. This
+                // strip is the answer to "where did the message I just sent
+                // go" — a queued turn is in no transcript and no bubble until
+                // the worker drains it, so without a list on screen a queued
+                // message and a lost one look identical.
+                QueuedStrip(
+                    queuedMessages = queuedMessages,
+                    onRefresh = onRefreshQueueNow,
+                    onUse = onUseQueuedNow,
                 )
 
                 Row(
@@ -243,10 +290,39 @@ internal fun ChatComposer(
 
                     Spacer(Modifier.width(2.dp))
 
-                    // One slot, two controls. The stop replaces the send rather
-                    // than sitting beside it, so the row never offers both
-                    // "start a turn" and "end a turn" at once.
+                    // One slot for the two verbs that act on a run's
+                    // *lifetime*: the stop replaces the send rather than
+                    // sitting beside it, so the row never offers both "start a
+                    // turn" and "end a turn" at once.
+                    //
+                    // Queueing is not one of those two — it does not touch the
+                    // run in progress at all, it adds a turn behind it — so it
+                    // gets its own control next to the stop rather than
+                    // displacing either.
                     if (isWorking) {
+                        if (canSend) {
+                            IconButton(
+                                onClick = onSendNow,
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .testTag("chat_queue")
+                                    .semantics {
+                                        role = Role.Button
+                                        contentDescription =
+                                            "Queue this message behind the running turn"
+                                    },
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.LowPriority,
+                                    // Violet rather than the accent, so a
+                                    // queue and a send are not the same button
+                                    // in two states: the run keeps going, this
+                                    // does not end it.
+                                    contentDescription = null,
+                                    tint = NalarAccent,
+                                )
+                            }
+                        }
                         IconButton(
                             onClick = onStopNow,
                             modifier = Modifier
@@ -304,6 +380,156 @@ internal fun ChatComposer(
         }
     }
 }
+
+/**
+ * The turns waiting behind the run, as a count that opens into a list.
+ *
+ * This is the web's `queuedMessages` panel (`FileInput.vue:753`) rebuilt for a
+ * phone: the web puts the button on the input row beside the textarea, and
+ * there is no room for it there — the row is already text, paperclip and send,
+ * and a fourth control steals width from the only thing on the card the reader
+ * came here to use. So the count is its own line above the text, which is
+ * also where the reader's eye goes after queueing something.
+ *
+ * **Nothing queued means nothing drawn.** Not a zero, not a disabled chip: an
+ * empty queue is the state the reader is in almost every turn, and a permanent
+ * "0 queued" is a control that is telling them there is nothing on the only
+ * row where something else might be.
+ *
+ * The list is re-read when it is *opened* rather than only on every frame:
+ * between them, the rows on screen are built from SSE frames the reader can
+ * watch arrive, and a drained turn that is still listed would have them
+ * compose a duplicate of one the agent is already answering.
+ */
+@Composable
+private fun QueuedStrip(
+    queuedMessages: List<QueuedChatMessage>,
+    onRefresh: () -> Unit,
+    onUse: (QueuedChatMessage) -> Unit,
+) {
+    if (queuedMessages.isEmpty()) return
+
+    var expanded by remember { mutableStateOf(false) }
+    val onUseNow by rememberUpdatedState(onUse)
+
+    Column(modifier = Modifier.fillMaxWidth().testTag("chat_queued_strip")) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable {
+                    val opening = !expanded
+                    expanded = opening
+                    if (opening) onRefresh()
+                }
+                .padding(start = 2.dp, top = 8.dp, bottom = 2.dp)
+                .testTag("chat_queued_toggle")
+                .semantics {
+                    role = Role.Button
+                    contentDescription = if (expanded) {
+                        "Hide the ${queuedMessages.size} queued messages"
+                    } else {
+                        "Show the ${queuedMessages.size} queued messages"
+                    }
+                },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.LowPriority,
+                contentDescription = null,
+                tint = NalarAccent,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                text = queuedLabel(queuedMessages.size),
+                style = MaterialTheme.typography.labelSmall,
+                color = NalarMuted,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.weight(1f))
+            Icon(
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = NalarDim,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+
+        if (expanded) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = NalarBackgroundRaised,
+                border = BorderStroke(1.dp, NalarBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 6.dp)
+                    .testTag("chat_queued_panel"),
+            ) {
+                Column(
+                    modifier = Modifier
+                        // Bounded, so a chat with thirty queued turns cannot
+                        // push the input off the top of a phone screen.
+                        .heightIn(max = 200.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    queuedMessages.forEach { queued ->
+                        QueuedRow(queued = queued, onUse = { onUseNow(queued) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One waiting turn, tappable to bring its text back into the box.
+ *
+ * The row does not leave the queue when it is tapped. The turn belongs to the
+ * server — the only thing that removes it is the worker draining it — so
+ * copying the text out is the whole gesture, and the reader is told so on the
+ * row rather than discovering it by sending the message twice.
+ */
+@Composable
+private fun QueuedRow(
+    queued: QueuedChatMessage,
+    onUse: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onUse)
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .testTag("chat_queued_${queued.id}"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                // A queued row can carry an image and no text — the client
+                // sends `image_urls` on the same POST as `queue_message`, and
+                // Migration 054 made the column nullable so those rows can
+                // exist. An empty row would render as a blank the reader
+                // cannot tap with any confidence about.
+                text = queued.message.ifBlank { "Image only" },
+                style = MaterialTheme.typography.bodySmall,
+                color = NalarText,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "Tap to edit before it runs",
+                style = MaterialTheme.typography.labelSmall,
+                color = NalarDim,
+            )
+        }
+    }
+}
+
+/**
+ * The count, worded. Split out so the plural is a rule with a test rather than
+ * an inline `if`.
+ */
+internal fun queuedLabel(count: Int): String =
+    if (count == 1) "1 queued" else "$count queued"
 
 /**
  * The attached images, as removable thumbnails.

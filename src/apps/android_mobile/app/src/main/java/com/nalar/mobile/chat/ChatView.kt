@@ -222,6 +222,17 @@ fun ChatView(
     isRunning: Boolean = false,
     onStop: () -> Unit = {},
     /**
+     * Re-read the queue behind the composer's panel, and put a waiting turn's
+     * text back in the box.
+     *
+     * Two callbacks rather than one `onUse: (String) -> Unit`, because the
+     * reader-facing verbs are two: "show me what is waiting" and "let me edit
+     * that one". The row identity travels with the text so the panel can key
+     * its rows and the callback can report which one was tapped.
+     */
+    onRefreshQueue: () -> Unit = {},
+    onUseQueuedMessage: (QueuedChatMessage) -> Unit = {},
+    /**
      * Put this chat on a different profile.
      *
      * Carries the profile *name*, and empty means "clear the per-session
@@ -689,6 +700,9 @@ fun ChatView(
             onRemoveAttachment = onRemoveAttachment,
             onSend = onSend,
             onStop = onStop,
+            queuedMessages = state.queuedMessages,
+            onRefreshQueue = onRefreshQueue,
+            onUseQueuedMessage = onUseQueuedMessage,
         )
     }
 }

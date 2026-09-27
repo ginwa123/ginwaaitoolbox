@@ -69,6 +69,8 @@ class ChatViewModel(
     private var olderPagePrimeJob: Job? = null
     private var olderJob: Job? = null
     private var sendJob: Job? = null
+    /** The `GET .../queue_messages` behind the composer's queue panel. */
+    private var queueJob: Job? = null
     private var attachJob: Job? = null
     private var stopJob: Job? = null
     private var answerJob: Job? = null
@@ -195,6 +197,7 @@ class ChatViewModel(
         olderJob?.cancel()
         olderPagePrimeJob?.cancel()
         sendJob?.cancel()
+        queueJob?.cancel()
         stopJob?.cancel()
         answerJob?.cancel()
         // A stream that is already up would keep delivering the PREVIOUS
@@ -245,6 +248,7 @@ class ChatViewModel(
         revalidate(sessionId, requestGeneration)
         reattachInFlightTurn(sessionId, requestGeneration)
         loadProfiles(requestGeneration)
+        revalidateQueue(sessionId, requestGeneration)
     }
 
     /**
@@ -276,6 +280,65 @@ class ChatViewModel(
                 )
             }
         }
+    }
+
+    /**
+     * Reads the server's queue for this chat and *replaces* what is on screen.
+     *
+     * A replacement rather than a merge, deliberately, in both directions: the
+     * local mirror is built from `queue_queued` / `queue_deleted` frames, and a
+     * frame missed while the socket was down leaves it permanently wrong. This
+     * is the only read that repairs that, and it is cheap — one row per waiting
+     * turn — so it runs on every open and every reconnect.
+     *
+     * A failure publishes nothing. The mirror is still better than nothing for
+     * the turns the stream *did* report, and replacing it with an empty list
+     * because the network blipped would delete a message the reader can see
+     * was queued.
+     */
+    private fun revalidateQueue(sessionId: String, requestGeneration: Int) {
+        queueJob?.cancel()
+        queueJob = viewModelScope.launch {
+            val result = withContext(ioDispatcher) { client.loadQueuedMessages(sessionId) }
+            if (requestGeneration != generation) return@launch
+            val queued = (result as? ChatResult.Loaded)?.value ?: return@launch
+            _uiState.update { state ->
+                if (state.sessionId != sessionId) {
+                    state
+                } else {
+                    state.copy(queuedMessages = queued)
+                }
+            }
+        }
+    }
+
+    /**
+     * Puts a waiting turn back in the box, which is the reader's way of
+     * editing it before the worker gets to it.
+     *
+     * The row **stays queued**: it is the server's turn, not the reader's
+     * draft, and the only way to take it out of the queue is for the worker to
+     * drain it. Copying the text out of a list the reader is about to send is
+     * what the web does here too (`FileInput.vue:415`), and matching it means a
+     * reader who learns the gesture on the phone is not surprised on the web.
+     */
+    fun useQueuedMessage(message: QueuedChatMessage) {
+        _uiState.update { state ->
+            state.copy(draft = message.message.trim())
+        }
+    }
+
+    /**
+     * Re-reads the queue behind an open panel.
+     *
+     * The panel is where the reader is deciding whether to wait or to compose
+     * something else, so the list they are looking at is the one worth being
+     * certain about — a locally-mirrored row that the worker already drained
+     * would have them compose a turn that duplicates one they just sent.
+     */
+    fun refreshQueuedMessages() {
+        val sessionId = _uiState.value.sessionId ?: return
+        revalidateQueue(sessionId, generation)
     }
 
     /**
@@ -689,11 +752,21 @@ class ChatViewModel(
     /**
      * Queues a turn.
      *
+     * **"Queue" is this method's normal case, not a special one.** There is no
+     * separate queue endpoint and no flag: the same `POST /llm/session` with a
+     * `queue_message` starts a run when the session is idle and lands in
+     * `session_queue_messages` when a worker is already live
+     * (`workflow.zig:688`, drained by the loop check at `workflow.zig:1565`).
+     * The composer's queue button therefore calls this, and the whole client-
+     * side difference is whether the button is offered.
+     *
      * There is no optimistic bubble. The web removed one deliberately: a local
      * push sits at the wrong end of the array and re-keys the grouped list,
      * which silently re-renders tool cards the user had just expanded. The
      * canonical row arrives over SSE instead, so the draft is cleared only once
-     * the server has actually accepted the turn.
+     * the server has actually accepted the turn — and a *queued* turn produces
+     * no row at all until the worker drains it, which is what
+     * [ChatUiState.queuedMessages] is for.
      */
     fun sendMessage() {
         val state = _uiState.value
@@ -845,6 +918,7 @@ class ChatViewModel(
         loadJob?.cancel()
         olderJob?.cancel()
         sendJob?.cancel()
+        queueJob?.cancel()
         stopJob?.cancel()
         answerJob?.cancel()
         cache.clear()
@@ -874,7 +948,13 @@ class ChatViewModel(
                 // A *re*connect means events were missed with no way to ask for
                 // them, so the only repair is a refetch. The first connect needs
                 // none — the load already in flight covers that window.
-                if (hasConnectedStreamOnce) revalidate(sessionId, generation)
+                if (hasConnectedStreamOnce) {
+                    revalidate(sessionId, generation)
+                    // Same reasoning, applied to the queue: frames lost while
+                    // the socket was down are gone, and the list the reader is
+                    // about to tap is built out of exactly those frames.
+                    revalidateQueue(sessionId, generation)
+                }
                 hasConnectedStreamOnce = true
             }
 
@@ -911,14 +991,13 @@ class ChatViewModel(
             is ChatStreamEvent.SessionChanged ->
                 if (event.sessionId == sessionId) revalidate(sessionId, generation)
 
-            // Surfaced, not dropped: a turn that looks like it vanished is
-            // almost always still waiting behind the current run.
-            is ChatStreamEvent.QueueChanged -> {
-                if (event.sessionId != sessionId) return
-                _uiState.update {
-                    it.copy(queuedCount = (it.queuedCount + event.queueDelta).coerceAtLeast(0))
-                }
-            }
+            // Mirrored, not counted. A composer that can queue a turn has to
+            // be able to show *which* turn is waiting — a turn that has left
+            // the app and is now behind a two-minute tool call is a message
+            // that looks lost, and "1 queued" does not tell the reader it is
+            // their own.
+            is ChatStreamEvent.QueueChanged ->
+                if (event.sessionId == sessionId) applyQueueChange(event)
 
             // A diagnostic frame (`is_error`) is not a run in progress, so it
             // must clear the flag too — otherwise the header claims the agent
@@ -934,6 +1013,43 @@ class ChatViewModel(
             // off its own `workers` subscription, so nothing here needs this
             // branch to do anything.
             is ChatStreamEvent.WorkerChanged -> Unit
+        }
+    }
+
+    /**
+     * Folds one `queue_queued` / `queue_deleted` frame into the mirror.
+     *
+     * Matched by id rather than by count, and an id already present is
+     * ignored: the same frame is delivered on the per-session key *and* on the
+     * central `queue` broadcast (`insert_queue_message.zig`), so the same
+     * queueing arrives twice and a blind append would show every queued turn
+     * twice. The web has the same double delivery and the same guard
+     * (`ChatView.vue:3716`).
+     *
+     * A delete for an id that is not in the list is a no-op for the same
+     * reason: the frame is real, the mirror is behind, and the next
+     * [revalidateQueue] is what settles it.
+     */
+    private fun applyQueueChange(event: ChatStreamEvent.QueueChanged) {
+        _uiState.update { state ->
+            when (event.action) {
+                ChatStreamEvent.QueueChanged.ACTION_QUEUED -> {
+                    if (state.queuedMessages.any { it.id == event.id }) {
+                        state
+                    } else {
+                        state.copy(
+                            queuedMessages = state.queuedMessages + QueuedChatMessage(
+                                id = event.id,
+                                message = event.message,
+                            ),
+                        )
+                    }
+                }
+
+                else -> state.copy(
+                    queuedMessages = state.queuedMessages.filterNot { it.id == event.id },
+                )
+            }
         }
     }
 

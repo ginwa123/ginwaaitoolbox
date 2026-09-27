@@ -149,16 +149,27 @@ sealed interface ChatStreamEvent {
     ) : ChatStreamEvent
 
     /**
-     * A message sitting in the queue behind the current run. Worth surfacing
-     * because the web shows the queue, and a turn that appears to have vanished
-     * is usually still waiting.
+     * A turn joined or left the queue behind the current run.
+     *
+     * Carries the **row**, not a +/- 1, and that is the whole point: a
+     * composer that can queue a turn has to be able to show *which* turn went
+     * where, and a delta can only ever answer "how many". The web made the same
+     * move (`ChatView.vue:3716` pushes `{id, message}` on `queued` and filters
+     * by `id` on `deleted`) for the same reason.
+     *
+     * [message] is empty on a delete — the backend's `queue_deleted` payload is
+     * `{action, id, session_id}` and carries no text.
      */
     data class QueueChanged(
         val sessionId: String,
         val action: String,
+        val id: String,
+        val message: String = "",
     ) : ChatStreamEvent {
-        /** +1 for a queued turn, -1 for one that left the queue. */
-        val queueDelta: Int get() = if (action == "queued") 1 else -1
+        companion object {
+            const val ACTION_QUEUED = "queued"
+            const val ACTION_DELETED = "deleted"
+        }
     }
 
     /**
@@ -306,7 +317,19 @@ private fun decodeChatFrameUnsafe(frame: SseFrame): ChatStreamEvent? {
 
         "queue_queued", "queue_deleted" -> ChatStreamEvent.QueueChanged(
             sessionId = payload.optNullableString("session_id").orEmpty(),
-            action = if (frame.event == "queue_queued") "queued" else "deleted",
+            action = if (frame.event == "queue_queued") {
+                ChatStreamEvent.QueueChanged.ACTION_QUEUED
+            } else {
+                ChatStreamEvent.QueueChanged.ACTION_DELETED
+            },
+            // Both emitters stamp the row id, and it is the only handle a
+            // later delete can be matched against. An empty one cannot be, so
+            // it is dropped here rather than published as a row that can be
+            // appended and never removed.
+            id = payload.optNullableString("id").orEmpty().takeIf { it.isNotEmpty() }
+                ?: return null,
+            // Only `queue_queued` carries the text; `queue_deleted` does not.
+            message = payload.optNullableString("message").orEmpty(),
         )
 
         "worker_created", "worker_updated", "worker_deleted" -> {

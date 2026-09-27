@@ -571,7 +571,10 @@ class ChatViewTest {
                 isLoading = false,
                 isLive = true,
                 isStreaming = true,
-                queuedCount = 2,
+                queuedMessages = listOf(
+                    QueuedChatMessage("q1", "then run the tests"),
+                    QueuedChatMessage("q2", "and open a PR"),
+                ),
             ),
         )
 

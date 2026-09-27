@@ -142,6 +142,8 @@ class MainActivity : ComponentActivity() {
                     onChatDraftChanged = chatViewModel::onDraftChanged,
                     onSendChatMessage = chatViewModel::sendMessage,
                     onStopChatRun = chatViewModel::stopRun,
+                    onRefreshChatQueue = chatViewModel::refreshQueuedMessages,
+                    onUseQueuedChatMessage = chatViewModel::useQueuedMessage,
                     onSelectChatModel = chatViewModel::selectProfile,
                     onAttachChatImage = chatViewModel::attachImage,
                     onRemoveChatAttachment = chatViewModel::removeAttachment,

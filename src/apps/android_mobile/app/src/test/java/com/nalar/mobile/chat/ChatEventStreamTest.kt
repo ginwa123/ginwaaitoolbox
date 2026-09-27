@@ -398,6 +398,47 @@ class ChatStreamEventTest {
     }
 
     @Test
+    fun `a queued turn carries the row the reader has to be shown`() {
+        // The whole reason this is not a +1/-1: a composer that can queue a
+        // turn must be able to say *which* turn is waiting, and a count cannot.
+        // The text is in the payload (`insert_queue_message.zig`) and reading
+        // only the id would leave the panel showing blank rows.
+        val queued = decodeChatFrame(
+            frame(
+                "queue_queued",
+                """{"action":"queued","id":"q1","session_id":"sess_1","message":"then open a PR"}""",
+            ),
+        ) as ChatStreamEvent.QueueChanged
+
+        assertEquals("q1", queued.id)
+        assertEquals("then open a PR", queued.message)
+    }
+
+    @Test
+    fun `a drained turn is identified by its id and carries no text`() {
+        // `queue_deleted` is `{action, id, session_id}` — no `message` key at
+        // all. Reading it as a nullable string is what keeps a JSON null from
+        // arriving as the four characters "null".
+        val deleted = decodeChatFrame(
+            frame("queue_deleted", """{"action":"deleted","id":"q1","session_id":"sess_1"}"""),
+        ) as ChatStreamEvent.QueueChanged
+
+        assertEquals("deleted", deleted.action)
+        assertEquals("q1", deleted.id)
+        assertEquals("", deleted.message)
+    }
+
+    @Test
+    fun `a queue frame with no id is dropped rather than published unmatchable`() {
+        // Every later delete is matched on the id, so a row without one could
+        // only ever be appended and never removed — it would sit in the panel
+        // for the rest of the session.
+        assertNull(
+            decodeChatFrame(frame("queue_queued", """{"action":"queued","session_id":"sess_1"}""")),
+        )
+    }
+
+    @Test
     fun `an event this screen does not act on is dropped, not an error`() {
         assertNull(decodeChatFrame(frame("kanban_task", """{"id":"t1"}""")))
         assertNull(decodeChatFrame(frame("background_process_created", """{"id":"b1"}""")))

@@ -129,6 +129,54 @@ object ChatApi {
         )
     }
 
+    /**
+     * The turns waiting behind this chat's current run, oldest first.
+     *
+     * The same `/api/llm/session/{id}` tree as everything else here, with
+     * `queue_messages` last — which matters, because the router walks its
+     * routes in registration order and a `/queue_messages` registered after
+     * `/messages` and before `/stream` is what keeps `/stream` reachable
+     * (`main.zig:549`, and the route-order contract in `stream_get.zig:177`).
+     *
+     * The queue is server state with no replay: a turn queued while this app
+     * was closed emits its `queue_queued` frame into the void, so this read is
+     * the only way to learn it happened. The `queue` SSE channel keeps it live
+     * afterwards.
+     */
+    fun queueMessagesPath(sessionId: String): String =
+        "/api/llm/session/${encodeQueryValue(sessionId)}/queue_messages"
+
+    /**
+     * `{"messages": [{"id", "message"}], "count": n}`.
+     *
+     * The array is the authority and `count` is not read: the server computes
+     * the two together (`queue_messages_get.zig`), so trusting `count` would
+     * only add a second way for the number and the list to disagree.
+     *
+     * `message` is nullable — Migration 054 dropped the NOT NULL so the
+     * background-process rows that carry only an image can live in the same
+     * table — so it is read through [optNullableString] and a textless row
+     * renders as a placeholder rather than as the word `null`.
+     */
+    fun parseQueuedMessages(body: String): List<QueuedChatMessage> {
+        val raw = JSONObject(body).optJSONArray("messages")
+        return buildList(raw?.length() ?: 0) {
+            for (index in 0 until (raw?.length() ?: 0)) {
+                val row = raw?.optJSONObject(index) ?: continue
+                // No id means no way to match a later `queue_deleted` to this
+                // row, so it could only ever be appended and never removed.
+                val id = row.optNullableString("id").orEmpty()
+                if (id.isEmpty()) continue
+                add(
+                    QueuedChatMessage(
+                        id = id,
+                        message = row.optNullableString("message").orEmpty(),
+                    ),
+                )
+            }
+        }
+    }
+
     fun stopPath(sessionId: String): String =
         "/api/llm/session/${encodeQueryValue(sessionId)}/stop"
 
