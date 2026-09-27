@@ -180,6 +180,52 @@ of the message. A run in progress when the chat is opened is re-attached from
 `GET /api/llm/session/{id}/stream`, because the backend writes a turn to
 `llm_history` only once it completes.
 
+### Tearing a stream down never blocks the thread that asked
+
+`HttpChatEventStream.stop()` is called from the main thread — by
+`ChatViewModel.openSession` on every session switch, and by `onCleared` on the
+way out. It used to call `HttpURLConnection.disconnect()` inline, which is
+not a cheap teardown. The response is `Transfer-Encoding: chunked`, so
+`disconnect()` reaches `sun.net.www.http.ChunkedInputStream.close()`, and that
+takes a `ReentrantLock` the **reading** thread is holding for the whole of
+every socket read — then drains the remaining chunks hunting for the trailer.
+
+So the main thread parked until the server next said anything: the ~15 s
+heartbeat for a chat sitting idle, or the full 120 s read timeout when the
+socket died quietly. And because `openSession` starts the replacement stream
+*after* the teardown, the old pump was already invalidated (so it delivered
+nothing) while the new one did not yet exist (so nothing could). From the
+screen that is one symptom: a chat that connects and then never updates.
+
+The close is now handed to a thread nobody joins. The pump sees the
+invalidated token on its next wake, stops dispatching, and closes its own
+connection — which is the only thread that can finish the close without
+contending for the lock. The two `disconnect()` calls that used to race are
+now single-owner, decided by connection identity rather than by the token, so
+a reconnecting pump cannot tear down the socket its replacement just opened.
+
+Two things make this testable at all, and both were missing:
+
+- `open()` returns `HttpURLConnection` rather than `HttpsURLConnection`.
+  Nothing in it is TLS-specific, and the narrower type meant the one layer
+  that actually opens sockets was the one layer no test could reach.
+- `HttpChatEventStreamSocketTest` drives the pump against a real
+  `ServerSocket` replaying the bytes kabelweb actually writes — the
+  `Connection: close` / `Transfer-Encoding: chunked` preamble included. On the
+  unfixed pump the suite does not fail, it *hangs*, which is why every case
+  carries a JUnit `timeout`: a build that quietly stalls is worse than a red
+  one.
+
+The reconnect token is claimed in `start()` rather than inside the thread body
+for the same reason. A thread that increments it whenever it happens to be
+scheduled can take the token its own replacement is about to be given, and the
+replacement then exits before it has opened a socket.
+
+`android_chat_sse_contract_test.py` (in `tests/functional/`) is the other half:
+it boots a real `nalar` and asserts the frames the decoder branches on, so a
+rename on the server reaches the phone as a test failure rather than as a chat
+that quietly stops updating.
+
 ### "Is the agent working?" is a separate question from "is a delta arriving?"
 
 A spinner appears beside every chat the backend currently has a worker for —
