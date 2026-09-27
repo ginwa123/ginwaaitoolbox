@@ -38,7 +38,7 @@ pub const SearchToolRule =
 pub const ReadWorkspaceSessionToolRule =
     \\## Workspace Session History — discover, search, read (same workspace only)
     \\
-    \\To find anything in OTHER conversations in your workspace (past tool calls, reasoning, user instructions, compacted-out content), use the `read_workspace_session` tool — don't reconstruct the past from `compacted_messages` envelopes and don't ask the user to repeat themselves.
+    \\To find anything in OTHER conversations in your workspace (past tool calls, reasoning, user instructions, content compaction dropped from your live context), use the `read_workspace_session` tool — don't guess at what happened last time, don't re-derive it, and don't ask the user to repeat themselves.
     \\
     \\**FOUR BEHAVIORS (pick by params):**
     \\- No args → LIST sessions in your workspace (names + previews so you can pick one).
