@@ -193,7 +193,17 @@ fn dispatchTool(ctx: ToolContext, tool_call: agent.ToolCall) !ToolResult {
     var modified_args: ?[]const u8 = null;
     defer if (modified_args) |a| ctx.allocator.free(a);
 
-    switch (runPreHookAction(ctx, tool_call.function.name, tool_call.function.arguments)) {
+    // Translate a deprecated tool name to its current registry entry
+    // (`bash` → `command`) BEFORE the hooks run, so a pre-2026-09-04 name
+    // behaves like the tool it now means: same hooks, same exec, same
+    // envelope. Resolution is dispatch-only — `UNIFIED_TOOL_REGISTRY` stays
+    // the advertised list, so the model is never re-offered `bash`.
+    // For a name that needs no translation this is a no-op.
+    if (tools_equipped.resolveToolAlias(tool_call.function.name)) |canonical| {
+        effective_call.function.name = canonical;
+    }
+
+    switch (runPreHookAction(ctx, effective_call.function.name, tool_call.function.arguments)) {
         .proceed => {},
         .proceed_modified => |a| {
             modified_args = a;
@@ -354,8 +364,15 @@ pub fn isKnownTool(name: []const u8) bool {
 }
 
 /// Check if a tool name is registered or is an MCP tool
+///
+/// Alias-aware on purpose. `isKnownTool` is the strict registry check;
+/// this gate additionally accepts a deprecated name whose target still
+/// exists (`bash` → `command`), because the call is going to run. If
+/// this function said no for `bash`, Phase 1 would stamp the call as an
+/// unknown-tool error and Phase 3 would `continue` past it — the exact
+/// silent-drop that made a dead tool call look like a flaky shell.
 pub fn isKnownToolOrMCP(name: []const u8, config: *const config_mod.LlmConfig) bool {
-    if (isKnownTool(name)) return true;
+    if (tools_equipped.isDispatchableToolName(name)) return true;
     return isMCPTool(config, name);
 }
 
@@ -370,6 +387,35 @@ pub fn getToolNames() []const []const u8 {
         break :blk n;
     };
     return &names;
+}
+
+/// Tool-result text for a call whose name is neither a registry entry nor an
+/// MCP tool. Replaces the bare `"unknown tools"` string, which named neither
+/// the offending tool nor any way forward, so the model had no correction to
+/// make and simply emitted the same name again on the next turn.
+///
+/// Lists the registry names deliberately: dispatch is registry-scoped (there
+/// is no allowlist re-check in `dispatchTool`), so this list is exactly the
+/// set of names the dispatcher would accept.
+fn unknownToolMessage(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    const head = try std.fmt.allocPrint(
+        allocator,
+        "unknown tool '{s}' — it is not available in this session; do not call it again. Available tools: ",
+        .{name},
+    );
+    defer allocator.free(head);
+    try out.appendSlice(allocator, head);
+
+    for (tools_equipped.UNIFIED_TOOL_REGISTRY(), 0..) |entry, i| {
+        if (i > 0) try out.append(allocator, ',');
+        try out.appendSlice(allocator, entry.name);
+    }
+    try out.appendSlice(allocator, ". Call one of those names exactly.");
+
+    return out.toOwnedSlice(allocator);
 }
 
 // ============================================================================
@@ -470,7 +516,7 @@ pub fn handle_tool(
             }
         }
         if (!has_known_tools) {
-            logger.infoFmt("[HANDLE_TOOL] All tool calls are unknown — placeholders were skipped", .{});
+            logger.infoFmt("[HANDLE_TOOL] All tool calls are unknown — placeholders were written as error envelopes", .{});
         }
 
         // Build tool names list and save assistant message
@@ -544,16 +590,22 @@ pub fn handle_tool(
             // for Phase 3 to land. Previously the bare empty content
             // caused `innerToolData()` to fall back to `msg.content`,
             // which was `""` — the card rendered blank.
-            const placeholder = if (!isKnownToolOrMCP(tool_call.function.name, config))
-                try wrapToolOutput(
+            const placeholder = if (!isKnownToolOrMCP(tool_call.function.name, config)) blk: {
+                // Same actionable text Phase 3 writes. The placeholder is what
+                // a crash-mid-flight or a stale-result sweep leaves behind, so
+                // a vague "unknown tools" here outlives the failure and is
+                // what the human sees on refresh.
+                const msg = try unknownToolMessage(allocator, tool_call.function.name);
+                defer allocator.free(msg);
+                break :blk try wrapToolOutput(
                     allocator,
                     tool_call.function.name,
                     tool_call.function.arguments,
                     false,
-                    "unknown tools",
+                    msg,
                     "",
-                )
-            else
+                );
+            } else
                 try wrapToolOutput(
                     allocator,
                     tool_call.function.name,
@@ -667,10 +719,24 @@ pub fn handle_tool(
             var toolAgentTemp: f32 = agent_temperature.*;
             var toolIsThinking: bool = isThinking.*;
 
-            // Skip placeholders for unknown tools (consistency with
-            // Phase 1 — we never inserted a placeholder for them).
+            // A name that reaches here is genuinely unknown: the deprecated
+            // aliases (`bash` → `command`) were already accepted by
+            // `isKnownToolOrMCP` above. Write an ACTIONABLE result into the
+            // Phase 1 placeholder rather than `continue`-ing. The bare skip
+            // left the placeholder's `data:null` + a non-actionable
+            // "unknown tools" as the FINAL tool_result, so the model got
+            // nothing to correct against and re-emitted the same name four
+            // turns running — while the shell card, which renders `data` and
+            // never `error`, showed the human a blank bubble. This is the
+            // exact "the shell suddenly stopped working" report.
             if (!isKnownToolOrMCP(tool_call.function.name, config)) {
-                logger.warnFmt("[HANDLE_TOOL] Skipping unknown tool '{s}' (no placeholder was created)", .{tool_call.function.name});
+                logger.warnFmt("[HANDLE_TOOL] unknown tool '{s}' — not in the registry or the MCP catalog", .{tool_call.function.name});
+                const err_msg = try unknownToolMessage(allocator, tool_call.function.name);
+                defer allocator.free(err_msg);
+                tool_result = try wrapToolOutput(allocator, tool_call.function.name, tool_call.function.arguments, false, err_msg, "");
+                errdefer allocator.free(tool_result);
+                try updateAndSendToolResult(allocator, io, db, id_llm_history, session_id, cwd, tool_call, tool_result, toolAgentTemp, toolIsThinking, current_agent_for_save, parent_session_id);
+                allocator.free(tool_result);
                 continue;
             }
 
@@ -1286,17 +1352,53 @@ test "Phase 1 placeholder uses wrapToolOutput for both known + unknown branches"
     const wrap_count = std.mem.count(u8, source, "wrapToolOutput(");
     try std.testing.expect(wrap_count >= 5);
 
-    // Unknown tools MUST emit a failure envelope so the frontend
-    // renders a structured error block (not a raw "unknown tools"
-    // text bubble). Asserts on the literal `"unknown tools"` arg
-    // passed to the `error_message` slot of wrapToolOutput.
-    try std.testing.expect(std.mem.indexOf(u8, source, "\"unknown tools\",") != null);
+    // Unknown tools MUST emit a failure envelope so the frontend renders a
+    // structured error block, and the text must be the actionable
+    // `unknownToolMessage` — it names the offending tool and lists the real
+    // tool names. The old bare `"unknown tools"` named neither, so the model
+    // had nothing to correct against and re-emitted the same dead name turn
+    // after turn. Counted at both call sites: the Phase 1 placeholder and the
+    // Phase 3 result.
+    const msg_count = std.mem.count(u8, source, "unknownToolMessage(allocator, tool_call.function.name)");
+    try std.testing.expect(msg_count >= 2);
+    try std.testing.expect(std.mem.indexOf(u8, source, "\"unknown tools\",") == null);
 
     // The bare-`""` literal that used to be assigned directly to
     // `response_content = ""` must NOT survive in Phase 1. Any
     // match here is a regression to the legacy behaviour.
     try std.testing.expect(std.mem.indexOf(u8, source, ".response_content = \"\",") == null);
     try std.testing.expect(std.mem.indexOf(u8, source, ".response_content = \"unknown tools\",") == null);
+}
+
+test "unknownToolMessage names the offending tool and offers the real ones" {
+    const msg = try unknownToolMessage(std.testing.allocator, "bash");
+    defer std.testing.allocator.free(msg);
+
+    // Names the tool so the model knows WHICH call was rejected...
+    try std.testing.expect(std.mem.indexOf(u8, msg, "unknown tool 'bash'") != null);
+    // ...and offers a way forward, including the canonical shell name. This is
+    // what the model was missing when it re-emitted `bash` four turns running.
+    try std.testing.expect(std.mem.indexOf(u8, msg, "command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, msg, "do not call it again") != null);
+}
+
+test "dispatchTool resolves deprecated shell names before the registry walk" {
+    // Static contract: alias resolution must happen INSIDE dispatchTool, ahead
+    // of the pre-hook and the registry lookup. Reverting it reintroduces the
+    // silent `continue` (Phase 3 saw the name as unknown and skipped it).
+    const max_bytes: usize = 1 * 1024 * 1024;
+    const source = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        placeholder_impl_path,
+        std.testing.allocator,
+        .limited(max_bytes),
+    );
+    defer std.testing.allocator.free(source);
+
+    try std.testing.expect(std.mem.indexOf(u8, source, "tools_equipped.resolveToolAlias(tool_call.function.name)") != null);
+    // The gate must accept aliases too, or Phase 1 stamps an error envelope
+    // and Phase 3 skips the call before dispatchTool ever sees it.
+    try std.testing.expect(std.mem.indexOf(u8, source, "tools_equipped.isDispatchableToolName(name)") != null);
 }
 
 test "wrapToolOutput envelope is round-trip parseable (envelope shape vs frontend)" {
@@ -1323,20 +1425,23 @@ test "wrapToolOutput envelope is round-trip parseable (envelope shape vs fronten
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"data\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, envelope, "\"error\":null") != null);
 
-    // Unknown tool branch envelope: success=false, error="unknown tools".
+    // Unknown tool branch envelope: success=false with the actionable message
+    // handle_tool actually writes (not the retired bare "unknown tools").
+    const unknown_msg = try unknownToolMessage(std.testing.allocator, "totally_made_up_tool");
+    defer std.testing.allocator.free(unknown_msg);
     const err_envelope = try wrapToolOutput(
         std.testing.allocator,
         "totally_made_up_tool",
         "{}",
         false,
-        "unknown tools",
+        unknown_msg,
         "",
     );
     defer std.testing.allocator.free(err_envelope);
 
     try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"tool\":\"totally_made_up_tool\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"success\":false") != null);
-    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"error\":\"unknown tools\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"error\":\"unknown tool 'totally_made_up_tool'") != null);
     try std.testing.expect(std.mem.indexOf(u8, err_envelope, "\"data\":null") != null);
 }
 

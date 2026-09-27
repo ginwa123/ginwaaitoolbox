@@ -32,6 +32,27 @@ const completedEnvelope = {
 
 const emptyPlaceholder = ''
 
+/**
+ * The exact `response_content` the backend persisted for the four failed
+ * calls in session task_1790447864669_3 (llm_history row 1790452019027732862
+ * and its three siblings). The model asked for the pre-2026-09-04 `bash`
+ * tool, Phase 3 skipped the call, and this is what was left behind.
+ */
+const unknownToolEnvelope = JSON.stringify({
+  tool: 'bash',
+  parameters: {
+    command: 'timeout 900 zig build web 2>&1 | head -60',
+    cwd: '/home/ginwa/.config/nalar/.worktrees/glinlandui-web',
+    mandatory_timeout: 950,
+    max_lines: 70,
+  },
+  success: false,
+  data: null,
+  error:
+    "unknown tool 'bash' — it is not available in this session; do not call it again. Available tools: command,read_file,...",
+  v: 1,
+})
+
 const paramsFor = (command: string) => JSON.stringify({ command })
 
 const makeWrapper = (props: {
@@ -117,5 +138,52 @@ describe('ShellTool.vue — in-progress placeholder (TDD: unknown bug)', () => {
     const html = wrapper.html()
     expect(html).toContain('echo hi')
     expect(html).not.toContain('stale')
+  })
+})
+
+/**
+ * Regression: a `success:false` shell envelope used to render as a card with
+ * a pill, a command line, and nothing else — `normalized.error` was computed
+ * and then read by nobody. A tool call that NEVER RAN was therefore
+ * pixel-identical to a command that ran and printed nothing, which is how
+ * four dead `bash` calls were read as "the shell is flaky" (the agent's own
+ * diagnosis) instead of "that tool does not exist".
+ */
+describe('ShellTool.vue — failed envelope is never blank', () => {
+  it('renders the envelope error text for a tool that never ran', () => {
+    const wrapper = makeWrapper({ content: unknownToolEnvelope, toolName: 'bash' })
+    const error = wrapper.find('[data-testid="shell-tool-error"]')
+    expect(error.exists()).toBe(true)
+    expect(error.text()).toContain("unknown tool 'bash'")
+    // The actionable part: the model/human can see the canonical name.
+    expect(error.text()).toContain('Available tools:')
+  })
+
+  it('marks the card as failed in the header even when collapsed', () => {
+    const wrapper = makeWrapper({ content: unknownToolEnvelope, toolName: 'bash' })
+    expect(wrapper.find('[data-testid="shell-tool-failed"]').exists()).toBe(true)
+  })
+
+  it('forces the body open — the error must not hide behind a "+"', () => {
+    // No `expanded` prop: the collapsed state is the default the user saw.
+    const wrapper = makeWrapper({ content: unknownToolEnvelope, toolName: 'bash' })
+    expect(wrapper.find('[data-testid="shell-tool-error"]').exists()).toBe(true)
+  })
+
+  it('shows no error block for a successful command', () => {
+    const wrapper = makeWrapper({ content: completedEnvelope, expanded: true })
+    expect(wrapper.find('[data-testid="shell-tool-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="shell-tool-failed"]').exists()).toBe(false)
+  })
+
+  it('still surfaces a non-zero exit code as an error, with the exit code kept', () => {
+    const wrapper = makeWrapper({
+      content: { ...completedEnvelope, exit_code: 2, stderr: 'boom' },
+      expanded: true,
+    })
+    // exit_code:2 with empty `error` field → no envelope-error block; the
+    // existing exit-code badge remains the failure signal.
+    expect(wrapper.find('[data-testid="shell-tool-error"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="shell-tool-exit-code"]').text()).toBe('2')
   })
 })
