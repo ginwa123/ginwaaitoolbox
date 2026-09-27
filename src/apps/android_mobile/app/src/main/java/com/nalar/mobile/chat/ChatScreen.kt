@@ -130,6 +130,12 @@ fun ChatScreen(
     onSend: () -> Unit = {},
     onStop: () -> Unit = {},
     /**
+     * Re-read the queue behind the composer's panel, and put a waiting turn's
+     * text back in the box. See [ChatView].
+     */
+    onRefreshQueue: () -> Unit = {},
+    onUseQueuedMessage: (QueuedChatMessage) -> Unit = {},
+    /**
      * Start a new chat, and put this one behind it.
      *
      * A callback and not a navigation, because the graph owns navigation *and*
@@ -314,6 +320,8 @@ fun ChatScreen(
                     onDraftChanged = onDraftChanged,
                     onSend = onSend,
                     onStop = onStop,
+                    onRefreshQueue = onRefreshQueue,
+                    onUseQueuedMessage = onUseQueuedMessage,
                     onSelectModel = onSelectModel,
                     isRunning = isRunning,
                     onAttachmentPicked = onAttachmentPicked,

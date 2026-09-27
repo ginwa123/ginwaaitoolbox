@@ -54,6 +54,7 @@ import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatScreen
 import com.nalar.mobile.chat.ChatUiState
 import com.nalar.mobile.chat.QuestionAnswer
+import com.nalar.mobile.chat.QueuedChatMessage
 import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
@@ -297,6 +298,16 @@ fun NalarNavGraph(
     onChatDraftChanged: (String) -> Unit,
     onSendChatMessage: () -> Unit,
     onStopChatRun: () -> Unit,
+    /**
+     * Re-read the queue behind the composer's panel, and put a waiting turn's
+     * text back in the box.
+     *
+     * Two `ChatViewModel` methods rather than one: the panel's whole value is
+     * that it is authoritative when opened, so a read that happened somewhere
+     * else and was passed in would be a stale list dressed as a current one.
+     */
+    onRefreshChatQueue: () -> Unit = {},
+    onUseQueuedChatMessage: (QueuedChatMessage) -> Unit = {},
     /**
      * Put a chat on a different profile, or clear the override with `""`.
      *
@@ -719,6 +730,8 @@ fun NalarNavGraph(
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,
                 onStop = onStopChatRun,
+                onRefreshQueue = onRefreshChatQueue,
+                onUseQueuedMessage = onUseQueuedChatMessage,
                 // The bar's `+`. It opens the project chooser rather than
                 // creating directly, because a chat is a task row and every
                 // task endpoint is nested under a project — see

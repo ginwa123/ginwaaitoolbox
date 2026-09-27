@@ -272,6 +272,99 @@ class ChatApiTest {
         assertTrue(body.getString("allowed_tools").contains("ask_user"))
     }
 
+    // --- The queue ---------------------------------------------------------
+
+    @Test
+    fun theQueueIsReadFromTheSessionTree() {
+        // `queue_messages` is registered *after* `/messages` and before
+        // `/stream` (`main.zig:549`), because the router matches in
+        // registration order — a path built for any other tree 404s.
+        assertEquals(
+            "/api/llm/session/sess_1/queue_messages",
+            ChatApi.queueMessagesPath("sess_1"),
+        )
+    }
+
+    @Test
+    fun aSessionIdIsEncodedRatherThanConcatenated() {
+        // A `/` in the id would otherwise create a path the router splits in
+        // the wrong place — the same class of bug as the route-order shadowing
+        // the sibling routes are ordered around.
+        assertEquals(
+            "/api/llm/session/sess%2F1/queue_messages",
+            ChatApi.queueMessagesPath("sess/1"),
+        )
+    }
+
+    @Test
+    fun theQueuedTurnsComeBackInOrderWithBothFields() {
+        val body = """
+            {
+              "messages": [
+                {"id": "1789451234567890123", "message": "then run the tests"},
+                {"id": "1789451234567890124", "message": "and open a PR"}
+              ],
+              "count": 2
+            }
+        """.trimIndent()
+
+        val queued = ChatApi.parseQueuedMessages(body)
+
+        assertEquals(2, queued.size)
+        assertEquals("1789451234567890123", queued[0].id)
+        assertEquals("then run the tests", queued[0].message)
+        assertEquals("and open a PR", queued[1].message)
+    }
+
+    @Test
+    fun anEmptyQueueIsAnEmptyListAndNotAFailure() {
+        assertEquals(emptyList<QueuedChatMessage>(), ChatApi.parseQueuedMessages("""{"messages":[],"count":0}"""))
+    }
+
+    @Test
+    fun aQueuedTurnWithNoTextDoesNotArriveAsTheWordNull() {
+        // Migration 054 made `session_queue_messages.message` nullable so an
+        // image-only background-process row can live in the same table, and
+        // `optString` on an explicit JSON null renders four characters. The
+        // panel then shows "null" where the reader queued a screenshot.
+        val body = """
+            {
+              "messages": [
+                {"id": "q1", "message": null},
+                {"id": "q2", "message": "real text"}
+              ],
+              "count": 2
+            }
+        """.trimIndent()
+
+        val queued = ChatApi.parseQueuedMessages(body)
+
+        assertEquals("", queued[0].message)
+        assertEquals("real text", queued[1].message)
+    }
+
+    @Test
+    fun aQueuedRowWithNoIdIsDropped() {
+        // Every delete is matched on the id, so a row without one can be
+        // appended and never removed — it would sit in the panel forever.
+        val body = """{"messages":[{"id":"","message":"orphan"},{"id":"q1","message":"kept"}],"count":2}"""
+
+        val queued = ChatApi.parseQueuedMessages(body)
+
+        assertEquals(1, queued.size)
+        assertEquals("kept", queued[0].message)
+    }
+
+    @Test
+    fun theCountIsNotTrustedOverTheRows() {
+        // The server computes the two together, so reading `count` would only
+        // add a second way for the header's number and the panel's list to
+        // disagree. Two rows and a count of 9 is not a state to honour.
+        val body = """{"messages":[{"id":"q1","message":"a"},{"id":"q2","message":"b"}],"count":9}"""
+
+        assertEquals(2, ChatApi.parseQueuedMessages(body).size)
+    }
+
     private fun message(id: String, content: String) = ChatMessage(
         id = id,
         role = ChatMessage.ROLE_USER,

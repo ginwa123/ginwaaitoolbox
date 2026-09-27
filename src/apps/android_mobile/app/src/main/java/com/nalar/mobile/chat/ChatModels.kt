@@ -280,6 +280,20 @@ fun effectiveProfileName(
     activeProfile: String?,
 ): String? = selectedProfile.ifEmpty { activeProfile }
 
+/**
+ * One turn waiting behind the run in progress.
+ *
+ * Not a [ChatMessage]: a queued turn has no row, no timestamp the server
+ * trusts and no place in the transcript until the worker drains it. It is the
+ * same shape the web keeps in `queuedMessages` (`FileInput.vue:9`) — an id so a
+ * drain can be matched, and the text so the reader can see what they are
+ * waiting on.
+ */
+data class QueuedChatMessage(
+    val id: String,
+    val message: String,
+)
+
 data class ChatUiState(
     val sessionId: String? = null,
     val isLoading: Boolean = true,
@@ -321,13 +335,20 @@ data class ChatUiState(
     /** Whether the SSE stream is currently open, shown as a live dot. */
     val isLive: Boolean = false,
     /**
-     * Turns waiting behind the current run.
+     * Turns waiting behind the current run, oldest first.
      *
-     * Tracked from the `queue` channel because a turn that appears to have
-     * vanished is almost always still queued, and an app that cannot say so
-     * looks broken.
+     * The list rather than a count because the reader's question is never
+     * "how many" — it is "where did the message I just sent go", and that
+     * question can only be answered by the text. A count would have to be
+     * tracked as a number *and* the list shown to the reader, and the two
+     * disagreeing is a header that says 2 next to a list of one.
+     *
+     * Fed by the `queue` channel and by
+     * `GET /api/llm/session/{id}/queue_messages` on open, because a turn
+     * queued before this screen existed produces no event at all — the stream
+     * has no replay buffer to ask again.
      */
-    val queuedCount: Int = 0,
+    val queuedMessages: List<QueuedChatMessage> = emptyList(),
     /**
      * Sub-agents launched but not yet reported finished.
      *
@@ -406,6 +427,14 @@ data class ChatUiState(
     /** Nothing cached and nothing loaded — a genuinely empty conversation. */
     val isEmptyConversation: Boolean
         get() = !isLoading && errorMessage == null && messages.isEmpty()
+
+    /**
+     * How many turns are waiting behind the run, for the header's one word.
+     *
+     * Derived rather than tracked, so the header and the queue list can never
+     * report different numbers for the same queue.
+     */
+    val queuedCount: Int get() = queuedMessages.size
 }
 
 /**

@@ -49,6 +49,9 @@ class ChatComposerTest {
         onRemoveAttachment: (String) -> Unit = {},
         onSend: () -> Unit = {},
         onStop: () -> Unit = {},
+        queuedMessages: List<QueuedChatMessage> = emptyList(),
+        onRefreshQueue: () -> Unit = {},
+        onUseQueuedMessage: (QueuedChatMessage) -> Unit = {},
     ) {
         compose.setContent {
             NalarTheme {
@@ -69,6 +72,9 @@ class ChatComposerTest {
                     onRemoveAttachment = onRemoveAttachment,
                     onSend = onSend,
                     onStop = onStop,
+                    queuedMessages = queuedMessages,
+                    onRefreshQueue = onRefreshQueue,
+                    onUseQueuedMessage = onUseQueuedMessage,
                 )
             }
         }
@@ -145,6 +151,197 @@ class ChatComposerTest {
 
         assertEquals(1, stopped)
         assertEquals(0, sent)
+    }
+
+    // --- Queue -------------------------------------------------------------
+
+    @Test
+    fun aRunWithSomethingTypedOffersAQueueBesideTheStop() {
+        // The gap this closes. Before it, a reader watching a three-minute
+        // tool call had exactly one way to act on a follow-up thought: stop the
+        // run and throw the work away.
+        render(draft = "and then open a PR", isWorking = true)
+
+        compose.onNodeWithTag("chat_queue").assertIsDisplayed()
+        compose.onNodeWithTag("chat_stop").assertIsDisplayed()
+        // Still one slot for the run's lifetime: send is not offered as well.
+        compose.onNodeWithTag("chat_send").assertDoesNotExist()
+    }
+
+    @Test
+    fun theQueueSendsTheTurnRatherThanStoppingTheRun() {
+        // Same callback as the send button, because the server decides: a live
+        // worker takes the message into `session_queue_messages`
+        // (`workflow.zig:688`) and drains it when it finishes. A separate
+        // "queue" endpoint would be a second wire contract for one action.
+        var sent = 0
+        var stopped = 0
+        render(
+            draft = "and then open a PR",
+            isWorking = true,
+            onSend = { sent++ },
+            onStop = { stopped++ },
+        )
+
+        compose.onNodeWithTag("chat_queue").performClick()
+        compose.waitForIdle()
+
+        assertEquals(1, sent)
+        assertEquals(0, stopped)
+    }
+
+    @Test
+    fun anIdleChatHasNoQueueButton() {
+        // With no run in progress the same tap starts a turn, and the send
+        // button already says exactly that. Two controls for one action is a
+        // control the reader has to think about.
+        render(draft = "hello", isWorking = false)
+
+        compose.onNodeWithTag("chat_queue").assertDoesNotExist()
+        compose.onNodeWithTag("chat_send").assertIsDisplayed()
+    }
+
+    @Test
+    fun thereIsNoQueueButtonOverAnEmptyBox() {
+        // A queue button that cannot do anything teaches the reader the
+        // composer is decoration. This is the same rule the model chip and the
+        // cwd expander are held to.
+        render(draft = "", isWorking = true)
+
+        compose.onNodeWithTag("chat_queue").assertDoesNotExist()
+    }
+
+    @Test
+    fun anImageWithNoTextIsSomethingToQueue() {
+        render(attachments = listOf(attachment("a1")), isWorking = true)
+
+        compose.onNodeWithTag("chat_queue").assertIsDisplayed()
+    }
+
+    @Test
+    fun theQueueIsInertWhileASendIsInFlight() {
+        render(draft = "hello", isWorking = true, isSending = true)
+
+        compose.onNodeWithTag("chat_queue").assertDoesNotExist()
+    }
+
+    @Test
+    fun anEmptyQueueDrawsNoStrip() {
+        // The reader is in this state on almost every turn, and a permanent
+        // "0 queued" would be telling them there is nothing on the one row
+        // where something else might be.
+        render(isWorking = true)
+
+        compose.onNodeWithTag("chat_queued_strip").assertDoesNotExist()
+    }
+
+    @Test
+    fun theStripNamesHowManyTurnsAreWaiting() {
+        render(
+            isWorking = true,
+            queuedMessages = listOf(
+                QueuedChatMessage("q1", "then run the tests"),
+                QueuedChatMessage("q2", "and open a PR"),
+            ),
+        )
+
+        compose.onNodeWithTag("chat_queued_strip").assertIsDisplayed()
+        compose.onNodeWithText("2 queued").assertExists()
+    }
+
+    @Test
+    fun theListIsClosedUntilItIsAskedFor() {
+        render(isWorking = true, queuedMessages = listOf(QueuedChatMessage("q1", "then run the tests")))
+
+        compose.onNodeWithTag("chat_queued_panel").assertDoesNotExist()
+
+        compose.onNodeWithTag("chat_queued_toggle").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithTag("chat_queued_panel").assertIsDisplayed()
+        compose.onNodeWithTag("chat_queued_q1").assertIsDisplayed()
+    }
+
+    @Test
+    fun openingTheListReReadsTheServer() {
+        // The rows on screen are built from SSE frames the reader can watch
+        // arrive; one that was drained while the socket was down would still be
+        // listed, and tapping it would have them compose a duplicate of a turn
+        // the agent is already answering.
+        var refreshed = 0
+        render(
+            isWorking = true,
+            queuedMessages = listOf(QueuedChatMessage("q1", "then run the tests")),
+            onRefreshQueue = { refreshed++ },
+        )
+
+        compose.onNodeWithTag("chat_queued_toggle").performClick()
+        compose.waitForIdle()
+
+        assertEquals(1, refreshed)
+    }
+
+    @Test
+    fun closingTheListDoesNotReReadIt() {
+        var refreshed = 0
+        render(
+            isWorking = true,
+            queuedMessages = listOf(QueuedChatMessage("q1", "then run the tests")),
+            onRefreshQueue = { refreshed++ },
+        )
+
+        compose.onNodeWithTag("chat_queued_toggle").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("chat_queued_toggle").performClick()
+        compose.waitForIdle()
+
+        assertEquals(1, refreshed)
+    }
+
+    @Test
+    fun tappingAQueuedTurnReportsWhichOne() {
+        var used: QueuedChatMessage? = null
+        render(
+            isWorking = true,
+            queuedMessages = listOf(
+                QueuedChatMessage("q1", "then run the tests"),
+                QueuedChatMessage("q2", "and open a PR"),
+            ),
+            onUseQueuedMessage = { used = it },
+        )
+
+        compose.onNodeWithTag("chat_queued_toggle").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithTag("chat_queued_q2").performClick()
+        compose.waitForIdle()
+
+        assertEquals("q2", used?.id)
+        assertEquals("and open a PR", used?.message)
+    }
+
+    @Test
+    fun aQueuedTurnWithNoTextStillHasSomethingOnItsRow() {
+        // The client sends `image_urls` on the same POST as `queue_message`,
+        // and Migration 054 made the column nullable so those rows exist. A
+        // blank row is a row the reader cannot aim at.
+        render(
+            isWorking = true,
+            queuedMessages = listOf(QueuedChatMessage("q1", "")),
+        )
+
+        compose.onNodeWithTag("chat_queued_toggle").performClick()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Image only").assertExists()
+    }
+
+    @Test
+    fun theCountIsSingularForOne() {
+        // Split out of the composable so the plural has a rule with a test
+        // rather than an inline `if` nobody re-runs.
+        assertEquals("1 queued", queuedLabel(1))
+        assertEquals("0 queued", queuedLabel(0))
+        assertEquals("3 queued", queuedLabel(3))
     }
 
     // --- Attachments -------------------------------------------------------

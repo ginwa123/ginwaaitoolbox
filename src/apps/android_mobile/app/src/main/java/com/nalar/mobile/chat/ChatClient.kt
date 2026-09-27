@@ -128,6 +128,24 @@ class ChatClient(
         )
     }
 
+    /**
+     * The turns waiting behind this chat's current run.
+     *
+     * The bootstrap for the composer's queue panel, and the only honest answer
+     * to "did my message go anywhere" after a cold open: the `queue_queued`
+     * frame for a turn queued while the app was closed was emitted to nobody,
+     * and the stream keeps no replay to ask again.
+     *
+     * A failed read leaves the panel showing what the stream has said since,
+     * which is why this returns a [ChatResult] rather than throwing — an
+     * offline phone should still be able to see a message it queued a minute
+     * ago on a connection that has since dropped.
+     */
+    fun loadQueuedMessages(sessionId: String): ChatResult<List<QueuedChatMessage>> = get(
+        path = ChatApi.queueMessagesPath(sessionId),
+        parse = ChatApi::parseQueuedMessages,
+    )
+
     fun stopRun(sessionId: String): ChatResult<Unit> {
         val response = try {
             transport.post(
