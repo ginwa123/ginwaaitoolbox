@@ -42,6 +42,7 @@ import androidx.room.RoomDatabase
     entities = [
         CachedMessageEntity::class,
         ChatCursorEntity::class,
+        ChatOlderPageEntity::class,
         CachedWorkspaceEntity::class,
         CachedChatSummaryEntity::class,
         CachedAuthMeEntity::class,

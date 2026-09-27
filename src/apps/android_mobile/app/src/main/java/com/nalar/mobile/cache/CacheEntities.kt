@@ -72,6 +72,41 @@ data class ChatCursorEntity(
 )
 
 /**
+ * Where one session's *older* history starts, and whether the server said there
+ * is any above it.
+ *
+ * A second cursor, and deliberately not the tail cursor under another name. The
+ * tail cursor answers "what is newer than the newest row I hold", which is how a
+ * returning chat fetches only the delta. The older boundary answers "what is
+ * older than the oldest row I hold", which is what arms scroll-to-top. They move
+ * in opposite directions and are read out of opposite ends of a page, so one
+ * column holding both would leave whichever was written last with no way to
+ * recover the other — and the one that went missing is the one that makes a
+ * returning chat permanently unpaged rather than merely stale.
+ *
+ * Its own table for the reason [ChatCursorEntity] has one: the write cadence
+ * differs (a prepend against an append) and neither value is a property of any
+ * message row.
+ */
+@Entity(
+    tableName = "chat_older_pages",
+    primaryKeys = ["user_id", "session_id"],
+)
+data class ChatOlderPageEntity(
+    @ColumnInfo(name = "user_id") val userId: String,
+    @ColumnInfo(name = "session_id") val sessionId: String,
+    /**
+     * The server's own `next_cursor` for a *descending* page: the
+     * `created_at_nano` of the oldest row of the page that was last fetched.
+     * A page-older request seeds its cursor with it and the server answers with
+     * everything strictly older, so holding a stale one skips or repeats rows.
+     */
+    val cursor: String,
+    /** Whether the server said there is more above [cursor]. */
+    @ColumnInfo(name = "has_more") val hasMore: Boolean,
+)
+
+/**
  * One workspace row, in the order the server sent it.
  *
  * [position] is the load-bearing column. The old codec stored a JSON array, so

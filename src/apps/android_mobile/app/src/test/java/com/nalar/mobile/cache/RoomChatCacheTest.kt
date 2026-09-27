@@ -4,6 +4,7 @@ import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.nalar.mobile.chat.CachedChatMessage
 import com.nalar.mobile.chat.ChatCacheCodec
+import com.nalar.mobile.chat.ChatOlderPage
 import com.nalar.mobile.chat.RoomChatCache
 import org.json.JSONObject
 import org.junit.After
@@ -289,6 +290,64 @@ class RoomChatCacheTest {
         assertEquals("2", cache.readCursor(USER, SESSION))
     }
 
+    // --- The older page -----------------------------------------------------
+
+    @Test
+    fun theOlderPageKeepsBothTheCursorAndTheVerdict() {
+        // Half of it is not enough. A cursor with no verdict re-arms
+        // scroll-back against a transcript that is already complete; a verdict
+        // with no cursor arms a request the app cannot make.
+        cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "500", hasMore = true))
+        assertEquals(
+            ChatOlderPage(cursor = "500", hasMore = true),
+            cache.readOlderPage(USER, SESSION),
+        )
+
+        cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "500", hasMore = false))
+        assertEquals(
+            ChatOlderPage(cursor = "500", hasMore = false),
+            cache.readOlderPage(USER, SESSION),
+        )
+    }
+
+    @Test
+    fun theOlderPageIsStoredPerUserAndPerSession() {
+        cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "500", hasMore = true))
+        cache.writeOlderPage(USER, "sess_2", ChatOlderPage(cursor = "600", hasMore = true))
+        cache.writeOlderPage("user_b", SESSION, ChatOlderPage(cursor = "700", hasMore = true))
+
+        assertEquals("500", cache.readOlderPage(USER, SESSION)?.cursor)
+        assertEquals("600", cache.readOlderPage(USER, "sess_2")?.cursor)
+        assertEquals("700", cache.readOlderPage("user_b", SESSION)?.cursor)
+    }
+
+    @Test
+    fun aNullOlderPageDropsTheStoredOne() {
+        cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "500", hasMore = true))
+
+        // Reaching the start of a transcript is a fact worth keeping, and the
+        // only way to keep it is to overwrite rather than leave stale.
+        cache.writeOlderPage(USER, SESSION, null)
+
+        assertNull(cache.readOlderPage(USER, SESSION))
+    }
+
+    @Test
+    fun aBlankIdentityCannotReachAnOlderPage() {
+        cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "500", hasMore = true))
+
+        assertNull(cache.readOlderPage(null, SESSION))
+        assertNull(cache.readOlderPage("  ", SESSION))
+        assertNull(cache.readOlderPage(USER, ""))
+    }
+
+    @Test
+    fun aStoredOlderPageIsReplacedRatherThanDuplicated() {
+        repeat(3) { cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "$it", hasMore = true)) }
+
+        assertEquals("2", cache.readOlderPage(USER, SESSION)?.cursor)
+    }
+
     // --- Sign-out -----------------------------------------------------------
 
     @Test
@@ -297,6 +356,8 @@ class RoomChatCacheTest {
         cache.writeMessages("user_b", "sess_2", listOf(message("b1", 100)))
         cache.writeCursor(USER, SESSION, "500")
         cache.writeCursor("user_b", "sess_2", "500")
+        cache.writeOlderPage(USER, SESSION, ChatOlderPage(cursor = "500", hasMore = true))
+        cache.writeOlderPage("user_b", "sess_2", ChatOlderPage(cursor = "500", hasMore = true))
 
         cache.clear()
 
@@ -306,12 +367,15 @@ class RoomChatCacheTest {
         assertNull(cache.readMessages("user_b", "sess_2", 10))
         assertNull(cache.readCursor(USER, SESSION))
         assertNull(cache.readCursor("user_b", "sess_2"))
+        assertNull(cache.readOlderPage(USER, SESSION))
+        assertNull(cache.readOlderPage("user_b", "sess_2"))
     }
 
     @Test
     fun aFirstReadOnAnEmptyDatabaseIsAMissNotAFailure() {
         assertNull(cache.readMessages(USER, SESSION, 10))
         assertNull(cache.readCursor(USER, SESSION))
+        assertNull(cache.readOlderPage(USER, SESSION))
     }
 
     private companion object {

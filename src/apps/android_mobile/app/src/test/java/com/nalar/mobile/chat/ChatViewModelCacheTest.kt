@@ -766,4 +766,113 @@ class ChatViewModelCacheTest {
 
         assertEquals(before, transport.requestedPaths.size)
     }
+
+    @Test
+    fun `stopping a run clears the header's claim that it is still working`() = cacheTest { s ->
+        val stream = FakeEventStream()
+        val model = model(s.ioDispatcher, InMemoryChatCache(), FakeTransport(), stream)
+        model.openSession("sess_1")
+        s.drain()
+
+        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "half an answer"))
+        s.drain()
+        assertTrue("the header reads Working... mid-run", model.uiState.value.isStreaming)
+
+        // A stop interrupts the turn, so the turn never finishes and the frames
+        // that would normally clear the flag never come.
+        model.stopRun()
+        s.drain()
+
+        assertFalse(
+            "the app bar must not keep saying Working... after the reader stopped it",
+            model.uiState.value.isStreaming,
+        )
+        assertTrue(
+            "the placeholder must stop spinning too",
+            model.uiState.value.messages.none { it.isStreaming },
+        )
+    }
+
+    @Test
+    fun `reopening a cached chat still pages backwards`() = cacheTest { s ->
+        val transport = FakeTransport(
+            messages = page(
+                wire("m5", 500L),
+                wire("m6", 600L),
+                hasMore = true,
+                nextCursor = (nanoBase + 500L).toString(),
+            ),
+        )
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport)
+
+        model.openSession("sess_1")
+        s.drain()
+        assertTrue("a cold open arms scroll-back", model.uiState.value.hasMoreOlder)
+
+        // Leave the chat and come back. The cache now holds a tail cursor, which
+        // is what makes the second open a *warm* one -- and the case every
+        // returning user hits, because the cursor is written on the very first
+        // open.
+        model.openSession("sess_2")
+        s.drain()
+        transport.messages = page(wire("m5", 500L), wire("m6", 600L))
+        model.openSession("sess_1")
+        s.drain()
+
+        assertTrue(
+            "a warm open must not switch scroll-back off for good",
+            model.uiState.value.hasMoreOlder,
+        )
+    }
+
+    @Test
+    fun `a warm open pages from the boundary the cache remembers`() = cacheTest { s ->
+        val transport = FakeTransport(
+            messages = page(
+                wire("m5", 500L),
+                wire("m6", 600L),
+                hasMore = true,
+                nextCursor = (nanoBase + 500L).toString(),
+            ),
+        )
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport)
+        model.openSession("sess_1")
+        s.drain()
+
+        // One page back, so the boundary the app has to ask with is not just
+        // the first page's: a stale cursor from an earlier open would skip or
+        // repeat rows.
+        transport.messages = page(
+            wire("m5", 500L),
+            wire("m4", 400L, content = "older"),
+            hasMore = true,
+            nextCursor = (nanoBase + 400L).toString(),
+        )
+        model.loadOlderMessages()
+        s.drain()
+
+        model.openSession("sess_2")
+        s.drain()
+        transport.messages = page(wire("m5", 500L), wire("m6", 600L))
+        model.openSession("sess_1")
+        s.drain()
+        transport.requestedPaths.clear()
+
+        transport.messages = page(
+            wire("m3", 300L, content = "oldest"),
+            wire("m4", 400L, content = "older"),
+        )
+        model.loadOlderMessages()
+        s.drain()
+
+        assertTrue(
+            "the page must be requested descending from the remembered boundary",
+            transport.requestedPaths.messagesRequest()
+                .contains("direction=desc&cursor=${nanoBase + 400L}"),
+        )
+        assertEquals(
+            listOf("oldest", "older", "hello", "hello"),
+            model.uiState.value.messages.map { it.content },
+        )
+    }
 }

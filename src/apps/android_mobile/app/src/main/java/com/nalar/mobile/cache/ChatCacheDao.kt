@@ -66,6 +66,25 @@ abstract class ChatCacheDao {
     abstract fun deleteCursor(userId: String, sessionId: String)
 
     /**
+     * The session's older boundary, or null when none has been established.
+     *
+     * A null is a real state, not a miss: it means this app session has never
+     * seen a descending page for this chat, so there is nothing to arm
+     * scroll-to-top with. It is answered by a *full* descending load, exactly
+     * as it was before any cursor was stored.
+     */
+    @Query(
+        "SELECT * FROM chat_older_pages WHERE user_id = :userId AND session_id = :sessionId",
+    )
+    abstract fun olderPageFor(userId: String, sessionId: String): ChatOlderPageEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    abstract fun putOlderPage(row: ChatOlderPageEntity)
+
+    @Query("DELETE FROM chat_older_pages WHERE user_id = :userId AND session_id = :sessionId")
+    abstract fun deleteOlderPage(userId: String, sessionId: String)
+
+    /**
      * Drops everything past the newest [keep] rows of one session.
      *
      * The file cache was rewritten whole on every write, so its size was
@@ -120,6 +139,9 @@ abstract class ChatCacheDao {
     @Query("DELETE FROM chat_cursors")
     abstract fun deleteAllCursors()
 
+    @Query("DELETE FROM chat_older_pages")
+    abstract fun deleteAllOlderPages()
+
     /**
      * Sign-out purge, in one transaction.
      *
@@ -135,5 +157,6 @@ abstract class ChatCacheDao {
     open fun clearAll() {
         deleteAllMessages()
         deleteAllCursors()
+        deleteAllOlderPages()
     }
 }

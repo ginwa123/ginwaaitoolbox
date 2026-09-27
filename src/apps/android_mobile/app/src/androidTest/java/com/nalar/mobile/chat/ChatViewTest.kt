@@ -535,15 +535,32 @@ class ChatViewTest {
     }
 
     @Test
-    fun aRunningWorkerWithNoChunksStillShowsNoStopButton() {
-        // Pinned so the spinner is never mistaken for the streaming flag: the
-        // stop control stays on `isStreaming`, which only flips on real deltas.
+    fun aRunningWorkerWithNoChunksStillOffersToStopIt() {
+        // Reversed on purpose. This used to assert that a worker with no deltas
+        // shows *no* stop button, so the spinner could not be mistaken for the
+        // streaming flag. But the reader is not being asked to guess what the
+        // spinner means — they are being offered the one control that ends the
+        // run, and taking it away for the whole of a two-minute tool call makes
+        // it a control that disappears exactly when it is wanted. The header
+        // now answers from both signals; see `ChatStatusTest` for the mapping.
         renderScreen(
             ChatUiState(sessionId = "s", isLoading = false, isLive = true, isStreaming = false),
             isRunning = true,
         )
         compose.onNodeWithTag("chat_running_spinner").assertExists()
+        compose.onNodeWithTag("chat_stop").assertIsDisplayed()
+    }
+
+    @Test
+    fun aStoppedRunDropsBothTheStopControlAndTheLabel() {
+        // The other end of the same rule, and the one that keeps the control
+        // honest: with neither signal left there is no run to interrupt, so
+        // neither the button nor "Working…" may remain.
+        renderScreen(
+            ChatUiState(sessionId = "s", isLoading = false, isLive = true, isStreaming = false),
+        )
         compose.onNodeWithTag("chat_stop").assertDoesNotExist()
+        compose.onNodeWithText("Live").assertExists()
     }
 
     @Test

@@ -49,6 +49,41 @@ import com.nalar.mobile.ui.NalarTheme
 import kotlinx.coroutines.launch
 
 /**
+ * Whether the agent is working, from the two signals that can say so.
+ *
+ * Neither alone is right, and the gap each one leaves is the same shape — a
+ * reader told the agent is idle while it is plainly busy.
+ *
+ * - [isRunning] is the backend's own answer and it holds between turns, so it
+ *   is the one that survives a long tool run that emits no deltas at all. It
+ *   arrives over the `workers` channel, so there is a window after a send
+ *   returns and before that frame lands.
+ * - [isStreaming] is instantaneous, and so covers exactly that window — but it
+ *   drops on `chunk_final` and only returns with the next chunk, which turns a
+ *   two-minute tool call into a series of silent pauses.
+ *
+ * The disjunction is also the safe direction for both mistakes: a header that
+ * says "Working…" for a moment after a run ended costs a glance, and a header
+ * that says "Live" for a two-minute tool call is a report the reader learns to
+ * stop believing, which is the failure that actually has to be avoided.
+ */
+fun isChatWorking(isRunning: Boolean, isStreaming: Boolean): Boolean = isRunning || isStreaming
+
+/**
+ * The header's word for the run, with no queue or agent counts attached.
+ *
+ * Split out of [ChatStatusLine] so the mapping is testable without a device —
+ * which matters because this is a composable whose whole surface is a
+ * `when` over two booleans, and a one-line rule that only instrumented tests
+ * can reach is a rule that quietly stops being true.
+ */
+fun chatStatusLabel(isWorking: Boolean, isLive: Boolean): String = when {
+    isWorking -> "Working…"
+    isLive -> "Live"
+    else -> "Reconnecting…"
+}
+
+/**
  * The chat as its own destination, with the recents drawer one tap away.
  *
  * A chat is a *view*, so it gets a route rather than living in a local
@@ -92,6 +127,11 @@ fun ChatScreen(
      * turns. `state.isStreaming` is per-*delta*: it drops on `chunk_final` and
      * only returns with the next chunk, so a long tool run reads as a series of
      * separate silent pauses. This does not.
+     *
+     * It now drives the status line's word and the stop control as well as the
+     * spinner, because a header that knows a run is going and a header that
+     * will not offer to stop it are telling the reader two different things.
+     * See [isChatWorking] for how the two signals combine.
      */
     isRunning: Boolean = false,
     /**
@@ -109,6 +149,9 @@ fun ChatScreen(
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     val dismissDrawer: () -> Unit = { coroutineScope.launch { drawerState.close() } }
+    // One answer for the label and the stop control, so they can never disagree
+    // about whether there is a run to interrupt.
+    val isWorking = isChatWorking(isRunning = isRunning, isStreaming = state.isStreaming)
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -143,7 +186,7 @@ fun ChatScreen(
                             )
                             ChatStatusLine(
                                 isLive = state.isLive,
-                                isStreaming = state.isStreaming,
+                                isWorking = isWorking,
                                 queuedCount = state.queuedCount,
                                 subAgentsRunning = state.subAgentsRunning,
                                 subAgentsTotal = state.subAgentsTotal,
@@ -165,8 +208,10 @@ fun ChatScreen(
                     },
                     actions = {
                         // Only while a run is actually going, so it is never a
-                        // button that does nothing.
-                        if (state.isStreaming) {
+                        // button that does nothing — and keyed on the same
+                        // answer the status line gives, because a control that
+                        // vanishes mid tool-run is the same lie told twice.
+                        if (isWorking) {
                             IconButton(
                                 onClick = onStop,
                                 modifier = Modifier.testTag("chat_stop"),
@@ -208,7 +253,7 @@ fun ChatScreen(
 @Composable
 private fun ChatStatusLine(
     isLive: Boolean,
-    isStreaming: Boolean,
+    isWorking: Boolean,
     queuedCount: Int,
     subAgentsRunning: Int,
     subAgentsTotal: Int,
@@ -226,13 +271,7 @@ private fun ChatStatusLine(
         Spacer(Modifier.size(6.dp))
         Text(
             text = buildString {
-                append(
-                    when {
-                        isStreaming -> "Working…"
-                        isLive -> "Live"
-                        else -> "Reconnecting…"
-                    },
-                )
+                append(chatStatusLabel(isWorking = isWorking, isLive = isLive))
                 // A turn that looks like it vanished is usually still queued,
                 // and saying so is the difference between "slow" and "broken".
                 if (queuedCount > 0) append(" · $queuedCount queued")

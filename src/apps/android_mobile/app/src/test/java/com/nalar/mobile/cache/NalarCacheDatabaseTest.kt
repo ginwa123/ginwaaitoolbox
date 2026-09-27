@@ -56,6 +56,7 @@ class NalarCacheDatabaseTest {
             execSQL("DELETE FROM cached_chat_summaries")
             execSQL("DELETE FROM cached_messages")
             execSQL("DELETE FROM chat_cursors")
+            execSQL("DELETE FROM chat_older_pages")
             execSQL("DELETE FROM cached_auth_me")
         }
     }
