@@ -18,11 +18,10 @@ const wrapToolOutput = tools.wrapToolOutput;
 // ─── list_skills ───
 
 pub fn execListSkills(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
-    // Pass ctx.cwd so local skills are looked up in the session's workspace
-    // (the same directory add_skill/edit_skill/remove_skill write to), matching
-    // how those tools are invoked. Passing null here would make list_skills fall
-    // back to the server's OS-level cwd, causing local skills to be invisible.
-    const inner = skill_tools_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.cwd, ctx.environment) catch |err| {
+    // Pass ctx.cwd so local skills are looked up in the session's workspace.
+    // skills_db keys local rows by a canonicalised cwd, so a mismatch here
+    // would make local skills invisible.
+    const inner = skill_tools_mod.execute_list_skills(ctx.allocator, ctx.io, ctx.db, ctx.cwd) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "list_skills failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "list_skills", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -42,7 +41,7 @@ pub fn execUseSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     );
     defer parsed.deinit();
 
-    const inner = skill_tools_mod.execute_use_skill_to_string(ctx.allocator, ctx.io, parsed.value, ctx.environment) catch |err| {
+    const inner = skill_tools_mod.execute_use_skill_to_string(ctx.allocator, ctx.io, ctx.db, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "use_skill failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "use_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -87,7 +86,7 @@ pub fn execRemoveSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult
     };
     defer parsed.deinit();
 
-    const inner = skill_tools_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
+    const inner = skill_tools_mod.execute_remove_skill_to_string(ctx.allocator, ctx.io, ctx.db, ctx.cwd, ctx.environment, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "remove_skill failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "remove_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };
@@ -124,7 +123,7 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     // executeAddSkillToString returns a plain []const u8 (no error
     // union); errors are encoded as `error` in the inner JSON object
     // and handled below.
-    const inner = skill_tools_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value);
+    const inner = skill_tools_mod.executeAddSkillToString(ctx.allocator, ctx.io, ctx.db, ctx.cwd, ctx.environment, parsed.value);
 
     if (std.json.parseFromSlice(skill_tools_mod.AddSkillOutput, ctx.allocator, inner, .{ .allocate = .alloc_always, .ignore_unknown_fields = true })) |parsed_inner| {
         defer parsed_inner.deinit();
@@ -136,13 +135,11 @@ pub fn execAddSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
 
     const output = try wrapToolOutput(ctx.allocator, "add_skill", tc.function.arguments, true, null, inner);
 
-    // The registry entry has auto_save_skill = true → the dispatcher in
-    // handle_tool.zig reads the wrapped JSON `data` (`skill_name`/`content`
-    // keys), then saves to session_skills. We return skill_save (not used
-    // directly here, but kept for symmetry with execUseSkill's auto-save
-    // contract — both rely on the dispatcher's parsing pass over the
-    // wrapped output).
-    _ = SkillSaveInfo;
+    // No `skill_save` here: the dispatcher persists `exec_result.skill_saved`
+    // verbatim (handle_tool.zig) and re-parsing the wrapped JSON was a
+    // documented-but-never-implemented step. add_skill therefore does not
+    // snapshot into session_skills — tracked separately, not part of the
+    // skills-table move.
     return ToolExecResult{ .output = output, .output_allocated = true };
 }
 
@@ -161,7 +158,7 @@ pub fn execEditSkill(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     };
     defer parsed.deinit();
 
-    const inner = skill_tools_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.cwd, ctx.environment, parsed.value) catch |err| {
+    const inner = skill_tools_mod.executeEditSkillToString(ctx.allocator, ctx.io, ctx.db, ctx.cwd, ctx.environment, parsed.value) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "edit_skill failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "edit_skill", tc.function.arguments, false, err_msg, "");
         return ToolExecResult{ .output = output, .output_allocated = true };

@@ -79,7 +79,6 @@ function mountAppLayout(routeQuery: Record<string, string>, routePath = '/app') 
     global: {
       stubs: {
         Sidebar: SidebarStub,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         Chats: true,

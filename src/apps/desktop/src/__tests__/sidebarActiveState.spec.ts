@@ -283,7 +283,6 @@ describe('AppLayout URL-driven chat navigation', () => {
       global: {
         stubs: {
           Sidebar: true,
-          RightSidebar: true,
           GitFileViewer: true,
           SkillDetail: true,
           ChatView: true,
@@ -333,7 +332,6 @@ describe('AppLayout URL-driven chat navigation', () => {
       global: {
         stubs: {
           Sidebar: true,
-          RightSidebar: true,
           GitFileViewer: true,
           SkillDetail: true,
           ChatView: true,

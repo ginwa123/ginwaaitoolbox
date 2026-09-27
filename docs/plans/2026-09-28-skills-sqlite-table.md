@@ -176,7 +176,7 @@ section is ever wanted again is `PromptSection.requires_tool` +
 | `parseSkillFromResult` | `handle_tool.zig:424-439` | XML parser for a pre-JSON envelope, 0 callers |
 | `RightSidebar.vue` + `RightSideBarSkillList.vue` | frontend | never rendered by any component |
 | `sidebar.ts:112-148` `skillsGlobalExpanded`/`skillsLocalExpanded` | frontend | only consumer is the dead `RightSideBarSkillList` |
-| `src/models/session_skill.zig` | backend | **committed syntactically broken** — the `pub const SessionSkill = struct {` line is missing, so lines 21-28 are struct fields at file scope. Only reachable from the orphan `src/models/models_test.zig:26`, which no build target references — so it never compiles today. A landmine, not a build blocker. |
+| `src/models/session_skill.zig` | backend | Looks broken (the `pub const SessionSkill = struct {` line is missing, so lines 21-28 read as struct fields at file scope) but is **correct** — `src/models/*.zig` uses the file-level-struct convention (fields at file scope + `const Self = @This()`), same as `agent_knowledge.zig`. Verified with `zig test`. No action needed. |
 
 ## 4. Target design
 
@@ -425,7 +425,7 @@ Ordered so every task is independently testable and reviewable.
 
 ### W0 — Landmine clearance (small, do first)
 
-1. Fix `src/models/session_skill.zig` (re-add the missing `pub const SessionSkill = struct {`) or delete it. Rationale: W4 adds `src/models/skill.zig`; if anyone ever wires `models_test.zig` into a build target, both files break at once and the diagnosis is confusing.
+1. ~~Fix `src/models/session_skill.zig`~~ — **not needed, the original diagnosis was wrong.** See §3.7: the file uses the repo's file-level-struct convention and compiles clean.
 2. Delete the dead `auto_save_skill` flag and its stale comment at `tools_exec_skills.zig:139-146`, and delete `parseSkillFromResult` (`handle_tool.zig:424-439`). Rationale: this plan rewrites the exec wrappers; leaving a lie in a file being edited invites a wrong "fix" later.
    - *Optional, separate:* make `add_skill`/`edit_skill` actually return `.skill_save` so the `session_skills` snapshot is not stale after an edit. This is a real bug but is **not** caused by the table move — flag it, don't silently absorb it.
 
@@ -578,6 +578,38 @@ first drafted — no `Skill`/`SkillDetail` type change at all, only additive `ta
 and the `deleteSkill(..., { cwd })` plumbing. The `path` field stays on the wire,
 sourced from `source_path`; the frontend already treats it as optional and `v-if`-
 guards every render site, so an empty value degrades silently rather than breaking.
+
+## 9. What implementation changed about this plan
+
+Recorded after the fact so the next reader is not misled by §5.
+
+**`zig build test` can report green from a stale build cache.** The first
+verification run after W0–W4 reported `3658/3658 passed` while the test module
+did not actually compile — the old skill tests contained type errors against the
+new signatures. The cache short-circuited the compile step. A `zig build test`
+that prints `compile test … success 4s` deserves suspicion; the reliable check is
+to make a deliberate type error and confirm the suite notices, or to clear the
+cache. This bit twice: the same trap hid a real `main.zig` compile error
+(`ai_mod.skills_db` was exported from `root.zig`, but `main.zig` reaches the
+world through `ai_workflow/tui/mod.zig`).
+
+**The importer's tests belong in Zig, not the functional harness.** §W6 proposed
+"add a `SKILL.MD`, delete the row, confirm the importer re-adds it with its
+tags". That is not expressible against the harness: the `harness` fixture boots
+the server in its fixture, *before* the test body runs, and the importer is
+deliberately boot-time-only. Rather than weaken the test, the fix was to give
+the harness a `seed_home=` parameter (use a caller-supplied directory as the
+shadowed HOME, still gated by `is_safe_tmp`), so "write the file, then boot,
+then assert it is listed" is expressible. Importer coverage then lives in both
+places where it belongs: `skills_db.zig` for the SQL-level contract, and
+`memories_skills_test.py` for the end-to-end boot behaviour.
+
+**A `defer` inside an `if` block fires at BLOCK exit, not function exit.** The
+first `listSkills` implementation freed the `"0"`/`"1"` bind string at the end of
+its `if (is_global)` block and then handed the freed pointer to `db.query`. It
+segfaulted only on the `is_global = true` path, which is why the
+`is_global = null` tests passed and the crash looked unrelated. The bind is now
+declared at function scope with a comment saying why.
 
 **Residual risk after these decisions** — none of the three traps in §4.5 are
 affected: empty-slice→NULL still applies (and now also to `tags`, which is the most

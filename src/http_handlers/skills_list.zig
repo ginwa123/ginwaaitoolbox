@@ -1,45 +1,43 @@
-//! `GET /api/skills` — list all skills from global and local dirs.
+//! `GET /api/skills` — list all skills from the `skills` table.
 //!
-//! Global skills come from `~/.config/nalar/skills/` (or
-//! `XDG_CONFIG_HOME`); local skills come from `{cwd}/.nalar/skills/`.
+//! Global rows (`is_global = 1`) and the workspace's local rows
+//! (`is_global = 0 AND cwd = ?`) are returned in the same
+//! `{global_skills, local_skills, cwd}` envelope the filesystem era used, so
+//! the frontend is unchanged and `list_skills`' tool payload keeps its shape.
 //!
-//! Layered as `useCase` (resolve singleton + read skills + serialize
-//! to JSON) and a thin handler that maps errors to status codes.
+//! Each entry's `path` is the row's `source_path` — provenance, and empty for
+//! skills the agent created.
+//!
+//! Layered as `useCase` (resolve DB + read + serialize) and a thin handler that
+//! maps errors to status codes.
 
 const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const list_skills_mod = nalarcore.skill_tools;
+const sqlite = nalarcore.sqlite;
 
-/// Domain-level error set for `useCase`. The `listAllSkills` +
-/// `toJson` pipeline can fail with various Io / allocation errors
-/// (OutOfMemory, Canceled, …) — we collapse all of these into the
-/// single `Internal` variant since they all map to the same 500
-/// status and the caller doesn't need to distinguish them.
+/// Domain-level error set for `useCase`.
 pub const SkillsListError = error{
     Internal,
 };
 
-// =====================================================================
+/// =====================================================================
 // Use case
-// =====================================================================
+/// =====================================================================
 
 fn useCase(
     allocator: std.mem.Allocator,
     io: std.Io,
+    db: *sqlite.SqliteBackend,
     cwd_param: ?[]const u8,
 ) SkillsListError![]const u8 {
-    const di = nalarcore.getSingleton() catch return error.Internal;
-    const environment = di.environment;
-
-    // List all skills. Catch the broader set of Io/alloc errors and
-    // collapse them to `error.Internal` so the declared error set
-    // matches the body's actual error surface.
-    const data = list_skills_mod.listAllSkills(allocator, io, cwd_param, environment) catch return error.Internal;
+    // The listing path can fail with Io / Db / alloc errors (OutOfMemory,
+    // Canceled, Constraint, …) — all of which map to the same 500, so they
+    // collapse into one variant rather than widening the error set.
+    const data = list_skills_mod.listAllSkills(allocator, io, db, cwd_param) catch return error.Internal;
     errdefer list_skills_mod.freeSkillsListData(allocator, data);
 
-    // Convert to JSON. `toJson` returns `error_set![]const u8` —
-    // collapse any internal errors to `error.Internal`.
     return list_skills_mod.toJson(allocator, data) catch return error.Internal;
 }
 
@@ -54,8 +52,9 @@ pub fn skillsListHandler(
 ) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
     const cwd_param = req.query.get("cwd");
+    const di = try nalarcore.getSingleton();
 
-    const json_response = useCase(allocator, ctx.io, cwd_param) catch |err| {
+    const json_response = useCase(allocator, ctx.io, di.db, cwd_param) catch |err| {
         const status: u16 = switch (err) {
             error.Internal => 500,
         };

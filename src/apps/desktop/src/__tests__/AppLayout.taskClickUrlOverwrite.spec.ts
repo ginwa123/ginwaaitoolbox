@@ -135,7 +135,6 @@ function mountAppLayout(routeQuery: Record<string, string> = {}) {
     global: {
       stubs: {
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         Chats: true,
@@ -316,7 +315,6 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
       global: {
         stubs: {
           Sidebar: true,
-          RightSidebar: true,
           GitFileViewer: true,
           SkillDetail: true,
           Chats: true,
@@ -423,7 +421,6 @@ describe('AppLayout — handleSelectTask does not get its URL overwritten by the
       global: {
         stubs: {
           Sidebar: true,
-          RightSidebar: true,
           GitFileViewer: true,
           SkillDetail: true,
           Chats: true,

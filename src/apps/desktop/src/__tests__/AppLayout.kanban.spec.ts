@@ -151,7 +151,6 @@ function mountAppLayout(workspaces: Workspace[] = []) {
         // Stub the heavy / unrelated children to keep the test
         // focused on main-content routing.
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         ChatView: true,

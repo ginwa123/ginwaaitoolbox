@@ -511,33 +511,40 @@ export function parseSearch(data: unknown): ParsedSearch {
   }
 }
 
+export interface ParsedSkill {
+  name: string
+  description: string
+  /**
+   * Provenance only, and nullable: a skill the agent created in the
+   * `skills` table has no file behind it.
+   */
+  path: string | null
+  /** Frontmatter tags, '||'-joined; '' when the skill has none. */
+  tags: string
+}
+
 export interface ParsedListSkills {
-  globalSkills: Array<{ name: string; description: string; path: string }>
-  localSkills: Array<{ name: string; description: string; path: string }>
+  globalSkills: ParsedSkill[]
+  localSkills: ParsedSkill[]
   totalCount: number
 }
 
-interface SkillBlock {
-  name: string
-  description: string
-  path: string
-}
-
-function parseSkillRecord(item: unknown): SkillBlock | null {
+function parseSkillRecord(item: unknown): ParsedSkill | null {
   const r = asRecord(item)
   const name = strField(r, 'name')
   if (!name) return null
   return {
     name,
     description: strField(r, 'description'),
-    path: strField(r, 'path'),
+    path: strOrNullField(r, 'path'),
+    tags: strField(r, 'tags'),
   }
 }
 
 export function parseListSkills(data: unknown): ParsedListSkills {
   const o = unwrapDataRecord(data)
-  const globalSkills: SkillBlock[] = []
-  const localSkills: SkillBlock[] = []
+  const globalSkills: ParsedSkill[] = []
+  const localSkills: ParsedSkill[] = []
   const globalRaw = Array.isArray(o.global_skills) ? o.global_skills : []
   for (const item of globalRaw) {
     const block = parseSkillRecord(item)

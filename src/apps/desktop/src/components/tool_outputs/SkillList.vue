@@ -6,8 +6,13 @@ const props = defineProps<{
   selectedSkillName: string | null
 }>()
 
-const globalSkills = ref<Skill[]>([])
-const localSkills = ref<Skill[]>([])
+/** A skill plus the split tags the template renders as chips. */
+interface SkillView extends Skill {
+  tagList: string[]
+}
+
+const globalSkills = ref<SkillView[]>([])
+const localSkills = ref<SkillView[]>([])
 const isLoading = ref(true)
 const error = ref<string | null>(null)
 
@@ -15,13 +20,24 @@ const emit = defineEmits<{
   selectSkill: [skillName: string]
 }>()
 
+// Tags arrive '||'-joined (the agent_memories convention); '' means the
+// skill's frontmatter carried no tags line, not a tag with no name.
+const withTags = (skills: Skill[]): SkillView[] =>
+  skills.map(({ tags, ...skill }) => ({
+    ...skill,
+    tagList: (tags ?? '')
+      .split('||')
+      .map((t) => t.trim())
+      .filter((t) => t !== ''),
+  }))
+
 const loadSkills = async () => {
   isLoading.value = true
   error.value = null
   try {
     const result = await getSkills()
-    globalSkills.value = result.global_skills || []
-    localSkills.value = result.local_skills || []
+    globalSkills.value = withTags(result.global_skills || [])
+    localSkills.value = withTags(result.local_skills || [])
   } catch (err) {
     error.value = err instanceof Error ? err.message : 'Failed to load skills'
     console.error('Failed to load skills:', err)
@@ -96,6 +112,19 @@ defineExpose({
               <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
                 {{ skill.description }}
               </p>
+              <div
+                v-if="skill.tagList.length > 0"
+                class="flex flex-wrap gap-1 mt-2"
+                data-testid="skill-tags"
+              >
+                <span
+                  v-for="tag in skill.tagList"
+                  :key="tag"
+                  class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.65rem]"
+                >
+                  {{ tag }}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -124,6 +153,19 @@ defineExpose({
               <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
                 {{ skill.description }}
               </p>
+              <div
+                v-if="skill.tagList.length > 0"
+                class="flex flex-wrap gap-1 mt-2"
+                data-testid="skill-tags"
+              >
+                <span
+                  v-for="tag in skill.tagList"
+                  :key="tag"
+                  class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.65rem]"
+                >
+                  {{ tag }}
+                </span>
+              </div>
               <p v-if="skill.path" class="text-xs mt-2 truncate" style="color: var(--semantic-text-dim);">
                 {{ skill.path }}
               </p>

@@ -121,7 +121,6 @@ const makeWorkspace = (): Workspace => ({
 // Shared stub config — same pattern as AppLayout.taskClickUrlOverwrite.spec.ts.
 const STUB_CONFIG = {
   Sidebar: true,
-  RightSidebar: true,
   GitFileViewer: true,
   SkillDetail: true,
   Chats: true,

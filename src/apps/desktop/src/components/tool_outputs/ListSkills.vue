@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import ToolParameters from './_shared/ToolParameters.vue'
-import { normalizeToolContent, parseListSkills } from './_shared/toolOutputParser'
+import { normalizeToolContent, parseListSkills, type ParsedSkill } from './_shared/toolOutputParser'
 
-interface SkillInfo {
-  name: string
-  description: string
-  path: string
+/** The shared parser shape plus the split tags the template renders. */
+interface SkillRow extends Omit<ParsedSkill, 'tags'> {
+  tagList: string[]
 }
 
 const props = defineProps<{
@@ -23,11 +22,22 @@ const isExpanded = ref(props.expanded ?? false)
 const normalized = computed(() => normalizeToolContent(props.content))
 const parsed = computed(() => parseListSkills(normalized.value.data))
 
+// Tags arrive '||'-joined (the agent_memories convention); '' means the
+// skill's frontmatter carried no tags line, not a tag with no name.
+const withTags = (skills: ParsedSkill[]): SkillRow[] =>
+  skills.map(({ tags, ...skill }) => ({
+    ...skill,
+    tagList: tags
+      .split('||')
+      .map((t) => t.trim())
+      .filter((t) => t !== ''),
+  }))
+
 // Parse global skills
-const globalSkills = computed((): SkillInfo[] => parsed.value.globalSkills)
+const globalSkills = computed(() => withTags(parsed.value.globalSkills))
 
 // Parse local skills
-const localSkills = computed((): SkillInfo[] => parsed.value.localSkills)
+const localSkills = computed(() => withTags(parsed.value.localSkills))
 
 // Total count
 const totalCount = computed(() => parsed.value.totalCount)
@@ -100,6 +110,19 @@ const copySkillName = async (e: Event, name: string) => {
               <p class="text-[0.65rem] text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5">
                 {{ skill.description }}
               </p>
+              <div
+                v-if="skill.tagList.length > 0"
+                class="flex flex-wrap gap-1 mt-1"
+                data-testid="list-skill-tags"
+              >
+                <span
+                  v-for="tag in skill.tagList"
+                  :key="tag"
+                  class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.6rem]"
+                >
+                  {{ tag }}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -131,6 +154,19 @@ const copySkillName = async (e: Event, name: string) => {
               <p class="text-[0.65rem] text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5">
                 {{ skill.description }}
               </p>
+              <div
+                v-if="skill.tagList.length > 0"
+                class="flex flex-wrap gap-1 mt-1"
+                data-testid="list-skill-tags"
+              >
+                <span
+                  v-for="tag in skill.tagList"
+                  :key="tag"
+                  class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.6rem]"
+                >
+                  {{ tag }}
+                </span>
+              </div>
               <p v-if="skill.path" class="text-[0.6rem] text-[var(--semantic-text-dim)] mt-0.5 truncate">
                 {{ skill.path }}
               </p>

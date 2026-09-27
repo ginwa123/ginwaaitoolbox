@@ -87,7 +87,6 @@ function mountAppLayoutForChatTest() {
     global: {
       stubs: {
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         // STUB ChatView with a stub-active flag so the test can

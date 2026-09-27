@@ -15,7 +15,7 @@ describe('UseSkill.vue — in-progress', () => {
     const wrapper = mount(UseSkill, {
       props: {
         content: null,
-        parameters: JSON.stringify({ path: '/skills/my-skill/SKILL.MD', skill_name: 'my-skill' }),
+        parameters: JSON.stringify({ skill_name: 'my-skill' }),
       } as never,
     })
     const html = wrapper.html()
@@ -27,14 +27,14 @@ describe('UseSkill.vue — in-progress', () => {
     const running = mount(UseSkill, {
       props: {
         content: null,
-        parameters: JSON.stringify({ path: '/skills/my-skill/SKILL.MD', skill_name: 'my-skill' }),
+        parameters: JSON.stringify({ skill_name: 'my-skill' }),
       } as never,
     })
     expect(running.find('[data-testid="use-skill-running"]').exists()).toBe(true)
     const done = mount(UseSkill, {
       props: {
         content: loadedPayload,
-        parameters: JSON.stringify({ path: '/skills/my-skill/SKILL.MD', skill_name: 'my-skill' }),
+        parameters: JSON.stringify({ skill_name: 'my-skill' }),
       } as never,
     })
     expect(done.find('[data-testid="use-skill-running"]').exists()).toBe(false)
@@ -45,7 +45,7 @@ describe('UseSkill.vue — in-progress', () => {
       props: {
         content: loadedPayload,
         expanded: true,
-        parameters: JSON.stringify({ path: '/skills/my-skill/SKILL.MD' }),
+        parameters: JSON.stringify({ skill_name: 'my-skill' }),
       } as never,
     })
     const html = wrapper.html()
@@ -61,14 +61,14 @@ describe('UseSkill.vue — in-progress', () => {
           skill_name: '',
           content: '',
           loaded: false,
-          error: 'Failed to open file "missing/SKILL.MD": FileNotFound',
+          error: 'Skill "missing" not found',
           available_skills: null,
         },
         expanded: true,
       } as never,
     })
     const html = wrapper.html()
-    expect(html).toContain('Failed to open file')
+    expect(html).toContain('not found')
     expect(html).toContain('✗')
   })
 })

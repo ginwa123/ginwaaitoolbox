@@ -130,7 +130,6 @@ function mountAppLayout(
       stubs: {
         // Stub Sidebar so it doesn't try to render / fetch data
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         Chats: true,

@@ -897,6 +897,7 @@ fn dupeAgentTools(allocator: std.mem.Allocator, src: []tool_models.AgentTool) ![
 }
 
 pub const skill_mod = @import("modules/agent/tools/skills.zig");
+pub const skills_db = @import("agentic_loop/skills_db.zig");
 pub const add_skill = skill_tools;
 pub const edit_skill = skill_tools;
 pub const remove_agent = @import("modules/agent/tools/remove_agent.zig");

@@ -225,6 +225,15 @@ pub fn main(init: std.process.Init) !void {
     try migration.registerAllMigrations(&migrationManager);
     try migrationManager.runMigrations();
 
+    // Skills are rows now, not files. One INSERT OR IGNORE sweep at boot so
+    // an existing user — or a fresh clone of a repo that tracks
+    // .nalar/skills/ — keeps every skill they had. It never overwrites, so an
+    // agent edit is not reverted by a restart. Failure is logged, not fatal:
+    // skills are optional and the table is already empty-and-valid.
+    ai_mod.skills_db.importFromDisk(allocator, io, &dbSqlite, environment, null) catch |err| {
+        std.log.warn("skills import from disk failed: {s}", .{@errorName(err)});
+    };
+
     const tmp_path = environment.get("TMPDIR") orelse
         environment.get("TEMP") orelse
         environment.get("TMP") orelse

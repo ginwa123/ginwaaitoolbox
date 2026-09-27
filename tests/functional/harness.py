@@ -256,6 +256,7 @@ class FunctionalHarness:
         ready_timeout_s: float = 30.0,
         stub_llm_profile: bool = False,
         extra_args: Sequence[str] = (),
+        seed_home: Path | None = None,
     ) -> "FunctionalHarness":
         """Boot a fresh nalar binary against an isolated tmpdir HOME.
 
@@ -331,8 +332,15 @@ class FunctionalHarness:
         #    with tests that want a deterministic value.
         chosen_port = _find_free_port(port)
 
-        # 3. mkdtemp. Atomic, fresh, mode 0700.
-        temp_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+        # 3. mkdtemp. Atomic, fresh, mode 0700. A caller-supplied seed_home
+        #    takes its place so the directory can be populated before boot.
+        temp_dir = (
+            Path(seed_home)
+            if seed_home is not None
+            else Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+        )
+        if seed_home is not None:
+            temp_dir.mkdir(parents=True, exist_ok=True)
 
         # 4. Validate BEFORE shadowing HOME. If this fails, we abort
         #    and the tempdir is leaked. Leaking a tempdir is preferable

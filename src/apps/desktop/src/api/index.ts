@@ -2927,6 +2927,18 @@ export async function moveDesignElementToPage(
 export interface Skill {
   name: string
   description: string
+  /**
+   * Frontmatter tags, '||'-joined (same convention as agent memories).
+   * '' when the skill carries no `tags:` line. Optional here because an
+   * older payload may omit the key entirely.
+   */
+  tags?: string
+  /**
+   * Provenance only — the file the row was imported from, NOT a handle
+   * the UI can open or hand back to the backend. Empty string for a skill
+   * the agent created in the `skills` table, which has no file at all, so
+   * every render site must treat it as optional.
+   */
   path?: string
 }
 

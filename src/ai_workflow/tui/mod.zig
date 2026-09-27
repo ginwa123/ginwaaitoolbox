@@ -9,6 +9,10 @@
 pub const nalarcore = @import("nalarcore");
 pub const models = @import("../../agentic_loop/models.zig");
 pub const http_handlers = @import("../../http_handlers/mod.zig");
+// Storage layer for the `skills` table. The boot-time importer in main.zig
+// goes through this module, so the export has to live here rather than only
+// on root.zig.
+pub const skills_db = @import("../../agentic_loop/skills_db.zig");
 pub const ai_workflow = @import("../../agentic_loop/workflow.zig");
 pub const llm_history = @import("../../agentic_loop/llm_history.zig");
 pub const on_event_sent = @import("../../agentic_loop/on_event_sent.zig");

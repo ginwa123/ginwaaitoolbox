@@ -65,6 +65,9 @@ const SKILL_FILE_NAME = "SKILL.MD";
 pub const SkillInfo = struct {
     name: []const u8,
     description: []const u8,
+    /// `'||'`-joined tags from the frontmatter. Empty slice when the
+    /// frontmatter has no `tags:` line — which is most of them.
+    tags: []const u8,
     path: []const u8,
 };
 
@@ -72,6 +75,9 @@ pub const SkillInfo = struct {
 pub const ParsedFrontmatter = struct {
     name: []const u8,
     description: []const u8,
+    /// `'||'`-joined. Always allocated (empty when absent) so every caller
+    /// can free it unconditionally alongside name/description.
+    tags: []const u8,
 };
 
 /// Parse YAML frontmatter from skill file content
@@ -82,8 +88,12 @@ pub const ParsedFrontmatter = struct {
 /// ---
 /// # Skill content follows...
 ///
-/// Returns allocated ParsedFrontmatter with owned name and description strings
-/// Caller owns the returned memory and must free name and description.
+/// Also parses an optional `tags:` line, in either the bracketed form the
+/// skill prompt mandates (`tags: [workflow, api]`) or a bare comma list. The
+/// result is `'||'`-joined, mirroring `agent_memories.tags`.
+///
+/// Returns allocated ParsedFrontmatter with owned name, description and tags
+/// strings. Caller owns the returned memory — use `freeParsedFrontmatter`.
 pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?ParsedFrontmatter {
     // Find the first --- marker
     const first_newline = std.mem.indexOf(u8, content, "\n") orelse return null;
@@ -93,9 +103,10 @@ pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?
     const closing_marker = std.mem.indexOf(u8, after_first_line, "\n---") orelse return null;
     const frontmatter_content = after_first_line[0..closing_marker];
 
-    // Parse name and description from frontmatter
+    // Parse name, description and tags from frontmatter
     var name: ?[]const u8 = null;
     var description: ?[]const u8 = null;
+    var tags: ?[]const u8 = null;
 
     var line_start: usize = 0;
     while (line_start < frontmatter_content.len) {
@@ -107,7 +118,7 @@ pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?
             continue;
         }
 
-        // Parse "name:" or "description:" lines
+        // Parse "name:", "description:" or "tags:" lines
         if (std.mem.startsWith(u8, line, "name:")) {
             const value = std.mem.trim(u8, line[5..], " \t");
             // Remove quotes if present, then allocate
@@ -124,23 +135,57 @@ pub fn parseYamlFrontmatter(allocator: std.mem.Allocator, content: []const u8) ?
             } else {
                 description = allocator.dupe(u8, value) catch return null;
             }
+        } else if (std.mem.startsWith(u8, line, "tags:")) {
+            tags = parseTagsValue(allocator, std.mem.trim(u8, line[5..], " \t")) catch return null;
         }
 
         line_start += line_end + 1;
     }
     const parsed_name = name orelse return null;
     const parsed_desc = description orelse "";
+    // Always allocated, even when absent, so callers can free all three
+    // unconditionally.
+    const parsed_tags = tags orelse (allocator.dupe(u8, "") catch return null);
 
     return .{
         .name = parsed_name,
         .description = parsed_desc,
+        .tags = parsed_tags,
     };
 }
 
+/// Normalise a raw `tags:` value to the `'||'`-joined stored form.
+///
+/// Accepts the bracketed list the skill prompt mandates (`[a, b]`), a bare
+/// comma list (`a, b`), and already-quoted values. Empty in, empty out.
+fn parseTagsValue(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+    var value = std.mem.trim(u8, raw, " \t");
+    if (value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']') {
+        value = value[1 .. value.len - 1];
+    }
+    if (value.len >= 2 and ((value[0] == '"' and value[value.len - 1] == '"') or (value[0] == '\'' and value[value.len - 1] == '\''))) {
+        value = value[1 .. value.len - 1];
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    var it = std.mem.splitScalar(u8, value, ',');
+    while (it.next()) |part| {
+        const tag = std.mem.trim(u8, part, " \t\"");
+        if (tag.len == 0) continue;
+        if (out.items.len > 0) try out.appendSlice(allocator, "||");
+        try out.appendSlice(allocator, tag);
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
 /// Free a ParsedFrontmatter allocated by parseYamlFrontmatter
-fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
+pub fn freeParsedFrontmatter(allocator: std.mem.Allocator, fm: ParsedFrontmatter) void {
     allocator.free(fm.name);
     allocator.free(fm.description);
+    allocator.free(fm.tags);
 }
 
 /// Get the local skills directory path (.nalar/skills/)
@@ -450,9 +495,12 @@ pub fn list_skills_from_dir(allocator: std.mem.Allocator, io: std.Io) []SkillInf
                 allocator.free(content);
                 continue;
             };
+            // parsed.{name,description,tags} move into skills_list below, so
+            // only path_copy is still ours to free on the failure path.
             skills_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
+                .tags = parsed.tags,
                 .path = path_copy,
             }) catch {
                 freeParsedFrontmatter(allocator, parsed);
@@ -460,7 +508,6 @@ pub fn list_skills_from_dir(allocator: std.mem.Allocator, io: std.Io) []SkillInf
                 allocator.free(content);
                 continue;
             };
-            // Note: parsed.name and parsed.description are now owned by skills_list
             allocator.free(content);
         } else {
             allocator.free(content);
@@ -475,6 +522,7 @@ pub fn free_skills_list(allocator: std.mem.Allocator, skills_list: []const Skill
     for (skills_list) |skill| {
         allocator.free(skill.name);
         allocator.free(skill.description);
+        allocator.free(skill.tags);
         allocator.free(skill.path);
     }
     allocator.free(skills_list);
@@ -594,9 +642,12 @@ pub fn list_skills_from_dir_path(allocator: std.mem.Allocator, io: std.Io, dir_p
                 allocator.free(content);
                 continue;
             };
+            // parsed.{name,description,tags} move into skills_list below, so
+            // only path_copy is still ours to free on the failure path.
             skills_list.append(allocator, .{
                 .name = parsed.name,
                 .description = parsed.description,
+                .tags = parsed.tags,
                 .path = path_copy,
             }) catch {
                 freeParsedFrontmatter(allocator, parsed);

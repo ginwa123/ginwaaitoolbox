@@ -422,22 +422,6 @@ fn unknownToolMessage(allocator: std.mem.Allocator, name: []const u8) ![]const u
 // HELPER FUNCTIONS - XML Parsing
 // ============================================================================
 
-fn parseSkillFromResult(result: []const u8) ?struct { name: []const u8, content: []const u8 } {
-    if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
-
-    const name_start = std.mem.indexOf(u8, result, "<skill_name>") orelse return null;
-    const name_begin = name_start + "<skill_name>".len;
-    const name_end = std.mem.indexOf(u8, result[name_begin..], "</skill_name>") orelse return null;
-    const skill_name = result[name_begin .. name_begin + name_end];
-
-    const content_start = std.mem.indexOf(u8, result, "<content>") orelse return null;
-    const content_begin = content_start + "<content>".len;
-    const content_end = std.mem.indexOf(u8, result[content_begin..], "</content>") orelse return null;
-    const skill_content = result[content_begin .. content_begin + content_end];
-
-    return .{ .name = skill_name, .content = skill_content };
-}
-
 fn parseAgentFromResult(result: []const u8) ?[]const u8 {
     if (std.mem.indexOf(u8, result, "<loaded>true</loaded>") == null) return null;
 

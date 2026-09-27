@@ -130,7 +130,6 @@ function mountApp(): VueWrapper {
           props: ['chatId', 'chatName', 'type', 'cwd', 'taskId', 'taskName', 'projectName', 'showHeader'],
         },
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         Chats: true,

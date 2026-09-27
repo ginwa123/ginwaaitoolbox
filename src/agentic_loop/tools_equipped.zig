@@ -146,7 +146,6 @@ pub const ToolInfo = struct {
     name: []const u8,
     exec: ToolExecFunc,
     tool_def: AgentTool,
-    auto_save_skill: bool = false,
     auto_save_agent: bool = false,
 };
 
@@ -200,10 +199,10 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 
         // === SKILL MANAGEMENT ===
         .{ .name = "list_skills", .exec = tools.execListSkills, .tool_def = list_skills_mod.list_skills_tool },
-        .{ .name = "use_skill", .exec = tools.execUseSkill, .tool_def = use_skill_mod.use_skill_tool, .auto_save_skill = true },
+        .{ .name = "use_skill", .exec = tools.execUseSkill, .tool_def = use_skill_mod.use_skill_tool },
         .{ .name = "remove_skill", .exec = tools.execRemoveSkill, .tool_def = remove_skill_mod.remove_skill_tool },
 
-        .{ .name = "add_skill", .exec = tools.execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
+        .{ .name = "add_skill", .exec = tools.execAddSkill, .tool_def = add_skill_mod.add_skill_tool },
         .{ .name = "edit_skill", .exec = tools.execEditSkill, .tool_def = edit_skill_mod.edit_skill_tool },
 
         // === MEMORY TOOLS ===

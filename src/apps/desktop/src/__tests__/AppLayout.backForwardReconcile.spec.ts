@@ -87,7 +87,6 @@ const makeWorkspace = (): Workspace => ({
 
 const STUB_CONFIG = {
   Sidebar: true,
-  RightSidebar: true,
   GitFileViewer: true,
   SkillDetail: true,
   SettingsView: true,

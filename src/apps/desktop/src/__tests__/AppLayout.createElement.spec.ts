@@ -117,7 +117,6 @@ function mountAppLayout(): VueWrapper {
       provide: { processingState: ref({}) },
       stubs: {
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         SettingsView: true,

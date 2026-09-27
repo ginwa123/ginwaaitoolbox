@@ -356,7 +356,9 @@ describe('parseSearch', () => {
 describe('parseListSkills', () => {
   it('parses global + local skill blocks', () => {
     const r = parseListSkills({
-      global_skills: [{ name: 'auth', description: 'handles auth', path: '/g.md' }],
+      global_skills: [
+        { name: 'auth', description: 'handles auth', path: '/g.md', tags: 'api||auth' },
+      ],
       local_skills: [{ name: 'x', description: '', path: '' }],
     })
     expect(r.totalCount).toBe(2)
@@ -365,8 +367,29 @@ describe('parseListSkills', () => {
       name: 'auth',
       description: 'handles auth',
       path: '/g.md',
+      tags: 'api||auth',
     })
     expect(r.localSkills).toHaveLength(1)
+  })
+  it('keeps a skill with empty path and empty tags, defaulting the missing ones', () => {
+    // A skill the agent created in the `skills` table has no file, so
+    // the wire sends path: '' and tags: '' rather than omitting them.
+    const r = parseListSkills({
+      global_skills: [{ name: 'fresh', description: '', path: '', tags: '' }],
+      local_skills: [{ name: 'legacy' }],
+    })
+    expect(r.globalSkills[0]).toEqual({
+      name: 'fresh',
+      description: '',
+      path: '',
+      tags: '',
+    })
+    expect(r.localSkills[0]).toEqual({
+      name: 'legacy',
+      description: '',
+      path: null,
+      tags: '',
+    })
   })
   it('returns totalCount=0 for empty content', () => {
     expect(parseListSkills({}).totalCount).toBe(0)

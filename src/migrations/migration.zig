@@ -2004,6 +2004,12 @@ pub const allMigrations: []const Migration = &.{
     // workspaces/sessions/worker row to the shared `user_system` sentinel.
     // Plan: docs/plans/2026-09-25-per-user-isolation.md (W0).
     .{ .version = Migration093AddOwnerColumns.version, .name = Migration093AddOwnerColumns.name, .up = Migration093AddOwnerColumns.up },
+    // Migration 094 — the `skills` table: skills stop being files and
+    // become rows, so the global list is a SELECT and `use_skill` takes a
+    // name instead of a path. Disk survives as a one-time importer
+    // (INSERT OR IGNORE) plus a best-effort mirror on write.
+    // Plan: docs/plans/2026-09-28-skills-sqlite-table.md (W1).
+    .{ .version = Migration094CreateSkills.version, .name = Migration094CreateSkills.name, .up = Migration094CreateSkills.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -6044,4 +6050,132 @@ test "Migration093 is registered in allMigrations" {
         if (m.version == Migration093AddOwnerColumns.version) return;
     }
     return error.Migration093NotRegistered;
+}
+
+// ============================================================================
+// Migration 094 — the `skills` table
+// ============================================================================
+//
+// A skill used to BE a file: `<skills-root>/<name>/SKILL.MD`, with the
+// filesystem path as the handle the LLM passed to `use_skill`. The table makes
+// the row the source of truth; disk becomes a one-time importer
+// (`importFromDisk`, INSERT OR IGNORE) plus a best-effort mirror on write, so a
+// repo-committed `.nalar/skills/` still works on a fresh machine.
+//
+// Two design points worth keeping in mind when editing this schema:
+//
+//   - `is_global`, not a `scope` TEXT enum. One concept from the SQL to the
+//     JSON to the TypeScript, so there is no derivation layer to get wrong. A
+//     row is fully addressed by `(is_global, cwd, name)`: `is_global = 1`
+//     always carries `cwd = ''`, `is_global = 0` carries a canonical abspath.
+//     That invariant is enforced in `skills_db.upsertSkill`, not here — the
+//     project leaves `PRAGMA foreign_keys` off, so a CHECK would be the only
+//     guard and this codebase does not use them here.
+//
+//   - `tags` is `'||'`-joined, mirroring `agent_memories.tags`. The frontmatter
+//     already carried a `tags:` line and the agent's system prompt already
+//     tells it to consult skills by tag; nothing parsed it before. The
+//     consumer is the LLM — `list_skills` output IS the tool payload, so tags
+//     now reach the model.
+//
+// NOT NULL DEFAULT '' is deliberate on every text column, but it is NOT
+// sufficient on its own: `SqliteBackend.exec` binds an empty slice as SQL NULL
+// (Migration 079's `content` and Migration 092's `config_json` both broke
+// exactly this way), so every write site wraps free text in `COALESCE(?, '')`.
+// See skills_db.zig.
+//
+// Plan: docs/plans/2026-09-28-skills-sqlite-table.md (W1)
+pub const Migration094CreateSkills = struct {
+    pub const version: u32 = 94;
+    pub const name = "create_skills";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // One statement per db.exec — sqlite3_prepare_v2 compiles only the
+        // first statement in the string.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skills (
+            \\    id          TEXT PRIMARY KEY,
+            \\    name        TEXT NOT NULL,
+            \\    description TEXT NOT NULL DEFAULT '',
+            \\    tags        TEXT NOT NULL DEFAULT '',
+            \\    content     TEXT NOT NULL DEFAULT '',
+            \\    is_global   INTEGER NOT NULL DEFAULT 0,
+            \\    cwd         TEXT NOT NULL DEFAULT '',
+            \\    source_path TEXT NOT NULL DEFAULT '',
+            \\    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+
+        // Two partial unique indexes rather than one composite UNIQUE: the
+        // same name is legal in both branches, and a single index over
+        // (is_global, cwd, name) would wrongly collide every local skill on
+        // the empty cwd.
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_global_name ON skills(name) WHERE is_global = 1",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_skills_local_cwd_name ON skills(cwd, name) WHERE is_global = 0",
+            &[_][]const u8{},
+        );
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skills_global ON skills(is_global, cwd)",
+            &[_][]const u8{},
+        );
+    }
+};
+
+test "Migration094 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration094CreateSkills.version) return;
+    }
+    return error.Migration094NotRegistered;
+}
+
+test "Migration094 creates skills with the two partial unique indexes" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try Migration094CreateSkills.up(&db, alloc);
+
+    const insertGlobal = "INSERT INTO skills (id, name, is_global) VALUES (?, ?, 1)";
+
+    // A second global row with the same name must be rejected. SqliteBackend
+    // reports any sqlite3 step failure as ExecuteFailed, not as a distinct
+    // Constraint variant, so that is what we assert on.
+    try db.exec(alloc, insertGlobal, &.{ "s1", "dup" });
+    try testing.expectError(error.ExecuteFailed, db.exec(alloc, insertGlobal, &.{ "s2", "dup" }));
+
+    // The same name IS legal when one of the two is local.
+    try db.exec(alloc, "INSERT INTO skills (id, name, is_global) VALUES (?, ?, 0)", &.{ "s3", "dup" });
+    try db.exec(alloc, "INSERT INTO skills (id, name, is_global, cwd) VALUES (?, ?, 0, ?)", &.{ "s4", "dup", "/tmp/ws1" });
+
+    // ...but not twice in the same cwd.
+    try testing.expectError(
+        error.ExecuteFailed,
+        db.exec(alloc, "INSERT INTO skills (id, name, is_global, cwd) VALUES (?, ?, 0, ?)", &.{ "s5", "dup", "/tmp/ws1" }),
+    );
+
+    // ...and the same name in a DIFFERENT cwd is fine.
+    try db.exec(alloc, "INSERT INTO skills (id, name, is_global, cwd) VALUES (?, ?, 0, ?)", &.{ "s6", "dup", "/tmp/ws2" });
+}
+
+test "Migration094 is idempotent" {
+    const alloc = std.testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var db: SqliteBackend = .{};
+    defer db.deinit();
+    try db.init(io, ":memory:");
+
+    try Migration094CreateSkills.up(&db, alloc);
+    // A boot re-runs every registered migration; a second up() must be a no-op.
+    try Migration094CreateSkills.up(&db, alloc);
 }

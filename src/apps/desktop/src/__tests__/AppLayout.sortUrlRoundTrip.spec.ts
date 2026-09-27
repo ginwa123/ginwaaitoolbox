@@ -111,7 +111,6 @@ function mountAppLayout(): ReturnType<typeof mount> {
       provide: { processingState: ref({}) },
       stubs: {
         Sidebar: true,
-        RightSidebar: true,
         GitFileViewer: true,
         SkillDetail: true,
         SettingsView: true,

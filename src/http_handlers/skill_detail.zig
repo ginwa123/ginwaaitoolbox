@@ -1,8 +1,17 @@
+//! `GET /api/skills/:name` — one skill, with its full content, from the
+//! `skills` table.
+//!
+//! Resolution is local-first then global, matching `use_skill`, so the detail
+//! view and the agent agree on which row "the skill named X" means. The
+//! response shape is unchanged from the filesystem era — including
+//! `is_global: boolean` and `path` (sourced from the row's `source_path`,
+//! which is empty for skills the agent created).
+
 const std = @import("std");
-const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
-const skill_mod = nalarcore.skill_mod;
+const skills_db = nalarcore.skills_db;
+const sqlite = nalarcore.sqlite;
 
 /// Response structure for skill detail endpoint
 pub const SkillDetailResponse = struct {
@@ -14,112 +23,83 @@ pub const SkillDetailResponse = struct {
 pub const SkillDetail = struct {
     name: []const u8,
     description: []const u8,
+    /// `'||'`-joined, or "" when the frontmatter carried no tags.
+    tags: []const u8,
     content: []const u8,
+    /// Provenance only — the row's `source_path`. May be "".
     path: []const u8,
     is_global: bool,
 };
 
+pub const SkillDetailError = error{
+    Internal,
+    NotFound,
+    /// Unreachable under the per-request arena, but the dupes building
+    /// SkillDetail can fail and the type system needs the variant named.
+    OutOfMemory,
+};
+
+/// Look the row up and shape it for the wire.
+fn useCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    skill_name: []const u8,
+    cwd_param: ?[]const u8,
+) SkillDetailError!SkillDetail {
+    // Prefer the caller's cwd — the frontend knows the active session's
+    // workspace, the server does not. Falls back to the server's own cwd so
+    // a plain `GET /api/skills/:name` still resolves local skills.
+    const source_cwd: []const u8 = if (cwd_param) |c| (if (c.len > 0) c else ".") else ".";
+    // canonicalCwd only fails on OOM, which collapses to 500 like every other
+    // internal failure here.
+    const canonical = skills_db.canonicalCwd(allocator, io, source_cwd) catch return error.Internal;
+    defer allocator.free(canonical);
+
+    const row = (skills_db.getSkill(allocator, db, skill_name, null, canonical) catch return error.Internal) orelse
+        return error.NotFound;
+    defer skills_db.freeSkillRow(allocator, row);
+
+    return .{
+        .name = try allocator.dupe(u8, row.name),
+        .description = try allocator.dupe(u8, row.description),
+        .tags = try allocator.dupe(u8, row.tags),
+        .content = try allocator.dupe(u8, row.content),
+        .path = try allocator.dupe(u8, row.source_path),
+        .is_global = row.is_global,
+    };
+}
+
 /// GET /api/skills/:name - Get detailed skill information including full content
-/// Searches both global (~/.config/nalar/skills/) and local (.nalar/skills/) directories
 pub fn skillDetailHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
-    // Get skill name from path parameter
     const skill_name = req.params.get("name") orelse {
         return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name is required" }, .{}) });
     };
 
+    if (skill_name.len == 0) {
+        return res.jsonResponse(.{ .status_code = 400, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = "Skill name cannot be empty" }, .{}) });
+    }
+
     const di = try nalarcore.getSingleton();
-    const environment = di.environment;
+    const cwd_param = req.query.get("cwd");
 
-    // Get global and local skills paths
-    const global_path = skill_mod.get_global_skills_path_from_env(allocator, environment.?);
-
-    // Resolve local skills path: prefer explicit cwd from query, fall back to io's cwd.
-    // This lets the frontend (which knows the active session's cwd) find local skills
-    // regardless of the nalar server's own working directory.
-    var local_path_alloc: ?[]const u8 = null;
-
-    if (req.query.get("cwd")) |cwd| {
-        if (cwd.len > 0) {
-            local_path_alloc = skill_mod.get_local_skills_path_for_dir(allocator, cwd);
-        }
-    }
-    if (local_path_alloc == null) {
-        local_path_alloc = skill_mod.get_local_skills_path_from_io(allocator, ctx.io);
-    }
-    const local_path = local_path_alloc;
-
-    // Try to find the skill in global directory first
-    if (global_path) |path| {
-        if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
-            return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail }, .{}) });
-        }
-    }
-
-    // Try local directory
-    if (local_path) |path| {
-        if (try findSkillByName(allocator, ctx.io, path, skill_name)) |detail| {
-            var detail_with_scope = detail;
-            detail_with_scope.is_global = false;
-            return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail_with_scope }, .{}) });
-        }
-    }
-
-    // Skill not found
-    return res.jsonResponse(.{ .status_code = 404, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}) }, .{}) });
-}
-
-/// Find a skill by name in the given directory
-/// Searches by skill name from YAML frontmatter, not folder name
-/// Returns SkillDetail with allocated strings, or null if not found
-fn findSkillByName(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, skill_name: []const u8) !?SkillDetail {
-    // Open the skills directory
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch {
-        return null;
-    };
-    defer std.Io.Dir.close(dir, io);
-
-    var iter = dir.iterate();
-    while (iter.next(io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
-
-        // Build path to SKILL.MD
-        const skill_file_path = std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.name, "SKILL.MD" }) catch continue;
-        defer allocator.free(skill_file_path);
-
-        // Read the skill file
-        const content = std.Io.Dir.cwd().readFileAlloc(io, skill_file_path, allocator, std.Io.Limit.limited(100 * 1024)) catch {
-            continue;
+    // The dupes inside `detail` live in the per-request arena, so nothing
+    // here needs an explicit free.
+    const detail = useCase(allocator, ctx.io, di.db, skill_name, cwd_param) catch |err| {
+        const status: u16 = switch (err) {
+            error.Internal, error.OutOfMemory => 500,
+            error.NotFound => 404,
         };
-        defer allocator.free(content);
-
-        if (content.len == 0) continue;
-
-        // Parse YAML frontmatter
-        if (skill_mod.parseYamlFrontmatter(allocator, content)) |parsed| {
-            // Check if this skill's name matches (not folder name)
-            if (!std.mem.eql(u8, parsed.name, skill_name)) continue;
-
-            // We return the full content including frontmatter
-            const path_copy = try allocator.dupe(u8, skill_file_path);
-            errdefer allocator.free(path_copy);
-
-            const name_copy = try allocator.dupe(u8, parsed.name);
-            errdefer allocator.free(name_copy);
-
-            const desc_copy = try allocator.dupe(u8, parsed.description);
-            errdefer allocator.free(desc_copy);
-
-            return SkillDetail{
-                .name = name_copy,
-                .description = desc_copy,
-                .content = try allocator.dupe(u8, content),
-                .path = path_copy,
-                .is_global = true, // Will be overwritten by caller if local
-            };
-        }
-    }
-
-    return null;
+        const message: []const u8 = switch (err) {
+            error.Internal, error.OutOfMemory => "Internal server error",
+            error.NotFound => try std.fmt.allocPrint(allocator, "Skill '{s}' not found", .{skill_name}),
+        };
+        return res.jsonResponse(.{
+            .status_code = status,
+            .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .error_message = message }, .{}),
+        });
+    };
+    return res.jsonResponse(.{ .status_code = 200, .data = try std.json.Stringify.valueAlloc(allocator, SkillDetailResponse{ .skill = detail }, .{}) });
 }

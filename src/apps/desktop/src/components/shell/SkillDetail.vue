@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { ref, watch, onMounted } from 'vue'
-import { getSkillDetail, deleteSkill, type SkillDetail } from '../../api'
+import { getSkillDetail, deleteSkill, ApiError, type SkillDetail } from '../../api'
 
 const props = defineProps<{
   skillName: string | null
+  /**
+   * Workspace the skill is listed under. Required by the backend for a
+   * local delete (is_global=false) — it addresses the row by
+   * (is_global, cwd, name) — so it must be passed on delete, not just on
+   * the detail fetch. Optional: hosts with no workspace context (the
+   * settings overlay) get the backend's 400 and its error_message.
+   */
   cwd?: string
 }>()
 
@@ -69,6 +76,25 @@ const cancelDelete = () => {
   showDeleteConfirm.value = false
 }
 
+// A local delete with no cwd is unresolvable, so the backend answers 400
+// with the reason in `error_message`. apiFetch throws on any non-2xx, so
+// that reason lives in ApiError.body — `err.message` would only say
+// "HTTP 400 Bad Request".
+const deleteErrorMessage = (err: unknown): string => {
+  if (err instanceof ApiError && err.body) {
+    try {
+      const parsed: unknown = JSON.parse(err.body)
+      if (parsed && typeof parsed === 'object') {
+        const message = (parsed as { error_message?: unknown }).error_message
+        if (typeof message === 'string' && message !== '') return message
+      }
+    } catch {
+      // Not JSON — fall through to the generic message below.
+    }
+  }
+  return err instanceof Error ? err.message : 'Failed to delete skill'
+}
+
 const handleDelete = async () => {
   if (!skillDetail.value) return
 
@@ -76,6 +102,7 @@ const handleDelete = async () => {
   try {
     const result = await deleteSkill(skillDetail.value.name, {
       is_global: skillDetail.value.is_global,
+      cwd: props.cwd,
     })
 
     if (result.success) {
@@ -85,7 +112,7 @@ const handleDelete = async () => {
       emit('error', result.error_message || 'Failed to delete skill')
     }
   } catch (err) {
-    emit('error', err instanceof Error ? err.message : 'Failed to delete skill')
+    emit('error', deleteErrorMessage(err))
   } finally {
     isDeleting.value = false
   }
