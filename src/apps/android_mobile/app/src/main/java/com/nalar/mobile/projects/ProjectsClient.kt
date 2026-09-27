@@ -98,6 +98,67 @@ class ProjectsClient(
         return RecentsResult.Loaded(created)
     }
 
+    /**
+     * Cold-start fallback for the drawer's "New Chat" row: the workspace's
+     * default project, created server-side when there is none.
+     *
+     * Normally never called — `loadProjects` already went through
+     * `GET /api/workspaces/{ws}/items`, which ensures the default on read, so
+     * the list the ViewModel holds already carries it. This exists for the app
+     * having been open when Migration 094 ran.
+     *
+     * Cookie-only auth, exactly like [createTask]: this app sends the session
+     * cookie and no `Authorization` header.
+     */
+    suspend fun getOrCreateDefaultProject(
+        workspaceId: String,
+    ): RecentsResult<ProjectSummary> {
+        val sessionCookie = try {
+            sessionStore.read()
+        } catch (_: Exception) {
+            return RecentsResult.Unavailable(SESSION_ERROR_MESSAGE)
+        }
+
+        val response = try {
+            transport.post(
+                path = ProjectsApi.defaultProjectPath(workspaceId),
+                // No body: this is a command ("give me the default"), and the
+                // name and path are fixed by the invariant. The transport
+                // signature takes a non-null String, and the server route
+                // ignores the body, so an empty string is the honest
+                // "no body" here.
+                body = "",
+                headers = sessionCookie
+                    ?.let { cookie ->
+                        mapOf(
+                            "Cookie" to "${AuthConfig.SESSION_COOKIE_NAME}=$cookie",
+                            "Content-Type" to "application/json",
+                        )
+                    }
+                    .orEmpty(),
+            )
+        } catch (_: Exception) {
+            return RecentsResult.Unavailable(unreachableMessage())
+        }
+
+        if (response.statusCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            return RecentsResult.SignedOut
+        }
+        // 200 = the default already existed, 201 = this call created it. Both
+        // are success; the body tells the caller which.
+        if (response.statusCode !in 200..299) {
+            return RecentsResult.Unavailable(createMessageForStatus(response.statusCode))
+        }
+
+        val project = try {
+            ProjectsApi.parseDefaultProject(response.body)
+        } catch (_: Exception) {
+            null
+        } ?: return RecentsResult.Unavailable(UNREADABLE_RESPONSE_MESSAGE)
+
+        return RecentsResult.Loaded(project)
+    }
+
     private fun <T> get(
         path: String,
         parse: (String) -> T,

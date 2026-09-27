@@ -52,6 +52,19 @@ object ProjectsApi {
      * `UriEncoding.encode` is a function. An id containing `/` would otherwise
      * split into two path segments and land on a different route.
      */
+    /**
+     * Cold-start fallback for the drawer's "New Chat" row.
+     *
+     * `GET /api/workspaces/{ws}/items` already ensures the default on the
+     * normal path, so this is rarely called — only when the app was open when
+     * Migration 094 ran, so the loaded list predates `is_default`.
+     */
+    fun defaultProjectPath(workspaceId: String): String = buildString {
+        append("/api/workspaces/")
+        append(UriEncoding.encode(workspaceId))
+        append("/default-project")
+    }
+
     fun itemsPath(workspaceId: String): String = buildString {
         append("/api/workspaces/")
         append(UriEncoding.encode(workspaceId))
@@ -91,6 +104,29 @@ object ProjectsApi {
      * `{"items":[…],"count":N}` — every item of one workspace. No pagination:
      * the endpoint takes none.
      */
+    /**
+     * Parse the `POST /api/workspaces/{ws}/default-project` envelope:
+     * `{"item": {…}, "created": true|false}`.
+     *
+     * Only the item is returned — the caller just needs a project to create
+     * a chat in, and whether it had to be created is a detail of *how* it
+     * arrived, not of what it is.
+     */
+    fun parseDefaultProject(body: String): ProjectSummary? {
+        val item = JSONObject(body).optJSONObject("item") ?: return null
+        val id = item.stringField("id")
+        // A row without an id cannot be scoped to, so it is unusable.
+        if (id.isEmpty()) return null
+        return ProjectSummary(
+            id = id,
+            workspaceId = item.stringField("workspace_id"),
+            itemType = item.stringField("item_type"),
+            name = item.stringField("name"),
+            path = item.stringField("path"),
+            isDefault = item.optInt("is_default", 1) == 1,
+        )
+    }
+
     fun parseItems(body: String): List<ProjectSummary> {
         val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
 
@@ -113,6 +149,12 @@ object ProjectsApi {
                         // into "Untitled project" rather than a blank row.
                         name = item.stringField("name"),
                         path = item.stringField("path"),
+                        // Migration 094 sends 0/1, not a JSON boolean, because
+                        // the column is an INTEGER. Absent (a server older
+                        // than the migration) reads as 0, i.e. an ordinary
+                        // project — the safe default, since the row is still
+                        // usable and the fallback endpoint can be called.
+                        isDefault = item.optInt("is_default", 0) == 1,
                     ),
                 )
             }
