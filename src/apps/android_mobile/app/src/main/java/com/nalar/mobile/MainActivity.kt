@@ -117,6 +117,20 @@ class MainActivity : ComponentActivity() {
                     onEnsureProjectChatsLoaded = homeViewModel::ensureProjectChatsLoaded,
                     onLoadMoreProjectChats = homeViewModel::loadMoreProjectChats,
                     onRetryProjects = homeViewModel::retryProjects,
+                    // The create's only ViewModel-facing half. The graph owns
+                    // the sheet and the navigation; the ViewModel owns the POST
+                    // and the row it paints.
+                    onCreateTask = { workspaceId, itemId, request ->
+                        // The workspace the row carries is the one the drawer's
+                        // copy may be blank on (a project read from cache), and
+                        // the endpoint is nested under it, so a blank here is a
+                        // 404 rather than a defaulted success.
+                        if (workspaceId.isNotBlank()) {
+                            homeViewModel.createTask(itemId, request)
+                        }
+                    },
+                    createdChats = homeViewModel.createdChat,
+                    onDismissTaskCreateError = homeViewModel::dismissTaskCreateError,
                     onToggleRecentsSection = homeViewModel::toggleRecentsSection,
                     onRetryHome = homeViewModel::refresh,
                     onOpenSession = chatViewModel::openSession,

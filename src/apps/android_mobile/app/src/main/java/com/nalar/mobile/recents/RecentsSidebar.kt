@@ -57,8 +57,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.projects.ProjectChatRow
 import com.nalar.mobile.projects.ProjectRow
+import com.nalar.mobile.projects.CreateTaskRow
 import com.nalar.mobile.projects.ProjectsActions
 import com.nalar.mobile.projects.ProjectsState
+import com.nalar.mobile.projects.ProjectTypes
 import com.nalar.mobile.projects.SeeAllChatsRow
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
@@ -591,6 +593,38 @@ private fun SidebarBody(
                                 .padding(start = 12.dp)
                                 .padding(start = 12.dp),
                         ) {
+                            // Above the rows, not below: the thing the reader
+                            // just made should be the first thing they see, and
+                            // the list grows downward, so a create affordance
+                            // at the bottom of it would be pushed off screen
+                            // by the very rows it creates.
+                            //
+                            // Hidden for routine projects, matching the desktop
+                            // (`WorkspaceItem.vue` hides the `+` there, and
+                            // `createTaskStartDecision` refuses one anyway) —
+                            // a scheduler-owned project has no task list for
+                            // this row to add to.
+                            if (project.itemType != ProjectTypes.ROUTINE) {
+                                CreateTaskRow(
+                                    projectName = project.id,
+                                    isBusy = projects.creatingTaskItemId == project.id,
+                                    onClick = {
+                                        // Same fallback "See all chats" uses one
+                                        // row below: a project read back from
+                                        // cache can carry a blank workspace, and
+                                        // the create endpoint is nested under it
+                                        // — so a blank here is a 404, not a
+                                        // defaulted success.
+                                        projectActions.onCreateTask(
+                                            project.copy(
+                                                workspaceId = project.workspaceId
+                                                    .ifEmpty { selectedWorkspaceId.orEmpty() },
+                                            ),
+                                        )
+                                    },
+                                )
+                            }
+
                             preview.forEach { chat ->
                                 ProjectChatRow(
                                     chat = chat,

@@ -189,6 +189,104 @@ object ProjectsApi {
         return byId.values.toList()
     }
 
+    /**
+     * `POST /api/workspaces/{ws}/items/{item}/tasks` — create a task.
+     *
+     * The same path [tasksPath] reads, on the other method. Creating does not
+     * get its own route on the server (`main.zig:815` registers one POST
+     * handler for both the drawer and the web app), so a client that invented
+     * `/tasks/create` here would 404.
+     */
+    fun createTaskPath(workspaceId: String, itemId: String): String = buildString {
+        append("/api/workspaces/")
+        append(UriEncoding.encode(workspaceId))
+        append("/items/")
+        append(UriEncoding.encode(itemId))
+        append("/tasks")
+    }
+
+    /**
+     * The JSON body for one [CreateTaskRequest].
+     *
+     * Field-for-field what the desktop's `api.createTask` sends
+     * (`api/index.ts:863-960`), because the backend reads one shape:
+     *
+     *  - `name` is the task's display name. For a memory it is *also* the
+     *    filename, and the two are sent as `name` and `memory_name` because the
+     *    handler reads them separately (`task_create.zig:257`).
+     *  - `task_type` is always explicit, never omitted. The server's default is
+     *    `standard`, so leaving it off would be equivalent — but a body whose
+     *    type is absent is a body whose meaning depends on a column default, and
+     *    the desktop sends it too.
+     *  - `memory_content` is sent for a memory and **nothing else** is sent for
+     *    a standard chat. No `description`, no `is_auto_retry_until_stop`, no
+     *    `tags`: those all have defined server-side defaults and sending them
+     *    would mean this client is asserting choices the reader was never asked.
+     *
+     * The name is trimmed here. The desktop does not trim, and the difference
+     * is only visible on a name the reader typed with stray spaces — where the
+     * trimmed one is what they meant, and an untrimmed `.md` filename is a
+     * filename with spaces in it that no `ls` output ever matches by eye.
+     */
+    fun createTaskBody(request: CreateTaskRequest): String {
+        val json = JSONObject()
+        when (request) {
+            is CreateTaskRequest.StandardChat -> {
+                json.put("name", request.name.trim())
+                json.put("task_type", TaskTypes.STANDARD)
+            }
+
+            is CreateTaskRequest.Memory -> {
+                val fileName = request.name.trim()
+                json.put("name", fileName)
+                json.put("task_type", TaskTypes.MEMORY)
+                json.put("memory_name", fileName)
+                json.put("memory_content", request.content)
+            }
+        }
+        return json.toString()
+    }
+
+    /**
+     * The one task object `POST .../tasks` returns, as a [ProjectChat].
+     *
+     * Not an array: the create handler answers with the row it just inserted
+     * (`task_create.zig`'s `MemoryResponse` / `StandardResponse`), so there is
+     * no envelope to unwrap and no way to get two rows.
+     *
+     * A task id is also the session id, which is the whole reason a created
+     * chat is navigable without a second lookup — see [ProjectChat].
+     *
+     * Returns null when the body carries no id. A row that cannot be opened or
+     * selected is worse than a failure the caller can report, so this refuses
+     * rather than inventing one.
+     */
+    fun parseCreatedTask(body: String, projectId: String): ProjectChat? {
+        val task = try {
+            JSONObject(body)
+        } catch (_: Exception) {
+            return null
+        }
+
+        val id = task.stringField("id")
+        if (id.isEmpty()) return null
+
+        return ProjectChat(
+            id = id,
+            projectId = projectId,
+            name = task.stringField("name"),
+            // Prefer `updated_at` and fall back the same way the list parser
+            // does, so a created row and a listed row of the same task are
+            // ordered the same way in a merged list.
+            updatedAtEpochMillis = RecentsApi.parseTimestampEpochMillis(
+                task.stringField("updated_at"),
+            ) ?: RecentsApi.parseTimestampEpochMillis(
+                task.stringField("created_at"),
+            ) ?: RecentsApi.UNKNOWN_TIMESTAMP,
+            taskType = task.optNullableString("task_type"),
+        )
+    }
+
     private fun encodeQueryValue(value: String): String =
         URLEncoder.encode(value, Charsets.UTF_8.name())
 

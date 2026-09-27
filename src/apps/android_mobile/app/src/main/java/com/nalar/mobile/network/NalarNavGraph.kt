@@ -1,8 +1,12 @@
 package com.nalar.mobile.network
 
+import com.nalar.mobile.projects.CreateTaskHost
+import com.nalar.mobile.projects.CreateTaskRequest
 import com.nalar.mobile.projects.ProjectChatsScreen
+import com.nalar.mobile.projects.ProjectSummary
 import com.nalar.mobile.projects.ProjectsActions
 import com.nalar.mobile.projects.ProjectsState
+import com.nalar.mobile.projects.rememberCreateTaskController
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -60,6 +64,7 @@ import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarMuted
 import com.nalar.mobile.ui.NalarText
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -241,6 +246,26 @@ fun NalarNavGraph(
     onLoadMoreProjectChats: (String) -> Unit = {},
     onRetryProjects: () -> Unit = {},
     /**
+     * Create a chat or a memory under a project.
+     *
+     * A three-argument callback rather than the whole flow, because the graph
+     * owns navigation and a create's *result* is a navigation; the sheet's own
+     * state stays with the UI, and this is the one thing it needs from the
+     * ViewModel.
+     */
+    onCreateTask: (String, String, CreateTaskRequest) -> Unit = { _, _, _ -> },
+    /**
+     * Session ids of chats that were just created, to open.
+     *
+     * A flow, not a callback into the graph, because the create finishes on a
+     * coroutine the graph does not own and the navigation has to happen after
+     * the row is painted. Collected once here so the chat opens from wherever
+     * the flow was started — the drawer, or the project screen.
+     */
+    createdChats: Flow<String>? = null,
+    /** Clear the last create's complaint. */
+    onDismissTaskCreateError: () -> Unit = {},
+    /**
      * Fold the sidebar's Recents section away, or unfold it.
      *
      * The chat route's drawer and the shell's drawer are one drawer, so this
@@ -275,6 +300,12 @@ fun NalarNavGraph(
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
 
+    // The one create flow in the app, built here because the graph is the only
+    // thing both entry points can reach: the drawer's `+` and the project
+    // screen's `+`. Two controllers would be two pickers that agree today and
+    // not tomorrow.
+    val createTask = rememberCreateTaskController(onCreateTask)
+
     // A `nalar://` link or a `popUpTo(SHELL)` navigation can leave a leaf as the
     // only destination on the back stack. The back arrow on those screens used to
     // call the inclusive `popBackStack()`, which emptied the back stack and left
@@ -299,6 +330,7 @@ fun NalarNavGraph(
             navController.navigate(NalarRoutes.project(workspaceId, itemId))
         },
         onRetry = onRetryProjects,
+        onCreateTask = createTask::start,
     )
 
     // Rebuilt from the state on every emission rather than held, so it cannot
@@ -313,7 +345,32 @@ fun NalarNavGraph(
             chats = homeState.projectChats,
             isLoading = homeState.isLoadingProjects,
             errorMessage = homeState.projectsError,
+            creatingTaskItemId = homeState.creatingTaskInProjectId,
         )
+    }
+
+    // A chat this app just created is opened here, and nowhere else.
+    //
+    // Collected at the graph rather than inside a destination because the create
+    // can be started from the drawer on the shell and the navigation has to
+    // work from wherever the reader happens to be — including from inside the
+    // project screen, where a plain `navigate` would leave the project list
+    // underneath the new chat and make Back return to a screen the reader has
+    // already finished with.
+    LaunchedEffect(createdChats) {
+        createdChats?.collect { sessionId ->
+            if (sessionId.isBlank()) return@collect
+            onSelectChat(sessionId)
+            onOpenSession(sessionId)
+            navController.navigate(NalarRoutes.chat(sessionId)) {
+                // Replace the shell rather than stacking on it: a chat the
+                // reader just made is where they want to be, and Back from
+                // there should leave the app's list rather than walk back
+                // through a chat they never opened.
+                popUpTo(NalarRoutes.SHELL) { inclusive = false }
+                launchSingleTop = true
+            }
+        }
     }
 
     // A chat picked from the chat route's drawer *replaces* the one on screen
@@ -444,6 +501,15 @@ fun NalarNavGraph(
             .fillMaxSize()
             .background(NalarBackground),
     ) {
+    // Inside the `Box` rather than beside it, so the sheet is drawn over the
+    // `NavHost` and not behind whatever the current destination paints. It
+    // composes nothing while the flow is idle.
+    CreateTaskHost(
+        controller = createTask,
+        isSubmitting = homeState.creatingTaskInProjectId != null,
+        errorMessage = homeState.taskCreateError,
+    )
+
     NavHost(
         navController = navController,
         startDestination = NalarRoutes.SHELL,
@@ -672,6 +738,32 @@ fun NalarNavGraph(
                     navController.navigate(NalarRoutes.chat(sessionId))
                 },
                 onLoadMore = { onLoadMoreProjectChats(itemId) },
+                onCreateTask = {
+                    // The same `start` the drawer's `+` uses, with a summary
+                    // rebuilt from this route's ids. A deep link names a project
+                    // the drawer may never have loaded, so the row is
+                    // synthesised rather than looked up — and its `item_type` is
+                    // empty, which lands on the picker, the safe default: a
+                    // project whose type is unknown gets both options offered
+                    // rather than one guessed.
+                    createTask.start(
+                        ProjectSummary(
+                            id = itemId,
+                            workspaceId = backStackEntry.arguments
+                                ?.getString(NalarRoutes.ARG_WORKSPACE_ID)
+                                .orEmpty(),
+                            itemType = homeState.projects
+                                .firstOrNull { it.id == itemId }
+                                ?.itemType
+                                .orEmpty(),
+                            name = homeState.projects
+                                .firstOrNull { it.id == itemId }
+                                ?.name
+                                .orEmpty(),
+                        ),
+                    )
+                },
+                isCreatingTask = homeState.creatingTaskInProjectId == itemId,
                 onBack = goBack,
             )
         }

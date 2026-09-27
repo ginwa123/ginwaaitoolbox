@@ -10,12 +10,14 @@ import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.network.RecordingAuthTransport
+import com.nalar.mobile.projects.CreateTaskRequest
 import com.nalar.mobile.projects.ProjectsApi
 import com.nalar.mobile.projects.ProjectsCache
 import com.nalar.mobile.projects.ProjectChatsPage
 import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.projects.RoomProjectsCache
 import com.nalar.mobile.projects.ProjectSummary
+import com.nalar.mobile.projects.isValidMemoryName
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
 import kotlinx.coroutines.CoroutineDispatcher
@@ -82,6 +84,26 @@ data class HomeUiState(
     val projectChats: Map<String, ProjectChatsPage> = emptyMap(),
     /** Which projects have a later page in flight. */
     val isLoadingMoreProjectChats: Set<String> = emptySet(),
+    // ── Creating a chat / task under a project ─────────────────────────────
+    /**
+     * The project whose create is in flight, or null.
+     *
+     * One id and not a set, because the entry point is a single `+` on one
+     * expanded project: a reader cannot have two creates in the air from one
+     * project row, and a second press on the same `+` while the first is open
+     * is the double-tap this value exists to swallow.
+     */
+    val creatingTaskInProjectId: String? = null,
+    /**
+     * Why the last create failed, or null.
+     *
+     * Held apart from [projectsError] and [errorMessage] on purpose: those say a
+     * *list* could not be loaded and the rows on screen are stale, which is
+     * still true. This says the thing the reader just asked for did not happen,
+     * and it has to be dismissible on its own — a reader who gave up on a memory
+     * name should not have to retry the project fetch to clear the complaint.
+     */
+    val taskCreateError: String? = null,
 ) {
     fun isProjectExpanded(itemId: String): Boolean = itemId in expandedProjectIds
 
@@ -191,6 +213,23 @@ class HomeViewModel(
 
     private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val sessionExpired: SharedFlow<Unit> = _sessionExpired.asSharedFlow()
+
+    /**
+     * Session ids of chats this app just created, for the nav graph to open.
+     *
+     * An event and not a piece of [HomeUiState], because it is a one-shot
+     * *navigation* with no resting place: a "navigate here" flag left in state
+     * is re-read by every recomposition, so the chat would be reopened after
+     * the reader navigated away. A flow is emitted once and forgotten.
+     *
+     * `extraBufferCapacity = 1` rather than a suspend send, because the create
+     * has already finished by the time anyone might be collecting, and a
+     * `MutableSharedFlow` with zero buffer drops an emission made with no
+     * subscriber — which would silently cost the reader the chat they asked
+     * for.
+     */
+    private val _createdChat = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val createdChat: SharedFlow<String> = _createdChat.asSharedFlow()
 
     private var userId: String? = null
     private var hasStarted = false
@@ -917,6 +956,137 @@ class HomeViewModel(
         }
     }
 
+    // ── Creating a chat / task under a project ─────────────────────────────
+
+    /**
+     * Create a chat or a memory under [itemId], and paint the result.
+     *
+     * The mobile twin of the desktop's `handleAddTaskPick` (`Sidebar.vue:920`):
+     * a standard chat is created and then opened, a memory is created and then
+     * *not* opened, because a memory has no session to open.
+     *
+     * Three things happen on success, and all three are load-bearing:
+     *
+     *  1. The new row is written into [HomeUiState.projectChats] for that
+     *     project, at the **front**. The list is ordered `updated_at desc`, and
+     *     a row created a second ago belongs above rows touched yesterday; a
+     *     refetch to discover the row this call already returned would be a
+     *     second request whose result could arrive in either order.
+     *  2. The project is forced open, so the row the reader just made is
+     *     visible. Creating from a collapsed project and having to expand it to
+     *     find the result is the one outcome that reads as "it didn't work".
+     *  3. The write-through cache gets the merged list, for the same reason
+     *     [loadMoreChats] writes merged rather than the page.
+     *
+     * A memory's name is validated here, before the POST, so the reader gets
+     * the rule on screen rather than a `400` rendered as a generic failure. The
+     * server validates again regardless.
+     */
+    fun createTask(itemId: String, request: CreateTaskRequest) {
+        val state = _uiState.value
+        val workspaceId = state.selectedWorkspaceId ?: return
+        // One create at a time. A second press on a `+` that is already working
+        // is a double-tap, and a double-tap on "create" is how two "New Chat"
+        // rows get made from one intent.
+        if (state.creatingTaskInProjectId != null) return
+
+        if (request is CreateTaskRequest.Memory && !isValidMemoryName(request.name)) {
+            _uiState.update { it.copy(taskCreateError = INVALID_MEMORY_NAME_MESSAGE) }
+            return
+        }
+        if (request is CreateTaskRequest.Memory && request.content.isBlank()) {
+            _uiState.update { it.copy(taskCreateError = EMPTY_MEMORY_CONTENT_MESSAGE) }
+            return
+        }
+
+        _uiState.update { it.copy(creatingTaskInProjectId = itemId, taskCreateError = null) }
+
+        // Capture the generation now. A projects reload under this call
+        // invalidates the page this result would merge into, and merging a
+        // freshly created row into a list the server has since replaced is how a
+        // deleted project's chat survives on screen.
+        val generation = (projectGenerations[itemId] ?: 0) + 1
+        projectGenerations[itemId] = generation
+
+        viewModelScope.launch {
+            val result = withContext(ioDispatcher) {
+                projectsClient.createTask(workspaceId, itemId, request)
+            }
+            if (projectGenerations[itemId] != generation) return@launch
+            if (_uiState.value.selectedWorkspaceId != workspaceId) return@launch
+
+            when (result) {
+                is RecentsResult.SignedOut -> {
+                    _uiState.update { it.copy(creatingTaskInProjectId = null) }
+                    expireSession()
+                }
+
+                is RecentsResult.Unavailable -> _uiState.update {
+                    // The rows survive: a failed create changed nothing.
+                    it.copy(creatingTaskInProjectId = null, taskCreateError = result.message)
+                }
+
+                is RecentsResult.Loaded -> {
+                    val created = result.value
+                    _uiState.update { current ->
+                        val existing = current.projectChats[itemId]
+                        current.copy(
+                            creatingTaskInProjectId = null,
+                            taskCreateError = null,
+                            // A project with no page yet — a `+` on a project the
+                            // reader never expanded, or one whose fetch failed —
+                            // gets a first page holding just the new row rather
+                            // than staying absent, which would make the create
+                            // look like it vanished.
+                            projectChats = current.projectChats + (
+                                itemId to ProjectChatsPage(
+                                    chats = listOf(created) +
+                                        existing?.chats.orEmpty().filterNot { it.id == created.id },
+                                    // Unchanged: this says nothing about whether
+                                    // more pages exist, and the create told us
+                                    // nothing about a cursor.
+                                    hasMore = existing?.hasMore ?: false,
+                                    nextCursor = existing?.nextCursor,
+                                )
+                                ),
+                            expandedProjectIds = current.expandedProjectIds + itemId,
+                        )
+                    }
+
+                    val id = userId
+                    if (id != null) {
+                        withContext(ioDispatcher) {
+                            projectsCache.writeProjectChats(
+                                id,
+                                workspaceId,
+                                itemId,
+                                _uiState.value.projectChats[itemId]?.chats.orEmpty(),
+                            )
+                        }
+                    }
+
+                    // Only a chat is a destination. A memory is a file on disk
+                    // with nothing to open, and navigating to its id would land
+                    // on a transcript route with no session behind it.
+                    if (request.opensChat) {
+                        _createdChat.tryEmit(created.id)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Clear the last create's complaint, and only that.
+     *
+     * Deliberately not a `refresh()`: a reader who mistyped a memory filename
+     * has a form to go back to, and making them re-fetch their projects to
+     * un-stick the screen would be punishment for a typo.
+     */
+    fun dismissTaskCreateError() {
+        _uiState.update { it.copy(taskCreateError = null) }
+    }
+
     /** Drop every project, expanded or paged, on sign-out. */
     private fun clearProjects() {
         projectsJob?.cancel()
@@ -1032,3 +1202,15 @@ internal fun selectWorkspaceId(
 ): String? = workspaces.firstOrNull { it.id == currentSelection }?.id
     ?: workspaces.firstOrNull { it.id == resumeSeed }?.id
     ?: workspaces.firstOrNull()?.id
+
+/**
+ * The two messages a form can earn *before* the request leaves.
+ *
+ * Stated here rather than in the composable so the same wording is asserted in
+ * a test that does not need a UI, and so the validation the ViewModel performs
+ * and the sentence it reports are the same object rather than two descriptions
+ * of each other.
+ */
+private const val INVALID_MEMORY_NAME_MESSAGE =
+    "The file name must end in .md, and cannot contain /, \\ or .."
+private const val EMPTY_MEMORY_CONTENT_MESSAGE = "A memory needs some content."
