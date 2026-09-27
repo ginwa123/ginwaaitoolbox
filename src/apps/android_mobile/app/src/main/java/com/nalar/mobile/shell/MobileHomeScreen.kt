@@ -120,6 +120,17 @@ fun MobileHomeScreen(
      */
     projects: ProjectsState = ProjectsState.Empty,
     projectActions: ProjectsActions = ProjectsActions.None,
+    /**
+     * Whether the Recents section is folded, and the tap that folds it.
+     *
+     * Hoisted, not local, for the same reason [projects] is: the chat route
+     * composes the *same* drawer through [RecentsDrawerContent] while this
+     * screen composes it twice below. A fold held in a local here would be one
+     * the reader loses the moment they open a chat — the drawer would spring
+     * open again with the section they just closed.
+     */
+    recentsExpanded: Boolean = true,
+    onToggleRecentsSection: () -> Unit = {},
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
         ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
@@ -233,6 +244,8 @@ fun MobileHomeScreen(
                             onLogout = onLogout,
                             projects = projects,
                             projectActions = projectActions,
+                            recentsExpanded = recentsExpanded,
+                            onToggleRecentsSection = onToggleRecentsSection,
                         )
                     }
                 },
@@ -276,6 +289,8 @@ fun MobileHomeScreen(
                             onLogout = onLogout,
                             projects = projects,
                             projectActions = projectActions,
+                            recentsExpanded = recentsExpanded,
+                            onToggleRecentsSection = onToggleRecentsSection,
                         )
                     }
                 },

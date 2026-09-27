@@ -17,7 +17,6 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.WorkspaceOption
-import com.nalar.mobile.shell.BackToChatsRow
 import com.nalar.mobile.shell.RecentsDrawerContent
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertEquals
@@ -146,7 +145,6 @@ class ChatViewTest {
                             onWorkspaceSelected = {},
                             onChatSelected = {},
                             onOpenChat = dismissDrawer,
-                            header = { BackToChatsRow(onClick = dismissDrawer) },
                         )
                     },
                 )

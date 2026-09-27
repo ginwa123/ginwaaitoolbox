@@ -9,6 +9,7 @@ import androidx.compose.ui.test.performClick
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.espresso.Espresso
 import com.nalar.mobile.auth.AuthUiState
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatUiState
@@ -101,10 +102,10 @@ class NalarNavGraphResumeInstrumentedTest {
     fun backFromAResumedChatReturnsToTheShell() {
         launch(LastPosition(workspaceId = "ws_b", sessionId = "sess_c"))
 
-        // Through the drawer, which is where the chat's way home now lives.
-        composeTestRule.onNodeWithTag("chat_drawer_menu").performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("chat_all_chats").performClick()
+        // The chat route's way home: the system Back button, claimed by the
+        // destination so it works from a resumed deep link where the shell was
+        // never pushed.
+        Espresso.pressBack()
         composeTestRule.waitForIdle()
 
         // A `popUpTo` here would drop the shell and put the user on the recovery

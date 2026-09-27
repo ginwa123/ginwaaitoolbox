@@ -1,33 +1,13 @@
 package com.nalar.mobile.shell
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.unit.dp
 import com.nalar.mobile.projects.ProjectsActions
 import com.nalar.mobile.projects.ProjectsState
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.RecentsSidebar
 import com.nalar.mobile.recents.WorkspaceOption
-import com.nalar.mobile.ui.NalarBorder
-import com.nalar.mobile.ui.NalarDim
-import com.nalar.mobile.ui.NalarText
 
 /**
  * The drawer both screens show: the workspace picker, the recents list and the
@@ -55,11 +35,6 @@ fun RecentsDrawerContent(
      */
     onOpenChat: () -> Unit,
     modifier: Modifier = Modifier,
-    /**
-     * Space above the list, for a screen that is *not* the chat list and
-     * therefore needs its own way back to it. See [BackToChatsRow].
-     */
-    header: @Composable (ColumnScope.() -> Unit)? = null,
     isLoading: Boolean = false,
     errorMessage: String? = null,
     onRetry: () -> Unit = {},
@@ -87,81 +62,43 @@ fun RecentsDrawerContent(
      */
     projects: ProjectsState = ProjectsState.Empty,
     projectActions: ProjectsActions = ProjectsActions.None,
+    /**
+     * Whether the Recents section is folded, and the tap that folds it.
+     *
+     * Forwarded for the same reason [projects] is: the two drawers are one
+     * drawer, so a fold the reader made in the shell has to still be a fold when
+     * they open the drawer from inside a chat. Neither drawer may keep its own
+     * copy of which section is open — that is how "I collapsed this and it came
+     * back" happens.
+     */
+    recentsExpanded: Boolean = true,
+    onToggleRecentsSection: () -> Unit = {},
 ) {
-    Column(
+    RecentsSidebar(
         modifier = modifier.fillMaxSize(),
-    ) {
-        if (header != null) {
-            header()
-            HorizontalDivider(color = NalarBorder)
-        }
-
-        RecentsSidebar(
-            // Weighted rather than `fillMaxSize` so the sidebar takes what is
-            // left under a header rather than the whole sheet, which would push
-            // the account footer off the bottom of the drawer.
-            modifier = Modifier.weight(1f),
-            workspaces = workspaces,
-            chats = chats,
-            selectedWorkspaceId = selectedWorkspaceId,
-            selectedChatId = selectedChatId,
-            onWorkspaceSelected = onWorkspaceSelected,
-            onChatSelected = onChatSelected,
-            onOpenChat = onOpenChat,
-            isLoading = isLoading,
-            errorMessage = errorMessage,
-            onRetry = onRetry,
-            isLoadingMore = isLoadingMore,
-            hasMoreChats = hasMoreChats,
-            onLoadMore = onLoadMore,
-            runningSessionIds = runningSessionIds,
-            isAuthEnabled = isAuthEnabled,
-            signedInEmail = signedInEmail,
-            isLoggingOut = isLoggingOut,
-            onLogout = onLogout,
-            projects = projects,
-            projectActions = projectActions,
-        )
-    }
-}
-
-/**
- * "All chats", at the top of the chat route's drawer.
- *
- * The chat's top bar has no back arrow any more — the hamburger opens the
- * drawer instead — so a chat opened from a `nalar://chat/…` link, which is the
- * one entry on the back stack, would have no in-app route to the shell at all:
- * system Back would close the app instead. That is the dead end
- * `goBackToPreviousOrShell` exists to prevent, moved rather than created.
- *
- * Placed at the top because that is where a navigation drawer's own hierarchy
- * lives, so it reads as "back out of here" rather than as a chat.
- */
-@Composable
-fun BackToChatsRow(
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .selectable(selected = false, onClick = onClick)
-            .testTag("chat_all_chats")
-            .padding(horizontal = 8.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-            contentDescription = null,
-            tint = NalarDim,
-        )
-        Spacer(Modifier.width(12.dp))
-        Text(
-            text = "All chats",
-            style = MaterialTheme.typography.bodyLarge,
-            color = NalarText,
-        )
-    }
+        workspaces = workspaces,
+        chats = chats,
+        selectedWorkspaceId = selectedWorkspaceId,
+        selectedChatId = selectedChatId,
+        onWorkspaceSelected = onWorkspaceSelected,
+        onChatSelected = onChatSelected,
+        onOpenChat = onOpenChat,
+        isLoading = isLoading,
+        errorMessage = errorMessage,
+        onRetry = onRetry,
+        isLoadingMore = isLoadingMore,
+        hasMoreChats = hasMoreChats,
+        onLoadMore = onLoadMore,
+        runningSessionIds = runningSessionIds,
+        isAuthEnabled = isAuthEnabled,
+        signedInEmail = signedInEmail,
+        isLoggingOut = isLoggingOut,
+        onLogout = onLogout,
+        projects = projects,
+        projectActions = projectActions,
+        recentsExpanded = recentsExpanded,
+        onToggleRecents = onToggleRecentsSection,
+    )
 }
 
 /**

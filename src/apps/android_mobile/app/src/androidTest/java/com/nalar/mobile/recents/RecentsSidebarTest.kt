@@ -1,5 +1,7 @@
 package com.nalar.mobile.recents
 
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.SemanticsMatcher
@@ -16,7 +18,13 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeUp
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.nalar.mobile.projects.ProjectSummary
+import com.nalar.mobile.projects.ProjectTypes
+import com.nalar.mobile.projects.ProjectsActions
+import com.nalar.mobile.projects.ProjectsState
 import com.nalar.mobile.shell.MobileDrawerLayout
 import com.nalar.mobile.shell.MobileHomeScreen
 import com.nalar.mobile.ui.NalarTheme
@@ -468,7 +476,113 @@ class RecentsSidebarTest {
         assertEquals(1, logoutCalls)
     }
 
+    @Test
+    fun bothSectionsAreNamedAndStartUnfolded() {
+        showModalScreen(projects = oneProject())
+
+        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("recents_section_header").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Recent").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("projects_section_header").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Projects").assertIsDisplayed()
+        // Unfolded by default: a section the reader has to open before it shows
+        // anything is a section most people never open.
+        composeTestRule.onNodeWithTag("chat_row_chat-a1").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("project_row_item-a").assertIsDisplayed()
+    }
+
+    @Test
+    fun theRecentsHeaderFoldsTheChatsAndUnfoldsThemAgain() {
+        // State, not a counter, because the sidebar only re-renders when the
+        // fold actually changes — which is the contract worth pinning: the
+        // composable asks, it does not decide.
+        var toggles = 0
+        val recentsOpen = mutableStateOf(true)
+        showModalScreen(
+            projects = oneProject(),
+            recentsOpen = recentsOpen,
+            recentsExpanded = {
+                toggles++
+                recentsOpen.value = !recentsOpen.value
+            },
+        )
+
+        composeTestRule.onNodeWithTag("sidebar_open_menu").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("recents_section_header").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, toggles)
+        // Folded: the rows go, the section's own title stays, and the *other*
+        // section is untouched — a fold is local to the section it belongs to.
+        composeTestRule.onNodeWithTag("recents_section_header").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("chat_row_chat-a1").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("chats_list_footer").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("projects_section_header").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("project_row_item-a").assertExists()
+
+        composeTestRule.onNodeWithTag("recents_section_header").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(2, toggles)
+        composeTestRule.onNodeWithTag("chat_row_chat-a1").assertIsDisplayed()
+    }
+
+    @Test
+    fun theRecentsTitleStaysPutWhileTheChatsScrollUnderIt() {
+        // The whole reason the header is a `stickyHeader` and not an `item`.
+        // Without the pin, the name scrolls away with the rows it names and the
+        // reader loses track of which list they are reading halfway down.
+        val manyChats = (1..60).map { index ->
+            ChatSummary(
+                id = "chat-$index",
+                workspaceId = "workspace-a",
+                title = "Chat $index",
+                updatedAtEpochMillis = now - index * 60_000L,
+            )
+        }
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = manyChats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("sidebar_chat_list").performTouchInput { swipeUp() }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("recents_section_header").assertIsDisplayed()
+        // Scrolled well past the first rows, so this can only be the pin.
+        composeTestRule.onNodeWithTag("chat_row_chat-1").assertIsNotDisplayed()
+    }
+
+    private fun oneProject() = ProjectsState(
+        expanded = true,
+        items = listOf(ProjectSummary("item-a", "workspace-a", ProjectTypes.KANBAN, "sprint board")),
+        expandedItemIds = emptySet(),
+        chats = emptyMap(),
+        isLoading = false,
+        errorMessage = null,
+    )
+
+    /**
+     * The modal drawer, with the Recents fold as *state* rather than a value.
+     *
+     * State and not a `Boolean` because a test that folds the section has to
+     * change the fold and re-compose; a plain parameter would need the screen
+     * built a second time, and `setContent` may only be called once. Defaulted
+     * so the tests that do not care about folding pass nothing.
+     */
     private fun showModalScreen(
+        projects: ProjectsState = ProjectsState.Empty,
+        recentsOpen: MutableState<Boolean> = mutableStateOf(true),
+        recentsExpanded: () -> Unit = {},
         onWorkspaceSelected: (String) -> Unit = {},
         onChatSelected: (String) -> Unit = {},
     ) {
@@ -480,6 +594,15 @@ class RecentsSidebarTest {
                     onWorkspaceSelected = onWorkspaceSelected,
                     onChatSelected = onChatSelected,
                     drawerLayout = MobileDrawerLayout.Modal,
+                    projects = projects,
+                    projectActions = ProjectsActions(
+                        onToggleSection = {},
+                        onToggleItem = {},
+                        onOpenAllChats = { _, _ -> },
+                        onRetry = {},
+                    ),
+                    recentsExpanded = recentsOpen.value,
+                    onToggleRecentsSection = recentsExpanded,
                 )
             }
         }

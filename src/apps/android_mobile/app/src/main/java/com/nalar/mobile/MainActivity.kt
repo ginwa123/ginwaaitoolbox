@@ -117,6 +117,7 @@ class MainActivity : ComponentActivity() {
                     onEnsureProjectChatsLoaded = homeViewModel::ensureProjectChatsLoaded,
                     onLoadMoreProjectChats = homeViewModel::loadMoreProjectChats,
                     onRetryProjects = homeViewModel::retryProjects,
+                    onToggleRecentsSection = homeViewModel::toggleRecentsSection,
                     onRetryHome = homeViewModel::refresh,
                     onOpenSession = chatViewModel::openSession,
                     onChatDraftChanged = chatViewModel::onDraftChanged,
