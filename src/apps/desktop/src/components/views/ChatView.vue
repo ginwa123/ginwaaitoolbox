@@ -869,6 +869,68 @@ let isInitialLoad = false
 // logger needs the wrapper's dimensions to tell them apart.
 const messagesWrapperRef = ref<HTMLElement | null>(null)
 
+// ─── Floating composer: the `--chat-composer-inset` contract ────────────────
+//
+// The composer dock is `position: absolute` on the chat column, so the
+// transcript scrolls *under* it. Four things need to know how tall that dock
+// is, and none of them can be a reactive ref: the textarea autogrows on every
+// input event, and a reactive dep read in the render function would re-run
+// ChatView's whole (very large) render on every keystroke.
+//
+// So the height is written straight to the DOM as a CSS custom property on
+// the chat column, and everything reads it in CSS:
+//   - `.composer-scrim`         — the fade's own extent
+//   - `.last-transcript-row`    — bottom padding on the newest message, so it
+//                                 can always be scrolled clear of the dock
+//   - `.chat-scroll-to-bottom`  — keeps the arrow above the dock
+//   - `.chat-scroll-slider`     — (in ChatScrollSlider) keeps the track
+//                                 reachable when the viewport is narrow
+// Because it is plain CSS padding, VirtualScroller's `measureItems()` picks
+// the clearance up through `el.offsetHeight` for free — the sizer grows, and
+// its `scrollToBottom` (`realBottom = topSpacer + contentH`) lands on the
+// padded bottom, so auto-stick keeps the last message visible with no change
+// to the scroller's height model.
+
+let chatColumnEl: HTMLElement | null = null
+const setChatColumnEl = (el: unknown) => {
+  chatColumnEl = (el as HTMLElement | null) ?? null
+}
+
+let composerDockObserver: ResizeObserver | null = null
+const syncComposerInset = (height: number) => {
+  // Ignore the 0×0 report a display:none dock emits (v-show hides it when
+  // the centre diff opens) — zeroing the inset there would make the last
+  // row lose its clearance for the whole time the diff is open.
+  if (height <= 0 || !chatColumnEl) return
+  const px = `${Math.ceil(height)}px`
+  if (chatColumnEl.style.getPropertyValue('--chat-composer-inset') === px) return
+  chatColumnEl.style.setProperty('--chat-composer-inset', px)
+}
+const setComposerDockEl = (el: unknown) => {
+  composerDockObserver?.disconnect()
+  composerDockObserver = null
+  const dockEl = (el as HTMLElement | null) ?? null
+  if (!dockEl) return
+  composerDockObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      syncComposerInset(entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height)
+    }
+  })
+  composerDockObserver.observe(dockEl)
+}
+onUnmounted(() => {
+  composerDockObserver?.disconnect()
+  composerDockObserver = null
+  chatColumnEl = null
+})
+
+// True for the newest transcript group only. Pads that ONE row so the final
+// message scrolls clear of the floating composer. Index-based on purpose:
+// `:last-child` would pad whichever row the virtual window happens to end
+// on, which is a mid-transcript row whenever the window does not cover the
+// tail (leaving a ~150px hole in the middle of the conversation).
+const isLastGroup = (index: number) => index === messageGroups.value.length - 1
+
 // Timestamp (ms since epoch) of the most recent auto-stick assignment.
 // Set at every site that programmatically writes `container.scrollTop`
 // to keep the chat pinned to the bottom — the SSE chunk handler, the
@@ -4165,7 +4227,19 @@ const compactSession = async () => {
 <template>
   <div class="flex h-full w-full">
     <!-- Main Chat Content -->
-    <div class="flex flex-col h-full flex-1 min-w-0">
+    <!--
+      `relative` + `chat-column`: the composer FLOATS over the transcript
+      (see the `composer-dock` block at the bottom), so this column is the
+      containing block it anchors to, and the host of the
+      `--chat-composer-inset` custom property every consumer of that inset
+      reads (the scrim, the last transcript row, the scroll-to-bottom
+      button, ChatScrollSlider's track). The inset is written here by the
+      dock's ResizeObserver via `setChatColumnEl` — deliberately a plain
+      DOM write, not a reactive ref, so that growing the textarea (which
+      fires the observer on every input event) never re-runs ChatView's
+      (very large) render.
+    -->
+    <div :ref="setChatColumnEl" class="relative flex flex-col h-full flex-1 min-w-0 chat-column">
       <!--
         Chat header. Rendered only when the parent passed the
         `showHeader` prop (the kanban 3-column layout sets it; the
@@ -4226,13 +4300,21 @@ const compactSession = async () => {
         `flex` here, the wrapper is a regular block element — the
         VirtualScroller's `flex: 1 1 0` does nothing, the scroller
         collapses to 0×0, the messages overflow out of the wrapper,
-        and the last bubbles overlap the FileInput below. This is the
+        and the last bubbles overlap the composer below. This is the
         "no scroll, bubbles overlap input" bug.
+
+        The composer is a floating overlay now (an `absolute` sibling
+        anchored to the column), so this wrapper takes the column's FULL
+        height and content scrolls under the dock. It is also the element
+        that clears the dock: the last row is padded by
+        `--chat-composer-inset`, which the dock's ResizeObserver measures
+        and writes onto the parent `.chat-column` (see the script block
+        and `.last-transcript-row` in the style block).
       -->
       <div
         v-show="!showCenterDiff"
         ref="messagesWrapperRef"
-        class="relative flex-1 min-h-0 flex flex-col mb-4 messages-scroll-hide-native"
+        class="relative flex-1 min-h-0 flex flex-col messages-scroll-hide-native"
       >
         <!-- Changes-sidebar toggle for the headerless standalone layout
              (the kanban layout has its toggle button in the header above). -->
@@ -4416,7 +4498,10 @@ const compactSession = async () => {
           <template #default="{ item: group, index: groupIndex }">
             <div
               class="px-4 max-w-4xl mx-auto"
-              :class="groupIndex === 0 ? 'pt-6' : ''"
+              :class="[
+                groupIndex === 0 ? 'pt-6' : '',
+                isLastGroup(groupIndex) ? 'last-transcript-row' : '',
+              ]"
               :data-group-key="groupKey(group)"
             >
               <div
@@ -5008,18 +5093,26 @@ const compactSession = async () => {
              live-only diagnostics (backend is_skip_db=true), so pinning
              them at the bottom of the transcript area is correct UX too:
              the newest error is always visible without scrolling. -->
-        <div v-if="agentError" class="px-4 max-w-4xl mx-auto pb-2" data-testid="agent-error-list">
+        <div
+          v-if="agentError"
+          class="px-4 max-w-4xl mx-auto agent-error-list"
+          data-testid="agent-error-list"
+        >
           <AgentErrorCard :key="agentError.id" :content="agentError.content" />
         </div>
       </div>
 
-      <!-- Scroll to bottom button -->
+      <!-- Scroll to bottom button.
+           Anchored to the chat column (now `relative`) and lifted clear of
+           the floating composer by `--chat-composer-inset`, so it never ends
+           up half-hidden behind the dock on narrow viewports. z-31 puts it
+           above the dock's z-30. -->
       <Transition name="fade">
         <button
           v-if="!isAtBottom && messageGroups.length > 0"
           v-show="!showCenterDiff"
           @click="scrollToBottom(true, 'user-button-click')"
-          class="absolute bottom-24 right-8 p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
+          class="chat-scroll-to-bottom p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
         >
           <svg
@@ -5039,16 +5132,39 @@ const compactSession = async () => {
         </button>
       </Transition>
 
-      <!-- Input (hidden in peek-embed read-only mode) -->
+      <!--
+        Floating composer dock (hidden in peek-embed read-only mode).
+
+        Was the last flex child in normal flow, with a `border-top` and an
+        opaque `--semantic-sidebar-bg` fill. That cost the transcript a
+        slice of its height AND read as a hard-edged bar: the message
+        column ended in a 1px rule with content hard-clipped above it.
+
+        Now the dock is `position: absolute; bottom: 0` on the (relative)
+        chat column, so the transcript owns the full column height and the
+        transcript scrolls *under* the composer. The hard rule is replaced
+        by `composer-scrim` — a solid-to-transparent gradient that fades to
+        `--semantic-content-bg`, the same colour the transcript is painted
+        on, so messages dissolve into the composer instead of being cut off
+        (fading to `--semantic-sidebar-bg` instead would show a 1-shade seam).
+
+        The card reads as floating because of the shadow applied in
+        `.composer-dock :deep(.composer-card)` below.
+
+        Clearance is the other half of "floating": the LAST transcript row
+        is padded by `--chat-composer-inset` (see `last-transcript-row`), so
+        the newest message can always be scrolled fully clear of the dock.
+        The dock's ResizeObserver keeps that inset in sync as the composer
+        grows (textarea autogrow, attachment previews, queued messages).
+      -->
       <div
         v-if="!hideInput"
         v-show="!showCenterDiff"
-        class="p-4"
-        style="
-          border-top: 1px solid var(--color-border);
-          background-color: var(--semantic-sidebar-bg);
-        "
+        :ref="setComposerDockEl"
+        class="composer-dock p-4"
+        data-testid="composer-dock"
       >
+        <div class="composer-scrim" aria-hidden="true" data-testid="composer-scrim"></div>
         <div class="max-w-4xl mx-auto">
           <FileInput
             ref="fileInputRef"
@@ -5783,6 +5899,88 @@ const compactSession = async () => {
 /* Make room for the slider track at the extreme right edge. */
 .messages-scroll-hide-native :deep(.user-pill-rail) {
   right: 18px;
+}
+
+/* ─── Floating composer ──────────────────────────────────────────────────
+   The composer is an overlay, not the last flex child. The dock's
+   ResizeObserver writes its height into `--chat-composer-inset` on the
+   `.chat-column` (see the script block); everything below reads that one
+   number, so there is a single source of truth for "how much room does
+   the floating composer take". It is unset (0) while the dock is not
+   rendered — e.g. the read-only peek panel — which degrades the last row
+   to a plain 1rem of bottom padding, matching the old flow layout. */
+.chat-column {
+  --chat-composer-inset: 0px;
+}
+
+.composer-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Above the transcript (z-0/auto) and the pill rail + scroll slider
+     (z-20), below the scroll-to-bottom arrow (z-31). */
+  z-index: 30;
+}
+
+/* The fade that replaces the old `border-top` + opaque sidebar fill.
+   `--semantic-content-bg` is the colour the transcript is actually
+   painted on, so the gradient dissolves into the page instead of
+   stopping at a 1px rule — or showing the 1-shade seam that fading to
+   `--semantic-sidebar-bg` (the old bar fill) would have produced. */
+.composer-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Opaque across the dock itself (so nothing shows through the padding
+     around the card), then 3rem of fade ABOVE it — that extra band is
+     what softens the cut where the transcript runs under the composer. */
+  height: calc(100% + 3rem);
+  pointer-events: none;
+  background: linear-gradient(
+    to top,
+    var(--semantic-content-bg) 0,
+    var(--semantic-content-bg) calc(100% - 3rem),
+    transparent 100%
+  );
+}
+
+/* Lift the composer card off the page. Without this it reads as another
+   flat surface rather than something floating over the transcript. */
+.composer-dock :deep(.composer-card) {
+  box-shadow:
+    0 10px 30px -10px rgba(0, 0, 0, 0.7),
+    0 2px 8px -2px rgba(0, 0, 0, 0.45);
+}
+
+/* Bottom clearance for the newest message. Plain CSS padding on the last
+   row, so VirtualScroller's `measureItems()` (which reads
+   `el.offsetHeight`) folds it into the height model for free: the sizer
+   grows, and `scrollToBottom` lands on the padded bottom, so the newest
+   message is always fully visible above the composer. Keyed by group
+   index in the template, never `:last-child` — the last child of the
+   rendered window is a mid-transcript row whenever the window does not
+   cover the tail. */
+.last-transcript-row {
+  padding-bottom: calc(var(--chat-composer-inset) + 1rem);
+}
+
+/* Same clearance for the live agent-error band: it sits after the
+   VirtualScroller (outside the height model, so it can't borrow
+   `.last-transcript-row`'s padding) and would otherwise sit under the
+   dock. */
+.agent-error-list {
+  padding-bottom: calc(var(--chat-composer-inset) + 0.5rem);
+}
+
+/* Scroll-to-bottom arrow: sits clear of the dock instead of at a fixed
+   `bottom-24`, which was tuned for the old in-flow composer height. */
+.chat-scroll-to-bottom {
+  position: absolute;
+  right: 2rem;
+  bottom: calc(var(--chat-composer-inset) + 0.75rem);
+  z-index: 31;
 }
 
 /* V1 composer toolbar (single-card): quiet ghost actions + muted status.

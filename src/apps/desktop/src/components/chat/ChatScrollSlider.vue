@@ -248,7 +248,13 @@ defineExpose({ refresh: readAndApply })
   position: absolute;
   right: 2px;
   top: 8px;
-  bottom: 8px;
+  /* `--chat-composer-inset` is set by ChatView on its chat column (the
+     dock's ResizeObserver measures the floating composer). The track
+     stops above it so the thumb never drags behind the composer on a
+     narrow viewport, where the centred composer card reaches the right
+     edge. Unset anywhere else (this component's own unit tests, a bare
+     host) — the fallback keeps the original 8px. */
+  bottom: calc(var(--chat-composer-inset, 0px) + 8px);
   width: 12px;
   z-index: 20;
   border-radius: 999px;
