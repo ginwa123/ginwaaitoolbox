@@ -460,6 +460,26 @@ test "parseRange: open-ended range bytes=0- with file_size=200" {
     try testing.expectEqual(@as(u64, 199), result.?.end);
 }
 
+test "parseRange: zero-length file rejects every range form" {
+    // `bytes=0-` on an empty file used to compute `0u64 - 1` before the
+    // bounds check ran, which is an unsigned-underflow safety panic and
+    // aborted the process. Any HTTP client could trigger it with a single
+    // Range header against any empty static asset.
+    for ([_][]const u8{ "bytes=0-", "bytes=0-0", "bytes=0-99", "bytes=-1", "bytes=-50", "bytes=5-" }) |header| {
+        const result = try static_files.parseRange(header, 0);
+        try testing.expect(result == null);
+    }
+}
+
+test "parseRange: single-byte file open-ended returns byte 0" {
+    // file_size == 1 is the smallest non-zero size; `file_size - 1` is
+    // legal here and must still produce a usable range.
+    const result = try static_files.parseRange("bytes=0-", 1);
+    try testing.expect(result != null);
+    try testing.expectEqual(@as(u64, 0), result.?.start);
+    try testing.expectEqual(@as(u64, 0), result.?.end);
+}
+
 test "parseRange: suffix range bytes=-50 with file_size=200" {
     const result = try static_files.parseRange("bytes=-50", 200);
     try testing.expect(result != null);

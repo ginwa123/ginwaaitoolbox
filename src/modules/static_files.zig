@@ -416,6 +416,13 @@ pub const ByteRange = struct {
 /// (a full 200 response) is always correct.
 pub fn parseRange(header: []const u8, file_size: u64) !?ByteRange {
     if (!std.mem.startsWith(u8, header, "bytes=")) return null;
+    // A zero-length file has no satisfiable range. Rejecting it here also
+    // keeps the open-ended branch below from computing `file_size - 1` on a
+    // `0u64`: unsigned underflow is a safety panic, not an error return, so
+    // it aborts the process. The `start > end or end >= file_size` check
+    // that would have rejected the result sits AFTER the subtraction, too
+    // late to help.
+    if (file_size == 0) return null;
     const spec = header["bytes=".len..];
     const dash = std.mem.indexOfScalar(u8, spec, '-') orelse return null;
     const start_s = spec[0..dash];
