@@ -1,7 +1,9 @@
 package com.nalar.mobile.http
 
+import com.nalar.mobile.BuildConfig
 import java.io.IOException
 import java.io.InputStream
+import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import javax.net.ssl.HttpsURLConnection
@@ -16,8 +18,7 @@ class HttpsHttpExchange(
     private val readTimeoutMillis: Int = DEFAULT_TIMEOUT_MILLIS,
 ) : HttpExchange {
     override fun execute(request: HttpRequestSpec): HttpResponseSpec {
-        val connection = (URL(request.url).openConnection() as? HttpsURLConnection)
-            ?: throw IOException("Request did not open an HTTPS connection")
+        val connection = openFor(request.url)
 
         try {
             connection.requestMethod = request.method
@@ -55,7 +56,7 @@ class HttpsHttpExchange(
     }
 
     /** `getHeaderFields()` keys the status line under a null name; drop it so only real headers survive. */
-    private fun HttpsURLConnection.readResponseHeaders(): List<HttpHeader> =
+    private fun HttpURLConnection.readResponseHeaders(): List<HttpHeader> =
         headerFields.entries.flatMap { (name, values) ->
             if (name == null) {
                 emptyList()
@@ -71,5 +72,31 @@ class HttpsHttpExchange(
         const val DEFAULT_TIMEOUT_MILLIS = 15_000
         const val ACCEPT_HEADER = "Accept"
         const val DEFAULT_ACCEPT = "application/json"
+
+        /**
+         * Opens [url], enforcing HTTPS unless this build has opted out.
+         *
+         * Typed as [HttpURLConnection] rather than [HttpsURLConnection] because a
+         * debug build can be pointed at a plain-HTTP nalar on the emulator's
+         * host alias, and because every operation this package performs —
+         * method, headers, timeouts, streaming, the error stream — lives on the
+         * base type anyway. The narrower type bought nothing and made the one
+         * layer that actually opens sockets the one layer no local-server test
+         * could reach.
+         *
+         * The HTTPS rule is relocated, not dropped: a non-HTTPS URL is still
+         * rejected outright unless `ALLOW_INSECURE_HTTP` is on, and that flag is
+         * false in every release build. Kept in one place so the binary
+         * exchange, which downloads files, cannot drift from it.
+         */
+        internal fun openFor(url: String): HttpURLConnection {
+            val opened = URL(url).openConnection()
+            if (opened is HttpsURLConnection) return opened
+            if (!BuildConfig.ALLOW_INSECURE_HTTP) {
+                throw IOException("Request did not open an HTTPS connection")
+            }
+            return opened as? HttpURLConnection
+                ?: throw IOException("Request did not open an HTTP connection")
+        }
     }
 }

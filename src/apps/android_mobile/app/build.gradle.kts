@@ -5,6 +5,35 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// The API host is a build-time constant rather than a runtime setting, and that
+// is not a preference — it is the only seam that works. The app resolves all
+// four of its ViewModels during the first composition of `MainActivity`, and an
+// instrumented test rule launches that Activity *before* any `@Before` runs, so
+// a value a test assigned at runtime would always arrive after
+// `HttpsAuthTransport` had already captured the production host. Baking it into
+// the variant removes the ordering question entirely.
+//
+// The functional UI suite passes `-PnalarBaseUrl=http://10.0.2.2:<port>` to talk
+// to a harness-booted nalar; nothing else does. `10.0.2.2` is the emulator's own
+// alias for the host's loopback interface, which is the address a `127.0.0.1`
+// bound server is reachable on from inside the emulator.
+val productionBaseUrl = "https://agent.ginwa.site"
+
+val debugBaseUrl: String = run {
+    val raw = (project.findProperty("nalarBaseUrl") as String?)?.trim().orEmpty()
+    if (raw.isEmpty()) {
+        productionBaseUrl
+    } else {
+        require(raw.startsWith("http://") || raw.startsWith("https://")) {
+            "nalarBaseUrl must be an absolute http(s) URL, got: $raw"
+        }
+        require(!raw.contains('"') && !raw.contains('\\')) {
+            "nalarBaseUrl must not contain quotes or backslashes, got: $raw"
+        }
+        raw.trimEnd('/')
+    }
+}
+
 android {
     namespace = "com.nalar.mobile"
     compileSdk = 35
@@ -20,15 +49,44 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // Release-safe defaults: the production host, and HTTPS-only
+        // enforcement on. Each build type below restates both rather than
+        // relying on inheritance, so a reader can verify the one invariant that
+        // matters here — "release never relaxes" — without knowing Gradle's
+        // inheritance rules.
+        buildConfigField("String", "API_BASE_URL", "\"$productionBaseUrl\"")
+        buildConfigField("boolean", "ALLOW_INSECURE_HTTP", "false")
     }
 
     buildTypes {
+        // The functional UI suite's seam.
+        //
+        // `ALLOW_INSECURE_HTTP` widens the client's HTTPS-only checks just far
+        // enough to open a plain-HTTP socket to a local server. It is a debug
+        // value because that is the only build that should ever talk to a
+        // server it was not shipped to talk to; it is `false` in release, and
+        // the cleartext allowance the platform needs is likewise scoped to
+        // `src/debug/res/xml/network_security_config.xml`.
+        //
+        // Note this does *not* make a debug build insecure by default: with no
+        // `-PnalarBaseUrl`, a debug APK points at production over HTTPS exactly
+        // as release does, and the flag is simply unused.
+        debug {
+            buildConfigField("String", "API_BASE_URL", "\"$debugBaseUrl\"")
+            buildConfigField("boolean", "ALLOW_INSECURE_HTTP", "true")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // Restated from `defaultConfig` on purpose — see the comment there.
+            // `debugBaseUrl` is deliberately unreadable here, so a stray
+            // `-PnalarBaseUrl` on a release invocation cannot redirect it.
+            buildConfigField("String", "API_BASE_URL", "\"$productionBaseUrl\"")
+            buildConfigField("boolean", "ALLOW_INSECURE_HTTP", "false")
         }
     }
 
@@ -43,6 +101,9 @@ android {
 
     buildFeatures {
         compose = true
+        // Off by default under AGP 8. Without this the module has no
+        // `BuildConfig` at all, so the base-URL seam above cannot exist.
+        buildConfig = true
     }
 
     testOptions {

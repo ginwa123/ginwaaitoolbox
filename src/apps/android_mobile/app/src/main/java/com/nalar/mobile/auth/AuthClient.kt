@@ -1,5 +1,6 @@
 package com.nalar.mobile.auth
 
+import com.nalar.mobile.BuildConfig
 import com.nalar.mobile.http.HttpHeader
 import com.nalar.mobile.http.HttpRequestSpec
 import com.nalar.mobile.http.HttpsHttpExchange
@@ -69,8 +70,19 @@ class HttpsAuthTransport(baseUrl: String) : AuthTransport {
     )
 
     init {
-        require(normalizedBaseUrl.startsWith("https://")) {
-            "Nalar API must use HTTPS"
+        // HTTPS is still the rule. The one exception is a debug build that has
+        // been pointed at a nalar running on the machine hosting the emulator —
+        // the functional UI suite's seam — and `ALLOW_INSECURE_HTTP` is false in
+        // every release build, so this cannot reach a shipped APK.
+        require(
+            normalizedBaseUrl.startsWith("https://") ||
+                (BuildConfig.ALLOW_INSECURE_HTTP && normalizedBaseUrl.startsWith("http://")),
+        ) {
+            if (BuildConfig.ALLOW_INSECURE_HTTP) {
+                "Nalar API must use HTTP or HTTPS"
+            } else {
+                "Nalar API must use HTTPS"
+            }
         }
     }
 

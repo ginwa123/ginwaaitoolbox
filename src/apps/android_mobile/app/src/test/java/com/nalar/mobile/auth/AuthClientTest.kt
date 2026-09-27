@@ -1,9 +1,11 @@
 package com.nalar.mobile.auth
 
+import com.nalar.mobile.BuildConfig
 import java.io.IOException
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -271,8 +273,37 @@ class AuthClientTest {
         )
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun httpsTransportRejectsCleartextBaseUrl() {
-        HttpsAuthTransport("http://agent.ginwa.site")
+    @Test
+    fun httpsTransportRejectsCleartextUnlessTheBuildPermitsIt() {
+        // Release refuses a cleartext base URL outright. The debug variant
+        // accepts one, because the functional UI suite points the app at a
+        // nalar running on the machine that hosts the emulator and that hop is
+        // plain HTTP. Asserting against the flag rather than against a fixed
+        // expectation is what keeps this true in both variants; the release
+        // half is pinned by `AuthConfigContractTest`, which reads the build
+        // script, since these tests only ever run under debug.
+        val cleartext = "http://agent.ginwa.site"
+
+        if (BuildConfig.ALLOW_INSECURE_HTTP) {
+            HttpsAuthTransport(cleartext)
+        } else {
+            assertThrows(IllegalArgumentException::class.java) {
+                HttpsAuthTransport(cleartext)
+            }
+        }
+    }
+
+    @Test
+    fun httpsTransportRejectsEverySchemeThatIsNotHttpOrHttps() {
+        // The widening is for plain HTTP specifically, so the flag cannot be
+        // used to smuggle in a scheme this client has no business opening.
+        for (url in listOf("ftp://agent.ginwa.site", "file:///etc/hosts", "agent.ginwa.site")) {
+            assertThrows(
+                "$url must be refused in every build",
+                IllegalArgumentException::class.java,
+            ) {
+                HttpsAuthTransport(url)
+            }
+        }
     }
 }
