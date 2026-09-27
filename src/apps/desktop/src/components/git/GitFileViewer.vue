@@ -30,7 +30,6 @@ const emit = defineEmits<{
 const isLoading = ref(false)
 const error = ref<string | null>(null)
 const diff = ref<GitFileDiff | null>(null)
-const wordWrap = ref(false)
 
 // Mini chat popup state
 const showMiniChat = ref(false)
@@ -182,19 +181,6 @@ onMounted(() => {
         <span style="color: var(--color-red);">-{{ stats.removed }}</span>
       </div>
 
-      <!-- Word wrap toggle -->
-      <button
-        @click="wordWrap = !wordWrap"
-        class="px-2 py-1 text-xs rounded transition-colors"
-        :style="{
-          backgroundColor: wordWrap ? 'var(--semantic-active-bg)' : 'transparent',
-          color: wordWrap ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
-        }"
-        title="Toggle word wrap"
-      >
-        Wrap
-      </button>
-
       <!-- Close button -->
       <button
         @click="emit('close')"
@@ -243,8 +229,7 @@ onMounted(() => {
     <!-- GitHub-style Diff View -->
     <div
       v-else
-      class="flex-1 overflow-auto"
-      :class="{ 'wrap-on': wordWrap }"
+      class="flex-1 overflow-auto diff-wrap"
       :style="{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }"
     >
       <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px;">
@@ -439,13 +424,14 @@ onMounted(() => {
   height: 100%;
 }
 
-/* Word wrap support */
-.wrap-on table {
+/* Word wrap is always on: long diff lines would otherwise push a
+   horizontal scrollbar across the whole viewer. */
+.diff-wrap table {
   white-space: pre-wrap;
   word-break: break-all;
 }
 
-.wrap-on .diff-line td:last-child {
+.diff-wrap .diff-line td:last-child {
   word-break: break-all;
 }
 
