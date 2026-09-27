@@ -3,6 +3,8 @@ package com.nalar.mobile.chat
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,11 +28,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,16 +50,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
+import com.nalar.mobile.ui.NalarBackgroundRaised
 import com.nalar.mobile.ui.NalarBorder
 import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarError
@@ -69,12 +78,12 @@ import com.nalar.mobile.ui.NalarText
  *
  * ### What is a control here and what is not
  *
- * The web's footer row is five dropdowns. A phone has four of those wired to
- * nothing, and a dropdown that opens an empty menu is worse than no dropdown —
- * it teaches the reader that the footer is decoration. So the footer's facts
- * (the model, the working directory) are rendered as *text*, and the only
- * thing in the row that is a button is the one that genuinely does something:
- * the chevron that expands a truncated `cwd` to the whole path.
+ * The web's footer row is five dropdowns. Two of them are real on a phone: the
+ * model, because a profile is picked from a list the server hands us and the
+ * choice is persisted per session, and the `cwd` expander, because there is a
+ * whole path hidden behind one line. The other three are wired to nothing, and
+ * a dropdown that opens an empty menu is worse than no dropdown — it teaches
+ * the reader that the footer is decoration. So those stay as text.
  *
  * The chevron is drawn only when there is a `cwd` to expand. A permanently
  * mounted expander is a control that lies about whether anything is hidden.
@@ -100,7 +109,29 @@ internal fun ChatComposer(
     isSending: Boolean,
     isAttaching: Boolean,
     isWorking: Boolean,
+    /**
+     * The per-session profile override, verbatim.
+     *
+     * The **raw** column, not what the chip shows: it is `""` on every chat
+     * nobody has picked a profile for, and the chip's label is the cascade
+     * over this and [activeModelProfile] — see [effectiveProfileName]. Keeping
+     * the raw value as the single input is what stops the chip and the
+     * picker's tick from being able to disagree.
+     */
     model: String,
+    /** Every configured profile, for the picker. Empty renders no menu. */
+    modelProfiles: List<ModelProfile> = emptyList(),
+    /** The account-wide default, badged `(active)` in the picker. */
+    activeModelProfile: String? = null,
+    /**
+     * Whether a save is in flight.
+     *
+     * The menu is not *hidden* while this is true — a menu that vanishes
+     * under the reader's thumb is worse than a slow one — but its rows are
+     * inert, because a second pick would race the first.
+     */
+    isSavingModel: Boolean = false,
+    onSelectModel: (String) -> Unit = {},
     cwd: String,
     onDraftChanged: (String) -> Unit,
     onAttach: () -> Unit,
@@ -261,7 +292,14 @@ internal fun ChatComposer(
                     color = NalarBorder.copy(alpha = 0.7f),
                 )
 
-                ComposerFooter(model = model, cwd = cwd)
+                ComposerFooter(
+                    model = model,
+                    modelProfiles = modelProfiles,
+                    activeModelProfile = activeModelProfile,
+                    isSavingModel = isSavingModel,
+                    onSelectModel = onSelectModel,
+                    cwd = cwd,
+                )
             }
         }
     }
@@ -378,16 +416,35 @@ private fun AttachmentThumbnail(
 /**
  * The turn's facts, under a divider.
  *
- * Read-only by design — see [ChatComposer]. Every value here is a fact the
- * ViewModel already holds, and rendering it as text is the honest version of
- * the web's dropdown for a client that has nothing to change it to.
+ * The model is a control; the working directory is not. See [ChatComposer] for
+ * why the cwd stays text — the honest reason it has nothing to change *to* is
+ * also the honest reason the model is now a menu: a profile is picked from a
+ * list the server hands us, and the per-session choice is persisted with a
+ * `PUT` the backend has an endpoint for.
  */
 @Composable
-private fun ComposerFooter(model: String, cwd: String) {
+private fun ComposerFooter(
+    model: String,
+    modelProfiles: List<ModelProfile>,
+    activeModelProfile: String?,
+    isSavingModel: Boolean,
+    onSelectModel: (String) -> Unit,
+    cwd: String,
+) {
     // Nothing to expand means no expander: a chevron that toggles one line
     // when both lines are already visible is a control that does nothing.
     val canExpand = cwd.isNotBlank()
     var expanded by remember { mutableStateOf(false) }
+
+    // The cascade's answer, computed once and used by both the chip's label and
+    // the picker's tick. Two independent readings of "which profile is this"
+    // is how a chip and its own menu end up disagreeing.
+    val effective = effectiveProfileName(model, activeModelProfile)
+    // A menu with nothing in it is a menu that opens onto an empty list, so
+    // the chip degrades to the plain label it used to be. A per-session choice
+    // on its own is enough to keep the menu: the reader then has a way to undo
+    // it, which is the one row a picker with a single implicit choice needs.
+    val canPickModel = modelProfiles.isNotEmpty() || model.isNotEmpty()
 
     Row(
         modifier = Modifier
@@ -396,8 +453,19 @@ private fun ComposerFooter(model: String, cwd: String) {
             .padding(start = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (model.isNotBlank()) {
-            FooterFact(label = "Model", value = model, tag = "chat_footer_model")
+        if (effective != null) {
+            if (canPickModel) {
+                ModelPicker(
+                    effectiveProfile = effective,
+                    profiles = modelProfiles,
+                    activeProfile = activeModelProfile,
+                    selectedProfile = model,
+                    isSaving = isSavingModel,
+                    onSelect = onSelectModel,
+                )
+            } else {
+                FooterFact(label = "Model", value = effective, tag = "chat_footer_model")
+            }
             Spacer(Modifier.width(12.dp))
         }
         if (canExpand) {
@@ -432,6 +500,216 @@ private fun ComposerFooter(model: String, cwd: String) {
                     modifier = Modifier.size(18.dp),
                 )
             }
+        }
+    }
+}
+
+/**
+ * The model chip and its menu.
+ *
+ * This is the composer's one dropdown, and it is the mirror of the web's
+ * `ChatView.vue` profile picker: same cascade, same `(active)` badge, same
+ * "Default (top-level config)" row that clears the per-session override.
+ *
+ * **`DropdownMenu`, not a bottom sheet.** The web anchors this to the chip and
+ * a phone has the same affordance — Material's menu is a `Popup` positioned
+ * against its anchor, so it opens *upward* out of a footer pinned to the
+ * bottom of the screen, which is where a thumb is not. A sheet would have
+ * covered the transcript, and this menu is short.
+ *
+ * The menu is a child of the `Box` around the chip, not of the footer `Row`:
+ * a `Row` child that grows would push the cwd and the expander sideways the
+ * moment the menu opened.
+ */
+@Composable
+private fun ModelPicker(
+    effectiveProfile: String,
+    profiles: List<ModelProfile>,
+    activeProfile: String?,
+    selectedProfile: String,
+    isSaving: Boolean,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    // The action a row fires is current without capturing the lambda the
+    // composable was composed with — the same reason the composer's other
+    // callbacks go through `rememberUpdatedState`.
+    val onSelectNow by rememberUpdatedState(onSelect)
+
+    Box {
+        Surface(
+            onClick = { expanded = true },
+            shape = RoundedCornerShape(6.dp),
+            color = Color.Transparent,
+            contentColor = NalarText,
+            modifier = Modifier
+                .testTag("chat_footer_model")
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "Model $effectiveProfile. Change model"
+                },
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 2.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Model",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NalarDim,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.width(4.dp))
+                Text(
+                    text = effectiveProfile,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NalarMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 140.dp),
+                )
+                // The affordance. Without it the chip is a label that happens
+                // to be tappable, and a tappable label is the one control a
+                // reader has the least reason to try.
+                Icon(
+                    imageVector = Icons.Filled.ExpandMore,
+                    contentDescription = null,
+                    tint = NalarDim,
+                    modifier = Modifier
+                        .padding(start = 3.dp)
+                        .size(12.dp),
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = expanded,
+            // Dismissed on a *pick* as well as on an outside tap, or the menu
+            // would stay open over the transcript after the choice landed.
+            onDismissRequest = { expanded = false },
+            modifier = Modifier
+                .background(NalarBackgroundRaised, RoundedCornerShape(10.dp))
+                .border(1.dp, NalarBorder, RoundedCornerShape(10.dp))
+                .widthIn(min = 240.dp, max = 320.dp)
+                .testTag("chat_model_menu"),
+            containerColor = NalarBackgroundRaised,
+        ) {
+            // "Default" clears the per-session override rather than naming a
+            // profile, and the server treats the empty string as that
+            // instruction — so the row's tick answers the *cascade*, not the
+            // column: a chat with no override but an account-wide active
+            // profile is already running on a named one.
+            ProfileMenuRow(
+                title = "Default (top-level config)",
+                detail = "Follows the profile marked active in settings.",
+                isChecked = selectedProfile.isEmpty(),
+                enabled = !isSaving,
+                testTag = "chat_model_default",
+                onClick = {
+                    expanded = false
+                    onSelectNow("")
+                },
+            )
+
+            profiles.forEach { profile ->
+                ProfileMenuRow(
+                    title = profile.name,
+                    detail = profile.detail,
+                    isChecked = effectiveProfile == profile.name,
+                    isActiveDefault = activeProfile == profile.name,
+                    enabled = !isSaving,
+                    testTag = "chat_model_${profile.name}",
+                    onClick = {
+                        expanded = false
+                        onSelectNow(profile.name)
+                    },
+                )
+            }
+
+            if (profiles.isEmpty()) {
+                Text(
+                    text = "No profiles configured. Add one in Settings.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = NalarMuted,
+                    modifier = Modifier
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                        .testTag("chat_model_empty"),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One row of the profile menu.
+ *
+ * [isActiveDefault] is the `(active)` badge and [isChecked] is the tick, and
+ * they are different facts: one profile can be the account-wide default while
+ * a *different* one is in force for this chat, and a picker that conflated
+ * them would tell the reader the wrong profile is about to be used.
+ */
+@Composable
+private fun ProfileMenuRow(
+    title: String,
+    detail: String,
+    isChecked: Boolean,
+    enabled: Boolean,
+    testTag: String,
+    onClick: () -> Unit,
+    isActiveDefault: Boolean = false,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .testTag(testTag),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = NalarText,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (isActiveDefault) {
+                    Spacer(Modifier.width(6.dp))
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = NalarAccent.copy(alpha = 0.18f),
+                    ) {
+                        Text(
+                            text = "active",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = NalarAccent,
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                        )
+                    }
+                }
+            }
+            if (detail.isNotEmpty()) {
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = NalarMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (isChecked) {
+            Icon(
+                imageVector = Icons.Filled.Check,
+                contentDescription = "In use",
+                tint = NalarAccent,
+                modifier = Modifier
+                    .padding(start = 10.dp)
+                    .size(16.dp),
+            )
         }
     }
 }

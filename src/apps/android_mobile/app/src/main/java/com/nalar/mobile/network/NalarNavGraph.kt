@@ -2,10 +2,12 @@ package com.nalar.mobile.network
 
 import com.nalar.mobile.projects.CreateTaskHost
 import com.nalar.mobile.projects.CreateTaskRequest
+import com.nalar.mobile.projects.NewChatProjectSheet
 import com.nalar.mobile.projects.ProjectChatsScreen
 import com.nalar.mobile.projects.ProjectSummary
 import com.nalar.mobile.projects.ProjectsActions
 import com.nalar.mobile.projects.ProjectsState
+import com.nalar.mobile.projects.TaskTypes
 import com.nalar.mobile.projects.rememberCreateTaskController
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -296,6 +298,14 @@ fun NalarNavGraph(
     onSendChatMessage: () -> Unit,
     onStopChatRun: () -> Unit,
     /**
+     * Put a chat on a different profile, or clear the override with `""`.
+     *
+     * The `ChatViewModel`'s own method rather than something the graph builds:
+     * the graph owns navigation and wiring, and this is a state change plus a
+     * `PUT` that the ViewModel already knows how to fail honestly.
+     */
+    onSelectChatModel: (String) -> Unit = {},
+    /**
      * A picked image and the removal of an attached one.
      *
      * Defaulted like every other chat action after `onStopChatRun` so a graph
@@ -331,6 +341,23 @@ fun NalarNavGraph(
     // screen's `+`. Two controllers would be two pickers that agree today and
     // not tomorrow.
     val createTask = rememberCreateTaskController(onCreateTask)
+
+    // Which project the chat route's `+` is going to create in.
+    //
+    // Held here, above the `NavHost`, for the same reason `createTask` is: the
+    // press happens on one route and the navigation that follows happens on
+    // another. A local `remember` inside the chat destination would be
+    // destroyed by the very navigation the create triggers, which is the same
+    // trap `createdChats` is a flow rather than a callback for.
+    var newChatSheetOpen by remember { mutableStateOf(false) }
+
+    // The projects the chooser offers: the ones in the *selected* workspace,
+    // because that is the workspace the create will be posted under. Offering
+    // a project from another workspace here would send a `POST` whose path
+    // names a workspace the reader is not looking at.
+    val newChatCandidates = homeState.projects.filter {
+        it.workspaceId == homeState.selectedWorkspaceId
+    }
 
     // A `nalar://` link or a `popUpTo(SHELL)` navigation can leave a leaf as the
     // only destination on the back stack. The back arrow on those screens used to
@@ -536,6 +563,34 @@ fun NalarNavGraph(
         errorMessage = homeState.taskCreateError,
     )
 
+    // The chat bar's `+` chooser, over the graph and over `CreateTaskHost` so
+    // the two never stack. It renders nothing while closed, so calling it
+    // unconditionally costs one boolean read.
+    //
+    // It hands the pick straight to [onCreateTask] rather than routing through
+    // `createTask.start()`: a new *chat* skips the Standard/Memory picker the
+    // drawer's `+` shows, because the button that opened this sheet already
+    // answered that question. The create's result comes back through
+    // [createdChats], which is what navigates — see the collector above.
+    if (newChatSheetOpen) {
+        NewChatProjectSheet(
+            projects = newChatCandidates,
+            onProjectPicked = { project ->
+                // Closed *before* the create, for the reason the controller
+                // closes its own steps before one: the create navigates to a
+                // new chat, and a sheet left on top of that chat is a sheet the
+                // reader has to dismiss on arrival.
+                newChatSheetOpen = false
+                onCreateTask(
+                    project.workspaceId,
+                    project.id,
+                    CreateTaskRequest.StandardChat(TaskTypes.DEFAULT_NEW_CHAT_NAME),
+                )
+            },
+            onDismiss = { newChatSheetOpen = false },
+        )
+    }
+
     NavHost(
         navController = navController,
         startDestination = NalarRoutes.SHELL,
@@ -664,6 +719,14 @@ fun NalarNavGraph(
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,
                 onStop = onStopChatRun,
+                // The bar's `+`. It opens the project chooser rather than
+                // creating directly, because a chat is a task row and every
+                // task endpoint is nested under a project — see
+                // [NewChatProjectSheet] for why that is a sheet and not an
+                // invented workspace-level endpoint.
+                onNewChat = { newChatSheetOpen = true },
+                isCreatingChat = homeState.creatingTaskInProjectId != null,
+                onSelectModel = onSelectChatModel,
                 onAttachmentPicked = onAttachChatImage,
                 onRemoveAttachment = onRemoveChatAttachment,
                 onLoadOlder = onLoadOlderChatMessages,

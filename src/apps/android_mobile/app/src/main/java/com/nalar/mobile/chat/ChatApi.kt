@@ -65,6 +65,70 @@ object ChatApi {
     fun sessionPath(sessionId: String): String =
         "/api/llm/session/${encodeQueryValue(sessionId)}"
 
+    /**
+     * The profile list. Same tree as the web's `api.getNalarConfig()`
+     * (`api/index.ts:4313`), which is the call `ChatView.vue`'s picker reads.
+     */
+    fun profilesPath(): String = "/api/config/nalar"
+
+    /**
+     * `PUT /api/llm/session/{id}` — the per-session profile choice.
+     *
+     * Field-for-field the desktop's `api.updateSession`
+     * (`api/index.ts:1588`), including the two empty strings. They are not
+     * padding: the backend treats an empty `name` and an empty
+     * `is_auto_retry_until_stop` as "leave alone"
+     * (`session_update.zig:92`), so omitting them would change the meaning
+     * only if the handler ever stopped defaulting them to `""`. Sending them
+     * is what makes the request say what it means instead of depending on a
+     * struct default.
+     *
+     * An **empty** `selected_profile_model` is a real instruction, not an
+     * absent field: `session_update.zig:84` writes the column unconditionally
+     * precisely so a chat can be put back on the default profile. Clearing the
+     * per-session override and keeping it are the same PUT with different text.
+     */
+    fun updateSessionBody(
+        selectedProfileModel: String,
+        name: String = "",
+        isAutoRetryUntilStop: String = "",
+    ): String = JSONObject()
+        .put("selected_profile_model", selectedProfileModel)
+        .put("name", name)
+        .put("is_auto_retry_until_stop", isAutoRetryUntilStop)
+        .toString()
+
+    /**
+     * The profile list, and the one the server calls active.
+     *
+     * `profiles` is a raw passthrough of `config.profiles_models` — an *object*
+     * keyed by profile name, not the array the web's own type would suggest —
+     * so it is read with `optJSONObject` and the keys are the names. Reading it
+     * as an array yields an empty list, which renders as a picker saying "no
+     * profiles configured" while the server has several.
+     *
+     * `active_profile` is `""` rather than null when unset, so it is normalised
+     * to null here. That mirrors the web, which does the same coercion, and it
+     * is what makes the effective-profile cascade a single `?:` instead of a
+     * three-way branch every reader has to re-derive.
+     */
+    fun parseProfiles(body: String): ProfilesPage {
+        val json = JSONObject(body)
+        val profiles = json.optJSONObject("profiles")
+        val names = profiles?.keys()?.asSequence()?.toList().orEmpty()
+        return ProfilesPage(
+            profiles = names.map { name ->
+                val entry = profiles?.optJSONObject(name)
+                ModelProfile(
+                    name = name,
+                    model = entry?.optNullableString("model").orEmpty(),
+                    baseUrl = entry?.optNullableString("base_url").orEmpty(),
+                )
+            },
+            activeProfile = json.optNullableString("active_profile")?.takeIf { it.isNotEmpty() },
+        )
+    }
+
     fun stopPath(sessionId: String): String =
         "/api/llm/session/${encodeQueryValue(sessionId)}/stop"
 

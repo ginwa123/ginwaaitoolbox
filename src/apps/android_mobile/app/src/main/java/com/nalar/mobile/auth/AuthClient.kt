@@ -40,6 +40,25 @@ interface AuthTransport {
         path: String,
         headers: Map<String, String>,
     ): AuthHttpResponse
+
+    /**
+     * `PUT /api/llm/session/{id}` is how a per-session profile choice is
+     * persisted, and the backend has no `POST` alias for it.
+     *
+     * A default that throws rather than an abstract member: the app has a
+     * double-digit number of transport fakes in its tests, each written against
+     * a two-method interface, and only the one test that exercises the profile
+     * picker needs this verb. Abstracting it makes every one of them a
+     * `NotImplementedError` they never call, which is churn with no coverage
+     * behind it. A fake that a `put` does reach still fails loudly.
+     */
+    fun put(
+        path: String,
+        body: String,
+        headers: Map<String, String>,
+    ): AuthHttpResponse = throw UnsupportedOperationException(
+        "This transport does not implement PUT",
+    )
 }
 
 class HttpsAuthTransport(baseUrl: String) : AuthTransport {
@@ -65,6 +84,12 @@ class HttpsAuthTransport(baseUrl: String) : AuthTransport {
         path: String,
         headers: Map<String, String>,
     ): AuthHttpResponse = request("GET", path, null, headers)
+
+    override fun put(
+        path: String,
+        body: String,
+        headers: Map<String, String>,
+    ): AuthHttpResponse = request("PUT", path, body, headers)
 
     private fun request(
         method: String,

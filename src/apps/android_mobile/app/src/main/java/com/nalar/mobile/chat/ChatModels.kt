@@ -223,6 +223,63 @@ private fun ChatMessageGroup.bareDeclarations(): List<ToolCallEntry> {
     return bare.flatMap { ToolCalls.parse(it.toolCallsJson) }
 }
 
+/**
+ * One entry of `config.profiles_models`: a saved LLM configuration.
+ *
+ * A *profile*, not a model. The name is the profile's ("space bunny free"),
+ * the model is the underlying provider model, and picking the profile is what
+ * the chat persists — the backend's `resolveProfileField` looks the name up in
+ * this map. Showing the model alone would be a string the server cannot act on.
+ */
+data class ModelProfile(
+    val name: String,
+    val model: String,
+    val baseUrl: String,
+) {
+    /**
+     * The one line under the name in the picker.
+     *
+     * Both halves are optional on the wire (`optNullableString` → `""` for a
+     * JSON null), and a profile that has one but not the other must still say
+     * something. Joining blindly would leave a leading or trailing `·`, which
+     * reads as a rendering bug rather than as a missing value.
+     */
+    val detail: String
+        get() = listOf(model, baseUrl).filter { it.isNotEmpty() }.joinToString(" · ")
+}
+
+/**
+ * `GET /api/config/nalar`'s two answers: every profile, and the active one.
+ */
+data class ProfilesPage(
+    val profiles: List<ModelProfile>,
+    /**
+     * The reader's chosen default from Settings → Profiles → "Set active".
+     *
+     * Null rather than `""` when unset, normalised once in
+     * [ChatApi.parseProfiles]. That is what lets the cascade below be a plain
+     * elvis chain instead of a check for "blank" in two places.
+     */
+    val activeProfile: String? = null,
+)
+
+/**
+ * The profile the next LLM call in this chat will actually use.
+ *
+ * Mirrors `workflow.zig::resolveProfileField` and the web's `effectiveProfile`
+ * computed, so the chip names the profile the server will apply rather than
+ * the one the reader last tapped.
+ *
+ * The per-session value falls through on *empty*, not just null. It arrives as
+ * `""` whenever nobody has picked one for this chat — that is what
+ * `session_update.zig` writes by default — so a `?:`-only check would show
+ * "Default" on a chat the server is running on the reader's active profile.
+ */
+fun effectiveProfileName(
+    selectedProfile: String,
+    activeProfile: String?,
+): String? = selectedProfile.ifEmpty { activeProfile }
+
 data class ChatUiState(
     val sessionId: String? = null,
     val isLoading: Boolean = true,
@@ -281,7 +338,64 @@ data class ChatUiState(
     val subAgentsRunning: Int = 0,
     val subAgentsTotal: Int = 0,
     val subAgentsFailed: Int = 0,
+    /**
+     * Every profile in `config.profiles_models`, for the composer's picker.
+     *
+     * Fetched once when a session opens and held for the life of the chat
+     * rather than re-read on every tap: profiles change from the desktop's
+     * settings dialog, not from this app, so a re-read per tap would be a
+     * request whose answer is guaranteed to match the one already in hand —
+     * and a picker that flickers through a loading state it did not need.
+     */
+    val availableProfiles: List<ModelProfile> = emptyList(),
+    /**
+     * The reader's account-wide default profile, or null when none is set.
+     *
+     * This is *not* [selectedProfileModel]. It is the middle step of the
+     * cascade in [effectiveProfileName], and it is why a chat the reader never
+     * touched still shows a real profile name rather than "Default".
+     */
+    val activeProfile: String? = null,
+    /**
+     * Profiles are on their way.
+     *
+     * Separate from [isLoading], which describes the *transcript*. A chat with
+     * a full transcript and an unfetched profile list is not loading, and
+     * showing a transcript spinner for it would blank the reader's scroll
+     * position to announce that a dropdown is not ready yet.
+     */
+    val isLoadingProfiles: Boolean = false,
+    /**
+     * A `PUT` of the chosen profile is in flight.
+     *
+     * The picker's own guard, not the composer's: a second tap on a different
+     * profile while the first is still saving is a race between two PUTs whose
+     * last writer is whichever response landed last, not whichever the reader
+     * tapped last. Blocking the menu is cheaper than ordering the writes.
+     */
+    val isUpdatingProfile: Boolean = false,
 ) {
+    /**
+     * The name to show on the model's chip — the *effective* profile, which is
+     * not always [selectedProfileModel].
+     *
+     * Computed here rather than in the composer so the chip, the picker's tick
+     * and the header can never disagree about which profile is in force: there
+     * is one answer, and it is the same function of the same two fields.
+     */
+    val effectiveProfile: String?
+        get() = effectiveProfileName(selectedProfileModel, activeProfile)
+
+    /**
+     * Whether the model chip is a control at all.
+     *
+     * A chip that opens a list of nothing is a control that teaches the reader
+     * the footer is decoration, which is worse than a plain label — so with no
+     * profiles configured and no per-session choice to clear, the chip is drawn
+     * as the text it used to be.
+     */
+    val canPickProfile: Boolean
+        get() = availableProfiles.isNotEmpty() || selectedProfileModel.isNotEmpty()
     /**
      * Rows are on screen and the revalidation failed. A chat that blanks
      * because the network blipped is worse than a stale one.

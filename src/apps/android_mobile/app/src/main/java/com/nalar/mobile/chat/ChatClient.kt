@@ -81,6 +81,53 @@ class ChatClient(
         return interpretWrite(response, "Your message could not be sent. Try again.")
     }
 
+    /**
+     * Every configured profile, and the reader's active default.
+     *
+     * Read once when a session opens rather than per tap, because a profile
+     * list cannot change from inside this app — it changes in the desktop's
+     * settings dialog. See [ChatUiState.availableProfiles] for why that makes a
+     * per-tap refetch pure waste rather than a refresh.
+     */
+    fun loadProfiles(): ChatResult<ProfilesPage> = get(
+        path = ChatApi.profilesPath(),
+        parse = ChatApi::parseProfiles,
+    )
+
+    /**
+     * Saves which profile this chat runs on.
+     *
+     * A `PUT` and not a field on the next send, because the choice has to
+     * outlive this process: the reader picks a profile on Tuesday, and the
+     * reply that goes out on Wednesday is queued by a worker this phone is not
+     * holding. Sending it with the turn would make the selection apply to
+     * exactly one message.
+     *
+     * [profileName] empty clears the per-session override and puts the chat
+     * back on the cascade's next step. That is a real instruction the server
+     * honours (`session_update.zig:84` writes the column unconditionally), so
+     * it is the same call with different text rather than a second method.
+     */
+    fun updateSelectedProfile(
+        sessionId: String,
+        profileName: String,
+    ): ChatResult<String> {
+        val response = try {
+            transport.put(
+                path = ChatApi.sessionPath(sessionId),
+                body = ChatApi.updateSessionBody(selectedProfileModel = profileName),
+                headers = authenticatedHeaders(json = true),
+            )
+        } catch (_: Exception) {
+            return ChatResult.Unavailable(unreachableMessage())
+        }
+        return interpretWrite(
+            response,
+            "That model could not be saved. Try again.",
+            parse = { body -> JSONObject(body).optNullableString("selected_profile_model").orEmpty() },
+        )
+    }
+
     fun stopRun(sessionId: String): ChatResult<Unit> {
         val response = try {
             transport.post(
@@ -190,10 +237,32 @@ class ChatClient(
         }
     }
 
+    /**
+     * A write whose reply carries nothing this client needs.
+     *
+     * An overload rather than a defaulted `parse` on the generic one: a default
+     * of `{ Unit }` leaves `T` unconstrained, so the compiler cannot infer it
+     * at a call site and every existing caller would have to say
+     * `interpretWrite<Unit>(...)`. Two functions keep each call site saying only
+     * what it actually reads.
+     */
     private fun interpretWrite(
         response: AuthHttpResponse,
         rejectionMessage: String,
-    ): ChatResult<Unit> {
+    ): ChatResult<Unit> = interpretWrite(response, rejectionMessage, parse = { })
+
+    /**
+     * A write that answers with a value, run through [parse].
+     *
+     * The parse is *inside* the try-free region but guarded, so an unreadable
+     * success body is [ChatResult.Unavailable] rather than an exception
+     * escaping into a coroutine — the same rule [interpretRead] follows.
+     */
+    private fun <T> interpretWrite(
+        response: AuthHttpResponse,
+        rejectionMessage: String,
+        parse: (String) -> T,
+    ): ChatResult<T> {
         if (response.statusCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
             return ChatResult.SignedOut
         }
@@ -205,7 +274,11 @@ class ChatClient(
         if (response.statusCode !in 200..299) {
             return ChatResult.Unavailable(messageForStatus(response.statusCode))
         }
-        return ChatResult.Loaded(Unit)
+        return try {
+            ChatResult.Loaded(parse(response.body))
+        } catch (_: Exception) {
+            ChatResult.Unavailable("The server sent a response this app could not read.")
+        }
     }
 
     private fun authenticatedHeaders(json: Boolean): Map<String, String> {

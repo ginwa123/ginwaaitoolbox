@@ -221,6 +221,14 @@ fun ChatView(
      */
     isRunning: Boolean = false,
     onStop: () -> Unit = {},
+    /**
+     * Put this chat on a different profile.
+     *
+     * Carries the profile *name*, and empty means "clear the per-session
+     * override" — the same encoding the `PUT` uses, so the composer's menu and
+     * the request cannot disagree about what clearing means.
+     */
+    onSelectModel: (String) -> Unit = {},
     onLoadOlder: () -> Unit = {},
     onDismissError: () -> Unit = {},
     onAnswer: (QuestionAnswer) -> Unit = {},
@@ -662,6 +670,10 @@ fun ChatView(
             isAttaching = state.isAttaching,
             isWorking = isWorking,
             model = state.selectedProfileModel,
+            modelProfiles = state.availableProfiles,
+            activeModelProfile = state.activeProfile,
+            isSavingModel = state.isUpdatingProfile,
+            onSelectModel = onSelectModel,
             cwd = state.cwd,
             onDraftChanged = onDraftChanged,
             onAttach = {

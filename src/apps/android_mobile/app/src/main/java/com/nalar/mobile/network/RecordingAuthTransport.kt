@@ -35,6 +35,14 @@ class RecordingAuthTransport(
         delegate.get(path = path, headers = headers)
     }
 
+    override fun put(
+        path: String,
+        body: String,
+        headers: Map<String, String>,
+    ): AuthHttpResponse = capture("PUT", path, body, headers) {
+        delegate.put(path = path, body = body, headers = headers)
+    }
+
     private fun capture(
         method: String,
         path: String,

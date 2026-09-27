@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +33,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -111,6 +114,11 @@ fun chatStatusLabel(isWorking: Boolean, isLive: Boolean): String = when {
  * control lives in the composer — beside the send it replaces, so the row
  * never offers "start a turn" and "end a turn" at the same time. There is
  * exactly one title bar and one way to interrupt a run.
+ *
+ * The bar's `actions` slot carries the one thing a reader inside a chat wants
+ * that is not this chat: a new one. Everything else the web puts in a bar —
+ * renaming, compacting, the worktree menu — either has no place on a phone
+ * bar or is a per-account setting the desktop's settings screen already owns.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -121,6 +129,27 @@ fun ChatScreen(
     onDraftChanged: (String) -> Unit = {},
     onSend: () -> Unit = {},
     onStop: () -> Unit = {},
+    /**
+     * Start a new chat, and put this one behind it.
+     *
+     * A callback and not a navigation, because the graph owns navigation *and*
+     * the create: a chat belongs to a project, so the press has to become
+     * "which project?" before it can become a `POST`. See
+     * [com.nalar.mobile.network.NalarNavGraph].
+     */
+    onNewChat: () -> Unit = {},
+    /**
+     * A create is in flight.
+     *
+     * The affordance only. [com.nalar.mobile.recents.HomeViewModel.createTask]
+     * refuses a second one, so this is what stops the reader being offered a
+     * button that silently does nothing rather than saying "busy".
+     */
+    isCreatingChat: Boolean = false,
+    /**
+     * Put this chat on a different profile, or clear the override with `""`.
+     */
+    onSelectModel: (String) -> Unit = {},
     /**
      * A picked image, as the picker's own string.
      *
@@ -231,12 +260,41 @@ fun ChatScreen(
                         }
                     },
                     actions = {
-                        // Nothing here. The stop control moved into the
-                        // composer, beside the send it replaces, and there is
-                        // one of them on purpose: a header that offers Stop
-                        // while the composer offers Send is telling the reader
-                        // two different things about the same run, and the one
-                        // they are holding is the one that can act on it.
+                        // The one thing the bar offers, and it is *not* the
+                        // stop control: that lives in the composer beside the
+                        // send it replaces, so there is exactly one answer to
+                        // "can I end this run" and it is on the control the
+                        // reader is already holding.
+                        //
+                        // A new chat, because a reader who has finished with
+                        // this one should not have to walk back through the
+                        // drawer, find the right project, and tap its `+` — the
+                        // drawer already has that path, and this is the one
+                        // that starts from where they are standing.
+                        IconButton(
+                            onClick = onNewChat,
+                            // Inert while a create is in flight. The ViewModel
+                            // guards it too; this is the affordance, that is
+                            // the invariant. Two chats from one tap is the
+                            // failure this exists to prevent.
+                            enabled = !isCreatingChat,
+                            modifier = Modifier
+                                .testTag("chat_new_chat")
+                                .semantics { contentDescription = "New chat" },
+                        ) {
+                            if (isCreatingChat) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = NalarDim,
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.Add,
+                                    contentDescription = null,
+                                )
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = NalarBackground,
@@ -256,6 +314,7 @@ fun ChatScreen(
                     onDraftChanged = onDraftChanged,
                     onSend = onSend,
                     onStop = onStop,
+                    onSelectModel = onSelectModel,
                     isRunning = isRunning,
                     onAttachmentPicked = onAttachmentPicked,
                     onRemoveAttachment = onRemoveAttachment,

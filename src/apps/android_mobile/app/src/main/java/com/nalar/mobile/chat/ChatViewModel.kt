@@ -72,6 +72,10 @@ class ChatViewModel(
     private var attachJob: Job? = null
     private var stopJob: Job? = null
     private var answerJob: Job? = null
+    /** The `GET /api/config/nalar` behind the composer's model picker. */
+    private var profilesJob: Job? = null
+    /** The `PUT /api/llm/session/{id}` that saves a picked profile. */
+    private var profileJob: Job? = null
 
     /**
      * Ids delivered live over SSE in this session view. A REST response skips
@@ -240,6 +244,88 @@ class ChatViewModel(
         startEventStream(sessionId)
         revalidate(sessionId, requestGeneration)
         reattachInFlightTurn(sessionId, requestGeneration)
+        loadProfiles(requestGeneration)
+    }
+
+    /**
+     * Fetches the profile list the composer's picker offers.
+     *
+     * On the same [generation] guard as everything else in an open: a profile
+     * list fetched for the chat the reader just left would otherwise land on
+     * the new one, and since profiles are account-wide the two lists are the
+     * same — but the *publish* is not, and a stale publish after a
+     * sign-out is a stale account's data on screen.
+     *
+     * Failure is silent by design. A profile list is a dropdown, not the
+     * transcript, and surfacing its failure through [ChatUiState.errorMessage]
+     * would blank a chat that loaded perfectly well to complain about a menu
+     * the reader may never open. The chip degrades to a plain label, which is
+     * exactly the control it used to be.
+     */
+    private fun loadProfiles(requestGeneration: Int) {
+        profilesJob?.cancel()
+        profilesJob = viewModelScope.launch {
+            val result = withContext(ioDispatcher) { client.loadProfiles() }
+            if (requestGeneration != generation) return@launch
+            val page = (result as? ChatResult.Loaded)?.value ?: return@launch
+            _uiState.update { state ->
+                state.copy(
+                    availableProfiles = page.profiles,
+                    activeProfile = page.activeProfile,
+                    isLoadingProfiles = false,
+                )
+            }
+        }
+    }
+
+    /**
+     * Put this chat on [profileName], and remember that it is there.
+     *
+     * Empty clears the override, which is a real choice — see
+     * [ChatClient.updateSelectedProfile] — and is what the picker's "Default"
+     * row sends.
+     *
+     * **The state changes only after the server agrees.** An optimistic write
+     * here would be actively wrong: the chip would name a profile the next
+     * turn does not use, and the reader's only evidence that the pick failed
+     * would be a chip they already trusted. A failed pick leaves the chip
+     * where it was and puts the reason on screen.
+     */
+    fun selectProfile(profileName: String) {
+        val state = _uiState.value
+        val sessionId = state.sessionId ?: return
+        if (state.isUpdatingProfile) return
+
+        profileJob?.cancel()
+        _uiState.update { it.copy(isUpdatingProfile = true, errorMessage = null) }
+        profileJob = viewModelScope.launch {
+            val result = withContext(ioDispatcher) {
+                client.updateSelectedProfile(sessionId, profileName)
+            }
+            when (result) {
+                is ChatResult.Loaded -> _uiState.update {
+                    // The server echoes the column it stored, which is the
+                    // authority on what this chat will now use.
+                    it.copy(
+                        selectedProfileModel = result.value,
+                        isUpdatingProfile = false,
+                    )
+                }
+
+                is ChatResult.Rejected -> _uiState.update {
+                    it.copy(isUpdatingProfile = false, errorMessage = result.message)
+                }
+
+                is ChatResult.Unavailable -> _uiState.update {
+                    it.copy(isUpdatingProfile = false, errorMessage = result.message)
+                }
+
+                ChatResult.SignedOut -> {
+                    _uiState.update { it.copy(isUpdatingProfile = false) }
+                    _sessionExpired.tryEmit(Unit)
+                }
+            }
+        }
     }
 
     /**
