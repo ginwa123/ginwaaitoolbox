@@ -20,6 +20,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.nalar.mobile.projects.ProjectsActions
+import com.nalar.mobile.projects.ProjectsState
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.RecentsSidebar
 import com.nalar.mobile.recents.WorkspaceOption
@@ -74,6 +76,17 @@ fun RecentsDrawerContent(
     signedInEmail: String? = null,
     isLoggingOut: Boolean = false,
     onLogout: () -> Unit = {},
+    /**
+     * The Projects section, forwarded to both drawers from here rather than
+     * from each call site.
+     *
+     * That is the whole reason this file exists: the shell's drawer and the
+     * chat route's drawer are two of the same drawer, and wiring this into
+     * `MobileHomeScreen` instead would have left the Projects section missing
+     * from whichever one a caller forgot.
+     */
+    projects: ProjectsState = ProjectsState.Empty,
+    projectActions: ProjectsActions = ProjectsActions.None,
 ) {
     Column(
         modifier = modifier.fillMaxSize(),
@@ -106,6 +119,8 @@ fun RecentsDrawerContent(
             signedInEmail = signedInEmail,
             isLoggingOut = isLoggingOut,
             onLogout = onLogout,
+            projects = projects,
+            projectActions = projectActions,
         )
     }
 }

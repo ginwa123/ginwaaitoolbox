@@ -1,5 +1,8 @@
 package com.nalar.mobile.testing
 
+import com.nalar.mobile.projects.ProjectsCache
+import com.nalar.mobile.projects.ProjectSummary
+import com.nalar.mobile.projects.ProjectChat
 import com.nalar.mobile.chat.CachedChatMessage
 import com.nalar.mobile.chat.ChatCache
 import com.nalar.mobile.chat.ChatOlderPage
@@ -122,6 +125,67 @@ class InMemoryRecentsCache : RecentsCache {
         val user = userKey(userId) ?: return null
         if (workspaceId.isBlank()) return null
         return "$user::$workspaceId"
+    }
+}
+
+/**
+ * The projects cache, in memory.
+ *
+ * Mirrors [InMemoryRecentsCache]'s shape, including its partition keys, so a
+ * test that seeds a workspace's projects and then switches workspaces sees the
+ * same isolation the real cache enforces through its primary key.
+ */
+class InMemoryProjectsCache : ProjectsCache {
+    private val projects = mutableMapOf<String, List<ProjectSummary>>()
+    private val chats = mutableMapOf<String, List<ProjectChat>>()
+
+    var cleared = false
+        private set
+
+    override fun readProjects(
+        userId: String?,
+        workspaceId: String,
+    ): List<ProjectSummary>? = projects[projectsKey(userId, workspaceId)]
+
+    override fun writeProjects(
+        userId: String?,
+        workspaceId: String,
+        value: List<ProjectSummary>,
+    ) {
+        projects[projectsKey(userId, workspaceId) ?: return] = value
+    }
+
+    override fun readProjectChats(
+        userId: String?,
+        workspaceId: String,
+        projectId: String,
+    ): List<ProjectChat>? = chats[chatsKey(userId, workspaceId, projectId)]
+
+    override fun writeProjectChats(
+        userId: String?,
+        workspaceId: String,
+        projectId: String,
+        value: List<ProjectChat>,
+    ) {
+        chats[chatsKey(userId, workspaceId, projectId) ?: return] = value
+    }
+
+    override fun clear() {
+        cleared = true
+        projects.clear()
+        chats.clear()
+    }
+
+    private fun projectsKey(userId: String?, workspaceId: String): String? {
+        val user = userId?.takeIf { it.isNotBlank() } ?: return null
+        if (workspaceId.isBlank()) return null
+        return "$user::$workspaceId"
+    }
+
+    private fun chatsKey(userId: String?, workspaceId: String, projectId: String): String? {
+        val base = projectsKey(userId, workspaceId) ?: return null
+        if (projectId.isBlank()) return null
+        return "$base::$projectId"
     }
 }
 

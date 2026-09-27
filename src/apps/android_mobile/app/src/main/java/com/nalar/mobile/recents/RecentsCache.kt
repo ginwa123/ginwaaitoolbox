@@ -239,5 +239,11 @@ class RoomRecentsCache(
     }
 }
 
-/** A null or blank identity cannot address a partition, so it is not a partition. */
-private fun String?.orNull(): String? = this?.takeIf { it.isNotBlank() }
+/**
+ * A null or blank identity cannot address a partition, so it is not a partition.
+ *
+ * `internal` rather than file-private so the projects cache enforces the same
+ * rule from the same definition — a second copy is a second chance to spell the
+ * guard differently, and the whole point is that it has exactly one spelling.
+ */
+internal fun String?.orNull(): String? = this?.takeIf { it.isNotBlank() }

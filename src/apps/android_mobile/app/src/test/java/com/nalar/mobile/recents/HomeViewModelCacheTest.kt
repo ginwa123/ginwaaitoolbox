@@ -1,5 +1,7 @@
 package com.nalar.mobile.recents
 
+import com.nalar.mobile.testing.InMemoryProjectsCache
+import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
@@ -95,6 +97,12 @@ class HomeViewModelCacheTest {
     ) = HomeViewModel(
         client = RecentsClient(MemorySessionStore(), httpTransport = transport),
         cache = cache,
+        // The projects section has no say in these tests, so it gets a
+        // client that answers nothing and a cache that answers nothing —
+        // which is what keeps an unrelated project fetch from showing up
+        // as a second request these tests would then have to account for.
+        projectsClient = ProjectsClient(MemorySessionStore()),
+        projectsCache = InMemoryProjectsCache(),
         positionStore = positionStore,
         ioDispatcher = ioDispatcher,
     )

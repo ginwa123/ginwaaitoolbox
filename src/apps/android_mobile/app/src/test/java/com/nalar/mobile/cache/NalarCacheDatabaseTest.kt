@@ -76,7 +76,20 @@ class NalarCacheDatabaseTest {
             }
 
         assertEquals(
-            listOf("cached_auth_me", "cached_chat_summaries", "cached_messages", "cached_workspaces"),
+            // `chat_cursors` is absent by design: it does not match the
+            // `cached_%` filter, and this test is about the *cached* tables
+            // specifically. The two project tables are here because the real
+            // builder is the only thing that proves they exist at all — a
+            // missing `projectsCacheDao` would otherwise only surface as a
+            // runtime failure on first launch.
+            listOf(
+                "cached_auth_me",
+                "cached_chat_summaries",
+                "cached_messages",
+                "cached_project_chats",
+                "cached_projects",
+                "cached_workspaces",
+            ),
             tables.sorted(),
         )
     }
