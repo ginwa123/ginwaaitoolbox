@@ -11,7 +11,7 @@ import DiffCommentBox, {
 import { escapeDiffHtml, type ParsedDiffLine } from './parseUnifiedDiff'
 
 /**
- * Shared full diff view: file header (back/filename/stats/Wrap/Open),
+ * Shared full diff view: file header (back/filename/stats/Open),
  * loading/error/empty states, GitHub-style hunk table, and the
  * review mini-chat popup. Presentational — data flows in via props,
  * user actions flow out via emits. Used full-height in ChatView's
@@ -39,8 +39,6 @@ const emit = defineEmits<{
   'submit-review': [message: string]
   'comment-saved': [payload: DiffCommentSavePayload]
 }>()
-
-const wordWrap = ref(false)
 
 // Mini chat popup state (moved verbatim from SidebarDiffPanel).
 const showMiniChat = ref(false)
@@ -225,18 +223,6 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       <span class="text-xs font-mono" style="color: var(--color-red)"> -{{ removed }} </span>
       <button
         type="button"
-        class="px-2 py-1 text-xs rounded"
-        :style="{
-          backgroundColor: wordWrap ? 'var(--semantic-active-bg)' : 'transparent',
-          color: wordWrap ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
-        }"
-        title="Toggle word wrap"
-        @click="wordWrap = !wordWrap"
-      >
-        Wrap
-      </button>
-      <button
-        type="button"
         class="px-2 py-1 text-xs rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Open file in code browser"
@@ -285,8 +271,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
 
     <div
       v-else
-      class="flex-1 min-h-0 overflow-auto"
-      :class="{ 'wrap-on': wordWrap }"
+      class="flex-1 min-h-0 overflow-auto diff-wrap"
       :style="{
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       }"
@@ -491,14 +476,23 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
             ✕
           </button>
         </div>
-        <DiffCommentBox :file-path="miniChatFilePath" :start-line="miniChatStartLine" :end-line="miniChatEndLine" :context="miniChatContent" :cwd="cwd" @save="handleCommentSave" />
+        <DiffCommentBox
+          :file-path="miniChatFilePath"
+          :start-line="miniChatStartLine"
+          :end-line="miniChatEndLine"
+          :context="miniChatContent"
+          :cwd="cwd"
+          @save="handleCommentSave"
+        />
       </div>
     </Teleport>
   </div>
 </template>
 
 <style scoped>
-.wrap-on td:last-child {
+/* Long diff lines are the common case (minified blobs, wide tables), so
+   soft-wrap is always on rather than an opt-in header toggle. */
+.diff-wrap td:last-child {
   white-space: pre-wrap;
   word-break: break-word;
 }

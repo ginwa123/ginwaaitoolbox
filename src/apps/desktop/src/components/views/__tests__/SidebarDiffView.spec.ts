@@ -48,6 +48,13 @@ describe('SidebarDiffView', () => {
     expect(wrapper.find('[data-testid="sidebar-diff-back"]').exists()).toBe(false)
   })
 
+  it('has no Wrap toggle and soft-wraps diff lines by default', () => {
+    const wrapper = mountView()
+    expect(wrapper.text()).not.toContain('Wrap')
+    expect(wrapper.find('button[title="Toggle word wrap"]').exists()).toBe(false)
+    expect(wrapper.find('.diff-wrap').exists()).toBe(true)
+  })
+
   it('emits back on back click', async () => {
     const wrapper = mountView()
     await wrapper.get('[data-testid="sidebar-diff-back"]').trigger('click')
