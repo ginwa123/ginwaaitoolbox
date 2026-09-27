@@ -2004,6 +2004,13 @@ pub const allMigrations: []const Migration = &.{
     // workspaces/sessions/worker row to the shared `user_system` sentinel.
     // Plan: docs/plans/2026-09-25-per-user-isolation.md (W0).
     .{ .version = Migration093AddOwnerColumns.version, .name = Migration093AddOwnerColumns.name, .up = Migration093AddOwnerColumns.up },
+    // Migration 094 — `workspace_items.is_default`, the per-workspace default
+    // project. The partial unique index makes "at most one" a database
+    // invariant, which matters because the lookup that creates the default
+    // runs from a list read, a workspace create AND a New Chat tap, so those
+    // genuinely race. No backfill: the list read creates it on demand.
+    // Plan: docs/plans/2026-09-27-sidebar-new-chat-default-project.md (D6, D12)
+    .{ .version = Migration094AddDefaultProjectToWorkspaceItems.version, .name = Migration094AddDefaultProjectToWorkspaceItems.name, .up = Migration094AddDefaultProjectToWorkspaceItems.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -4980,6 +4987,68 @@ pub const Migration093AddOwnerColumns = struct {
 };
 
 // ============================================================================
+// Migration 094 — mark one workspace item as the workspace's default project.
+// ============================================================================
+//
+// Backs the "New Chat" action in the desktop sidebar and the Android drawer.
+// The invariant this migration makes storable is:
+//
+//   Every workspace has a default project. If we look for one and don't
+//   find it, we create it before doing anything else.
+//
+// The default project is a `workspace_items` row of `item_type = 'agent'`
+// whose `path` is the server user's home directory, so a chat created
+// inside it runs with $HOME as its working directory. See
+// `src/http_handlers/workspace_items_default.zig::ensureDefaultProject` —
+// the list read (`GET /api/workspaces/:ws/items`) is what catches a miss
+// and creates the row, so this migration deliberately does NOT backfill:
+// a backfill would have to resolve $HOME at migration time, and the lazy
+// path covers every legacy workspace on its next read anyway.
+//
+// Plan: docs/plans/2026-09-27-sidebar-new-chat-default-project.md
+pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
+    pub const version: u32 = 94;
+    pub const name = "add_default_project_to_workspace_items";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // NOT NULL DEFAULT 0 is the only shape SQLite accepts when adding a
+        // column to an existing table, and it has the property we want for
+        // free: every pre-existing row reads back as 0 (an ordinary
+        // project) without a table rewrite or a backfill UPDATE. This is an
+        // O(1) metadata change — no lock on existing rows.
+        try addColumnIfMissing(.{ .db = db }, allocator, "workspace_items", "is_default", "is_default INTEGER NOT NULL DEFAULT 0");
+
+        // At most one default per workspace, enforced by the DATABASE
+        // rather than by a convention. The WHERE clause is what makes this
+        // a *partial* index: ordinary rows (is_default = 0) are never
+        // compared against each other, so a workspace can still hold any
+        // number of non-default projects. A plain column could only be
+        // enforced by application code, which every concurrent caller would
+        // have to get right — and the lookup that creates the default runs
+        // from a list read, a workspace create and a New Chat tap, so they
+        // genuinely do race.
+        //
+        // Scoped to `workspace_id` alone, NOT (workspace_id, user_id):
+        // `workspace_items` has no user_id column. Items inherit their
+        // owner through `workspaces.user_id` (Migration 093), and two owners
+        // can never share a single `workspaces` row — so there is no
+        // cross-owner default to collide, and per-workspace is the right
+        // grain.
+        try db.exec(allocator,
+            \\CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_items_default_per_workspace
+            \\ON workspace_items(workspace_id) WHERE is_default = 1
+        , &[_][]const u8{});
+
+        // Lookup index: ensureDefaultProject's fast path filters on both
+        // columns, and this list runs on every sidebar load.
+        try db.exec(allocator,
+            \\CREATE INDEX IF NOT EXISTS idx_workspace_items_default_lookup
+            \\ON workspace_items(workspace_id, is_default)
+        , &[_][]const u8{});
+    }
+};
+
+// ============================================================================
 // Migration 087 — agent config tables for routine workspace items.
 // ============================================================================
 //
@@ -6044,4 +6113,187 @@ test "Migration093 is registered in allMigrations" {
         if (m.version == Migration093AddOwnerColumns.version) return;
     }
     return error.Migration093NotRegistered;
+}
+
+// ============================================================================
+// Migration 094 — workspace_items.is_default
+// ============================================================================
+
+/// Create a minimal pre-Migration-094 `workspace_items` table, with rows
+/// already in it. The column default has to be verified against real
+/// existing rows, not a table we just created with the column present.
+fn setupWorkspaceItemsPre094(ctx: *TestCtx) !void {
+    const alloc = testing.allocator;
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\  id TEXT PRIMARY KEY,
+        \\  workspace_id TEXT NOT NULL,
+        \\  item_type TEXT NOT NULL,
+        \\  name TEXT,
+        \\  path TEXT,
+        \\  position INTEGER NOT NULL DEFAULT 0
+        \\)
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position)
+        \\VALUES ('item_a', 'ws_1', 'kanban', 'Board', '/tmp/board', 1),
+        \\       ('item_b', 'ws_1', 'agent',  'Helper', '/tmp/helper', 2),
+        \\       ('item_c', 'ws_2', 'folder', 'Stuff', '/tmp/stuff', 0)
+    , &.{});
+}
+
+/// Assert one workspace item's `is_default` flag. A comparison helper (not a
+/// getter) so no duped value can escape and trip the leak-checking allocator.
+fn expectIsDefault(ctx: *TestCtx, id: []const u8, expected: []const u8) !void {
+    const alloc = testing.allocator;
+    var q = try ctx.db.query(alloc,
+        "SELECT is_default FROM workspace_items WHERE id = ?",
+        &[_][]const u8{id},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings(expected, row.values[0]);
+}
+
+test "Migration094 adds is_default and defaults every pre-existing row to 0" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceItemsPre094(&ctx);
+
+    try Migration094AddDefaultProjectToWorkspaceItems.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "workspace_items");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    var found = false;
+    for (cols) |c| {
+        if (std.mem.eql(u8, c, "is_default")) found = true;
+    }
+    try testing.expect(found);
+
+    // The whole point of NOT NULL DEFAULT 0: pre-existing rows must read
+    // back as ordinary projects, with no backfill UPDATE and no table
+    // rewrite. If this ever returns non-zero, a migration is marking a
+    // user's existing project as a default.
+    var q = try ctx.db.query(alloc,
+        \\SELECT id, is_default FROM workspace_items ORDER BY id
+    , &.{});
+    defer q.deinit();
+    var seen: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("0", row.values[1]);
+        seen += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), seen);
+
+    // NOT NULL must be set, or a future writer could store NULL and the
+    // `WHERE is_default = 1` index would silently skip that row forever.
+    var qi = try ctx.db.query(alloc,
+        "SELECT type, \"notnull\", dflt_value FROM pragma_table_info('workspace_items') WHERE name = 'is_default'",
+        &.{});
+    defer qi.deinit();
+    const irow = (try qi.next()) orelse return error.RowMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("INTEGER", irow.values[0]);
+    try testing.expectEqualStrings("1", irow.values[1]);
+    try testing.expectEqualStrings("0", irow.values[2]);
+}
+
+test "Migration094's partial unique index allows one default per workspace" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceItemsPre094(&ctx);
+
+    try Migration094AddDefaultProjectToWorkspaceItems.up(&ctx.db, alloc);
+
+    // ws_1 gets its default. ws_2 has none yet — the invariant is the
+    // service layer's job to fill, not the schema's.
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_items SET is_default = 1 WHERE id = 'item_a'",
+        &.{},
+    );
+
+    // A SECOND default in the same workspace must be refused. This is the
+    // guarantee the whole race-guard in ensureDefaultProject leans on.
+    // `ExecuteFailed` is what SqliteBackend.exec surfaces for a constraint
+    // violation — the SQLSTATE text ("UNIQUE constraint failed") only
+    // reaches the log, so the STATE check below is what actually proves the
+    // index did its job.
+    try testing.expectError(
+        error.ExecuteFailed,
+        ctx.db.exec(alloc,
+            "UPDATE workspace_items SET is_default = 1 WHERE id = 'item_b'",
+            &.{},
+        ),
+    );
+    try expectIsDefault(&ctx, "item_b", "0");
+
+    // A different workspace may have its own default — the index is
+    // partial *and* scoped per workspace, not "one default in the db".
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_items SET is_default = 1 WHERE id = 'item_c'",
+        &.{},
+    );
+
+    // Ordinary rows are never compared against each other, so any number
+    // of them coexist in one workspace.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, position)
+        \\VALUES ('item_d', 'ws_1', 'kanban', 'Another board', 3)
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, position)
+        \\VALUES ('item_e', 'ws_1', 'kanban', 'Third board', 4)
+    , &.{});
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM workspace_items WHERE workspace_id = 'ws_1' AND is_default = 1",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration094 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupWorkspaceItemsPre094(&ctx);
+
+    try Migration094AddDefaultProjectToWorkspaceItems.up(&ctx.db, alloc);
+    // Mark one so a re-run also has to cope with a populated column.
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_items SET is_default = 1 WHERE id = 'item_a'",
+        &.{},
+    );
+    // Re-running must not throw "duplicate column" (addColumnIfMissing
+    // guards it) and must not clobber the existing default.
+    try Migration094AddDefaultProjectToWorkspaceItems.up(&ctx.db, alloc);
+    try Migration094AddDefaultProjectToWorkspaceItems.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT id FROM workspace_items WHERE is_default = 1",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("item_a", row.values[0]);
+    try testing.expect((try q.next()) == null);
+}
+
+test "Migration094 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration094AddDefaultProjectToWorkspaceItems.version) return;
+    }
+    return error.Migration094NotRegistered;
 }
