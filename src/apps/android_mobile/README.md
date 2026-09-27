@@ -614,6 +614,78 @@ asserts the workspace seed and the writes; `NalarNavGraphResumeInstrumentedTest`
 drives the real `NavHost`, which is the only way to prove the `navigate()`
 happens once and leaves the shell underneath it.
 
+### The launch waits, and then it lands
+
+Restoring the session and being ready to show it are two different moments, and
+the phone used to conflate them. `/api/auth/me` answers long before the
+workspace list and the chat list have settled, and `ResumePlan` cannot answer
+"is the saved chat still there?" until they have. So the shell painted an
+interactive sidebar immediately, held it there for as long as the recents took,
+and *then* navigated into the chat the reader had left.
+
+A second drift sat behind it. The resume navigates before the transcript's
+first page is in, so the route appeared over an empty list and the auto-scroll
+to the newest turn landed a frame or two later — the frame the reader finally
+saw was the top of the transcript and the frame after it was the bottom.
+
+So `launchGateIsUp` holds an opaque screen over the graph until the launch has
+actually decided what it is showing:
+
+- **the resume has answered** — `ResumePlan.isDecided` separates "still
+  asking" from "answered, and there is nothing to open", which the return value
+  alone cannot, since both are `null`;
+- **and, if it opened a chat, that chat's transcript is standing where the
+  reader left it** — reported by `ChatView` itself, the only place that knows
+  the scroll has been issued. A transcript that finished loading empty reports
+  too, so an empty chat and a failed load both lift the gate instead of leaving
+  a splash with no way out of it.
+
+Three things deliberately do **not** raise the gate: the three unauthenticated
+phases, because the shell is already a launch screen, a sign-in form or a "Try
+again" and covering any of them hides its only controls; a destination that is
+not the shell, because `ResumePlan` never answers off the shell and waiting
+would be a splash nobody can leave; and an empty back stack, so
+`NavigationLostScreen` keeps its button.
+
+The gate **covers** the `NavHost` rather than replacing it. The chat the resume
+opened is composed, measured and scrolled underneath, which is the only way the
+frame the reader finally sees is a frame the transcript is already at the end
+of — and it swallows touches, because a tap landing on a chat row behind it
+would be a position the user chose while the app was still restoring the
+previous one. `LaunchGateTest` walks the whole sequence on the JVM, and
+`NalarNavGraphLaunchGateTest` asserts the rendered outcome against a real
+`NavHost`: the chat stays behind the gate while its first page is in flight, and
+the gate is gone once it lands.
+
+### Two things the gate needed that the pure function could not tell it
+
+Both were found by rendering the graph, not by reasoning about it, which is the
+argument for having a rendered test at all.
+
+**The plan is not observable.** `ResumePlan` latches its own answer, and latching
+a field of a plain object invalidates nothing. The gate read `plan.isDecided`
+during composition, so a decision that arrived afterwards never reached it, and
+every launch with nothing to resume sat behind the gate for ever. The answer is
+now copied into state on *every* consultation of the plan — not only the ones
+that answer, because "nothing to resume" is the answer the gate is waiting for.
+
+**The resume effect ran before the graph existed.** It read
+`navController.currentDestination` from inside its own body, and the first run
+lands in the frame or two before `NavHost` has set the graph, so the destination
+was null, `sessionToResume` rejected it as "not on the shell", and the resume was
+dropped for the rest of the launch. The destination is hoisted and put in the
+effect's key list, so the question is re-asked the moment there is a destination
+to ask it from.
+
+### The gate is tested on the JVM, not on an emulator
+
+`NalarNavGraphLaunchGateTest` runs the real graph under `RobolectricTestRunner`
+with `createComposeRule`, so it is part of `testDebugUnitTest` — the task CI
+runs, on a machine with no device attached. It used to be an instrumented test,
+which meant the only assertions covering the gate had never been run on any
+machine that did not have an emulator to hand. That is how the two bugs above
+survived a green build.
+
 ### What is stored, and what is not
 
 The store is per account, and sign-out clears it along with the caches — the

@@ -84,6 +84,10 @@ dependencies {
     ksp("androidx.room:room-compiler:2.6.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+    // The host activity `createComposeRule` launches. On `debugImplementation`
+    // as well as `testImplementation` because the instrumented rules need it
+    // merged into the debug manifest, and the unit tests need it on their
+    // classpath.
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 
     testImplementation("junit:junit:4.13.2")
@@ -95,6 +99,23 @@ dependencies {
     // DAO tests run on Robolectric rather than the bare JVM.
     testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("androidx.test:core:1.7.0")
+    // The launch gate is Compose behaviour, and the only thing that has ever
+    // pinned it is a rendered tree — which meant an emulator. `createComposeRule`
+    // under Robolectric renders the real graph on the JVM, so the gate is now
+    // covered by the test task CI actually runs, on a box with no device
+    // attached. `ui-test-manifest` is what supplies the host activity
+    // `createComposeRule` launches; it has to be here, not only on
+    // `debugImplementation`, or the rule has nothing to compose into.
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.compose.ui:ui-test-manifest")
+    // `ui-test-junit4` asks for `androidx.test.ext:junit:1.1.5`; 1.3.0 is the
+    // version the instrumented tests already use, and pinning it here means the
+    // two classpaths resolve to one artifact instead of two.
+    testImplementation("androidx.test.ext:junit:1.3.0")
+    // Same story for espresso, which `ui-test` drags in transitively: the BOM
+    // asks for 3.5.0, the cached artifact is the 3.7.0 the instrumented tests
+    // already resolve. Pinned so the unit-test classpath builds offline.
+    testImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")

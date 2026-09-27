@@ -196,6 +196,18 @@ fun ChatView(
     onLoadOlder: () -> Unit = {},
     onDismissError: () -> Unit = {},
     onAnswer: (QuestionAnswer) -> Unit = {},
+    /**
+     * The viewport has been put where the reader left this chat, and this is
+     * the only place that knows it. Carries the session it is reporting for,
+     * because a launch is deciding on a specific chat and a report about some
+     * other one — or about none, which is what a stale state paints on the
+     * route's first frame — must not pass for the one it is waiting on.
+     *
+     * See [com.nalar.mobile.network.launchGateIsUp]. Both callers of this are
+     * a cold open and the auto-scroll it triggers, and both are invisible in a
+     * screenshot, which is why the report exists rather than a delay.
+     */
+    onTranscriptSettled: (String?) -> Unit = {},
 ) {
     val groups = remember(state.messages) { groupMessages(state.messages) }
     val listState = rememberLazyListState()
@@ -239,6 +251,7 @@ fun ChatView(
      */
     val chatScroll = remember { ChatScrollState() }
     val onLoadOlderNow by rememberUpdatedState(onLoadOlder)
+    val onTranscriptSettledNow by rememberUpdatedState(onTranscriptSettled)
 
     /**
      * One page per approach to the top.
@@ -480,7 +493,40 @@ fun ChatView(
         state.hasMoreOlder,
         tailSignature,
     ) {
-        applyScroll(chatScroll.onContentChanged(state.sessionId, groups.size))
+        val action = chatScroll.onContentChanged(state.sessionId, groups.size)
+        applyScroll(action)
+        // Reported after the scroll is issued, not on the state change that
+        // caused it. `applyScroll` has by now waited for the list to measure the
+        // row it aims at (`awaitMeasuredItems`) — that wait is what a cold open
+        // spends, and it is spent *before* the frame is drawn, so a launch that
+        // waits for this is waiting for a real position rather than a promise of
+        // one.
+        //
+        // A `Hold` is deliberately not a report: it means nothing moved and
+        // nothing is on screen to move, which is what a transcript with no rows
+        // yet looks like. Reporting there would lift the launch gate over an
+        // empty chat.
+        if (action !is ChatScrollAction.Hold) {
+            onTranscriptSettledNow(state.sessionId)
+        }
+    }
+
+    /**
+     * A transcript that finished loading with nothing in it is as settled as
+     * one that has been scrolled — there is no more arriving, so a gate waiting
+     * for a first paint would wait for ever.
+     *
+     * **A failed load lands here too**, and that is the second way a launch must
+     * not stay blocked: the error banner is a screen worth showing, and a gate
+     * over it would turn "this chat did not load" into "the app is stuck".
+     * `!isLoading` is the whole test, because `openSession` paints
+     * `isLoading = true` with no messages first, so a cold open that is still
+     * fetching cannot satisfy it.
+     */
+    LaunchedEffect(state.sessionId, state.isLoading, groups.isEmpty()) {
+        if (!state.isLoading && groups.isEmpty()) {
+            onTranscriptSettledNow(state.sessionId)
+        }
     }
 
     // Sending is an explicit "take me to the newest turn" — the reader is

@@ -122,6 +122,17 @@ fun ChatScreen(
     onDismissError: () -> Unit = {},
     onAnswer: (QuestionAnswer) -> Unit = {},
     /**
+     * The transcript is standing where it belongs and there is nothing left to
+     * wait for.
+     *
+     * A launch holds a screen over this one until this fires, because a chat
+     * that is on screen a frame before its auto-scroll has run shows the top of
+     * the transcript and then jumps to the bottom — the one thing a reader who
+     * just reopened their last chat would notice. See
+     * [com.nalar.mobile.network.launchGateIsUp].
+     */
+    onTranscriptSettled: (String?) -> Unit = {},
+    /**
      * Whether a worker is registered for this session — the backend's own
      * definition of "the agent is working", and the one that holds between
      * turns. `state.isStreaming` is per-*delta*: it drops on `chunk_final` and
@@ -244,6 +255,7 @@ fun ChatScreen(
                     onLoadOlder = onLoadOlder,
                     onDismissError = onDismissError,
                     onAnswer = onAnswer,
+                    onTranscriptSettled = onTranscriptSettled,
                 )
             }
         }
