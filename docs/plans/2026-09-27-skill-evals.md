@@ -1,53 +1,44 @@
-# Skill Evals — evaluate the skills an agent actually used
+# Skill Evals — the agent evaluates the skills it used, itself
 
 > **Status:** plan only. Nothing in this document is implemented.
-> **Written:** 2026-09-27, against `HEAD` = `e0d892c9` (branch base `origin/main`).
-> **Sibling plan:** `docs/plans/2026-09-28-skills-sqlite-table.md` — unimplemented, and it
-> **claims Migration 094**. This plan therefore takes **095 / 096** and is written so that
-> every phase before W9 works whether or not 094 has landed (§4.3, §5 W9).
-> **Product request:** *"run evals skills on demand after task done — that means the main
-> agent runs `spawn_sub_agent`, the sub-agents eval the skills, for example: the skill is
-> not relevant, the skill must use the new code, etc., based on the history the main agent
-> used that skill."*
+> **Written:** 2026-09-27, revised 2026-09-27 after review feedback, against `HEAD` = `e0d892c9`.
+> **Revision:** the trigger is a **system-prompt rule**, not a post-task hook. The agent runs
+> the eval itself. This deleted the hook, the scheduler, the eval session, and one tool from
+> the first draft (see §11 for the full delta).
+> **Sibling plan:** `docs/plans/2026-09-28-skills-sqlite-table.md` — unimplemented, reserves
+> Migration 094. This plan therefore takes **095 / 096**.
 
 ---
 
 ## 1. Goal, in one paragraph
 
-Today a skill is a file the agent may or may not load, and **nothing ever checks whether
-it was right**. A skill can describe an API that was renamed three months ago, duplicate
-another skill, or be loaded for a task it has nothing to do with — and the only feedback
-loop is a human noticing. This plan adds **Skill Evals**: after a task finishes (and on
-demand), a **separate main-agent session** is queued which reads the frozen evidence of
-*which skills the task actually loaded and what it did with them*, then calls the existing
-`spawn_sub_agent` tool to fan out **one eval sub-agent per skill**. Each sub-agent scores
-that skill on a fixed rubric — relevance, whether the procedure was actually followed,
-whether it helped, **freshness against today's code** ("must use the new code"), accuracy,
-and duplication — and must back every claim with machine-checkable evidence. Verdicts
-(`keep | update | rewrite | merge | delete | needs_human`), a proposed replacement body, and
-the evidence are stored in SQLite and surfaced in a new Evals UI, where a human applies or
-dismisses them. **Nothing is auto-applied by default.**
+Today a skill is a file the agent may or may not load, and **nothing ever checks whether it
+was right**. A skill can describe an API renamed three months ago, duplicate another skill,
+or be loaded for a task it has nothing to do with — and the only feedback loop is a human
+noticing. This plan adds **Skill Evals**, driven by a new system-prompt rule that tells the
+agent: *when you loaded a skill this session, evaluate it before you answer*. The agent calls
+one new tool, `run_skill_eval`, which reads the frozen record of which skills this session
+actually loaded, runs a **no-LLM deterministic pre-pass** (do the paths the skill names still
+exist? what changed since?), then uses the existing sub-agent batch runner to fan out **one
+eval sub-agent per skill**. Each scores its skill against a fixed rubric — relevance, whether
+the procedure was actually followed, whether it helped, **freshness against today's code**
+("must use the new code"), accuracy, duplication — and must back every claim with
+machine-checkable evidence. Verdicts, a proposed replacement body, and the evidence land in
+SQLite and surface in a new Evals UI. **Nothing is auto-applied.**
 
 ---
 
 ## 2. The request, decomposed
 
-The request names six things. Each maps to exactly one mechanism in this plan — no more,
-no less.
-
-| What was asked | Mechanism | Where |
-|---|---|---|
-| "run evals **on demand**" | `POST /api/skill-evals/runs`, a UI button, and a `run_skill_eval` agent tool so the user can literally say *"eval my skills"* in chat | §4.11, §4.13, W9, W11 |
-| "**after task done**" | one hook in the existing per-run teardown `defer` — the only place that runs on *every* exit path | §4.1, W7 |
-| "the **main agent** runs `spawn_sub_agent`" | a dedicated eval session with `is_sub_agent = false` (mandatory — see §4.2) that spawns the eval sub-agents | §4.2, W6 |
-| "the sub-agents **eval the skills**" | one sub-agent per used skill, each with its own narrow tool allowlist and a fixed rubric | §4.5, §4.6 |
-| "e.g. the skill **is not relevant**" | rubric dimension `relevance`, judged against the task the skill was loaded for | §4.5 |
-| "e.g. **must use the new code**" | rubric dimension `freshness` **plus** a deterministic no-LLM drift pre-pass (path existence + `git log --since`) so the sub-agent adjudicates pre-computed facts instead of guessing | §4.4, §4.5 |
-| "based on **the history the main agent used that skill**" | the frozen evidence bundle built from `session_skill_events` + the `llm_history` tool-call graph | §4.3, W3 |
-
-Two additional dimensions the request implies but does not name, and which are the ones a
-human reviewer will actually want: `accuracy` (is any stated fact wrong?) and `duplication`
-(does another skill already cover this?).
+| What was asked | Mechanism |
+|---|---|
+| "just put to **system prompt, so the ai agent will run eval self**" | a new `SkillEvalToolRule` prompt constant beside `SkillsToolRule` (`core.zig:167`), appended at `prompts_build_messages_for_agent_prompt.zig:125` — **the exact shape of the `ReadWorkspaceSessionToolRule` precedent added in `d61be32b`** |
+| "run evals **on demand**" | `POST /api/skill-evals/runs` + a UI button, in addition to the agent's self-trigger |
+| "**the main agent** runs `spawn_sub_agent`" | `run_skill_eval`'s exec calls the **same batch runner** `spawn_sub_agent` uses (`std.Io.Group.concurrent` over `runSubAgent`) — see §4.2 for why code, not the LLM, writes that JSON |
+| "the **sub-agents eval the skills**" | one sub-agent per loaded skill, each with its own narrow allowlist and the rubric inline |
+| "the skill **is not relevant**" | rubric dimension `relevance`, judged against the task that loaded it |
+| "**must use the new code**" | a **deterministic, no-LLM pre-pass** — path existence + bounded `git log --since` (§4.4) — so the sub-agent adjudicates pre-computed facts instead of trying to recall the codebase |
+| "based on **the history the main agent used that skill**" | the frozen evidence bundle (§4.3), built from the usage ledger + the `llm_history` tool-call graph |
 
 ---
 
@@ -55,187 +46,185 @@ human reviewer will actually want: `accuracy` (is any stated fact wrong?) and `d
 
 All line numbers verified in this worktree against `HEAD` = `e0d892c9`.
 
-### 3.1 A skill is a file, and nothing records whether it was *used*
+### 3.1 The prompt-rule precedent exists and is one week old
 
-- `<root>/<name>/SKILL.MD`; global root `$XDG_CONFIG_HOME/nalar/skills` else
-  `$HOME/.config/nalar/skills` (`src/modules/agent/tools/skills.zig:474`), local root
-  `<cwd>/.nalar/skills` (`skills.zig:55`). `SkillInfo` is `{name, description, path}`
-  (`skills.zig:62`) — **no id, no tags, no content**.
-- The five tools live in `src/modules/agent/tools/skill_tools.zig`; `use_skill` takes
-  **`path`**, not `skill_name` (`skill_tools.zig:145-194`).
-- **There is no SQLite `skills` table** — the sibling plan (§Sibling) is plan-only.
-  Highest migration in the tree is **93** (`migration.zig:4964`); the registration list ends
-  at `migration.zig:2006`.
+This is the load-bearing fact for the whole revision. `prompts_build_messages_for_agent_prompt.zig:110-125`:
 
-### 3.2 The only usage record is `session_skills`, and it is lossy
-
-`session_skills` (Migration 008, `migration.zig:90-99`; `loaded_at` → `loaded_at_nano` in
-Migration 075, `migration.zig:3291`):
-
-```sql
-session_id TEXT NOT NULL, skill_name TEXT NOT NULL, content TEXT NOT NULL,
-loaded_at_nano ..., PRIMARY KEY (session_id, skill_name)
+```zig
+// The four "tools the agent must actually use" mandates: the special tool
+// (search the catalog for a tool), the special skills (load the skill a
+// task needs), memory (load prior context / persist new facts), and
+// workspace session history (the past is queryable, not guesswork).
+// Unconditional — never gated on hasTool, because a gate keyed on the tool
+// list is a per-agent bit in the cacheable prefix, and these rules must
+// stay byte-identical across every agent so the block is one cache hit
+// rather than N fragments.
+try final_system.appendSlice(allocator, prompts_const.ProgressiveToolRule);
+try final_system.appendSlice(allocator, prompts_const.SkillsToolRule);
+try final_system.appendSlice(allocator, prompts_const.MemoryToolRule);
+try final_system.appendSlice(allocator, prompts_const.ReadWorkspaceSessionToolRule);
 ```
 
-- Written **only** by `use_skill` → `ToolExecResult.skill_save`
-  (`tools_exec_skills.zig:60-67`) → `handle_tool.zig:809-810` → `saveSkill`
-  (`llm_history.zig:4243`, `INSERT OR REPLACE`).
-- **Gaps that matter for evals:**
-  1. **No `loop_index`.** "Which turn loaded this skill" is not stored. `loaded_at_nano` is
-     **seconds** despite the name (`llm_history.zig:4340-4343`) and `INSERT OR REPLACE`
-     re-stamps it on a reload, so a reload destroys the original load time.
-  2. **`add_skill` / `edit_skill` do not write here**, despite carrying
-     `.auto_save_skill = true` — the flag has zero readers (the sibling plan's §3.3).
-  3. **Listed-but-not-loaded is invisible.** `list_skills` returns
-     `{name, description, path}` only (`skills.zig:62`), so a skill that was *offered and
-     ignored* — a real eval finding — leaves no trace at all.
+`ReadWorkspaceSessionToolRule` (`core.zig:38-63`) was added days ago in commit `d61be32b`
+("feat(prompts): add ReadWorkspaceSessionToolRule to buildMessages (live path)"). It is:
+a markdown rule with a `**FOUR BEHAVIORS**` list and a `**Self-check:**` closer; appended
+**unconditionally** in the live path; mirrored by a `PROMPT_SECTIONS` entry with
+`requires_tool` (`:1206`) purely for documentation; and pinned by two tests —
+`prompts_test.zig:1699` "reaches the live prompt, not just PROMPT_SECTIONS" and `:1712`
+"names the tool and the four behaviors".
 
-### 3.3 The transcript is queryable, and is the enrichment source
+**A skill-eval rule follows that template exactly.** Copy it; invent nothing.
 
-`llm_history` carries everything needed to reconstruct a `use_skill` call
-(`migration.zig:597-626`, `:656`):
+### 3.2 A skill is a file, and nothing records whether it was *used*
 
-| Column | Use for evals |
-|---|---|
-| `tool_calls_json` (assistant rows) | serialized `[]ToolCall` where `arguments` is a **JSON string inside JSON** — `llm_history.zig:1459-1464` |
-| `loop_index` | the turn number — joins an assistant call to its result and to the transcript |
-| `tool_name`, `tool_call_id` (tool rows) | `role='tool'`, `tool_name='use_skill'`, `response_content` = the `UseSkillJSON` containing `skill_name` **and the full skill body** |
-| `parent_session_id` | needed to sum an eval run's own token cost (§8) |
+- `<root>/<name>/SKILL.MD`; global root `$XDG_CONFIG_HOME/nalar/skills` else
+  `$HOME/.config/nalar/skills` (`skills.zig:474`), local root `<cwd>/.nalar/skills`
+  (`skills.zig:55`). `SkillInfo` is `{name, description, path}` (`skills.zig:62`).
+- `use_skill` takes **`path`**, not `skill_name` (`skill_tools.zig:145-194`).
+- **No SQLite `skills` table** — the sibling plan is plan-only. Highest migration is **93**
+  (`migration.zig:4964`); the registration list ends at `migration.zig:2006`.
 
-This is why the plan does **not** depend on `session_skills.loaded_at_nano` for ordering:
-the tool row has a real `loop_index`. `session_skills` is still the fastest way to answer
-"did this session load any skill at all", which is the hook's cheapest gate.
+### 3.3 The only usage record is `session_skills`, and it is lossy
 
-### 3.4 Post-task does not exist
+`session_skills` (Migration 008, `migration.zig:90-99`) is written **only** by `use_skill` →
+`ToolExecResult.skill_save` (`tools_exec_skills.zig:60-67`) → `handle_tool.zig:809-810` →
+`saveSkill` (`llm_history.zig:4243`). Gaps that matter:
 
-- The one place that runs on **every** exit path is the teardown `defer` at
-  `workflow.zig:712-724` (armed *before* the loop). There is no per-run success hook. The
-  terminal-success exit is `workflow.zig:1598` (`break` inside the `.stop` branch, after
-  `insertLLMHistories` at `:1533` persisted the final assistant message and after
-  `deleteWorker` at `:1585`). **There is a commented-out `markSessionIdle` immediately
-  before it at `workflow.zig:1584`** — the abandoned hook site.
-- Three other terminal exits exist and must be *explicitly* excluded, not forgotten:
-  queued-message continuation (`:1565-1573`, `continue` — **not** finished), `ask_user`
-  pending (`:1653-1661`), unexpected `finish_reason` (`:1695`), plus cancellation
-  (`flushCancelledPartial`, `workflow.zig:514`) and callback-level error
-  (`workflow.zig:143-196`, where the loop's `break` is never reached).
-- The reusable launch primitive is `di.emit_run_agent(.{ ..., .skip_initial_queue_message = true })`
-  — two working call sites: `src/schedulers/cleanup_stale_background_process.zig:308-320`
-  (`wakeSessionForCompletion`, gated on `isWorkerRunning` at `:279`) and
-  `ask_user_pending.zig:627`.
-- The reusable polling-scheduler shape is `src/ai_workflow/tui/routines/Scheduler.zig`
-  (`TICK_INTERVAL_NS = 5s` `:49`, `resetStuckRunning` `:58`, claim-then-fire
-  `fire.zig:111-158` with `db.changes() > 0`). Its `markSuccess` fires at **submit** time
-  (`fire.zig:164`), so routines themselves are the wrong container — only the loop shape is
-  reusable.
+1. **No `loop_index`** — "which turn loaded this skill" is not stored. `loaded_at_nano` is
+   **seconds** despite the name (`llm_history.zig:4340-4343`) and `INSERT OR REPLACE`
+   re-stamps it on reload.
+2. **`add_skill` / `edit_skill` never write it**, despite carrying `.auto_save_skill = true`
+   — that flag has zero readers.
+3. **Listed-but-not-loaded is invisible** — `list_skills` returns name/description/path only,
+   so a skill that was *offered and ignored* (a real finding) leaves no trace.
+4. **No content hash** — drift detection has to re-read and diff rather than compare a key.
 
-### 3.5 Sub-agents already do everything else
+### 3.4 The transcript is the enrichment source
+
+`llm_history` (`migration.zig:597-626`, `:656`) has `tool_calls_json` on assistant rows
+(`arguments` is a **JSON string inside JSON** — `llm_history.zig:1459-1464`), `loop_index`
+(the turn counter), and `role='tool'` rows carrying `tool_name`, `tool_call_id` and
+`response_content` = the `UseSkillJSON` with `skill_name` **and the full body**. So the turn
+a skill was loaded is fully recoverable from `llm_history` alone; `session_skills` is only
+the cheap "did this session use any skill at all" gate.
+
+### 3.5 Sub-agents already do the rest
 
 - `spawn_sub_agent` is a **batch runner**: one call spawns N agents in parallel via
-  `std.Io.Group.concurrent` (`tools_exec_spawn_sub_agent.zig:461, 554, 559`), hard cap
-  **20** enforced at the parse boundary (`spawn_sub_agent.zig:249`).
-- `tools` is a **required, non-empty allowlist** — no omit, no `"all"`
-  (`spawn_sub_agent.zig:277-297`); `ask_user` and `spawn_sub_agent` are rejected
-  (`:307`), and the same list is enforced again at filter time from the single source of
-  truth `MAIN_AGENT_ONLY_NAMES` (`ask_user.zig:260-263`, strip at
-  `tool_eligibility.zig:134`).
-- `agent_name` is resolved **per-profile only** from `~/.config/nalar/config.json`
-  (`Config.zig:2194-2253`); a miss is a **random fallback** flagged
-  `is_random_fallback` and badge-rendered by the frontend (`SpawnSubAgent.vue:103`).
-- **`timeout_seconds` is dead** — parsed and validated (`spawn_sub_agent.zig:319-322`) and
-  read nowhere; `group.await` is unbounded.
-- Sub-agents cannot inherit tool calls (`inherited_context.zig:122-181` filters to
-  `role IN ('user','assistant')`) and cannot spawn further agents (§4.2).
+  `std.Io.Group.concurrent` (`tools_exec_spawn_sub_agent.zig:461, 554, 559`), hard cap **20**
+  at the parse boundary (`spawn_sub_agent.zig:249`).
+- `tools` is a **required, non-empty allowlist** — no omit, no `"all"` (`:277-297`);
+  `ask_user` and `spawn_sub_agent` are rejected (`:307`) and stripped again at filter time
+  from the single source `MAIN_AGENT_ONLY_NAMES` (`ask_user.zig:260-263`, strip at
+  `tool_eligibility.zig:134`, test at `:326`).
+- Per-sub-agent results come back as JSON: `{name, success, random_fallback, session_id,
+  response, error}` inside `{results: [...], summary: {...}}`
+  (`tools_exec_spawn_sub_agent.zig:571-625`). **`response` is the sub-agent's final text** —
+  that is the transport for the eval report, so no report-submission tool is needed.
+- Live progress already streams over SSE (`subagent_progress.zig:48-60`, `launched|completed|failed`).
+- `agent_name` resolves per-profile only (`Config.zig:2194-2253`); a miss is a **random
+  fallback**. **`timeout_seconds` is dead** — parsed (`:319-322`), read nowhere.
 
-### 3.6 There is no eval, rating, or feedback primitive anywhere
+### 3.6 No eval, rating, or feedback primitive exists
 
 `rg` over `src/**` for `rating|thumbs|feedback|score|verdict|eval` returns only prose in
-comments. No table, no endpoint, no component. **This feature owns the first one.**
-The precedent to copy for "structured notes in SQLite + FTS5" is `agent_memories`
-(Migration 070, `migration.zig:3466-3592`; module `src/agentic_loop/agent_memories.zig`).
+comments. No table, no endpoint, no component. The structural precedent to copy is
+`agent_memories` (Migration 070, `migration.zig:3466-3592`; `src/agentic_loop/agent_memories.zig`).
 
-### 3.7 Frontend surfaces that already exist and must be reused
+### 3.7 4.1 `SKILL.MD` parsing and the crash class
 
-| Concern | Reuse |
-|---|---|
-| Master/detail settings page | `SettingsView.vue:78-121` + `SkillsSettings.vue:1-73` + `SkillList.vue` + `SkillDetail.vue:1-203` |
-| Verdict badge on a skill row | `WorkspaceItemTaskCard.vue:569-624` (the review-dot pattern) |
-| Proposed-patch diff | the existing diff renderers (`SidebarDiffView.vue:279`, `GitFileViewer.vue:235`) |
-| Deep-linkable panel | `ChatRightSidebar.vue:42` `SidebarPanel` union (+ `readSidebarParam` `:44-54`, `setPanel` `:84-96`) — extend the union, never add a second param |
-| SSE | `src/helpers/sseBus.ts:25-43` (`SseEventMap`) + `src/api/index.ts:3620-3656` (`UnifiedChannels`) + `:3738-3799` (`additionalEventTypes`) + a dispatch branch in `onEvent` |
-| Store-side SSE | `src/stores/kanbanSse.ts:42-323` is the template |
-
-**The `session_unknown` lesson applies directly.** An `event:` name that is not
-pre-registered in `additionalEventTypes` (`api/index.ts:3738-3799`) is dropped silently by
-the browser before `onEvent` ever fires — this is exactly how `action="updated"` produced
-`event: session_unknown` and rows stayed stale until refresh (PR #215). Every new event
-name in this plan needs a Zig test *and* a TS registration in the same PR.
+`parseYamlFrontmatter` (`skills.zig:87-145`) returns `{name, description}` — **`tags:` is
+parsed by nothing** though the prompt mandates it. And the `*Absolute` filesystem family
+(`statFileAbsolute`, `openFileAbsolute`, …) asserts `path.isAbsolute(path)` and **aborts the
+whole process** on failure — not a catchable error, and `isAbsolute("")` is `false`
+(PR #639's crash class). The drift pre-pass will feed paths extracted from LLM-authored text
+into exactly that family, so it must validate at the boundary (§4.4).
 
 ---
 
 ## 4. Target design
 
-### 4.1 Trigger — one queue row, two producers
+### 4.1 Trigger — a prompt rule the agent obeys
+
+A new constant `SkillEvalToolRule` in `src/modules/agent/prompts/core.zig`, beside
+`SkillsToolRule` (`core.zig:167-198`), written in the established voice: header, bold framing,
+a numbered loop, a `**Self-check:**` closer. It is appended **unconditionally** at
+`prompts_build_messages_for_agent_prompt.zig:125`, right after
+`prompts_const.ReadWorkspaceSessionToolRule`, for the documented cache reason at `:113-119`.
+It is self-gating in its wording, so an agent that does not have the tool simply reads a
+no-op section — **do not** wrap it in `hasTool(...)`, which is exactly the cache
+fragmentation the comment forbids.
+
+Draft of the rule (final wording is a review item — it is prose shipped to every agent):
 
 ```
-T1 on demand  ── POST /api/skill-evals/runs ─┐
-              ── run_skill_eval agent tool  ─┤
-T2 after task ── per-run teardown defer ─────┤
-                                             ▼
-                              INSERT skill_eval_runs (status='queued')
-                                             │  (microseconds, no LLM)
-                                             ▼
-                     skill_evals_poller (5 s tick, crash-recoverable)
-                                             │  claim → status='running'
-                                             ▼
-                     di.emit_run_agent(eval_session_id, skip_initial_queue_message=true)
+## Skill Evals — evaluate the skill you used, before you answer
+
+**A skill is only worth what it is worth today.** After you finish a task in which you
+loaded at least one skill with `use_skill`, call `run_skill_eval` ONCE before your final
+message. It reads the record of what this session actually loaded — you do not pass the
+skill list, so you cannot cherry-pick — and spawns one eval sub-agent per skill to check
+relevance, whether the procedure was followed, whether it helped, whether the paths and
+commands it names still exist in the code as it is now, and whether another skill already
+covers it.
+
+- **Skip it** when you loaded no skill, or when `run_skill_eval` is not in your tool list.
+- **Once per task.** A second call is a cheap no-op, not a second eval.
+- **You are not the judge.** The sub-agents produce the verdicts; do not pre-judge or
+  argue with them.
+- **Report it in one line** in your final message, e.g. "Evaluated 3 skills — 1 needs
+  updating (`foo`)". If a skill came back `needs_human`, say so.
+
+**Self-check:** "did I load a skill and forget to evaluate it?" If yes, call
+`run_skill_eval` now.
 ```
 
-**T2 hook point: `workflow.zig:712-724`, inside the existing `defer`.** That defer is armed
-before the loop, so it is the only place guaranteed to run on *every* exit path. The hook is
-gated on a local `run_completed: bool` that is set to `true` immediately before the `break`
-at `workflow.zig:1598` — i.e. "the final assistant message was persisted and the worker is
-being torn down". Errors, cancellation, `ask_user`-pending and unexpected `finish_reason`
-all leave it `false`, so they do not schedule an eval by default. `eval_on =
-"all_terminal"` in config (§4.10) opts the other exits in.
+### 4.2 One tool does the work — synchronous, in-session
 
-The hook does exactly three cheap things and returns:
+`run_skill_eval` is the **only** new tool. Its exec:
 
-1. `SELECT 1 FROM session_skill_events WHERE session_id = ? LIMIT 1` — no skills used, no eval.
-2. Guard checks (§4.9) — config enabled, `sessions.is_eval = 0`, per-day budget, dedupe.
-3. `INSERT INTO skill_eval_runs (... status='queued')`.
+1. **Resolve the target set from code, not from the agent** — the ledger/`session_skills`
+   rows for `ctx.session_id`. This is what stops the agent from silently omitting the skill
+   it worked around. `{}` = all loaded skills; `{skill_name}` = one (for the UI's per-skill
+   button).
+2. **Dedupe** — if a run already exists for `(session_id, 'self_prompt')`, return the stored
+   summary instead of re-running.
+3. **Tier-0 pre-pass** (§4.4) — instant, no tokens. If every finding is deterministic and
+   none is `severity: high`, settle the run with **zero sub-agents**.
+4. **INSERT** a `skill_eval_runs` row (`status='running'`, `trigger='self_prompt'`).
+5. **Build one sub-agent per skill**: instruction = rubric + that skill's evidence slice;
+   `tools` = `["read_file","search","glob","list_directory","command","list_skills","use_skill"]`.
+6. **Fan out through the shared batch runner** — the same `runSubAgent` +
+   `std.Io.Group.concurrent` path `spawn_sub_agent` uses, so `parent_session_id` links the
+   sub-agents to this session, `subagent_progress` SSE streams "eval 2 of 3" for free, and the
+   ≤20 / non-empty-allowlist / no-main-agent-only-names rules are enforced by code instead of
+   by an LLM writing JSON.
+7. **Collect** each `results[].response`, parse as JSON, run `validateReport()` (§4.5),
+   downgrade what fails, persist `skill_eval_results`.
+8. **Finalize** the run (`status='done'`, `total_tokens` summed exactly over the returned
+   `session_id`s — the envelope hands them back) and **return a compact summary** the agent
+   can quote: `{evaluated, verdicts: {keep: 2, update: 1}, needs_attention: [...], run_id}`.
 
-**It must not call an LLM and must not block.** The `defer` runs while the worker row is
-being deleted; anything slow here delays `worker_deleted` and the frontend's
-`isStreaming` flag.
+**Why the fan-out is code, not the LLM writing a `spawn_sub_agent` call** (it is worth being
+explicit, since "the main agent runs `spawn_sub_agent`" is the ask): the *effect* is
+identical — same session, same concurrency, same sub-agent sessions with
+`parent_session_id`. The difference is only who writes the JSON. Handing that to the model
+means asking it to produce ≤20 well-formed nested payloads with a non-empty allowlist each
+and no main-agent-only names — precisely the parse rules §3.5 shows are easy to violate and
+that only wire tests catch. The plan therefore keeps the semantics and puts the serialization
+in code. Extracting the batch runner out of `tools_exec_spawn_sub_agent.zig` into a shared
+function used by both callers is its own reviewed task (§5 W4).
 
-### 4.2 The runner is a **main** agent session — not a sub-agent
+**Synchronous, not queued.** The tool blocks until the sub-agents finish, exactly as
+`spawn_sub_agent` already does. The cost is latency on the agent's final message; the
+benefit is no scheduler, no claim/reaper state machine, no crash-recovery path, no
+"queued-but-never-ran" rows, and no separate eval session. §11 records what this removed and
+§8 R2 records the escape hatch if blocking proves painful.
 
-This is forced by the code, not a preference:
-
-- Sub-agents are stripped of `spawn_sub_agent` (`tool_eligibility.zig:134`, source of truth
-  `ask_user.zig:260-263`). A sub-agent **cannot** fan out, so the eval runner must be
-  `is_sub_agent = false`.
-- The runner must therefore be a normal session: `sessions.is_eval = 1` (Migration 095) and
-  `skill_eval_runs.eval_session_id` pointing back at it.
-- Its `allowed_tools` (a CSV in `RunParamsNew`, authoritative for sub-agents because the
-  per-agent override chain is skipped when `is_sub_agent`, `workflow.zig:600-641`) is:
-  `list_skills, use_skill, read_file, search, glob, list_directory, command, used_tools,
-  spawn_sub_agent, submit_skill_eval_report`
-  — plus `edit_skill, add_skill, remove_skill` **only** in apply mode (§4.8).
-- **Rejected alternative:** having the *task's own* session spawn the eval sub-agents at
-  the end. It extends the user's session, pollutes its transcript and compaction window,
-  cannot be retried or cancelled independently, and — decisively — the task session has
-  already emitted its final message, so appending an eval turn would surface eval chatter
-  in the user's chat. The runner-as-separate-session still literally satisfies "the main
-  agent runs `spawn_sub_agent`": the runner *is* a main agent.
-
-### 4.3 The evidence bundle — the contract of the whole feature
+### 4.3 The evidence bundle
 
 `src/agentic_loop/skill_evals_evidence.zig` builds one frozen JSON document per run, stored
-in `skill_eval_runs.evidence_json` and handed verbatim to the runner. Freezing it means the
-report can be re-derived and audited later, and the eval is reproducible even after
-`llm_history` rows are compacted away.
+in `skill_eval_runs.evidence_json`, sliced per skill into each sub-agent's instruction:
 
 ```json
 {
@@ -246,13 +235,11 @@ report can be re-derived and audited later, and the eval is reproducible even af
     "workspace_item_id": "item_1788811112791088699", "item_type": "kanban",
     "cwd": "/home/ginwa/ginwaaitoolbox", "finish_reason": "stop",
     "final_message": "...the assistant's last message...",
-    "user_intent": "...the session's first user message, truncated to 2 KB...",
-    "started_at_nano": 1790542158599884172, "ended_at_nano": 1790542201041721153
+    "user_intent": "...the session's first user message, truncated to 2 KB..."
   },
   "skills": [{
     "name": "ginwaaitoolbox-resolve-pr-conflict",
     "scope": "global",
-    "load_event": "loaded",
     "first_loop_index": 7, "use_count": 2, "listed_count": 3,
     "listed_without_loading": false,
     "content_at_use": "---\nname: ...\n---\n## Procedure\n...",
@@ -267,68 +254,58 @@ report can be re-derived and audited later, and the eval is reproducible even af
                     "result_excerpt": "{\"skill_name\":\"...\",\"loaded\":true,...}" }]
   }],
   "available_skills": [{ "name": "other-skill", "description": "..." }],
-  "transcript_excerpt": [{ "role": "assistant", "loop_index": 7, "content": "..." }],
   "deterministic_findings": [{ "dimension": "stale_path", "severity": "high",
                               "claim": "referenced path does not exist",
                               "path": "src/ai_workflow/tui/agentic_loop/workflow.zig" }]
 }
 ```
 
-`transcript_excerpt` is the *compact* window around each `first_loop_index` (a few turns
-either side), not the whole session — the whole session is available to the sub-agents
-through the `read_workspace_session` tool if they need it, and a 200 KB prompt is not a
-feature.
+`transcript_excerpt` is deliberately **not** included: the sub-agent has
+`read_workspace_session` and can pull the turns it needs, and a 200 KB prompt is not a
+feature. What it does get is the `loop_index` anchors, so the read is targeted.
 
-**Cross-plan hazard, called out now:** `use_calls[].arguments` is `{path: ...}` **today**,
-but the sibling plan (§4.7 there) deletes `path` and makes `use_skill` take `skill_name`.
-The extractor must therefore accept **both** shapes (`skill_name` first, then `path`
-basename, then `response_content.skill_name` as the authority) or evals silently stop
-matching the moment 094 lands. This is a two-line tolerance, and it is the single most
-likely way this feature breaks in the future. W9 owns the switch-on case.
+**Cross-plan hazard.** `use_calls[].arguments` is `{path: ...}` today, but the sibling plan
+(§4.7 there) deletes `path` and makes `use_skill` take `skill_name`. The extractor must accept
+**both** shapes — `skill_name`, then `path` basename, then `response_content.skill_name` as
+the authority — or evals silently stop matching the day 094 lands. W8 owns the switch-on case.
 
-### 4.4 Tier 0: the deterministic pre-pass (no LLM, no tokens)
+### 4.4 Tier 0 — the deterministic pre-pass (no LLM, no tokens)
 
-`src/agentic_loop/skill_evals_drift.zig`. Cheap structural evals run **before** any agent is
-spawned, and their results are pre-computed facts in the bundle:
+`src/agentic_loop/skill_evals_drift.zig`, run before any sub-agent exists:
 
 1. **Path extraction** — a conservative tokeniser over the skill body for path-shaped and
    `file:line`-shaped tokens. Conservative on purpose: a false positive becomes a false
    "stale path" finding. Cap at 50 paths per skill.
-2. **Existence check** — for each path, resolve against the session `cwd` and `statFileAbsolute`
-   / `accessAbsolute`. **Every path must be validated `isAbsolute` before reaching a
-   `*Absolute` call** — `std.fs.path.isAbsolute("")` is `false`, and the `*Absolute` family
-   asserts and aborts the whole process (PR #639's crash class). A relative or empty token
-   is rejected at the boundary, never passed through.
-3. **Drift by git history** — for each referenced path, `git -C <cwd> log --oneline
-   --since=<loaded_at ISO> -- <paths>`, bounded: `std.process.spawn` (not `Child.run` — the
-   codebase is uniformly on `spawn`), `wait_pid_bounded` (`shell.zig:164`), 3 s deadline,
-   output capped. This *is* the "must use the new code" mechanism — it produces the commit
-   list, and the sub-agent decides whether those commits invalidate the skill.
-4. **Structural checks** — frontmatter parses; `name:` is kebab-case; `description:`
-   present and ≤ 200 chars; body ≤ `MAX_SKILLS_SIZE` (100 KB, `skills.zig:7`); **name
-   collision** with another skill by `name`, and by description similarity (a cheap
-   trigram/Jaccard over descriptions, no LLM) → the `duplication` signal.
+2. **Existence check** — resolve against the session `cwd`, then `statFileAbsolute` /
+   `accessAbsolute`. **Validate `isAbsolute` at the boundary and turn a relative or empty
+   token into a finding** — never pass it through (§3.7's abort-the-process class).
+3. **Drift by git history** — for the referenced paths: `git -C <cwd> log --oneline
+   --since=<loaded_at ISO> -- <paths>`. Bounded: `std.process.spawn` (the codebase is
+   uniformly on `spawn`, not `Child.run`), `wait_pid_bounded` (`shell.zig:164`), 3 s deadline,
+   capped output. **This is the "must use the new code" mechanism** — it produces the commit
+   list; the sub-agent decides whether those commits invalidate the skill.
+4. **Structural checks** — frontmatter parses; `name:` kebab-case; `description:` present and
+   ≤ 200 chars; body ≤ `MAX_SKILLS_SIZE` (100 KB, `skills.zig:7`); name collision and a cheap
+   trigram/Jaccard description similarity → the `duplication` signal.
 
-If the only findings are deterministic and none is `severity: high`, the run can be
-**settled without spawning any sub-agent at all** and the token cost is zero. This is worth
-building first: it makes the feature immediately useful on the cheapest cases and it is
-fully unit-testable.
+If the only findings are deterministic and none is `severity: high`, the run settles at
+**zero token cost**. Build this first: it is fully unit-testable and it makes the feature
+useful on the cheapest, most common cases (a skill naming a file that no longer exists).
 
-### 4.5 Tier 1: the rubric and the strict output contract
+### 4.5 Tier 1 — the rubric and the strict output contract
 
-The runner's queued instruction (`src/agentic_loop/skill_evals_prompt.zig`) is a generated
-markdown document: role statement, the frozen evidence bundle, the rubric verbatim, the
-output contract, **and the explicit statement that this session is an eval session and must
-not attempt the original task**.
+Each eval sub-agent's instruction carries: the role statement, its skill's evidence slice,
+the rubric verbatim, and the output contract. Its **final message must be the report JSON**
+(no tool needed — §3.5's `response` field is the transport).
 
 Each dimension is scored **0-3** with a mandatory evidence pointer:
 
-| Dimension | Question the sub-agent must answer | Evidence it must cite |
+| Dimension | Question | Evidence it must cite |
 |---|---|---|
 | `relevance` | Did this skill match the task it was loaded for? | the user intent + the turn that loaded it |
-| `used` | Was the procedure actually followed, or loaded and ignored? | transcript tool calls |
+| `used` | Was the procedure followed, or loaded and ignored? | transcript tool calls |
 | `helpfulness` | Did following it help, or mislead? | the outcome / final message |
-| `freshness` | **Do the paths, symbols and commands the skill names still exist and behave as described?** | `deterministic_findings` + `drift_commits` + its own `read_file`/`search`/`command` checks |
+| `freshness` | **Do the paths, symbols and commands it names still exist and behave as described?** | `deterministic_findings` + `drift_commits` + its own `read_file`/`search`/`command` checks |
 | `accuracy` | Is any stated fact wrong? | the file/line that contradicts it |
 | `duplication` | Does `available_skills` already cover this? | the other skill's name |
 
@@ -343,54 +320,26 @@ Verdict is exactly one of:
 | `delete` | ≥ 1 `severity: high` finding |
 | `needs_human` | the honest default when evidence is insufficient |
 
-Submitted via the `submit_skill_eval_report` tool (W8) as strict JSON, then **validated in
-Zig** (`validateReport()`), never trusted: verdict ∈ enum; scores ∈ 0..3; confidence ∈
-0..1; every finding has non-empty `evidence`; `proposed_content` non-empty for
-`update`/`rewrite`; `merge_target` exists; a `delete` verdict without a `high` finding is
-downgraded to `needs_human`. On validation failure the runner gets **one** repair turn with
-the error fed back, then the result is stored as `needs_human`. An unevidenced verdict is
-the single most damaging failure mode of an LLM judge — it is rejected structurally.
+`validateReport()` runs in Zig and is never bypassed: verdict ∈ enum; scores ∈ 0..3;
+confidence ∈ 0..1; every finding has non-empty `evidence`; `proposed_content` non-empty for
+`update`/`rewrite`; `merge_target` exists; **a `delete` without a `high` finding is
+downgraded to `needs_human`**. A sub-agent whose final message does not parse as JSON, or
+fails validation, is stored as `needs_human` with the raw text preserved in `rationale` —
+never silently dropped, and never trusted. An unevidenced verdict is the most damaging
+failure mode of an LLM judge, so it is rejected structurally.
 
-### 4.6 Fan-out
+### 4.6 Storage — Migrations **095** and **096**
 
-One `spawn_sub_agent` call, one sub-agent **per skill**, capped at
-`min(max_skills_per_run, 20)`. Above the cap, skills are prioritised by
-`use_count desc, first_loop_index asc` and the remainder are recorded as
-`status='skipped'` in the run report rather than silently dropped.
+Conventions copied from the repo: one statement per `db.exec` (`sqlite3_prepare_v2` compiles
+only the first); `CREATE TABLE/INDEX IF NOT EXISTS`; `DATETIME DEFAULT CURRENT_TIMESTAMP` set
+in SQL, never bound from Zig; **TEXT ids** from
+`std.Io.Timestamp.now(io, .real).nanoseconds`; no foreign keys (`PRAGMA foreign_keys` is off
+project-wide); register in `registerAllMigrations` after the Migration093 entry at
+`migration.zig:2006`.
 
-Each sub-agent's `tools` (required, non-empty, no `"all"`, never a main-agent-only name):
-
-```
-["read_file", "search", "glob", "list_directory", "command", "list_skills", "use_skill"]
-```
-
-plus `write_file`/`text_replace` only if the sub-agent is asked to draft a patch (default:
-it returns `proposed_content` in its report instead — the parent owns all writes).
-
-`agent_name` = `skill_evals.judge_sub_agent` if configured, else the profile's first
-sub-agent, else `""` → the existing random fallback still works, so **v1 needs zero
-configuration**. The recommended sub-agent definition (a `skill-evaluator` entry with the
-rubric as its `system_prompt`) ships as a documented one-click seed, and the UI shows a
-"using a random agent — configure one" affordance off `is_random_fallback`.
-
-**`timeout_seconds` must not be relied on** — it is dead today (§3.5). The bound comes from
-the poller's reaper (§4.7): a run whose `eval_session_id` has no live worker and no report
-after `max_run_minutes` is marked `failed` and can be retried. Fixing the dead field is
-tempting but is a separate change to a shared tool; note it, do not bolt it on here.
-
-### 4.7 Storage — Migrations **095** and **096**
-
-Conventions copied from the repo, not invented: one statement per `db.exec`
-(`sqlite3_prepare_v2` compiles only the first); `CREATE TABLE/INDEX IF NOT EXISTS`;
-`DATETIME DEFAULT CURRENT_TIMESTAMP` set in SQL, never bound from Zig; **TEXT ids** from
-`std.Io.Timestamp.now(io, .real).nanoseconds`; no foreign keys (`PRAGMA foreign_keys` is
-deliberately off project-wide); register in `registerAllMigrations` after the Migration093
-entry at `migration.zig:2006`.
-
-#### Migration 095 — usage ledger + eval marker
+#### Migration 095 — the usage ledger
 
 ```sql
--- the append-only record of "which skill, which turn, what body" (fixes §3.2 gaps 1 & 3)
 CREATE TABLE IF NOT EXISTS session_skill_events (
   id           TEXT PRIMARY KEY,
   session_id   TEXT NOT NULL,
@@ -404,51 +353,45 @@ CREATE TABLE IF NOT EXISTS session_skill_events (
 );
 CREATE INDEX IF NOT EXISTS idx_session_skill_events_session ON session_skill_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_skill_events_skill ON session_skill_events(skill_name, created_at);
-
--- the recursion guard for §4.1 (an explicit flag, NOT a session-id substring sniff —
--- `tools_exec_spawn_sub_agent.zig:241` already shows how fragile that heuristic is)
-ALTER TABLE sessions ADD COLUMN is_eval INTEGER NOT NULL DEFAULT 0;
 ```
 
-Writers: `handle_tool.zig`, immediately beside the existing `SaveSkill` call at
-`handle_tool.zig:809-810` — one `INSERT` for `use_skill`, one per entry returned by
-`list_skills` (that is what makes `listed_without_loading` observable), one for
-`add_skill`/`edit_skill`/`remove_skill`. `session_skills` keeps its current writers
-untouched; it remains the compaction drift detector. **The ledger is additive — it never
-replaces `session_skills`.**
+Writers: `handle_tool.zig`, beside the existing `SaveSkill` call at `:809-810` — one row for
+`use_skill`, one per entry returned by `list_skills` (that is what makes
+`listed_without_loading` observable), one each for `add_skill`/`edit_skill`/`remove_skill`.
+**Additive**: `session_skills` keeps its writers untouched and remains the compaction drift
+detector.
 
 #### Migration 096 — runs and results
 
 ```sql
 CREATE TABLE IF NOT EXISTS skill_eval_runs (
   id              TEXT PRIMARY KEY,
-  session_id      TEXT NOT NULL DEFAULT '',   -- evaluated session ('' for a skill-scope run)
-  eval_session_id TEXT NOT NULL DEFAULT '',   -- the main-agent session doing the eval
-  skill_name      TEXT NOT NULL DEFAULT '',   -- '' = whole-session scope
-  scope           TEXT NOT NULL DEFAULT 'session',   -- 'session' | 'skill' | 'sweep'
-  trigger         TEXT NOT NULL DEFAULT 'on_demand', -- 'on_demand' | 'after_task' | 'manual_ui'
-  status          TEXT NOT NULL DEFAULT 'queued',    -- queued|running|done|failed|cancelled|skipped
+  session_id      TEXT NOT NULL DEFAULT '',   -- the session whose skills were evaluated
+  skill_name      TEXT NOT NULL DEFAULT '',   -- '' = every loaded skill
+  scope           TEXT NOT NULL DEFAULT 'session',    -- 'session' | 'skill'
+  trigger         TEXT NOT NULL DEFAULT 'self_prompt',-- 'self_prompt' | 'on_demand'
+  status          TEXT NOT NULL DEFAULT 'running',    -- running|done|failed|skipped
   profile         TEXT NOT NULL DEFAULT '',
   model           TEXT NOT NULL DEFAULT '',
   cwd             TEXT NOT NULL DEFAULT '',
   evidence_json   TEXT NOT NULL DEFAULT '',
+  sub_session_ids_json TEXT NOT NULL DEFAULT '',      -- exact cost attribution
   report_json     TEXT NOT NULL DEFAULT '',
-  total_tokens    INTEGER NOT NULL DEFAULT 0,        -- computed at finalize (§8)
+  total_tokens    INTEGER NOT NULL DEFAULT 0,
   error           TEXT NOT NULL DEFAULT '',
   started_at      DATETIME, finished_at DATETIME,
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_skill_eval_runs_status ON skill_eval_runs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_skill_eval_runs_session ON skill_eval_runs(session_id, created_at DESC);
-CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_runs_after_task
-  ON skill_eval_runs(session_id, skill_name, trigger) WHERE trigger = 'after_task';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_runs_self_prompt
+  ON skill_eval_runs(session_id, trigger) WHERE trigger = 'self_prompt';
 
 CREATE TABLE IF NOT EXISTS skill_eval_results (
   id              TEXT PRIMARY KEY,
   run_id          TEXT NOT NULL,
   skill_name      TEXT NOT NULL,
   session_id      TEXT NOT NULL DEFAULT '',
-  status          TEXT NOT NULL DEFAULT 'pending', -- pending|done|failed|skipped
+  status          TEXT NOT NULL DEFAULT 'pending', -- pending|done|failed|needs_human
   verdict         TEXT NOT NULL DEFAULT 'needs_human',
   relevance       INTEGER NOT NULL DEFAULT 0,
   used            INTEGER NOT NULL DEFAULT 0,
@@ -458,6 +401,7 @@ CREATE TABLE IF NOT EXISTS skill_eval_results (
   duplication     INTEGER NOT NULL DEFAULT 0,
   confidence      REAL NOT NULL DEFAULT 0,
   content_at_use  TEXT NOT NULL DEFAULT '',
+  content_hash_at_use TEXT NOT NULL DEFAULT '',
   missing_paths_json TEXT NOT NULL DEFAULT '',
   drift_commits_json TEXT NOT NULL DEFAULT '',
   proposed_content TEXT NOT NULL DEFAULT '',
@@ -466,257 +410,232 @@ CREATE TABLE IF NOT EXISTS skill_eval_results (
   rationale       TEXT NOT NULL DEFAULT '',
   sub_session_id  TEXT NOT NULL DEFAULT '',
   applied_at      DATETIME,
-  apply_action    TEXT NOT NULL DEFAULT '',       -- 'edit'|'delete'|'keep'|'' (what a human did)
+  apply_action    TEXT NOT NULL DEFAULT '',       -- 'edit'|'delete'|'keep'|''
   created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_skill_eval_results_run ON skill_eval_results(run_id);
 CREATE INDEX IF NOT EXISTS idx_skill_eval_results_skill ON skill_eval_results(skill_name, created_at DESC);
 ```
 
-`applied_at` + `apply_action` exist so the eval itself can later be scored — did the human
-accept the verdict? That is the only honest way to calibrate a judge, and it costs two
-columns.
+`applied_at` + `apply_action` exist so the eval can itself be scored — did the human accept
+the verdict? That is the only honest way to calibrate a judge, and it costs two columns.
 
-Repository module: **`src/agentic_loop/skill_evals_db.zig`**, next to `agent_memories.zig`
-(the established home for a table's SQL). `is_global`-style booleans and every integer are
-stringified on bind (`std.fmt.allocPrint(alloc, "{d}", ...)`) and compared on read
-(`std.mem.eql(u8, row.values[i], "1")`) — the `design_model.zig:179-187` idiom.
-**Every free-text write must be `COALESCE(?, '')`**: `SqliteBackend.exec` binds a
-zero-length slice as SQL `NULL` and `NOT NULL` then fails **at runtime**, mid-useCase —
-Migration 079's `content` column broke exactly this way, and `source_path`/`error`/`rationale`
-are all plausibly empty. Note the asymmetry: `query`/`queryRow` do **not** have the guard,
-so `""` is `NULL` in a `WHERE` arg but `''` in a `VALUES` — guard the empty-name path
-explicitly.
+Repository: **`src/agentic_loop/skill_evals_db.zig`**, next to `agent_memories.zig`. Integers
+and booleans are stringified on bind (`std.fmt.allocPrint(alloc, "{d}", ...)`) and compared on
+read (`std.mem.eql(u8, row.values[i], "1")`) — the `design_model.zig:179-187` idiom.
+**Every free-text write must be `COALESCE(?, '')`**: `SqliteBackend.exec` binds a zero-length
+slice as SQL `NULL` and `NOT NULL` then fails **at runtime, mid-useCase** — Migration 079's
+`content` column broke exactly this way, and `rationale`/`error`/`missing_paths_json` are all
+plausibly empty. Note the asymmetry: `query`/`queryRow` do **not** have the guard, so `""` is
+`NULL` in a `WHERE` arg but `''` in `VALUES` — guard the empty-name path explicitly.
 
-### 4.8 Applying a verdict
-
-Default **propose-only**: the eval writes rows; a human clicks Apply. `apply_mode` config
-values: `off` (never write), `propose` (**default**), `auto_low_risk`.
-
-Apply reuses the **existing** skill write path — `edit_skill` / `remove_skill` / `add_skill`
-(or the sibling plan's `skills_db.upsertSkill`/`deleteSkill` after 094) — never a second
-writer, so there is exactly one place that touches a `SKILL.MD`. Apply records
-`apply_action` + `applied_at` and emits an SSE event so open views refresh.
-
-`auto_low_risk` is deliberately narrow: only `delete` for a skill with ≥ 2 consecutive
-`delete` verdicts across ≥ 2 different runs, no `keep` in between, and zero `use` in the
-last 30 days. Everything else — including every `update`/`rewrite` — stays human-gated.
-Auto-editing a skill body is not a risk this plan takes in v1.
-
-### 4.9 Guards — the part that decides whether this is a feature or a token leak
+### 4.7 Guards
 
 | Guard | Mechanism | Why |
 |---|---|---|
-| **No eval-of-eval recursion** | `sessions.is_eval = 1` checked in the T2 hook; eval sessions never enqueue a run | an eval run is itself a task that loads skills |
-| **No sub-agent can trigger evals** | `run_skill_eval` is added to `MAIN_AGENT_ONLY_NAMES` (`ask_user.zig:260`), which is simultaneously the parse-time rejection (`spawn_sub_agent.zig:307`), the tool strip (`tool_eligibility.zig:134`), and the progressive-equip bypass — one list, three enforcement points | a fan-out of fan-outs has no bound |
-| **Nothing without skills** | hook gate 1: any `session_skill_events` row for the session | most sessions use no skill |
-| **Dedupe** | partial unique index `uq_skill_eval_runs_after_task` (096) — a re-run of the same task cannot double-enqueue | the T2 hook can fire more than once for one logical task (queued-message continuation, retries) |
-| **Budget** | `max_evals_per_day`, `max_concurrent`, counted with `SELECT COUNT(*) FROM skill_eval_runs WHERE created_at >= date('now')` | a hard ceiling a user can reason about |
-| **Blast radius** | `max_skills_per_run` (default 8), `min_skills_used` (default 1), `max_run_minutes` (poller reaper) | one run cannot fan out 20 agents over 300 skills |
-| **Opt-in** | `skill_evals.enabled = false` by default | it spends money |
-| **No blocking** | the T2 hook only inserts; the poller does all LLM work | `defer` runs during worker teardown |
+| **No recursion** | `run_skill_eval` goes into `MAIN_AGENT_ONLY_NAMES` (`ask_user.zig:260`) — one list, three enforcement points (parse rejection at `spawn_sub_agent.zig:307`, the strip at `tool_eligibility.zig:134`, the progressive-equip bypass) — and it is absent from every eval sub-agent's allowlist | a fan-out of fan-outs has no bound |
+| **No cherry-picking** | the tool reads the skill set from the ledger for `ctx.session_id`; the agent passes nothing | the agent must not be able to omit the skill it worked around |
+| **Idempotent** | partial unique index `uq_skill_eval_runs_self_prompt`; a repeat call returns the stored summary | the rule says "once", but an LLM will sometimes call twice; a duplicate must be free, not a second eval |
+| **Bounded fan-out** | `max_skills_per_run` (default 8) — above it, prioritise by `use_count desc, first_loop_index asc` and record the rest as `skipped` | one run cannot fan out 20 agents over 300 skills |
+| **Budget** | `max_evals_per_day`; denied runs return a clear message instead of silently doing nothing | a ceiling the user can reason about |
+| **No blocking, no surprise** | synchronous but bounded; `subagent_progress` SSE shows "eval 2 of 3"; `total_tokens` in the summary the agent quotes | the user should see the cost of what just happened |
+| **Opt-out** | removing `run_skill_eval` from the tool list is the off switch (§4.8) | no new config flag needed to disable it |
 
-### 4.10 Config
+### 4.8 Config — the allowlist *is* the on/off switch
 
-New `skill_evals` block in `~/.config/nalar/config.json`, mirroring the `SubAgentConfig`
-plumbing (`Config.zig:172-197` / `:360-378` / `:867` / `:1014` / `:1396-1412` — struct,
-JSON mirror with defaults, parse, dup, profile clone) and exposed through
-`GET/PUT /api/nalar/config` (`nalar_config_put.zig:302-343` shape):
+Because the rule is a static constant, the trigger is gated the way every other tool is
+gated in this repo: **the tool must be in the agent's tool list**. `run_skill_eval` is added
+to `DEFAULT_CHAT_TOOLS` (`api/index.ts:1509-1529`) and categorised in
+`ToolsSection.vue:43-125` (`eval: 'Skills'`), so a user turns evals off by toggling the tool
+off — the same gesture as every other tool, no new concept. For a `kanban`/`design`/`agent`
+workspace item, the per-item `agent_tools` allowlist decides (secure-by-default: an empty
+list means zero tools, `agent_tools_allowed.zig:37-83`).
+
+Config therefore shrinks to the cost knobs only:
 
 ```json
 "skill_evals": {
-  "enabled": false,
-  "auto_after_task": false,
-  "eval_on": "success_only",
-  "min_skills_used": 1,
   "max_skills_per_run": 8,
   "max_evals_per_day": 10,
-  "max_concurrent": 1,
-  "max_run_minutes": 10,
-  "apply_mode": "propose",
   "judge_sub_agent": "",
   "judge_profile": "",
+  "apply_mode": "propose",
   "include_listed_without_loading": true
 }
 ```
 
-`enabled: false` + `auto_after_task: false` means a fresh install does nothing until the
-user turns it on — and the on-demand path (button / `run_skill_eval`) works immediately
-without it, because an explicit user request is its own consent.
+`apply_mode`: `off` (never write) | `propose` (**default**) | `auto_low_risk`. Mirror the
+`SubAgentConfig` plumbing (`Config.zig:172-197` / `:360-378` / `:867` / `:1014` /
+`:1396-1412`) and expose via `GET/PUT /api/nalar/config` (`nalar_config_put.zig:302-343`).
 
-### 4.11 HTTP surface — a **separate prefix**, on purpose
+### 4.9 Applying a verdict
 
-All routes under `/api/skill-evals/*`, i.e. **not** nested under `/api/skills`. This is a
-deliberate dodge of the documented route-order trap: `matchRoute` walks routes in
-registration order and `/api/skills/:name` is registered at `main.zig:602`, so any new
-literal like `/api/skills/evals` registered after it is captured with `name="evals"`. A
-sibling prefix has zero interaction with it. (If a sub-route is ever added under
-`/api/skills/`, the in-repo precedent for the correct order is
-`…/knowledge/reorder` before `…/knowledge/:knowledge_id` at `main.zig:721-722`.)
+Default **propose-only**: a human clicks Apply. Apply reuses the **existing** skill write path
+— `edit_skill` / `remove_skill` / `add_skill` (or the sibling plan's
+`skills_db.upsertSkill`/`deleteSkill` after 094) — never a second writer, so exactly one place
+touches a `SKILL.MD`. Apply records `apply_action` + `applied_at` and emits an SSE event so
+open views refresh.
+
+`auto_low_risk` is deliberately narrow: only `delete`, only for a skill with ≥ 2 consecutive
+`delete` verdicts across ≥ 2 different runs, no `keep` in between, and zero `use` in 30 days.
+Every `update`/`rewrite` stays human-gated. Auto-editing a skill body is not a risk this plan
+takes in v1.
+
+### 4.10 HTTP surface — a **separate prefix**, on purpose
+
+All under `/api/skill-evals/*`, **not** nested under `/api/skills`. This dodges the documented
+route-order trap: `matchRoute` walks routes in registration order and `/api/skills/:name` is
+registered at `main.zig:602`, so a literal `/api/skills/evals` registered after it is captured
+with `name="evals"`. A sibling prefix has zero interaction with it. (Precedent for the correct
+order if a sub-route is ever added under `/api/skills/`: `…/knowledge/reorder` before
+`…/knowledge/:knowledge_id`, `main.zig:721-722`.)
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/skill-evals/runs` | `{session_id?|skill_name?, scope, apply?}` → `{run_id, status}` |
+| `POST` | `/api/skill-evals/runs` | `{session_id, skill_name?, apply?}` → the summary (the UI button path) |
 | `GET` | `/api/skill-evals/runs` | list, filtered by `session_id`/`skill_name`/`status`, paged |
 | `GET` | `/api/skill-evals/runs/:run_id` | run + all results + report |
-| `POST` | `/api/skill-evals/runs/:run_id/cancel` | cancel queued/running |
 | `POST` | `/api/skill-evals/results/:result_id/apply` | `{action:"edit"|"delete"|"keep"}` |
 | `GET` | `/api/skill-evals/skills/:skill_name/history` | verdict timeline for one skill |
 | `GET` | `/api/skill-evals/summary` | counts by verdict — powers the sidebar badge |
 
-Handlers follow the `agent_knowledge_*` shape: a `useCase(allocator, db, input)` with a
-closed error set and two exhaustive `switch`es (status + message) so adding a variant fails
-to compile. `nalarcore.getSingleton()` is touched **in the handler only**.
+Handlers follow the `agent_knowledge_*` shape: `useCase(allocator, db, input)` with a closed
+error set and two exhaustive `switch`es (status + message) so adding a variant fails to
+compile. `nalarcore.getSingleton()` is touched **in the handler only**.
 
-### 4.12 SSE
+### 4.11 SSE
 
-New routing key `"skill_evals"` in `unified_events_sse.zig:248-273`, and five event names:
+New routing key `"skill_evals"` in `unified_events_sse.zig:248-273`, and three event names:
+`skill_eval_run_started`, `skill_eval_run_completed`, `skill_eval_run_failed`. The per-skill
+verdicts ride inside the completed payload — no separate event. Sub-agent progress needs
+nothing new (it already streams on `subagent_progress`).
 
-`skill_eval_run_created`, `skill_eval_run_started`, `skill_eval_run_completed`,
-`skill_eval_run_failed`, `skill_eval_verdict`.
+Each name must be registered in **all four** places in the same PR: the Zig emitter's
+event-type ladder; `api/index.ts:3738-3799` `additionalEventTypes` (**missing here = silently
+dropped by the browser**); a dispatch branch in `onEvent` (`:3801+`); and `SseEventMap`
+(`sseBus.ts:25-43`) + `UnifiedChannels` (`api/index.ts:3620-3656`). Pin the wire strings with
+a Zig test in the `sse_on_event_send_session.zig:209-232` shape and a TS registry test like
+`unifiedSseBuffer.spec.ts:580-720`. **No fallthrough default** — that is how `session_unknown`
+happened.
 
-Each must be registered in **all four** places, in the same PR:
-
-1. the Zig emitter's event-type ladder;
-2. `src/api/index.ts:3738-3799` `additionalEventTypes` — **missing here = silently dropped**;
-3. a dispatch branch in `onEvent` (`api/index.ts:3801+`);
-4. `SseEventMap` (`sseBus.ts:25-43`) + `UnifiedChannels` (`api/index.ts:3620-3656`).
-
-Zig side gets a regression test in the `sse_on_event_send_session.zig:209-232` shape pinning
-the exact wire strings; the frontend side gets a registry-completeness assertion like
-`unifiedSseBuffer.spec.ts:580-720`. **No fallthrough default in the ladder** — that is how
-`session_unknown` happened.
-
-### 4.13 Frontend
+### 4.12 Frontend
 
 | Piece | Built from | Notes |
 |---|---|---|
 | Settings "Evals" tab | `SettingsView.vue:78-121` (4th entry) | reuse the local toast at `:13-20, 120-133` |
 | `SkillEvalsSettings.vue` | `SkillsSettings.vue:1-73` master/detail | left = runs + per-skill roll-up; right = report |
 | Report view | `SkillDetail.vue` structure | score bars, rationale, evidence list, `proposed_diff` in the existing diff renderer, Apply / Dismiss |
-| Verdict badge on skill rows | `WorkspaceItemTaskCard.vue:569-624` pattern | worst-of-last-N verdict, `GET /summary` or per-skill history |
-| "Evaluate" button | `SkillDetail.vue` next to Delete | `POST /runs` with `scope: "skill"` |
-| Right-sidebar panel | extend the `SidebarPanel` union at `ChatRightSidebar.vue:42` | inherits `?sidebar=evals` deep-link + localStorage — **do not add a second param** |
-| Live progress | new `stores/skillEvalsSse.ts` modelled on `kanbanSse.ts:42-323` | "eval 2 of 5" via `BackgroundCommandsPopup.vue`'s pill pattern |
-| In-transcript `run_skill_eval` card | `KanbanMove.vue:1-180` + `parseKanbanMove` in `toolOutputParser.ts:652-680` | so "eval my skills" shows its result in chat |
-| Tool toggles | `ToolsSection.vue:43-125` + `DEFAULT_CHAT_TOOLS` `api/index.ts:1509-1529` | new tools must be added or they are filtered out of every session |
+| Verdict badge on skill rows | `WorkspaceItemTaskCard.vue:569-624` pattern | worst-of-last-N verdict |
+| "Evaluate" button | `SkillDetail.vue` next to Delete | `POST /runs` with `skill_name` |
+| Right-sidebar panel | extend the `SidebarPanel` union at `ChatRightSidebar.vue:42` | inherits `?sidebar=evals` deep-link + localStorage — **never a second param** |
+| Live state | `stores/skillEvalsSse.ts` modelled on `kanbanSse.ts:42-323` | plus the existing sub-agent progress pill (`BackgroundCommandsPopup.vue`) |
+| In-transcript card | `KanbanMove.vue:1-180` + `parseKanbanMove` (`toolOutputParser.ts:652-680`) | so the run and its verdicts are visible where they happened |
+| Tool registration | `ToolsSection.vue:43-125` + `DEFAULT_CHAT_TOOLS` `api/index.ts:1509-1529` | missing here = filtered out of every session |
 
-URL-param rule (repo convention, non-negotiable): extend the view's existing param union,
-mount reads it back, clicks write it with `router.replace`. A local `ref` boolean for the
-selected tab would break refresh/Back/share.
+URL-param rule (repo convention): extend the view's existing param union, mount reads it
+back, clicks write it with `router.replace`. A local `ref` boolean would break
+refresh/Back/share.
 
 ---
 
 ## 5. Task breakdown
 
-Ordered so each task is independently reviewable, and so everything before W9 works
-**today**, on the filesystem model, with no dependency on the sibling plan.
+Ordered so each task is independently reviewable and everything works on today's filesystem
+model with **no** dependency on the sibling plan.
 
-- **W0 — Seams (no behaviour).** `src/agentic_loop/skill_evals_db.zig` skeleton + the two
-  migrations 095/096 registered after `migration.zig:2006`, with a registration guard test
-  in the `migration.zig:6042-6048` shape. Add `skills_read`/`skills_write` accessor helpers
-  in one place so W9's swap is a single-file change. Delete nothing; do not fix the
-  0-reader `auto_save_skill` here (the sibling plan owns that file's cleanup).
+- **W0 — Migration 095 + 096.** Tables above, registered after `migration.zig:2006`, with a
+  registration guard test in the `migration.zig:6042-6048` shape.
 - **W1 — Usage ledger.** Writers at `handle_tool.zig:809-810` for `use_skill` (with
-  `loop_index`, `llm_history_id`, `content_hash`) and for `list_skills`
-  (per entry, `event='listed'`), plus `add_skill`/`edit_skill`/`remove_skill`.
-  `sessions.is_eval` written by the runner in W6.
-- **W2 — Repository + report validation.** `skill_evals_db.zig` CRUD, `validateReport()`,
-  and the verdict-downgrade rules (§4.5). Pure functions, in-memory DB tests, **no**
-  `spawn_sub_agent` yet.
-- **W3 — Evidence bundle.** `skill_evals_evidence.zig`: ledger read + `llm_history` join on
-  `tool_call_id`/`loop_index` + final message + first user message + `available_skills` +
-  transcript excerpt. **Accepts both `{path}` and `{skill_name}` `use_skill` arguments** (§4.3).
-- **W4 — Drift pre-pass.** `skill_evals_drift.zig`: path extraction, existence check with
-  the `isAbsolute` boundary guard, bounded `git log --since`, structural checks, description
-  similarity. **Zero LLM.** This is where "must use the new code" actually comes from.
-- **W5 — Prompt + rubric.** `skill_evals_prompt.zig`: the runner instruction, the rubric,
-  the output contract, the "you are an eval session" statement, and the negative-space rules
-  (do not attempt the original task; do not edit skills in propose mode).
-- **W6 — Runner + poller.** `skill_evals_runner.zig` (claim → set `is_eval` → snapshot
-  `evidence_json` → `emit_run_agent(skip_initial_queue_message = true)` →
-  `updateSessionIsEval`) and `src/schedulers/skill_evals_poller.zig` (`TICK = 5s`,
-  `resetStuckRunning` on boot, `claimForRun` via `db.changes() > 0`, reaper for
-  `max_run_minutes`, `max_concurrent` gate `isWorkerRunning`). Registered beside the
-  routine scheduler in `startup.zig`/`main.zig:297-306`.
-- **W7 — The post-task hook.** `run_completed: bool` set at `workflow.zig:1598`; the
-  enqueue call inside the `defer` at `workflow.zig:712-724`; `auto_after_task` +
-  `eval_on` + all guards from §4.9. **Zero LLM work in the hook.**
-- **W8 — Tools.** `run_skill_eval` (main-agent-only — add to
-  `MAIN_AGENT_ONLY_NAMES`, `ask_user.zig:260`) and `submit_skill_eval_report` (validates
-  the caller is an eval session via `skill_eval_runs.eval_session_id`). Registry +
-  `ToolsSection.vue` + `DEFAULT_CHAT_TOOLS`.
-- **W9 — Sibling-plan compatibility.** Read `use_skill` arguments in both shapes; route all
-  skill reads/writes through the W0 seam so 094's `skills_db` swap is one file. Add a test
-  that fails if a third argument shape appears.
-- **W10 — HTTP.** The seven `/api/skill-evals/*` routes + `skill_evals` in
-  `nalar_config_get`/`put`.
-- **W11 — SSE.** Channel + five event names + Zig wire-pinning tests + the four frontend
-  registrations.
-- **W12 — Frontend.** §4.13 in full, including the URL-param spec and the diff renderer.
-- **W13 — Functional + docs.** `tests/functional/skill_evals_test.py` (§6), plus a section
-  in `docs/SPEC.md`.
+  `loop_index`, `llm_history_id`, `content_hash`) and `list_skills` (per entry,
+  `event='listed'`), plus `add_skill`/`edit_skill`/`remove_skill`.
+- **W2 — Repository + validation.** `skill_evals_db.zig` CRUD, `validateReport()`, the
+  downgrade rules (§4.5). Pure functions, in-memory DB tests, no spawning.
+- **W3 — Evidence bundle.** `skill_evals_evidence.zig`: ledger + `llm_history` join on
+  `tool_call_id`/`loop_index` + final and first user messages + `available_skills` +
+  per-skill slicing. **Accepts both `{path}` and `{skill_name}` `use_skill` arguments.**
+- **W4 — Shared batch runner.** Extract `runSubAgent` + the `std.Io.Group.concurrent`
+  loop out of `tools_exec_spawn_sub_agent.zig:413-630` into a reusable function; both
+  `execSpawnSubAgent` and `execRunSkillEval` call it. Pure refactor — the existing
+  static-contract tests at `:660-792` must keep passing unchanged.
+- **W5 — Drift pre-pass.** `skill_evals_drift.zig`: path extraction, existence check with the
+  `isAbsolute` boundary guard, bounded `git log --since`, structural checks, description
+  similarity. **Zero LLM.** This is where "must use the new code" comes from.
+- **W6 — Prompt rule.** `SkillEvalToolRule` in `core.zig` beside `SkillsToolRule`; appended
+  at `prompts_build_messages_for_agent_prompt.zig:125`; re-exported in `prompts.zig` and
+  `modules/agent/prompts.zig`; `PROMPT_SECTIONS` entry with `requires_tool` (`:1206` shape);
+  tests mirroring `prompts_test.zig:1699` (reaches the live prompt) and `:1712` (names the
+  tool and its behaviors).
+- **W7 — The tool.** `run_skill_eval`: resolve from the ledger, dedupe, Tier-0, build
+  instructions, fan out via W4, validate, persist, finalize, return the summary. Registered
+  in `UNIFIED_TOOL_REGISTRY`, added to `MAIN_AGENT_ONLY_NAMES`, `ToolsSection.vue`,
+  `DEFAULT_CHAT_TOOLS`.
+- **W8 — Sibling-plan compatibility.** Read `use_skill` arguments in both shapes; route all
+  skill reads/writes through one accessor module so 094's `skills_db` swap is a single-file
+  change; add a test that fails on a third argument shape.
+- **W9 — HTTP + config.** The six `/api/skill-evals/*` routes + the `skill_evals` config block.
+- **W10 — SSE.** Channel + three event names + the four registrations + the pinning tests.
+- **W11 — Frontend.** §4.12 in full, including the URL-param spec and the diff renderer.
+- **W12 — Functional + docs.** `tests/functional/skill_evals_test.py` (§6) and a section in
+  `docs/SPEC.md`.
 
 ### Test plan per task
 
 | Task | Coverage |
 |---|---|
-| W0/W1/W2 | in-memory SQLite via `migration.registerAllMigrations` + `runMigrations()` (never hand-rolled `CREATE TABLE` — the convention recorded in `.nalar/memories/llm-history-test-use-migrations-module.md`); partial-unique-index rejection; **`""` binds as `''` not NULL** for `rationale`/`error`/`missing_paths_json`; an unevidenced verdict is rejected; a `delete` without a `high` finding is downgraded |
-| W3 | fixture session with assistant `tool_calls_json` + `role='tool'` rows → assert `first_loop_index`, `use_count`, `content_changed_since_use`; **both** `{path}` and `{skill_name}` argument shapes |
-| W4 | path extraction on a real SKILL.MD; missing path detected; the `isAbsolute("")` boundary returns a finding instead of aborting (**the PR #639 crash class — a unit test that panics is the failure mode to pin**); a relative path is rejected; `git log --since` bounded and non-blocking on a non-repo cwd |
-| W5 | the prompt contains the rubric, the output contract, the eval-session statement, and every skill name from the bundle; **static-contract assert that every `spawn_sub_agent` payload it builds has non-empty `tools`, no `"all"`, no main-agent-only name, an `agent_name`, and ≤ 20 agents** — those are the parse-time rules and a regression must fail at build, not at 3 a.m. |
-| W6 | claim atomicity (`db.changes() > 0`); second claim loses; `resetStuckRunning` on boot; reaper marks an orphan `running` run `failed`; `max_concurrent` blocks a second fire |
-| W7 | a `.stop` run enqueues exactly one row; a cancelled run enqueues none; an eval session (`is_eval = 1`) enqueues none; `auto_after_task = false` enqueues none; the unique index makes a double-fire a no-op |
-| W8 | `run_skill_eval` is rejected at `spawn_sub_agent` parse time for a sub-agent (the `MAIN_AGENT_ONLY_NAMES` test already exists at `tool_eligibility.zig:326` — extend it); `submit_skill_eval_report` from a non-eval session is rejected |
-| W10/W11 | **Python functional**, not curl — see §6 |
-| W12 | `SidebarEv…`/settings-tab URL spec in the `SidebarDiffPanel.tabs.spec.ts:1-267` shape; SSE registry completeness in the `unifiedSseBuffer.spec.ts:580-720` shape |
+| W0/W1/W2 | in-memory SQLite via `migration.registerAllMigrations` + `runMigrations()` — never hand-rolled `CREATE TABLE` (the convention recorded in `.nalar/memories/llm-history-test-use-migrations-module.md`); the partial unique index rejects a second `self_prompt` run; **`""` binds as `''`, not NULL**, for `rationale`/`error`/`missing_paths_json`; an unevidenced verdict is rejected; a `delete` without a `high` finding is downgraded |
+| W3 | fixture session with assistant `tool_calls_json` + `role='tool'` rows → assert `first_loop_index`, `use_count`, `content_changed_since_use`, `listed_without_loading`; **both** `{path}` and `{skill_name}` argument shapes |
+| W4 | the extracted runner is behaviour-identical: existing `spawn_sub_agent` tests pass unchanged; a batch of 3 runs concurrently; `error.ConcurrencyUnavailable` on a bare blocking `Io` is still surfaced, not swallowed |
+| W5 | path extraction on a real SKILL.MD; a missing path is detected; **the `isAbsolute("")` boundary returns a finding instead of aborting the process** (the PR #639 class — a test that panics *is* the failure being pinned); a relative path is rejected; `git log --since` is bounded and does not hang on a non-repo cwd |
+| W6 | the rule reaches the live prompt (not just `PROMPT_SECTIONS`); it names the tool and the skip/once/no-pre-judging behaviors; **it is appended unconditionally** — a test asserting it is *not* inside a `hasTool(...)` branch, because gating it fragments the cacheable prefix |
+| W7 | dedupe: a second call returns the stored summary and spawns nothing; the skill set comes from the ledger, not the args (a call passing a skill the session never loaded is ignored/rejected); a sub-agent whose final message is not JSON lands as `needs_human` with the raw text preserved; `total_tokens` equals the sum over the returned sub-session ids |
+| W7 | **static-contract assert that the built sub-agent payloads have non-empty `tools`, no `"all"`, no main-agent-only name, an `agent_name`, and ≤ 20 agents** — the parse-time rules from `spawn_sub_agent.zig:277-297`, `:307`, `:249`. A regression must fail at build, not at 3 a.m. |
+| W9/W10 | **Python functional**, not curl — §6 |
+| W11 | the settings-tab/panel URL spec in the `SidebarDiffPanel.tabs.spec.ts:1-267` shape; SSE registry completeness like `unifiedSseBuffer.spec.ts:580-720` |
 
 ---
 
 ## 6. Verification — functional tests with a scripted stub LLM
 
-Per the repo's verification rule: **no `nohup nalar --port 8080` + `curl`.** The three
-failure modes the rule names are all live here — route order under a new prefix, empty
-strings collapsing to SQL NULL mid-useCase, and strict validators rejecting `""`.
+Per the repo's rule: **no `nohup nalar --port 8080` + `curl`.** All three named failure modes
+are live here — route order under a new prefix, empty strings collapsing to SQL NULL
+mid-useCase, and strict validators rejecting `""`.
 
 `tests/functional/skill_evals_test.py`, on the `harness` fixture (`port=None` → a random
-2000-32000 port; **8081 is reserved and must never be used**; isolated tmpdir `HOME` gated
-by `is_safe_tmp()`):
+20000-32000 port; **8081 is reserved, never used**; isolated tmpdir `HOME` gated by
+`is_safe_tmp()`):
 
-1. **The pipeline, end to end, deterministically.** The proven pattern already exists in
-   `tests/functional/anthropic_chat_headers_test.py:69-94`: boot the harness, `PUT` a
-   profile pointing at a local `ThreadingHTTPServer` stub that returns scripted SSE,
-   `POST /api/llm/session` with a `queue_message`, poll until the reply lands. Here the stub
-   plays **both** the runner and the eval sub-agents (it returns a canned
-   `submit_skill_eval_report` call), so the whole chain — hook → queue row → poller →
-   eval session → `spawn_sub_agent` → report → `skill_eval_results` — is asserted without
-   a real LLM. The harness's own `stub_llm_profile=True` points at a dead port
+1. **The whole pipeline, deterministically.** The pattern already exists in
+   `tests/functional/anthropic_chat_headers_test.py:69-94`: boot the harness, `PUT` a profile
+   pointing at a local `ThreadingHTTPServer` stub returning scripted SSE, `POST
+   /api/llm/session` with a `queue_message`, poll until the reply lands. Here the stub plays
+   both the task agent (it emits a `run_skill_eval` tool call) and the eval sub-agents (they
+   return canned report JSON), so hook→ledger→Tier-0→fan-out→validate→persist is asserted
+   without a real LLM. The harness's own `stub_llm_profile=True` points at a dead port
    (`harness.py:1206`) and is **not** sufficient; the stub must be a live scripted server.
-2. **On-demand route:** `POST /api/skill-evals/runs` → 201, `status:"queued"`, and a
-   `GET /api/skill-evals/runs/:id` round-trip.
-3. **Route order:** every literal `/api/skill-evals/*` path resolves to its own handler and
-   is not swallowed by a `:param` sibling; and `GET /api/skills/:name` is unaffected
-   (regression for the §4.11 dodge).
-4. **Empty-string trap over the real wire:** a run whose report has
-   `rationale: ""`, `error: ""`, `missing_paths_json: ""` persists and reads back `""`
-   rather than 500-ing — the case unit tests miss because they never pass `""` through
-   `useCase`.
-5. **The recursion guard:** an eval session that itself loads a skill does **not** enqueue
-   a second run.
-6. **Dedupe:** firing the after-task trigger twice for one session yields one row.
+2. **Tier-0 settles with zero sub-agents** when the only finding is a missing path — assert
+   the run is `done`, a result row exists with `freshness` low, and the stub received **no**
+   sub-agent completion request.
+3. **Route order:** every literal `/api/skill-evals/*` path resolves to its own handler and is
+   not swallowed by a `:param` sibling; `GET /api/skills/:name` is unaffected.
+4. **The empty-string trap over the real wire:** a report with `rationale: ""`,
+   `error: ""`, `missing_paths_json: ""` persists and reads back `""` rather than 500-ing —
+   the case unit tests miss because they never pass `""` through a `useCase`.
+5. **Dedupe:** two `run_skill_eval` calls in one session produce one run and the second
+   returns the stored summary.
+6. **No recursion:** an eval sub-agent given `run_skill_eval` in its allowlist cannot call
+   it (`MAIN_AGENT_ONLY_NAMES` parse rejection at `spawn_sub_agent.zig:307`).
 7. **Apply:** `POST /results/:id/apply {action:"delete"}` removes the skill via the existing
    path and flips `apply_action`/`applied_at`; a second apply is a no-op.
-8. **SSE:** subscribe to `/api/events?channels=skill_evals` and assert the five event names
-   arrive with the exact strings pinned by the Zig test (this is the `session_unknown`
-   regression class — the browser drops unregistered names, and only a wire test catches a
-   name mismatch between the Zig ladder and `additionalEventTypes`).
+8. **SSE:** subscribe to `/api/events?channels=skill_evals` and assert the three event names
+   arrive with the exact strings the Zig test pins — the `session_unknown` regression class,
+   which only a wire test catches.
 
 ### Verification gates
 
 ```
 zig build test --summary all
 cd src/apps/desktop && pnpm test:unit
-cd src/apps/desktop && pnpm run build          # delete any stray .js next to .ts
+cd src/apps/desktop && pnpm run build
 zig build install:linux
 NALAR_BIN=$(pwd)/zig-out/bin/nalarcore-linux-x86_64 python3 -m pytest tests/functional/skill_evals_test.py -v
 ```
@@ -726,103 +645,117 @@ comments — comments explain *why*. Then a PR for review.
 
 ---
 
-## 7. Cost model — stated honestly, then bounded
+## 7. Cost model
 
-One run ≈ 1 runner turn (a large prompt: evidence bundle, so 5-30 K tokens) + N sub-agent
-sessions × (system prompt + evidence slice + 1-3 tool turns + a report). For 5 skills that
-is roughly **6 sessions and 60-200 K tokens**. A user with `auto_after_task` on and 20
-coding tasks a day would spend ~1.5-4 M tokens a day — completely invisible unless the UI
-shows it.
-
-So: `skill_eval_runs.total_tokens` is computed at finalize by summing
-`llm_history.total_tokens` for `session_id = eval_session_id` **and** every
-`parent_session_id = eval_session_id` (the sub-agents), and the Evals UI shows tokens and
-an estimated cost per run and per rolling week. `max_evals_per_day` defaults to **10**. The
-Tier-0 pre-pass (§4.4) settles trivial cases at zero cost. None of this is optional
-polish — an eval feature that cannot tell the user what it costs will be turned off
-permanently the first time it surprises them.
+One run ≈ the Tier-0 pre-pass (free) + N eval sub-agents × (system prompt + a small evidence
+slice + 1-3 tool turns + a report). For 3 skills that is roughly **3 sessions, 20-60 K
+tokens**, and Tier-0 settles the trivial cases at zero. The tool returns the verdict counts
+and the token total in its summary, so the agent quotes the cost to the user in its final
+message; `skill_eval_runs.total_tokens` records it per run, summed exactly over the returned
+sub-session ids. `max_evals_per_day` (10) and `max_skills_per_run` (8) bound it. An eval
+feature that cannot tell the user what it just cost will be turned off the first time it
+surprises them.
 
 ---
 
 ## 8. Risks
 
-| # | Risk | Mitigation |
+| # | Risk | Assessment / mitigation |
 |---|---|---|
-| R1 | **Eval-of-eval recursion** — the eval session loads a skill, its teardown enqueues another eval, forever | explicit `sessions.is_eval` flag (not a session-id substring sniff); `run_skill_eval` is main-agent-only so no sub-agent can trigger one; W7 test |
-| R2 | **Silent token leak** | `enabled`/`auto_after_task` default false; four budget knobs; `total_tokens` shown in the UI |
-| R3 | **An LLM judge deletes a good skill** | propose-only default; `delete` requires a `high` finding; no auto-apply for `update`/`rewrite` in v1; `applied_at`/`apply_action` make accept/reject measurable |
-| R4 | **Evidence hallucination** — a confident verdict with invented file:line | `validateReport()` rejects a finding with empty evidence; Tier-0 facts are pre-computed, so freshness is adjudication not recall |
-| R5 | **`""` binds as SQL NULL** → `NOT NULL` failure mid-useCase | `COALESCE(?, '')` on every free-text write; dedicated unit + functional test (R1 precedent: Migration 079's `content`) |
-| R6 | **Route shadowing** | routes live under a fresh `/api/skill-evals` prefix, never under `/api/skills/` (§4.11); functional test |
-| R7 | **SSE event dropped silently** | four-point registration per §4.12 + a Zig wire-string test + a TS registry test in the same PR |
-| R8 | **The hook delays worker teardown** | the hook only `INSERT`s; all LLM work is in the poller |
-| R9 | **`timeout_seconds` is dead** → a wedged sub-agent blocks the runner forever | do **not** rely on it; the poller reaper marks runs with no live worker and no report as `failed` after `max_run_minutes`. Fixing the dead field is a separate change |
-| R10 | **`use_skill` argument shape changes when 094 lands** → evals stop matching skills | extractor accepts `skill_name`, then `path`, then `response_content.skill_name`; W9 test fails on a third shape |
-| R11 | **Migration-number collision** with the sibling plan's 094 | this plan takes 095/096; stated in the header and re-checked at W0 |
-| R12 | **`cwd` canonicalisation drift** makes a local skill invisible to the drift pre-pass | one `canonicalCwd` helper shared by the evidence builder, the pre-pass, and the HTTP query path — the same trap the sibling plan calls out |
-| R13 | **A `*Absolute` call on a non-absolute path aborts the process** (mixed into the pre-pass by a skill that references a relative path) | validate `isAbsolute` at the boundary, reject with a finding, never pass through — the PR #639 crash class |
-| R14 | **The after-task trigger fires for a session that never really finished** | `run_completed` is set only at `workflow.zig:1598`; other terminal exits are opt-in via `eval_on = "all_terminal"` |
-| R15 | **Two duplicate cards exist for this request** (`task_1790542119154_4` and this one) — a parallel agent may land a competing plan/implementation | land the plan doc as a PR for review before any implementation; the plan names the exact modules so a collision is visible at the file level |
+| R1 | **The agent simply does not call the tool.** Compliance is best-effort — this is the price of prompt-driven, and the repo already lives with it (the kanban "move your card" mandate is prompt-only and nothing enforces it). | **Accepted.** A missed eval is a missing eval, not a broken feature. The rule is phrased in the same voice as the other `MANDATORY` rules and has a `**Self-check:**`; the rule states "you loaded no skill → skip", so a skip is usually *correct*. The on-demand UI/HTTP path guarantees a way to eval regardless. If compliance proves bad in practice, the async arm is additive (see R2). |
+| R2 | **The agent's final answer waits for the fan-out.** | Bounded by `max_skills_per_run` (8) and culled by Tier-0; the existing `subagent_progress` SSE shows progress. `spawn_sub_agent` already imposes exactly this latency for up to 20 agents, so it is an accepted pattern. **Escape hatch, no schema change needed:** the run row already has a `status`, so a future poller can pick up `running`/queued rows and drain them out-of-band. |
+| R3 | **Self-assessment bias** — the agent judges the skill it chose. | The agent decides *whether* and *when*, never *what* (the tool reads the ledger) and never the *verdict* (fresh sub-agents judge from a frozen bundle). Residual bias is limited to under-triggering, which R1 already covers. |
+| R4 | **An LLM judge deletes a good skill.** | propose-only default; `delete` requires a `high` finding; no auto-apply for `update`/`rewrite` in v1; `applied_at`/`apply_action` make accept/reject measurable. |
+| R5 | **Evidence hallucination** — a confident verdict with an invented file:line. | `validateReport()` rejects a finding with empty evidence; Tier-0 facts are pre-computed, so freshness is adjudication, not recall. |
+| R6 | **`""` binds as SQL NULL** → `NOT NULL` failure mid-useCase. | `COALESCE(?, '')` on every free-text write; dedicated unit + functional test (precedent: Migration 079's `content`). |
+| R7 | **Route shadowing.** | routes live under a fresh `/api/skill-evals` prefix, never under `/api/skills/` (§4.10); functional test. |
+| R8 | **SSE event dropped silently.** | four-point registration per §4.11 + a Zig wire-string test + a TS registry test in the same PR. |
+| R9 | **`timeout_seconds` is dead** → a wedged sub-agent blocks the tool call. | do **not** rely on it. The bound is `max_skills_per_run` plus the fact that a wedged sub-agent wedges `spawn_sub_agent` too — a pre-existing condition, not one this feature introduces. Fixing the dead field is a separate change. |
+| R10 | **`use_skill` argument shape changes when 094 lands** → evals stop matching skills. | extractor accepts `skill_name`, then `path`, then `response_content.skill_name`; W8 test fails on a third shape. |
+| R11 | **Migration-number collision** with the sibling plan's 094. | this plan takes 095/096; stated in the header and re-checked at W0. |
+| R12 | **`cwd` canonicalisation drift** hides a local skill from the pre-pass. | one `canonicalCwd` helper shared by the evidence builder, the pre-pass and the HTTP query path. |
+| R13 | **A `*Absolute` call on a non-absolute path aborts the process** — the pre-pass feeds LLM-authored paths into that family. | validate `isAbsolute` at the boundary, turn a bad token into a finding, never pass it through (§3.7, PR #639). |
+| R14 | **The prompt rule fragments the cacheable prefix** if someone "helpfully" gates it on `hasTool`. | the rule is appended unconditionally next to `ReadWorkspaceSessionToolRule`, and W6 gets a test asserting it is not inside a `hasTool` branch (the rationale is written in the code comment at `prompts_build_messages_for_agent_prompt.zig:113-119`). |
+| R15 | **A duplicate card exists** (`task_1790542119154_4`, in progress) for this same request. | landed as a reviewable plan first; the plan names exact modules so a collision is visible at the file level. |
 
 ---
 
-## 9. Decision log — resolved here, and what still needs the human
+## 9. Decision log
 
-Resolved in this plan (stated so the reviewer can reject them explicitly):
+Resolved in this plan:
 
 | # | Question | Decision |
 |---|---|---|
-| 1 | Does the eval run in the task's own session, or a separate one? | **Separate main-agent session** (`is_sub_agent = false`, `sessions.is_eval = 1`). Forced by `tool_eligibility.zig:134` (sub-agents cannot spawn) and by not wanting eval chatter in the user's transcript. |
-| 2 | Auto-apply verdicts? | **No.** `apply_mode` default `propose`; only a narrow `delete` case may ever auto-apply, and not in v1. |
-| 3 | Config on by default? | **No.** `enabled: false`, `auto_after_task: false`. |
-| 4 | Where does the eval get a model? | **Inherit the session profile**; optional `judge_profile`/`judge_sub_agent` override. Zero-config must work. |
-| 5 | Where does "must use the new code" come from? | **Tier-0 deterministic pre-pass** (path existence + bounded `git log --since`), adjudicated by the sub-agent — not by asking an LLM to remember the codebase. |
-| 6 | New tables, or reuse routines/background processes? | **New tables** (095/096). Routines are time-triggered and mark success at submit time; background processes have no LLM. Only their *loop shape* is reused. |
+| 1 | Hook in the workflow, or a prompt rule? | **Prompt rule.** Revised on review feedback: the agent runs the eval itself, following the `ReadWorkspaceSessionToolRule` precedent. |
+| 2 | Who writes the `spawn_sub_agent` JSON? | **Code**, inside `run_skill_eval`, reusing the extracted batch runner. Same semantics, none of the malformed-payload risk. |
+| 3 | Synchronous or queued? | **Synchronous.** Removes the scheduler, claim/reaper, crash recovery and eval session; the exit to async is additive. |
+| 4 | Auto-apply verdicts? | **No.** `apply_mode` default `propose`; narrow `delete`-only auto-apply exists in config but not in v1. |
+| 5 | Config flag to enable/disable? | **None needed** — the tool allowlist is the switch, as for every other tool. |
+| 6 | Where does "must use the new code" come from? | **Tier-0 deterministic pre-pass** (path existence + bounded `git log --since`), adjudicated by the sub-agent. |
+| 7 | New tables, or reuse routines/background processes? | **New tables** (095/096). Routines are time-triggered and mark success at submit time; background processes have no LLM. |
 
-Still needing a human answer before W6 (these change the build, not the design):
+Still needing a human answer before W7:
 
-1. **Scope of v1** — session-scoped evals only (recommended), or also a weekly "sweep all
-   skills" cron? The sweep is cheap to add on the same queue but roughly 10× the token spend.
-2. **Judge model** — may an eval spend tokens on a *different*, cheaper profile than the task
-   used, or must it inherit? (Inherit is the safer default; cheap is the better product.)
-3. **Migration numbers** — confirm 095/096, given the sibling plan has reserved 094 but has
-   not landed.
-4. **Auto-apply appetite** — is a narrow `delete`-only auto-apply ever wanted, or should
-   `auto_low_risk` be deleted from the config surface entirely to avoid the ambiguity?
-5. **`session_skill_events`** — accept the new ledger table (needed for
-   `listed_without_loading` and for a stable `content_hash` drift key), or do the eval from
-   `llm_history` alone and drop that one dimension?
+1. **Rule wording** — the prompt is prose shipped to every agent; §4.1 carries a draft for
+   review. Anything that must be said differently?
+2. **Latency tolerance** — is blocking the final answer for the fan-out acceptable, or should
+   v1 ship the async poller from the start? (Recommended: synchronous, revisit with data.)
+3. **Judge model** — inherit the session profile (recommended), or allow a cheaper
+   `judge_profile` override to be used by default?
+4. **Migration numbers** — confirm 095/096, given the sibling plan reserved 094 but has not
+   landed.
+5. **`session_skill_events`** — accept the new ledger (needed for `listed_without_loading`
+   and a stable `content_hash` drift key), or drop that dimension and read `llm_history` only?
 
 ---
 
 ## 10. Explicitly out of scope
 
-- **No `search_skill` / skill search.** Not needed for evals; the sibling plan already
-  deferred it.
+- **No `search_skill`.** Not needed for evals; the sibling plan already deferred it.
 - **No FTS5 index on eval reports.** The tables are small and always read by `run_id` or
-  `skill_name`. Add it only if the UI needs full-text search over rationales.
-- **No workflow-blocking gate.** Evals are informational; they do not fail CI, do not block
-  a PR, and do not block a kanban column transition. Making a skill's verdict a merge gate
-  is a product decision nobody has asked for.
-- **No new sub-agent CRUD tool.** `skill-evaluator` is seeded through the existing
-  `PUT /api/nalar/config` path.
-- **Fixing `timeout_seconds`** (`spawn_sub_agent.zig:319-322`) — real bug, separate change.
-- **Fixing the 0-reader `auto_save_skill` flag** and the missing `session_skills` writes for
-  `add_skill`/`edit_skill` — the sibling plan's W0 owns that file; this plan's ledger (W1)
-  makes those writes observable *without* touching the flag, so the two changes do not
-  collide.
+  `skill_name`.
+- **No workflow-blocking gate.** Evals are informational: they do not fail CI, block a PR, or
+  block a kanban transition.
+- **No `submit_skill_eval_report` tool** — sub-agent reports travel back in the existing
+  `spawn_sub_agent` envelope's `response` field (§3.5).
+- **No new sub-agent CRUD tool.** A `skill-evaluator` definition is seeded through the
+  existing `PUT /api/nalar/config`; and v1 works with none at all, because a missing
+  `agent_name` falls back to the existing random-fallback path.
+- **Fixing `timeout_seconds`** (`spawn_sub_agent.zig:319-322`) and the 0-reader
+  `auto_save_skill` flag — real bugs, separate changes. The sibling plan's W0 owns that file's
+  cleanup; this plan's ledger makes the missing writes observable without touching the flag.
+
+---
+
+## 11. What the revision deleted
+
+Review feedback ("just put it in the system prompt, so the agent runs the eval itself")
+removed more than the trigger. Recorded so the simplification is visible and reversible:
+
+| Dropped | Was in |
+|---|---|
+| the `run_completed` flag at `workflow.zig:1598` and the enqueue call inside the teardown `defer` (`:712-724`) | §4.1 of the first draft |
+| the whole `skill_eval_runs` poller: 5 s tick, `resetStuckRunning`, `claimForRun`/`db.changes()`, the `max_run_minutes` reaper, `max_concurrent` gate, `isWorkerRunning` check | W6 |
+| the **separate eval session** and `sessions.is_eval` — no longer needed, because the eval's sub-agents are spawned by a tool call from the task's own session and are main-agent-only-stripped from spawning further | Migration 095, §4.2, W6 |
+| `eval_session_id`, `uq_…_after_task`, the `after_task`/`sweep` trigger values | Migration 096 |
+| the `submit_skill_eval_report` tool and its eval-session-only validation | W8 |
+| the `enabled` / `auto_after_task` / `eval_on` config axis | §4.10 |
+| the 5th SSE event (`skill_eval_verdict`) and the `worker_deleted`-inference coupling | §4.12 |
+
+Net: **one prompt constant, one tool, one shared-refactor — instead of a hook, a scheduler, a
+state machine, and two extra config flags.** The evidence bundle, Tier-0 drift pre-pass,
+rubric, validation-with-downgrade, storage, HTTP, SSE and frontend work are unchanged; they
+were the parts worth keeping.
 
 ---
 
 ## Sibling — `docs/plans/2026-09-28-skills-sqlite-table.md`
 
-Read in full before writing this document. Its four decision-log entries are taken as given
-(`is_global` on the wire, keep the filesystem mirror, add `tags`, no `path` shim). Three
-consequences land here:
+Read in full. Its four decision-log entries are taken as given (`is_global` on the wire, keep
+the filesystem mirror, add `tags`, no `path` shim). Three consequences land here:
 
 1. **Migration 094 is its claim** → this plan takes 095/096 (§8 R11).
-2. **`use_skill` moves from `path` to `skill_name`** → the evidence extractor must accept
-   both, or evals silently stop matching skills the day 094 lands (§4.3, §8 R10).
+2. **`use_skill` moves from `path` to `skill_name`** → the evidence extractor must accept both,
+   or evals stop matching the day 094 lands (§4.3, §8 R10).
 3. **It adds `tags`** → the `duplication` dimension can compare tags as well as descriptions
-   (currently `tags:` is parsed by nothing; `ParsedFrontmatter` is `{name, description}`
-   only, `skills.zig:68`).
+   (today `ParsedFrontmatter` is `{name, description}` only, `skills.zig:68`).
