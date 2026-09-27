@@ -91,17 +91,78 @@ switch to the chat next to this one, pick another workspace, sign out — which 
 what a reader in a chat is usually there for, and offering it from a bar costs
 one gesture rather than a trip out of the transcript and back.
 
-What the arrow offered, the drawer still has to offer: `BackToChatsRow` sits at
-the top of the chat's drawer. A chat opened from `nalar://chat/…` is the *only*
-entry on the back stack, so without that row there is no in-app route to the
-shell at all and system Back just closes the app — the dead end described
-below, moved rather than created.
+The drawer had no "All chats" row, and does not need one: it *is* the chat list.
+A row that returned the reader to the top of a list already open in front of
+them was a second route to where they were standing, and every caller of
+`RecentsDrawerContent` had to keep wiring it.
+
+What the arrow offered, the system Back button offers instead. The chat
+destination registers a `BackHandler` calling the same
+`goBackToPreviousOrShell` every other way out uses — see
+[Back never dead-ends the app](#back-never-dead-ends-the-app). That matters
+because a chat opened from `nalar://chat/…` is the *only* entry on the back
+stack, and the library keeps its own Back callback disabled at that depth: with
+no in-app route, Back would close the app and the reader would have no way off a
+screen they never navigated into. Registered inside the destination, so the
+shell behind it keeps the ordinary "Back leaves the app" behaviour, and after the
+`ModalNavigationDrawer`'s own handler, so an open drawer still closes on Back
+before the route sees it.
 
 One consequence worth naming: the drawer's list is composed even while it is
 closed, so the chat route holds a transcript *and* a recents list in the tree at
 once. That is why the two `LazyColumn`s carry different test tags
 (`chat_message_list` and `sidebar_chat_list`) — one tag for both would make
 every `onNodeWithTag` on either list fail on "multiple nodes".
+
+### Two sections, and both of their titles stay put
+
+The one list holds two sections — **Recent** and **Projects** — and each has a
+header that folds the section away. Both start unfolded: a section the reader has
+to open before it shows anything is a section most people never open, and the
+recents list is the drawer's reason for existing.
+
+Both headers are `stickyHeader`s, so a title stays on screen while its own rows
+scroll under it. The section's name is the only thing on screen saying which
+list the rows below belong to, and a plain `item` header is the first thing a
+scroll throws away — the reader is halfway down an undifferentiated list of chat
+titles. That is why `SidebarSectionHeader` paints the drawer's own background
+rather than `Color.Transparent`: rows pass *under* the pin, and a transparent
+header would show a chat title sliding through the word "Recent". The Projects
+gap above its header is a separate row for the same reason — a spacer drawn
+*inside* a sticky header pins with it and leaves a transparent band the chats
+scroll through.
+
+The fold is state, not local composable state, and lives on `HomeUiState`
+(`isRecentsExpanded`, `isProjectsExpanded`) so a section the reader folded stays
+folded when they open the drawer from inside a chat. The shell's drawer and the
+chat route's drawer are one drawer, and neither may keep its own copy — that is
+how "I collapsed this and it came back" happens.
+
+Both are also the same control, so both are one composable:
+`SidebarSectionHeader(title, itemCount, unit, expanded, onClick, testTag)`. A
+second implementation would be a second place to forget the opaque background.
+
+`RecentsSidebarSectionsTest` covers the fold and both pins on the JVM under
+Robolectric, which matters more than it sounds: the equivalent instrumented
+tests need an emulator, and an emulator is the one thing CI does not have, so
+this behaviour would otherwise ship ungated.
+
+### Paging is scoped to the chat region
+
+The drawer's one scroller holds both sections, so the "ask for the next page"
+watcher is anchored on where the *chat* rows end
+(`chatRegionEndIndex`), not on the bottom of the whole list — otherwise it would
+only fire once the reader had scrolled past every project row, i.e. never for
+anyone who stops at the chats. The Recents header is counted in that index
+because it is a real row: leave it out and the trigger arms a page early.
+
+The band is one-sided (`last >= end - 2`). It used to also require
+`last <= end`, on the theory that being *past* the footer meant the reader was
+reading projects — but a scroll that *lands* past the footer (a fling, a
+`scrollToItem`, a fast drag on a short page) jumps the band instead of crossing
+it and the page never came. The latch above the watcher is the anti-storm guard,
+and holding `last` at or past the end keeps that latch engaged, so nothing
+re-fires while the reader is down among the projects.
 
 ## Chat
 
@@ -563,11 +624,15 @@ state costs one tap instead of a dead window. `NavControllerBackStackTest` drive
 a real `NavController` through both paths on a device; `NalarNavGraphBackTest`
 keeps the rule and the shape of the fix honest on the JVM, where CI runs it.
 
-The chat route reaches the same rule through its drawer rather than an arrow —
-`All chats` calls `goBackToPreviousOrShell` like every other way out. The
-system Back button cannot cause the blank window, but on a deep-linked chat it
-has nothing to pop either, so "only an in-app back button finds it" is now
-"only the drawer's first row finds it".
+The chat route reaches the same rule with no back arrow and no "All chats" row
+at all: its destination registers a `BackHandler { goBack() }`. The system Back
+button cannot cause the blank window, but on a deep-linked chat it has nothing
+to pop either — and the library's own callback is *disabled* at that depth, so
+without this handler the reader's only way out of a chat they were linked into
+is leaving the app. The handler lives after the `ModalNavigationDrawer`'s, so
+an open drawer still consumes Back before the route does.
+`NalarNavGraphBackInstrumentedTest` drives that with a real `pressBack()` from a
+single-destination stack; `ChatDrawerTest` keeps the wiring honest on the JVM.
 
 ### Deep links
 

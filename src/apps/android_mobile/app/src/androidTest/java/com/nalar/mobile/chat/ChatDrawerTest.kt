@@ -13,7 +13,6 @@ import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.WorkspaceOption
-import com.nalar.mobile.shell.BackToChatsRow
 import com.nalar.mobile.shell.RecentsDrawerContent
 import com.nalar.mobile.ui.NalarTheme
 import org.junit.Assert.assertEquals
@@ -29,6 +28,13 @@ import org.junit.runner.RunWith
  * the *same* drawer the shell shows, that a chat picked there is a destination
  * (so the sheet closes behind it), and that a workspace is still only a filter
  * (so the sheet does not).
+ *
+ * The drawer has no "all chats" row. It used to, and it was the only in-app way
+ * off a chat opened from a `nalar://` link; the graph now claims the system Back
+ * button for that instead (`NalarNavGraphBackInstrumentedTest`). A row that
+ * returns the reader to the top of the list already open in front of them is a
+ * second route to where they are standing, so it is asserted *absent* — a test
+ * that only checked the row existed could not have caught its removal.
  */
 @RunWith(AndroidJUnit4::class)
 class ChatDrawerTest {
@@ -47,21 +53,22 @@ class ChatDrawerTest {
     )
 
     private var pickedChatId: String? = null
-    private var backToChatsTaps = 0
     // State, not plain fields: the sidebar re-reads these on every
     // recomposition, and a field write would leave the drawer showing the
-    // workspace the reader just left. The production wiring gets the same
-    // recomposition from `HomeViewModel`.
+    // workspace the reader just left, or a section that refused to fold. The
+    // production wiring gets the same recomposition from `HomeViewModel`.
     private lateinit var selectedWorkspaceId: MutableState<String?>
     private lateinit var selectedChatId: MutableState<String?>
+    private lateinit var recentsExpanded: MutableState<Boolean>
 
     /**
-     * The same drawer the shell shows, with the route's header in front of it —
-     * the shape `NalarNavGraph` hands the screen.
+     * The same drawer the shell shows, which is the shape `NalarNavGraph` hands
+     * the screen: no header slot, and a Recents section that folds on a tap.
      */
     private fun showChat() {
         selectedWorkspaceId = mutableStateOf("workspace-a")
         selectedChatId = mutableStateOf("chat-a1")
+        recentsExpanded = mutableStateOf(true)
         composeTestRule.setContent {
             NalarTheme {
                 ChatScreen(
@@ -76,7 +83,8 @@ class ChatDrawerTest {
                             onWorkspaceSelected = { selectedWorkspaceId.value = it },
                             onChatSelected = { pickedChatId = it },
                             onOpenChat = dismissDrawer,
-                            header = { BackToChatsRow(onClick = { backToChatsTaps++ }) },
+                            recentsExpanded = recentsExpanded.value,
+                            onToggleRecentsSection = { recentsExpanded.value = !recentsExpanded.value },
                         )
                     },
                 )
@@ -102,9 +110,35 @@ class ChatDrawerTest {
 
         composeTestRule.onNodeWithTag("sidebar_sheet").assertIsDisplayed()
         composeTestRule.onNodeWithTag("workspace_dropdown").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("chat_all_chats").assertIsDisplayed()
         composeTestRule.onNodeWithText("Recent").assertIsDisplayed()
         composeTestRule.onNodeWithTag("chat_row_chat-a1").assertIsDisplayed()
+    }
+
+    @Test
+    fun theDrawerHasNoAllChatsRow() {
+        showChat()
+        openDrawer()
+
+        // The hamburger opened the list that row used to lead to, so the row
+        // would be a way to where the reader already is.
+        composeTestRule.onNodeWithTag("chat_all_chats").assertDoesNotExist()
+        composeTestRule.onNodeWithText("All chats").assertDoesNotExist()
+    }
+
+    @Test
+    fun theRecentsHeaderFoldsTheListAndKeepsItsOwnTitle() {
+        showChat()
+        openDrawer()
+
+        composeTestRule.onNodeWithTag("recents_section_header").performClick()
+        composeTestRule.waitForIdle()
+
+        // Folding hides the rows, never the section's name — otherwise the
+        // reader is left with a list of projects and no idea what was folded.
+        composeTestRule.onNodeWithTag("recents_section_header").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("chat_row_chat-a1").assertDoesNotExist()
+        // The other section is untouched: a fold is local to its own section.
+        composeTestRule.onNodeWithTag("projects_section_header").assertExists()
     }
 
     @Test
@@ -150,16 +184,5 @@ class ChatDrawerTest {
         composeTestRule.onNodeWithTag("sidebar_sheet").assertIsDisplayed()
         composeTestRule.onNodeWithTag("chat_row_chat-b1").assertIsDisplayed()
         composeTestRule.onNodeWithTag("chat_row_chat-a1").assertDoesNotExist()
-    }
-
-    @Test
-    fun theDrawersOwnRowLeadsOutOfTheChat() {
-        showChat()
-        openDrawer()
-
-        composeTestRule.onNodeWithTag("chat_all_chats").performClick()
-        composeTestRule.waitForIdle()
-
-        assertEquals(1, backToChatsTaps)
     }
 }

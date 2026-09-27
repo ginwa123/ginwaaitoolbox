@@ -50,6 +50,17 @@ data class HomeUiState(
     val chatsTotal: Int = 0,
     // ── Projects (the sidebar's Projects section) ──────────────────────────
     /**
+     * Whether the Recents section is unfolded.
+     *
+     * Expanded by default, same as [isProjectsExpanded] and for the same reason:
+     * the recents list is the drawer's reason for existing, so making the reader
+     * open it before it shows anything is a fold nobody asked for. Held beside
+     * the projects flag rather than in the composable because it has to survive
+     * the drawer closing — a section that re-opens itself every time the reader
+     * looks at a chat is a setting that is not a setting.
+     */
+    val isRecentsExpanded: Boolean = true,
+    /**
      * Whether the Projects section is unfolded. Expanded by default, matching
      * the desktop's `sidebarStore.projectsExpanded` — a section that has to be
      * opened before it is useful is a section most people never open.
@@ -701,6 +712,18 @@ class HomeViewModel(
     /** Fold the whole section away, or unfold it. The state lives here, not in a composable. */
     fun toggleProjectsSection() {
         _uiState.update { it.copy(isProjectsExpanded = !it.isProjectsExpanded) }
+    }
+
+    /**
+     * Fold the Recents section away, or unfold it.
+     *
+     * No fetch on re-opening, and no clearing on fold: the rows are already
+     * paged into memory and the cached list is what a re-opened section should
+     * show. Only the *visibility* changes, which is what makes folding cheap
+     * enough to be worth doing at all.
+     */
+    fun toggleRecentsSection() {
+        _uiState.update { it.copy(isRecentsExpanded = !it.isRecentsExpanded) }
     }
 
     /**

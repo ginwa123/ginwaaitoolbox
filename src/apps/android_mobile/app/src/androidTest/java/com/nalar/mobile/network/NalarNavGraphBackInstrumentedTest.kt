@@ -2,9 +2,11 @@ package com.nalar.mobile.network
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.test.espresso.Espresso
 import androidx.navigation.NavGraph
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
@@ -36,8 +38,12 @@ import org.junit.runner.RunWith
  *
  * These tests put the real `NavHost` into that state and assert that an in-app
  * affordance leaves something on screen. On the chat route that affordance is no
- * longer a back arrow — it is the hamburger's drawer, whose "All chats" row
- * leads out — so the route has to be driven the way a reader drives it.
+ * longer a back arrow, and no longer the drawer's "All chats" row either — the
+ * drawer opens the list that row led to, so keeping it would have been a second
+ * route to where the reader already stands. What is left is the system Back
+ * button, which the chat destination claims with a `BackHandler`. This is the
+ * only thing standing between a deep-linked chat and "Back quits the app", so it
+ * is driven for real here rather than simulated.
  */
 @RunWith(AndroidJUnit4::class)
 class NalarNavGraphBackInstrumentedTest {
@@ -70,20 +76,31 @@ class NalarNavGraphBackInstrumentedTest {
         )
     }
 
-    /** The chat's way out now that its top bar has no arrow: the drawer's row. */
-    private fun leaveChatThroughItsDrawer() {
+    /**
+     * The chat's way out: the system Back button, which the route claims.
+     *
+     * The drawer is opened first and closed again on purpose. `ModalNavigationDrawer`
+     * registers its own, deeper `BackHandler`, and the dispatcher runs the
+     * most-recently-added enabled callback first — so an open drawer has to eat
+     * the press, and only a closed one can be relied on to reach the route's.
+     */
+    private fun leaveChatWithTheSystemBackButton() {
         composeTestRule.onNodeWithTag("chat_drawer_menu").performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("chat_all_chats").performClick()
+        Espresso.pressBack()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("sidebar_sheet").assertIsNotDisplayed()
+
+        Espresso.pressBack()
         composeTestRule.waitForIdle()
     }
 
     @Test
-    fun theChatDrawersAllChatsRowLeavesTheShellOnScreenFromASingleDestinationStack() {
+    fun systemBackLeavesTheShellOnScreenFromASingleDestinationStack() {
         setUpGraph()
         navigateToDeepLinkedLeaf()
 
-        leaveChatThroughItsDrawer()
+        leaveChatWithTheSystemBackButton()
 
         composeTestRule.onNodeWithTag("home_screen").assertIsDisplayed()
     }
@@ -105,12 +122,12 @@ class NalarNavGraphBackInstrumentedTest {
     }
 
     @Test
-    fun leavingTheChatThroughItsDrawerStillReturnsToTheShell() {
+    fun systemBackReturnsToTheShellFromAChatPushedOverIt() {
         setUpGraph()
         composeTestRule.runOnUiThread { controller.navigate(NalarRoutes.chat("sess_1")) }
         composeTestRule.waitForIdle()
 
-        leaveChatThroughItsDrawer()
+        leaveChatWithTheSystemBackButton()
 
         composeTestRule.onNodeWithTag("home_screen").assertIsDisplayed()
     }

@@ -1,6 +1,7 @@
 package com.nalar.mobile.recents
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,7 +58,6 @@ import androidx.compose.ui.unit.dp
 import com.nalar.mobile.projects.ProjectChatRow
 import com.nalar.mobile.projects.ProjectRow
 import com.nalar.mobile.projects.ProjectsActions
-import com.nalar.mobile.projects.ProjectsSectionHeader
 import com.nalar.mobile.projects.ProjectsState
 import com.nalar.mobile.projects.SeeAllChatsRow
 import com.nalar.mobile.ui.NalarAccent
@@ -86,7 +86,29 @@ private const val LOAD_MORE_KEY = "__chats_footer__"
 /** Reserved key for the recents list's own loading/error/empty row. */
 private const val CHATS_STATE_KEY = "__chats_state__"
 
+/** Reserved key for the recents section header, which is also its sticky pin. */
+private const val RECENTS_HEADER_KEY = "__recents_header__"
+
 private const val PROJECTS_HEADER_KEY = "__projects_header__"
+
+/**
+ * The gap above the Projects header, as its own row.
+ *
+ * A row rather than padding on the header itself because the header is sticky:
+ * a sticky row is pinned to the top of the list viewport, so a spacer drawn
+ * inside it pins too and leaves a transparent band the chats scroll through.
+ * The separation has to live above the pin.
+ */
+private const val PROJECTS_GAP_KEY = "__projects_gap__"
+
+/**
+ * How many rows the recents section spends on its own header.
+ *
+ * The header is a row in the list, not decoration around it, so it shifts every
+ * chat index below it. The paging trigger counts indices and would otherwise
+ * arm a page early — see `chatRegionEnd` in [SidebarBody].
+ */
+private const val RECENTS_HEADER_ROWS = 1
 
 private const val CONTENT_TYPE_SENTINEL = "sentinel"
 
@@ -94,9 +116,37 @@ private const val CONTENT_TYPE_CHAT = "chat"
 
 private const val CONTENT_TYPE_STATE = "state"
 
-private const val CONTENT_TYPE_PROJECTS_HEADER = "projects-header"
+private const val CONTENT_TYPE_SECTION_HEADER = "section-header"
 
 private const val CONTENT_TYPE_PROJECT = "project"
+
+/**
+ * Where the recents region ends in the drawer's one list: the index of its
+ * footer row, the last row belonging to the chat list.
+ *
+ * Null when that region has nothing in it — folded away, or empty with nothing
+ * to page. Null and not a number because a number would arm the paging trigger
+ * on the *Projects* header below, paging a chat list the reader has either just
+ * hidden or has none of.
+ *
+ * The header's row is inside the arithmetic deliberately. It is a row in the
+ * list, so it shifts every chat index by one, and a trigger that counted only
+ * the chats would arm a page early — firing while the reader is still a screen
+ * of rows from the bottom, which is how the last page of a long list arrives
+ * only after they have scrolled past it.
+ *
+ * A pure function rather than an inline expression because this is the one
+ * piece of the drawer's paging rule that a layout test cannot pin: proving a
+ * one-row shift would need a viewport measured to the row, and a test that
+ * depends on the exact row height silently stops testing anything the moment
+ * the row's padding changes.
+ */
+internal fun chatRegionEndIndex(visibleChatCount: Int, recentsExpanded: Boolean): Int? =
+    if (!recentsExpanded || visibleChatCount <= 0) {
+        null
+    } else {
+        RECENTS_HEADER_ROWS + visibleChatCount
+    }
 
 @Composable
 fun RecentsSidebar(
@@ -167,6 +217,17 @@ fun RecentsSidebar(
      */
     projects: ProjectsState = ProjectsState.Empty,
     projectActions: ProjectsActions = ProjectsActions.None,
+    /**
+     * Whether the Recents section is unfolded, and the tap that folds it.
+     *
+     * State and action rather than a holder because neither half means anything
+     * without the other, and both are forwarded verbatim from
+     * [com.nalar.mobile.shell.RecentsDrawerContent] to here — the graph's
+     * drawer and the shell's drawer are the same drawer and must not be able to
+     * disagree about which section is open.
+     */
+    recentsExpanded: Boolean = true,
+    onToggleRecents: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -195,6 +256,8 @@ fun RecentsSidebar(
             runningSessionIds = runningSessionIds,
             projects = projects,
             projectActions = projectActions,
+            recentsExpanded = recentsExpanded,
+            onToggleRecents = onToggleRecents,
         )
 
         // Deliberately outside the body. The "no workspaces" story is an early
@@ -215,7 +278,13 @@ fun RecentsSidebar(
  *
  * Split out for one reason: [RecentsSidebar] needs an account footer below it
  * that no branch of this may swallow.
+ *
+ * Opted into `ExperimentalFoundationApi` for `stickyHeader` alone. It is the
+ * only experimental call here, and both section titles are pinned with it — a
+ * sidebar whose sections are named by a row that scrolls off is a list of rows
+ * with no headings, which is the problem this drawer already had.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SidebarBody(
     workspaces: List<WorkspaceOption>,
@@ -242,6 +311,8 @@ private fun SidebarBody(
     runningSessionIds: Set<String>,
     projects: ProjectsState,
     projectActions: ProjectsActions,
+    recentsExpanded: Boolean,
+    onToggleRecents: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -308,17 +379,9 @@ private fun SidebarBody(
         }
 
         // Index of the recents footer, which is the last row belonging to the
-        // chat list. Everything after it is the Projects section.
-        //
-        // Null when the recents list rendered no rows at all — then there is no
-        // footer, and the Projects header is index 0. Without this the paging
-        // trigger would arm on the header and page the chat list from a row
-        // that is not in it.
-        val chatRegionEnd: Int? = if (visibleChats.isEmpty()) {
-            null
-        } else {
-            visibleChats.size
-        }
+        // chat list. Everything after it is the Projects section. Null when
+        // there is nothing there to page.
+        val chatRegionEnd = chatRegionEndIndex(visibleChats.size, recentsExpanded)
 
         // One page per approach to the end of the *chat* region.
         //
@@ -338,15 +401,24 @@ private fun SidebarBody(
                 // Only a real overflow can be scrolled; an unlaid-out list
                 // reports 0/0 and would otherwise arm on the first frame.
                 //
-                // Scoped to the chat region on purpose. One scroller now holds
-                // both lists, so the old "last index is near totalItemsCount"
-                // test would fire every time the reader scrolled to the bottom
-                // of the *Projects* section — paging chats they are not even
-                // looking at, forever.
+                // Scoped to the chat region on purpose. One scroller holds both
+                // lists, so the old "last index is near totalItemsCount" test
+                // would fire only once the reader had scrolled past every
+                // project row — i.e. never, for anyone who stops at the chats.
+                //
+                // A one-sided band, and that is the whole subtlety: the condition
+                // used to also require `last <= end`, on the theory that being
+                // *past* the footer means the reader is reading projects. But a
+                // scroll that *lands* past the footer — a fling, a `scrollToItem`,
+                // or just a fast drag on a short page — jumps the band instead of
+                // crossing it, and the page never came. The upper bound could
+                // only be a belt-and-braces guard against a storm, and the latch
+                // above is already that guard: holding `last` at or past the end
+                // keeps the latch engaged, so nothing re-fires while the reader
+                // is down among the projects.
                 info.totalItemsCount > 0 &&
                     end != null &&
-                    last >= end - LOAD_MORE_INDEX_THRESHOLD &&
-                    last <= end
+                    last >= end - LOAD_MORE_INDEX_THRESHOLD
             }
                 .distinctUntilChanged()
                 .collect { nearEndOfChats ->
@@ -373,65 +445,90 @@ private fun SidebarBody(
                 .selectableGroup(),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            if (visibleChats.isEmpty()) {
-                // A row in the list, not a weighted placeholder beside it.
-                // The Projects section has to stay reachable while the recents
-                // are loading, empty or broken — a weighted placeholder would
-                // take the whole remaining height and push Projects off-screen
-                // exactly when the reader most wants somewhere else to go.
-                item(key = CHATS_STATE_KEY, contentType = CONTENT_TYPE_STATE) {
-                    when {
-                        isLoading -> SidebarPlaceholder(
-                            testTag = "chats_loading",
-                            title = "Loading chats",
-                            detail = "Fetching the most recent chats in this workspace.",
-                            showSpinner = true,
-                        )
+            // ── Recents ───────────────────────────────────────────────────
+            //
+            // Sticky like every header in this list, and for the same reason the
+            // two section titles have to be one shared composable: the section's
+            // name is the only thing on screen saying which list the rows under
+            // it belong to, and the name is the first thing a scroll throws away.
+            stickyHeader(key = RECENTS_HEADER_KEY, contentType = CONTENT_TYPE_SECTION_HEADER) {
+                SidebarSectionHeader(
+                    title = "Recent",
+                    itemCount = visibleChats.size,
+                    unit = "chats",
+                    expanded = recentsExpanded,
+                    onClick = onToggleRecents,
+                    testTag = "recents_section_header",
+                )
+            }
 
-                        errorMessage != null -> SidebarError(
-                            testTag = "chats_error",
-                            message = errorMessage,
-                            onRetry = onRetry,
-                        )
+            if (recentsExpanded) {
+                if (visibleChats.isEmpty()) {
+                    // A row in the list, not a weighted placeholder beside it.
+                    // The Projects section has to stay reachable while the recents
+                    // are loading, empty or broken — a weighted placeholder would
+                    // take the whole remaining height and push Projects off-screen
+                    // exactly when the reader most wants somewhere else to go.
+                    item(key = CHATS_STATE_KEY, contentType = CONTENT_TYPE_STATE) {
+                        when {
+                            isLoading -> SidebarPlaceholder(
+                                testTag = "chats_loading",
+                                title = "Loading chats",
+                                detail = "Fetching the most recent chats in this workspace.",
+                                showSpinner = true,
+                            )
 
-                        else -> EmptyChats()
+                            errorMessage != null -> SidebarError(
+                                testTag = "chats_error",
+                                message = errorMessage,
+                                onRetry = onRetry,
+                            )
+
+                            else -> EmptyChats()
+                        }
                     }
-                }
-            } else {
-                items(
-                    items = visibleChats,
-                    key = { chat -> chat.id },
-                    contentType = { CONTENT_TYPE_CHAT },
-                ) { chat ->
-                    ChatRow(
-                        chat = chat,
-                        selected = chat.id == selectedChatId,
-                        isRunning = chat.id in runningSessionIds,
-                        nowEpochMillis = nowEpochMillis,
-                        onClick = {
-                            onChatSelected(chat.id)
-                            onOpenChat()
-                        },
-                    )
-                }
+                } else {
+                    items(
+                        items = visibleChats,
+                        key = { chat -> chat.id },
+                        contentType = { CONTENT_TYPE_CHAT },
+                    ) { chat ->
+                        ChatRow(
+                            chat = chat,
+                            selected = chat.id == selectedChatId,
+                            isRunning = chat.id in runningSessionIds,
+                            nowEpochMillis = nowEpochMillis,
+                            onClick = {
+                                onChatSelected(chat.id)
+                                onOpenChat()
+                            },
+                        )
+                    }
 
-                item(key = LOAD_MORE_KEY, contentType = CONTENT_TYPE_SENTINEL) {
-                    ChatListFooter(
-                        isLoading = isLoadingMore,
-                        // Claiming the end while more may still exist is a lie
-                        // the user reads first and then has to watch retracted.
-                        hasReachedEnd = !hasMoreChats,
-                    )
+                    item(key = LOAD_MORE_KEY, contentType = CONTENT_TYPE_SENTINEL) {
+                        ChatListFooter(
+                            isLoading = isLoadingMore,
+                            // Claiming the end while more may still exist is a lie
+                            // the user reads first and then has to watch retracted.
+                            hasReachedEnd = !hasMoreChats,
+                        )
+                    }
                 }
             }
 
             // ── Projects ──────────────────────────────────────────────────
-            item(key = PROJECTS_HEADER_KEY, contentType = CONTENT_TYPE_PROJECTS_HEADER) {
+            item(key = PROJECTS_GAP_KEY, contentType = CONTENT_TYPE_SENTINEL) {
                 Spacer(Modifier.height(20.dp))
-                ProjectsSectionHeader(
-                    projectCount = projects.items.size,
+            }
+
+            stickyHeader(key = PROJECTS_HEADER_KEY, contentType = CONTENT_TYPE_SECTION_HEADER) {
+                SidebarSectionHeader(
+                    title = "Projects",
+                    itemCount = projects.items.size,
+                    unit = "projects",
                     expanded = projects.expanded,
                     onClick = projectActions.onToggleSection,
+                    testTag = "projects_section_header",
                 )
             }
 

@@ -37,7 +37,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.WorkspaceOption
-import com.nalar.mobile.shell.BackToChatsRow
 import com.nalar.mobile.shell.RecentsDrawerContent
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
@@ -101,9 +100,12 @@ fun chatStatusLabel(isWorking: Boolean, isLive: Boolean): String = when {
  *
  * The drawer is the same sidebar the shell shows, supplied by the caller: the
  * screen owns the sheet, the state and the swipe, and must not grow its own
- * idea of what a chat list is. The route supplies the content, including the
- * row that leads back to the chat list, because that row is navigation and
- * navigation belongs to the graph.
+ * idea of what a chat list is. It carries no "all chats" row of its own — the
+ * list it opens *is* the list that row used to lead to, so a row that returns
+ * the reader to the top of a list already in front of them is a second route to
+ * where they are standing. The one way out that is not the drawer is the system
+ * Back button, and the graph owns that: see
+ * [com.nalar.mobile.network.NalarNavGraph].
  *
  * The title, the live indicator and Stop live in the route's top bar rather than
  * in a second header above the transcript, so there is exactly one title bar and
@@ -146,8 +148,8 @@ fun ChatScreen(
      */
     isRunning: Boolean = false,
     /**
-     * What the hamburger opens, and the only way out of the chat into the rest
-     * of the app.
+     * What the hamburger opens, and the widest way out of the chat into the
+     * rest of the app.
      *
      * It is handed the drawer so it can close it: a chat picked from the list is
      * a destination the reader is moving to, and leaving the list open on top of
@@ -349,7 +351,6 @@ private fun ChatScreenPreview() {
                     onWorkspaceSelected = {},
                     onChatSelected = {},
                     onOpenChat = dismissDrawer,
-                    header = { BackToChatsRow(onClick = dismissDrawer) },
                 )
             },
         )

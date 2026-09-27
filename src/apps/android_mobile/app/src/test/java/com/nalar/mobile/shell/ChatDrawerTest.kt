@@ -46,11 +46,38 @@ class ChatDrawerTest {
                 "shows, or the hamburger opens an empty sheet",
             graph.contains("RecentsDrawerContent("),
         )
+    }
+
+    @Test
+    fun theDrawerHasNoAllChatsRow() {
+        // The row used to be the only in-app way off a deep-linked chat. The
+        // drawer opens the very list it led to, so keeping it would be a second
+        // route to where the reader already stands — and both callers of this
+        // drawer would have to keep wiring it.
+        val drawer = moduleSource("shell/RecentsDrawer.kt")
         assertTrue(
-            "and the drawer needs a way out of the chat: the top bar has no " +
-                "back arrow, and a deep-linked chat has nothing under it for the " +
-                "system Back button to pop",
-            graph.contains("BackToChatsRow("),
+            "no row in the drawer may lead out of it; that is what removed the " +
+                "'All chats' affordance",
+            !drawer.contains("BackToChatsRow"),
+        )
+    }
+
+    @Test
+    fun theChatRouteClaimsTheSystemBackButton() {
+        // Removing the "All chats" row removed the only in-app way out of a chat
+        // that has nothing stacked under it — a `nalar://chat/…` link. The
+        // system Back callback is disabled while the back stack is one deep, so
+        // without this the reader's only way off such a chat is leaving the app.
+        //
+        // The assertion is on the *call*, not on the word: a `BackHandler` wired
+        // to nothing at all would satisfy a grep and leave the dead end exactly
+        // where it was.
+        val graph = navGraphSource()
+        val claimsBack = Regex("BackHandler\\s*\\{\\s*goBack\\(\\)\\s*\\}").containsMatchIn(graph)
+        assertTrue(
+            "the chat destination must claim Back, or a deep-linked chat is a " +
+                "dead end that quits the app",
+            claimsBack,
         )
     }
 

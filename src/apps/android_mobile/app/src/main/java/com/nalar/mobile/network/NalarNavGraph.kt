@@ -3,6 +3,7 @@ package com.nalar.mobile.network
 import com.nalar.mobile.projects.ProjectChatsScreen
 import com.nalar.mobile.projects.ProjectsActions
 import com.nalar.mobile.projects.ProjectsState
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,7 +51,6 @@ import com.nalar.mobile.login.LoginCredentials
 import com.nalar.mobile.login.LoginScreen
 import com.nalar.mobile.recents.ChatSummary
 import com.nalar.mobile.recents.HomeUiState
-import com.nalar.mobile.shell.BackToChatsRow
 import com.nalar.mobile.shell.MobileHomeScreen
 import com.nalar.mobile.shell.RecentsDrawerContent
 import com.nalar.mobile.shell.chatDrawerSelectedChatId
@@ -240,6 +240,14 @@ fun NalarNavGraph(
     onEnsureProjectChatsLoaded: (String) -> Unit = {},
     onLoadMoreProjectChats: (String) -> Unit = {},
     onRetryProjects: () -> Unit = {},
+    /**
+     * Fold the sidebar's Recents section away, or unfold it.
+     *
+     * The chat route's drawer and the shell's drawer are one drawer, so this
+     * reaches both — a fold made in one and forgotten in the other is a drawer
+     * that springs open on the reader every time they switch screens.
+     */
+    onToggleRecentsSection: () -> Unit = {},
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -268,10 +276,12 @@ fun NalarNavGraph(
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
 
     // A `nalar://` link or a `popUpTo(SHELL)` navigation can leave a leaf as the
-    // only destination on the back stack. The back arrow there used to call the
-    // inclusive `popBackStack()`, which emptied the back stack and left `NavHost`
-    // drawing nothing at all. See [BackAction]. The chat's own way out is now
-    // the drawer's "All chats" row, which lands here.
+    // only destination on the back stack. The back arrow on those screens used to
+    // call the inclusive `popBackStack()`, which emptied the back stack and left
+    // `NavHost` drawing nothing at all. See [BackAction]. The chat route has no
+    // back arrow and no "All chats" row — its way out is the system Back button,
+    // which the chat destination claims with a [BackHandler] for exactly that
+    // reason.
     val goBack: () -> Unit = { navController.goBackToPreviousOrShell() }
 
     // Built once, here, and handed to both drawers and the project screen.
@@ -314,7 +324,7 @@ fun NalarNavGraph(
     // On a deep-linked chat the shell is not underneath, so the popUpTo finds
     // nothing and the new chat lands on top of the old one. Back then returns
     // to the chat that was open, which is a route onwards rather than a dead
-    // end — and "All chats" still reaches the shell.
+    // end — and the system Back button still reaches the shell.
     val switchChat: (String) -> Unit = { chatId ->
         onOpenSession(chatId)
         navController.navigate(NalarRoutes.chat(chatId)) {
@@ -486,6 +496,15 @@ fun NalarNavGraph(
                     signedInEmail = authState.userEmail,
                     isLoggingOut = authState.isLoggingOut,
                     onLogout = signOut,
+                    // The shell's drawer is the same drawer the chat route's
+                    // hamburger opens, so it gets the same sections and the same
+                    // fold state. It used to get neither, which is why the
+                    // Projects section appeared only once the reader had already
+                    // opened a chat.
+                    projects = projectState,
+                    projectActions = projectActions,
+                    recentsExpanded = homeState.isRecentsExpanded,
+                    onToggleRecentsSection = onToggleRecentsSection,
                 )
             }
         }
@@ -513,6 +532,27 @@ fun NalarNavGraph(
                     onOpenSession(sessionId)
                 }
             }
+
+            // The chat's only way out, and the reason it is not a dead end.
+            //
+            // Without this the route has no in-app navigation at all — the top
+            // bar leads with a hamburger and the drawer carries no "all chats"
+            // row — and `updateOnBackPressedCallbackEnabled` leaves the system's
+            // callback *disabled* while `destinationCountOnBackStack <= 1`. A
+            // `nalar://chat/…` link lands exactly there, so Back would quit the
+            // app from a screen the reader never navigated into and cannot
+            // otherwise leave.
+            //
+            // Registered here rather than in `ChatScreen` because this is
+            // navigation and the graph owns navigation. It is also scoped to the
+            // destination, so the shell behind it keeps the default
+            // "Back leaves the app" behaviour.
+            //
+            // `ModalNavigationDrawer` registers its own handler deeper in the
+            // tree, and the dispatcher runs the most-recently-added enabled
+            // callback first — so an open drawer still closes on Back and only
+            // falls through to here once it is shut.
+            BackHandler { goBack() }
 
             ChatScreen(
                 state = chatState,
@@ -556,17 +596,6 @@ fun NalarNavGraph(
                             switchChat(chatId)
                         },
                         onOpenChat = dismissDrawer,
-                        // The chat has no back arrow to leave by, and a deep-linked
-                        // one has nothing beneath it for the system Back button to
-                        // pop, so the drawer carries the route home itself.
-                        header = {
-                            BackToChatsRow(
-                                onClick = {
-                                    dismissDrawer()
-                                    goBack()
-                                },
-                            )
-                        },
                         isLoading = homeState.isLoading,
                         errorMessage = homeState.errorMessage,
                         onRetry = onRetryHome,
@@ -583,6 +612,12 @@ fun NalarNavGraph(
                         onLogout = signOut,
                         projects = projectState,
                         projectActions = projectActions,
+                        // Straight off `homeState` rather than a local: the
+                        // reader folded these sections in the shell's drawer, and
+                        // a copy held here would forget it the moment they opened
+                        // a chat.
+                        recentsExpanded = homeState.isRecentsExpanded,
+                        onToggleRecentsSection = onToggleRecentsSection,
                     )
                 },
             )
