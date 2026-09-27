@@ -1,0 +1,11 @@
+# Pinned to keep CI reproducible. Bump deliberately, not by drift.
+#
+# pytest:  test framework + fixtures + parametrize.
+#
+# Deliberately absent: playwright and pytest-xdist. The sibling
+# tests/functional_ui/ suite needs playwright because it drives a browser;
+# this suite drives an emulator through Gradle, so the only Python dependency
+# is the test framework itself. Keeping playwright out is what lets this suite
+# run in the same venv as the lighter functional/ suite.
+
+pytest>=7.4,<9
