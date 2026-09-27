@@ -110,13 +110,16 @@ pub fn buildMessages(
             \\
         );
     }
-    // Special tool + special skills: the two "reach for this before you
-    // improvise" mandates. Unconditional — never gated on hasTool, because
-    // a gate keyed on the tool list is a per-agent bit in the cacheable
-    // prefix, and these two rules must stay byte-identical across every
-    // agent so the block is a cache hit rather than N fragments.
+    // The three "tools the agent must actually use" mandates: the special
+    // tool (search the catalog for a tool), the special skills (load the
+    // skill a task needs), and memory (load prior context / persist new
+    // facts). Unconditional — never gated on hasTool, because a gate keyed
+    // on the tool list is a per-agent bit in the cacheable prefix, and these
+    // rules must stay byte-identical across every agent so the block is one
+    // cache hit rather than N fragments.
     try final_system.appendSlice(allocator, prompts_const.ProgressiveToolRule);
     try final_system.appendSlice(allocator, prompts_const.SkillsToolRule);
+    try final_system.appendSlice(allocator, prompts_const.MemoryToolRule);
     _ = activeAgentContent;
 
     // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)

@@ -1560,16 +1560,18 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
 
 
 // -------------------------------------------------------------------------
-// ProgressiveToolRule + SkillsToolRule — the "special tool / special skills"
-// mandates wired into buildMessages. Three properties are pinned:
+// ProgressiveToolRule + SkillsToolRule + MemoryToolRule — the "tools the agent
+// must actually use" mandates wired into buildMessages. Four properties are
+// pinned:
 //   1. Content: each rule names its tools and states the mandate.
-//   2. No bloat: neither rule pre-lists skills, and buildMessages never
-//      injects skill bodies — discovery stays a `list_skills` call so the
-//      cacheable system-prompt prefix does not grow with the user's skill
-//      library.
-//   3. Cache-stability: both are appended unconditionally (no hasTool gate),
-//      so the block is byte-identical for every agent and the shared prefix
-//      stays a cache hit instead of fragmenting per tool set.
+//   2. No bloat: no rule pre-lists skills, and buildMessages never injects
+//      skill bodies — discovery stays a `list_skills` call so the cacheable
+//      system-prompt prefix does not grow with the user's skill library.
+//   3. Cache-stability: all three are appended unconditionally (no hasTool
+//      gate), so the block is byte-identical for every agent and the shared
+//      prefix stays a cache hit instead of fragmenting per tool set.
+//   4. Live-path coverage: each rule must be referenced by buildMessages, not
+//      only by the test-only build_agent_prompt / PROMPT_SECTIONS path.
 // -------------------------------------------------------------------------
 
 test "ProgressiveToolRule names the special tool and the three-call loop" {
@@ -1614,36 +1616,78 @@ test "SkillsToolRule does not pre-list skills (no Available Skills listing)" {
     try std.testing.expect(contains(prompt, "Nothing is pre-injected"));
 }
 
-test "static contract: buildMessages appends both rules unconditionally" {
+test "static contract: buildMessages appends all three rules unconditionally" {
     const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
 
     try std.testing.expect(contains(src, "prompts_const.ProgressiveToolRule"));
     try std.testing.expect(contains(src, "prompts_const.SkillsToolRule"));
+    try std.testing.expect(contains(src, "prompts_const.MemoryToolRule"));
 
-    // No hasTool gate on either rule: a per-agent condition in the cacheable
-    // prefix fragments the prompt cache across every distinct tool set.
+    // No hasTool gate on any of the three: a per-agent condition in the
+    // cacheable prefix fragments the prompt cache across every distinct tool
+    // set. PROMPT_SECTIONS still gates memory on load_memory, but that
+    // constant only feeds build_agent_prompt, which no production caller
+    // reaches — so the gate there does not protect the live prompt.
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"search_tool\")"));
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"use_skill\")"));
     try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"list_skills\")"));
+    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"load_memory\")"));
+    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"save_memory\")"));
 
     // No skill bodies / no skills listing injected into the prompt.
     try std.testing.expect(!contains(src, "makeSkillsEquippedContext(allocator, db, session_id)"));
     try std.testing.expect(!contains(src, "appendSkillsListing(allocator, &final_system"));
 }
 
-test "static contract: both rules sit in the static prefix, before dynamic blocks" {
+test "static contract: the three rules sit in the static prefix, before dynamic blocks" {
     const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
 
     const i_progressive = std.mem.indexOf(u8, src, "prompts_const.ProgressiveToolRule").?;
     const i_skills = std.mem.indexOf(u8, src, "prompts_const.SkillsToolRule").?;
+    const i_memory_rule = std.mem.indexOf(u8, src, "prompts_const.MemoryToolRule").?;
     const i_plan = std.mem.indexOf(u8, src, "## Task Planning").?;
     const i_memory_md = std.mem.indexOf(u8, src, "makeWorkingDirectoryContext").?;
     const i_finalize = std.mem.indexOf(u8, src, "final_system.toOwnedSlice").?;
 
-    // After the other static rules ...
+    // The three mandates sit together, in a stable order, after the other
+    // static rules ...
     try std.testing.expect(i_progressive > i_plan);
+    try std.testing.expect(i_progressive < i_skills);
+    try std.testing.expect(i_skills < i_memory_rule);
     // ... and before the first dynamic block, so a per-session mutation
     // cannot invalidate the prefix the provider caches.
-    try std.testing.expect(i_skills < i_memory_md);
-    try std.testing.expect(i_skills < i_finalize);
+    try std.testing.expect(i_memory_rule < i_memory_md);
+    try std.testing.expect(i_memory_rule < i_finalize);
+}
+
+test "MemoryToolRule reaches the live prompt, not just the test-only path" {
+    // MemoryToolRule used to be referenced ONLY by PROMPT_SECTIONS, which
+    // feeds build_agent_prompt — and build_agent_prompt has no production
+    // caller (workflow.zig and session_compact.zig both call buildMessages).
+    // So a prompt that opens with "failing to call load_memory ... is a task
+    // failure" never reached a real agent. Pin the live-path reference so a
+    // future refactor cannot drop it back to the test-only path.
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+    try std.testing.expect(contains(src, "prompts_const.MemoryToolRule"));
+
+    // Sanity: buildMessages is the live path and build_agent_prompt is not.
+    // workflow.zig:1348 and http_handlers/session_compact.zig:85 both call
+    // buildMessages; build_agent_prompt is referenced only from tests.
+    const workflow = @embedFile("../../agentic_loop/workflow.zig");
+    try std.testing.expect(contains(workflow, "buildMessages("));
+    try std.testing.expect(!contains(workflow, "build_agent_prompt("));
+}
+
+test "MemoryToolRule names both memory tools and the blocking gate" {
+    const prompt: []const u8 = prompts.MemoryToolRule;
+
+    try std.testing.expect(contains(prompt, "save_memory"));
+    try std.testing.expect(contains(prompt, "load_memory"));
+    // The mandate framing the user asked for — not optional, blocking.
+    try std.testing.expect(contains(prompt, "NOT optional"));
+    try std.testing.expect(contains(prompt, "blocking, not advisory"));
+    // The two load triggers that make it actionable without re-reading the rule.
+    try std.testing.expect(contains(prompt, "first user message of any session"));
+    // Cross-reference stays accurate: buildMessages does inject this block.
+    try std.testing.expect(contains(prompt, "## Global Knowledge"));
 }
