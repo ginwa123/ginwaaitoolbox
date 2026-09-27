@@ -58,7 +58,7 @@ const gserverz = nalarcore.gserverz;
 const http_response = @import("http_response.zig");
 const helpers = @import("helpers");
 const tools_equipped = @import("../agentic_loop/tools_equipped.zig");
-const SystemFolder = @import("../modules/system_folder/system_folder.zig");
+const SystemFolder = nalarcore.system_folder.SystemFolder;
 
 /// The display name of an auto-created default project. Cosmetic only —
 /// both clients follow the `is_default` flag, never the name, so a user is
@@ -141,7 +141,7 @@ pub fn ensureDefaultProject(
         \\VALUES (?, ?, 'agent', ?, ?,
         \\  COALESCE((SELECT MAX(position) FROM workspace_items WHERE workspace_id = ?), -1) + 1,
         \\  1, datetime('now'), datetime('now'))
-    , .{ item_id, workspace_id, DEFAULT_PROJECT_NAME, home, workspace_id }) catch |err| switch (err) {
+    , &[_][]const u8{ item_id, workspace_id, DEFAULT_PROJECT_NAME, home, workspace_id }) catch |err| switch (err) {
         // The partial UNIQUE index rejected us: another caller created the
         // default between our read and our write. That is the race working
         // as designed, so roll back and return the winner's row rather than
@@ -165,7 +165,7 @@ pub fn ensureDefaultProject(
     tx.exec(
         allocator,
         "INSERT INTO agents (id, workspace_item_id) VALUES (?, ?)",
-        .{ item_id, item_id },
+        &[_][]const u8{ item_id, item_id },
     ) catch return error.DatabaseError;
 
     // Seed the tool allowlist so a fresh default is immediately usable
@@ -199,7 +199,7 @@ fn readDefault(
         allocator,
         \\SELECT id, name, path, position FROM workspace_items
         \\WHERE workspace_id = ? AND is_default = 1
-    , .{workspace_id}) catch return null;
+    , &[_][]const u8{workspace_id}) catch return null;
     defer q.deinit();
 
     const row = (q.next() catch null) orelse return null;
@@ -222,7 +222,7 @@ fn readPosition(
     db: *nalarcore.sqlite.SqliteBackend,
     item_id: []const u8,
 ) i64 {
-    var q = db.query(allocator, "SELECT position FROM workspace_items WHERE id = ?", .{item_id}) catch return 0;
+    var q = db.query(allocator, "SELECT position FROM workspace_items WHERE id = ?", &[_][]const u8{item_id}) catch return 0;
     defer q.deinit();
     const row = (q.next() catch null) orelse return 0;
     defer row.deinit(allocator);
@@ -238,7 +238,7 @@ pub fn workspaceExists(
     db: *nalarcore.sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) bool {
-    var q = db.query(allocator, "SELECT 1 FROM workspaces WHERE id = ?", .{workspace_id}) catch return false;
+    var q = db.query(allocator, "SELECT 1 FROM workspaces WHERE id = ?", &[_][]const u8{workspace_id}) catch return false;
     defer q.deinit();
     const row = q.next() catch null orelse return false;
     defer row.deinit(allocator);
@@ -262,6 +262,10 @@ pub fn workspaceExists(
 const DefaultProjectResponse = struct {
     item: http_response.WorkspaceItemGetResponse,
     created: bool,
+    /// Sort hint for the item above. Kept beside it, not inside it, so the
+    /// item keeps the exact shape `GET /workspaces/:ws/items` emits — one
+    /// WorkspaceItem, two producers.
+    position: i64,
 };
 
 pub const WorkspaceDefaultProjectInput = struct {
@@ -285,8 +289,11 @@ pub fn useCaseGet(allocator: std.mem.Allocator, db: *nalarcore.sqlite.SqliteBack
             .name = project.name,
             .path = project.path,
             .is_default = 1,
-            .position = project.position,
         },
+        // Reported next to the item rather than inside it: `position` is a
+        // per-item sort hint the workspace_items list already carries, and
+        // this envelope is a lookup, not a listing.
+        .position = project.position,
         .created = project.created,
     }, .{});
     return json;
