@@ -103,7 +103,7 @@ negative tests in `harness_safety_test.py` guard the invariants.
   gating.
 - **No Windows cell.** PR #70's smoke-test cleanup kept the option, but no
   self-hosted Windows runner is registered. Pre-existing compile-blockers
-  in `src/modules/agent/tools/bash_selfkill.zig` and `Agent.zig`'s
+  in the (since-deleted) `bash_selfkill.zig` and `Agent.zig`'s
   `apply_tcp_keepalive` are now resolved (commits `04aa8f8a` + `9ef9d5fb`);
   remaining work to add Windows is runner-registration + `vcpkg` sysroot
   wiring in `build.zig` (separate task).

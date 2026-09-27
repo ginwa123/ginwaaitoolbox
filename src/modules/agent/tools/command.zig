@@ -12,7 +12,7 @@
 //   * `execute_command` — dispatches per-OS (`pwsh` on Windows with a
 //     `cmd.exe` retry on `error.FileNotFound`, `bash` elsewhere) via
 //     `shell.execute_shell`.
-//   * `command_result_to_json` — the shared 9-field JSON payload.
+//   * `command_result_to_json` — the shared 8-field JSON payload.
 //   * `command_tool` — the merged `AgentTool` (name "command").
 //
 // `bash.zig` / `pwsh.zig` are now deprecated shims over this module.
@@ -55,8 +55,8 @@ pub const COMMAND_CMD_PREFIX: []const []const u8 = &.{
 /// (with a `cmd.exe` retry when pwsh is missing), `bash` everywhere else.
 /// Same semantics as the old `execute_bash` / `execute_pwsh`: mandatory
 /// timeout (returns `error.MandatoryTimeoutMissing` if null), byte + line
-/// truncation, foreground / background dispatch, self-kill detection,
-/// URL-encoding (skipped under cmd — see shell.run_shell_command).
+/// truncation, foreground / background dispatch, URL-encoding (skipped
+/// under cmd — see shell.run_shell_command).
 pub fn execute_command(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -85,7 +85,7 @@ pub fn execute_command(
     }
 }
 
-/// JSON payload formatter — same 9-field shape as the old
+/// JSON payload formatter — same 8-field shape as the old
 /// `bash_result_to_string` / `pwsh_result_to_string`.
 pub const command_result_to_json = shell.result_to_json;
 

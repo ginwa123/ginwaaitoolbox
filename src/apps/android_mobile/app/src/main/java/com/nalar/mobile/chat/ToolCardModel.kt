@@ -92,7 +92,6 @@ sealed interface ToolBody {
         val timedOut: Boolean = false,
         val stdoutLines: Int = 0,
         val stderrLines: Int = 0,
-        val isSelf: Boolean = false,
     ) : ToolBody {
         /**
          * `No errors.` is the shell's placeholder for an empty stderr, and the
@@ -102,7 +101,7 @@ sealed interface ToolBody {
         val hasStderr: Boolean
             get() = stderr.isNotBlank() && stderr.trim() != NO_STDERR_SENTINEL
 
-        val hasWarning: Boolean get() = isSelf || timedOut
+        val hasWarning: Boolean get() = timedOut
         val hasFailure: Boolean get() = exitCode != null && exitCode != 0
 
         private companion object {
@@ -600,7 +599,6 @@ object ToolCard {
                 timedOut = data.boolOr("timeout", fallback = false),
                 stdoutLines = data.intOrNull("stdout_lines") ?: 0,
                 stderrLines = data.intOrNull("stderr_lines") ?: 0,
-                isSelf = data.boolOr("is_self", fallback = false),
             )
 
             ToolKind.Search -> ToolBody.Search(
@@ -976,7 +974,6 @@ object ToolCard {
         body.exitCode?.let { add(it.toString()) }
         if (body.truncated) add("truncated")
         if (body.timedOut) add("timeout")
-        if (body.isSelf) add("self-kill")
     }.joinToString(" · ")
 
     /**

@@ -1,1 +1,1 @@
-{"data":{"command":"ls","exit_code":0,"is_self":false,"stderr":"","stderr_lines":0,"stdout":"a\n","stdout_lines":1,"timeout":false,"truncated":false},"error":null,"parameters":{"command":"ls"},"success":true,"tool":"bash","v":1}
+{"data":{"command":"ls","exit_code":0,"stderr":"","stderr_lines":0,"stdout":"a\n","stdout_lines":1,"timeout":false,"truncated":false},"error":null,"parameters":{"command":"ls"},"success":true,"tool":"bash","v":1}

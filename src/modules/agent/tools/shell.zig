@@ -8,7 +8,6 @@
 //   * the spawn + reader-thread + byte-truncation + line-count pipeline
 //   * the mandatory-timeout enforcement
 //   * the background-detach path (currently bash's `nohup` idiom)
-//   * the self-kill detection (shared between bash + pwsh)
 //   * the URL-encoding step (swaps `"…"` → `'…'` around URLs to keep both
 //     bash and PowerShell from interpreting `?` / `&` as wildcards)
 //   * the JSON serialisation of `ShellOutput` to the LLM-facing envelope
@@ -36,7 +35,6 @@ const builtin = @import("builtin");
 const helpers = @import("helpers");
 const schemas = @import("schemas.zig");
 
-const selfkill = @import("bash_selfkill.zig"); // shared per D5 (bash + pwsh)
 const sanitizeControlChars = helpers.sanitize_control_chars;
 
 /// Canonical wire schema. Per-shell wrappers (bash.zig, pwsh.zig) re-export
@@ -61,7 +59,6 @@ pub const ShellOutput = struct {
     timeout: bool,
     stdout_lines: usize = 0,
     stderr_lines: usize = 0,
-    is_self: bool = false,
 };
 
 /// Returned by `execute_shell` when the caller omits `mandatory_timeout`.
@@ -410,34 +407,6 @@ pub fn run_shell_command(
     }
     if (input.mandatory_timeout) |t| {
         if (t == 0) return error.MandatoryTimeoutMissing;
-    }
-
-    // --- Self-kill protection check ---
-    const self_pid = selfkill.get_self_pid();
-    if (try selfkill.detect_self_kill(allocator, command, self_pid)) |warning| {
-        std.log.warn("Self-kill detected: {s}", .{warning});
-
-        const stderr_msg = try std.fmt.allocPrint(allocator, "\n=== SELF-KILL PROTECTION ===\n" ++
-            "Blocked command that would terminate the current process.\n" ++
-            "Reason: {s}\n" ++
-            "Your PID: {d}\n" ++
-            "===========================\n", .{ warning, self_pid });
-        errdefer allocator.free(stderr_msg);
-
-        const command_copy = try allocator.dupe(u8, command);
-        errdefer allocator.free(command_copy);
-
-        return ShellOutput{
-            .command = command_copy,
-            .stdout = "",
-            .stderr = stderr_msg,
-            .exit_code = 1,
-            .truncated = false,
-            .timeout = false,
-            .stdout_lines = 0,
-            .stderr_lines = 1,
-            .is_self = true,
-        };
     }
 
     // --- Background mode ---
@@ -794,9 +763,9 @@ fn spawn_background(
     };
 }
 
-/// JSON serialiser — same 9-field payload as the old `result_to_xml`
+/// JSON serialiser — same 8-field payload as the old `result_to_xml`
 /// (`command/stdout/stderr/exit_code/truncated/timeout/stdout_lines/
-/// stderr_lines/is_self`), now a JSON object.
+/// stderr_lines`), now a JSON object.
 ///
 /// Returned to the LLM as the inner `data` of the standard JSON envelope
 /// (`wrapToolOutput` embeds it in `"data"` on the agentic-loop side).
@@ -821,7 +790,6 @@ pub fn result_to_json(allocator: std.mem.Allocator, result: ShellOutput) ![]u8 {
         .timeout = result.timeout,
         .stdout_lines = result.stdout_lines,
         .stderr_lines = result.stderr_lines,
-        .is_self = result.is_self,
     }, .{});
 }
 
@@ -919,10 +887,10 @@ test "shell.ShellInput JSON schema: same field set as BashInput (alias carries t
     try testing.expectEqual(@as(u32, 5), a.value.mandatory_timeout.?);
 }
 
-test "shell.ShellOutput has all 9 fields the bash JSON payload uses" {
+test "shell.ShellOutput has all 8 fields the bash JSON payload uses" {
     // The bash_result_to_json payload has: command, stdout, stderr,
-    // exit_code, truncated, timeout, stdout_lines, stderr_lines, is_self.
-    // ShellOutput MUST have the same 9 — pwsh_result_to_json reuses it.
+    // exit_code, truncated, timeout, stdout_lines, stderr_lines.
+    // ShellOutput MUST have the same 8 — pwsh_result_to_json reuses it.
     // We construct a sample instance so the type inference resolves
     // correctly; @hasField works on the inferred type only.
     const sample = shell.ShellOutput{
@@ -942,7 +910,6 @@ test "shell.ShellOutput has all 9 fields the bash JSON payload uses" {
     try testing.expect(@hasField(T, "timeout"));
     try testing.expect(@hasField(T, "stdout_lines"));
     try testing.expect(@hasField(T, "stderr_lines"));
-    try testing.expect(@hasField(T, "is_self"));
 }
 
 test "shell.execute_shell runs bash happy path" {

@@ -20,7 +20,7 @@ pub fn execute_pwsh(
     return command.execute_command(allocator, io, input);
 }
 
-/// JSON payload formatter — same 9-field shape as `bash_result_to_json`.
+/// JSON payload formatter — same 8-field shape as `bash_result_to_json`.
 /// Re-exported under the pwsh name for ergonomic callers.
 pub const pwsh_result_to_json = command.command_result_to_json;
 

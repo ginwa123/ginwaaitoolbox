@@ -25,7 +25,7 @@
  *     logPath }` or `null` for ordinary text / foreground `<command>` XML.
  *   - isBackgroundCommandOutput: `true` iff the content holds a
  *     `<background_command>` block or the legacy prose prefix.
- *   - backgroundToShellXml: re-emits the parsed fields as the 9-tag shell
+ *   - backgroundToShellXml: re-emits the parsed fields as the 8-tag shell
  *     envelope so the existing shell card renderer displays it unchanged.
  *
  * Pure functions; safe to call inside `computed`.
@@ -126,7 +126,7 @@ function parseLegacyProse(content: string): ParsedBackgroundCommandOutput | null
 }
 
 /**
- * Re-emit a parsed background completion as the foreground 9-tag shell XML
+ * Re-emit a parsed background completion as the foreground shell XML
  * envelope. `command`/`stdout` are XML-escaped; `stderr` is empty (the
  * background logger merges streams); `truncated` comes from the envelope.
  */
@@ -139,7 +139,6 @@ export function backgroundToShellXml(parsed: ParsedBackgroundCommandOutput): str
     `<truncated>${parsed.truncated}</truncated>` +
     `<timeout>false</timeout>` +
     `<stdout_lines></stdout_lines>` +
-    `<stderr_lines></stderr_lines>` +
-    `<is_self>false</is_self>`
+    `<stderr_lines></stderr_lines>`
   )
 }

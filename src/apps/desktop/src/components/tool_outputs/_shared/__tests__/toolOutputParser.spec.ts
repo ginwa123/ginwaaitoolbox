@@ -599,7 +599,6 @@ describe('parsePwsh', () => {
     timeout: false,
     stdout_lines: 2,
     stderr_lines: 0,
-    is_self: false,
   }
 
   it('parses a PowerShell command result with the same shape as parseBash', () => {
@@ -611,7 +610,6 @@ describe('parsePwsh', () => {
     expect(r.timedOut).toBe(false)
     expect(r.stdoutLines).toBe(2)
     expect(r.stderrLines).toBe(0)
-    expect(r.isSelf).toBe(false)
   })
 
   it('returns the same ParsedBash shape as parseBash for the same input', () => {
@@ -622,7 +620,7 @@ describe('parsePwsh', () => {
 })
 
 // unify-command Phase C: `command` (unified shell) reuses the identical
-// 9-field payload. `parseBash` / `parsePwsh` specs above are untouched;
+// 8-field payload. `parseBash` / `parsePwsh` specs above are untouched;
 // these cases only lock the new alias + dispatcher branch.
 describe('parseCommand', () => {
   const payload = {
@@ -634,7 +632,6 @@ describe('parseCommand', () => {
     timeout: false,
     stdout_lines: 2,
     stderr_lines: 0,
-    is_self: false,
   }
 
   it('parses a unified command result with the same shape as parseBash', () => {

@@ -233,8 +233,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
                 "timeout": False,
                 "stdout_lines": 3,
                 "stderr_lines": 0,
-                "is_self": False,
-            },
+                },
             "error": None,
             "v": 1,
         }

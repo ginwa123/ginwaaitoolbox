@@ -174,7 +174,6 @@ describe('ChatView command tool output — live placeholder-to-result update', (
       timeout: false,
       stdout_lines: 2,
       stderr_lines: 0,
-      is_self: false,
     })
     __dispatchSseBus('llm', commandEvent(finalContent))
     await flushPromises()
@@ -204,7 +203,6 @@ describe('ChatView command tool output — live placeholder-to-result update', (
       timeout: false,
       stdout_lines: 1,
       stderr_lines: 0,
-      is_self: false,
     })
     __dispatchSseBus('llm', commandEvent(finalContent))
     await flushPromises()
@@ -308,7 +306,6 @@ describe('ChatView command tool output — live placeholder-to-result update', (
       timeout: false,
       stdout_lines: 2,
       stderr_lines: 0,
-      is_self: false,
     })
     __dispatchSseBus('llm', commandEvent(finalContent))
     await flushPromises()
