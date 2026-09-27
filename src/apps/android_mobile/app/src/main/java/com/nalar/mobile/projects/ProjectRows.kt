@@ -62,6 +62,15 @@ class ProjectsState(
     val chats: Map<String, ProjectChatsPage>,
     val isLoading: Boolean,
     val errorMessage: String?,
+    /**
+     * The project whose create is in flight, or null.
+     *
+     * Held here rather than passed down as its own parameter, for the reason
+     * the whole holder exists: this composable already takes twenty-two and
+     * this is only ever read by the `+` row, which is part of the Projects
+     * section like everything else it draws.
+     */
+    val creatingTaskItemId: String? = null,
 ) {
     fun isProjectExpanded(itemId: String): Boolean = itemId in expandedItemIds
 
@@ -119,13 +128,13 @@ class ProjectsState(
 }
 
 /**
- * The four things a reader can do to the Projects section.
+ * The things a reader can do to the Projects section.
  *
- * [onOpenAllChats] is a **destination** and the other three are **not**. That
- * split is the whole drawer contract: a project row and the section header
- * reshape the list in place, only "See all chats" leaves, and only a chat row
- * closes the drawer. Naming them together is a small way of keeping that
- * visible at the call site.
+ * [onOpenAllChats] and [onCreateTask] are **destinations** (or lead to one) and
+ * the rest are not. That split is the whole drawer contract: a project row and
+ * the section header reshape the list in place, only "See all chats" leaves,
+ * and only a chat row closes the drawer. Naming them together is a small way of
+ * keeping that visible at the call site.
  */
 @Stable
 class ProjectsActions(
@@ -139,6 +148,17 @@ class ProjectsActions(
      */
     val onOpenAllChats: (workspaceId: String, itemId: String) -> Unit,
     val onRetry: () -> Unit,
+    /**
+     * Open the create flow for a project. Does **not** close the drawer: the
+     * sheet takes over on top of it, and a memory create has to leave the reader
+     * looking at the list their new row just appeared in.
+     *
+     * Takes the whole [ProjectSummary] rather than two ids because the flow
+     * needs the item's `item_type` to decide whether to show a picker at all —
+     * see [createTaskStartDecision] — and passing ids would make the caller
+     * look the type up in a list it does not own.
+     */
+    val onCreateTask: (ProjectSummary) -> Unit = {},
 ) {
     companion object {
         val None = ProjectsActions(
@@ -146,6 +166,7 @@ class ProjectsActions(
             onToggleItem = {},
             onOpenAllChats = { _, _ -> },
             onRetry = {},
+            onCreateTask = {},
         )
     }
 }

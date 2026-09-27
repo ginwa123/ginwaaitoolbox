@@ -10,6 +10,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.nalar.mobile.recents.ChatListFooter
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
+import com.nalar.mobile.ui.NalarDim
 import com.nalar.mobile.ui.NalarText
 import kotlinx.coroutines.flow.distinctUntilChanged
 
@@ -82,6 +85,17 @@ fun ProjectChatsScreen(
      */
     onOpenChat: (String) -> Unit,
     onLoadMore: () -> Unit,
+    /**
+     * Open the create flow for *this* project.
+     *
+     * The same flow the drawer's `+` opens, handed in rather than built here: a
+     * reader who makes a chat from the project screen and one who makes one from
+     * the drawer should get the same picker, the same memory rules and the same
+     * validation. Two implementations is how they stop agreeing.
+     */
+    onCreateTask: () -> Unit = {},
+    /** Whether a create for this project is in flight, for the `+`'s busy state. */
+    isCreatingTask: Boolean = false,
     nowEpochMillis: Long = remember { System.currentTimeMillis() },
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -141,6 +155,30 @@ fun ProjectChatsScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = NalarBackground,
                 ),
+                actions = {
+                    // The one place on this screen that creates something.
+                    // It sits here rather than as a floating button because the
+                    // list is a plain `LazyColumn` with a footer, and a FAB
+                    // would float over the last chat a reader is trying to tap.
+                    IconButton(
+                        onClick = onCreateTask,
+                        // Disabled while the create is in flight, so a
+                        // double-tap cannot make two chats. The ViewModel
+                        // refuses a second create too; this is the affordance.
+                        enabled = !isCreatingTask,
+                        modifier = Modifier.testTag("project_chats_create"),
+                    ) {
+                        Icon(
+                            imageVector = if (isCreatingTask) {
+                                Icons.Filled.HourglassTop
+                            } else {
+                                Icons.Filled.Add
+                            },
+                            contentDescription = "New chat in this project",
+                            tint = if (isCreatingTask) NalarDim else NalarAccent,
+                        )
+                    }
+                },
             )
         },
     ) { padding ->

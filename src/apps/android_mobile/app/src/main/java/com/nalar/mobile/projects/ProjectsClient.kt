@@ -44,6 +44,60 @@ class ProjectsClient(
         parse = { body -> ProjectsApi.parseProjectChatsPage(body, itemId) },
     )
 
+    /**
+     * Create a task under a project — an ordinary chat, or a memory file.
+     *
+     * Returns the row the server just inserted, so the caller can paint it
+     * without re-fetching the page it landed in. A create that "succeeds" with
+     * no id is reported as [RecentsResult.Unavailable] rather than as an empty
+     * [com.nalar.mobile.projects.ProjectChat]: there is nothing to open and
+     * nothing to select, and pretending otherwise would drop the reader into a
+     * chat route that cannot resolve.
+     */
+    fun createTask(
+        workspaceId: String,
+        itemId: String,
+        request: CreateTaskRequest,
+    ): RecentsResult<ProjectChat> {
+        val sessionCookie = try {
+            sessionStore.read()
+        } catch (_: Exception) {
+            return RecentsResult.Unavailable(SESSION_ERROR_MESSAGE)
+        }
+
+        val response = try {
+            transport.post(
+                path = ProjectsApi.createTaskPath(workspaceId, itemId),
+                body = ProjectsApi.createTaskBody(request),
+                headers = sessionCookie
+                    ?.let { cookie ->
+                        mapOf(
+                            "Cookie" to "${AuthConfig.SESSION_COOKIE_NAME}=$cookie",
+                            "Content-Type" to "application/json",
+                        )
+                    }
+                    .orEmpty(),
+            )
+        } catch (_: Exception) {
+            return RecentsResult.Unavailable(unreachableMessage())
+        }
+
+        if (response.statusCode == HttpURLConnection.HTTP_UNAUTHORIZED) {
+            return RecentsResult.SignedOut
+        }
+        if (response.statusCode !in 200..299) {
+            return RecentsResult.Unavailable(createMessageForStatus(response.statusCode))
+        }
+
+        val created = try {
+            ProjectsApi.parseCreatedTask(response.body, itemId)
+        } catch (_: Exception) {
+            null
+        } ?: return RecentsResult.Unavailable(UNREADABLE_RESPONSE_MESSAGE)
+
+        return RecentsResult.Loaded(created)
+    }
+
     private fun <T> get(
         path: String,
         parse: (String) -> T,
@@ -78,7 +132,7 @@ class ProjectsClient(
         return try {
             RecentsResult.Loaded(parse(response.body))
         } catch (_: Exception) {
-            RecentsResult.Unavailable("The server sent a response this app could not read.")
+            RecentsResult.Unavailable(UNREADABLE_RESPONSE_MESSAGE)
         }
     }
 
@@ -101,7 +155,29 @@ class ProjectsClient(
         else -> "Could not load your projects. Try again."
     }
 
+    /**
+     * The same statuses, said about a *write*.
+     *
+     * A distinct function rather than a parameter on [messageForStatus] because
+     * the two sentences are about different promises: "could not load" is
+     * describing a list the reader can still scroll, and "could not create"
+     * is telling them the thing they just asked for did not happen. Reusing the
+     * read wording on a failed create reads as though the create may have
+     * worked, which is exactly the ambiguity that sends people looking for a
+     * chat that was never made.
+     */
+    private fun createMessageForStatus(statusCode: Int): String = when {
+        statusCode == HttpURLConnection.HTTP_CLIENT_TIMEOUT -> unreachableMessage()
+        statusCode in 500..599 -> "The server could not create that. Try again."
+        // 400 and 403 land here. The server's own message names the offending
+        // field and this client cannot forward it safely — it is free text from
+        // a handler that has changed wording across migrations — so the app says
+        // what it can vouch for and the form re-asks.
+        else -> "Could not create that. Check the name and try again."
+    }
+
     private companion object {
         const val SESSION_ERROR_MESSAGE = "Could not read the saved session. Try signing in again."
+        const val UNREADABLE_RESPONSE_MESSAGE = "The server sent a response this app could not read."
     }
 }
