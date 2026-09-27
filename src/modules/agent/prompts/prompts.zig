@@ -22,10 +22,13 @@ pub const UniversalRules = core.UniversalRules;
 pub const PromptAutoFix = core.PromptAutoFix;
 pub const ResponseFormatting = core.ResponseFormatting;
 pub const SearchToolRule = core.SearchToolRule;
-// Progressive tool search: tells the model that some tools are lazy and how
-// to reach them (search_tool -> view_tool -> use_tool). Gated on the
-// search_tool being present in the resolved tool set.
+// Progressive tool search: `search_tool` is the agent's special tool — the
+// mandate to search the catalog for the tool a task needs (search_tool ->
+// view_tool -> use_tool). Gated on search_tool being in the resolved tool set.
+// Skills: `list_skills` / `use_skill` are the agent's special skills — the
+// mandate to load the skill a task needs. Gated on use_skill being present.
 pub const ProgressiveToolRule = core.ProgressiveToolRule;
+pub const SkillsToolRule = core.SkillsToolRule;
 pub const ReadWorkspaceSessionToolRule = core.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = core.MemoryToolRule;
 pub const CrossProjectCwdRule = core.CrossProjectCwdRule;

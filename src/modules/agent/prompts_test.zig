@@ -1558,3 +1558,92 @@ test "ResponseFormatting teaches the <html> wrapper tag" {
 // `PROMPT_SECTIONS` declaration order + the post-loop block order.
 // -------------------------------------------------------------------------
 
+
+// -------------------------------------------------------------------------
+// ProgressiveToolRule + SkillsToolRule — the "special tool / special skills"
+// mandates wired into buildMessages. Three properties are pinned:
+//   1. Content: each rule names its tools and states the mandate.
+//   2. No bloat: neither rule pre-lists skills, and buildMessages never
+//      injects skill bodies — discovery stays a `list_skills` call so the
+//      cacheable system-prompt prefix does not grow with the user's skill
+//      library.
+//   3. Cache-stability: both are appended unconditionally (no hasTool gate),
+//      so the block is byte-identical for every agent and the shared prefix
+//      stays a cache hit instead of fragmenting per tool set.
+// -------------------------------------------------------------------------
+
+test "ProgressiveToolRule names the special tool and the three-call loop" {
+    const prompt: []const u8 = prompts.ProgressiveToolRule;
+
+    // It is framed as the agent's special tool with a mandate to use it.
+    try std.testing.expect(contains(prompt, "your special tool"));
+    try std.testing.expect(contains(prompt, "search_tool"));
+    // The loop: search -> view -> use, in that order.
+    const i_search = std.mem.indexOf(u8, prompt, "- `search_tool`").?;
+    const i_view = std.mem.indexOf(u8, prompt, "- `view_tool`").?;
+    const i_use = std.mem.indexOf(u8, prompt, "- `use_tool`").?;
+    try std.testing.expect(i_search < i_view);
+    try std.testing.expect(i_view < i_use);
+    // The "always search to finish the task" mandate, not just "when stuck".
+    try std.testing.expect(contains(prompt, "every task"));
+    try std.testing.expect(contains(prompt, "Before hand-rolling"));
+}
+
+test "SkillsToolRule names the special skills and the list->use loop" {
+    const prompt: []const u8 = prompts.SkillsToolRule;
+
+    try std.testing.expect(contains(prompt, "your special skills"));
+    const i_list = std.mem.indexOf(u8, prompt, "- `list_skills`").?;
+    const i_use = std.mem.indexOf(u8, prompt, "- `use_skill`").?;
+    try std.testing.expect(i_list < i_use);
+    // Mandate: load the skill the task needs, before improvising.
+    try std.testing.expect(contains(prompt, "When to load"));
+    try std.testing.expect(contains(prompt, "blocking, not advisory"));
+    // Path handling — the one argument use_skill takes.
+    try std.testing.expect(contains(prompt, "SKILL.MD"));
+    try std.testing.expect(contains(prompt, "verbatim"));
+}
+
+test "SkillsToolRule does not pre-list skills (no Available Skills listing)" {
+    // A per-user listing in the system prompt would grow with the skill
+    // library and bust the cacheable prefix. Discovery must stay a tool call.
+    const prompt: []const u8 = prompts.SkillsToolRule;
+    try std.testing.expect(!contains(prompt, "## Available Skills"));
+    try std.testing.expect(!contains(prompt, "## Loaded Skills"));
+    // It must instead say so explicitly, so the model knows to call the tool.
+    try std.testing.expect(contains(prompt, "Nothing is pre-injected"));
+}
+
+test "static contract: buildMessages appends both rules unconditionally" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+
+    try std.testing.expect(contains(src, "prompts_const.ProgressiveToolRule"));
+    try std.testing.expect(contains(src, "prompts_const.SkillsToolRule"));
+
+    // No hasTool gate on either rule: a per-agent condition in the cacheable
+    // prefix fragments the prompt cache across every distinct tool set.
+    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"search_tool\")"));
+    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"use_skill\")"));
+    try std.testing.expect(!contains(src, "hasTool(filtered_tools, \"list_skills\")"));
+
+    // No skill bodies / no skills listing injected into the prompt.
+    try std.testing.expect(!contains(src, "makeSkillsEquippedContext(allocator, db, session_id)"));
+    try std.testing.expect(!contains(src, "appendSkillsListing(allocator, &final_system"));
+}
+
+test "static contract: both rules sit in the static prefix, before dynamic blocks" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+
+    const i_progressive = std.mem.indexOf(u8, src, "prompts_const.ProgressiveToolRule").?;
+    const i_skills = std.mem.indexOf(u8, src, "prompts_const.SkillsToolRule").?;
+    const i_plan = std.mem.indexOf(u8, src, "## Task Planning").?;
+    const i_memory_md = std.mem.indexOf(u8, src, "makeWorkingDirectoryContext").?;
+    const i_finalize = std.mem.indexOf(u8, src, "final_system.toOwnedSlice").?;
+
+    // After the other static rules ...
+    try std.testing.expect(i_progressive > i_plan);
+    // ... and before the first dynamic block, so a per-session mutation
+    // cannot invalidate the prefix the provider caches.
+    try std.testing.expect(i_skills < i_memory_md);
+    try std.testing.expect(i_skills < i_finalize);
+}
