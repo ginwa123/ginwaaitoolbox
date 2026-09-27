@@ -6,6 +6,7 @@ const process = @import("helpers").process;
 const getCurrentProcessId = process.getCurrentProcessId;
 const sqlite = nalarcore.sqlite;
 const auth_common = @import("auth_common.zig");
+const workspace_default = @import("workspace_items_default.zig");
 
 /// Process-local monotonic counter for workspace_id generation. The
 /// (PID ^ ts_ms)-only generator collided when 2+ workspaces were
@@ -44,7 +45,7 @@ pub fn workspacesCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequ
     };
     defer allocator.free(owner);
 
-    const result = useCase(allocator, sqlite_db, ctx.io, req.body, owner) catch |err| {
+    const result = useCase(allocator, sqlite_db, ctx.io, req.body, owner, di.environment) catch |err| {
         const status: u16 = switch (err) {
             error.InvalidJson, error.MissingBody, error.MissingName, error.NameNotString => 400,
             error.DatabaseError => 500,
@@ -83,6 +84,9 @@ fn useCase(
     io: std.Io,
     body: []const u8,
     owner: []const u8,
+    /// Needed to resolve the default project's `path` ($HOME). Read from
+    /// the singleton by the handler, never from the request body.
+    environment: ?*const std.process.Environ.Map,
 ) WorkspacesCreateError!WorkspacesCreateResult {
     if (body.len == 0) return error.MissingBody;
 
@@ -119,6 +123,29 @@ fn useCase(
     createWorkspace(allocator, sqlite_db, workspace_id, name.string, owner) catch {
         return error.DatabaseError;
     };
+
+    // Every workspace has a default project (see
+    // workspace_items_default.zig). Creating it HERE means a brand-new
+    // workspace shows its default in the Projects list on the very first
+    // paint, instead of only after the list read fills it in.
+    //
+    // Deliberately NON-FATAL. A workspace with no default is fully
+    // recoverable — the next `GET /api/workspaces/:ws/items` ensures it —
+    // whereas failing this whole request over a home directory we could not
+    // resolve would leave the user with NO workspace at all. That is
+    // strictly the worse outcome.
+    const defaulted = workspace_default.ensureDefaultProject(
+        allocator,
+        sqlite_db,
+        workspace_id,
+        environment,
+        null,
+    );
+    if (defaulted) |project| {
+        defer project.deinit(allocator);
+    } else |err| {
+        std.log.warn("workspaces_create: default project ensure failed (non-fatal, the items list will heal it): {s}", .{@errorName(err)});
+    }
 
     return .{ .id = workspace_id, .name = name.string };
 }
