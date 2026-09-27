@@ -162,15 +162,6 @@ object ChatApi {
         "/api/llm/session/${encodeQueryValue(sessionId)}/stream"
 
     /**
-     * The event stream. `channels` is required and an unknown token terminates
-     * the stream, so it is spelled out here rather than assembled from a set.
-     *
-     * The backend emits no `id:` frames and keeps no replay buffer, so there is
-     * no Last-Event-ID to resume from: every reconnect re-fetches the tail.
-     */
-    fun eventsPath(): String = "/api/events?channels=llm,sessions,queue"
-
-    /**
      * Sending a message is the *same* endpoint that creates a session. Omitting
      * `session_id` mints one; supplying it queues a turn on the existing chat.
      * It returns 201 as soon as the work is enqueued — the reply never contains

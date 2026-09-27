@@ -10,11 +10,11 @@ import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.HttpsAuthTransport
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.chat.ChatClient
-import com.nalar.mobile.chat.ChatEventStream
 import com.nalar.mobile.chat.ChatResult
 import com.nalar.mobile.chat.ChatStreamEvent
 import com.nalar.mobile.chat.ChatStreamState
-import com.nalar.mobile.chat.HttpChatEventStream
+import com.nalar.mobile.chat.SseBus
+import com.nalar.mobile.chat.SseBusHolder
 import com.nalar.mobile.network.RecordingAuthTransport
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -32,28 +32,33 @@ import kotlinx.coroutines.withContext
  * Keeps [RunningSessionsStore] in step with the backend's `worker` table for the
  * whole app, not for one screen.
  *
- * This is a ViewModel rather than state inside `ChatViewModel` because the chat
- * stream only exists while a chat is open — `ChatViewModel.openSession` is what
- * starts it — and the sidebar, which is on screen precisely when no chat is
- * open, is where a per-session "busy" marker is most wanted. Reusing the chat
- * stream would report "nothing is running" exactly when the user is scanning
- * the list for what is running, so this subscribes to the `workers` channel on
- * its own connection instead.
+ * The two surfaces that need it are never on screen together: the sidebar lives
+ * on the shell route and the chat header on the chat route, and navigating to
+ * one replaces the other. So the set lives beside
+ * [com.nalar.mobile.chat.ChatViewModel] as its own ViewModel, and both are fed
+ * by the root [SseBus] that [com.nalar.mobile.MainActivity] opens at sign-in.
  *
- * Three sources, because no two of them are correct. The stream keeps the set
- * true as runs start and stop; `GET /api/workers` re-runs on every (re)connect,
- * because the server keeps no replay buffer and a socket that dropped mid-run
- * has no way to be asked what it missed; and a periodic beat plus a
- * foreground resync cover the case the other two both miss — a `worker_deleted`
- * that was emitted while the app was backgrounded, which the stream never
- * dispatches and the socket never re-opens to correct. The desktop's
+ * Three sources, because no two of them are correct. The bus keeps the set true
+ * as runs start and stop; `GET /api/workers` re-runs on every reconnect, because
+ * the server keeps no replay buffer and a socket that dropped mid-run has no way
+ * to be asked what it missed; and a periodic beat plus [onForeground] cover the
+ * case the other two both miss - a `worker_deleted` that was emitted while the
+ * app was backgrounded, which the socket never dispatches to a collector that
+ * was not running and never re-opens to correct. The desktop's
  * `fetchInitialWorkers` does the first two and neither of the others, which is
  * why the desktop has the same stuck spinner.
  */
 class WorkerActivityViewModel(
     private val client: ChatClient,
     private val store: RunningSessionsStore,
-    private val eventStream: ChatEventStream,
+    /**
+     * The app's ONE event connection, shared with the chat.
+     *
+     * Subscribed once, in `init`. This class no longer owns a socket, which is
+     * why its job narrowed to what a socket cannot do: keeping [store] honest
+     * against the REST list on a timer and on the way back into the app.
+     */
+    private val bus: SseBus,
     // Injected so tests can drive the resync on the same scheduler as the
     // stream callbacks; `advanceUntilIdle` cannot wait on the real IO pool.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -78,9 +83,17 @@ class WorkerActivityViewModel(
 
     private var resyncJob: Job? = null
     private var tickJob: Job? = null
-    private var streaming = false
+    private var tracked = false
     private var lastResyncAtMillis = 0L
     private var currentUserId: String? = null
+    private var unsubscribeFromBus: (() -> Unit)? = null
+
+    init {
+        unsubscribeFromBus = bus.subscribe(
+            onEvent = { event -> handleEvent(event) },
+            onState = { state -> handleState(state) },
+        )
+    }
 
     /**
      * Starts the subscription, or tears it down when nobody is signed in.
@@ -93,28 +106,28 @@ class WorkerActivityViewModel(
      */
     fun onUserChanged(newUserId: String?) {
         if (newUserId.isNullOrBlank()) {
-            stop()
-            // Not reset by `stop()` itself, because `stop()` short-circuits
-            // when nothing is streaming.
+            stopTracking()
+            // Not reset by `stopTracking()` itself, because it short-circuits
+            // when nothing is being tracked.
             currentUserId = null
             return
         }
         if (newUserId == currentUserId) {
-            if (!streaming) start()
+            if (!tracked) startTracking()
             return
         }
         // A *different* account is as much a teardown as a sign-out. The ids in
         // the store are not account-scoped, so carrying them across the switch
         // paints the outgoing account's "running" markers against the incoming
         // account's chats.
-        stop()
+        stopTracking()
         currentUserId = newUserId
-        start()
+        startTracking()
     }
 
     /** Sign-out. The ids are not account-scoped, so they cannot outlive the cookie. */
     fun onSignedOut() {
-        stop()
+        stopTracking()
         currentUserId = null
     }
 
@@ -129,51 +142,66 @@ class WorkerActivityViewModel(
      * request — it has nothing to say about a user who just opened the app.
      */
     fun onForeground() {
-        if (!streaming) return
+        if (!tracked) return
         resync(force = true)
     }
 
-    private fun start() {
-        streaming = true
-        eventStream.start(
-            onEvent = { event -> handleEvent(event) },
-            onState = { state -> handleState(state) },
-        )
+    /**
+     * Starts the reconciliation beat for a signed-in account.
+     *
+     * Named for what it does rather than `start()`, because it no longer starts
+     * anything a socket needs: the bus is opened by `MainActivity` off the same
+     * `authState.userId`. Only the periodic REST resync is this class's.
+     */
+    private fun startTracking() {
+        tracked = true
         tickJob?.cancel()
         tickJob = viewModelScope.launch {
             resyncTicks.collect { resync() }
         }
     }
 
-    private fun stop() {
-        if (!streaming) return
-        streaming = false
+    private fun stopTracking() {
+        if (!tracked) return
+        tracked = false
         resyncJob?.cancel()
         resyncJob = null
         tickJob?.cancel()
         tickJob = null
-        eventStream.stop()
         lastResyncAtMillis = 0L
         store.clear()
     }
 
     override fun onCleared() {
-        // `stop()` on its own is not enough: it returns early when nothing is
-        // streaming, and the store is a process-wide singleton, so an Activity
-        // destroyed while the process survives would leave its last set
+        // `stopTracking()` alone is not enough: it returns early when nothing is
+        // being tracked, and the store is a process-wide singleton, so an
+        // Activity destroyed while the process survives would leave its last set
         // published for whatever Activity is created next.
-        stop()
+        stopTracking()
         store.clear()
+        unsubscribeFromBus?.invoke()
+        unsubscribeFromBus = null
         super.onCleared()
     }
 
+    /**
+     * The set is only *ours* to maintain while an account is signed in.
+     *
+     * The bus is subscribed for the life of the process, so without this guard a
+     * `worker_created` that arrived between sign-out and the next sign-in would
+     * repaint a set the next account then inherited. In production the bus is
+     * closed at sign-out and cannot emit at all; the guard is what makes that
+     * true by construction rather than by ordering.
+     */
     private fun handleEvent(event: ChatStreamEvent) {
+        if (!tracked) return
         if (event is ChatStreamEvent.WorkerChanged) {
             store.apply(event.action, event.sessionId)
         }
     }
 
     private fun handleState(state: ChatStreamState) {
+        if (!tracked) return
         // Every transition back to Live — including the first connect — is a
         // moment where the set is possibly wrong: runs that started or stopped
         // while the socket was down left no trace to apply. The list is the only
@@ -240,10 +268,7 @@ class WorkerActivityViewModel(
                         ),
                     ),
                     store = RunningSessionsStore.default,
-                    eventStream = HttpChatEventStream(
-                        sessionStore = sessionStore,
-                        path = WorkerApi.eventsPath(),
-                    ),
+                    bus = SseBusHolder.get(sessionStore),
                 )
             }
         }

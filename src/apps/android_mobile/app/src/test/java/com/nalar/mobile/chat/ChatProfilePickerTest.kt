@@ -3,6 +3,7 @@ package com.nalar.mobile.chat
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.FakeSseBus
 import com.nalar.mobile.testing.InMemoryChatCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -67,14 +68,6 @@ class ChatProfilePickerTest {
         override fun clear() { value = null }
     }
 
-    private class FakeEventStream : ChatEventStream {
-        override fun start(
-            onEvent: (ChatStreamEvent) -> Unit,
-            onState: (ChatStreamState) -> Unit,
-        ) = Unit
-
-        override fun stop() = Unit
-    }
 
     /**
      * Answers `GET /api/config/nalar` and `PUT /api/llm/session/{id}`, and
@@ -125,7 +118,7 @@ class ChatProfilePickerTest {
     ) = ChatViewModel(
         client = ChatClient(MemorySessionStore(), httpTransport = transport),
         cache = InMemoryChatCache(),
-        eventStream = FakeEventStream(),
+        bus = FakeSseBus(),
         ioDispatcher = ioDispatcher,
     ).also { it.onUserChanged("user_a") }
 

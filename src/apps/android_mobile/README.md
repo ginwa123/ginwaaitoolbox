@@ -171,7 +171,8 @@ Tapping a chat in the drawer opens it as its own destination
 process death, works with the system Back button, and can be shared as a link.
 
 The transcript is **live**: it reads `GET /api/llm/session/{id}/messages`,
-subscribes to `GET /api/events?channels=llm,sessions,queue`, streams deltas into
+subscribes to the one root connection (`GET /api/events?channels=llm,queue,sessions,workers`,
+`chat/SseBus.kt`), streams deltas into
 a placeholder as they arrive, and replaces the placeholder with the canonical
 row when it lands. Sending posts to `POST /api/llm/session`, the same endpoint
 that creates a session, which enqueues the turn and returns immediately — so
@@ -349,16 +350,17 @@ working on this session", and it holds across the gaps.
 
 Two sources, because neither alone is right:
 
-- **`GET /api/events?channels=workers`** on its own connection, carrying
-  `worker_created` / `worker_updated` / `worker_deleted`. It is a second
-  subscription rather than an extra channel on the chat stream because
-  `ChatViewModel.openSession` is what starts that one — the sidebar is on
-  screen precisely when no chat is open, and a stream that was never opened
-  reports "nothing is running" at exactly the moment the user is scanning the
-  list for what is running.
-- **`GET /api/workers`**, re-read on every (re)connect. The server keeps no
-  replay buffer, so a run that started or stopped while the socket was down
-  left no event to apply and the list is the only thing that can correct it.
+- **The one root connection** (`GET /api/events?channels=llm,queue,sessions,workers`,
+  owned by `chat/SseBus.kt`), carrying `worker_created` / `worker_updated` /
+  `worker_deleted` alongside the chat traffic. It used to be a *second*
+  subscription, because `ChatViewModel.openSession` was what started the chat
+  one and the sidebar is on screen precisely when no chat is open. The bus is
+  opened at sign-in instead, so both surfaces read the same socket and cannot
+  disagree.
+- **`GET /api/workers`**, re-read on every (re)connect, on a 30 s beat, and on
+  the way back into the app. The server keeps no replay buffer, so a run that
+  started or stopped while the socket was up but the app was backgrounded left
+  no event to apply, and the list is the only thing that can correct it.
   It *replaces* the set rather than merging, or every run that stopped during
   an outage would stay lit forever.
 

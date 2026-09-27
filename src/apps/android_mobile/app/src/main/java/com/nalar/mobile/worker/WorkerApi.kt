@@ -31,18 +31,6 @@ object WorkerApi {
         "/api/workers?limit=$limit"
 
     /**
-     * The `workers` channel on its own, not added to [com.nalar.mobile.chat.ChatApi.eventsPath].
-     *
-     * The chat stream is opened by [com.nalar.mobile.chat.ChatViewModel.openSession],
-     * which only runs once a chat is on screen — and the sidebar, which is
-     * where a per-session indicator is most useful, is on screen precisely
-     * when no chat is open. Reusing that stream would therefore report "nothing
-     * is running" at exactly the moment the user is scanning the list for what
-     * is running.
-     */
-    fun eventsPath(): String = "/api/events?channels=workers"
-
-    /**
      * Projects the workers envelope down to the ids that mean "busy".
      *
      * `session_id` is preferred and `id` is the fallback, because the two are

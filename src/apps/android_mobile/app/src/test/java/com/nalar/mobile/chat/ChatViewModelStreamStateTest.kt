@@ -3,6 +3,7 @@ package com.nalar.mobile.chat
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.FakeSseBus
 import com.nalar.mobile.testing.InMemoryChatCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -81,32 +82,14 @@ class ChatViewModelStreamStateTest {
         }
     }
 
-    private class FakeEventStream : ChatEventStream {
-        var onEvent: ((ChatStreamEvent) -> Unit)? = null
-        var onState: ((ChatStreamState) -> Unit)? = null
-
-        override fun start(
-            onEvent: (ChatStreamEvent) -> Unit,
-            onState: (ChatStreamState) -> Unit,
-        ) {
-            this.onEvent = onEvent
-            this.onState = onState
-        }
-
-        override fun stop() = Unit
-
-        fun emit(event: ChatStreamEvent) = onEvent?.invoke(event) ?: Unit
-        fun state(next: ChatStreamState) = onState?.invoke(next) ?: Unit
-    }
-
     private fun model(
         ioDispatcher: CoroutineDispatcher,
-        stream: FakeEventStream = FakeEventStream(),
+        bus: FakeSseBus = FakeSseBus(),
         transport: AuthTransport = FakeTransport(),
     ) = ChatViewModel(
         client = ChatClient(MemorySessionStore(), httpTransport = transport),
         cache = InMemoryChatCache(),
-        eventStream = stream,
+        bus = bus,
         ioDispatcher = ioDispatcher,
         nowMillis = { 1_789_451_234_000L },
     ).also { it.onUserChanged("user_a") }
@@ -114,14 +97,14 @@ class ChatViewModelStreamStateTest {
     /** Opens a session and gets a delta on screen, i.e. a run in progress. */
     private suspend fun TestScope.openStreamingTurn(
         schedulers: Schedulers,
-        stream: FakeEventStream,
+        bus: FakeSseBus,
     ): ChatViewModel {
-        val model = model(schedulers.ioDispatcher, stream)
+        val model = model(schedulers.ioDispatcher, bus)
         model.openSession("sess_1")
         schedulers.drain()
-        stream.state(ChatStreamState.Live)
+        bus.state(ChatStreamState.Live)
         schedulers.drain()
-        stream.emit(ChatStreamEvent.Chunk(sessionId = "sess_1", index = 0, content = "part"))
+        bus.emit(ChatStreamEvent.Chunk(sessionId = "sess_1", index = 0, content = "part"))
         schedulers.drain()
         assertTrue("precondition: the turn is streaming", model.uiState.value.isStreaming)
         return model
@@ -130,12 +113,12 @@ class ChatViewModelStreamStateTest {
     @Test
     fun `a terminal stream failure stops claiming the turn is streaming`() =
         streamStateTest { schedulers ->
-            val stream = FakeEventStream()
-            val model = openStreamingTurn(schedulers, stream)
+            val bus = FakeSseBus()
+            val model = openStreamingTurn(schedulers, bus)
 
             // The pump `return`s on a rejected handshake instead of retrying, so
             // neither `chunk_final` nor `llm_full` is ever coming for this turn.
-            stream.state(ChatStreamState.Failed("The event stream is unavailable (401)."))
+            bus.state(ChatStreamState.Failed("The event stream is unavailable (401)."))
             schedulers.drain()
 
             assertFalse(model.uiState.value.isStreaming)
@@ -146,14 +129,14 @@ class ChatViewModelStreamStateTest {
     @Test
     fun `an is_error frame clears the flag too, the way a terminal failure now does`() =
         streamStateTest { schedulers ->
-            val stream = FakeEventStream()
-            val model = openStreamingTurn(schedulers, stream)
+            val bus = FakeSseBus()
+            val model = openStreamingTurn(schedulers, bus)
 
             // `llm_full` with `is_error` is an agentic-loop diagnostic ("a retry
             // notice", "TooManyRetries"), not a turn, and it already cleared the
             // flag before this change. The two must not disagree about whether a
             // run that has given up is still running.
-            stream.emit(
+            bus.emit(
                 ChatStreamEvent.Failed("The agent hit TooManyRetries and gave up."),
             )
             schedulers.drain()
@@ -164,12 +147,12 @@ class ChatViewModelStreamStateTest {
 
     @Test
     fun `a reconnecting stream leaves the flag alone`() = streamStateTest { schedulers ->
-        val stream = FakeEventStream()
-        val model = openStreamingTurn(schedulers, stream)
+        val bus = FakeSseBus()
+        val model = openStreamingTurn(schedulers, bus)
 
         // A reconnect is not the end of the run — the refetch it triggers is
         // what may settle it — so this transition must not clear anything.
-        stream.state(ChatStreamState.Reconnecting)
+        bus.state(ChatStreamState.Reconnecting)
         schedulers.drain()
 
         assertTrue(model.uiState.value.isStreaming)
