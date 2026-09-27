@@ -1,5 +1,8 @@
 package com.nalar.mobile.chat
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -32,8 +35,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -193,6 +194,33 @@ fun ChatView(
     modifier: Modifier = Modifier,
     onDraftChanged: (String) -> Unit = {},
     onSend: () -> Unit = {},
+    /**
+     * Hand a picked image to whoever decodes it, as the picker's own string.
+     *
+     * The launcher itself is registered by this composable rather than taken
+     * as a callback, so the paperclip cannot be wired to a picker that does
+     * not open. `PickVisualMedia` needs no runtime permission on any API level
+     * this app supports, which is the whole reason it is preferred over
+     * `GetContent`: a permission dialog in front of "attach a screenshot" is a
+     * dialog readers deny, and then never attach again.
+     *
+     * The `Uri` is turned into a string here, at the last moment it is
+     * useful — see [PickedImageReader] for why the grant does not travel any
+     * further than the bytes.
+     */
+    onAttachmentPicked: (String) -> Unit = {},
+    /** Drop one pending attachment, by the id its row carries. */
+    onRemoveAttachment: (String) -> Unit = {},
+    /**
+     * Whether a run can be interrupted.
+     *
+     * The composer's stop control is gated on this rather than on
+     * `state.isStreaming` alone, for the reason [isChatWorking] spells out: a
+     * long tool run emits no deltas, so a composer gated on streaming alone
+     * loses its stop control for the whole two minutes of a slow command.
+     */
+    isRunning: Boolean = false,
+    onStop: () -> Unit = {},
     onLoadOlder: () -> Unit = {},
     onDismissError: () -> Unit = {},
     onAnswer: (QuestionAnswer) -> Unit = {},
@@ -209,6 +237,18 @@ fun ChatView(
      */
     onTranscriptSettled: (String?) -> Unit = {},
 ) {
+    val onAttachPicked by rememberUpdatedState(onAttachmentPicked)
+    // One launcher for the whole transcript, not one per attachment: it is a
+    // registration against the activity, and re-registering it for each chip
+    // would leave the previous callback live.
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) onAttachPicked(uri.toString())
+    }
+
+    // Same disjunction the header's word uses, so the composer's stop control
+    // and the status line can never disagree about whether a run exists.
+    val isWorking = isChatWorking(isRunning = isRunning, isStreaming = state.isStreaming)
+
     val groups = remember(state.messages) { groupMessages(state.messages) }
     val listState = rememberLazyListState()
     // Owned here, above the `LazyColumn`, because the per-card open/closed
@@ -617,9 +657,26 @@ fun ChatView(
 
         ChatComposer(
             draft = state.draft,
+            attachments = state.pendingAttachments,
             isSending = state.isSending,
+            isAttaching = state.isAttaching,
+            isWorking = isWorking,
+            model = state.selectedProfileModel,
+            cwd = state.cwd,
             onDraftChanged = onDraftChanged,
+            onAttach = {
+                // One image at a time. `PickVisualMediaRequest` also takes a
+                // `maxItems`, so a multi-select is a one-line change — but it
+                // would make *each* pick a list the budget has to be walked
+                // against mid-decode, and the strip already gives the reader a
+                // way to swap an image out without starting over.
+                picker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            },
+            onRemoveAttachment = onRemoveAttachment,
             onSend = onSend,
+            onStop = onStop,
         )
     }
 }
@@ -1011,75 +1068,6 @@ private fun MessageBody(message: ChatMessage, contentColor: Color) {
         )
     }
 }
-
-@Composable
-private fun ChatComposer(
-    draft: String,
-    isSending: Boolean,
-    onDraftChanged: (String) -> Unit,
-    onSend: () -> Unit,
-) {
-    val onDraft by rememberUpdatedState(onDraftChanged)
-    val canSend = draft.isNotBlank() && !isSending
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .imePadding()
-            .background(NalarBackground)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        TextField(
-            value = draft,
-            onValueChange = onDraft,
-            modifier = Modifier
-                .weight(1f)
-                .testTag("chat_composer_input"),
-            placeholder = {
-                Text("Message", style = MaterialTheme.typography.bodyMedium)
-            },
-            textStyle = MaterialTheme.typography.bodyMedium,
-            maxLines = 5,
-            shape = RoundedCornerShape(20.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = NalarField,
-                unfocusedContainerColor = NalarField,
-                focusedTextColor = NalarText,
-                unfocusedTextColor = NalarText,
-                focusedPlaceholderColor = NalarDim,
-                unfocusedPlaceholderColor = NalarDim,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-            ),
-        )
-
-        Spacer(Modifier.size(8.dp))
-
-        Surface(
-            modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .testTag("chat_send"),
-            color = if (canSend) NalarAccent else NalarField,
-            shape = CircleShape,
-        ) {
-            IconButton(
-                onClick = onSend,
-                enabled = canSend,
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.ArrowUpward,
-                    contentDescription = "Send message",
-                    tint = if (canSend) NalarBackground else NalarDim,
-                )
-            }
-        }
-    }
-}
-
 @Preview(showBackground = true, widthDp = 390, heightDp = 844)
 @Composable
 private fun ChatViewPreview() {

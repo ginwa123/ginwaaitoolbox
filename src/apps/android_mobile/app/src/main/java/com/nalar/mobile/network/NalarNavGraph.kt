@@ -44,6 +44,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import kotlinx.coroutines.flow.StateFlow
 import androidx.navigation.navDeepLink
 import com.nalar.mobile.auth.AuthRestoringScreen
 import com.nalar.mobile.auth.AuthUiState
@@ -210,21 +211,37 @@ fun NalarNavGraph(
     navController: NavHostController = rememberNavController(),
     homeState: HomeUiState,
     /**
-     * The chat transcript, *read on demand* rather than handed in as a value.
+     * The chat transcript, as the flow it is — collected *inside* the chat
+     * destination, never at the top of the tree.
      *
-     * A `ChatUiState` parameter is a `StateFlow` sample taken at the top of
-     * the tree, and every emission of it — every stream delta, every page, every
-     * keystroke in the composer's draft — then recomposes the whole
+     * A `ChatUiState` value parameter is a `StateFlow` sample taken above the
+     * `NavHost`, and every emission of it — every stream delta, every page,
+     * every keystroke in the composer's draft — then recomposes the whole
      * `NalarNavGraph`: the drawer, the `NavHost` builder, and every composed
      * destination. The transcript is the only thing that changed, and it is the
      * one thing that is already virtualized.
      *
-     * A lambda reads the flow *inside* the chat destination, so only that
-     * composable observes it. It is a provider rather than a `StateFlow` so the
-     * graph still has no opinion about where the value comes from, and so a
-     * test can hand over a fixed state the same way it always did.
+     * **A `() -> ChatUiState` provider was the wrong fix for that, and it is
+     * what made the composer untypeable.** Calling a lambda during composition
+     * does not subscribe anything: `StateFlow.value` is a plain field read, not
+     * a Compose snapshot read, so the destination recomposed only when some
+     * *other* collected state happened to change — the home state, or the
+     * worker set. Streaming therefore appeared to work, because a run does
+     * register a worker and does move the home list.
+     *
+     * Typing is the one interaction in this app with nothing else changing
+     * behind it. `onDraftChanged` wrote to the flow, the destination never
+     * observed the write, the controlled `TextField` kept the `value` it was
+     * composed with, and every keystroke was swallowed: the cursor blinked and
+     * nothing arrived. Same for the composer clearing itself after a send and
+     * for the inline Stop — each is a state change with no second source.
+     *
+     * So the flow is passed and collected by the destination, which is what
+     * this parameter always claimed to do. `collectAsState` inside a
+     * `composable {}` block subscribes that block's recompose scope and no
+     * other, so the promise at the top of this comment still holds.
      */
-    chatState: () -> ChatUiState,
+    chatState: StateFlow<ChatUiState>,
     /**
      * The position the last run left behind. Read once per launch and never
      * written from here — a persisted position that the app edits as it resumes
@@ -278,6 +295,15 @@ fun NalarNavGraph(
     onChatDraftChanged: (String) -> Unit,
     onSendChatMessage: () -> Unit,
     onStopChatRun: () -> Unit,
+    /**
+     * A picked image and the removal of an attached one.
+     *
+     * Defaulted like every other chat action after `onStopChatRun` so a graph
+     * rendered with inert data in a test does not have to spell out the
+     * attachment surface to get to the part it is about.
+     */
+    onAttachChatImage: (String) -> Unit = {},
+    onRemoveChatAttachment: (String) -> Unit = {},
     onLoadOlderChatMessages: () -> Unit,
     onDismissChatError: () -> Unit,
     onAnswerChatQuestion: (QuestionAnswer) -> Unit,
@@ -585,7 +611,10 @@ fun NalarNavGraph(
             ),
         ) { backStackEntry ->
             val sessionId = backStackEntry.arguments?.getString(NalarRoutes.ARG_SESSION_ID).orEmpty()
-            val chatState = chatState()
+            // Collected here, not sampled above the `NavHost`. This is the one
+            // line that makes the composer work: it subscribes *this* block, so
+            // a draft keystroke recomposes the chat and nothing else.
+            val chatState by chatState.collectAsState()
             // The id in the route is the truth. When it disagrees with what is
             // loaded — a deep link, or a session that failed to open — the route
             // wins, or the screen would show the previous chat under this one's
@@ -635,6 +664,8 @@ fun NalarNavGraph(
                 onDraftChanged = onChatDraftChanged,
                 onSend = onSendChatMessage,
                 onStop = onStopChatRun,
+                onAttachmentPicked = onAttachChatImage,
+                onRemoveAttachment = onRemoveChatAttachment,
                 onLoadOlder = onLoadOlderChatMessages,
                 onDismissError = onDismissChatError,
                 onAnswer = onAnswerChatQuestion,

@@ -18,6 +18,7 @@ import com.nalar.mobile.recents.HomeUiState
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.ui.NalarTheme
+import kotlinx.coroutines.flow.MutableStateFlow
 import org.junit.Assert.assertFalse
 import org.junit.Rule
 import org.junit.Test
@@ -163,7 +164,7 @@ private fun TestNavGraph(navController: NavHostController) {
         onUseAnotherAccount = {},
         navController = navController,
         homeState = HomeUiState(isLoading = false),
-        chatState = { ChatUiState(sessionId = "sess_1", isLoading = false) },
+        chatState = MutableStateFlow(ChatUiState(sessionId = "sess_1", isLoading = false)),
         // Nothing saved: the back stack is what this file is about, and a
         // position that resumed would navigate out from under the test.
         positionStore = NoLastPosition,

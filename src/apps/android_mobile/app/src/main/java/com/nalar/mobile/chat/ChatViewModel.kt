@@ -47,6 +47,11 @@ class ChatViewModel(
     private val client: ChatClient,
     private val cache: ChatCache,
     private val eventStream: ChatEventStream,
+    // Reads a picked `content://` image into an encoded attachment. Injected
+    // because it is the only part of the send path that needs a `Bitmap`, and
+    // threading a `Context` in for it would put the Android framework in the
+    // middle of a rule that is really about a 10 MB cap.
+    private val imageReader: PickedImageReader = PickedImageReader { null },
     // Injected so tests can drive the fetch on the same scheduler as the paint;
     // `advanceUntilIdle` cannot wait on the real IO pool.
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -64,6 +69,7 @@ class ChatViewModel(
     private var olderPagePrimeJob: Job? = null
     private var olderJob: Job? = null
     private var sendJob: Job? = null
+    private var attachJob: Job? = null
     private var stopJob: Job? = null
     private var answerJob: Job? = null
 
@@ -531,6 +537,70 @@ class ChatViewModel(
     }
 
     /**
+     * Decode a picked image and add it to the turn being composed.
+     *
+     * The cap is checked **after** the decode and against the attachments
+     * already on the turn, not against a guess made before it. The reader
+     * downsamples and re-encodes, so the size that matters is only known once
+     * the bytes exist — and checking a pre-decode estimate is how an app ends
+     * up refusing a 200 KB screenshot it had room for.
+     *
+     * A refusal is a message, not a silent drop: the reader picked a file, and
+     * the only honest answer to "nothing happened" is which rule said no.
+     */
+    fun attachImage(source: String) {
+        if (_uiState.value.isAttaching) return
+        attachJob?.cancel()
+        _uiState.update { it.copy(isAttaching = true, errorMessage = null) }
+        attachJob = viewModelScope.launch {
+            val attachment = imageReader.read(source)
+            val state = _uiState.value
+            when {
+                attachment == null -> _uiState.update {
+                    it.copy(isAttaching = false, errorMessage = "That image could not be read.")
+                }
+
+                ChatAttachments.rejection(state.pendingAttachments, attachment.byteCount) != null ->
+                    _uiState.update {
+                        it.copy(
+                            isAttaching = false,
+                            errorMessage = ChatAttachments.rejection(
+                                state.pendingAttachments,
+                                attachment.byteCount,
+                            ),
+                        )
+                    }
+
+                // Re-picked the same photo. Its id is derived from the URI, so
+                // this is a real duplicate rather than a near miss — and adding
+                // it twice would spend the reader's budget on one image.
+                state.pendingAttachments.any { it.id == attachment.id } ->
+                    _uiState.update { it.copy(isAttaching = false) }
+
+                else -> _uiState.update {
+                    it.copy(
+                        isAttaching = false,
+                        pendingAttachments = it.pendingAttachments + attachment,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Drop one attached image.
+     *
+     * Immediate rather than round-tripped: a reader who taps the ✕ on a
+     * picture they just chose expects the picture to go, and an optimistic
+     * removal here has nothing to roll back — the bytes were never sent.
+     */
+    fun removeAttachment(id: String) {
+        _uiState.update { state ->
+            state.copy(pendingAttachments = state.pendingAttachments.filterNot { it.id == id })
+        }
+    }
+
+    /**
      * Queues a turn.
      *
      * There is no optimistic bubble. The web removed one deliberately: a local
@@ -543,7 +613,12 @@ class ChatViewModel(
         val state = _uiState.value
         val sessionId = state.sessionId ?: return
         val text = state.draft.trim()
-        if (text.isEmpty() || state.isSending) return
+        // An image on its own is a turn. "You can't send a message with no
+        // message" is a rule from a client that had no attachments, and the
+        // reader who attached a screenshot and wrote nothing is asking a
+        // question the picture answers.
+        val attachments = state.pendingAttachments
+        if ((text.isEmpty() && attachments.isEmpty()) || state.isSending) return
 
         sendJob?.cancel()
         _uiState.update { it.copy(isSending = true, errorMessage = null) }
@@ -553,12 +628,17 @@ class ChatViewModel(
                     sessionId = sessionId,
                     message = text,
                     cwd = state.cwd,
+                    // Already-encoded data URLs. The backend splits this field
+                    // on `|` and validates each segment is
+                    // `data:image/*;base64,…`; base64's alphabet contains no
+                    // pipe, so no escaping is needed or possible here.
+                    imageUrls = ChatAttachments.dataUrls(attachments),
                     selectedProfileModel = state.selectedProfileModel,
                 )
             }
             when (result) {
                 is ChatResult.Loaded -> _uiState.update {
-                    it.copy(isSending = false, draft = "")
+                    it.copy(isSending = false, draft = "", pendingAttachments = emptyList())
                 }
 
                 is ChatResult.SignedOut -> {
@@ -968,6 +1048,7 @@ class ChatViewModel(
                     ),
                     cache = RoomChatCache(application),
                     eventStream = HttpChatEventStream(sessionStore),
+                    imageReader = BitmapPickedImageReader(application.contentResolver),
                 )
             }
         }

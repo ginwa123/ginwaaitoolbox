@@ -16,6 +16,8 @@ import com.nalar.mobile.recents.WorkspaceOption
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.ui.NalarTheme
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -55,7 +57,7 @@ class NalarNavGraphLaunchGateTest {
             // not arrived. The reader must not see it yet, because the frame
             // they would see is the top of an empty list and the frame after it
             // is the bottom of a full one — the drift this exists to remove.
-            chatState = { ChatUiState(sessionId = "sess_c", isLoading = true) },
+            chatState = MutableStateFlow(ChatUiState(sessionId = "sess_c", isLoading = true)),
         )
 
         // The navigation has already happened. Only the *showing* is held, which
@@ -81,7 +83,7 @@ class NalarNavGraphLaunchGateTest {
             // Loaded, and nothing to scroll because the transcript is empty —
             // which is also what a failed load looks like, and a gate that
             // waited for a scroll in that case would strand the reader.
-            chatState = { ChatUiState(sessionId = "sess_c", isLoading = false) },
+            chatState = MutableStateFlow(ChatUiState(sessionId = "sess_c", isLoading = false)),
         )
 
         composeTestRule.onNodeWithTag("launch_gate").assertDoesNotExist()
@@ -180,7 +182,7 @@ class NalarNavGraphLaunchGateTest {
             userId = "user_1",
         ),
         onOpenSession: (String) -> Unit = {},
-        chatState: () -> ChatUiState = { ChatUiState(sessionId = "sess_c", isLoading = false) },
+        chatState: StateFlow<ChatUiState> = MutableStateFlow(ChatUiState(sessionId = "sess_c", isLoading = false)),
     ) {
         composeTestRule.setContent {
             NalarTheme {
@@ -237,7 +239,7 @@ private fun GateGraph(
     positionStore: LastPositionStore,
     authState: AuthUiState,
     onOpenSession: (String) -> Unit,
-    chatState: () -> ChatUiState,
+    chatState: StateFlow<ChatUiState>,
 ) {
     NalarNavGraph(
         authState = authState,

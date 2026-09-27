@@ -180,6 +180,89 @@ of the message. A run in progress when the chat is opened is re-attached from
 `GET /api/llm/session/{id}/stream`, because the backend writes a turn to
 `llm_history` only once it completes.
 
+### The composer is a card, and the stop control lives in it
+
+The composer is one bordered rounded surface, built the way the web's is:
+the text field and the paperclip and the run's control on the first row, a
+divider, and the turn's facts on the second. `BasicTextField` draws the text
+and a cursor and nothing else — the card is the frame, and a `TextField`
+inside a bordered card is two frames for one input.
+
+The stop control moved out of the app bar and into the composer, replacing the
+send rather than sitting beside it. There is one answer to "can I interrupt
+this run", and it lives in the row the reader is already holding. Two of them
+disagreeing — a header that offers Stop while the composer offers Send, during
+a reconnect — is the same lie told twice, and a reader who has learned to
+distrust the composer stops trusting the send button too.
+
+The footer's facts — the model, the working directory — are rendered as
+**text**, not as the web's dropdowns. A phone has nothing to change them to,
+and a dropdown that opens an empty menu teaches the reader that the footer is
+decoration. The only button in the row is the chevron that expands a truncated
+`cwd`, and it is drawn only when there is a `cwd` to expand: a permanently
+mounted expander is a control that lies about whether anything is hidden.
+
+### Images are attached as data URLs, and the size rules are the backend's
+
+`image_urls` is a pipe-joined list of
+`data:image/<mime>;base64,<payload>` strings. There is no upload endpoint;
+the web builds the same thing client-side with `FileReader.readAsDataURL`, so
+a mobile client that wants images has to make the same choice.
+`src/http_handlers/image_urls_validation.zig` is the server half of the
+contract: the prefix is validated, and the *joined* string is capped at
+`MAX_IMAGE_URLS_BYTES` (10 MB). `ChatAttachments.MAX_TOTAL_BYTES` mirrors it,
+because a client cap that differs from the server's is a client that either
+refuses things the server would take or sends things it refuses.
+
+Every picked image is downscaled before it is encoded, and the cap is checked
+against the **encoded** length, not the raw one. Base64 emits four characters
+per three bytes, so measuring the cap on raw bytes accepts a payload a third
+larger than the cap — which is exactly the gap that turns a 7 MB photo into a
+413. The 1280px long edge is also the size a model reads an image at; the
+tokens a screenshot costs are decided by how much text is legible in it, not
+by how many pixels the phone happened to capture.
+
+A `content://` URI never travels past `PickedImageReader`. A URI is a *grant*:
+meaningful only to whatever is about to read the bytes, and meaningless after
+that. Everything above the reader — the attach/remove bookkeeping, the
+budget, the composer's strip — wants "this image" and not "this capability",
+and a `Uri` in their signatures would put `android.net` in the middle of rules
+that are really about a 10 MB cap.
+
+A turn may carry up to four images, and an image with no text is still a
+turn. A refusal names the rule that refused it: "too many" and "too big" are
+different problems with different answers, and one message for both would tell
+the reader to do something that does not help. A *failed* send keeps the
+images along with the draft — they are megabytes the reader spent a minute
+choosing, and losing them to a dropped connection is the worst thing this
+feature could do.
+
+### Why the composer could not be typed into
+
+`NalarNavGraph` took `chatState: () -> ChatUiState` and called it in the chat
+destination. That looks like a lazy read and behaves like a value: a
+`StateFlow.value` read during composition subscribes to **nothing**, because
+`StateFlow.value` is a plain field read rather than a Compose snapshot read.
+The destination therefore repainted only when some *other* collected state
+happened to change — the home state, or the worker set.
+
+Everything with a second source kept working, which is why it shipped. A run
+registers a worker, so streaming repainted. A send moves the chat list, so the
+composer cleared itself after a send. Typing had no second source at all: the
+controlled text field never received a new `value`, and every keystroke was
+swallowed — the cursor blinked and nothing arrived.
+
+The graph now takes the `StateFlow` and the chat destination
+`collectAsState()`s it. That subscribes *that block's* recompose scope and no
+other, so the promise the old parameter's comment always made — only the
+transcript moves, not the drawer and not the `NavHost` — is finally true.
+
+`NalarNavGraphChatStateTest` pins it by rendering the graph, pushing a value
+into a `MutableStateFlow` and asserting the tree changed. A `ChatScreen` test
+cannot catch this: rendering the screen with a draft and typing into it passes
+whether or not the graph hands it a live flow. Re-introducing the old
+one-line read fails three of its four tests.
+
 ### Tearing a stream down never blocks the thread that asked
 
 `HttpChatEventStream.stop()` is called from the main thread — by

@@ -107,9 +107,10 @@ fun chatStatusLabel(isWorking: Boolean, isLive: Boolean): String = when {
  * Back button, and the graph owns that: see
  * [com.nalar.mobile.network.NalarNavGraph].
  *
- * The title, the live indicator and Stop live in the route's top bar rather than
- * in a second header above the transcript, so there is exactly one title bar and
- * the stop control is actually reachable.
+ * The title and the live indicator live in the route's top bar, and the stop
+ * control lives in the composer — beside the send it replaces, so the row
+ * never offers "start a turn" and "end a turn" at the same time. There is
+ * exactly one title bar and one way to interrupt a run.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -120,6 +121,16 @@ fun ChatScreen(
     onDraftChanged: (String) -> Unit = {},
     onSend: () -> Unit = {},
     onStop: () -> Unit = {},
+    /**
+     * A picked image, as the picker's own string.
+     *
+     * The picker launcher itself lives in `ChatView`, which owns the
+     * composer — this slot only carries the result down to whoever decodes
+     * it, so the paperclip cannot be wired to a picker that does not open.
+     */
+    onAttachmentPicked: (String) -> Unit = {},
+    /** Drop one pending attachment, by the id its row carries. */
+    onRemoveAttachment: (String) -> Unit = {},
     onLoadOlder: () -> Unit = {},
     onDismissError: () -> Unit = {},
     onAnswer: (QuestionAnswer) -> Unit = {},
@@ -220,22 +231,12 @@ fun ChatScreen(
                         }
                     },
                     actions = {
-                        // Only while a run is actually going, so it is never a
-                        // button that does nothing — and keyed on the same
-                        // answer the status line gives, because a control that
-                        // vanishes mid tool-run is the same lie told twice.
-                        if (isWorking) {
-                            IconButton(
-                                onClick = onStop,
-                                modifier = Modifier.testTag("chat_stop"),
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Stop,
-                                    contentDescription = "Stop the run",
-                                    tint = NalarError,
-                                )
-                            }
-                        }
+                        // Nothing here. The stop control moved into the
+                        // composer, beside the send it replaces, and there is
+                        // one of them on purpose: a header that offers Stop
+                        // while the composer offers Send is telling the reader
+                        // two different things about the same run, and the one
+                        // they are holding is the one that can act on it.
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = NalarBackground,
@@ -254,6 +255,10 @@ fun ChatScreen(
                     state = state,
                     onDraftChanged = onDraftChanged,
                     onSend = onSend,
+                    onStop = onStop,
+                    isRunning = isRunning,
+                    onAttachmentPicked = onAttachmentPicked,
+                    onRemoveAttachment = onRemoveAttachment,
                     onLoadOlder = onLoadOlder,
                     onDismissError = onDismissError,
                     onAnswer = onAnswer,

@@ -237,6 +237,26 @@ data class ChatUiState(
      * user typed.
      */
     val draft: String = "",
+    /**
+     * Images attached to the turn being composed, already encoded.
+     *
+     * Pending, not sent: they ride along with the *next* send and are cleared
+     * on the same success signal as [draft], so a rejected turn keeps the
+     * images and the reader does not have to go back to the gallery. The data
+     * URLs are the whole payload, which is why the composer's own state is not
+     * the thing holding them — a recomposition must not be able to drop three
+     * megabytes the reader spent a minute choosing.
+     */
+    val pendingAttachments: List<ChatAttachment> = emptyList(),
+    /**
+     * A picked image is being decoded and downscaled.
+     *
+     * A decode of a 12 MP photo is a few hundred milliseconds, and the picker
+     * hands control back before that finishes — so without this the paperclip
+     * looks like it did nothing for a quarter of a second, which is long
+     * enough for a reader to tap it twice.
+     */
+    val isAttaching: Boolean = false,
     val isSending: Boolean = false,
     val isStreaming: Boolean = false,
     val isLoadingOlder: Boolean = false,

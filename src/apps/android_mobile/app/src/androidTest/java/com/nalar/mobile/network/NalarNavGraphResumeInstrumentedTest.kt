@@ -19,6 +19,8 @@ import com.nalar.mobile.recents.WorkspaceOption
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
 import com.nalar.mobile.ui.NalarTheme
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -201,7 +203,7 @@ class NalarNavGraphResumeInstrumentedTest {
                     positionStore = FixedLastPosition(
                         LastPosition(workspaceId = "ws_b", sessionId = "sess_c"),
                     ),
-                    chatState = { ChatUiState(sessionId = "sess_c", isLoading = true) },
+                    chatState = MutableStateFlow(ChatUiState(sessionId = "sess_c", isLoading = true)),
                 )
             }
         }
@@ -306,7 +308,7 @@ private fun ResumeGraph(
      * the chat it is showing. A state with no session id is a shape production
      * never produces, and the launch gate reads it as "not settled yet".
      */
-    chatState: () -> ChatUiState = { ChatUiState(sessionId = "sess_c", isLoading = false) },
+    chatState: StateFlow<ChatUiState> = MutableStateFlow(ChatUiState(sessionId = "sess_c", isLoading = false)),
 ) {
     NalarNavGraph(
         authState = authState,
