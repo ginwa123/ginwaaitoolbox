@@ -195,12 +195,37 @@ disagreeing — a header that offers Stop while the composer offers Send, during
 a reconnect — is the same lie told twice, and a reader who has learned to
 distrust the composer stops trusting the send button too.
 
-The footer's facts — the model, the working directory — are rendered as
-**text**, not as the web's dropdowns. A phone has nothing to change them to,
-and a dropdown that opens an empty menu teaches the reader that the footer is
-decoration. The only button in the row is the chevron that expands a truncated
-`cwd`, and it is drawn only when there is a `cwd` to expand: a permanently
-mounted expander is a control that lies about whether anything is hidden.
+The footer's facts are not all equal. The **model is a dropdown**, because a
+profile is picked from a list the server hands us (`GET /api/config/nalar`) and
+the per-session choice is persisted with `PUT /api/llm/session/{id}` — the same
+two calls the web's `ChatView.vue` profile picker makes. The **working
+directory stays text**: there is nothing to change it to. A dropdown that opens
+an empty menu teaches the reader that the footer is decoration, so with no
+profiles configured and no per-session choice to clear, the model degrades to
+the plain label it was. The only other button in the row is the chevron that
+expands a truncated `cwd`, and it is drawn only when there is a `cwd` to
+expand: a permanently mounted expander is a control that lies about whether
+anything is hidden.
+
+The model's label is a **cascade**, not the raw column. The chip shows
+`selected_profile_model` if this chat has one, else the account-wide
+`active_profile`, else nothing — mirroring `workflow.zig::resolveProfileField`.
+The per-session value falls through on *empty string*, not just null: it
+arrives as `""` on every chat nobody has picked a profile for, so a
+null-only check would report "Default" on a chat the server is running on a
+named profile. Picking a profile is **not optimistic** — the chip changes when
+the server agrees, because a chip naming a profile the next turn does not use
+is the one thing the reader cannot check for themselves.
+
+Everything else in that bar is a per-chat fact; a new chat is the one thing a
+reader inside a chat wants that is *not* this chat, so it is the bar's only
+action. It opens a project chooser rather than creating directly, because a
+chat is a `workspace_item_tasks` row and every task endpoint is nested under
+`/api/workspaces/:id/items/:id` — there is no endpoint anywhere that makes a
+chat without a parent. Routines are filtered out of the chooser: a routine is
+scheduled, not conversed with, and the backend does not accept tasks under
+one. The create itself is the drawer's own, and the result navigates through
+the same `createdChats` flow that opens a chat made anywhere else in the app.
 
 ### Images are attached as data URLs, and the size rules are the backend's
 
