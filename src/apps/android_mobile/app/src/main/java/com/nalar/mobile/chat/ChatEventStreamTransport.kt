@@ -40,10 +40,16 @@ interface ChatEventStream {
  * trying to stitch a gap.
  *
  * The lifecycle is token-based rather than a boolean. A thread blocked on
- * [BufferedReader.readLine] is not interruptible, so [stop] disconnects the
- * socket to unblock it AND bumps a token that the old pump checks — otherwise
- * the woken thread sees a cleared "stopped" flag, reconnects, and runs beside
- * its replacement, appending every chunk twice for the rest of the process.
+ * [BufferedReader.readLine] is not interruptible, so [stop] bumps a token that
+ * the old pump re-checks on every wake — otherwise the woken thread sees a
+ * cleared "stopped" flag, reconnects, and runs beside its replacement,
+ * appending every chunk twice for the rest of the process. The token is
+ * claimed in [start], under the lock, so a replacement can never be handed a
+ * token its predecessor is about to take.
+ *
+ * [stop] additionally closes the socket, but **not on the caller's thread**:
+ * `disconnect()` on a chunked response contends for a lock the reading thread
+ * is holding, and the ViewModel calls [stop] from the main thread. See [stop].
  */
 class HttpChatEventStream(
     private val sessionStore: SessionStore,
@@ -72,19 +78,47 @@ class HttpChatEventStream(
         onEvent: (ChatStreamEvent) -> Unit,
         onState: (ChatStreamState) -> Unit,
     ) {
-        val thread = synchronized(lock) {
+        val myToken: Int
+        val thread: Thread
+        synchronized(lock) {
             // Starting while one is already up is a caller bug, but silently
             // keeping the old callbacks would be worse: the new chat would look
             // connected while receiving another chat's events.
             if (running) return
             running = true
-            Thread({ pump(++token, onEvent, onState) }, "nalar-chat-sse")
-                .also { worker = it }
+            // Claimed here, not in the thread body. A thread that bumps the
+            // token whenever it happens to be scheduled can take the token its
+            // own replacement is about to be given, and the replacement then
+            // exits before it has opened a socket — a chat that reports
+            // "connected" and then never receives a frame.
+            myToken = ++token
+            thread = Thread({ pump(myToken, onEvent, onState) }, "nalar-chat-sse")
+            worker = thread
         }
         thread.isDaemon = true
         thread.start()
     }
 
+    /**
+     * Tears the stream down, and returns without waiting for the socket.
+     *
+     * **The socket must not be closed from here.** `disconnect()` on a chunked
+     * response reaches `ChunkedInputStream.close()`, which takes a lock the
+     * *reading* thread holds for the whole of every socket read and then drains
+     * the remaining chunks hunting for the trailer. Calling it inline parks
+     * the caller for as long as the server says nothing — the ~15 s heartbeat
+     * for an idle chat, the full read timeout for a socket that died quietly —
+     * and [ChatViewModel] calls `stop()` from the main thread on every session
+     * switch, immediately *before* it starts the replacement stream. The
+     * observed symptom is a chat that never updates: the old pump is already
+     * invalidated so it delivers nothing, and the new one does not exist yet
+     * because the switch is still parked inside the teardown.
+     *
+     * The close still has to happen, and only the pump's own exit can finish
+     * it without contending for that lock, so it is handed to a thread nobody
+     * joins. The pump sees the invalidated token on its next wake, stops
+     * dispatching, and closes the connection itself.
+     */
     override fun stop() {
         val toClose = synchronized(lock) {
             if (!running) return
@@ -95,7 +129,11 @@ class HttpChatEventStream(
             worker = null
             openConnection.also { openConnection = null }
         }
-        runCatching { toClose?.disconnect() }
+        toClose?.let { connection ->
+            Thread({ runCatching { connection.disconnect() } }, "nalar-chat-sse-close")
+                .apply { isDaemon = true }
+                .start()
+        }
     }
 
     private fun pump(
@@ -149,8 +187,18 @@ class HttpChatEventStream(
                     // Offline, rotated, killed by the system. A reconnect plus a
                     // refetch is the whole recovery story.
                 } finally {
-                    runCatching { connection.disconnect() }
-                    synchronized(lock) { if (token == myToken) openConnection = null }
+                    // Only this pump's own connection, and only while it is
+                    // still the current one. A `stop()` that has already taken
+                    // the connection away handed it to the closer thread, and
+                    // two threads inside one chunked stream's close is the
+                    // contention that teardown must not have. Identity rather
+                    // than the token, so a reconnecting pump cannot clear the
+                    // socket its replacement just opened.
+                    val stillOurs = synchronized(lock) { openConnection === connection }
+                    if (stillOurs) {
+                        synchronized(lock) { openConnection = null }
+                        runCatching { connection.disconnect() }
+                    }
                     // A socket that died mid-frame would otherwise swallow a
                     // complete-looking payload.
                     parser.flush()?.let { frame -> dispatch(frame, onEvent) }
@@ -188,9 +236,18 @@ class HttpChatEventStream(
         }
     }
 
-    private fun open(): HttpsURLConnection {
-        val connection = URL(normalizedBaseUrl + path)
-            .openConnection() as HttpsURLConnection
+    /**
+     * Opens the request without reading a byte of the body.
+     *
+     * Typed as [HttpURLConnection] rather than [HttpsURLConnection] because
+     * nothing here is TLS-specific — the same six headers and the same cookie
+     * are all a stream needs — and the base type is what lets the pump be
+     * driven against a plain-HTTP socket in `HttpChatEventStreamSocketTest`.
+     * A cast to the https subclass would have made the one layer that actually
+     * opens sockets the only layer no test could reach.
+     */
+    private fun open(): HttpURLConnection {
+        val connection = URL(normalizedBaseUrl + path).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
         // The stream is idle between turns, so a short read timeout would
