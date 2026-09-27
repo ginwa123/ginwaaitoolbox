@@ -81,6 +81,14 @@ const emit = defineEmits<{
 // the user sends a message.
 const DEFAULT_NEW_CHAT_NAME = 'New Chat'
 
+// In-flight guard for the top-left New Chat button. The store's
+// isNavigatingToTask covers the create+route inside
+// createAndOpenStandardChat, but this click handler also has to resolve
+// the default project first, and two clicks landing in that gap would both
+// reach addTask. A ref (not a local) because the button's `:disabled`
+// binding reads it.
+const isCreatingChat = ref(false)
+
 // Chat-id updates forward to ChatsList, which owns the live navItems
 // mirror (plan: 2026-09-22-revamp-ui-chats). Sidebar kept no list of
 // its own — the pre-refactor navItems/chatsLoading mirror below was
@@ -876,6 +884,38 @@ const createAndOpenStandardChat = async (workspaceId: string, itemId: string) =>
   }
 }
 
+// The top-left "New Chat" action. It never asks which project to use —
+// that is the whole point. The workspace's DEFAULT project (Migration 094)
+// is an agent-mode item whose path is the server user's home directory,
+// and it is where the chat is created; the server ensures that default
+// exists on every items read, so this is normally a pure local find and
+// the button is instant.
+//
+// Everything past resolving the default is delegated to
+// createAndOpenStandardChat, unchanged: the race guard, the store flags,
+// and the router.replace that makes the new chat's URL deep-linkable and
+// Back/Forward-correct. Reimplementing any of that here is how two
+// subtly-different "new chat" paths get born.
+const handleNewChat = async () => {
+  const workspaceId = workspacesStore.activeWorkspaceId
+  // No active workspace means no chat is possible. The button is disabled
+  // in this state, but guard anyway — a programmatic call must not
+  // quietly create a workspace as a side effect of a sidebar click.
+  if (!workspaceId) return
+  if (isCreatingChat.value) return
+  isCreatingChat.value = true
+  try {
+    const project = await workspacesStore.ensureDefaultProject(workspaceId)
+    // undefined means the ensure failed. Do NOT navigate and do NOT
+    // fabricate a local item — a wrong project id would land the user on
+    // a project that does not exist, which is worse than doing nothing.
+    if (!project) return
+    await createAndOpenStandardChat(workspaceId, project.id)
+  } finally {
+    isCreatingChat.value = false
+  }
+}
+
 // Open the picker when the user clicks the green `+` on a
 // non-agent workspace item. Chunk 6: previously this directly
 // created a `Task <time>` row and auto-navigated. Now we route
@@ -1336,11 +1376,17 @@ defineExpose({
          shadow, no scale on hover, just a thin border that matches
          the sidebar's typographic treatment. The chevron points in
          the *target* direction (left when expanded, right when
-         collapsed) so the click intent reads at a glance. -->
+         collapsed) so the click intent reads at a glance.
+
+         `top-24` (96px), not `top-16` (64px): this button is absolutely
+         positioned, so it does NOT move when content is inserted above
+         it. The 48px header plus the 40px New Chat row ends at 88px,
+         which means `top-16` would leave the chevron sitting ON TOP of
+         the New Chat row, swallowing its clicks. -->
     <button
       @click="toggleCollapse"
       data-testid="sidebar-collapse-toggle"
-      class="absolute -right-2.5 top-16 z-20 w-5 h-5 rounded flex items-center justify-center transition-colors duration-150"
+      class="absolute -right-2.5 top-24 z-20 w-5 h-5 rounded flex items-center justify-center transition-colors duration-150"
       style="background: var(--semantic-card-bg); border: 1px solid var(--color-border)"
       :title="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
       :aria-label="isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"
@@ -1423,6 +1469,48 @@ defineExpose({
         </button>
       </div>
     </div>
+
+    <!-- New Chat. Sits between the header and the content, above ChatsList,
+         because it is the one action that never needs a project picked
+         first: it creates the chat inside the workspace's DEFAULT project
+         (Migration 094 — an agent-mode item whose path is the server
+         user's home directory, so the chat runs with $HOME as its cwd).
+         The server ensures that default on every items read, so this is
+         normally a pure local find with no round trip.
+
+         Bare text, matching the Settings/Logout weight above rather than a
+         filled pill: the 2026-09-22 revamp moved this whole sidebar to a
+         text-driven treatment and a heavy button would fight it. Collapsed
+         to a 64px rail it becomes an icon — a 64px rail must not drop the
+         only always-visible chat affordance, and the label moves to
+         title/aria-label. -->
+    <button
+      data-testid="sidebar-new-chat-button"
+      class="h-10 flex items-center gap-2 shrink-0 px-4 border-b transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40"
+      :class="isCollapsed ? 'justify-center px-0' : 'hover:bg-[var(--semantic-card-bg)]'"
+      style="border-color: var(--color-border)"
+      :disabled="!workspacesStore.activeWorkspaceId || isCreatingChat"
+      :title="
+        !workspacesStore.activeWorkspaceId
+          ? 'Select a workspace first'
+          : isCollapsed
+            ? 'New Chat'
+            : 'Start a new chat in the default project'
+      "
+      aria-label="New Chat"
+      @click="handleNewChat"
+    >
+      <span
+        class="w-3.5 text-center text-sm leading-none"
+        :style="{ color: 'var(--semantic-text-dim)' }"
+        aria-hidden="true"
+      >{{ isCreatingChat ? '◌' : '✎' }}</span>
+      <span
+        v-if="!isCollapsed"
+        class="text-xs font-medium"
+        :style="{ color: 'var(--semantic-text-dim)' }"
+      >New Chat</span>
+    </button>
 
     <!-- Content -->
     <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'p-3'">

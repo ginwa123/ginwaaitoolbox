@@ -32,6 +32,14 @@ export interface WorkspaceItem {
   id: string
   name: string
   item_type: string
+  // 1 when this is the workspace's default project (Migration 094) — an
+  // `item_type: 'agent'` item whose `path` is the server user's home
+  // directory, and where the "New Chat" action creates its chat. The
+  // server guarantees exactly one per workspace: `GET
+  // /workspaces/:id/items` ensures it on read, so this is normally a pure
+  // local find. A number (0/1) not a boolean because that is the column's
+  // type; only these two values are ever sent.
+  is_default?: number
   // The on-disk cwd for kanban items. Optional (matches the API
   // interface in api/index.ts): legacy kanbans have no path (the
   // API returns `null` for unset rows), folder items never set it,
@@ -1592,6 +1600,47 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
         updatedAt: new Date(),
       })
       return taskId
+    }
+  }
+
+  // Return the workspace's default project — the agent-mode item whose
+  // `path` is the server user's home directory, and where the "New Chat"
+  // action creates its chat (Migration 094).
+  //
+  // Normally this is a PURE LOCAL FIND: the server ensures the default on
+  // every `GET /workspaces/:id/items`, so the list this store already holds
+  // carries it. That keeps the New Chat button instant and costs no round
+  // trip.
+  //
+  // The network branch is the cold-start fallback — the app was open when
+  // the migration ran, so the held list predates `is_default` and would
+  // otherwise leave the button a no-op until a manual refetch.
+  //
+  // Returns undefined on failure (and logs), following the `addTask`
+  // convention above. It must NOT fabricate a local item with a fake id:
+  // a wrong id would navigate to a project that does not exist, which is
+  // worse than doing nothing.
+  async function ensureDefaultProject(workspaceId: string): Promise<WorkspaceItem | undefined> {
+    const workspace = workspaces.value.find((ws) => ws.id === workspaceId)
+    if (!workspace) return undefined
+
+    const existing = workspace.items.find((item) => item.is_default === 1)
+    if (existing) return existing
+
+    try {
+      const { item } = await api.getOrCreateDefaultProject(workspaceId)
+      // Adopt the response's own fields when the store already holds a row
+      // for that id, so an item's fetched `tasks` array is not clobbered.
+      const known = workspace.items.find((it) => it.id === item.id)
+      if (known) {
+        Object.assign(known, item)
+        return known
+      }
+      workspace.items.unshift(item)
+      return item
+    } catch (err) {
+      console.error('Failed to resolve the default project for workspace', workspaceId, err)
+      return undefined
     }
   }
 
@@ -4641,6 +4690,7 @@ export const useWorkspacesStore = defineStore('workspaces', () => {
     reorderWorkspaceItems,
     updateWorkspaceItemPath,
     addTask,
+    ensureDefaultProject,
     toggleTask,
     deleteTask,
     // Per-column pagination (kanban-per-column-pagination plan,
