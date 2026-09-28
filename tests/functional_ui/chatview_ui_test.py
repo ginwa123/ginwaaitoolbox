@@ -56,12 +56,17 @@ def _open_chatview(page, h: UIHarness, session_id: str, timeout_ms: int = 30000)
     which writes ``activeChatId = "chat-<session_id>"`` and renders
     the real ``<ChatView>`` (not the stub ``<Chats>`` view).
 
-    Header testid caveat: the per-chat header testid
-    (``data-testid="chat-header-name-${chatId}"``) is gated by
-    ``v-if="showHeader"`` and AppLayout does NOT pass ``showHeader``
-    to the standalone ChatView, so the header is hidden in the
-    standard route. Tests must wait for the empty-state copy
-    or for a specific message text (NOT the header testid).
+    App-bar testid caveat: the shared app bar
+    (``data-testid="chat-app-bar"``, title
+    ``data-testid="chat-app-bar-title"``) is gated by ChatView's
+    ``v-if="showHeader"``, and AppLayout passes ``show-header`` only
+    for TASK chats (the kanban / agent / standard workspace-item
+    branches — see ChatAppBar.vue). This helper opens a BARE chat
+    (``/app?view=chat&session=…`` → the standalone
+    ``<ChatView v-else-if="activeChatId.startsWith('chat-')">``
+    branch), which deliberately stays headerless, so the app bar is
+    absent here. Tests must wait for the empty-state copy or for a
+    specific message text (NOT an app-bar testid).
     """
     page.goto(
         h.web_url(f"/app?view=chat&session={session_id}"),

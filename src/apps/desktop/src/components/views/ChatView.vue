@@ -85,6 +85,7 @@ import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
+import ChatAppBar from './ChatAppBar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
 import { copyTextToClipboard } from './chat_right_sidebar/DiffCommentBox.vue'
 import {
@@ -123,14 +124,13 @@ const props = defineProps<{
   type?: 'chat' | 'task'
   cwd?: string
   /**
-   * When true, render the compact header bar (chat name + ✕ close
-   * button) above the messages. The host (AppLayout) sets this to
-   * true in the 3-column layout (sidebar | kanban | chatview) so
-   * the user can identify + close the chat without leaving the
-   * kanban. In the full-width standalone chat layout (the
-   * `/app?view=chat` route) the prop is left false, preserving the
-   * original "no header" experience where the chat fills the
-   * viewport edge-to-edge.
+   * When true, render the shared chat app bar (ChatAppBar.vue —
+   * chat name + `◫` sidebar toggle + `✕` close) above the
+   * messages. Every task-chat host sets this so all three
+   * workspace-item modes (kanban / agent / standard folder-chat)
+   * get the identical bar; the standalone `chat-<id>` branch
+   * leaves it false so a bare chat still fills the viewport
+   * edge-to-edge.
    *
    * Defaults to `false` so older call sites that don't supply it
    * still compile — see the nalar-frontend-task-literal-typing-rule
@@ -4273,57 +4273,32 @@ const compactSession = async () => {
     -->
     <div :ref="setChatColumnEl" class="relative flex flex-col h-full flex-1 min-w-0 chat-column">
       <!--
-        Chat header. Rendered only when the parent passed the
-        `showHeader` prop (the kanban 3-column layout sets it; the
-        full-width standalone chat layout leaves it false so the
-        existing "no header" experience is preserved). When shown,
-        it includes the chat name (so the user can see which task
-        they're chatting with when the kanban + chat are side by
-        side) and a ✕ button that emits `close` to the host. The
-        host (AppLayout) handles the actual navigation / state
+        Chat app bar. Rendered only when the parent passed the
+        `showHeader` prop. Every task-chat host sets it (kanban
+        branch, AgentChatView, StandardTaskChatView) so all three
+        workspace-item modes get the identical bar; the standalone
+        `chat-<id>` branch leaves it false so a bare chat still
+        fills the viewport edge-to-edge. The markup itself lives in
+        ChatAppBar.vue — the one app bar shared by every mode, so the
+        title, the sidebar toggle and the ✕ cannot drift apart again.
+        The `app-bar-extras` slot lets a host pin mode-specific bits
+        (AgentChatView's SessionSlider) into the same bar.
+        The host (AppLayout) handles the actual navigation / state
         cleanup so the ChatView stays decoupled from router + store
         concerns.
       -->
-      <header
+      <ChatAppBar
         v-if="showHeader && !embedded"
-        class="h-11 flex items-center gap-2 px-3 shrink-0"
-        style="
-          background-color: var(--semantic-sidebar-bg);
-          border-bottom: 1px solid var(--color-border);
-        "
+        :title="chatName"
+        :show-sidebar-toggle="!embedded"
         :data-chat-header="chatId"
+        @toggle-sidebar="chatSidebar.toggle()"
+        @close="emit('close')"
       >
-        <span
-          class="text-sm font-semibold truncate flex-1"
-          style="color: var(--semantic-text)"
-          :data-testid="`chat-header-name-${chatId}`"
-        >
-          {{ chatName }}
-        </span>
-        <button
-          v-if="!embedded"
-          type="button"
-          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim)"
-          title="Toggle changes sidebar (Cmd/Ctrl+B)"
-          aria-label="Toggle changes sidebar"
-          :data-testid="`chat-sidebar-toggle-${chatId}`"
-          @click="chatSidebar.toggle()"
-        >
-          ◫
-        </button>
-        <button
-          type="button"
-          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim)"
-          title="Close chat (return to kanban)"
-          aria-label="Close chat"
-          :data-testid="`chat-header-close-${chatId}`"
-          @click="emit('close')"
-        >
-          ✕
-        </button>
-      </header>
+        <template #extras>
+          <slot name="app-bar-extras" />
+        </template>
+      </ChatAppBar>
       <!-- Messages (Virtual Scroll) -->
       <!--
         The wrapper MUST be a flex container (`flex flex-col`) so the
