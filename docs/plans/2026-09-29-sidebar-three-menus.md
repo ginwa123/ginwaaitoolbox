@@ -7,9 +7,13 @@
 **Wireframe:** `docs/plans/2026-09-29-sidebar-three-menus-wireframe.html`
 **Branch:** `worktree/make-the-3-sidebar-left-menu-more-better-1790616053266`
 
-**Goal:** give each of the sidebar's three menus exactly one job — New Chat **acts**, Recent **resumes**, Projects
-**enumerates** — and make the two list menus render visibly different row types so a user can tell a loose chat from a
-project child.
+**Goal, in priority order.** The sidebar is not *neat* — it uses **nine font sizes, four left edges and three row
+heights** in one 210 px panel, and there is no scale for any of them to be wrong against. That is the first job (D12–D17,
+T1–T2) and it is the one that ships first. Then: give each of the three menus exactly one job — New Chat **acts**,
+Recent **resumes**, Projects **enumerates** — and make the two list menus render visibly different row types so a user
+can tell a loose chat from a project child.
+
+The two wireframes are one PR but two reviews. `…-spacing-type-wireframe.html` is self-contained and lands on its own.
 
 **Architecture:** three sequential, independently-shippable changes. (1) A row-type system in the sidebar: an `item_type`
 glyph map, a distinct chat-row grammar, hover-revealed actions. (2) A recency surface: RECENT capped at 5 rows with a
@@ -78,6 +82,21 @@ over the tree. Each lands on its own PR; none depends on the next except as note
 | **D10** | New Chat gains **`⌘N`** and a trailing **`▾`** split (start in a chosen project/page). Weight, colour, the 40 px height and the `top-24` chevron are **untouched**. | Re-styling the row | The 2026-09-27 plan locked the bare-text treatment explicitly. The split only relocates the hover-only `+` that already exists per project row. |
 | **D11** | The whole nav is **one roving-tabindex keyboard list**, with focus derived from the route like the active row. | A local `focusIndex` ref | A local ref is exactly how the highlight and the keyboard cursor drift apart — the failure `2026-08-06-sidebar-single-active-state-design.md` exists to prevent. |
 
+### Spacing & type — the substrate (added after the user pointed at the real complaint)
+
+The decisions above are about meaning. **D12–D17 are about geometry and are the actual ask** — they land first (T1) and
+every later task builds on them. Full audit in
+`docs/plans/2026-09-29-sidebar-spacing-type-wireframe.html`.
+
+| # | Decision | Rejected alternative | Why |
+|---|---|---|---|
+| **D12** | **Four spacing tokens** — `--sb-gutter` 12 px, `--sb-row` 32 px, `--sb-indent` 12 px, `--sb-hit` 24 px — added to `style.css` beside the ~50 existing colour vars. | A new `tailwind.config.js` | There is no Tailwind config today, so geometry is entirely un-centralised. But colour already standardised on CSS vars; a second token mechanism is worse than extending the first. |
+| **D13** | **Three type sizes.** 11 px section title (600, uppercase, `0.08em`) · **13 px row label** · 11 px meta · plus a fixed 12 px icon glyph. Nine sizes → three. | 14 px for projects, 13 px for chats | Re-introduces the two-size hierarchy the wireframe exists to remove. 13 px is what `WorkspaceItem.vue:604` already uses — the value two of three row types are already at, so this is normalisation, not redesign. |
+| **D14** | **The nav's `p-3` is deleted.** | Moving the list rows out to 16 px | The 8 px step at the top of the panel is caused by this one container padding, not by any row. Removing it is what makes a single left edge possible. |
+| **D15** | **Every row is 32 px**, including RECENT (from 48). | Leaving RECENT roomier | 48 px exists for no reason other than that it was written first. 32 px holds a git badge, name, time pill and spinner. **Couples to `:default-item-height` on the `VirtualScroller`** — that value must move with it or the list scrolls wrong. |
+| **D16** | **Both section headers become identical** — 28 px, 12 px padding, same `border-b`. | Dropping the border to match PROJECTS | Today RECENT draws a rule and PROJECTS does not, so a boundary exists between the two menus but not between PROJECTS and its own contents. A rule between peers is what keeps the boundary legible. |
+| **D17** | **The stale `sidebarSpacing.spec.ts` comment is deleted**, replaced by a real spec asserting the four token values. | Writing the grep test the comment describes | The comment at `ChatsList.vue:911` claims a contract that **does not exist** — a repo-wide search for `sidebarSpacing` returns exactly one hit, the comment itself. A grep test would enshrine `py-2.5` as correct. |
+
 **Carried forward, not reopened:** no filled primary button for New Chat; no `+` on the RECENTS header (deleted
 deliberately 2026-09-22); no count badge on a collapsed project row; a project row is a **filter** and a chat row is a
 **destination**; the 64 px collapsed rail keeps an icon-only New Chat with `aria-label`; the four New Chat states
@@ -115,7 +134,8 @@ for `query.nav` returns zero files, so `?nav=` is free.
 
 | Action | File | Responsibility |
 |---|---|---|
-| Modify | `src/apps/desktop/src/components/shell/Sidebar.vue` | Replace the two stacked panes with one `<nav>` scroller; drop the chat-resize plumbing; host the filter. |
+| Modify | `src/apps/desktop/src/style.css` | **The four `--sb-*` spacing tokens and the three type sizes**, beside the existing ~50 colour vars. The root fix (D12). |
+| Modify | `src/apps/desktop/src/components/shell/Sidebar.vue` | Delete the nav's `p-3`; align the header and New Chat to `--sb-gutter`; replace the two stacked panes with one `<nav>` scroller; drop the chat-resize plumbing; host the filter. |
 | Modify | `src/apps/desktop/src/components/views/ChatsList.vue` | Cap at 5 rows, add the breadcrumb + empty state + labelled run chip + hover actions, remove the in-pane `Load more`. |
 | Modify | `src/apps/desktop/src/components/workspace/ProjectsList.vue` | Remove the `items.length` count, the deleted search comment and the `Load more`; add the optional filter; read `?nav=`. |
 | Modify | `src/apps/desktop/src/components/workspace/WorkspaceItem.vue` | Add the glyph slot, drop the count badge, collapse the always-on actions to `⋯`, auto-expand from the route. |
@@ -132,37 +152,50 @@ for `query.nav` returns zero files, so `?nav=` is free.
 
 ## Tasks
 
-- [ ] **T1 — Glyph map + the project row.** Add `itemTypeGlyph.ts`; render the glyph on every project row; remove the
-      `tasks.length` badge and the header `items.length` count. *No behaviour change yet — this is the scannability fix
-      and it is the piece most worth landing first.*
+> **Order matters, and it changed.** This list was originally headed by the glyph map. The sidebar's real complaint is
+> that it is not <i>neat</i> — different margins, different font sizes — so **T1 is now the spacing and type substrate**,
+> and the IA work lands on top of it. A consistent 13 px row label and one left edge is what every later change needs in
+> order to look deliberate.
+
+- [ ] **T1 — Spacing + type substrate. (the actual ask)** Add the four `--sb-*` tokens to `style.css`; delete the nav's
+      `p-3`; set every row, section header and hit box to the token values. Split per D12–D17.
+      *Ship this on its own.* It is mechanical, it is reviewable line-by-line, and it makes the screenshot measurably
+      better before any behaviour changes.
+      `Commit: refactor(sidebar): one spacing and type scale for the whole panel`
+- [ ] **T2 — Prove the substrate.** Replace the stale `sidebarSpacing.spec.ts` comment with a real spec asserting the
+      four token values and the three font sizes. Add a DOM assertion that every row in all three menus shares one
+      left edge. *Without this the drift restarts within a month — that is why nine sizes accumulated in the first place.*
+      `Commit: test(sidebar): assert the spacing and type tokens instead of a class string`
+- [ ] **T3 — Glyph map + the project row.** `itemTypeGlyph.ts`; render the glyph on every project row; remove the
+      `tasks.length` badge and the header `items.length` count. Now a `Q6` decision, because T1 made the row label 13 px.
       `Commit: feat(sidebar): project rows carry an item_type glyph and lose their lying counts`
-- [ ] **T2 — Breadcrumb on RECENT.** Derive each session's parent project name server-side (the scope resolver already
+- [ ] **T4 — Breadcrumb on RECENT.** Derive each session's parent project name server-side (the scope resolver already
       knows the task → item mapping) and render it under the row. Also add the empty state (D8) and the labelled run chip
-      (D9). *This is the fix for the actual complaint in the screenshot.*
+      (D9). *This is the fix for "Recent and Projects look identical".*
       `Commit: feat(sidebar): RECENT rows name their parent project`
-- [ ] **T3 — Collapse the row actions.** `⋯` on both menus; pin/rename/delete move into the existing context menu;
-      add `Shift F10` to open it from the keyboard.
+- [ ] **T5 — Collapse the row actions.** `⋯` on both menus, at `--sb-hit` 24 px; pin/rename/delete move into the
+      existing context menu; add `Shift F10` to open it from the keyboard. *One hit-box size kills the 24/26/28 split.*
       `Commit: feat(sidebar): row actions collapse behind a single overflow control`
-- [ ] **T4 — One scroller + `?nav=`.** Delete `chatsHeight` and the drag handle; move section fold into the route;
-      write a mount-with-query spec and a click spec.
+- [ ] **T6 — One scroller + `?nav=`.** Delete `chatsHeight` and the drag handle; move section fold into the route; write a
+      mount-with-query spec and a click spec.
       `Commit: refactor(sidebar): one nav scroller, section fold in the URL`
-- [ ] **T5 — `See all` destinations.** RECENT gets `See all ›`; a project with more children than fit gets
+- [ ] **T7 — `See all` destinations.** RECENT gets `See all ›`; a project with more children than fit gets
       `See all N chats ›`. Both navigate; neither closes anything.
       `Commit: feat(sidebar): See all destinations for Recent and for a project`
-- [ ] **T6 — Real totals.** `COUNT(*)` in `tasks_list.zig` → `total`; surface it; only then let `See all N chats ›`
+- [ ] **T8 — Real totals.** `COUNT(*)` in `tasks_list.zig` → `total`; surface it; only then let `See all N chats ›`
       print a number. *Blocked on its own card; the UI must render correctly with `total` absent.*
       `Commit: feat(api): return a real total alongside the paged task list`
-- [ ] **T7 — URL-driven active row (closes `docs/SPEC.md:971`).** Auto-expand the active project from the route; 2 px
+- [ ] **T9 — URL-driven active row (closes `docs/SPEC.md:971`).** Auto-expand the active project from the route; 2 px
       accent bar on the active chat row.
       `Commit: feat(sidebar): single active row derived from the route`
-- [ ] **T8 — Filter box.** *Only after Q1 is answered yes.*
+- [ ] **T10 — Filter box.** *Only after Q1 is answered yes.*
       `Commit: feat(sidebar): filter the project tree`
-- [ ] **T9 — `⌘N` and the New Chat split.** Shortcut + trailing `▾`; the split menu offers the default project, a named
+- [ ] **T11 — `⌘N` and the New Chat split.** Shortcut + trailing `▾`; the split menu offers the default project, a named
       project, and a design page.
       `Commit: feat(sidebar): New Chat gains a shortcut and a split target menu`
-- [ ] **T10 — Keyboard roving list.** `↑ ↓ → ← Enter Esc` across all three menus, focus derived from the route.
+- [ ] **T12 — Keyboard roving list.** `↑ ↓ → ← Enter Esc` across all three menus, focus derived from the route.
       `Commit: feat(sidebar): one keyboard-navigable list across the three menus`
-- [ ] **T11 — Mirror to the Android drawer.** *Its own card, tracked separately; noted so it is not forgotten.*
+- [ ] **T13 — Mirror to the Android drawer.** *Its own card, tracked separately; noted so it is not forgotten.*
       `Commit: chore(android): mirror the sidebar row grammar in the drawer`
 
 ---
@@ -172,7 +205,8 @@ for `query.nav` returns zero files, so `?nav=` is free.
 | Gate | Command | Asserts |
 |---|---|---|
 | Backend | `zig build test` | `tasks_list` returns `total` and the page; `COUNT` does not perturb the cursor. |
-| Frontend unit | `cd src/apps/desktop && pnpm run test:unit` | Glyph map incl. the unknown-type fallback; no count badge; breadcrumb present on RECENT and absent on a child; `?nav=` round-trip; the active row follows the route. |
+| Frontend unit | `cd src/apps/desktop && pnpm run test:unit` | **The four `--sb-*` token values and the three font sizes are asserted** (T2) — this is the gate that stops the nine-size drift returning. Plus: glyph map incl. the unknown-type fallback; no count badge; breadcrumb present on RECENT and absent on a child; `?nav=` round-trip; the active row follows the route. |
+| Geometry | a DOM assertion, not a screenshot | Every row in all three menus resolves to the same left edge and the same computed font-size. Pixel-diffing a screenshot is the wrong gate here — it fails on a 1 px antialiasing change and passes on a 14 px indent regression. |
 | Functional | `python3 -m pytest tests/functional -k sidebar` | The wire payload for `GET /workspaces/:ws/items/:item/tasks` carries `total`, and `?nav=` survives a real `GET /app/…`. Free port 8080–8199, never 8081, isolated `HOME`. |
 | No-regression | `pnpm run test:unit` before and after | The 5 existing `Sidebar.*.spec.ts` files must stay green **without** edits; if a spec has to change, the change is the review signal. |
 | Render | `functional_ui` seeded from a real `agent.db` | The breadcrumb does not truncate the chat name at 210 px; the glyph column is optically aligned. |
@@ -199,6 +233,14 @@ for `query.nav` returns zero files, so `?nav=` is free.
 | **Q2** | Does a project row keep a chevron at all? A kanban and a routine have no children, so their chevron is a dead control. | **Hide it** for childless types. A control that cannot do anything should not be drawn. |
 | **Q3** | Does a project child keep its own time pill? | **Keep.** The seven identical `New Chat` rows are exactly the case where a timestamp is the only thing that distinguishes them. |
 
+### Spacing & type questions
+
+| # | Question | Recommendation |
+|---|---|---|
+| **Q4** | Does the header text move in by 4 px? D14 puts every label at 12 px, so **Settings**, **Logout** and **New Chat** shift 16 → 12. | **Yes.** 12 px is what most of the panel already uses and it is the only value that makes a single left edge possible. The alternative moves the list rows out to 16 instead, spending the same 4 px elsewhere. |
+| **Q5** | Do RECENT rows drop 48 → 32 px? They carry a git badge, name, time pill and spinner. | **Yes.** 32 px holds all four, and the saving shows up as more projects visible without scrolling. 48 px is the one row height that exists for no reason other than that it was written first. |
+| **Q6** | Is 13 px too small for a project name? A project is the biggest object in the panel and would render the same size as a chat under it. | **13 everywhere**, with hierarchy carried by the glyph and the indent. 14/13 re-introduces the two-size hierarchy this exists to remove — and the glyph from T3 gives a project more presence at the same text size. |
+
 ---
 
 ## Risks
@@ -218,4 +260,6 @@ for `query.nav` returns zero files, so `?nav=` is free.
 - [x] Wireframe written — `docs/plans/2026-09-29-sidebar-three-menus-wireframe.html`
 - [x] Every load-bearing fact verified first-hand (`workspace_scope.zig:89-91`, `llm_history.zig:381`, `migration.zig:1048`, `WorkspaceItem.vue:634-639`, `http_response.zig:618`, `docs/tabs.md:148`, `docs/SPEC.md:971`)
 - [x] Prior approved decisions carried forward, none silently reopened except Q1, which is raised as a question
+- [x] Spacing + type audited from source and re-prioritised to T1 — `docs/plans/2026-09-29-sidebar-spacing-type-wireframe.html`
+- [x] Found that the `sidebarSpacing.spec.ts` contract claimed at `ChatsList.vue:911` does not exist in the repo
 - [ ] **User reviewed before execution** ← the human's job
