@@ -504,29 +504,34 @@ jobs:
 
           # ripgrep for src/modules/agent/tools/search.zig, which SPAWNS
           # `rg`. Without it every search_test.zig case fails with
-          # error.FileNotFound. The image ships it (via chocolatey, with
-          # C:\ProgramData\chocolatey\bin already on PATH), so this is a
-          # guard with a fallback, not an install step.
+          # error.FileNotFound.
+          #
+          # The image does NOT ship ripgrep, and it has no `winget`
+          # either (the old self-hosted Windows box did — its fallback
+          # path assumed winget and died with "The term 'winget' is not
+          # recognized"). Chocolatey IS provisioned on windows-2022, the
+          # runner user is an administrator, and C:\ProgramData\chocolatey\bin
+          # is already on PATH — so `choco install` is the package manager
+          # that actually exists here. `rg` is then re-resolved rather
+          # than assumed, because choco's shim only lands on PATH for
+          # processes started after this one.
           $rg = Get-Command rg -ErrorAction SilentlyContinue
           if ($rg) {
             Write-Host ("ok ripgrep already at " + $rg.Source)
           } else {
-            Write-Host "ripgrep missing from the image - installing via winget..."
-            winget install --id BurntSushi.ripgrep.MSVC --wait -e --accept-source-agreements --accept-package-agreements --silent
-            # Append rather than rebuild: the old code concatenated the
-            # User-scope PATH onto the Process-scope one, duplicating every
-            # inherited entry and only working if winget's shim happened to
-            # land in the User scope.
+            Write-Host "ripgrep missing from the image - installing via chocolatey..."
+            choco install ripgrep -y --no-progress
             $chocoBin = "C:\ProgramData\chocolatey\bin"
             if (Test-Path $chocoBin) {
               $env:PATH = $chocoBin + ";" + $env:PATH
               Add-Content -Path $env:GITHUB_PATH -Value $chocoBin
             }
-            if (-not (Get-Command rg -ErrorAction SilentlyContinue)) {
-              Write-Error "ripgrep still not on PATH after install"
+            $rg = Get-Command rg -ErrorAction SilentlyContinue
+            if (-not $rg) {
+              Write-Error "ripgrep still not on PATH after choco install -- search_test.zig will fail"
               exit 1
             }
-            Write-Host "ok ripgrep installed"
+            Write-Host ("ok ripgrep installed at " + $rg.Source)
           }
 
       - name: Show toolchain versions
