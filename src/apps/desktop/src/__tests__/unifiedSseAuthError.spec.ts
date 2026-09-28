@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any -- test mocks legitimately use loose types */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createUnifiedSseConnection } from '../api'
 import * as sseClient from '../helpers/sseClient'
