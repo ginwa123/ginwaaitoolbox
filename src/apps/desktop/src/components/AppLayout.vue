@@ -8,7 +8,7 @@ import ChatView from './views/ChatView.vue'
 import StandardTaskChatView from './views/StandardTaskChatView.vue'
 import Chats from './views/Chats.vue'
 import SettingsView from './views/SettingsView.vue'
-import CodeEditor from './views/CodeEditor.vue'
+import CodeViewerStage from './views/CodeViewerStage.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
 import SseStatusBadge from './shell/SseStatusBadge.vue'
 import KanbanView from './kanban/KanbanView.vue'
@@ -36,7 +36,9 @@ import * as api from '../api'
 import type { DesignElement as DesignElementApi } from '../api'
 import { buildToggle } from '../stores/agentToolToggle'
 import {
+  CODE_VIEWER_STATE_KEY,
   OPEN_IN_CODE_EDITOR_KEY,
+  type CodeViewerState,
   type OpenInCodeEditorFn,
   type OpenInCodeEditorOptions,
 } from '../composables/useCodeEditor'
@@ -975,7 +977,6 @@ const closeSkillViewer = () => {
 // links resolve without silent blanks.
 const codeEditorSession = useCodeEditorSession({
   readFile: (cwd, path) => api.readFileContent(cwd, path),
-  writeFile: (cwd, path, content) => api.writeFileContent(cwd, path, content),
   syncUrl: ({ path, line }) => {
     // Keep-append: the editor keys merge into the current URL so the
     // workspace/project/chat context in the path survives a reload.
@@ -1009,23 +1010,11 @@ const codeEditorError = codeEditorSession.error
 const codeEditorRequestedLine = codeEditorSession.requestedLine
 
 const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOptions) => {
-  console.log('[openInCodeEditor] filePath:', opts.filePath, 'cwd:', opts.cwd, 'line:', opts.line)
   // Clear other overlays to prevent priority conflicts
   gitViewerFile.value = null
   gitViewerStaged.value = false
   skillViewerSkill.value = null
   await codeEditorSession.openFile(opts)
-  console.log('[openInCodeEditor] codeEditorFile.value after set:', codeEditorFile.value?.path)
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-const _handleCodeEditorFileClick = (file: api.FolderEntry) => {
-  if (!rightSidebarCwd.value) return
-  return openInCodeEditor({
-    filePath: file.path,
-    fileName: file.name,
-    cwd: rightSidebarCwd.value,
-  })
 }
 
 // Expose openInCodeEditor to all descendants (tool output components) via inject
@@ -1056,9 +1045,22 @@ const closeCodeEditor = () => {
   replaceWithCurrentContext()
 }
 
-const handleCodeEditorSave = async (content: string) => {
-  await codeEditorSession.save(content)
+// The open file itself, so a SURFACE can render it: ChatView paints it in
+// its center column next to the chat-owned right sidebar (the user opened
+// the file FROM that sidebar — it must stay put), and the overlay in the
+// template is the fallback for every context with no chat on screen (kanban
+// board, design canvas, settings, chats list). Same session refs, no copies:
+// the template bindings above alias these exact objects.
+const codeViewerState: CodeViewerState = {
+  file: codeEditorSession.file,
+  content: codeEditorSession.content,
+  loading: codeEditorSession.loading,
+  error: codeEditorSession.error,
+  requestedLine: codeEditorSession.requestedLine,
+  cwd: codeEditorSession.cwd,
+  close: closeCodeEditor,
 }
+provide<CodeViewerState>(CODE_VIEWER_STATE_KEY, codeViewerState)
 
 const handleSubmitReview = async (message: string) => {
   console.log('[AppLayout] Code review submitted:', message)
@@ -1134,8 +1136,14 @@ const currentView = computed(() => {
     return 'skill'
   }
   console.log('[currentView] skillViewerSkill is null, checking route')
-  // code-editor view - check only the ref
-  if (codeEditorFile.value) return 'code-editor'
+  // code-editor view - the open file wins UNLESS a chat surface can
+  // display it itself. ChatView renders the file in its center column
+  // (next to the chat-owned right sidebar, like the stacked center
+  // diff), so claiming the whole <main> here would unmount ChatView
+  // and take the sidebar with it. Everywhere else (kanban board,
+  // design canvas, settings, chats list) there is no ChatView and this
+  // overlay is the only surface. See `chatSurfaceActive`.
+  if (codeEditorFile.value && !chatSurfaceActive.value) return 'code-editor'
 
   // Path-based contract (plan: 2026-09-22-revamp-ui-chats). Projects
   // are workspace items, so every project path is the 'workspace'
@@ -1177,6 +1185,36 @@ const activeTask = computed(() => workspacesStore.activeTask)
 // containing item's id or null. Cheap O(W) where W = number of
 // tasks across all workspaces.
 const activeTaskWorkspaceItemId = computed(() => workspacesStore.activeTaskWorkspaceItemId)
+
+/**
+ * True when the <main> chain is showing a ChatView surface — i.e. when
+ * ChatView owns the center column AND the chat-owned right sidebar
+ * (Explorer / Files changed / Terminal).
+ *
+ * Single source of truth for the three call sites that must agree:
+ *   1. `currentView` — only claim the whole <main> for the code viewer
+ *      when this is false (otherwise ChatView would be unmounted and the
+ *      sidebar would vanish with it).
+ *   2. ChatView, via the injected `CODE_VIEWER_STATE_KEY`, renders the
+ *      file in its center column when a file is open.
+ *
+ * The three chat branches of the chain, faithfully:
+ *   - inline task chats: kanban → `<ChatView>`, agent →
+ *     `<AgentChatView>` (wraps ChatView), folder/memory/chat →
+ *     `<StandardTaskChatView>` (wraps ChatView). All three gate on
+ *     "the active task belongs to the active workspace item".
+ *   - standalone chat: `<ChatView v-else-if="activeChatId.startsWith('chat-')">`.
+ *
+ * NOT chat surfaces (they keep AppLayout's full-surface viewer):
+ *   - design items — their chat is the `DesignChatDialog` modal;
+ *   - the chats list (`<Chats>`) — no active chat session at all.
+ */
+const chatSurfaceActive = computed(() => {
+  const item = activeWorkspaceItem.value
+  if (item?.item_type === 'design') return false
+  if (activeTask.value && activeTaskWorkspaceItemId.value === item?.id) return true
+  return activeChatId.value.startsWith('chat-')
+})
 
 // ─── Kanban task chat ────────────────────────────────────────────────────────
 //
@@ -2873,59 +2911,26 @@ defineExpose({
         </div>
       </div>
 
-      <!-- Code Editor (shown when view is code-editor) -->
+      <!-- Code viewer — full-surface FALLBACK. `currentView` only resolves
+           to 'code-editor' when no ChatView is on screen (see
+           `chatSurfaceActive`), because inside a chat the viewer renders
+           in ChatView's center column so the chat-owned right sidebar
+           (Explorer / Files changed / Terminal) stays visible. Same
+           `CodeViewerStage` component, so both surfaces are identical. -->
       <div
         v-if="currentView === 'code-editor' && codeEditorFile"
         class="flex-1 flex flex-col overflow-hidden absolute inset-0"
         style="background-color: var(--semantic-content-bg); z-index: 10"
+        data-testid="code-viewer-overlay"
       >
-        <!-- Loading state -->
-        <div v-if="codeEditorLoading" class="flex-1 flex items-center justify-center">
-          <svg
-            class="animate-spin w-8 h-8"
-            style="color: var(--color-aqua)"
-            viewBox="0 0 24 24"
-            fill="none"
-          >
-            <circle
-              class="opacity-25"
-              cx="12"
-              cy="12"
-              r="10"
-              stroke="currentColor"
-              stroke-width="4"
-            />
-            <path
-              class="opacity-75"
-              fill="currentColor"
-              d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-            />
-          </svg>
-        </div>
-
-        <!-- Error state -->
-        <div v-else-if="codeEditorError" class="flex-1 flex flex-col items-center justify-center">
-          <span class="text-2xl mb-2">⚠️</span>
-          <p class="text-sm" style="color: var(--semantic-text-dim)">{{ codeEditorError }}</p>
-          <button
-            @click="closeCodeEditor"
-            class="mt-4 px-4 py-2 rounded-lg text-sm"
-            style="background-color: var(--color-border); color: var(--semantic-text)"
-          >
-            Close
-          </button>
-        </div>
-
-        <!-- Code Editor -->
-        <CodeEditor
-          v-else
-          :file-path="codeEditorFile.path"
-          :file-name="codeEditorFile.name"
+        <CodeViewerStage
+          :file="codeEditorFile"
           :content="codeEditorContent"
+          :loading="codeEditorLoading"
+          :error="codeEditorError"
           :cwd="rightSidebarCwd"
-          :line="codeEditorRequestedLine ?? undefined"
+          :line="codeEditorRequestedLine"
           @close="closeCodeEditor"
-          @save="handleCodeEditorSave"
         />
       </div>
 
@@ -2957,9 +2962,12 @@ defineExpose({
            gives each tab its own body with no extra state. `:key` forces a
            fresh mount per task, preserving useChatScrollRestore's
            per-session scroll contract when the user switches cards.
-           `:show-header` renders ChatView's own header (task name + ✕) so
+           `:show-header` renders the shared ChatAppBar (title + ◫ + ✕) so
            the chat stays closable with tab mode off; the ✕ routes through
-           handleCloseTaskView, which closes the tab when one owns the chat. -->
+           handleCloseTaskView, which closes the tab when one owns the chat.
+           The other two task-chat modes (AgentChatView below,
+           StandardTaskChatView further down) set the same flag, so all
+           three render the identical bar. -->
       <ChatView
         v-else-if="
           activeWorkspaceItem &&
@@ -3114,7 +3122,10 @@ defineExpose({
            chain and render BOTH stacked (config on top, chat
            squeezed at the bottom). Closing the chat (@close →
            handleCloseTaskView clears activeTask) falls back to
-           AgentView. -->
+           AgentView. AgentChatView no longer hand-rolls a header — it
+           forwards `:show-header` + `@close` to its inner ChatView, so
+           agent mode renders the same shared ChatAppBar as the kanban
+           and standard branches. -->
       <AgentChatView
         v-else-if="
           activeWorkspaceItem &&
@@ -3240,6 +3251,12 @@ defineExpose({
         fight the activeTask state the kanban + design branches
         depend on.
 
+        `@close` routes ChatView's app-bar ✕ through
+        handleCloseTaskView, the same handler the kanban and agent
+        branches use. With `:show-header` set on the wrapper, this mode
+        renders the same shared ChatAppBar as the other two, so the
+        title / ◫ / ✕ sit in the same place in all three.
+
         Mount order matters: this v-else-if is AFTER AgentView
         (above), so 'agent' items render AgentView not ChatView.
         It precedes the standalone `<ChatView v-else-if=
@@ -3258,6 +3275,7 @@ defineExpose({
         :task="activeTask"
         :cwd="effectiveChatCwd"
         @update-chat-id="handleUpdateChatId"
+        @close="handleCloseTaskView"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"

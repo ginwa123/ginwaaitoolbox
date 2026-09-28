@@ -1,138 +1,102 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, shallowRef } from 'vue'
-import { detectLanguage } from '@/helpers/codeHighlight'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { detectLanguage, highlightLine } from '@/helpers/codeHighlight'
 import { displayPathFor } from '@/composables/useCodeEditorSession'
 
-// LAZY LOADED — DO NOT statically `import 'monaco-editor'`.
-//
-// Why this matters (Linux 99% CPU bug, task_1787683960703_0, 2026-08-25):
-// Monaco Editor ships ~30 language worker bundles (TypeScript,
-// JavaScript, JSON, CSS, HTML, Handlebars, Razor, Freemarker, Liquid,
-// …) totaling ~96 MB across 64 cached blobs in the WebKitGTK disk
-// cache. A static `import * as monaco from 'monaco-editor'` here
-// forces Vite to ship the entire tree into the entry chunk. On
-// WebKitGTK (Linux) the cached responses are re-parsed on every app
-// start, pinning one CPU core at 80–100% for ~10–30 s. WKWebView
-// (macOS) uses memory-mapped cache + a faster JS engine so the same
-// workload is invisible. Dynamic `import()` defers the bundle load
-// until the user actually opens a file in the editor — until then no
-// monaco chunk is downloaded and nothing lands in the WebKitGTK
-// cache.
-//
-// `monaco` is typed as `unknown` at script scope and narrowed inside
-// onMounted after the dynamic import resolves. The test
-// `CodeEditor.lazy-monaco.spec.ts` greps this file and fails the
-// build if a future refactor re-introduces a top-level static import.
-
-// Minimal structural type for the editor instance — we only need a
-// few methods on it. Using `unknown` instead of `monaco.editor.IStandaloneCodeEditor`
-// keeps the monaco-editor package out of this file's static module
-// graph.
-type EditorInstance = {
-  getValue(): string
-  setValue(v: string): void
-  getOptions(): { get(id: unknown): unknown }
-  getModel(): unknown
-  updateOptions(opts: { readOnly?: boolean }): void
-  revealLineInCenter(line: number): void
-  setSelection(sel: {
-    startLineNumber: number
-    startColumn: number
-    endLineNumber: number
-    endColumn: number
-  }): void
-  focus(): void
-  onDidChangeModelContent(cb: () => void): { dispose(): void }
-  addCommand(keybind: number, cb: () => void): void
-  dispose(): void
-}
-
-// Same for monaco's namespace API — only the methods/types we
-// actually call. Kept narrow on purpose: if a future change needs a
-// new monaco feature, add the typed surface here (NOT a top-level
-// `import`).
-//
-// We type the loaded namespace as `unknown` (not as `MonacoNs`) so
-// `vue-tsc` doesn't demand a structurally compatible shape from the
-// real monaco-editor type definition — the dynamic import resolves
-// to the real package types which are richer than our hand-written
-// narrow surface. The cast happens once at the import site, all
-// downstream uses go through the typed ref below.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type MonacoNs = any
-
-// Configure Monaco's worker URL *once*. `self.MonacoEnvironment` is a
-// global that Monaco reads at worker-spawn time — it doesn't need
-// the monaco-editor package to be imported for this side effect to
-// take effect. We register only the language workers we actually use
-// (TS/JS/JSON/CSS/HTML/Markdown) so Vite's lazy import never pulls
-// in the 30+ language parsers we don't render.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const g = globalThis as any
-g.MonacoEnvironment = g.MonacoEnvironment || {}
-// No eslint-disable needed here — the function body itself doesn't
-// declare an `any` type (the cast is on `g` two lines above).
-g.MonacoEnvironment.getWorker = function (_moduleId: string, label: string) {
-  const getWorkerModule = (moduleUrl: string) => {
-    return new Worker(g.MonacoEnvironment.getWorkerUrl(moduleUrl, label), {
-      name: label,
-      type: 'module',
-    })
-  }
-  switch (label) {
-    case 'json':
-      return getWorkerModule('/monaco-editor/esm/vs/language/json/json.worker?worker')
-    case 'css':
-    case 'scss':
-    case 'less':
-      return getWorkerModule('/monaco-editor/esm/vs/language/css/css.worker?worker')
-    case 'html':
-      return getWorkerModule('/monaco-editor/esm/vs/language/html/html.worker?worker')
-    case 'typescript':
-    case 'javascript':
-      return getWorkerModule('/monaco-editor/esm/vs/language/typescript/ts.worker?worker')
-    case 'markdown':
-      // Monaco ships markdown under the html worker; reuse it.
-      return getWorkerModule('/monaco-editor/esm/vs/language/html/html.worker?worker')
-    default:
-      // Any other language (yaml, python, shell, zig, …) falls back
-      // to the base editor worker — no syntax highlighting but no
-      // extra 1–2 MB bundle download either.
-      return getWorkerModule('/monaco-editor/esm/vs/editor/editor.worker?worker')
-  }
-}
+/**
+ * Read-only code viewer for `?view=code-editor`.
+ *
+ * Rendering follows the git-diff-review pattern (`SidebarDiffView.vue` /
+ * `GitFileViewer.vue` / `tool_outputs/_shared/DiffView.vue`): one table row
+ * per line, a sticky line-number gutter, soft-wrap always on, and the
+ * repo's zero-dependency tokenizer (`helpers/codeHighlight`) painting
+ * `tok-*` spans with the same palette as the diff cards.
+ *
+ * Why not Monaco (bug: task_1790594549955_1 — "when i click code editor
+ * there is no code"): the previous version lazy-loaded monaco through a
+ * dynamic import marked with the `@vite-ignore` comment. That marker
+ * makes Vite keep the BARE specifier in the emitted bundle
+ * (``import(`monaco-editor`)``), which no browser can resolve, so
+ * `onMounted` rejected with `Failed to resolve module specifier
+ * "monaco-editor"` and the body rendered empty while the header still
+ * painted. The jsdom specs could not see it (vitest aliases
+ * `monaco-editor` to a stub and ignores unhandled errors) and the Vite
+ * dev server resolves bare specifiers itself — only the built bundle
+ * failed. Rendering with the shared tokenizer removes the runtime module
+ * resolution entirely, so there is nothing left to resolve at runtime,
+ * and the viewer matches the diff review the user already reads.
+ *
+ * The component is presentational: `AppLayout` owns the open-file session
+ * (file / content / loading / error) and passes the text down.
+ */
 
 const props = defineProps<{
   filePath: string
   fileName: string
+  /** Whole-file text, already fetched by the session composable. */
   content?: string
+  /** Explicit language override; defaults to the file extension. */
   language?: string
-  readonly?: boolean
   cwd?: string
   /**
-   * Optional 1-based line number to scroll to once the editor mounts.
-   * When undefined, the editor opens at the top.
-   * Set from `OpenInCodeEditorOptions.line` so clicking a diff line number
-   * opens the file already scrolled to that line.
+   * Optional 1-based line to jump to once the viewer mounts (threaded
+   * from the diff review's "open at this line" / `?line=` deep link).
+   * The target row is marked and scrolled to the middle of the viewport.
    */
   line?: number
 }>()
 
 const emit = defineEmits<{
   close: []
-  save: [content: string]
-  'content-change': [content: string]
 }>()
 
-const editorContainer = ref<HTMLDivElement | null>(null)
-const editor = shallowRef<EditorInstance | null>(null)
-// Holds the loaded monaco namespace so the post-mount watchers and
-// the read-only toggle button can call into it without re-importing
-// or holding a static reference. `null` until onMounted resolves the
-// dynamic import.
-const monacoNs = shallowRef<MonacoNs | null>(null)
-const isModified = ref(false)
-const originalContent = ref(props.content || '')
+const bodyEl = ref<HTMLElement | null>(null)
+
+const detectedLanguage = computed(() => props.language || detectLanguage(props.fileName))
+
+const hasContent = computed(() => (props.content ?? '').length > 0)
+
+// A file that ends in a newline would otherwise render a phantom last
+// row (editors number real lines only).
+const lines = computed<string[]>(() => {
+  const raw = (props.content ?? '').split('\n')
+  if (raw.length > 1 && raw[raw.length - 1] === '') raw.pop()
+  return raw
+})
+
+const lineCount = computed(() => lines.value.length)
+
+const targetLine = computed(() =>
+  typeof props.line === 'number' && props.line > 0 ? props.line : null,
+)
+
+const isTarget = (lineNumber: number) => targetLine.value === lineNumber
+
+/** Split one line into colored token spans (plaintext ⇒ one plain span). */
+const tokensFor = (line: string) => highlightLine(line, detectedLanguage.value)
+
+/**
+ * Bring the requested line into view. Best-effort: jsdom has no
+ * `scrollIntoView`, and a `?line=` beyond EOF is simply ignored.
+ */
+async function scrollToTarget(): Promise<void> {
+  const line = targetLine.value
+  if (line === null) return
+  await nextTick()
+  const row = bodyEl.value?.querySelector<HTMLElement>(`[data-line="${line}"]`)
+  if (row && typeof row.scrollIntoView === 'function') {
+    row.scrollIntoView({ block: 'center' })
+  }
+}
+
+onMounted(() => {
+  void scrollToTarget()
+})
+
+watch(
+  () => [props.line, props.content],
+  () => void scrollToTarget(),
+)
 
 // Footer shows the full path. filePath from the sidebar explorer is
 // already absolute (backend listDirectory joins dir_path + name), so
@@ -141,8 +105,7 @@ const originalContent = ref(props.content || '')
 // displayPathFor helper joins only relative paths.
 const displayPath = computed(() => displayPathFor(props.cwd, props.filePath))
 
-// detectLanguage lives in @/helpers/codeHighlight (shared with DiffView).
-// Get file icon for display
+// File icon for display
 const getFileIcon = (fileName: string): string => {
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const iconMap: Record<string, string> = {
@@ -173,184 +136,30 @@ const getFileIcon = (fileName: string): string => {
   return iconMap[ext] || '📄'
 }
 
-const detectedLanguage = ref(props.language || detectLanguage(props.fileName))
-
-onMounted(async () => {
-  if (!editorContainer.value) return
-
-  // LAZY LOAD — see the long comment block at the top of this file.
-  // Until this line runs, no monaco-editor code has been downloaded.
-  // WebKitGTK's disk cache stays empty of the 96 MB of language
-  // worker bundles, so subsequent app starts don't re-parse them.
-  //
-  // `/* @vite-ignore */` tells Vite's optimizer not to analyse this
-  // dynamic import. Without it, Vite sees the named-export usage
-  // (`monaco.editor.create`, `monaco.editor.defineTheme`, etc.) and
-  // hoists the resolved module into the entry chunk's static import
-  // graph — exactly what we DON'T want. With the comment, the chunk
-  // stays separate and is only fetched when the user actually opens
-  // a file in the editor.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const monaco = (await import(/* @vite-ignore */ 'monaco-editor')) as any
-  monacoNs.value = monaco
-
-  // Configure editor theme to match Kanagawa Dragon theme
-  monaco.editor.defineTheme('nalar-dark', {
-    base: 'vs-dark',
-    inherit: true,
-    rules: [
-      { token: 'comment', foreground: '7a8382', fontStyle: 'italic' },
-      { token: 'keyword', foreground: '8992a7' },
-      { token: 'string', foreground: '87a987' },
-      { token: 'number', foreground: 'c4b28a' },
-      { token: 'type', foreground: '8ba4b0' },
-      { token: 'function', foreground: '8ea4a2' },
-      { token: 'variable', foreground: 'c5c9c5' },
-    ],
-    colors: {
-      'editor.background': '#181616',
-      'editor.foreground': '#c5c9c5',
-      'editor.lineHighlightBackground': '#1D1C19',
-      'editorCursor.foreground': '#8ea4a2',
-      'editor.selectionBackground': '#282727',
-      'editorLineNumber.foreground': '#7a8382',
-      'editorLineNumber.activeForeground': '#8992a7',
-      'editor.inactiveSelectionBackground': '#282727',
-      'editorIndentGuide.background': '#282727',
-      'editorIndentGuide.activeBackground': '#393836',
-      'editor.wordHighlightBackground': '#282727',
-      'editor.wordHighlightStrongBackground': '#12120f',
-      'editorBracketMatch.background': '#282727',
-      'editorBracketMatch.border': '#8992a7',
-      'scrollbar.shadow': '#12120f',
-      'scrollbarSlider.background': '#28272780',
-      'scrollbarSlider.hoverBackground': '#39383680',
-      'scrollbarSlider.activeBackground': '#8992a780',
-      'minimap.background': '#181616',
-    },
-  })
-
-  const editorInstance = monaco.editor.create(editorContainer.value, {
-    value: props.content || '',
-    language: detectedLanguage.value,
-    theme: 'nalar-dark',
-    readOnly: props.readonly || false,
-    automaticLayout: true,
-    minimap: { enabled: true },
-    fontSize: 13,
-    fontFamily: "'Fira Code', 'Consolas', 'Monaco', monospace",
-    fontLigatures: true,
-    lineNumbers: 'on',
-    renderLineHighlight: 'all',
-    scrollBeyondLastLine: false,
-    wordWrap: 'on',
-    tabSize: 2,
-    insertSpaces: true,
-    cursorBlinking: 'smooth',
-    cursorSmoothCaretAnimation: 'on',
-    smoothScrolling: true,
-    padding: { top: 8, bottom: 8 },
-  })
-
-  editor.value = editorInstance
-
-  // If the caller passed a line number, scroll to it (centered) once the
-  // editor is laid out. Monaco's `revealLineInCenter` handles both the
-  // scroll position and a brief selection highlight so the user sees
-  // exactly which line they jumped to from the diff.
-  if (typeof props.line === 'number' && props.line > 0) {
-    // Wait one tick so automaticLayout has produced real line heights.
-    setTimeout(() => {
-      editorInstance.revealLineInCenter(props.line!)
-      editorInstance.setSelection({
-        startLineNumber: props.line!,
-        startColumn: 1,
-        endLineNumber: props.line!,
-        endColumn: 1,
-      })
-      editorInstance.focus()
-    }, 0)
-  }
-
-  // Listen for content changes
-  editorInstance.onDidChangeModelContent(() => {
-    const newContent = editorInstance.getValue()
-    isModified.value = newContent !== originalContent.value
-    emit('content-change', newContent)
-  })
-
-  // Add keyboard shortcut for save
-  editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-    if (!props.readonly && isModified.value) {
-      handleSave()
-    }
-  })
-})
-
-onUnmounted(() => {
-  editor.value?.dispose()
-})
-
-// Watch for external content changes
-watch(
-  () => props.content,
-  (newContent) => {
-    if (editor.value && newContent !== editor.value.getValue()) {
-      editor.value.setValue(newContent || '')
-      originalContent.value = newContent || ''
-      isModified.value = false
-    }
-  },
-)
-
-// Watch for language changes
-watch(
-  () => props.language,
-  (newLanguage) => {
-    if (editor.value && newLanguage && monacoNs.value) {
-      const model = editor.value.getModel()
-      if (model) {
-        monacoNs.value.editor.setModelLanguage(model, newLanguage)
-        detectedLanguage.value = newLanguage
-      }
-    }
-  },
-)
-
 const handleClose = () => {
   emit('close')
-}
-
-const handleSave = () => {
-  if (editor.value) {
-    const content = editor.value.getValue()
-    emit('save', content)
-    originalContent.value = content
-    isModified.value = false
-  }
-}
-
-const handleReadOnlyToggle = () => {
-  if (editor.value && monacoNs.value) {
-    const options = editor.value.getOptions()
-    const newReadonly = !options.get(monacoNs.value.editor.EditorOption.readOnly)
-    editor.value.updateOptions({ readOnly: newReadonly })
-  }
 }
 </script>
 
 <template>
-  <div class="code-editor-container flex flex-col h-full overflow-hidden">
+  <div
+    class="code-editor flex flex-col h-full min-h-0 overflow-hidden"
+    data-testid="code-editor"
+    style="background-color: var(--semantic-content-bg)"
+  >
     <!-- Header -->
     <div
       class="h-12 flex items-center justify-between px-4 shrink-0"
       style="background-color: var(--color-bg-m2); border-bottom: 1px solid var(--color-border)"
     >
-      <div class="flex items-center gap-3">
+      <div class="flex items-center gap-3 min-w-0">
         <button
+          type="button"
           @click="handleClose"
-          class="p-2 rounded-lg hover:opacity-70 transition-opacity"
+          class="p-2 rounded-lg hover:opacity-70 transition-opacity shrink-0"
           title="Close"
+          aria-label="Close"
+          data-testid="code-editor-close"
         >
           <svg
             class="w-4 h-4"
@@ -367,93 +176,91 @@ const handleReadOnlyToggle = () => {
             />
           </svg>
         </button>
-        <span class="text-lg">{{ getFileIcon(fileName) }}</span>
-        <div class="flex items-center gap-2">
-          <span class="text-sm font-medium" style="color: var(--semantic-text)">
+        <span class="text-lg shrink-0">{{ getFileIcon(fileName) }}</span>
+        <div class="flex items-center gap-2 min-w-0">
+          <span
+            class="text-sm font-medium truncate"
+            style="color: var(--semantic-text)"
+            :title="filePath"
+          >
             {{ fileName }}
           </span>
           <span
-            v-if="isModified"
-            class="w-2 h-2 rounded-full"
-            style="background-color: var(--color-orange)"
-            title="Unsaved changes"
-          />
-          <span
-            v-if="props.readonly"
-            class="text-xs px-2 py-0.5 rounded"
+            class="text-xs px-2 py-0.5 rounded shrink-0"
             style="background-color: var(--semantic-active-bg); color: var(--semantic-text-dim)"
+            data-testid="code-editor-line-count"
           >
-            READONLY
+            {{ lineCount }} {{ lineCount === 1 ? 'line' : 'lines' }}
           </span>
         </div>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 shrink-0">
         <!-- Language indicator -->
         <span
           class="text-xs px-2 py-1 rounded"
           style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
+          data-testid="code-editor-language"
         >
           {{ detectedLanguage }}
-        </span>
-
-        <!-- Readonly toggle -->
-        <button
-          v-if="!isModified"
-          @click="handleReadOnlyToggle"
-          class="p-2 rounded-lg hover:opacity-70 transition-opacity"
-          :title="props.readonly ? 'Enable editing' : 'Make readonly'"
-        >
-          <svg
-            class="w-4 h-4"
-            style="color: var(--semantic-text-dim)"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-            />
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
-            />
-          </svg>
-        </button>
-
-        <!-- Save button -->
-        <button
-          v-if="isModified && !props.readonly"
-          @click="handleSave"
-          class="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90"
-          style="background-color: var(--color-green); color: var(--color-bg)"
-          title="Save (Ctrl+S)"
-        >
-          Save
-        </button>
-
-        <!-- Unsaved indicator -->
-        <span
-          v-if="isModified && !props.readonly"
-          class="text-xs"
-          style="color: var(--color-orange)"
-        >
-          Unsaved
         </span>
       </div>
     </div>
 
-    <!-- Editor container -->
-    <div ref="editorContainer" class="flex-1 overflow-hidden" />
+    <!-- Lines: sticky number gutter on the left, token-colored content
+         on the right. Soft-wrap is always on (same decision as the diff
+         views), so a long line never pushes a horizontal scrollbar. -->
+    <div
+      ref="bodyEl"
+      class="flex-1 min-h-0 overflow-auto code-body"
+      data-testid="code-editor-body"
+      :style="{
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      }"
+    >
+      <div
+        v-if="!hasContent"
+        class="flex flex-col items-center justify-center h-full italic text-xs"
+        style="color: var(--semantic-text-dim)"
+        data-testid="code-editor-empty"
+      >
+        This file is empty
+      </div>
+
+      <table v-else class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
+        <tbody>
+          <tr
+            v-for="(line, idx) in lines"
+            :key="idx"
+            class="code-row"
+            :class="{ 'code-row-target': isTarget(idx + 1) }"
+            data-testid="code-line"
+            :data-line="idx + 1"
+            :data-target="isTarget(idx + 1) ? 'true' : 'false'"
+          >
+            <td
+              class="code-gutter px-2 text-right select-none align-top"
+              style="color: var(--semantic-text-dim); user-select: none"
+              data-testid="code-line-number"
+            >
+              {{ idx + 1 }}
+            </td>
+            <td class="code-content px-2 align-top" style="color: var(--semantic-text)">
+              <span
+                v-for="(token, tokenIdx) in tokensFor(line)"
+                :key="tokenIdx"
+                :class="`tok-${token.type}`"
+                >{{ token.text || '\u00a0' }}</span
+              >
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
 
     <!-- Footer with file path -->
     <div
-      v-if="props.cwd || filePath"
+      v-if="cwd || filePath"
       class="h-6 flex items-center px-3 shrink-0 text-xs truncate"
       style="
         background-color: var(--color-bg-m2);
@@ -468,19 +275,85 @@ const handleReadOnlyToggle = () => {
 </template>
 
 <style scoped>
-.code-editor-container {
+.code-editor {
   background-color: var(--semantic-content-bg);
 }
 
-.code-editor-container :deep(.monaco-editor) {
-  padding-top: 8px;
+/* Soft-wrap is always on: long lines are the common case (minified
+   blobs, wide tables) and were the reason the diff views dropped their
+   Wrap toggle. `break-word` keeps the gutter aligned with its row. */
+.code-body table {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.code-editor-container :deep(.monaco-editor .margin) {
+.code-gutter {
+  width: 3.5rem;
+  position: sticky;
+  left: 0;
   background-color: var(--semantic-content-bg);
+  border-right: 1px solid var(--color-border);
+  z-index: 1;
 }
 
-.code-editor-container :deep(.minimap) {
-  background-color: var(--semantic-sidebar-bg) !important;
+.code-row:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+/* The row reached from the diff review's "open at this line" / ?line=N. */
+.code-row-target {
+  background-color: rgba(139, 164, 176, 0.14);
+}
+
+.code-row-target .code-gutter {
+  background-color: rgba(139, 164, 176, 0.14);
+  border-right-color: var(--color-blue);
+  color: var(--semantic-text);
+}
+
+/* Scrollbar styling — same as the diff viewers. */
+.code-body::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.code-body::-webkit-scrollbar-track {
+  background: var(--color-bg-m2);
+}
+
+.code-body::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 5px;
+}
+
+.code-body::-webkit-scrollbar-thumb:hover {
+  background: var(--color-gray-3);
+}
+
+/* Code token colors — the shared palette from the diff review
+   (`tool_outputs/_shared/DiffView.vue`, `SidebarDiffView.vue`). Scoped
+   here so the viewer matches the diff cards exactly. */
+.tok-plain {
+  color: inherit;
+}
+.tok-keyword {
+  color: #8992a7;
+  font-weight: 600;
+}
+.tok-string {
+  color: #87a987;
+}
+.tok-comment {
+  color: #7a8382;
+  font-style: italic;
+}
+.tok-number {
+  color: #c4b28a;
+}
+.tok-function {
+  color: #8ea4a2;
+}
+.tok-type {
+  color: #8ba4b0;
 }
 </style>

@@ -23,6 +23,7 @@ import { mount } from '@vue/test-utils'
 
 import * as api from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
+import { useNavigationStore } from '../stores/navigation'
 import type { Workspace, WorkspaceItem, KanbanColumn } from '../stores/workspaces'
 import AppLayout from '../components/AppLayout.vue'
 import { makeLocalStorageStub } from './helpers'
@@ -136,7 +137,7 @@ function mountAppLayout(
         Chats: true,
         SettingsView: true,
         ChatView: true,
-        CodeEditor: true,
+        CodeViewerStage: true,
         KanbanView: {
           template: '<div data-kanban-view="stub" :data-item-id="item.id" />',
           props: ['item', 'workspaceId', 'itemId'],
@@ -1206,6 +1207,84 @@ describe('AppLayout — readable code-editor URLs (keep-append)', () => {
     await vi.waitFor(() => {
       expect(readMock).toHaveBeenCalledWith('/tmp/kb', 'late.txt')
     })
+    wrapper.unmount()
+  })
+})
+
+describe('AppLayout — code viewer surface (the right sidebar must survive)', () => {
+  // Regression: opening a file from the right-sidebar Explorer replaced
+  // the WHOLE <main> with the viewer overlay, so ChatView — which owns
+  // that sidebar, the header and the composer — was never mounted and
+  // the sidebar (plus its composer underneath) vanished.
+  // The viewer now renders inside ChatView; the overlay is a fallback
+  // for contexts with no chat on screen.
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    installBusForTests()
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: makeLocalStorageStub(),
+      writable: true,
+      configurable: true,
+    })
+    vi.spyOn(api, 'getWorkspaces').mockResolvedValue({ workspaces: [] })
+    vi.spyOn(api, 'getWorkspacesItems').mockResolvedValue({ items: [], count: 0 })
+    vi.spyOn(api, 'getTasks').mockResolvedValue({ tasks: [], has_more: false, next_cursor: null })
+    vi.spyOn(api, 'getSystemFolder').mockResolvedValue({
+      entries: [],
+      path: '/',
+      absolute: '/',
+      home: '/',
+    })
+    vi.spyOn(api, 'listKanbanColumns').mockResolvedValue({ columns: [], count: 0 })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('keeps the chat (and its sidebar) as the main surface when a file is open', async () => {
+    const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouteMock.mockReturnValue({ query: {}, path: '/app', fullPath: '/app' } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '/w' } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'readFileContent').mockResolvedValue({ content: 'hello' } as any)
+
+    const wrapper = mountAppLayout([], {}, '/app')
+    const nav = useNavigationStore()
+    nav.setActiveChat('sess_sidebar', 'Sidebar chat')
+    await nextTick()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper.vm as any).openInCodeEditor({ filePath: 'notes.txt', cwd: '/w' })
+    await nextTick()
+
+    // The full-surface overlay must NOT be mounted: ChatView renders the
+    // file itself, so the right sidebar stays exactly where it was.
+    expect(wrapper.find('[data-testid="code-viewer-overlay"]').exists()).toBe(false)
+    expect(wrapper.find('chat-view-stub').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('still overlays the whole surface when no chat is on screen', async () => {
+    const replaceMock = vi.fn()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouterMock.mockReturnValue({ replace: replaceMock, push: vi.fn() } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    useRouteMock.mockReturnValue({ query: {}, path: '/app', fullPath: '/app' } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'getSession').mockResolvedValue({ cwd: '/w' } as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(api, 'readFileContent').mockResolvedValue({ content: 'hello' } as any)
+
+    const wrapper = mountAppLayout([], {}, '/app')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (wrapper.vm as any).openInCodeEditor({ filePath: 'notes.txt', cwd: '/w' })
+    await nextTick()
+
+    expect(wrapper.find('[data-testid="code-viewer-overlay"]').exists()).toBe(true)
     wrapper.unmount()
   })
 })

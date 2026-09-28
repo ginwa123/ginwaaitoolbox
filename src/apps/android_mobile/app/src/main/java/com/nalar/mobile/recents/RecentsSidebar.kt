@@ -230,6 +230,17 @@ fun RecentsSidebar(
      */
     recentsExpanded: Boolean = true,
     onToggleRecents: () -> Unit = {},
+    /**
+     * The top-level "New Chat" row: create a chat in the workspace's default
+     * project and open it.
+     *
+     * State and action rather than a holder because neither half means anything
+     * without the other, and both are forwarded verbatim from
+     * [com.nalar.mobile.shell.RecentsDrawerContent] — the graph's drawer and
+     * the shell's drawer are the same drawer.
+     */
+    isCreatingChat: Boolean = false,
+    onNewChat: () -> Unit = {},
 ) {
     Column(
         modifier = modifier
@@ -260,6 +271,8 @@ fun RecentsSidebar(
             projectActions = projectActions,
             recentsExpanded = recentsExpanded,
             onToggleRecents = onToggleRecents,
+            isCreatingChat = isCreatingChat,
+            onNewChat = onNewChat,
         )
 
         // Deliberately outside the body. The "no workspaces" story is an early
@@ -315,6 +328,13 @@ private fun SidebarBody(
     projectActions: ProjectsActions,
     recentsExpanded: Boolean,
     onToggleRecents: () -> Unit,
+    /**
+     * The top-level "New Chat" row's busy flag and its tap. No defaults, like
+     * the two above: this is a private composable with exactly one caller, and
+     * a default here would only let that caller forget to wire the action.
+     */
+    isCreatingChat: Boolean,
+    onNewChat: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
@@ -353,6 +373,21 @@ private fun SidebarBody(
             selectedWorkspaceId = selectedWorkspaceId,
             onWorkspaceSelected = onWorkspaceSelected,
         )
+
+        // Top-level "New Chat", above the scroller. Deliberately NOT an item in
+        // the LazyColumn below: chatRegionEndIndex is index arithmetic that
+        // assumes a fixed number of rows above the chats inside that list, and
+        // a row in here would shift every chat index — arming the full-page
+        // fetch early, with no error and no layout test that can see it.
+        //
+        // Placed BEFORE the conditional stale-data notice (not after) so it does
+        // not move down when a refresh fails.
+        if (selectedWorkspaceId != null) {
+            NewChatRow(
+                isBusy = isCreatingChat,
+                onClick = onNewChat,
+            )
+        }
 
         // Rows survived a failed refresh. Say so — a stale list that looks live
         // is its own kind of lie.

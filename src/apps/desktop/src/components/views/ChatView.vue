@@ -35,6 +35,13 @@ import {
 import FileInput from '../file/FileInput.vue'
 import { installSseBus, useSseBus } from '../../helpers/sseBus'
 import { readGitStatusCache } from '../../helpers/gitStatusCache'
+import { Effect } from 'effect'
+import { runEffectExit } from '../../helpers/effectRuntime'
+import {
+  fetchInitialHistoryWithRetry,
+  INITIAL_HISTORY_TIMEOUT_MS,
+} from '../../helpers/chatHistoryRetry'
+import { ChatHistoryError } from '../../api'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {
   isBackgroundCommandOutput,
@@ -85,6 +92,7 @@ import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
+import ChatAppBar from './ChatAppBar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
 import { copyTextToClipboard } from './chat_right_sidebar/DiffCommentBox.vue'
 import {
@@ -97,7 +105,9 @@ import { useChatRightSidebar } from './chat_right_sidebar/useChatRightSidebar'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
 import type { AgentErrorEntry } from '../../stores/agentError'
-import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
+import { useInjectCodeViewer, useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
+import type { CodeViewerView } from '@/composables/useCodeEditor'
+import CodeViewerStage from './CodeViewerStage.vue'
 import { useRouter, useRoute } from 'vue-router'
 import CompactionCard from '../preview/CompactionCard.vue'
 // 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
@@ -121,14 +131,13 @@ const props = defineProps<{
   type?: 'chat' | 'task'
   cwd?: string
   /**
-   * When true, render the compact header bar (chat name + ✕ close
-   * button) above the messages. The host (AppLayout) sets this to
-   * true in the 3-column layout (sidebar | kanban | chatview) so
-   * the user can identify + close the chat without leaving the
-   * kanban. In the full-width standalone chat layout (the
-   * `/app?view=chat` route) the prop is left false, preserving the
-   * original "no header" experience where the chat fills the
-   * viewport edge-to-edge.
+   * When true, render the shared chat app bar (ChatAppBar.vue —
+   * chat name + `◫` sidebar toggle + `✕` close) above the
+   * messages. Every task-chat host sets this so all three
+   * workspace-item modes (kanban / agent / standard folder-chat)
+   * get the identical bar; the standalone `chat-<id>` branch
+   * leaves it false so a bare chat still fills the viewport
+   * edge-to-edge.
    *
    * Defaults to `false` so older call sites that don't supply it
    * still compile — see the nalar-frontend-task-literal-typing-rule
@@ -613,6 +622,36 @@ const centerDiffScrollRef = ref<HTMLElement | null>(null)
 
 const showCenterDiff = computed(() => centerDiff.value !== null)
 
+/**
+ * The code viewer's open file, shared by `AppLayout` (which owns the
+ * session). Non-null ⇒ this chat renders the file in its center column,
+ * exactly where the stacked center diff goes, so the chat-owned right
+ * sidebar — the Explorer the user just clicked a file in — stays on
+ * screen. `null` outside an AppLayout subtree (unit tests), which is the
+ * pre-existing "no file open" state.
+ *
+ * The viewer wins over the diff stage: the diff's ⤴ button opens the
+ * file, so both can be true for one click.
+ */
+const codeViewer = useInjectCodeViewer()
+/**
+ * Plain (never-null) view model for the template: the injected session
+ * unwrapped, or an empty model when there is no provider (unit tests) /
+ * no open file. One object, so the template needs no null-narrowing.
+ */
+const codeViewerModel = computed<CodeViewerView>(() => ({
+  file: codeViewer?.file.value ?? null,
+  content: codeViewer?.content.value ?? '',
+  loading: codeViewer?.loading.value ?? false,
+  error: codeViewer?.error.value ?? null,
+  line: codeViewer?.requestedLine.value ?? null,
+  cwd: codeViewer?.cwd.value ?? '',
+  close: () => codeViewer?.close(),
+}))
+const showCodeViewer = computed(() => codeViewerModel.value.file !== null)
+/** Messages + composer are hidden while either center stage is up. */
+const showCenterStage = computed(() => showCenterDiff.value || showCodeViewer.value)
+
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
   currentPath.value = path
@@ -1092,6 +1131,18 @@ const isInitializing = computed(
 )
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
+// "The server has answered, and the answer was: zero messages."
+//
+// The empty state must be gated on this, not on `messageGroups.length === 0`
+// alone. Before it existed, ANY state that wasn't actively loading — a failed
+// fetch, a mid-retry window, a not-yet-assigned session — rendered
+// "How can I help you?" for sessions with hundreds of messages. The
+// distinction that matters to the reader is "empty" vs "not known yet", and
+// only a completed load can tell us which one we are looking at.
+//
+// Reset to false at the start of every load and set true only when an attempt
+// completes without throwing.
+const historyConfirmed = ref(false)
 
 // File previews render inline inside the chat bubble
 // (see PresentFiles.vue + PreviewContentRenderer.vue). There is no
@@ -2656,21 +2707,18 @@ const applyDeltaExtra = (extra: {
 }
 
 /**
- * Initial load / refresh (the old `loadChatHistory(false)`).
+ * One attempt at the initial load: cache-first paint, then the network page.
  *
- * The `loadMore` branch that used to live here moved to `maybeLoadOlder` /
- * `commitOlderPage`; this function no longer has a `loadMore` parameter, so the
- * two scroll-back call sites can no longer accidentally take the slow path.
+ * Split out of `loadChatHistory` so the retry loop can re-run the WHOLE
+ * attempt (cache-prime included) after a failed network fetch. It fails —
+ * the caller's error channel is the only place that decides what a failed
+ * transcript means, and it must never be "this session is empty".
+ *
+ * The body is still promise-shaped (it awaits IndexedDB reads and the
+ * network page); `runHistoryLoadAttemptEffect` is the one place that bridges
+ * it onto the Effect seam.
  */
-const loadChatHistory = async () => {
-  if (!sessionId.value || isPendingSession.value) return
-
-  isLoading.value = true
-  messageCursor.value = null
-  // Invalidate anything armed for the previous view of this session.
-  resetOlderPrefetch('refresh')
-  error.value = null
-
+const runHistoryLoadAttempt = async () => {
   // Cached mount: paint stored full-fidelity raws instantly (same mapper as
   // the network path, so no shape drift), restore the cursor from sync_state,
   // then refresh just the tail with cursor+asc. Miss/IDB failure falls
@@ -2702,6 +2750,9 @@ const loadChatHistory = async () => {
       } finally {
         isInitialLoad = false
       }
+      // The cache painted rows, so the empty state is already ruled out — but
+      // the tail delta below has not answered yet, so `historyConfirmed`
+      // waits for it. A cached mount is still a "not known yet" state.
       isLoading.value = false
       await nextTick()
       scrollToBottom(true, 'cached-mount')
@@ -2726,6 +2777,10 @@ const loadChatHistory = async () => {
       } catch {
         // Painted cache stands; the next mount retries the tail.
       }
+      // Painted rows exist either way, so "this session is empty" is now
+      // ruled out — the empty state may be shown again if the session is
+      // later reloaded.
+      historyConfirmed.value = true
       setupCodeBlockCopyButtons()
       void rehydrateSubAgentProgress()
       return
@@ -2734,142 +2789,150 @@ const loadChatHistory = async () => {
     // Ignore — network path below is authoritative.
   }
 
+  // `fetchChatHistoryEffect`, not `getChatHistory`: the latter answers a
+  // failed fetch with an empty transcript, which is exactly the "this session
+  // has no messages" lie the empty state would then render. Here the failure
+  // is a `ChatHistoryError` on the error channel; `runPromise` re-raises it
+  // and `runHistoryLoadAttemptEffect` re-types it for the retry loop.
+  const data = await Effect.runPromise(
+    api.fetchChatHistoryEffect(
+      sessionId.value,
+      PAGE_SIZE,
+      undefined,
+      'desc',
+      INITIAL_HISTORY_TIMEOUT_MS,
+    ),
+  )
+
+  if (data.cwd) {
+    sessionCwd.value = data.cwd
+  }
+
+  if (data.git_worktree_cwd !== undefined) {
+    gitWorktreeCwd.value = data.git_worktree_cwd
+  }
+
+  // Attached-PR binding for the sidebar's PR-changes mode. Loaded
+  // here (mount) and re-synced by refreshWorktreeBinding() so a
+  // mid-chat attach/clear flips the panel without a reload.
+  if (data.pr_url !== undefined) {
+    chatPrUrl.value = data.pr_url ?? ''
+  }
+  if (data.pr_provider !== undefined) {
+    chatPrProvider.value = data.pr_provider ?? ''
+  }
+
+  // 2026-08-07-profile-persist-read — load the persisted profile
+  // selection from the messages endpoint response. The watch on
+  // sessionId.value (below) ALSO reads it from getSession() (which
+  // calls the same endpoint), but the watch is `immediate: false`
+  // and races with loadChatHistory on initial mount. Reading it here
+  // is the authoritative source: whichever finishes first, the value
+  // is the same. The watch's later update will agree and not clobber.
+  if (data.selected_profile_model !== undefined) {
+    selectedProfile.value = data.selected_profile_model || null
+  }
+
+  if (data.max_total_tokens !== undefined) {
+    maxTotalTokens.value = data.max_total_tokens
+  }
+  if (data.max_capacity_total_tokens !== undefined) {
+    maxCapacityTotalTokens.value = data.max_capacity_total_tokens
+  }
+  sessionSkills.value = data.skills || []
+
+  const newMessages = toChatMessages(data.messages)
+
+  // Initial load path. Set isInitialLoad BEFORE the messages
+  // assignment so the messages-length watcher's sync callback
+  // sees the flag and skips its own scrollToBottom (which would
+  // yank the user back to the bottom right after we restore a
+  // saved position).
+  isInitialLoad = true
   try {
-    const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, undefined)
-
-    if (data.cwd) {
-      sessionCwd.value = data.cwd
-    }
-
-    if (data.git_worktree_cwd !== undefined) {
-      gitWorktreeCwd.value = data.git_worktree_cwd
-    }
-
-    // Attached-PR binding for the sidebar's PR-changes mode. Loaded
-    // here (mount) and re-synced by refreshWorktreeBinding() so a
-    // mid-chat attach/clear flips the panel without a reload.
-    if (data.pr_url !== undefined) {
-      chatPrUrl.value = data.pr_url ?? ''
-    }
-    if (data.pr_provider !== undefined) {
-      chatPrProvider.value = data.pr_provider ?? ''
-    }
-
-    // 2026-08-07-profile-persist-read — load the persisted profile
-    // selection from the messages endpoint response. The watch on
-    // sessionId.value (below) ALSO reads it from getSession() (which
-    // calls the same endpoint), but the watch is `immediate: false`
-    // and races with loadChatHistory on initial mount. Reading it here
-    // is the authoritative source: whichever finishes first, the value
-    // is the same. The watch's later update will agree and not clobber.
-    if (data.selected_profile_model !== undefined) {
-      selectedProfile.value = data.selected_profile_model || null
-    }
-
-    if (data.max_total_tokens !== undefined) {
-      maxTotalTokens.value = data.max_total_tokens
-    }
-    if (data.max_capacity_total_tokens !== undefined) {
-      maxCapacityTotalTokens.value = data.max_capacity_total_tokens
-    }
-    sessionSkills.value = data.skills || []
-
-    const newMessages = toChatMessages(data.messages)
-
-    // Initial load path. Set isInitialLoad BEFORE the messages
-    // assignment so the messages-length watcher's sync callback
-    // sees the flag and skips its own scrollToBottom (which would
-    // yank the user back to the bottom right after we restore a
-    // saved position).
-    isInitialLoad = true
+    const liveMessagesAtCommit = currentLiveMessages()
+    messages.value = mergeMessagesById(newMessages.slice().reverse(), liveMessagesAtCommit)
+    messageCursor.value = data.next_cursor
+    hasMoreMessages.value = data.has_more
+    // Write-through: persist full server rows so the next mount paints
+    // from cache. Best-effort — IDB failure keeps in-memory behavior.
     try {
-      const liveMessagesAtCommit = currentLiveMessages()
-      messages.value = mergeMessagesById(newMessages.slice().reverse(), liveMessagesAtCommit)
-      messageCursor.value = data.next_cursor
-      hasMoreMessages.value = data.has_more
-      // Write-through: persist full server rows so the next mount paints
-      // from cache. Best-effort — IDB failure keeps in-memory behavior.
-      try {
-        const sid = sessionId.value
-        const allRows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
-        const rows = allRows.filter((row) => !liveMessageIds.has(row.id))
-        await runSyncVoid(chatEngineDb.putLocal(sid, rows), 'messages.putLocal')
-        // Sync cursor must be the newest row, not the pagination cursor:
-        // the backend omits next_cursor when has_more is false (wiping the
-        // cursor to null), and on a full page it points at the oldest row
-        // (re-fetching the same page next mount). Either way the next mount
-        // degrades to a full desc limit=1000 load.
-        if (rows.length === allRows.length) {
-          await runSyncVoid(
-            chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null)),
-            'messages.setCursor',
-          )
-        }
-      } catch {
-        // Ignore — cache is advisory on write.
+      const sid = sessionId.value
+      const allRows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
+      const rows = allRows.filter((row) => !liveMessageIds.has(row.id))
+      await runSyncVoid(chatEngineDb.putLocal(sid, rows), 'messages.putLocal')
+      // Sync cursor must be the newest row, not the pagination cursor:
+      // the backend omits next_cursor when has_more is false (wiping the
+      // cursor to null), and on a full page it points at the oldest row
+      // (re-fetching the same page next mount). Either way the next mount
+      // degrades to a full desc limit=1000 load.
+      if (rows.length === allRows.length) {
+        await runSyncVoid(
+          chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null)),
+          'messages.setCursor',
+        )
       }
+    } catch {
+      // Ignore — cache is advisory on write.
+    }
 
-      const initialContainer = virtualScrollerRef.value?.containerRef
-      const initialCtx = buildScrollContext(initialContainer, {
-        chatId: sessionId.value || props.chatId,
-        messages: messages.value.length,
-        isAtBottom: isAtBottom.value,
-        virtualScrollerRef,
-        wrapperRef: messagesWrapperRef,
-      })
+    const initialContainer = virtualScrollerRef.value?.containerRef
+    const initialCtx = buildScrollContext(initialContainer, {
+      chatId: sessionId.value || props.chatId,
+      messages: messages.value.length,
+      isAtBottom: isAtBottom.value,
+      virtualScrollerRef,
+      wrapperRef: messagesWrapperRef,
+    })
+    scrollLogger.info({
+      ...initialCtx,
+      caller: 'loadChatHistory',
+      reason: 'scroll-to-bottom-forced',
+      extra: { trigger: 'initial-load' },
+    })
+    await nextTick()
+    // Wait one paint frame so the browser has actually laid out the
+    // VirtualScroller items (nextTick alone only waits for Vue's DOM
+    // update, not for layout/paint). After this, the MutationObserver
+    // set up in onMounted takes over: whenever spacers resize (from
+    // measurement updates) it'll re-stick to the bottom as long as the
+    // user hasn't scrolled up.
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+    // Try to restore the user's previous scroll position (set by
+    // useChatScrollRestore when they last closed this task). If
+    // no saved position exists OR the saved position is "near
+    // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
+    // returns null and we fall through to the existing
+    // scrollToBottom behavior. This is the chat-specific
+    // counterpart of the kanban composable's restore-on-mount
+    // path.
+    const savedScrollTop = chatScrollRestore.restore()
+    if (savedScrollTop !== null) {
+      scrollLogger.markProgrammatic()
+      virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
       scrollLogger.info({
         ...initialCtx,
         caller: 'loadChatHistory',
-        reason: 'scroll-to-bottom-forced',
-        extra: { trigger: 'initial-load' },
+        reason: 'scroll-position-restored',
+        extra: { savedScrollTop, trigger: 'initial-load' },
       })
-      await nextTick()
-      // Wait one paint frame so the browser has actually laid out the
-      // VirtualScroller items (nextTick alone only waits for Vue's DOM
-      // update, not for layout/paint). After this, the MutationObserver
-      // set up in onMounted takes over: whenever spacers resize (from
-      // measurement updates) it'll re-stick to the bottom as long as the
-      // user hasn't scrolled up.
-      await new Promise<void>((r) => requestAnimationFrame(() => r()))
-
-      // Try to restore the user's previous scroll position (set by
-      // useChatScrollRestore when they last closed this task). If
-      // no saved position exists OR the saved position is "near
-      // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
-      // returns null and we fall through to the existing
-      // scrollToBottom behavior. This is the chat-specific
-      // counterpart of the kanban composable's restore-on-mount
-      // path.
-      const savedScrollTop = chatScrollRestore.restore()
-      if (savedScrollTop !== null) {
-        scrollLogger.markProgrammatic()
-        virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
-        scrollLogger.info({
-          ...initialCtx,
-          caller: 'loadChatHistory',
-          reason: 'scroll-position-restored',
-          extra: { savedScrollTop, trigger: 'initial-load' },
-        })
-      } else {
-        scrollToBottom(true, 'initial-load')
-      }
-
-      setupCodeBlockCopyButtons()
-      // 2026-09-04 spawn-subagent-refresh-persist
-      // (task_1788505292766_1) — rehydrate live sub-agent rows after
-      // a (re)load. Fire-and-forget: the map update re-renders cards
-      // when snapshots land; failures keep Task 0's "starting…".
-      void rehydrateSubAgentProgress()
-    } finally {
-      isInitialLoad = false
+    } else {
+      scrollToBottom(true, 'initial-load')
     }
-  } catch (err) {
-    console.error('Failed to load chat history:', err)
-    error.value = 'Failed to load messages'
-    messages.value = []
+
+    setupCodeBlockCopyButtons()
+    // 2026-09-04 spawn-subagent-refresh-persist
+    // (task_1788505292766_1) — rehydrate live sub-agent rows after
+    // a (re)load. Fire-and-forget: the map update re-renders cards
+    // when snapshots land; failures keep Task 0's "starting…".
+    void rehydrateSubAgentProgress()
   } finally {
-    isLoading.value = false
+    isInitialLoad = false
   }
+  // The server answered. Whether the answer was "0 messages" or "500", the
+  // empty state is now allowed to consider rendering.
+  historyConfirmed.value = true
 
   // NOTE — deliberately NO prefetch evaluation here.
   //
@@ -2884,6 +2947,72 @@ const loadChatHistory = async () => {
   // The arm therefore waits for the first real user scroll event, which is also
   // when the prefetch is actually useful. A chat restored to a position near
   // the top arms on its first upward scroll — still ~1.5 viewports early.
+}
+
+/**
+ * The promise-shaped attempt above, as an `Effect`.
+ *
+ * `Effect.tryPromise` is the sanctioned bridge (see `sync/SessionEngineDb.ts`
+ * for the same shape): it is where a rejection becomes a typed
+ * `ChatHistoryError` instead of an unhandled throw, so the retry loop and the
+ * error state can both see it.
+ */
+const runHistoryLoadAttemptEffect = (): Effect.Effect<void, ChatHistoryError> =>
+  Effect.tryPromise({
+    try: runHistoryLoadAttempt,
+    catch: (cause) =>
+      new ChatHistoryError({
+        sessionId: sessionId.value,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
+
+/**
+ * Initial load / refresh (the old `loadChatHistory(false)`).
+ *
+ * Wraps `runHistoryLoadAttempt` in the retry schedule, then decides what a
+ * fully-failed load means. Two invariants this owns:
+ *
+ *   1. `isLoading` stays true across every attempt, so `isInitializing` keeps
+ *      the skeleton up and the composer disabled for the whole wait. The user
+ *      sees "still loading" — never a transcript that claims to be empty.
+ *   2. `historyConfirmed` is only set by a SUCCESSFUL attempt, so the empty
+ *      state cannot render off a failed fetch. A fully-failed load lands in
+ *      the error state with its Retry button.
+ *
+ * The `loadMore` branch that used to live here moved to `maybeLoadOlder` /
+ * `commitOlderPage`; this function no longer has a `loadMore` parameter, so the
+ * two scroll-back call sites can no longer accidentally take the slow path.
+ */
+const loadChatHistory = async () => {
+  if (!sessionId.value || isPendingSession.value) return
+
+  isLoading.value = true
+  messageCursor.value = null
+  // Invalidate anything armed for the previous view of this session.
+  resetOlderPrefetch('refresh')
+  error.value = null
+  // "Not known yet" until an attempt completes.
+  historyConfirmed.value = false
+
+  // No try/catch: `ensuring` is the finally, `tapError` is the catch, and both
+  // are typed against the error channel. See AGENTS.md, "Frontend — No
+  // `try`/`catch` in the desktop app; use Effect-TS".
+  await runEffectExit(
+    Effect.ensuring(
+      Effect.tapError(fetchInitialHistoryWithRetry(runHistoryLoadAttemptEffect), (err) =>
+        Effect.sync(() => {
+          console.error('Failed to load chat history:', err)
+          error.value = 'Failed to load messages'
+          messages.value = []
+        }),
+      ),
+      Effect.sync(() => {
+        isLoading.value = false
+      }),
+    ),
+    'history.load',
+  )
 }
 
 // ─── Scroll ──────────────────────────────────────────────────────────────────
@@ -4241,57 +4370,32 @@ const compactSession = async () => {
     -->
     <div :ref="setChatColumnEl" class="relative flex flex-col h-full flex-1 min-w-0 chat-column">
       <!--
-        Chat header. Rendered only when the parent passed the
-        `showHeader` prop (the kanban 3-column layout sets it; the
-        full-width standalone chat layout leaves it false so the
-        existing "no header" experience is preserved). When shown,
-        it includes the chat name (so the user can see which task
-        they're chatting with when the kanban + chat are side by
-        side) and a ✕ button that emits `close` to the host. The
-        host (AppLayout) handles the actual navigation / state
+        Chat app bar. Rendered only when the parent passed the
+        `showHeader` prop. Every task-chat host sets it (kanban
+        branch, AgentChatView, StandardTaskChatView) so all three
+        workspace-item modes get the identical bar; the standalone
+        `chat-<id>` branch leaves it false so a bare chat still
+        fills the viewport edge-to-edge. The markup itself lives in
+        ChatAppBar.vue — the one app bar shared by every mode, so the
+        title, the sidebar toggle and the ✕ cannot drift apart again.
+        The `app-bar-extras` slot lets a host pin mode-specific bits
+        (AgentChatView's SessionSlider) into the same bar.
+        The host (AppLayout) handles the actual navigation / state
         cleanup so the ChatView stays decoupled from router + store
         concerns.
       -->
-      <header
+      <ChatAppBar
         v-if="showHeader && !embedded"
-        class="h-11 flex items-center gap-2 px-3 shrink-0"
-        style="
-          background-color: var(--semantic-sidebar-bg);
-          border-bottom: 1px solid var(--color-border);
-        "
+        :title="chatName"
+        :show-sidebar-toggle="!embedded"
         :data-chat-header="chatId"
+        @toggle-sidebar="chatSidebar.toggle()"
+        @close="emit('close')"
       >
-        <span
-          class="text-sm font-semibold truncate flex-1"
-          style="color: var(--semantic-text)"
-          :data-testid="`chat-header-name-${chatId}`"
-        >
-          {{ chatName }}
-        </span>
-        <button
-          v-if="!embedded"
-          type="button"
-          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim)"
-          title="Toggle changes sidebar (Cmd/Ctrl+B)"
-          aria-label="Toggle changes sidebar"
-          :data-testid="`chat-sidebar-toggle-${chatId}`"
-          @click="chatSidebar.toggle()"
-        >
-          ◫
-        </button>
-        <button
-          type="button"
-          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim)"
-          title="Close chat (return to kanban)"
-          aria-label="Close chat"
-          :data-testid="`chat-header-close-${chatId}`"
-          @click="emit('close')"
-        >
-          ✕
-        </button>
-      </header>
+        <template #extras>
+          <slot name="app-bar-extras" />
+        </template>
+      </ChatAppBar>
       <!-- Messages (Virtual Scroll) -->
       <!--
         The wrapper MUST be a flex container (`flex flex-col`) so the
@@ -4312,7 +4416,7 @@ const compactSession = async () => {
         and `.last-transcript-row` in the style block).
       -->
       <div
-        v-show="!showCenterDiff"
+        v-show="!showCenterStage"
         ref="messagesWrapperRef"
         class="relative flex-1 min-h-0 flex flex-col messages-scroll-hide-native"
       >
@@ -4394,9 +4498,21 @@ const compactSession = async () => {
           </button>
         </div>
 
-        <!-- Empty State -->
+        <!-- Empty State --
+             Gated on `historyConfirmed`, NOT on "there are no messages".
+             "Zero messages" and "we have not been told yet" are different
+             states and only a completed load can tell them apart: before
+             this gate, a slow or erroring backend — whose failure used to
+             be swallowed into an empty transcript — rendered "How can I
+             help you?" for sessions full of messages. -->
         <div
-          v-if="!isInitializing && !isLoading && !error && messageGroups.length === 0"
+          v-if="
+            historyConfirmed &&
+            !isInitializing &&
+            !isLoading &&
+            !error &&
+            messageGroups.length === 0
+          "
           class="flex flex-col items-center justify-center h-full px-4"
         >
           <div
@@ -5110,7 +5226,7 @@ const compactSession = async () => {
       <Transition name="fade">
         <button
           v-if="!isAtBottom && messageGroups.length > 0"
-          v-show="!showCenterDiff"
+          v-show="!showCenterStage"
           @click="scrollToBottom(true, 'user-button-click')"
           class="chat-scroll-to-bottom p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
@@ -5159,7 +5275,7 @@ const compactSession = async () => {
       -->
       <div
         v-if="!hideInput"
-        v-show="!showCenterDiff"
+        v-show="!showCenterStage"
         :ref="setComposerDockEl"
         class="composer-dock p-4"
         data-testid="composer-dock"
@@ -5379,7 +5495,7 @@ const compactSession = async () => {
            in CenterDiffSection) so long lists scroll fast. Messages state
            is preserved (v-show) underneath. -->
       <div
-        v-if="showCenterDiff"
+        v-if="showCenterDiff && !showCodeViewer"
         class="flex-1 min-h-0 flex flex-col"
         data-testid="chat-center-diff"
       >
@@ -5444,6 +5560,27 @@ const compactSession = async () => {
             @comment-saved="onChatSidebarCommentSaved"
           />
         </div>
+      </div>
+
+      <!-- Code viewer stage: the open file, in the same center slot as the
+           stacked diff above, so the chat-owned right sidebar (Explorer /
+           Files changed / Terminal) stays visible next to it. This is the
+           path the user's own Explorer click takes. The session state is
+           injected by AppLayout (see `useInjectCodeViewer`). -->
+      <div
+        v-if="codeViewerModel.file"
+        class="flex-1 min-h-0 flex flex-col"
+        data-testid="chat-center-code"
+      >
+        <CodeViewerStage
+          :file="codeViewerModel.file"
+          :content="codeViewerModel.content"
+          :loading="codeViewerModel.loading"
+          :error="codeViewerModel.error"
+          :cwd="codeViewerModel.cwd"
+          :line="codeViewerModel.line"
+          @close="codeViewerModel.close()"
+        />
       </div>
     </div>
 
@@ -5947,8 +6084,21 @@ const compactSession = async () => {
 }
 
 /* Lift the composer card off the page. Without this it reads as another
-   flat surface rather than something floating over the transcript. */
+   flat surface rather than something floating over the transcript.
+
+   `position: relative` + `z-index: 1` is load-bearing, not decoration: the
+   scrim is a POSITIONED descendant of the dock (`position: absolute`,
+   `z-index: auto`), and CSS paints positioned descendants AFTER in-flow,
+   non-positioned content. A static card therefore loses to the scrim, whose
+   opaque band covers the dock's full height — the input row, paperclip and
+   Send button all vanish, leaving only whatever the card happens to position
+   itself (the profile picker's `relative` wrapper) on top. `pointer-events:
+   none` on the scrim hides the damage from hit-testing, so `elementFromPoint`
+   still reports the textarea and every geometry test passes. Giving the card
+   its own stacking context above the scrim is what keeps it visible. */
 .composer-dock :deep(.composer-card) {
+  position: relative;
+  z-index: 1;
   box-shadow:
     0 10px 30px -10px rgba(0, 0, 0, 0.7),
     0 2px 8px -2px rgba(0, 0, 0, 0.45);

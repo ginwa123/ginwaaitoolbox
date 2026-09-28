@@ -73,6 +73,14 @@ fun RecentsDrawerContent(
      */
     recentsExpanded: Boolean = true,
     onToggleRecentsSection: () -> Unit = {},
+    /**
+     * The top-level "New Chat" row, forwarded here rather than wired in each of
+     * the two call sites — the whole reason this file exists. A caller that
+     * forgot to pass it would render a drawer whose one always-available action
+     * silently does nothing.
+     */
+    isCreatingChat: Boolean = false,
+    onNewChat: () -> Unit = {},
 ) {
     RecentsSidebar(
         modifier = modifier.fillMaxSize(),
@@ -98,6 +106,8 @@ fun RecentsDrawerContent(
         projectActions = projectActions,
         recentsExpanded = recentsExpanded,
         onToggleRecents = onToggleRecentsSection,
+        isCreatingChat = isCreatingChat,
+        onNewChat = onNewChat,
     )
 }
 

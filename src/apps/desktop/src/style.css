@@ -72,6 +72,23 @@
   --semantic-hover-bg: #1D1C19;
   --semantic-hover-text: #d5cea3;
 
+  /* ── Sidebar geometry ─────────────────────────────────────────────
+     One gutter, one row height, one indent step, one hit box. The whole
+     left panel resolves against these four; they are the only place a
+     sidebar measurement should be written down. */
+  --sb-gutter: 12px;   /* left edge of every row, title, icon and action */
+  --sb-row: 32px;      /* every list row, all three menus, all depths   */
+  --sb-indent: 12px;   /* one step per nesting level                     */
+  --sb-hit: 24px;      /* every row action's click/touch box            */
+
+  /* Sidebar type. Two text sizes plus a glyph size: 11px carries both
+     the section title (600, uppercase, tracked) and plain meta, which
+     differ by treatment rather than size. 13px is every row label. */
+  --sb-fs-section: 11px;
+  --sb-fs-row: 13px;
+  --sb-fs-meta: 11px;
+  --sb-fs-icon: 12px;
+
   /* Tailwind integration - extend theme */
   --color-primary: var(--color-violet);
   --color-secondary: var(--color-aqua);

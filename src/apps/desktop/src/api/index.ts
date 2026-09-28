@@ -3,6 +3,8 @@
 
 import { createSseClient, type SseClient } from '../helpers/sseClient'
 import { readGitStatusCache, writeGitStatusCache } from '../helpers/gitStatusCache'
+import { Cause, Data, Effect } from 'effect'
+import { describeCause } from '../helpers/effectRuntime'
 
 export const API_BASE = '/api'
 
@@ -555,6 +557,31 @@ export async function getWorkspacesItems(
 ): Promise<{ items: WorkspaceItem[]; count: number }> {
   return await apiFetch<{ items: WorkspaceItem[]; count: number }>(
     `/workspaces/${workspace_id}/items`,
+  )
+}
+
+// Cold-start fallback for the "New Chat" action.
+//
+// The invariant is "every workspace has a default project, and a miss
+// creates one" — and `GET /workspaces/:id/items` (above) already enforces
+// it server-side, so `getWorkspacesItems` normally comes back with the
+// default in it and a client lookup is a pure local find.
+//
+// This endpoint exists for the one case the list cannot cover: the app
+// was open when Migration 094 ran, so the list the store already holds
+// predates the `is_default` column. Without this, a New Chat tap would be
+// a no-op until the user manually refetched.
+//
+// Idempotent — 200 + `created: false` when it already existed, 201 +
+// `created: true` when this call created it. Takes no body: it is a
+// command ("give me the default"), and the name and path are fixed by the
+// invariant.
+export async function getOrCreateDefaultProject(
+  workspace_id: string,
+): Promise<{ item: WorkspaceItem; created: boolean }> {
+  return await apiFetch<{ item: WorkspaceItem; created: boolean }>(
+    `/workspaces/${workspace_id}/default-project`,
+    { method: 'POST' },
   )
 }
 
@@ -1381,12 +1408,45 @@ function parseTimestamp(ts: number | string): number {
   // If timestamp looks like nanoseconds (> 1e12), convert to seconds
   return num > 1e12 ? Math.floor(num / 1e9) : num
 }
-export async function getChatHistory(
-  sessionId: string,
-  limit = 50,
-  cursor?: string,
-  direction: 'asc' | 'desc' = 'desc',
-): Promise<{
+/**
+ * The transcript fetch failed — transport, non-2xx, or an abort.
+ *
+ * Deliberately coarse: the UI acts on "the transcript is unavailable", not on
+ * which kind of unavailable it is, and the retry policy is the same for all
+ * three. The point of the tag is only that the failure is DISTINGUISHABLE
+ * from an empty transcript — see the empty-state bug this replaced.
+ */
+export class ChatHistoryError extends Data.TaggedError('ChatHistoryError')<{
+  readonly sessionId: string
+  readonly reason: string
+}> {}
+
+/**
+ * What a best-effort transcript caller gets when the fetch failed. Named, not
+ * inlined, so the two shapes can be diffed by eye: every field is `undefined`
+ * or empty because the answer genuinely is unknown, and the only place this is
+ * legitimate is `getChatHistory`'s three metadata callers.
+ */
+const EMPTY_CHAT_HISTORY: ChatHistoryResponse = {
+  messages: [],
+  has_more: false,
+  next_cursor: null,
+  cwd: undefined,
+  git_worktree_cwd: undefined,
+  pr_url: undefined,
+  pr_provider: undefined,
+  // 2026-08-07-profile-persist-read — preserve the field shape on
+  // the error path so ChatView's `loadChatHistory` branch can
+  // safely read `data.selected_profile_model` (it'll be
+  // `undefined`, which ChatView coerces to `null`).
+  selected_profile_model: undefined,
+  max_total_tokens: undefined,
+  max_capacity_total_tokens: undefined,
+  total_count: undefined,
+  skills: [],
+}
+
+export type ChatHistoryResponse = {
   messages: Message[]
   has_more: boolean
   next_cursor: string | null
@@ -1409,91 +1469,134 @@ export async function getChatHistory(
   max_capacity_total_tokens?: number
   total_count?: number
   skills?: SkillInfo[]
-}> {
-  try {
-    const params = new URLSearchParams({
-      sort_by: 'created_at',
-      direction,
-      limit: limit.toString(),
-    })
-    if (cursor) {
-      params.set('cursor', cursor)
-    }
-    // silent: true — AppLayout.fetchChatSessionCwd swallows this
-    // error to fall back to a message-derived cwd, so a toast on
-    // 404/5xx would be noise.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-    const data = await apiFetch<any>(
-      `/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`,
-      { silent: true },
-    )
-    return {
-      messages: data.messages.map(
-        (msg: {
-          id: string
-          role: string
-          content: string
-          created_at: number | string
-          tool_name?: string
-          diffview_before?: string
-          diffview_after?: string
-          image_url?: string
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-          tool_calls_json?: any
-          reasoning_content?: string
-        }) => ({
-          ...msg,
-          content: msg.content,
-          created_at: parseTimestamp(msg.created_at),
-          tool_name: msg.tool_name,
-          diffview_before: msg.diffview_before,
-          diffview_after: msg.diffview_after,
-          image_url: msg.image_url,
-          tool_calls_json: msg.tool_calls_json,
-          // 2026-08-23 hidden-messages fix — pass the thinking model's
-          // reasoning through to ChatView (backend already returns it).
-          reasoning_content: msg.reasoning_content || undefined,
-        }),
-      ),
-      has_more: data.has_more,
-      next_cursor: data.next_cursor,
-      cwd: data.cwd,
-      git_worktree_cwd: data.git_worktree_cwd,
-      pr_url: data.pr_url,
-      pr_provider: data.pr_provider,
-      // 2026-08-07-profile-persist-read — read the per-session
-      // selected profile name so the chatview chip can show the
-      // persisted selection on page refresh. Empty string from the
-      // backend (= "no profile set") is preserved here; ChatView
-      // coerces empty → null before assigning to selectedProfile.
-      selected_profile_model: data.selected_profile_model,
-      max_total_tokens: data.max_total_tokens,
-      max_capacity_total_tokens: data.max_capacity_total_tokens,
-      total_count: data.total_count,
-      skills: data.skills,
-    }
-  } catch (error) {
-    // Return empty messages when LLM backend unavailable
-    console.log(error)
-    return {
-      messages: [],
-      has_more: false,
-      next_cursor: null,
-      cwd: undefined,
-      git_worktree_cwd: undefined,
-      pr_url: undefined,
-      pr_provider: undefined,
-      // 2026-08-07-profile-persist-read — preserve the field shape on
-      // the error path so ChatView's `loadChatHistory` branch can
-      // safely read `data.selected_profile_model` (it'll be
-      // `undefined`, which ChatView coerces to `null`).
-      selected_profile_model: undefined,
-      max_total_tokens: undefined,
-      max_capacity_total_tokens: undefined,
-      total_count: undefined,
-      skills: [],
-    }
+}
+
+/**
+ * The transcript endpoint, WITH the failure in the type.
+ *
+ * Returns `Effect<ChatHistoryResponse, ChatHistoryError>`, so "the backend is
+ * unreachable" is a value the caller must handle — it cannot be mistaken for
+ * an empty transcript. That distinction is the whole fix: a slow or erroring
+ * backend previously returned `messages: []`, the empty state's `v-if` went
+ * true, and the chatview claimed a full session was empty ("How can I help
+ * you?"). See AGENTS.md, "Frontend — No `try`/`catch` in the desktop app".
+ *
+ * `getChatHistory` (below) is the explicitly-named best-effort variant built
+ * on this one, for the three metadata callers whose fallback chains depend on
+ * degrading quietly.
+ *
+ * `timeoutMs` lets the transcript load outlive apiFetch's 15 s default: a
+ * `limit=1000` page carrying base64 image_urls and tool JSON routinely needs
+ * longer, and that abort is what turned a slow server into a phantom empty
+ * session.
+ */
+export function fetchChatHistoryEffect(
+  sessionId: string,
+  limit = 50,
+  cursor?: string,
+  direction: 'asc' | 'desc' = 'desc',
+  timeoutMs?: number,
+): Effect.Effect<ChatHistoryResponse, ChatHistoryError> {
+  const params = new URLSearchParams({
+    sort_by: 'created_at',
+    direction,
+    limit: limit.toString(),
+  })
+  if (cursor) {
+    params.set('cursor', cursor)
   }
+  // silent: true — the failure is the caller's to handle (the chatview's retry
+  // loop + inline error UI for the transcript; a console.log for the
+  // best-effort metadata callers), so a toast on 404/5xx would be noise.
+  //
+  // `timeoutMs` is forwarded so the initial transcript load can outlive
+  // apiFetch's 15 s default: a `limit=1000` page carrying base64 image_urls
+  // and tool JSON routinely needs longer, and that abort is what turned a slow
+  // server into a phantom empty session. Left undefined, the default stands.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+  const toResponse = (data: any): ChatHistoryResponse => ({
+    messages: data.messages.map(
+      (msg: {
+        id: string
+        role: string
+        content: string
+        created_at: number | string
+        tool_name?: string
+        diffview_before?: string
+        diffview_after?: string
+        image_url?: string
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+        tool_calls_json?: any
+        reasoning_content?: string
+      }) => ({
+        ...msg,
+        content: msg.content,
+        created_at: parseTimestamp(msg.created_at),
+        tool_name: msg.tool_name,
+        diffview_before: msg.diffview_before,
+        diffview_after: msg.diffview_after,
+        image_url: msg.image_url,
+        tool_calls_json: msg.tool_calls_json,
+        // 2026-08-23 hidden-messages fix — pass the thinking model's
+        // reasoning through to ChatView (backend already returns it).
+        reasoning_content: msg.reasoning_content || undefined,
+      }),
+    ),
+    has_more: data.has_more,
+    next_cursor: data.next_cursor,
+    cwd: data.cwd,
+    git_worktree_cwd: data.git_worktree_cwd,
+    pr_url: data.pr_url,
+    pr_provider: data.pr_provider,
+    // 2026-08-07-profile-persist-read — read the per-session
+    // selected profile name so the chatview chip can show the
+    // persisted selection on page refresh. Empty string from the
+    // backend (= "no profile set") is preserved here; ChatView
+    // coerces empty → null before assigning to selectedProfile.
+    selected_profile_model: data.selected_profile_model,
+    max_total_tokens: data.max_total_tokens,
+    max_capacity_total_tokens: data.max_capacity_total_tokens,
+    total_count: data.total_count,
+    skills: data.skills,
+  })
+
+  return Effect.tryPromise({
+    try: () =>
+      apiFetch<any>(`/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`, {
+        silent: true,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      }),
+    catch: (cause) => new ChatHistoryError({ sessionId, reason: describeCause(Cause.fail(cause)) }),
+  }).pipe(Effect.map(toResponse))
+}
+
+/**
+ * Best-effort transcript: a failure yields an EMPTY transcript rather than a
+ * rejection, implemented on the Effect seam so no `try`/`catch` sits between
+ * the failure and the value the caller gets.
+ *
+ * Correct ONLY for the three metadata callers — AppLayout's cwd fallback,
+ * ChatView's `refreshWorktreeBinding` (`limit=1`), and the older-page
+ * prefetch — whose fallback chains depend on degrading quietly. The initial
+ * transcript load must use `fetchChatHistoryEffect`, so "the backend is
+ * unreachable" can never be handed to the UI as "this session is empty".
+ */
+export function getChatHistory(
+  sessionId: string,
+  limit = 50,
+  cursor?: string,
+  direction: 'asc' | 'desc' = 'desc',
+): Promise<ChatHistoryResponse> {
+  return Effect.runPromise(
+    fetchChatHistoryEffect(sessionId, limit, cursor, direction).pipe(
+      Effect.catchAll((error) => {
+        // The reason is logged, not discarded — the AGENTS.md rule about
+        // never letting a caught error vanish into an indistinguishable value.
+        console.log(error)
+        return Effect.succeed(EMPTY_CHAT_HISTORY)
+      }),
+    ),
+  )
 }
 
 // Send a message to LLM
@@ -4628,26 +4731,6 @@ export function fileDownloadUrl(
   disposition: 'inline' | 'attachment' = 'attachment',
 ): string {
   return `${API_BASE}/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(filePath)}&disposition=${disposition}`
-}
-
-// Write file content API (for CodeEditor save)
-export async function writeFileContent(
-  cwd: string,
-  filePath: string,
-  content: string,
-): Promise<{ success: boolean; message?: string }> {
-  // silent: true — AppLayout surfaces save failures inline in the
-  // code editor; a toast would duplicate the message.
-  return await apiFetch<{ success: boolean; message?: string }>('/system/folder', {
-    method: 'POST',
-    body: {
-      action: 'write',
-      path: cwd,
-      file: filePath,
-      content,
-    },
-    silent: true,
-  })
 }
 
 // Git Stage/Unstage API

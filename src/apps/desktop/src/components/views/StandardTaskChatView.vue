@@ -1,11 +1,7 @@
 <!--
   StandardTaskChatView — thin wrapper around <ChatView> for the
-  standard (non-kanban / non-design) task chat branch in AppLayout.
-
-  Encapsulates the chat-id / chat-name / :key wiring that AppLayout
-  previously inlined for this branch. The host passes an active Task
-  (any non-kanban / non-design workspace item) and the resolved cwd;
-  this component forwards a stable ChatView mount keyed by the task id.
+  standard (non-kanban / non-agent / non-design) task chat branch in
+  AppLayout: folder, memory, chat and routine items.
 
   Why a wrapper at all?
     - DesignChatDialog already wraps <ChatView>
@@ -18,6 +14,16 @@
       `chat-${task.id}` as the chat session id, matching the inline
       behaviour this component replaced.
 
+  App bar
+  ───────
+  This mode used to render NO bar at all (ChatView's `showHeader` was
+  never set), so the ◫ sidebar toggle floated over the transcript and
+  there was no way to leave the chat from the surface. It now sets
+  `:show-header="true"` and re-emits ChatView's `close`, so all three
+  workspace-item modes (kanban / agent / standard) render the same
+  shared ChatAppBar — same height, background, title, sidebar toggle
+  and ✕.
+
   Public API:
     props:
       task    Task       the active task (required; used to derive
@@ -29,6 +35,8 @@
                          verbatim from ChatView when the underlying
                          session id changes (e.g. auto-rename on
                          first message)
+      close              []                                forwarded
+                         verbatim from ChatView's app-bar ✕
 -->
 <script setup lang="ts">
 import ChatView from './ChatView.vue'
@@ -46,6 +54,7 @@ withDefaults(
 
 const emit = defineEmits<{
   'update-chat-id': [oldId: string, newId: string]
+  close: []
 }>()
 </script>
 
@@ -68,6 +77,8 @@ const emit = defineEmits<{
     :chat-id="`chat-${task.id}`"
     :chat-name="task.name ?? ''"
     :cwd="cwd"
+    :show-header="true"
     @update-chat-id="(oldId, newId) => emit('update-chat-id', oldId, newId)"
+    @close="emit('close')"
   />
 </template>

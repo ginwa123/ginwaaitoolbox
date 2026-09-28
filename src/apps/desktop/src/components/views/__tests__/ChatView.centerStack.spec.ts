@@ -132,7 +132,7 @@ describe('ChatView stacked center render', () => {
   })
 
   it('hides messages+composer while any stacked diff shows', () => {
-    expect(chatViewSrc).toMatch(/v-show="!showCenterDiff" ref="messagesWrapperRef"/)
+    expect(chatViewSrc).toMatch(/v-show="!showCenterStage"\s+ref="messagesWrapperRef"/)
   })
 
   it('header offers Copy all scoped to this diff', () => {

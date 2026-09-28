@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wireframe — sidebar New Chat → default project (task_1790528102260_4)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #12120f; color: #c5c9c5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; padding: 24px; }
+  h1 { font-size: 19px; margin-bottom: 5px; }
+  h2 { font-size: 14px; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #282727; }
+  h3 { font-size: 12px; margin: 0 0 8px; color: #a6a69c; text-transform: uppercase; letter-spacing: .07em; }
+  .sub { color: #a6a69c; font-size: 12px; margin-bottom: 20px; line-height: 1.75; max-width: 1120px; }
+  .sub code, code { background: #2a2825; padding: 1px 5px; border-radius: 4px; font-size: 11px; color: #c5c9c5; }
+  b { color: #c5c9c5; }
+  a { color: #8ba4b0; }
+  .row { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+
+  /* ── app chrome (mirrors the real sidebar tokens) ─────────────── */
+  .app { display: flex; width: 620px; height: 470px; border: 1px solid #282727; border-radius: 8px; overflow: hidden; background: #181616; }
+  .sidebar { width: 210px; flex-shrink: 0; background: #12120f; border-right: 1px solid #282727; display: flex; flex-direction: column; position: relative; }
+  .sb-head { height: 48px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid #282727; }
+  .sb-ws { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #c5c9c5; }
+  .sb-chev { font-size: 8px; color: #7a8382; }
+  .sb-acts { display: flex; gap: 12px; font-size: 11px; color: #a6a69c; }
+  .sb-newchat { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #282727; cursor: pointer; }
+  .sb-newchat .pen { font-size: 13px; color: #7a8382; width: 13px; text-align: center; }
+  .sb-newchat .lbl { font-size: 11px; font-weight: 500; color: #a6a69c; }
+  .sb-newchat.hot { background: #1c1a18; }
+  .sb-newchat.hot .pen, .sb-newchat.hot .lbl { color: #c5c9c5; }
+  .sb-newchat.dis { opacity: .38; cursor: not-allowed; }
+  .sb-nav { flex: 1; min-height: 0; overflow: hidden; padding: 8px 0; }
+  .sb-sec { font-size: 9px; letter-spacing: .09em; color: #625e5a; padding: 4px 14px 5px; }
+  .sb-row { display: flex; align-items: center; gap: 7px; padding: 5px 14px; font-size: 11px; color: #7a8382; }
+  .sb-row.on { color: #c5c9c5; background: #201e1c; }
+  .sb-row .bul { width: 4px; height: 4px; border-radius: 99px; background: #7a8382; opacity: .55; flex-shrink: 0; }
+  .sb-row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-row .badge { font-size: 9px; padding: 0 4px; border-radius: 3px; background: #2a2825; color: #8f9b7a; border: 1px solid #3a3f30; }
+  .sb-row .plus { color: #7a8382; font-size: 13px; opacity: .7; }
+  /* collapse chevron — the pin offset is the thing this wireframe must show */
+  .sb-toggle { position: absolute; right: -8px; top: 24px; width: 17px; height: 17px; border-radius: 99px; background: #181616; border: 1px solid #282727; display: flex; align-items: center; justify-content: center; font-size: 8px; color: #a6a69c; z-index: 5; }
+  .sb-toggle.t24 { top: 96px; }
+  .sb-toggle-badge { position: absolute; right: -8px; top: 24px; width: 17px; height: 17px; border-radius: 99px; background: #3a2a22; border: 1px solid #6a4a38; display: flex; align-items: center; justify-content: center; font-size: 8px; color: #d8b48a; z-index: 6; }
+
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .m-head { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #282727; }
+  .m-title { font-size: 12px; font-weight: 600; flex: 1; }
+  .m-path { font-size: 10px; color: #625e5a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .m-body { flex: 1; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
+  .bubble { max-width: 74%; padding: 7px 10px; border-radius: 8px; font-size: 11px; line-height: 1.55; }
+  .bubble.me { align-self: flex-end; background: #2a2825; color: #c5c9c5; }
+  .bubble.ai { align-self: flex-start; background: #1d2220; color: #7a8382; }
+  .m-input { margin: 0 14px 12px; height: 34px; border: 1px solid #282727; border-radius: 8px; display: flex; align-items: center; padding: 0 11px; font-size: 11px; color: #4d4a47; }
+
+  /* collapsed sidebar */
+  .app.collapsed { width: 300px; }
+  .sidebar.collapsed { width: 64px; }
+  .sb-head.collapsed { justify-content: center; padding: 0; }
+  .mono { font-size: 13px; color: #a6a69c; font-weight: 600; }
+  .sb-newchat.collapsed { justify-content: center; padding: 0; }
+  .sb-nav.collapsed { padding: 6px 0; }
+  .sb-nav.collapsed .sb-sec, .sb-nav.collapsed .sb-row .t, .sb-nav.collapsed .sb-row .plus { display: none; }
+  .sb-nav.collapsed .sb-row { justify-content: center; padding: 6px 0; }
+
+  /* spinner state */
+  .spin { width: 12px; height: 12px; border: 1.5px solid #3a3835; border-top-color: #c5c9c5; border-radius: 99px; animation: s .8s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+  /* annotation callouts */
+  .panel { border: 1px solid #282727; border-radius: 8px; background: #181616; padding: 12px 14px; }
+  .panel ol, .panel ul { padding-left: 17px; }
+  .panel li { margin-bottom: 7px; line-height: 1.65; color: #a6a69c; }
+  .panel li:last-child { margin-bottom: 0; }
+  .cap { font-size: 10px; color: #625e5a; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 9px; }
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .step { border: 1px solid #282727; border-radius: 7px; background: #181616; padding: 9px 11px; min-width: 152px; flex: 1; }
+  .step .n { font-size: 9px; color: #625e5a; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
+  .step .t { font-size: 11px; color: #c5c9c5; line-height: 1.5; }
+  .step .m { font-size: 9.5px; color: #7a8382; margin-top: 4px; line-height: 1.5; }
+  .arrow { align-self: center; padding: 0 7px; color: #4d4a47; font-size: 13px; }
+  .dec { display: inline-block; font-size: 9px; padding: 0 5px; border-radius: 3px; margin-right: 5px; }
+  .dec-a { background: rgba(137,146,167,.16); color: #b3bcd0; border: 1px solid rgba(137,146,167,.4); }
+  .dec-q { background: rgba(200,140,90,.14); color: #d8ab7a; border: 1px solid rgba(200,140,90,.38); }
+  .note { font-size: 11px; color: #7a8382; line-height: 1.7; margin-top: 10px; max-width: 700px; }
+
+  /* ── android drawer ──────────────────────────────────────────── */
+  .phone { width: 300px; height: 520px; border: 1px solid #393836; border-radius: 22px; background: #181616; display: flex; overflow: hidden; position: relative; flex-shrink: 0; }
+  .drawer { width: 236px; background: #12120f; border-right: 1px solid #282727; display: flex; flex-direction: column; }
+  .dr-top { padding: 10px 12px 8px; flex-shrink: 0; }
+  .dr-ws { display: flex; align-items: center; gap: 7px; padding: 8px 10px; border: 1px solid #282727; border-radius: 7px; background: #1c1a18; font-size: 11.5px; color: #c5c9c5; }
+  .dr-ws .sel { flex: 1; }
+  .dr-newchat { display: flex; align-items: center; gap: 9px; margin: 9px 0 0; padding: 9px 10px; border-radius: 7px; background: #232019; border: 1px solid #4a4232; font-size: 12px; font-weight: 500; color: #e8c87a; }
+  .dr-newchat .ic { font-size: 13px; }
+  .dr-newchat.dis { opacity: .4; }
+  .dr-stale { margin: 8px 0 0; padding: 6px 9px; border-radius: 6px; background: #2a2320; border: 1px solid #4a3830; font-size: 9.5px; color: #c9a08a; }
+  .dr-list { flex: 1; min-height: 0; overflow: hidden; padding: 6px 0; }
+  .dr-sec { font-size: 9px; letter-spacing: .09em; color: #625e5a; padding: 7px 12px 5px; display: flex; justify-content: space-between; }
+  .dr-item { display: flex; align-items: center; gap: 7px; padding: 6px 12px; font-size: 11px; color: #7a8382; }
+  .dr-item.on { color: #c5c9c5; background: #201e1c; }
+  .dr-item .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dr-badge { font-size: 8.5px; padding: 0 4px; border-radius: 3px; background: #2a2825; color: #8f9b7a; border: 1px solid #3a3f30; }
+  .scrim { flex: 1; background: rgba(0,0,0,.42); }
+  /* the LazyColumn boundary — rows inside it shift the paging arithmetic */
+  .dr-list { position: relative; }
+  .dr-list::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 0; }
+  .zone { font-size: 9px; letter-spacing: .07em; text-transform: uppercase; padding: 3px 7px; border-radius: 4px; display: inline-block; margin-bottom: 6px; }
+  .zone-safe { background: rgba(137,146,167,.16); color: #b3bcd0; border: 1px solid rgba(137,146,167,.4); }
+  .zone-bad { background: rgba(200,120,90,.14); color: #d8ab7a; border: 1px solid rgba(200,120,90,.4); }
+  .kv { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  .kv td { padding: 5px 8px; font-size: 11.5px; border-bottom: 1px solid #232221; color: #a6a69c; line-height: 1.55; vertical-align: top; }
+  .kv td:first-child { color: #c5c9c5; white-space: nowrap; width: 1%; }
+</style>
+</head>
+<body>
+
+<h1>Wireframe — sidebar <b>New Chat</b> → default project</h1>
+<div class="sub">
+  <b>Task</b> <code>task_1790528102260_4</code> &nbsp;·&nbsp; <b>Plan</b> <code>docs/plans/2026-09-27-sidebar-new-chat-default-project.md</code><br>
+  One click in the top-left sidebar — <b>desktop</b> below, <b>Android</b> in §5 — creates a chat session inside the active
+  workspace's <b>default project</b>: an <code>item_type = 'agent'</code> workspace item whose <code>path</code> is the
+  user's <code>$HOME</code>, created on demand and guaranteed to exist for every workspace. Colours and spacing are the
+  real tokens; the 210 px sidebar is drawn narrow so the header/action/recents geometry is legible at this size.
+</div>
+
+<h2>1 — The only structural change: one 40 px row, above Recents</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">As shipped (today)</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-toggle-badge">‹</div>
+        <div class="sb-head">
+          <div class="sb-ws">⌄ ginwa / main</div>
+          <div class="sb-acts"><span>Settings</span></div>
+        </div>
+        <div class="sb-nav">
+          <div class="sb-sec">CHATS</div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Fix login redirect</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Migrate 094 review</span></div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">Fix login redirect</span></div>
+        <div class="m-body"><div class="bubble me">the redirect loops after sign-in</div></div>
+        <div class="m-input">Message…</div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="cap">Proposed — row added, chevron re-pinned</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-toggle t24">‹</div>
+        <div class="sb-head">
+          <div class="sb-ws">⌄ ginwa / main</div>
+          <div class="sb-acts"><span>Settings</span></div>
+        </div>
+        <div class="sb-newchat hot">
+          <span class="pen">✎</span><span class="lbl">New Chat</span>
+        </div>
+        <div class="sb-nav">
+          <div class="sb-sec">CHATS</div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Fix login redirect</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Migrate 094 review</span></div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="m-head">
+          <span class="m-title">New Chat</span>
+          <span class="m-path">Project Default · ~/</span>
+        </div>
+        <div class="m-body"><div class="bubble me">list my projects in ~/src</div></div>
+        <div class="m-input">Message…</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="note">
+  <b>The chevron is the trap.</b> It is <code>position:absolute; top:16</code> (64 px) today — pinned to the header's bottom
+  edge. A 40 px row underneath pushes its content to 88 px, so the chevron would land <i>on top of</i> the New Chat row and
+  swallow clicks. It must move to <code>top-24</code> (96 px) — 8 px clear — in both expanded and collapsed states. The amber
+  badge on the left panel marks the collision.
+</div>
+
+<h2>2 — Every state of the row</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">Idle → hover → in-flight</div>
+    <div class="app" style="width:210px;height:auto">
+      <div class="sidebar" style="width:100%;height:auto">
+        <div class="sb-head"><div class="sb-ws">⌄ ginwa / main</div></div>
+        <div class="sb-newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div style="height:1px"></div>
+        <div class="sb-newchat hot"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div style="height:1px"></div>
+        <div class="sb-newchat hot"><span class="spin"></span><span class="lbl" style="opacity:.6">New Chat</span></div>
+        <div style="height:1px"></div>
+        <div class="sb-newchat dis"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div style="height:8px"></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:9px">
+      <b>1</b> idle &nbsp;·&nbsp; <b>2</b> hover &nbsp;·&nbsp; <b>3</b> creating (spinner, button disabled) &nbsp;·&nbsp; <b>4</b> no active workspace — disabled,
+      tooltip <i>"Select a workspace first"</i>. A chat cannot exist without a workspace, and quietly creating one
+      from a sidebar click would be a surprising side effect.
+    </div>
+  </div>
+
+  <div>
+    <div class="cap">Collapsed — 64 px, icon carries the label</div>
+    <div class="app collapsed" style="height:200px">
+      <div class="sidebar collapsed">
+        <div class="sb-toggle t24">›</div>
+        <div class="sb-head collapsed"><span class="mono">G</span></div>
+        <div class="sb-newchat collapsed hot" title="New Chat" aria-label="New Chat"><span class="pen">✎</span></div>
+        <div class="sb-nav collapsed">
+          <div class="sb-row on"><span class="bul"></span></div>
+          <div class="sb-row"><span class="bul"></span></div>
+          <div class="sb-row"><span class="bul"></span></div>
+        </div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">New Chat</span><span class="m-path">~/</span></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:9px">
+      The word "New Chat" does not fit in 64 px, so the collapsed row is icon-only with
+      <code>aria-label</code> + <code>title</code>. This follows the <code>WorkspaceSwitcher collapsed</code> prop already
+      in the header. <b>The affordance is never dropped entirely</b> — a 64 px rail is exactly where a user expects the
+      one always-on chat button to live.
+    </div>
+  </div>
+
+</div>
+
+<h2>3 — What lands in the Projects list</h2>
+<div class="row">
+  <div class="app" style="width:250px;height:300px">
+    <div class="sidebar" style="width:100%">
+      <div class="sb-head"><div class="sb-ws">⌄ ginwa / main</div></div>
+      <div class="sb-newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+      <div class="sb-nav">
+        <div class="sb-sec">PROJECTS</div>
+        <div class="sb-row on"><span class="bul"></span><span class="t">Project Default</span><span class="badge">~/</span><span class="plus">+</span></div>
+        <div class="sb-row"><span class="bul"></span><span class="t">kabelweb</span><span class="badge">~/kabelweb</span><span class="plus">+</span></div>
+        <div class="sb-row"><span class="bul"></span><span class="t">Sprint Juni</span><span class="plus">+</span></div>
+        <div class="sb-sec" style="margin-top:10px">CHATS</div>
+        <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="panel" style="flex:1;min-width:330px">
+    <div class="cap">The default project is an ordinary project row</div>
+    <table class="kv">
+      <tr><td>item_type</td><td><code>'agent'</code> — the task's "agent mode". It is also the only type whose <code>+</code> already skips the task picker and creates a Standard Chat directly.</td></tr>
+      <tr><td>name</td><td><code>"Project Default"</code> — freely renameable; the name is cosmetic, the <code>is_default</code> flag is what the button follows.</td></tr>
+      <tr><td>path</td><td><code>$HOME</code>, resolved <b>server-side</b> by <code>system_folder.getHomeDirectory</code> (the existing <code>HOME → USERPROFILE → HOMEDRIVE+HOMEPATH</code> chain). A browser does not know the server user's home, so this must never be a client value.</td></tr>
+      <tr><td>position</td><td><code>MAX(position)+1</code> — same as every other create, so it lands at the top of the list.</td></tr>
+      <tr><td>visibility</td><td>Shown, not hidden. A row the user can open, rename, and drop chats into is far less surprising than an invisible system project.</td></tr>
+    </table>
+  </div>
+</div>
+
+<h2>4 — One click, end to end</h2>
+<div class="flow">
+  <div class="step"><div class="n">Step 1 · no-op on the happy path</div><div class="t">Store already holds the <code>is_default = 1</code> item</div><div class="m">The workspace list is loaded with the app, so this is a local find — no network, no spinner flash.</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="n">Step 2 · cold path only</div><div class="t"><code>POST /api/workspaces/:ws/default-project</code></div><div class="m">Idempotent. Returns the existing default, or creates the agent item + its <code>agents</code> sibling + tool seed in one transaction.</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="n">Step 3</div><div class="t"><code>createAndOpenStandardChat(ws, defaultId)</code></div><div class="m">The <b>existing</b> helper — reused verbatim, not reimplemented. <code>addTask(name:'New Chat')</code> + race guard.</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="n">Step 4 · the URL is the state</div><div class="t"><code>router.replace</code> → <code>/app/{ws}/projects/{default}/chat/{task}</code></div><div class="m">Deep-linkable, refresh-safe, Back/Forward-correct. No local <code>ref</code> holds "which chat is open".</div></div>
+  <div class="arrow">→</div>
+  <div class="step"><div class="n">Step 5 · server, on first message</div><div class="t">cwd resolves to <code>$HOME</code></div><div class="m">No cwd plumbing: the existing chain falls <code>task.cwd (empty) → item.path</code> — which is <code>$HOME</code>. The header shows <code>~/</code>.</div></div>
+</div>
+
+<div class="note">
+  <b>A chat <i>is</i> a task.</b> Migration 052 dropped <code>workspace_item_tasks.session_id</code>; the invariant is
+  <code>task.id == session.id</code>, and the <code>sessions</code> row is created lazily on the first chat message. So
+  "create a new session" needs no session endpoint at all.
+</div>
+
+<h2>5 — The same action on Android, in the drawer</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">Proposed — pinned under the workspace picker</div>
+    <div class="phone">
+      <div class="drawer">
+        <div class="dr-top">
+          <div class="dr-ws"><span>⌄</span><span class="sel">ginwa / main</span><span style="color:#7a8382">▾</span></div>
+          <div class="dr-newchat"><span class="ic">✎</span> New Chat</div>
+        </div>
+        <div class="dr-list">
+          <div class="dr-sec"><span>RECENT</span><span>4</span></div>
+          <div class="dr-item on"><span class="t">New Chat</span></div>
+          <div class="dr-item"><span class="t">Migrate 094 review</span></div>
+          <div class="dr-item"><span class="t">Fix login redirect</span></div>
+          <div class="dr-sec"><span>PROJECTS</span><span>3</span></div>
+          <div class="dr-item on"><span class="t">Project Default</span><span class="dr-badge">~/</span></div>
+          <div class="dr-item"><span class="t">kabelweb</span><span class="dr-badge">~/kabelweb</span></div>
+        </div>
+      </div>
+      <div class="scrim"></div>
+    </div>
+    <div class="note" style="margin-top:9px">
+      Same look as the desktop row, sized for touch: a 9 px vertical pad, the accent label, and a
+      <b>pencil</b> rather than a <code>+</code> — the per-project <code>+</code> already means "add to
+      <i>this</i> project", and two identical glyphs would blur that.
+    </div>
+  </div>
+
+  <div class="panel" style="flex:1;min-width:340px">
+    <div class="cap">Where the row must and must not go</div>
+    <p style="margin-bottom:10px;color:#a6a69c;line-height:1.7">
+      The drawer's paging trigger is a pure function over <b>list indices</b> — <code>chatRegionEndIndex</code> assumes a
+      fixed number of rows sit above the chats <i>inside</i> the <code>LazyColumn</code>:
+    </p>
+    <div class="zone zone-safe">✓ safe — the Column above the LazyColumn</div>
+    <p style="margin:0 0 12px 2px;color:#7a8382;line-height:1.65">
+      Below the workspace dropdown, above the scroller. The dropdown is already the one non-scrolling
+      control up there, and index arithmetic never sees it.
+    </p>
+    <div class="zone zone-bad">✗ breaks it — the first item inside the LazyColumn</div>
+    <p style="margin:0 0 12px 2px;color:#7a8382;line-height:1.65">
+      That header count is a hard-coded constant. One extra row shifts every chat index, so the
+      full-page fetch <b>arms a screen early</b> — a wrong page of chats, with no error and no layout
+      test that can see it. Placing the row before the conditional stale-data notice also keeps it from
+      jumping down when a refresh fails.
+    </p>
+    <table class="kv">
+      <tr><td>Wiring</td><td>One param on the drawer's single wiring point — <b>not</b> the two call sites. It exists in one file precisely so a second copy of this wiring can't be a second copy of every drawer bug.</td></tr>
+      <tr><td>Disabled</td><td>Reuses the existing global in-flight guard. It is not per-project, and that's correct: one create at a time is the right semantic, and a second "New Chat" row from one intent is exactly what that guard exists to prevent.</td></tr>
+      <tr><td>Navigation</td><td>Nothing new. The existing created-chat flow already selects, opens and navigates, with the drawer dismissal behind the nav. The row just has to reach it — do not navigate by hand.</td></tr>
+    </table>
+  </div>
+
+</div>
+
+<h2>6 — Decisions the wireframe depends on</h2>
+<div class="row">
+  <div class="panel" style="flex:1;min-width:300px">
+    <div class="cap">Proposing</div>
+    <ul>
+      <li><span class="dec dec-a">D1</span> <code>item_type = 'agent'</code> — the task's "agent mode"; also the only type whose <code>+</code> already goes straight to a Standard Chat.</li>
+      <li><span class="dec dec-a">D3</span> <code>path = $HOME</code>, resolved server-side. Empty/non-absolute home is a <b>hard error</b>, never a silent <code>""</code> — that would fall through to a <code>/tmp</code> sandbox and the agent would run somewhere the user never asked for.</li>
+      <li><span class="dec dec-a">D6</span> One default per workspace, enforced by a <b>partial unique index</b> (<code>WHERE is_default = 1</code>), not a convention. A double-tap cannot produce two.</li>
+      <li><span class="dec dec-a">D9</span> A brand-new chat appears under the project immediately, and in <b>Recents after the first message</b> — exactly like the project <code>+</code> does today. Making it appear in Recents sooner would diverge the two entry points.</li>
+      <li><span class="dec dec-a">D10</span> <b>Desktop and Android</b>, one backend. Neither client reimplements a create flow — each resolves an item and calls the one it already has.</li>
+      <li><span class="dec dec-a">D11</span> <b>Create it if not found</b>, as the invariant: every workspace has a default, and the code that looks one up creates one on a miss. No surface may have a "no default project" branch.</li>
+      <li><span class="dec dec-a">D12</span> ✅ <b>The items <i>list</i> endpoint creates the default on a miss</b> — the read both clients already make. So neither client needs a "does it exist?" branch: the client code is a pure find, and a legacy workspace is healed the moment anyone opens it. Two obligations come with it, shown in §7.</li>
+      <li><span class="dec dec-a">D13</span> ✅ <b>The Android drawer closes on New Chat.</b> The per-project <code>+</code> deliberately stays open; a <i>top-level</i> action that leaves the drawer up while the chat loads behind it reads as a bug. One dismissal hook, threaded the way <code>onOpenAllChats</code> already is — fired <i>before</i> navigating, so it feels instant rather than like a flicker.</li>
+    </ul>
+  </div>
+  <div class="panel" style="flex:1;min-width:300px">
+    <div class="cap">Still open</div>
+    <ul>
+      <li><span class="dec dec-q">Q1</span> <b>Deleting the only default.</b> The index prevents <i>two</i>, not <i>zero</i>. Left alone, deleting it means the next read misses and re-creates one — the invariant working, but it <i>looks</i> like a bug to someone who just deleted a project. <b>I lean to refusing the delete (409)</b>, but the invariant genuinely tolerates either. This is the one that's truly 50/50.</li>
+      <li><span class="dec dec-q">Q2</span> Should <code>+ Add Item</code> offer a "Default" option? I propose <b>no</b> — the default is system-owned, not user-created.</li>
+    </ul>
+  </div>
+</div>
+
+<h2>7 — What D12 obliges the server to handle</h2>
+<div class="row">
+  <div class="panel" style="flex:1;min-width:300px">
+    <div class="cap">A GET that writes — what you buy</div>
+    <ul>
+      <li>The invariant is enforced in <b>one</b> place, on a read both clients already make.</li>
+      <li><b>Zero</b> client-side ensure logic and <b>zero</b> extra round trip — the client code collapses to a pure find.</li>
+      <li>A legacy workspace is <b>healed the moment anyone opens it</b>, with no data migration and no <code>$HOME</code> resolved at migration time.</li>
+    </ul>
+  </div>
+  <div class="panel" style="flex:1;min-width:300px">
+    <div class="cap">…and what it obliges us to get right</div>
+    <ul>
+      <li><b>The read must not fail because the write failed.</b> A caller who cannot write, an unwritable home, a lost race we could not recover — the list still returns 200 with what it found. One missing row beats a broken sidebar, and the very next read tries again.</li>
+      <li><b>An unknown workspace must create nothing.</b> This is the trap. The list handler does <b>not</b> 404 today — it just returns <code>[]</code> — so there is no existence check to lean on. Without an explicit probe, <code>GET /api/workspaces/does-not-exist/items</code> would create an <b>orphan</b> item row for a workspace that never existed.</li>
+      <li><b>A prefetch, monitor or crawler can now trigger a create.</b> Inherent to the choice. Nothing to do but know it.</li>
+    </ul>
+  </div>
+</div>
+<div class="note" style="margin-top:11px">
+  Both obligations get a test, and the orphan one gets a test <b>over the wire</b> — assert
+  <code>200 []</code> <i>and</i> that no workspace was invented. It is the single easiest way to get D12 wrong, which is
+  why it gets its own step in the plan rather than a footnote.
+</div>
+
+<h2>8 — How this gets verified</h2>
+<div class="note" style="margin-top:0">
+  <b>Not by starting a server and curling it.</b> A functional test
+  (<code>tests/functional/sidebar_new_chat_default_project_test.py</code>) boots a fresh binary through
+  <code>harness.py</code> on a free port in 8080–8199 — <b>never 8081</b> — with <code>HOME</code> pointed at an isolated
+  tmpdir, then asserts that a new chat's resolved cwd is that tmpdir and not a <code>/tmp</code> sandbox. The whole feature
+  is defined by <i>where the home directory lands</i>, and only a harness with a controlled <code>HOME</code> can assert that.
+  It also carries the two D12 wire tests: a legacy workspace with no items comes back <i>with</i> the default, and an unknown
+  workspace id comes back <code>200 []</code> having invented nothing.
+  <br><br>
+  Unit tests cover the rest: the migration's indexes, the ensure idempotence, eight vitest cases for the desktop button's
+  states, and the Android suite — where <code>ChatRegionEndIndexTest</code> must keep passing <b>untouched</b>, because a
+  failure there is the only thing that catches a row placed in the wrong container.
+</div>
+
+</body>
+</html>

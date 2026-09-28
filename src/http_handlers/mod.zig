@@ -63,6 +63,27 @@ pub const workspaceDeleteHandler = @import("workspace_delete.zig").workspaceDele
 pub const workspaceItemsCreateHandler = @import("workspace_items_create.zig").workspaceItemsCreateHandler;
 pub const workspaceItemsListHandler = @import("workspace_items_get.zig").workspaceItemsListHandler;
 pub const workspaceItemsGetHandler = @import("workspace_items_get.zig").workspaceItemsGetHandler;
+pub const workspaceDefaultProjectHandler = @import("workspace_items_default.zig").workspaceDefaultProjectHandler;
+
+test {
+    // Static route-contract tests for the default-project endpoint. A
+    // separate file so this module stays a flat list of handler exports.
+    _ = @import("workspace_items_default_test.zig");
+
+    // The implementation file's OWN inline tests. This line is load-bearing and
+    // its absence is invisible: `pub const workspaceDefaultProjectHandler =
+    // @import("workspace_items_default.zig").workspaceDefaultProjectHandler;`
+    // above makes the file reachable for its *value*, but that does NOT pull
+    // its tests into the test binary. Only a `test { _ = @import(...) }` block
+    // does.
+    //
+    // Nine tests (create, idempotence, per-workspace, alongside-ordinary,
+    // bad-home, empty-id, race, useCaseGet, workspaceExists) were silently not
+    // running for an entire review cycle because this block was missing, and a
+    // freeing bug in that file shipped. Verified with `strings` on the test
+    // binary: the test names were absent. Do not delete this import.
+    _ = @import("workspace_items_default.zig");
+}
 pub const workspaceItemsUpdateHandler = @import("workspace_items_update.zig").workspaceItemsUpdateHandler;
 pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").workspaceItemsReorderHandler;
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;

@@ -164,6 +164,68 @@ def _geom(page) -> dict:
     return g
 
 
+#: Who is painted on top at the two points a user looks at when they decide
+#: the composer is usable: the middle of the textarea, and the middle of the
+#: Send button.
+#:
+#: The scrim is deliberately `pointer-events: none`, which HIDES it from
+#: hit-testing — that is why the whole geometry half of this suite (and
+#: `elementFromPoint` anywhere else) reported a perfectly healthy composer
+#: while the user was looking at an empty card. Flipping the scrim to
+#: `pointer-events: auto` for the duration of the probe makes it hit-testable
+#: again, and because hit-testing walks the same stacking order that painting
+#: does, the returned element is the one the user actually sees.
+_PAINT_ORDER_SCRIPT = r"""
+() => {
+  const card = document.querySelector('.composer-card');
+  const scrim = document.querySelector('.composer-scrim');
+  const ta = document.querySelector('[data-testid="chat-message-textarea"]');
+  const send = document.querySelector('[data-testid="send-message-button"]');
+  const present = { card: !!card, scrim: !!scrim, textarea: !!ta, send: !!send };
+  if (!card || !scrim || !ta || !send) return { missing: true, present };
+
+  scrim.style.pointerEvents = 'auto';
+  const mid = (el) => {
+    const r = el.getBoundingClientRect();
+    return [r.left + r.width / 2, r.top + r.height / 2];
+  };
+  const describe = (el) => {
+    if (!el) return 'null';
+    const tid = el.getAttribute('data-testid');
+    return (
+      el.tagName +
+      (tid ? '#' + tid : '') +
+      (el === scrim ? ' [SCRIM]' : '') +
+      (card.contains(el) ? ' [in-card]' : '')
+    );
+  };
+  const points = {};
+  for (const [name, el] of [['textarea', ta], ['send', send]]) {
+    const [x, y] = mid(el);
+    const hit = document.elementFromPoint(x, y);
+    points[name] = {
+      point: [Math.round(x), Math.round(y)],
+      hit: describe(hit),
+      isScrim: hit === scrim,
+      insideCard: !!(hit && card.contains(hit)),
+    };
+  }
+  const cardRect = card.getBoundingClientRect();
+  return {
+    missing: false,
+    present,
+    // Guards the instrument: if the scrim did not actually become hittable,
+    // the assertions below would pass vacuously.
+    scrimMadeHittable: getComputedStyle(scrim).pointerEvents === 'auto',
+    scrimCoversCard: scrim.getBoundingClientRect().bottom > cardRect.top,
+    points,
+    cardHeight: Math.round(cardRect.height),
+    formHeight: Math.round(ta.getBoundingClientRect().height),
+  };
+}
+"""
+
+
 def test_composer_docks_to_the_column_bottom_as_an_overlay(ui_harness, page) -> None:
     session_id = "sess-float-overlay"
     _open_chat(ui_harness, page, session_id)
@@ -268,4 +330,56 @@ def test_scrim_fades_into_the_transcript_background(ui_harness, page) -> None:
     assert g["scrim"]["height"] > g["dock"]["height"] + 20, (
         f"scrim ({g['scrim']['height']}px) is not taller than the dock "
         f"({g['dock']['height']}px) — there is no fade band above it"
+    )
+
+
+def test_scrim_does_not_paint_over_the_composer(ui_harness, page) -> None:
+    """The scrim is a BACKDROP: the composer card must paint above it.
+
+    The scrim is a positioned descendant of the dock (`position: absolute`,
+    `z-index: auto`) and CSS paints positioned descendants AFTER in-flow,
+    non-positioned content. The card used to be static, so the scrim's opaque
+    band — which spans the dock's full height — painted straight over the
+    input row: the textarea, the paperclip and the Send button all vanished
+    and the user was left with an empty card and a toolbar.
+
+    Every other assertion in this suite still passed while that was true, and
+    so did `elementFromPoint`, because `pointer-events: none` hides the scrim
+    from hit-testing. This probe flips the scrim back to `pointer-events: auto`
+    so hit-testing follows paint order, and requires the composer to be the
+    thing on top at the two points the user actually looks at.
+    """
+    session_id = "sess-float-paintregion"
+    _open_chat(ui_harness, page, session_id)
+
+    p = page.evaluate(_PAINT_ORDER_SCRIPT)
+    print(f"\n[float-composer] paint order: {p}")
+    assert p.get("missing") is not True, f"composer pieces missing: {p}"
+
+    # The instrument itself: without this the assertions below are vacuous.
+    assert p["scrimMadeHittable"], (
+        "could not make the scrim hit-testable, so this probe would pass "
+        f"without proving anything: {p}"
+    )
+    # Precondition — if the scrim did not overlap the card, this test would
+    # not be testing the thing it claims to test.
+    assert p["scrimCoversCard"], (
+        f"the scrim no longer overlaps the card, so paint order is moot: {p}"
+    )
+    for name, point in p["points"].items():
+        assert not point["isScrim"], (
+            f"the scrim is painted over the {name} at {point['point']} — the "
+            f"composer is invisible to the user: {p}"
+        )
+        assert point["insideCard"], (
+            f"something outside the composer card is on top of the {name} at "
+            f"{point['point']} (got {point['hit']}): {p}"
+        )
+
+    # The card must not merely be on top — it must still be a real composer.
+    # A collapsed/zero-height form is the same user-visible bug in another
+    # disguise, and the box maths above would happily pass it.
+    assert p["formHeight"] >= 30, (
+        f"the input row collapsed to {p['formHeight']}px inside a "
+        f"{p['cardHeight']}px card — the composer is not usable: {p}"
     )

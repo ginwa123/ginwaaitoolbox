@@ -11,8 +11,8 @@
 # `refs/pull/<N>/merge`, while the post-merge push run executes on
 # `refs/heads/main` — two DIFFERENT groups, so cancel-in-progress can
 # never link them. Consequence: merging a PR leaves its still-running
-# (now pointless) PR pipeline burning self-hosted runner minutes until
-# it finishes on its own.
+# (now pointless) PR pipeline burning GitHub Actions minutes until it
+# finishes on its own.
 #
 # THE TRICK USED HERE (zero API calls, no token scopes)
 # -----------------------------------------------------

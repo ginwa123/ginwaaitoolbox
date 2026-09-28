@@ -661,14 +661,33 @@ fn fetchToolsFromServerStdio(
     // Retry loop for cold-start race: process.spawn returns before the
     // child (python → SDK connect → _stdin.on('data')) has attached its
     // stdin listener. First attempt may get UnexpectedEof/RecvTimeout.
-    // We retry up to 3 times with a short sleep, matching the Test
-    // handler's strategy (which uses 20 retries for CI worst-case).
+    // We retry with a sleep between attempts, matching the Test
+    // handler's strategy (which uses 20 attempts x 500ms for CI
+    // worst-case).
+    //
+    // The sleep used to be missing: this comment claimed "a short
+    // sleep", the plan that added the loop specified 200ms, and
+    // `git log -S Duration.sleep` on this file is empty — the three
+    // attempts ran back-to-back inside the same cold window, so they
+    // could not possibly have helped. The effect was that a slow
+    // cold-start handshake silently yielded ZERO tools (the error is
+    // swallowed into `continue` in the caller), which red the macOS
+    // cell on the first run on a GitHub-hosted runner — a fresh VM
+    // where the self-hosted MacBook Air always had a warm /bin/sh,
+    // warm dyld cache and a warm page cache. Same bug bites production
+    // on any slow host, not just CI.
+    const retry_attempts: u8 = 10;
+    const retry_delay_ms: i64 = 200;
     var last_err: anyerror = error.MCPServerSpawnFailed;
     var attempt: u8 = 0;
-    while (attempt < 3) : (attempt += 1) {
+    while (attempt < retry_attempts) : (attempt += 1) {
         const client = reg.getOrSpawn(server_name, argv) catch {
             last_err = error.MCPServerSpawnFailed;
-            if (attempt + 1 < 3) {
+            if (attempt + 1 < retry_attempts) {
+                std.Io.Clock.Duration.sleep(
+                    .{ .raw = std.Io.Duration.fromMilliseconds(retry_delay_ms), .clock = .real },
+                    reg.io,
+                ) catch {};
                 continue;
             }
             return error.MCPServerSpawnFailed;
@@ -701,9 +720,12 @@ fn fetchToolsFromServerStdio(
         const resp = do_handshake(client, deadline_ns, cancel_fn) catch |err| {
             last_err = err;
             const is_retryable = err == error.UnexpectedEof or err == error.RecvTimeout or err == error.BrokenPipe;
-            if (is_retryable and attempt + 1 < 3) {
+            if (is_retryable and attempt + 1 < retry_attempts) {
                 reg.markStale(server_name);
-
+                std.Io.Clock.Duration.sleep(
+                    .{ .raw = std.Io.Duration.fromMilliseconds(retry_delay_ms), .clock = .real },
+                    reg.io,
+                ) catch {};
                 continue;
             }
             if (err == error.RecvTimeout) return error.MCPServerRecvFailed;

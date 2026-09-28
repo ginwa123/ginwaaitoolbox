@@ -275,6 +275,13 @@ fun NalarNavGraph(
      */
     onCreateTask: (String, String, CreateTaskRequest) -> Unit = { _, _, _ -> },
     /**
+     * The drawer's top-level "New Chat": create a chat in the workspace's
+     * default project and open it. Kept separate from [onCreateTask] because
+     * this one chooses the project (there is only ever one) and closes the
+     * drawer, which a per-project create must not do.
+     */
+    onNewChat: () -> Unit = {},
+    /**
      * Session ids of chats that were just created, to open.
      *
      * A flow, not a callback into the graph, because the create finishes on a
@@ -663,6 +670,11 @@ fun NalarNavGraph(
                     projectActions = projectActions,
                     recentsExpanded = homeState.isRecentsExpanded,
                     onToggleRecentsSection = onToggleRecentsSection,
+                    // The drawer's top-level New Chat. The screen wraps this
+                    // with the drawer dismissal; nothing here navigates — the
+                    // createdChat collector above does, once the create lands.
+                    isCreatingChat = homeState.creatingTaskInProjectId != null,
+                    onNewChat = onNewChat,
                 )
             }
         }

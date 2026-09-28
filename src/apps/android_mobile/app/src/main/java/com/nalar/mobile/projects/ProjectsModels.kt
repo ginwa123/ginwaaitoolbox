@@ -36,8 +36,19 @@ data class ProjectSummary(
     val workspaceId: String,
     val itemType: String,
     val name: String,
-    /** On-disk cwd. Empty when the server sent null; unused by this feature. */
+    /** On-disk cwd. Empty when the server sent null. */
     val path: String = "",
+    /**
+     * True when this is the workspace's default project (Migration 094) — an
+     * `agent` item whose [path] is the server user's home directory, and where
+     * the drawer's "New Chat" row creates its chat.
+     *
+     * The server guarantees exactly one per workspace: `GET
+     * /api/workspaces/{ws}/items` ensures it on read, so this is normally a
+     * pure local find over an already-loaded list. Defaults to false so the
+     * many existing test fixtures keep compiling.
+     */
+    val isDefault: Boolean = false,
 ) {
     /**
      * The server's `name` is nullable, and `stringField` maps an explicit JSON
