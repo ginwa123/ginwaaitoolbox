@@ -76,7 +76,16 @@ pub const EnsureDefaultProjectError = error{
 
 pub const DefaultProject = struct {
     /// Heap-allocated and owned by the caller. Everything in this struct
-    /// is duped, so the caller frees each field (or uses an arena).
+    /// Every string field is **heap-duplicated from `allocator`** and owned by
+    /// the caller, so [DefaultProject.deinit] can free all four unconditionally.
+    ///
+    /// This is not a stylistic preference. An earlier revision assigned
+    /// `.name = DEFAULT_PROJECT_NAME` (a comptime constant in rodata) on the
+    /// create path while the read path duped it — and `deinit` freed both. Freeing
+    /// a string the allocator never handed out is undefined behaviour: it corrupts
+    /// the allocator's free-list, and the clobbered memory later reads back as
+    /// `0xAA` poison, which reached the UI as a project literally named
+    /// `[ 170, 170, 170, … ]`. Uniform ownership is what makes the free sound.
     id: []const u8,
     workspace_id: []const u8,
     name: []const u8,
@@ -181,15 +190,94 @@ pub fn ensureDefaultProject(
     return DefaultProject{
         .id = item_id,
         .workspace_id = try allocator.dupe(u8, workspace_id),
-        .name = DEFAULT_PROJECT_NAME,
+        // DUPE, not the constant. `deinit` frees every field, and freeing the
+        // comptime string `DEFAULT_PROJECT_NAME` — which lives in rodata and was
+        // never handed out by this allocator — corrupts the free-list. The
+        // clobbered memory then surfaces as `0xAA` bytes in an unrelated
+        // string, which is how a project ended up named
+        // `[ 170, 170, 170, … ]`. The read path below already duped, so this
+        // makes the two paths agree.
+        .name = try allocator.dupe(u8, DEFAULT_PROJECT_NAME),
         .path = try allocator.dupe(u8, home),
         .position = readPosition(allocator, db, item_id),
         .created = true,
     };
 }
 
+/// Is this a name a person could have typed?
+///
+/// The rule is deliberately narrow, because a false positive here **destroys a
+/// user's rename**. So it rejects only what memory corruption can actually
+/// produce, and nothing else:
+///
+///   * empty — a NULL or clobbered name;
+///   * invalid UTF-8 — the 0xAA poison bytes this feature really did emit are a
+///     run of continuation bytes, which is not valid UTF-8 by construction;
+///   * any C0/C1 control character — poison that happened to land on
+///     codepoints that *are* valid would still be caught here.
+///
+/// Everything else is accepted, deliberately including non-ASCII and
+/// punctuation-only names: "café", "проект", and "." are all names someone
+/// chose, and an earlier ASCII-only version of this check would have silently
+/// rewritten all three.
+fn nameLooksUsable(name: []const u8) bool {
+    if (name.len == 0) return false;
+    if (!std.unicode.utf8ValidateSlice(name)) return false;
+
+    // Iterate CODEPOINTS, not bytes. UTF-8 continuation bytes occupy
+    // 0x80..0xBF, so testing raw bytes against the C1 range (0x80..0x9F)
+    // rejects perfectly good non-ASCII names — "проект" has a 0x80
+    // continuation byte in its second character. Only C0 controls and DEL
+    // (0x00..0x1F, 0x7F) are safe to test as bytes, because they can never
+    // appear inside a multi-byte sequence.
+    var view = std.unicode.Utf8View.init(name) catch return false;
+    var it = view.iterator();
+    while (it.nextCodepoint()) |cp| {
+        // C0 controls, DEL, and the C1 range. A control character in a
+        // project name is either corruption or a paste accident, and
+        // rewriting it is the safer of the two outcomes.
+        if (cp < 0x20) return false;
+        if (cp == 0x7F) return false;
+        if (cp >= 0x80 and cp <= 0x9F) return false;
+    }
+    return true;
+}
+
+/// Repair a default project whose stored `name` is garbage, in place.
+///
+/// The allocator bug that produced such names is fixed, but any row already
+/// written before the fix is still sitting in the user's database, and this
+/// endpoint reads on every sidebar load — so it is the cheapest place to heal.
+/// The rewrite is a single indexed UPDATE by primary key, it only fires on a name
+/// no human would have typed, and a user rename is left alone.
+fn repairGarbageName(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    item_id: []const u8,
+    stored_name: []const u8,
+) void {
+    if (nameLooksUsable(stored_name)) return;
+    db.exec(
+        allocator,
+        "UPDATE workspace_items SET name = ? WHERE id = ?",
+        &[_][]const u8{ DEFAULT_PROJECT_NAME, item_id },
+    ) catch |err| {
+        // Non-fatal on purpose: a stale name is cosmetic, and failing the
+        // read over it would be strictly worse than showing it.
+        std.log.warn(
+            "ensureDefaultProject: could not repair the default project's name (non-fatal): {s}",
+            .{@errorName(err)},
+        );
+        return;
+    };
+    std.log.info(
+        "ensureDefaultProject: repaired a corrupted default project name for item {s}",
+        .{item_id},
+    );
+}
+
 /// Read the workspace's default project, or null when it has none.
-/// This is the whole "does a default exist?" query — one row, no writes.
+/// This is the whole "does a default exist?" query — one row on the hot path.
 fn readDefault(
     allocator: std.mem.Allocator,
     db: *nalarcore.sqlite.SqliteBackend,
@@ -205,12 +293,52 @@ fn readDefault(
     const row = (q.next() catch null) orelse return null;
     defer row.deinit(allocator);
 
+    // Dup every field up front, before the row's memory is released by
+    // `defer` — the same dangling-slice trap that `resolveCwdFromTaskOrItem`
+    // fell into, avoided here by never returning a reference into the row.
+    const id = allocator.dupe(u8, row.values[0]) catch return null;
+    const ws = allocator.dupe(u8, workspace_id) catch {
+        allocator.free(id);
+        return null;
+    };
+    const name = allocator.dupe(u8, row.values[1]) catch {
+        allocator.free(id);
+        allocator.free(ws);
+        return null;
+    };
+    const path = allocator.dupe(u8, row.values[2]) catch {
+        allocator.free(id);
+        allocator.free(ws);
+        allocator.free(name);
+        return null;
+    };
+    const position = std.fmt.parseInt(i64, row.values[3], 10) catch 0;
+
+    // Heal a name corrupted by an earlier build, now that we hold an owned copy
+    // and know the row's id. Best effort, and never on a name a user typed.
+    if (!nameLooksUsable(name)) {
+        repairGarbageName(allocator, db, id, name);
+        allocator.free(name);
+        return DefaultProject{
+            .id = id,
+            .workspace_id = ws,
+            .name = allocator.dupe(u8, DEFAULT_PROJECT_NAME) catch {
+                allocator.free(id);
+                allocator.free(ws);
+                return null;
+            },
+            .path = path,
+            .position = position,
+            .created = false,
+        };
+    }
+
     return DefaultProject{
-        .id = allocator.dupe(u8, row.values[0]) catch return null,
-        .workspace_id = allocator.dupe(u8, workspace_id) catch return null,
-        .name = allocator.dupe(u8, row.values[1]) catch return null,
-        .path = allocator.dupe(u8, row.values[2]) catch return null,
-        .position = std.fmt.parseInt(i64, row.values[3], 10) catch 0,
+        .id = id,
+        .workspace_id = ws,
+        .name = name,
+        .path = path,
+        .position = position,
         .created = false,
     };
 }
@@ -400,15 +528,15 @@ fn setupDb(alloc: std.mem.Allocator) !TestCtx {
         \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
-    , .{});
+    , &[_][]const u8{});
     try db.exec(alloc,
         \\CREATE UNIQUE INDEX idx_workspace_items_default_per_workspace
         \\ON workspace_items(workspace_id) WHERE is_default = 1
-    , .{});
+    , &[_][]const u8{});
     try db.exec(alloc,
         \\CREATE INDEX idx_workspace_items_default_lookup
         \\ON workspace_items(workspace_id, is_default)
-    , .{});
+    , &[_][]const u8{});
     try db.exec(alloc,
         \\CREATE TABLE agents (
         \\  id TEXT PRIMARY KEY,
@@ -417,7 +545,7 @@ fn setupDb(alloc: std.mem.Allocator) !TestCtx {
         \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         \\  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
-    , .{});
+    , &[_][]const u8{});
     try db.exec(alloc,
         \\CREATE TABLE agent_tools (
         \\  id TEXT PRIMARY KEY,
@@ -426,8 +554,8 @@ fn setupDb(alloc: std.mem.Allocator) !TestCtx {
         \\  enabled INTEGER NOT NULL DEFAULT 1,
         \\  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         \\)
-    , .{});
-    try db.exec(alloc, "CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, user_id TEXT)", .{});
+    , &[_][]const u8{});
+    try db.exec(alloc, "CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, user_id TEXT)", &[_][]const u8{});
 
     // A real environment map with HOME set, because getHomeDirectory takes
     // one and the whole feature is defined by where HOME lands.
@@ -438,14 +566,22 @@ fn setupDb(alloc: std.mem.Allocator) !TestCtx {
     return .{ .db = db, .threaded = threaded, .env = env, .home = "/home/tester" };
 }
 
-/// Run a `SELECT COUNT(*)` whose WHERE clause needs the item id interpolated.
-/// `template` is a fmt string taking one `{{s}}` (the id). Ids here are
-/// generated by the code under test, never user input, so interpolation is
-/// safe and keeps the assertions readable.
-fn countWhereFmt(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, template: []const u8, id: []const u8) !u32 {
-    var buf: [512]u8 = undefined;
-    const sql = try std.fmt.bufPrint(&buf, template, .{id});
-    var q = try db.query(alloc, sql, .{});
+/// Run a `SELECT COUNT(*)` whose WHERE clause needs the item id(s) interpolated.
+/// `template` is a comptime fmt string; pass one `{{s}}` argument per `{{s}}`
+/// placeholder. Ids here are generated by the code under test, never user
+/// input, so interpolation is safe and keeps the assertions readable.
+///
+/// comptime because Zig 0.16 requires a compile-time format string for both
+/// `bufPrint` and `allocPrint` — a runtime template cannot be formatted at all.
+fn countWhereFmt(
+    db: *sqlite.SqliteBackend,
+    alloc: std.mem.Allocator,
+    comptime template: []const u8,
+    ids: anytype,
+) !u32 {
+    const sql = try std.fmt.allocPrint(alloc, template, ids);
+    defer alloc.free(sql);
+    var q = try db.query(alloc, sql, &[_][]const u8{});
     defer q.deinit();
     const row = (try q.next()) orelse return 0;
     defer row.deinit(alloc);
@@ -455,7 +591,7 @@ fn countWhereFmt(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, template: 
 fn countWhere(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, table: []const u8, where: []const u8) !u32 {
     var buf: [256]u8 = undefined;
     const sql = try std.fmt.bufPrint(&buf, "SELECT COUNT(*) FROM {s} WHERE {s}", .{ table, where });
-    var q = try db.query(alloc, sql, .{});
+    var q = try db.query(alloc, sql, &[_][]const u8{});
     defer q.deinit();
     const row = (try q.next()) orelse return 0;
     defer row.deinit(alloc);
@@ -478,14 +614,14 @@ test "ensureDefaultProject creates the default on a miss, rooted at HOME" {
     // combined WHERE is deliberate: it asserts the type, the flag and the
     // path on the SAME row rather than three independent counts.
     try testing.expectEqual(@as(u32, 1), try countWhere(&ctx.db, alloc, "workspace_items", "workspace_id = 'ws_1'"));
-    try testing.expectEqual(@as(u32, 1), try countWhereFmt(&ctx.db, alloc, "SELECT COUNT(*) FROM workspace_items WHERE id = '{s}' AND item_type = 'agent' AND is_default = 1 AND path = '/home/tester'", p.id));
+    try testing.expectEqual(@as(u32, 1), try countWhereFmt(&ctx.db, alloc, "SELECT COUNT(*) FROM workspace_items WHERE id = '{s}' AND item_type = 'agent' AND is_default = 1 AND path = '/home/tester'", .{p.id}));
     // The 1-1 invariant: the agents row's id AND workspace_item_id are both
     // the item id, which is what `agents.workspace_item_id UNIQUE` relies on.
-    try testing.expectEqual(@as(u32, 1), try countWhereFmt(&ctx.db, alloc, "SELECT COUNT(*) FROM agents WHERE id = '{s}' AND workspace_item_id = '{s}'", p.id));
+    try testing.expectEqual(@as(u32, 1), try countWhereFmt(&ctx.db, alloc, "SELECT COUNT(*) FROM agents WHERE id = '{s}' AND workspace_item_id = '{s}'", .{ p.id, p.id }));
 
     // The tool allowlist must be seeded, or the default project is a
     // NotConfigured dead-end on first use.
-    const seeded = try countWhereFmt(&ctx.db, alloc, "SELECT COUNT(*) FROM agent_tools WHERE agent_id = '{s}'", p.id);
+    const seeded = try countWhereFmt(&ctx.db, alloc, "SELECT COUNT(*) FROM agent_tools WHERE agent_id = '{s}'", .{p.id});
     try testing.expect(seeded > 0);
 }
 
@@ -533,7 +669,7 @@ test "ensureDefaultProject returns the existing default alongside ordinary items
     try ctx.db.exec(alloc,
         \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position)
         \\VALUES ('item_kanban', 'ws_1', 'kanban', 'Board', '/tmp/board', 5)
-    , .{});
+    , &[_][]const u8{});
 
     const p = try ensureDefaultProject(alloc, &ctx.db, "ws_1", &ctx.env, null);
     defer p.deinit(alloc);
@@ -551,8 +687,8 @@ test "ensureDefaultProject writes nothing when the home directory is unusable" {
     var ctx = try setupDb(alloc);
     defer ctx.deinit();
 
-    var empty_buf: [8][]const u8 = undefined;
-    var no_home: std.process.Environ.Map = .init(&empty_buf);
+    var no_home: std.process.Environ.Map = .init(alloc);
+    defer no_home.deinit();
     // HOME present but EMPTY. On POSIX that historically "succeeded" with
     // "" — which is exactly the case that would store path='' and send the
     // agent to a temp sandbox. It must be a hard error instead.
@@ -602,7 +738,7 @@ test "ensureDefaultProject honours the partial unique index under a simulated ra
             \\INSERT INTO workspace_items
             \\  (id, workspace_id, item_type, name, path, position, is_default)
             \\VALUES ('item_loser', 'ws_1', 'agent', 'Project Default', '/home/tester', 0, 1)
-        , .{}),
+        , &[_][]const u8{}),
     );
     // Still exactly one default, and the winner is intact.
     try testing.expectEqual(@as(u32, 1), try countWhere(&ctx.db, alloc, "workspace_items", "workspace_id = 'ws_1' AND is_default = 1"));
@@ -629,7 +765,14 @@ test "useCaseGet serializes the project and reports whether it created it" {
     try testing.expect(std.mem.indexOf(u8, second, "\"created\":false") != null);
 
     // Both must report the SAME id — the envelope, not just the service.
-    const View = struct { item: http_response.WorkspaceItemGetResponse, created: bool };
+    // Mirrors DefaultProjectResponse exactly, `position` included: the parser
+    // is strict about unknown fields, so a View that omits one fails on the
+    // very response it is meant to check.
+    const View = struct {
+        item: http_response.WorkspaceItemGetResponse,
+        created: bool,
+        position: i64,
+    };
     const p1 = try std.json.parseFromSliceLeaky(View, alloc, first, .{});
     const p2 = try std.json.parseFromSliceLeaky(View, alloc, second, .{});
     try testing.expectEqualStrings(p1.item.id, p2.item.id);
@@ -643,7 +786,7 @@ test "workspaceExists distinguishes a real workspace from an invented one" {
     var ctx = try setupDb(alloc);
     defer ctx.deinit();
 
-    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, name) VALUES ('ws_real', 'Real')", .{});
+    try ctx.db.exec(alloc, "INSERT INTO workspaces (id, name) VALUES ('ws_real', 'Real')", &[_][]const u8{});
 
     try testing.expect(workspaceExists(alloc, &ctx.db, "ws_real"));
     // This is the orphan guard. useCaseList returns [] for an unknown
@@ -652,4 +795,92 @@ test "workspaceExists distinguishes a real workspace from an invented one" {
     // existed.
     try testing.expect(!workspaceExists(alloc, &ctx.db, "ws_ghost"));
     try testing.expect(!workspaceExists(alloc, &ctx.db, ""));
+}
+
+// ─── The corrupted-name repair ───────────────────────────────────────────
+//
+// A build with the bad free wrote default projects whose `name` came back as
+// 0xAA poison bytes, which the UI rendered as `[ 170, 170, … ]`. Fixing the
+// allocator stops new damage but leaves those rows in the user's database, so
+// the read path heals them. These tests pin both halves of the rule: garbage is
+// repaired, and a name a person typed is left alone.
+
+test "nameLooksUsable rejects poison bytes and blanks, accepts real names" {
+    // The exact shape the bug produced: 0xAA repeated.
+    var poison: [8]u8 = undefined;
+    @memset(&poison, 0xAA);
+    try testing.expect(!nameLooksUsable(&poison));
+
+    // Invalid UTF-8 (a lone continuation byte), and a blank.
+    try testing.expect(!nameLooksUsable("\x80"));
+    try testing.expect(!nameLooksUsable(""));
+
+    // Real names, including ones a person deliberately chose. A false
+    // negative here means the heal would clobber a user's rename, which is
+    // the one way this repair could do harm.
+    try testing.expect(nameLooksUsable(DEFAULT_PROJECT_NAME));
+    try testing.expect(nameLooksUsable("My Home Chat"));
+    try testing.expect(nameLooksUsable("project 2"));
+    // Non-ASCII is a legitimate name, not corruption. An earlier ASCII-only
+    // version of this check rejected all three of these and would have silently
+    // rewritten a user's rename.
+    try testing.expect(nameLooksUsable("caf\u{00e9}"));
+    try testing.expect(nameLooksUsable("\u{043f}\u{0440}\u{043e}\u{043a}\u{0435}\u{043a}\u{0442}"));
+    // Punctuation-only is odd but is still something a person typed.
+    try testing.expect(nameLooksUsable("."));
+    try testing.expect(nameLooksUsable("---"));
+
+    // Control characters ARE rejected, even when the rest is valid UTF-8 —
+    // this is the second line of defence behind the UTF-8 check.
+    try testing.expect(!nameLooksUsable("New\u{0001}Chat"));
+    try testing.expect(!nameLooksUsable("\u{007f}"));
+}
+
+test "a corrupted default project name is repaired on read" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb(alloc);
+    defer ctx.deinit();
+
+    // Seed a default whose name is poison bytes, the way the bad build did.
+    var poison: [8]u8 = undefined;
+    @memset(&poison, 0xAA);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position, is_default)
+        \\VALUES ('item_poison', 'ws_1', 'agent', ?, '/home/tester', 0, 1)
+    , &[_][]const u8{&poison});
+
+    const p = try ensureDefaultProject(alloc, &ctx.db, "ws_1", &ctx.env, null);
+    defer p.deinit(alloc);
+
+    // The caller gets a usable name, not the poison.
+    try testing.expectEqualStrings(DEFAULT_PROJECT_NAME, p.name);
+    try testing.expect(nameLooksUsable(p.name));
+
+    // And the stored row was actually rewritten, so the next read is clean too.
+    const stored = try countWhereFmt(&ctx.db, alloc,
+        "SELECT COUNT(*) FROM workspace_items WHERE id = '{s}' AND name = 'Project Default'",
+        .{p.id});
+    try testing.expectEqual(@as(u32, 1), stored);
+}
+
+test "a user rename of the default project is never clobbered" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb(alloc);
+    defer ctx.deinit();
+
+    const created = try ensureDefaultProject(alloc, &ctx.db, "ws_1", &ctx.env, null);
+    defer created.deinit(alloc);
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_items SET name = 'Work stuff' WHERE id = ?",
+        &[_][]const u8{created.id},
+    );
+
+    const p = try ensureDefaultProject(alloc, &ctx.db, "ws_1", &ctx.env, null);
+    defer p.deinit(alloc);
+
+    // A name a person chose survives the heal, and the row is not rewritten.
+    try testing.expectEqualStrings("Work stuff", p.name);
+    try testing.expectEqual(@as(u32, 1), try countWhereFmt(&ctx.db, alloc,
+        "SELECT COUNT(*) FROM workspace_items WHERE id = '{s}' AND name = 'Work stuff'",
+        .{p.id}));
 }
