@@ -6000,8 +6000,21 @@ const compactSession = async () => {
 }
 
 /* Lift the composer card off the page. Without this it reads as another
-   flat surface rather than something floating over the transcript. */
+   flat surface rather than something floating over the transcript.
+
+   `position: relative` + `z-index: 1` is load-bearing, not decoration: the
+   scrim is a POSITIONED descendant of the dock (`position: absolute`,
+   `z-index: auto`), and CSS paints positioned descendants AFTER in-flow,
+   non-positioned content. A static card therefore loses to the scrim, whose
+   opaque band covers the dock's full height — the input row, paperclip and
+   Send button all vanish, leaving only whatever the card happens to position
+   itself (the profile picker's `relative` wrapper) on top. `pointer-events:
+   none` on the scrim hides the damage from hit-testing, so `elementFromPoint`
+   still reports the textarea and every geometry test passes. Giving the card
+   its own stacking context above the scrim is what keeps it visible. */
 .composer-dock :deep(.composer-card) {
+  position: relative;
+  z-index: 1;
   box-shadow:
     0 10px 30px -10px rgba(0, 0, 0, 0.7),
     0 2px 8px -2px rgba(0, 0, 0, 0.45);

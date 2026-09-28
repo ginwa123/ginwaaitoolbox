@@ -288,6 +288,27 @@ describe('ChatView floating composer — source contract', () => {
     expect(block).not.toContain('--semantic-sidebar-bg')
   })
 
+  it('lifts the composer card above the scrim so the input stays visible', () => {
+    // The scrim is a POSITIONED descendant of the dock (`position: absolute`,
+    // `z-index: auto`), and CSS paints positioned descendants AFTER in-flow,
+    // non-positioned content. A static card therefore loses to the scrim, whose
+    // opaque band spans the dock's full height — the input row, paperclip and
+    // Send button all vanish behind an empty-looking card.
+    //
+    // `pointer-events: none` on the scrim hides that from hit-testing, so
+    // neither jsdom nor `elementFromPoint` can see it. The card needs its own
+    // stacking context, positioned above the scrim. The paint order itself is
+    // asserted in tests/functional_ui/chatview_floating_composer_test.py
+    // (`test_scrim_does_not_paint_over_the_composer`); this pins the CSS that
+    // decides it, so a later refactor cannot quietly drop the stacking context.
+    const cardRule = chatViewSrc.match(
+      /\.composer-dock\s+:deep\(\.composer-card\)\s*\{[^}]*\}/,
+    )
+    expect(cardRule).not.toBeNull()
+    expect(cardRule![0]).toMatch(/position:\s*relative;/)
+    expect(cardRule![0]).toMatch(/z-index:\s*1;/)
+  })
+
   it('fades the scrim to the transcript background, not the old bar fill', () => {
     // Fading to --semantic-sidebar-bg (#12120f) against a --semantic-content-bg
     // (#181616) transcript would show a 1-shade seam.
