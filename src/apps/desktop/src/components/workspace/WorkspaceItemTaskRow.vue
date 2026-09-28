@@ -158,7 +158,7 @@ const errorRetryLabel = computed(() =>
   <div
     role="button"
     tabindex="0"
-    class="relative flex items-center gap-2 px-2 py-[7px] rounded-lg text-xs group/task cursor-pointer transition-colors duration-150 min-h-[32px] w-full text-left"
+    class="relative flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-[var(--sb-fs-row)] group/task cursor-pointer transition-colors duration-150 w-full text-left"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
     data-task-row
@@ -214,6 +214,10 @@ const errorRetryLabel = computed(() =>
           >⚠</span
         >
       </span>
+      <!-- sb-scope: overlay — a floating card, not a row in the panel.
+           It keeps its own 240px width on purpose (narrower than the
+           kanban card's 280px because sidebar rows are denser) and its
+           own type scale, so Sidebar.spacing.spec.ts skips this block. -->
       <!-- Same tooltip markup as the kanban card, but 240px wide
              (the card uses 280px); sidebar rows are denser so the
              narrower tooltip feels less obtrusive. -->
@@ -246,6 +250,7 @@ const errorRetryLabel = computed(() =>
           {{ errorHeadline }}
         </div>
       </div>
+      <!-- /sb-scope: overlay -->
     </span>
     <!-- Pin indicator (always visible when pinned). -->
     <span
