@@ -167,12 +167,12 @@ for `query.nav` returns zero files, so `?nav=` is free.
 > and the IA work lands on top of it. A consistent 13 px row label and one left edge is what every later change needs in
 > order to look deliberate.
 
-- [ ] **T1 — Spacing + type substrate. (the actual ask)** Add the four `--sb-*` tokens to `style.css`; delete the nav's
+- [x] **T1 — Spacing + type substrate. — DONE `ee9ee05e`** (the actual ask)** Add the four `--sb-*` tokens to `style.css`; delete the nav's
       `p-3`; set every row, section header and hit box to the token values. Split per D12–D17.
       *Ship this on its own.* It is mechanical, it is reviewable line-by-line, and it makes the screenshot measurably
       better before any behaviour changes.
       `Commit: refactor(sidebar): one spacing and type scale for the whole panel`
-- [ ] **T2 — Prove the substrate.** Replace the stale `sidebarSpacing.spec.ts` comment with a real spec asserting the
+- [x] **T2 — Prove the substrate. — DONE `ee9ee05e`** Replace the stale `sidebarSpacing.spec.ts` comment with a real spec asserting the
       four token values and the three font sizes. Add a DOM assertion that every row in all three menus shares one
       left edge. *Without this the drift restarts within a month — that is why nine sizes accumulated in the first place.*
       `Commit: test(sidebar): assert the spacing and type tokens instead of a class string`
@@ -273,3 +273,4 @@ for `query.nav` returns zero files, so `?nav=` is free.
 - [x] Spacing + type audited from source and re-prioritised to T1 — `docs/plans/2026-09-29-sidebar-spacing-type-wireframe.html`
 - [x] Found that the `sidebarSpacing.spec.ts` contract claimed at `ChatsList.vue:911` does not exist in the repo
 - [x] **User reviewed before execution** — approved 2026-09-29 ("okey"). D12–D17 decided; Q4/Q5/Q6 answered yes.
+- [x] **T1 + T2 implemented** (`ee9ee05e`): 8 files, +1 spec, 8/8 new tests, 0 regressions vs an 11-failure baseline
