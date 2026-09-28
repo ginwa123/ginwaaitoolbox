@@ -3,20 +3,33 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick, ref, type Ref } from 'vue'
+import { defineComponent, h } from 'vue'
 import { setActivePinia, createPinia } from 'pinia'
 import AgentChatView from '../components/views/AgentChatView.vue'
+import ChatAppBar from '../components/views/ChatAppBar.vue'
 
 // Stub ChatView — it transitively pulls in many Pinia stores
 // (useNavigationStore, useWorkspacesStore, etc.) and a real SSE bus
-// instance, none of which we need to exercise here. We're only
-// asserting AgentChatView's wrapper behaviour.
-vi.mock('../components/views/ChatView.vue', () => ({
-  default: {
-    name: 'ChatView',
-    props: ['workspaceId', 'taskId'],
-    template: '<div data-testid="stub-chat-view">stub</div>',
+// instance, none of which we need to exercise here. The stub honours
+// the real `showHeader` contract: it renders the shared ChatAppBar
+// when the flag is set and re-emits `close` from the bar's ✕, so
+// these tests assert what AgentChatView actually WIRES rather than
+// ChatView's internals (covered by ChatAppBarParity.spec.ts).
+const ChatViewStub = defineComponent({
+  name: 'ChatView',
+  props: ['chatId', 'chatName', 'type', 'cwd', 'showHeader', 'embedded'],
+  emits: ['close'],
+  setup(props, { emit, slots }) {
+    return () =>
+      props.showHeader
+        ? h(
+            ChatAppBar,
+            { title: props.chatName as string, onClose: () => emit('close') },
+            { extras: () => (slots['app-bar-extras'] ? slots['app-bar-extras']() : null) },
+          )
+        : h('div', { 'data-testid': 'stub-chat-view' }, 'stub')
   },
-}))
+})
 
 function mountChatView(props: Record<string, unknown> = {}) {
   document.body.innerHTML = ''
@@ -31,6 +44,7 @@ function mountChatView(props: Record<string, unknown> = {}) {
       ...props,
     },
     global: {
+      stubs: { ChatView: ChatViewStub },
       provide: { processingState },
     },
   })
@@ -52,10 +66,23 @@ describe('AgentChatView', () => {
     expect(document.querySelector('[role="dialog"]')).toBeFalsy()
   })
 
-  it('emits close when close button clicked', async () => {
+  it('uses the shared ChatAppBar instead of a bespoke header', async () => {
+    mountChatView()
+    await nextTick()
+    // One bar, the shared one — the same element kanban and standard
+    // mode render (see ChatAppBarParity.spec.ts).
+    const bars = document.querySelectorAll('[data-testid="chat-app-bar"]')
+    expect(bars.length).toBe(1)
+    // No leftover bespoke header / text "Close" button.
+    expect(document.querySelector('[data-testid="agent-chat-close"]')).toBeFalsy()
+  })
+
+  it('emits close when the shared app bar ✕ is clicked', async () => {
     const { wrapper } = mountChatView()
     await nextTick()
-    const closeBtn = document.querySelector('[data-testid="agent-chat-close"]') as HTMLButtonElement
+    const closeBtn = document.querySelector(
+      '[data-testid="chat-app-bar-close"]',
+    ) as HTMLButtonElement
     closeBtn.click()
     await nextTick()
     expect(wrapper.emitted('close')).toBeTruthy()

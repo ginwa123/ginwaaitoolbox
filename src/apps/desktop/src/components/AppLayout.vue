@@ -2962,9 +2962,12 @@ defineExpose({
            gives each tab its own body with no extra state. `:key` forces a
            fresh mount per task, preserving useChatScrollRestore's
            per-session scroll contract when the user switches cards.
-           `:show-header` renders ChatView's own header (task name + ✕) so
+           `:show-header` renders the shared ChatAppBar (title + ◫ + ✕) so
            the chat stays closable with tab mode off; the ✕ routes through
-           handleCloseTaskView, which closes the tab when one owns the chat. -->
+           handleCloseTaskView, which closes the tab when one owns the chat.
+           The other two task-chat modes (AgentChatView below,
+           StandardTaskChatView further down) set the same flag, so all
+           three render the identical bar. -->
       <ChatView
         v-else-if="
           activeWorkspaceItem &&
@@ -3119,7 +3122,10 @@ defineExpose({
            chain and render BOTH stacked (config on top, chat
            squeezed at the bottom). Closing the chat (@close →
            handleCloseTaskView clears activeTask) falls back to
-           AgentView. -->
+           AgentView. AgentChatView no longer hand-rolls a header — it
+           forwards `:show-header` + `@close` to its inner ChatView, so
+           agent mode renders the same shared ChatAppBar as the kanban
+           and standard branches. -->
       <AgentChatView
         v-else-if="
           activeWorkspaceItem &&
@@ -3245,6 +3251,12 @@ defineExpose({
         fight the activeTask state the kanban + design branches
         depend on.
 
+        `@close` routes ChatView's app-bar ✕ through
+        handleCloseTaskView, the same handler the kanban and agent
+        branches use. With `:show-header` set on the wrapper, this mode
+        renders the same shared ChatAppBar as the other two, so the
+        title / ◫ / ✕ sit in the same place in all three.
+
         Mount order matters: this v-else-if is AFTER AgentView
         (above), so 'agent' items render AgentView not ChatView.
         It precedes the standalone `<ChatView v-else-if=
@@ -3263,6 +3275,7 @@ defineExpose({
         :task="activeTask"
         :cwd="effectiveChatCwd"
         @update-chat-id="handleUpdateChatId"
+        @close="handleCloseTaskView"
       />
       <ChatView
         v-else-if="activeChatId.startsWith('chat-')"

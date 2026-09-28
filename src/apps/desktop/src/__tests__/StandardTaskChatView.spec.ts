@@ -20,6 +20,9 @@
 //      useChatScrollRestore's scroll position across task
 //      switches (same as the kanban chat branch's `:key="'kanban-chat-' +
 //      activeTask.id"`).
+//   6. `:show-header` is set and ChatView's `close` is re-emitted,
+//      so this mode renders the same shared ChatAppBar as the kanban
+//      and agent modes (cross-mode proof: ChatAppBarParity.spec.ts).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
@@ -32,10 +35,10 @@ import type { Task } from '../stores/workspaces'
 // invariant — NOT the raw task.id). Each new mount registers here.
 const mountedKeys: string[] = []
 
-function mountWrapper(props: {
-  task: Task
-  cwd?: string
-}): { wrapper: VueWrapper; chatViewProps: { chatId: string; chatName: string; cwd: string }[] } {
+function mountWrapper(props: { task: Task; cwd?: string }): {
+  wrapper: VueWrapper
+  chatViewProps: { chatId: string; chatName: string; cwd: string }[]
+} {
   const chatViewProps: { chatId: string; chatName: string; cwd: string }[] = []
   const wrapper = mount(StandardTaskChatView, {
     props,
@@ -47,9 +50,20 @@ function mountWrapper(props: {
         // Also push each mount's :key into `mountedKeys` so we can
         // verify the wrapper's :key reactivity rule (test #5).
         ChatView: {
+          name: 'ChatView',
           template:
-            '<div data-testid="chatview-stub" :data-chat-id="chatId" :data-chat-name="chatName" :data-chat-cwd="cwd" />',
-          props: ['chatId', 'chatName', 'type', 'cwd', 'taskId', 'taskName', 'projectName', 'showHeader'],
+            '<div data-testid="chatview-stub" :data-chat-id="chatId" :data-chat-name="chatName" :data-chat-cwd="cwd" :data-show-header="String(showHeader)" />',
+          props: [
+            'chatId',
+            'chatName',
+            'type',
+            'cwd',
+            'taskId',
+            'taskName',
+            'projectName',
+            'showHeader',
+          ],
+          emits: ['close', 'update-chat-id'],
           mounted() {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const k = (this.$ as any).vnode?.key
@@ -104,7 +118,9 @@ describe('StandardTaskChatView', () => {
   it('forwards cwd verbatim to ChatView', () => {
     const task: Task = { id: 'task_a', name: 'A' } as Task
     const { wrapper: w } = mountWrapper({ task, cwd: '/abs/path/to/cwd' })
-    expect(w.find('[data-testid="chatview-stub"]').attributes('data-chat-cwd')).toBe('/abs/path/to/cwd')
+    expect(w.find('[data-testid="chatview-stub"]').attributes('data-chat-cwd')).toBe(
+      '/abs/path/to/cwd',
+    )
     wrapper = w
   })
 
@@ -129,6 +145,23 @@ describe('StandardTaskChatView', () => {
     expect(w.emitted('update-chat-id')).toBeTruthy()
     expect(w.emitted('update-chat-id')![0]).toEqual(['chat-task_a', 'chat-task_a_renamed'])
     expect(onUpdateChatId).not.toHaveBeenCalled() // sanity
+    wrapper = w
+  })
+
+  it('turns the shared chat app bar on and re-emits its ✕ as close', async () => {
+    // Pre-fix this mode rendered NO bar at all: the sidebar toggle
+    // floated over the transcript and there was no way to leave the
+    // chat from the surface. It must now match the kanban and agent
+    // modes — see ChatAppBarParity.spec.ts for the cross-mode proof.
+    const task: Task = { id: 'task_a', name: 'A' } as Task
+    const { wrapper: w } = mountWrapper({ task })
+    expect(w.find('[data-testid="chatview-stub"]').attributes('data-show-header')).toBe('true')
+
+    // ChatView's `close` is re-emitted verbatim so AppLayout can route
+    // it through handleCloseTaskView, same as the other two branches.
+    w.findComponent({ name: 'ChatView' }).vm.$emit('close')
+    await nextTick()
+    expect(w.emitted('close')).toBeTruthy()
     wrapper = w
   })
 
