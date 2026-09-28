@@ -6,6 +6,92 @@ const LLMModels = @import("../agent/LLMModels.zig");
 const helpers = @import("helpers");
 const parse_thinking = @import("parse_thinking.zig");
 
+/// Skill Evals — the agent evaluates the skills it actually used.
+///
+/// **Default OFF.** `enabled` is the MASTER SWITCH and it is deliberately the
+/// first field: with it false the feature does not exist for this user — the
+/// `run_skill_eval` tool is never injected into the tool list, the prompt rule
+/// self-gates on that absence, and the HTTP surface stays inert. Nothing is
+/// spent and no eval can start until the user opts in.
+///
+/// Why a flag rather than just "the tool is absent by default": the tool list
+/// is seeded per workspace item at creation time, so an existing install would
+/// otherwise never see the feature appear (or disappear) when the user changes
+/// their mind. A config flag is the single place the user flips it.
+///
+/// Why gating TOOL AVAILABILITY is the right lever rather than editing the
+/// prompt text: the static rule block is appended unconditionally so it stays
+/// byte-identical across agents and remains one cache hit rather than N
+/// fragments (see the comment in
+/// `agentic_loop/prompts_build_messages_for_agent_prompt.zig`). Making the
+/// rule *word* itself conditional on config would break that property for
+/// every agent; making the *tool* conditional costs nothing.
+///
+/// Every field is a primitive or an enum on purpose — no owned strings — so
+/// this struct needs no allocation, no dupe, and no deinit participation.
+/// `judge_sub_agent` / `judge_profile` are therefore not here yet: v1 works
+/// with zero configuration (a missing sub-agent name already falls back to the
+/// existing random-fallback path), and they can be added when the judge
+/// sub-agent work lands.
+pub const SkillEvalsConfig = struct {
+    /// Master switch. False = the feature is off and cannot spend anything.
+    enabled: bool = false,
+    /// Upper bound on sub-agent fan-out within a single run. Above this the
+    /// remaining skills are recorded as skipped rather than silently dropped.
+    max_skills_per_run: u32 = 8,
+    /// Daily ceiling on eval runs, counted from `skill_eval_runs.created_at`.
+    max_evals_per_day: u32 = 10,
+    /// How long a `skill_eval_facts` row may sit in the `'computing'` lease
+    /// before another session may steal it. A crashed owner must not be able
+    /// to poison the shared cache forever.
+    fact_lease_seconds: u32 = 300,
+    /// Whether a skill that was *listed* but never loaded is evaluated too.
+    /// Off would hide the "the agent was offered the right skill and ignored
+    /// it" finding, which is a real one, so this defaults on.
+    include_listed_without_loading: bool = true,
+    /// What may be done with a verdict. `propose` records and surfaces it but
+    /// never writes to a skill without a human clicking Apply.
+    apply_mode: ApplyMode = .propose,
+
+    pub const ApplyMode = enum { off, propose, auto_low_risk };
+};
+
+/// Tolerant JSON mirror of `SkillEvalsConfig`.
+///
+/// A separate type from the runtime one for the same reason `ProfileJson` is
+/// separate from `LlmProfile`: the JSON side must survive a user typo.
+/// `apply_mode` is therefore a nullable *string* rather than the enum — an
+/// unrecognised value degrades to `propose` instead of failing the whole
+/// `config.json` parse. That matches how the sub-agent `thinking` /
+/// `temperature` fields behave, where garbage degrades to the default rather
+/// than making the user's config unloadable.
+///
+/// Declared at file scope rather than nested inside `LlmConfigJson` because
+/// Zig requires every struct field to precede any declaration, and the field
+/// that uses this type sits in the middle of that struct.
+const SkillEvalsJson = struct {
+    enabled: bool = false,
+    max_skills_per_run: u32 = 8,
+    max_evals_per_day: u32 = 10,
+    fact_lease_seconds: u32 = 300,
+    include_listed_without_loading: bool = true,
+    apply_mode: ?[]const u8 = null,
+};
+
+/// Map the tolerant `config.json` string to the runtime enum.
+///
+/// Absent or unrecognised yields `.propose` — the safe default, where a verdict
+/// is recorded and surfaced but nothing is written to a skill without a human
+/// clicking Apply. Typo-tolerant on purpose: a bad value must never make the
+/// user's `config.json` unloadable, which is exactly what declaring this field
+/// as an enum on the JSON side would do.
+fn parseApplyMode(raw: ?[]const u8) SkillEvalsConfig.ApplyMode {
+    const s = raw orelse return .propose;
+    if (std.mem.eql(u8, s, "off")) return .off;
+    if (std.mem.eql(u8, s, "auto_low_risk")) return .auto_low_risk;
+    return .propose;
+}
+
 pub const LlmConfig = struct {
     allocator: std.mem.Allocator,
     api_key: []const u8,
@@ -47,6 +133,9 @@ pub const LlmConfig = struct {
     /// startup port default (random when on); the server keeps running
     /// when the flag is off. Mirrors `notify_on_complete` pattern.
     web_launch_enabled: bool = false,
+    /// Skill Evals — the agent evaluates the skills it actually used. Off by
+    /// default; see `SkillEvalsConfig` for the switch and the reasoning.
+    skill_evals: SkillEvalsConfig = .{},
     /// Delay in milliseconds that the workflow sleeps before retrying a
     /// failed `callDynamicAgentNew` call. 0 = no delay (current behavior,
     /// the retry fires immediately on the next loop iteration). Upper
@@ -314,6 +403,11 @@ pub const LlmConfig = struct {
         /// Opt-in: allow the agent to launch URLs in the user's web
         /// browser. Default false. Mirrors `notify_on_complete`.
         web_launch_enabled: bool = false,
+        /// Skill Evals. Absent from `config.json` entirely = disabled, which
+        /// is the shipped default — so an existing install that never heard of
+        /// this feature parses to `enabled: false` and behaves exactly as it
+        /// did before. See `SkillEvalsConfig`.
+        skill_evals: SkillEvalsJson = .{},
         /// Delay in milliseconds before retrying a failed workflow call.
         /// See `LlmConfig.retry_delay_ms` for semantics. Plan
         /// 2026-07-15-retry-delay.
@@ -538,6 +632,15 @@ pub const LlmConfig = struct {
             .notify_on_complete = config_json.notify_on_complete,
             .notify_on_error = config_json.notify_on_error,
             .web_launch_enabled = config_json.web_launch_enabled,
+            .skill_evals = .{
+                .enabled = config_json.skill_evals.enabled,
+                .max_skills_per_run = config_json.skill_evals.max_skills_per_run,
+                .max_evals_per_day = config_json.skill_evals.max_evals_per_day,
+                .fact_lease_seconds = config_json.skill_evals.fact_lease_seconds,
+                .include_listed_without_loading = config_json.skill_evals.include_listed_without_loading,
+                // Tolerant: absent or unrecognised degrades to `propose`.
+                .apply_mode = parseApplyMode(config_json.skill_evals.apply_mode),
+            },
             .retry_delay_ms = config_json.retry_delay_ms,
             // Top-level compaction defaults — restored in plan
             // 2026-07-07-compaction-inline. Persisted as raw optional
@@ -1296,6 +1399,9 @@ pub const LlmConfig = struct {
             .notify_on_complete = self.notify_on_complete,
             .notify_on_error = self.notify_on_error,
             .web_launch_enabled = self.web_launch_enabled,
+            // Plain value copy — `SkillEvalsConfig` owns no memory, so the
+            // clone needs no dupe and `deinit` needs no new free.
+            .skill_evals = self.skill_evals,
             // Top-level compaction defaults — primitive copies, no
             // allocation needed (they're plain optionals).
             .max_capacity_token_model = self.max_capacity_token_model,
@@ -2409,6 +2515,14 @@ pub const LlmConfig = struct {
         \\  "notify_on_complete": false,
         \\  "web_launch_enabled": false,
         \\  "retry_delay_ms": 0,
+        \\  "skill_evals": {
+        \\    "enabled": false,
+        \\    "max_skills_per_run": 8,
+        \\    "max_evals_per_day": 10,
+        \\    "fact_lease_seconds": 300,
+        \\    "apply_mode": "propose",
+        \\    "include_listed_without_loading": true
+        \\  },
         \\  "max_capacity_token_model": null,
         \\  "compaction_threshold_percent": null
         \\}
@@ -2778,4 +2892,122 @@ test "resolveSessionProfileCompat: mirrors old resolveSessionProfile semantics" 
 test {
     _ = @import("config_test.zig");
     _ = @import("parse_thinking_test.zig");
+}
+
+// ─── Skill Evals — the config toggle (default OFF) ───────────────────────
+//
+// These live inline rather than in config_test.zig because they exercise
+// `LlmConfig.LlmConfigJson` and `parseApplyMode`, both of which are private to
+// this file.
+
+test "skill_evals defaults to disabled" {
+    const cfg: SkillEvalsConfig = .{};
+    try std.testing.expect(!cfg.enabled);
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, cfg.apply_mode);
+    try std.testing.expectEqual(@as(u32, 8), cfg.max_skills_per_run);
+    try std.testing.expectEqual(@as(u32, 10), cfg.max_evals_per_day);
+    try std.testing.expectEqual(@as(u32, 300), cfg.fact_lease_seconds);
+    try std.testing.expect(cfg.include_listed_without_loading);
+}
+
+test "skill_evals is disabled when config.json omits the key entirely" {
+    const allocator = std.testing.allocator;
+
+    // The guarantee that matters for an existing install: a config written
+    // before this feature existed must parse to exactly the old behaviour.
+    const parsed = try std.json.parseFromSlice(
+        LlmConfig.LlmConfigJson,
+        allocator,
+        \\{"model":"m","provider":"p"}
+    , .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    try std.testing.expect(!parsed.value.skill_evals.enabled);
+    try std.testing.expect(parsed.value.skill_evals.apply_mode == null);
+}
+
+test "skill_evals defaults to disabled when the block is present but empty" {
+    const allocator = std.testing.allocator;
+
+    const parsed = try std.json.parseFromSlice(
+        LlmConfig.LlmConfigJson,
+        allocator,
+        \\{"skill_evals":{}}
+    , .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    try std.testing.expect(!parsed.value.skill_evals.enabled);
+    // The non-switch knobs still get their documented defaults, so turning the
+    // switch on alone is enough to get a safe, bounded configuration.
+    try std.testing.expectEqual(@as(u32, 8), parsed.value.skill_evals.max_skills_per_run);
+    try std.testing.expectEqual(@as(u32, 300), parsed.value.skill_evals.fact_lease_seconds);
+}
+
+test "skill_evals honours an explicit opt-in" {
+    const allocator = std.testing.allocator;
+
+    const parsed = try std.json.parseFromSlice(
+        LlmConfig.LlmConfigJson,
+        allocator,
+        \\{"skill_evals":{"enabled":true,"max_skills_per_run":3,"apply_mode":"off"}}
+    , .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.skill_evals.enabled);
+    try std.testing.expectEqual(@as(u32, 3), parsed.value.skill_evals.max_skills_per_run);
+    try std.testing.expectEqualStrings("off", parsed.value.skill_evals.apply_mode.?);
+}
+
+test "defaultConfigJson ships the feature off and still parses" {
+    const allocator = std.testing.allocator;
+
+    // The file `Config.init` writes for a brand-new install. Parsing it back
+    // must succeed (a template that does not round-trip would break startup)
+    // and must leave the feature off.
+    const parsed = try std.json.parseFromSlice(
+        LlmConfig.LlmConfigJson,
+        allocator,
+        LlmConfig.defaultConfigJson,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    try std.testing.expect(!parsed.value.skill_evals.enabled);
+    try std.testing.expectEqual(@as(u32, 8), parsed.value.skill_evals.max_skills_per_run);
+    try std.testing.expectEqual(@as(u32, 10), parsed.value.skill_evals.max_evals_per_day);
+    try std.testing.expectEqual(@as(u32, 300), parsed.value.skill_evals.fact_lease_seconds);
+    try std.testing.expect(parsed.value.skill_evals.include_listed_without_loading);
+    try std.testing.expectEqualStrings("propose", parsed.value.skill_evals.apply_mode.?);
+}
+
+test "an unrecognised apply_mode degrades to propose instead of failing the parse" {
+    const allocator = std.testing.allocator;
+
+    // `apply_mode` is a nullable string on the JSON side precisely so a typo
+    // here cannot make the user's whole config.json unloadable. This test
+    // pins both halves of that: the parse succeeds, and the mapping is safe.
+    const parsed = try std.json.parseFromSlice(
+        LlmConfig.LlmConfigJson,
+        allocator,
+        \\{"skill_evals":{"enabled":true,"apply_mode":"proposal"}}
+    , .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    try std.testing.expect(parsed.value.skill_evals.enabled);
+    try std.testing.expectEqualStrings("proposal", parsed.value.skill_evals.apply_mode.?);
+    try std.testing.expectEqual(
+        SkillEvalsConfig.ApplyMode.propose,
+        parseApplyMode(parsed.value.skill_evals.apply_mode),
+    );
+}
+
+test "parseApplyMode maps the known values and is safe on absent input" {
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode(null));
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.off, parseApplyMode("off"));
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.auto_low_risk, parseApplyMode("auto_low_risk"));
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode("propose"));
+    // Unknown, empty and wrong-case all land on the safe default.
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode("PROPOSE"));
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode(""));
+    try std.testing.expectEqual(SkillEvalsConfig.ApplyMode.propose, parseApplyMode("nonsense"));
 }
