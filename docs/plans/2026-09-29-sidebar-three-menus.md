@@ -7,6 +7,16 @@
 **Wireframe:** `docs/plans/2026-09-29-sidebar-three-menus-wireframe.html`
 **Branch:** `worktree/make-the-3-sidebar-left-menu-more-better-1790616053266`
 
+> **Review state (2026-09-29).** The human approved this plan ("okey") **for the spacing & type layer only** — the
+> first wireframe was written against information architecture, the human redirected it to margins and font sizes, and
+> the second wireframe is the one that was read. So:
+> - **D12–D17 (spacing & type): APPROVED. Q4/Q5/Q6: answered yes.** These are ready to implement — T1 and T2.
+> - **D1–D11 (information architecture): NOT yet re-reviewed.** The human redirected away before answering Q1–Q3, and
+>   those decisions are unaffected by the spacing work. They are not blocked on anything in T1–T2, so the two layers can
+>   proceed independently — but do not treat D1–D11 as signed off.
+> - **Q1 (a search box on Projects) is still genuinely open**, and it is still the one decision that would reopen a
+>   recorded 2026-09-22 choice. It gates T10 and nothing else.
+
 **Goal, in priority order.** The sidebar is not *neat* — it uses **nine font sizes, four left edges and three row
 heights** in one 210 px panel, and there is no scale for any of them to be wrong against. That is the first job (D12–D17,
 T1–T2) and it is the one that ships first. Then: give each of the three menus exactly one job — New Chat **acts**,
@@ -82,7 +92,7 @@ over the tree. Each lands on its own PR; none depends on the next except as note
 | **D10** | New Chat gains **`⌘N`** and a trailing **`▾`** split (start in a chosen project/page). Weight, colour, the 40 px height and the `top-24` chevron are **untouched**. | Re-styling the row | The 2026-09-27 plan locked the bare-text treatment explicitly. The split only relocates the hover-only `+` that already exists per project row. |
 | **D11** | The whole nav is **one roving-tabindex keyboard list**, with focus derived from the route like the active row. | A local `focusIndex` ref | A local ref is exactly how the highlight and the keyboard cursor drift apart — the failure `2026-08-06-sidebar-single-active-state-design.md` exists to prevent. |
 
-### Spacing & type — the substrate (added after the user pointed at the real complaint)
+### Spacing & type — the substrate (added after the user pointed at the real complaint) · **APPROVED 2026-09-29**
 
 The decisions above are about meaning. **D12–D17 are about geometry and are the actual ask** — they land first (T1) and
 every later task builds on them. Full audit in
@@ -262,4 +272,4 @@ for `query.nav` returns zero files, so `?nav=` is free.
 - [x] Prior approved decisions carried forward, none silently reopened except Q1, which is raised as a question
 - [x] Spacing + type audited from source and re-prioritised to T1 — `docs/plans/2026-09-29-sidebar-spacing-type-wireframe.html`
 - [x] Found that the `sidebarSpacing.spec.ts` contract claimed at `ChatsList.vue:911` does not exist in the repo
-- [ ] **User reviewed before execution** ← the human's job
+- [x] **User reviewed before execution** — approved 2026-09-29 ("okey"). D12–D17 decided; Q4/Q5/Q6 answered yes.

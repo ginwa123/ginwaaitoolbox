@@ -77,6 +77,7 @@
   .dec { display: inline-block; font-size: 9px; padding: 0 5px; border-radius: 3px; margin-right: 5px; }
   .dec-a { background: rgba(137,146,167,.16); color: #b3bcd0; border: 1px solid rgba(137,146,167,.4); }
   .dec-q { background: rgba(200,140,90,.14); color: #d8ab7a; border: 1px solid rgba(200,140,90,.38); }
+  .dec-ok { background: rgba(111,163,160,.16); color: #8ea4a2; border: 1px solid rgba(111,163,160,.42); }
 
   /* type specimen */
   .spec { display: flex; flex-direction: column; gap: 2px; }
@@ -498,7 +499,7 @@
 <h2>7 — Decisions</h2>
 <div class="row">
   <div class="panel">
-    <div class="cap">Proposing</div>
+    <div class="cap">Approved 2026-09-29 — <span style="color:#8ea4a2">the human answered &ldquo;okey&rdquo;; D12&ndash;D17 are decided, not proposals</span></div>
     <ol style="list-style:none">
       <li><span class="dec dec-a">D12</span><b>Four spacing tokens</b> — <code>--sb-gutter</code> 12,
         <code>--sb-row</code> 32, <code>--sb-indent</code> 12, <code>--sb-hit</code> 24 — added to
@@ -521,18 +522,18 @@
   </div>
 
   <div class="panel">
-    <div class="cap">Still open</div>
+    <div class="cap">Answered 2026-09-29 &mdash; all three accepted as recommended</div>
     <ol style="list-style:none">
-      <li style="margin-bottom:9px"><span class="dec dec-q">Q4</span><b>Does the header text move in by 4&nbsp;px?</b>
+      <li style="margin-bottom:9px"><span class="dec dec-ok">Q4 &mdash; yes</span><b>Does the header text move in by 4&nbsp;px?</b>
         D14 puts every label at 12&nbsp;px, so <b>Settings</b>, <b>Logout</b> and <b>New Chat</b> shift left from
         16 → 12. <b>Recommendation: yes.</b> Twelve is the value most of the panel already uses and it is what makes
         the single edge possible. The alternative — moving the lists out to 16 — spends the same 4&nbsp;px somewhere
         else and leaves the list rows 8&nbsp;px wider than they are now.</li>
-      <li style="margin-bottom:9px"><span class="dec dec-q">Q5</span><b>Do RECENT rows drop 48 → 32&nbsp;px?</b> They
+      <li style="margin-bottom:9px"><span class="dec dec-ok">Q5 &mdash; yes</span><b>Do RECENT rows drop 48 → 32&nbsp;px?</b> They
         carry a git badge, a name, a time pill and a spinner. 32&nbsp;px holds all four, and the saving shows up as
         more projects visible without scrolling. <b>Recommendation: yes</b> — 48 is the one row height that exists
         for no reason other than that it was the first one written.</li>
-      <li><span class="dec dec-q">Q6</span><b>Is 13&nbsp;px too small for a project name?</b> A project is the biggest
+      <li><span class="dec dec-ok">Q6 &mdash; yes</span><b>Is 13&nbsp;px too small for a project name?</b> A project is the biggest
         object in the panel and it would render at the same size as a chat under it. The alternative is 14 for projects
         and 13 for chats, which re-introduces the two-size hierarchy this wireframe exists to remove.
         <b>Recommendation: 13 everywhere</b>, with hierarchy carried by the glyph and the indent — which is what the
@@ -545,6 +546,21 @@
 </div>
 
 <!-- ══════════════════════════════════════════════════════════ -->
+<div class="panel wide" style="margin-top:14px">
+  <div class="zone zone-ok">Recorded 2026-09-29</div>
+  <p style="font-size:11.5px;line-height:1.75;color:#a6a69c">
+    The human reviewed this wireframe and answered <b>&ldquo;okey&rdquo;</b>. <b>D12&ndash;D17 are approved</b> and
+    <b>Q4, Q5 and Q6 are answered yes</b> — the header text moves 16&nbsp;&rarr;&nbsp;12&nbsp;px, RECENT rows drop
+    48&nbsp;&rarr;&nbsp;32&nbsp;px, and project names stay at 13&nbsp;px rather than being promoted to 14&nbsp;px.
+  </p>
+  <p style="font-size:11.5px;line-height:1.75;color:#a6a69c;margin-top:7px">
+    So: <b>four tokens, three type sizes, one left edge, 32&nbsp;px rows.</b> <b>T1 and T2 in the plan are the work.</b>
+    Q5 carries one coupling that is easy to miss — <code>:default-item-height</code> on the
+    <code>VirtualScroller</code> (<code>ChatsList.vue:962</code>) must move 48&nbsp;&rarr;&nbsp;32 with the row, or the
+    virtualiser scrolls against a height nothing renders.
+  </p>
+</div>
+
 <h2>8 — Explicitly not in this wireframe</h2>
 <div class="row">
   <div class="panel wide">
