@@ -211,12 +211,22 @@ def test_create_seven_items_of_mixed_types(
         created_ids.append(body["id"])
     assert len(created_ids) == 7
 
+    # 8, not 7: Migration 094 gives every workspace a DEFAULT project (an
+    # `agent` item rooted at $HOME). This test is about the seven it created,
+    # so the default is excluded by flag rather than by trimming a list —
+    # a positional trim would keep passing if the default ever moved.
     items = _list_items(harness, ws_id)
-    assert len(items) == 7, f"expected 7 items, got {len(items)}"
-    item_types = {it.get("item_type") for it in items}
+    created_items = [it for it in items if not it.get("is_default")]
+    defaults = [it for it in items if it.get("is_default") == 1]
+    assert len(defaults) == 1, f"expected exactly one default project, got {items!r}"
+    assert len(created_items) == 7, f"expected 7 created items, got {len(created_items)}"
+    item_types = {it.get("item_type") for it in created_items}
     assert {"chat", "kanban", "design"} == item_types, (
         f"expected all 3 item types, got {item_types}"
     )
+    # And the default is an agent, which is what makes the New Chat action a
+    # single tap on both clients rather than a two-step picker.
+    assert defaults[0]["item_type"] == "agent", f"{defaults!r}"
 
 
 # ─── Test 7: delete workspace leaves items as orphans ────────────────────
@@ -246,7 +256,10 @@ def test_delete_workspace_orphans_items(
 
     for i in range(3):
         _create_item(harness, ws_id, f"item-{i}", "chat", base_path)
-    assert len(_list_items(harness, ws_id)) == 3
+    # +1: the workspace's DEFAULT project (Migration 094), created with the
+    # workspace. It orphans along with the rest — the cascade gap documented
+    # in this test's header applies to it like any other item.
+    assert len(_list_items(harness, ws_id)) == 4
 
     del_body = harness.http(
         "DELETE", f"/api/workspaces/{ws_id}", expect=200
@@ -260,9 +273,14 @@ def test_delete_workspace_orphans_items(
     )
 
     # Items persist as orphans (current behavior — see header comment).
+    # 4 = the 3 created + the workspace's DEFAULT project (Migration 094),
+    # which orphaned with them.
     items = _list_items(harness, ws_id)
-    assert len(items) == 3, (
-        f"expected 3 orphan items, got {len(items)}: {items!r}"
+    assert len(items) == 4, (
+        f"expected 4 orphan items, got {len(items)}: {items!r}"
+    )
+    assert any(it.get("is_default") == 1 for it in items), (
+        f"the default project should orphan with the rest: {items!r}"
     )
 
 

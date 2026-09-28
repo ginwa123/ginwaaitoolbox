@@ -4436,6 +4436,17 @@ pub const WorkspaceItemInfo = struct {
     path: ?[]u8 = null,
     created_at: ?[]u8 = null,
     updated_at: ?[]u8 = null,
+    /// Migration 094 — 1 when this item is the workspace's default project.
+    /// The default is an `item_type = 'agent'` row whose `path` is the
+    /// server user's home directory, and the "New Chat" action in both the
+    /// desktop sidebar and the Android drawer creates its chat here.
+    ///
+    /// An INTEGER rather than a bool because the column is, and the
+    /// NOT NULL DEFAULT 0 keeps every pre-Migration-094 row at 0 without a
+    /// backfill. Only these two values are ever stored; the partial unique
+    /// index on (workspace_id) WHERE is_default = 1 is what guarantees no
+    /// workspace can have two.
+    is_default: i64 = 0,
 
     pub fn deinit(self: WorkspaceItemInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -4472,7 +4483,7 @@ pub fn getWorkspaceItem(
     db: *sqlite.SqliteBackend,
     id: []const u8,
 ) !?WorkspaceItemInfo {
-    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at FROM workspace_items WHERE id = ?";
+    const sql = "SELECT id, workspace_id, item_type, name, path, created_at, updated_at, is_default FROM workspace_items WHERE id = ?";
 
     var rows = try db.query(allocator, sql, &.{id});
     defer rows.deinit();
@@ -4486,6 +4497,7 @@ pub fn getWorkspaceItem(
             .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
             .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
+            .is_default = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
         };
         row.deinit(allocator);
         return item;
@@ -4589,7 +4601,7 @@ pub fn listWorkspaceItems(
     db: *sqlite.SqliteBackend,
     workspace_id: []const u8,
 ) ![]WorkspaceItemInfo {
-    const sql = "SELECT wi.id, wi.workspace_id, wi.item_type, wi.name, wi.path, wi.created_at, wi.updated_at FROM workspace_items wi WHERE wi.workspace_id = ? ORDER BY wi.position DESC, wi.id ASC";
+    const sql = "SELECT wi.id, wi.workspace_id, wi.item_type, wi.name, wi.path, wi.created_at, wi.updated_at, wi.is_default FROM workspace_items wi WHERE wi.workspace_id = ? ORDER BY wi.position DESC, wi.id ASC";
 
     var rows = try db.query(allocator, sql, &.{workspace_id});
     defer rows.deinit();
@@ -4609,6 +4621,7 @@ pub fn listWorkspaceItems(
             .path = if (row.values[4].len > 0) try allocator.dupe(u8, row.values[4]) else null,
             .created_at = if (row.values[5].len > 0) try allocator.dupe(u8, row.values[5]) else null,
             .updated_at = if (row.values[6].len > 0) try allocator.dupe(u8, row.values[6]) else null,
+            .is_default = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
         };
         try items.append(allocator, item);
         row.deinit(allocator);

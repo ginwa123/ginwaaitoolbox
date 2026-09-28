@@ -178,6 +178,12 @@ class MainActivity : ComponentActivity() {
                             homeViewModel.createTask(itemId, request)
                         }
                     },
+                    // The drawer's top-level "New Chat". No project id and no
+                    // request: HomeViewModel resolves the workspace's default
+                    // project itself (Migration 094) and builds the Standard
+                    // Chat, so the graph and this activity neither have to know
+                    // which project that is.
+                    onNewChat = homeViewModel::newChat,
                     createdChats = homeViewModel.createdChat,
                     onDismissTaskCreateError = homeViewModel::dismissTaskCreateError,
                     onToggleRecentsSection = homeViewModel::toggleRecentsSection,

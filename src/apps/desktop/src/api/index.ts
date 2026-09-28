@@ -558,6 +558,31 @@ export async function getWorkspacesItems(
   )
 }
 
+// Cold-start fallback for the "New Chat" action.
+//
+// The invariant is "every workspace has a default project, and a miss
+// creates one" — and `GET /workspaces/:id/items` (above) already enforces
+// it server-side, so `getWorkspacesItems` normally comes back with the
+// default in it and a client lookup is a pure local find.
+//
+// This endpoint exists for the one case the list cannot cover: the app
+// was open when Migration 094 ran, so the list the store already holds
+// predates the `is_default` column. Without this, a New Chat tap would be
+// a no-op until the user manually refetched.
+//
+// Idempotent — 200 + `created: false` when it already existed, 201 +
+// `created: true` when this call created it. Takes no body: it is a
+// command ("give me the default"), and the name and path are fixed by the
+// invariant.
+export async function getOrCreateDefaultProject(
+  workspace_id: string,
+): Promise<{ item: WorkspaceItem; created: boolean }> {
+  return await apiFetch<{ item: WorkspaceItem; created: boolean }>(
+    `/workspaces/${workspace_id}/default-project`,
+    { method: 'POST' },
+  )
+}
+
 export async function createWorkspace(name: string): Promise<Workspace> {
   return await apiFetch<Workspace>('/workspaces', {
     method: 'POST',

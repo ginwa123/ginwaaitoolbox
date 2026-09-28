@@ -4,6 +4,7 @@ const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const ai_mod = nalarcore.ai_mod;
 const llm_history = nalarcore.llm_history;
+const workspace_default = @import("workspace_items_default.zig");
 
 pub const WorkspaceItemsListError = error{
     OutOfMemory,
@@ -17,6 +18,30 @@ pub const WorkspaceItemsGetError = error{
 };
 
 /// GET /api/workspaces/:workspace_id/items - Get all workspace items
+///
+/// D12: this read also ENSURES the workspace's default project exists.
+///
+/// Both clients (the Vue sidebar and the Android drawer) already call this
+/// endpoint to render their project list, and the invariant is "every
+/// workspace has a default project, and a miss creates one". Enforcing it
+/// here means neither client needs a "does the default exist?" branch at
+/// all — their lookup is a pure find over this response. It also means a
+/// workspace that predates Migration 094 is healed the moment anyone opens
+/// it, with no data migration.
+///
+/// Two rules make writing on a read safe:
+///
+///  1. GATED ON EXISTENCE. `useCaseList` does NOT 404 for an unknown
+///     workspace — it returns `[]`. So there is no existing check to lean
+///     on, and an ungated ensure would create an ORPHAN workspace_items
+///     row for a workspace that never existed. `workspaceExists` gates it.
+///     The status code is deliberately unchanged (200 + []), because
+///     changing it would be a wire-contract change no caller asked for.
+///
+///  2. NON-FATAL. A read must not fail because the write failed — a
+///     read-only caller, an unwritable home, an unrecoverable race. One
+///     missing row beats a broken sidebar, and the very next read tries
+///     again. Every error is swallowed with a warn.
 pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, res: gserverz.HttpResponse) !gserverz.HttpResponse {
     const allocator = ctx.allocator;
 
@@ -26,6 +51,29 @@ pub fn workspaceItemsListHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRe
     const workspace_id = req.params.get("workspace_id") orelse "";
     if (workspace_id.len == 0) {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "workspace_id required" }) });
+    }
+
+    // 1. Existence gate — see rule 1 above.
+    if (workspace_default.workspaceExists(allocator, sqlite_db, workspace_id)) {
+        // 2. Non-fatal ensure — see rule 2 above. `if` on the error union
+        // so the failure branch can log without unwinding the handler.
+        const ensured = workspace_default.ensureDefaultProject(
+            allocator,
+            sqlite_db,
+            workspace_id,
+            di.environment,
+            nalarcore.getLlmConfig(di).tools,
+        );
+        if (ensured) |project| {
+            defer project.deinit(allocator);
+            if (project.created) {
+                // Not an error, just a workspace that had no default —
+                // which means a legacy workspace healed on this read.
+                std.log.info("workspace_items_list: created default project for workspace {s}", .{workspace_id});
+            }
+        } else |err| {
+            std.log.warn("workspace_items_list: default project ensure failed (non-fatal): {s}", .{@errorName(err)});
+        }
     }
 
     const items = useCaseList(allocator, sqlite_db, workspace_id) catch |err| {
@@ -84,6 +132,7 @@ pub fn workspaceItemsGetHandler(ctx: gserverz.HttpContext, req: gserverz.HttpReq
         .path = item.path,
         .created_at = item.created_at,
         .updated_at = item.updated_at,
+        .is_default = item.is_default,
     }) });
 }
 

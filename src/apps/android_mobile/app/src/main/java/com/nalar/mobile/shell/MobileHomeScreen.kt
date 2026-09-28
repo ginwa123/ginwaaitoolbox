@@ -131,6 +131,15 @@ fun MobileHomeScreen(
      */
     recentsExpanded: Boolean = true,
     onToggleRecentsSection: () -> Unit = {},
+    /**
+     * The top-level "New Chat" row's busy flag and its tap.
+     *
+     * Threaded rather than owned here for the same reason the section fold is:
+     * the shell's permanent drawer and the modal one are the same drawer, so a
+     * row wired in only one of them is a row that does nothing in the other.
+     */
+    isCreatingChat: Boolean = false,
+    onNewChat: () -> Unit = {},
 ) {
     val initialResolvedWorkspaceId = initialWorkspaceId
         ?.takeIf { requestedId -> workspaces.any { it.id == requestedId } }
@@ -187,6 +196,21 @@ fun MobileHomeScreen(
                 drawerState.close()
             }
         }
+    }
+
+    // D13: the top-level "New Chat" CLOSES the drawer, unlike the per-project
+    // `+` beside it, which deliberately leaves it open so the reader watches
+    // the new row appear under that project. Two rows that look alike and
+    // behave oppositely is worse than either choice alone.
+    //
+    // The dismissal is fired BEFORE the create starts, not after. The create is
+    // async — the navigation happens later, when HomeViewModel's createdChat
+    // flow emits — so the close animation runs while the request is in flight
+    // and the chat screen mounts into an already-closed drawer. Closing after
+    // would be a visible flicker.
+    val newChatAndClose: () -> Unit = {
+        closeDrawer()
+        onNewChat()
     }
     val selectedWorkspace = workspaces.firstOrNull { it.id == selectedWorkspaceId }
     val selectedChat = scopedChats.firstOrNull { it.id == selectedChatId }
@@ -246,6 +270,8 @@ fun MobileHomeScreen(
                             projectActions = projectActions,
                             recentsExpanded = recentsExpanded,
                             onToggleRecentsSection = onToggleRecentsSection,
+                            isCreatingChat = isCreatingChat,
+                            onNewChat = newChatAndClose,
                         )
                     }
                 },
@@ -291,6 +317,8 @@ fun MobileHomeScreen(
                             projectActions = projectActions,
                             recentsExpanded = recentsExpanded,
                             onToggleRecentsSection = onToggleRecentsSection,
+                            isCreatingChat = isCreatingChat,
+                            onNewChat = newChatAndClose,
                         )
                     }
                 },

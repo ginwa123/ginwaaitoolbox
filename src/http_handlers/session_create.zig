@@ -489,11 +489,20 @@ fn resolveCwdFromTaskOrItem(
     // in legacy schemas (Migration 033 added it as nullable; later
     // migrations tightened it for kanban / design but NOT for
     // other workspace_item subtypes) — guard with len > 0.
+    //
+    // MUST dupe before returning. `row.deinit(alloc)` above frees the
+    // row's value slices, so returning `row.values[N]` hands the caller a
+    // dangling pointer into freed memory. The caller then reads whatever
+    // landed there, finds it is not an absolute path, and silently falls
+    // back to `createSandbox` — so the session's persisted cwd became a
+    // per-session temp dir instead of the project's path, with no error
+    // anywhere. `alloc` is the request arena, so the dup outlives this
+    // function the way the caller's other `effective_cwd` values do.
     const task_cwd = row.values[0];
-    if (task_cwd.len > 0) return task_cwd;
+    if (task_cwd.len > 0) return alloc.dupe(u8, task_cwd) catch return "";
 
     const item_path = row.values[1];
-    if (item_path.len > 0) return item_path;
+    if (item_path.len > 0) return alloc.dupe(u8, item_path) catch return "";
 
     return "";
 }

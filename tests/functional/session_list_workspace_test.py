@@ -282,15 +282,42 @@ def test_session_detail_returns_owning_workspace_id(
 
 def test_workspaces_list_carries_items_count(harness: FunctionalHarness) -> None:
     """Every workspace row carries `items_count` (its workspace_items
-    row count), whether or not is_include_items fetches the rows."""
+    row count), whether or not is_include_items fetches the rows.
+
+    Note the +1 everywhere: Migration 094 gives every workspace a DEFAULT
+    project (an `agent` item rooted at $HOME), created eagerly by
+    `POST /api/workspaces` and healed on read. So "a workspace with nothing
+    in it" is no longer a reachable state — it has the default and nothing
+    else. The numbers are named so the intent survives the next migration
+    that adds another system-owned row.
+    """
     seed = _seed(harness)
     empty_ws = _create_workspace(harness, "no-items-ws")
 
+    # One seeded kanban per workspace, plus the default.
+    EXPECTED = 2
+    # The "no items" workspace has only the default.
+    EXPECTED_EMPTY = 1
+
     r = harness.http("GET", "/api/workspaces", expect=200).json()
     by_id = {w["id"]: w for w in r["workspaces"]}
-    assert by_id[seed["ws_a"]]["items_count"] == 1, by_id[seed["ws_a"]]
-    assert by_id[seed["ws_b"]]["items_count"] == 1, by_id[seed["ws_b"]]
-    assert by_id[empty_ws]["items_count"] == 0, by_id[empty_ws]
+    assert by_id[seed["ws_a"]]["items_count"] == EXPECTED, by_id[seed["ws_a"]]
+    assert by_id[seed["ws_b"]]["items_count"] == EXPECTED, by_id[seed["ws_b"]]
+    assert by_id[empty_ws]["items_count"] == EXPECTED_EMPTY, by_id[empty_ws]
+
+    # Cross-check against the authoritative list rather than trusting the
+    # badge: the count and the rows must agree, and there must be exactly
+    # one default among them.
+    for ws_id, expected in (
+        (seed["ws_a"], EXPECTED),
+        (seed["ws_b"], EXPECTED),
+        (empty_ws, EXPECTED_EMPTY),
+    ):
+        listed = harness.http("GET", f"/api/workspaces/{ws_id}/items", expect=200).json()
+        assert listed["count"] == expected, f"{ws_id}: {listed!r}"
+        defaults = [i for i in listed["items"] if i.get("is_default") == 1]
+        assert len(defaults) == 1, f"{ws_id}: {listed!r}"
+        assert defaults[0]["item_type"] == "agent", f"{ws_id}: {listed!r}"
 
     # Same badge with the items skipped (lazy-load path).
     r2 = harness.http(
@@ -300,8 +327,8 @@ def test_workspaces_list_carries_items_count(harness: FunctionalHarness) -> None
         expect=200,
     ).json()
     by_id2 = {w["id"]: w for w in r2["workspaces"]}
-    assert by_id2[seed["ws_a"]]["items_count"] == 1, by_id2[seed["ws_a"]]
-    assert by_id2[empty_ws]["items_count"] == 0, by_id2[empty_ws]
+    assert by_id2[seed["ws_a"]]["items_count"] == EXPECTED, by_id2[seed["ws_a"]]
+    assert by_id2[empty_ws]["items_count"] == EXPECTED_EMPTY, by_id2[empty_ws]
     assert all(w["items"] == [] for w in r2["workspaces"]), (
         "is_include_items=false must return empty items arrays"
     )

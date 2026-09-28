@@ -685,6 +685,23 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/workspaces/:id", ai_mod.http_handlers.workspaceGetHandler);
     try authed.put("/api/workspaces/:id", ai_mod.http_handlers.workspaceUpdateHandler);
     try authed.delete("/api/workspaces/:id", ai_mod.http_handlers.workspaceDeleteHandler);
+    // Idempotent: returns the workspace's default project, creating it
+    // (item_type='agent', path=$HOME) when there is none.
+    //
+    // This is the COLD-START FALLBACK. GET /api/workspaces/:ws/items
+    // already ensures the default on the normal path, so most clients never
+    // call this. It exists for the one case the list cannot cover: the app
+    // was open when Migration 094 ran, so its loaded list predates the
+    // is_default column and a "New Chat" tap would otherwise be a no-op
+    // until a manual refetch.
+    //
+    // Route order: 3 segments, with a LITERAL `default-project` in position
+    // 4. Every other 3+ segment route under /api/workspaces starts with a
+    // literal `items` in that same position, and no
+    // `POST /api/workspaces/:workspace_id/:param` route exists, so a param
+    // sibling cannot shadow this. `workspace_items_default_test.zig`
+    // asserts both facts statically so a future sibling cannot.
+    try authed.post("/api/workspaces/:workspace_id/default-project", ai_mod.http_handlers.workspaceDefaultProjectHandler);
     try authed.post("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsCreateHandler);
     try authed.get("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsListHandler);
     try authed.post("/api/workspaces/:workspace_id/items/reorder", ai_mod.http_handlers.workspaceItemsReorderHandler);

@@ -63,6 +63,13 @@ pub const workspaceDeleteHandler = @import("workspace_delete.zig").workspaceDele
 pub const workspaceItemsCreateHandler = @import("workspace_items_create.zig").workspaceItemsCreateHandler;
 pub const workspaceItemsListHandler = @import("workspace_items_get.zig").workspaceItemsListHandler;
 pub const workspaceItemsGetHandler = @import("workspace_items_get.zig").workspaceItemsGetHandler;
+pub const workspaceDefaultProjectHandler = @import("workspace_items_default.zig").workspaceDefaultProjectHandler;
+
+test {
+    // Static route-contract tests for the default-project endpoint. A
+    // separate file so this module stays a flat list of handler exports.
+    _ = @import("workspace_items_default_test.zig");
+}
 pub const workspaceItemsUpdateHandler = @import("workspace_items_update.zig").workspaceItemsUpdateHandler;
 pub const workspaceItemsReorderHandler = @import("workspace_items_reorder.zig").workspaceItemsReorderHandler;
 pub const workspaceItemsDeleteHandler = @import("workspace_items_delete.zig").workspaceItemsDeleteHandler;

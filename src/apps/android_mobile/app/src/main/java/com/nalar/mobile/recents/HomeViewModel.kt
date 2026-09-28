@@ -17,6 +17,7 @@ import com.nalar.mobile.projects.ProjectChatsPage
 import com.nalar.mobile.projects.ProjectsClient
 import com.nalar.mobile.projects.RoomProjectsCache
 import com.nalar.mobile.projects.ProjectSummary
+import com.nalar.mobile.projects.TaskTypes
 import com.nalar.mobile.projects.isValidMemoryName
 import com.nalar.mobile.storage.LastPosition
 import com.nalar.mobile.storage.LastPositionStore
@@ -982,6 +983,62 @@ class HomeViewModel(
      * the rule on screen rather than a `400` rendered as a generic failure. The
      * server validates again regardless.
      */
+    /**
+     * The drawer's top-level "New Chat": create a chat inside the workspace's
+     * DEFAULT project.
+     *
+     * The default is an `agent` project whose `path` is the server user's home
+     * directory (Migration 094), and the server ensures it on every items read,
+     * so [defaultProjectId] normally finds it in the list already held here and
+     * this makes **no** network call. The fallback POST covers the one case the
+     * list cannot: the app having been open when the migration ran.
+     *
+     * Hand-off to [createTask] is deliberate and total — the double-tap guard,
+     * the forced project expansion, the Room write-through and the
+     * `_createdChat` emit that makes `NalarNavGraph` navigate all live in
+     * there. Calling `navController.navigate` from here as well is how a chat
+     * gets opened twice.
+     */
+    fun newChat() {
+        val state = _uiState.value
+        val workspaceId = state.selectedWorkspaceId ?: return
+        // The existing global guard. It is not per-project, and that is right
+        // here: one create at a time is the correct semantic, and two "New
+        // Chat" rows from one tap is exactly what it exists to prevent.
+        if (state.creatingTaskInProjectId != null) return
+
+        viewModelScope.launch {
+            // Normally this is a LOCAL FIND and no request happens: the server
+            // ensures the default on every items read, so the list already held
+            // here carries it.
+            val defaultId = defaultProjectId(state.projects)
+            val project: ProjectSummary? = if (defaultId != null) {
+                state.projects.first { it.id == defaultId }
+            } else {
+                // Cold start — the app was open when the migration ran. A
+                // `when` rather than a helper, because there is no getOrNull on
+                // RecentsResult and adding one for a single caller would be
+                // scope creep. SignedOut and Unavailable both land in the error
+                // branch below.
+                when (val resolved = projectsClient.getOrCreateDefaultProject(workspaceId)) {
+                    is RecentsResult.Loaded -> resolved.value
+                    is RecentsResult.Unavailable,
+                    RecentsResult.SignedOut,
+                    -> null
+                }
+            }
+            if (project == null) {
+                // Surface it in the same slot the per-project create uses, and
+                // do NOT navigate. A wrong or invented project id would land
+                // the reader in a project that does not exist, which is worse
+                // than doing nothing.
+                _uiState.update { it.copy(taskCreateError = DEFAULT_PROJECT_ERROR_MESSAGE) }
+                return@launch
+            }
+            createTask(project.id, CreateTaskRequest.StandardChat(TaskTypes.DEFAULT_NEW_CHAT_NAME))
+        }
+    }
+
     fun createTask(itemId: String, request: CreateTaskRequest) {
         val state = _uiState.value
         val workspaceId = state.selectedWorkspaceId ?: return
@@ -1135,6 +1192,15 @@ class HomeViewModel(
 
     companion object {
         /**
+         * Shown when the default project could not be resolved, so the drawer's
+         * "New Chat" appears to do nothing with no explanation. Deliberately
+         * distinct from the per-project create errors: this one is about the
+         * workspace, not about anything the reader typed.
+         */
+        const val DEFAULT_PROJECT_ERROR_MESSAGE =
+            "Could not start a new chat. Try again in a moment."
+
+        /**
          * [positionStore] is passed in rather than built here so the caller
          * controls its lifetime: `MainActivity` holds one instance for the whole
          * process, and the nav graph reads the same one to decide what to resume.
@@ -1195,6 +1261,22 @@ class HomeViewModel(
  * Top level and free of Compose so the precedence can be asserted directly,
  * rather than inferred from which workspace a rendered drawer happened to show.
  */
+/**
+ * The workspace's default project id, or null when this list has none.
+ *
+ * Top level and free of Compose for the same reason [selectWorkspaceId] is:
+ * so the lookup can be asserted directly instead of inferred from which
+ * project a drawn drawer happened to show.
+ *
+ * Null is a real answer, not a bug — it is the cold-start case, where the
+ * caller must ask the server to create one. An empty list and a list of
+ * ordinary projects both return null, and neither may be treated as "use the
+ * first project": the default is a specific, system-owned row, and guessing
+ * one would put a New Chat in an arbitrary project.
+ */
+internal fun defaultProjectId(projects: List<ProjectSummary>): String? =
+    projects.firstOrNull { it.isDefault }?.id
+
 internal fun selectWorkspaceId(
     workspaces: List<WorkspaceOption>,
     currentSelection: String?,

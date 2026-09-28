@@ -486,7 +486,13 @@ def test_reorder_items_changes_display_order(
     # least in their creation order). Capture the actual returned
     # order from /items.
     initial_items = _list_items(harness, ws_id)
-    initial_ids = [i["id"] for i in initial_items]
+    # The workspace also carries its DEFAULT project (Migration 094), which
+    # this test did not create. Exclude it by flag so the comparison is about
+    # the seven items under test.
+    default_items = [i for i in initial_items if i.get("is_default") == 1]
+    assert len(default_items) == 1, f"expected one default project, got {initial_items!r}"
+    created_items = [i for i in initial_items if not i.get("is_default")]
+    initial_ids = [i["id"] for i in created_items]
     # Confirm the same 7 ids are present (in some order).
     assert set(initial_ids) == set(ids), (
         f"created ids should match listed ids:\n"
@@ -506,10 +512,19 @@ def test_reorder_items_changes_display_order(
 
     # The list endpoint returns items in `position DESC` order, so
     # ordered_ids[0] is at the top.
-    reordered_items = _list_items(harness, ws_id)
+    #
+    # The workspace's DEFAULT project (Migration 094) is excluded by flag
+    # rather than by a `[:7]` slice. It was at the top before the reorder and
+    # the reorder pushed the seven above it, so a positional slice silently
+    # started comparing the wrong seven ids — which is exactly the kind of
+    # assertion that keeps passing while testing something else.
+    reordered_items = [
+        i for i in _list_items(harness, ws_id) if not i.get("is_default")
+    ]
     reordered_ids = [i["id"] for i in reordered_items]
-    assert reordered_ids[:7] == new_order, (
-        f"reorder didn't apply:\n  expected: {new_order}\n  got:      {reordered_ids[:7]}"
+    assert len(reordered_ids) == 7, f"expected 7 reordered items, got {reordered_ids!r}"
+    assert reordered_ids == new_order, (
+        f"reorder didn't apply:\n  expected: {new_order}\n  got:      {reordered_ids}"
     )
 
 
