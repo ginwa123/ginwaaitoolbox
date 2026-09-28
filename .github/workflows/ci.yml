@@ -1699,3 +1699,171 @@ jobs:
           fi
           rm -f /tmp/functional-test-ui-start.$$
 
+
+  android-functional-test:
+    # The Android client's functional UI suite: a real `nalar` binary against an
+    # isolated tmpdir HOME, ten scenarios seeded into that instance's own
+    # `agent.db`, and the **real MainActivity** driven on an emulator with
+    # assertions on the rendered Compose tree.
+    # See docs/superpowers/plans/2026-09-27-android-functional-ui-test.md.
+    #
+    # Emulator-only by construction, not by preference: the debug APK is built
+    # to reach the host at 10.0.2.2, which is the *emulator's* alias for this
+    # machine's loopback interface, so a physical device cannot run it. The
+    # suite refuses to guess — tests/functional_android/conftest.py skips with
+    # that reason when it cannot find an emulator.
+    #
+    # This is the gate that keeps the suite from rotting. It was written as a
+    # local-only suite first, and an emulator-only test that nobody runs is the
+    # failure this job exists to prevent: the module already learned that lesson
+    # once, when `NalarNavGraphLaunchGateTest` sat unrun on an emulator while
+    # two bugs survived a green build.
+    #
+    # The unit tests are a *different* job (the `android-unit-test` job in
+    # flight as PR #654). This one covers only what needs a device.
+    name: android-functional-test (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    # Chained after the backend matrix so a broken build is not re-tested on an
+    # emulator. Same shape as functional-test and functional-test-ui.
+    needs: backend
+    # A cold AVD boot, one Gradle build + install, then ten scenarios. The
+    # jobs above are ~5 min; an emulator is a different order of magnitude and
+    # the default 360 would cut a working run off at the boot.
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (Ubuntu)
+        # A GitHub-hosted runner is a fresh VM per job, so every job installs
+        # its own. The list is shared rather than copy-pasted — see the script.
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Set up JDK 17
+        # Load-bearing, not cosmetic. AGP 8.7.3 rejects a newer JDK and aborts
+        # with a bare version number and no stack trace — on a machine
+        # defaulting to JDK 27 the whole error message is `27`.
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        # `packages` is load-bearing: without it the action runs
+        # `sdkmanager tools`, and Google removed that package, so sdkmanager
+        # exits 1 with "Failed to find package 'tools'". Listing what we need
+        # skips that call. platforms;android-35 matches compileSdk = 35.
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Set up Gradle
+        # Caches the distribution and the dependency graph. Without it every run
+        # re-downloads the whole AndroidX/Compose tree.
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Setup Python 3.12
+        # Pinned because the venv below is cached, and a venv is only valid for
+        # the exact minor version that created it.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache the python venv
+        # Shares the key prefix with the other two suites so this job restores
+        # the venv `functional-test` already built instead of making a third
+        # cold one. Caches are immutable, so the first job to finish saves and
+        # the rest simply get "Cache already exists".
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/nalar-ci-venv
+          key: v3-py-${{ runner.os }}-py312-android-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_android/requirements.txt') }}
+          restore-keys: |
+            v2-py-${{ runner.os }}-py312-
+
+      - name: Enable KVM
+        # GitHub-hosted Linux runners do expose /dev/kvm, but the runner user
+        # cannot open it until it is in the `kvm` group. Skipping this gives a
+        # permissions error that reads like broken hardware acceleration.
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Build the nalar binary the harness boots
+        # `install:linux` produces `zig-out/bin/nalarcore-linux-x86_64`, which
+        # is the target-triple-named artifact — NOT the unqualified `nalar`
+        # that the default `install` step writes. Same command the other
+        # functional jobs' build path uses.
+        run: zig build install:linux
+
+      - name: Install the suite's python dependencies
+        env:
+          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+        run: |
+          set -euo pipefail
+          if [ ! -x "$NALAR_FUNC_VENV_DIR/bin/python" ]; then
+            python3 -m venv "$NALAR_FUNC_VENV_DIR"
+          fi
+          "$NALAR_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional/requirements.txt
+          "$NALAR_FUNC_VENV_DIR/bin/pip" install -q -r tests/functional_android/requirements.txt
+
+      - name: Run the functional UI suite on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        env:
+          # The exact artifact `zig build install:linux` installs. Note the
+          # name: `install:linux` produces `nalarcore-linux-x86_64`, NOT
+          # `nalar` — `nalar` comes from the default `install` step that
+          # `install:linux:system` and the functional-test job use. Pinning the
+          # wrong one here would still pass, because the suite's resolver falls
+          # through to the other candidates, which is exactly why it is worth
+          # naming the right file: a silent fallback hides a broken pin.
+          NALAR_BIN: ${{ github.workspace }}/zig-out/bin/nalarcore-linux-x86_64
+          PYTHONPATH: tests/functional:tests/functional_ui:tests/functional_android
+          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
+        with:
+          # Matches compileSdk. A mismatch between the emulator's API level and
+          # the one the app was built against is a device-only failure that
+          # nobody can reproduce locally.
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          # The action's own default boot timeout is shorter than a cold boot on
+          # a loaded runner.
+          emulator-boot-timeout: 900
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          disable-animations: true
+          script: |
+            set -euo pipefail
+            # `ANDROID_SERIAL` is deliberately NOT set: with a single clean adb
+            # server the suite discovers the emulator itself, and hardcoding
+            # `emulator-5554` would break the day the action picks another port.
+            # (The suite's own README says to set it locally, where a real phone
+            # attached alongside the emulator is the normal case.)
+            "$NALAR_FUNC_VENV_DIR/bin/python" -m pytest tests/functional_android/ -q -rs \
+              2>&1 | tee /tmp/android-functional-test.log
+
+      - name: Upload the reports
+        # `if: always()` so a failing run still publishes the instrumented JUnit
+        # XML and the pytest log instead of only a red check.
+        #
+        # `continue-on-error` because artifact storage is an account-level quota
+        # this repo does not control, and hitting it turned an otherwise green
+        # run red before. The report is a diagnostic; the gate is the step above.
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v5
+        with:
+          name: android-functional-test-report
+          path: |
+            /tmp/android-functional-test.log
+            src/apps/android_mobile/app/build/outputs/androidTest-results/
+            src/apps/android_mobile/app/build/reports/
+          if-no-files-found: ignore
+          retention-days: 7
