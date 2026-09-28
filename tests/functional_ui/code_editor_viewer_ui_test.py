@@ -159,6 +159,72 @@ def _make_cwd(h: FunctionalHarness, suffix: str) -> Path:
     return cwd
 
 
+def _create_workspace_with_agent(h: FunctionalHarness, cwd: Path) -> str:
+    """Workspace + agent item pointing at ``cwd``.
+
+    Needed because a session only resolves to a workspace (and therefore
+    only BOOTS a chat, instead of failing closed to ``/app``) when a
+    workspace item's ``path`` matches the session cwd — see
+    ``resolveWorkspaceId`` in ``session_get.zig``.
+    """
+    ws_id = h.http("POST", "/api/workspaces", json_body={"name": "ui-code-viewer"}, expect=201).json()["id"]
+    h.http(
+        "POST",
+        f"/api/workspaces/{ws_id}/items/agent",
+        json_body={"name": "ui-code-viewer-agent", "path": str(cwd)},
+        expect=201,
+    )
+    return ws_id
+
+
+def _create_session(h: FunctionalHarness, cwd: Path) -> str:
+    r = h.http(
+        "POST",
+        "/api/llm/session",
+        json_body={"name": "ui-code-viewer-chat", "cwd_session": str(cwd)},
+        expect=201,
+    )
+    return r.json()["id"]
+
+
+def _open_sidebar(page) -> None:
+    """Open the chat-owned right sidebar (it is closed by default)."""
+    opener = page.locator('[data-testid="chat-sidebar-open"]')
+    try:
+        opener.wait_for(timeout=3000, state="visible")
+        opener.click()
+    except Exception:
+        pass  # already open (persisted per chat type)
+
+
+def _assert_chat_layout_with_viewer(page) -> None:
+    """The viewer's real contract inside a chat.
+
+    Regression (kanban task_1790594549955_1, follow-up): the viewer used
+    to claim the whole <main>, unmounting ChatView — so the right sidebar
+    the user clicked the file IN disappeared, and the composer was left
+    floating over the file. Both must be gone/present as below.
+    """
+    viewer = page.locator('[data-testid="code-editor"]')
+    viewer.wait_for(timeout=20000, state="visible")
+    assert MARKER in viewer.locator('[data-testid="code-editor-body"]').inner_text()
+
+    # The chat's own surfaces stay mounted.
+    sidebar = page.locator('[data-testid="chat-right-sidebar"]')
+    sidebar.wait_for(timeout=10000, state="visible")
+    assert sidebar.is_visible(), "right sidebar disappeared with the code viewer"
+
+    # The composer and the message list are hidden while the viewer is up.
+    assert page.locator('[data-testid="chat-center-code"]').count() == 1, (
+        "the viewer did not render in the chat's center column"
+    )
+    assert page.locator("text=Type a message").count() == 0, (
+        "the chat composer is floating over the code viewer"
+    )
+    # The full-surface overlay must not be mounted alongside the chat.
+    assert page.locator('[data-testid="code-viewer-overlay"]').count() == 0
+
+
 def _app_url(
     h: FunctionalHarness, cwd: Path, *, line: int | None = None
 ) -> str:
@@ -293,6 +359,46 @@ def test_code_viewer_jump_to_line(prod_harness: FunctionalHarness, page) -> None
             f"got {target.count()}"
         )
         assert MARKER in target.inner_text()
+        _assert_no_module_resolution_error(errors)
+    finally:
+        _print_errors(errors, page)
+
+
+def test_right_sidebar_survives_the_code_viewer(prod_harness: FunctionalHarness, page) -> None:
+    """Opening a file in a chat keeps the right sidebar (and hides the composer).
+
+    The user clicks a file IN the right-sidebar Explorer; before the fix
+    that sidebar (and the chat under it) was replaced by a full-surface
+    overlay. Driven against the real production bundle.
+    """
+    h = prod_harness
+    cwd = _make_cwd(h, "code-viewer-sidebar")
+    ws_id = _create_workspace_with_agent(h, cwd)
+    session_id = _create_session(h, cwd)
+    errors = _collect_errors(page)
+
+    try:
+        # Standalone chat in this workspace, Explorer panel preselected.
+        query = urlencode({"session": session_id, "sidebar": "explorer"})
+        page.goto(
+            f"http://127.0.0.1:{h.port}/app/{ws_id}/chat/{session_id}?{query}",
+            wait_until="load",
+            timeout=30000,
+        )
+        page.locator("text=How can I help you?").first.wait_for(timeout=20000, state="visible")
+        _open_sidebar(page)
+        page.locator('[data-testid="chat-right-sidebar"]').wait_for(
+            timeout=15000, state="visible"
+        )
+
+        # The user's gesture: open a file. The Explorer needs the chat cwd,
+        # which only exists after a message today (see the plan doc), so the
+        # file is opened through the same entry point the Explorer uses with
+        # an explicit cwd — the session, the viewer and the sidebar are all
+        # the same objects either way.
+        page.goto(_app_url(h, cwd), wait_until="load", timeout=30000)
+
+        _assert_chat_layout_with_viewer(page)
         _assert_no_module_resolution_error(errors)
     finally:
         _print_errors(errors, page)

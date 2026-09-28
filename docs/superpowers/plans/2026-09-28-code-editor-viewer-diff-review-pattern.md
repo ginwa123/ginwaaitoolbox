@@ -41,8 +41,57 @@ The dead save path is removed end-to-end (`CodeEditor.vue` save button/readonly 
 - [x] Full frontend unit suite: **4130 passed / 27 failed — the identical 27 pre-existing failures on `main`** (ChatView.center*, renderResponse, FilePickerDialog.windows, workspacesStore*, …, verified by running both checkouts and diffing the failure lists: zero new regressions).
 - [x] `pnpm run type-check` (vue-tsc) clean; `oxlint` + `eslint` clean on every touched file (`api/index.ts` prettier drift is pre-existing on `main`).
 
+## Follow-up (same PR) — the viewer must not eat the chat
+
+User report after the first fix: *"the sidebar right i mean"* (the right
+sidebar vanished when a file was opened **from it**), plus a screenshot of
+the chat composer floating over the viewer.
+
+Both had one cause: `AppLayout` claimed the whole `<main>` for the viewer
+(`currentView === 'code-editor'`, `absolute inset-0 z-10`), which stopped
+the `<main>` chain and unmounted `ChatView` — the owner of the right
+sidebar, the chat header and the composer. (The standalone
+`<ChatView v-else-if>` lives in a SECOND chain, because a plain `v-if`
+dialog branch splits the chain mid-way — so ChatView could also still
+paint *under* the overlay, which is the composer in the screenshot.)
+
+Fix, mirroring the stacked center diff that already lives in that slot:
+
+- `AppLayout` **provides** the open-file session (`CODE_VIEWER_STATE_KEY`,
+  the same session refs — no copies) and keeps the overlay **only** as a
+  fallback: `currentView` claims `code-editor` when
+  `!chatSurfaceActive.value`.
+- `chatSurfaceActive` is the union of the chain's chat branches (inline
+  task chats for kanban/agent/folder items, plus the standalone chat) and
+  excludes the design dialog and the chats list — so the "which surface
+  is on screen" question has exactly one definition.
+- `ChatView` renders `CodeViewerStage` in its center column
+  (`data-testid="chat-center-code"`) beside `ChatRightSidebar`, and
+  messages + composer are hidden by ONE gate,
+  `showCenterStage = showCenterDiff || showCodeViewer`, so the composer can
+  never float over either center stage. State is preserved underneath
+  (`v-show`), exactly like the diff.
+- The loading/error/file trio moved out of `AppLayout` into
+  `views/CodeViewerStage.vue` so both hosts render identical markup.
+
+Verification: `ChatView.codeViewer.spec.ts` (9 static contract checks over
+both sources), `CodeViewerStage.spec.ts` (7 behavioural), two new
+AppLayout mount tests (chat ⇒ no overlay + ChatView rendered; no chat ⇒
+overlay), and a fourth production-bundle UI test that drives a real chat
+and asserts the sidebar is visible, `chat-center-code` is the surface,
+the composer is gone and no overlay exists — **4 passed in 6.9 s**. Full
+suite: 4151 passed / 25 failed (the 25 are the pre-existing ones; the two
+center-diff gate specs this change touched now pass again). vue-tsc,
+oxlint, eslint clean.
+
+Numbers above are from the first verification pass; the branch was later
+rebased onto `main` (which had landed the floating-composer feature —
+conflict resolved by keeping `main`'s `composer-dock` markup and swapping
+only the visibility gate). Re-verified on the rebased branch: 4/4
+production-bundle UI tests, 4169 passed / 25 pre-existing failures, zero
+new against the new `main` baseline.
+
 ## Out of scope (follow-ups worth their own card)
 
 1. **`PropertiesPanel.vue`** carries the same `@vite-ignore` monaco import, so its design-HTML editor falls back to the textarea placeholder ("TODO: install monaco-editor…") in production. Unlike the code viewer it degrades gracefully, and the fix is a bundle-size decision (monaco as a lazy chunk vs. another zero-dep editor), so it is deliberately left alone.
-2. **The code-editor overlay is `absolute inset-0 z-10` over the whole `<main>`**, and `currentView` returns `code-editor`, which unmounts `ChatView` — that is why the right sidebar disappears when a file is opened from it (kanban `task_1790229937829_0`, still on hold). Out of scope here: fixing it means rendering the viewer inside ChatView's center column so the sidebar survives.
-3. **A fresh chat has no sidebar cwd**: `GET /api/llm/session/:id/messages` returns `cwd: null` while the session has no messages, and `ChatView.effectiveCwd` reads only that endpoint, so the Explorer shows "Pass a cwd to browse files" until the first message. That is why the functional test drives the reader through the deep link (`?view=code-editor&file=…&cwd=…`) rather than the Explorer click; the click path itself is unchanged and covered by `AppLayout.urlPersist.spec.ts` + `useCodeEditorSession.spec.ts`.
+2. **A fresh chat has no sidebar cwd**: `GET /api/llm/session/:id/messages` returns `cwd: null` while the session has no messages, and `ChatView.effectiveCwd` reads only that endpoint, so the Explorer shows "Pass a cwd to browse files" until the first message. That is why the functional test drives the reader through the deep link (`?view=code-editor&file=…&cwd=…`) rather than the Explorer click; the click path itself is unchanged and covered by `AppLayout.urlPersist.spec.ts` + `useCodeEditorSession.spec.ts`.

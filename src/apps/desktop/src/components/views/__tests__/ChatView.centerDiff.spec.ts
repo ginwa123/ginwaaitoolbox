@@ -49,9 +49,14 @@ describe('ChatView center-stage diff', () => {
     expect(chatViewSrc).toMatch(/diff-review-comments/)
   })
 
-  it('hides messages+composer while the diff shows (state preserved)', () => {
-    expect(chatViewSrc).toMatch(/v-show="!showCenterDiff" ref="messagesWrapperRef"/)
-    expect(chatViewSrc).toMatch(/v-if="!hideInput"\s*\n\s*v-show="!showCenterDiff"/)
+  it('hides messages+composer while a center stage shows (state preserved)', () => {
+    // One gate for BOTH center stages (stacked diff + code viewer) so the
+    // composer can never float over either one.
+    expect(chatViewSrc).toMatch(/v-show="!showCenterStage"\s+ref="messagesWrapperRef"/)
+    expect(chatViewSrc).toMatch(/v-if="!hideInput"\s+v-show="!showCenterStage"/)
+    expect(chatViewSrc).toMatch(
+      /const showCenterStage = computed\(\(\) => showCenterDiff\.value \|\| showCodeViewer\.value\)/,
+    )
   })
 
   it('drops stale diffs on cwd change', () => {
