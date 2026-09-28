@@ -3,7 +3,7 @@
 **Task** `task_1790616305483_5` · "make the 3 button more better"
 **Wireframe** [`docs/plans/2026-09-29-kanban-task-detail-3-buttons-wireframe.html`](./2026-09-29-kanban-task-detail-3-buttons-wireframe.html)
 **Component** `src/apps/desktop/src/components/kanban/KanbanTaskDetail.vue:1812-1907`
-**Status** 🟡 planning — wireframe written, awaiting human pick. **No code changed yet.**
+**Status** 🟢 IMPLEMENTED — the human picked **Option B (split button)** from the wireframe (§4). See §8 for the as-built record.
 
 ---
 
@@ -167,3 +167,74 @@ should be added — it asserts imperatively.
 Open [`2026-09-29-kanban-task-detail-3-buttons-wireframe.html`](./2026-09-29-kanban-task-detail-3-buttons-wireframe.html).
 Hover the drawn buttons in §3 and §7 to see the hover state the proposal adds —
 on the "as shipped" row in §1, nothing happens, which is defect 4.
+
+---
+
+## 8. As built — Option B, the split button
+
+The human picked **Option B** (§4 of the wireframe) over the recommended
+Option A. What shipped:
+
+```
+create mode   [ Cancel ]     [ ▶ Create task & run agent | ▾ ]  ▾ → "Create task only"
+                ghost            gradient, rounded-l + seam      gradient, rounded-r
+
+edit mode     [ Cancel ]     [ Save | ▾ ]                        ▾ → "▶ Start agent"
+                ghost            gradient, rounded-l + seam      gradient, rounded-r
+```
+
+The left half is the action we expect you to want; the caret menu holds the
+alternative. Create mode's half is the run — which is also what <kbd>Enter</kbd>
+on the name field does, so the visual default and the keyboard default agree.
+Edit mode swaps which half is primary.
+
+**Decisions that changed from the proposal in §3**, because Option B moves a
+button into a menu:
+
+- **D1 → B.** Implemented as drawn in §4.
+- **D2 → the run** (unchanged). The run is the left half in create mode.
+- **D4 (per-action pending) adapted.** With one narration slot rather than
+  two, the pressed action's verb lands on the primary half:
+  `pendingAction === 'create'` → "Creating…", `'create_and_run'` → "Starting…",
+  `null` → "Creating…". The `null` fallback survives, which is why the
+  existing `creatingGuard` specs needed no rewrite of their *contract* —
+  only of the two labels that moved.
+- **D7 applied.** Subtitle is now "Create a new task, or start an agent on it
+  right away."
+
+**The testid contract held — better than expected.** The plan predicted ~30
+sites would need rewriting. Actual: **4 assertions in 2 files**, all of them
+label assertions, because the menu is toggled with `v-show` rather than `v-if`
+so its items stay in the DOM and jsdom's `element.click()` dispatches on a
+`display:none` node just fine. All 69 `data-testid` consumers still resolve;
+`KanbanView.spec.ts` (41 tests) passed untouched, including the
+`mousedown`-then-`click` tag-draft sequence at `:880-885`.
+
+Playwright is the one place that genuinely needs the menu opened — a real
+browser refuses to click `display:none` — so the three create-mode sites in
+`tests/functional_ui/` now click the caret first.
+
+**New spec** `KanbanTaskDetailDialog.commitSplit.spec.ts` (10 tests): the
+split's structure per mode, caret open/close + `aria-expanded`, menu-item
+commit closing the menu, Escape peeling one layer instead of closing the
+panel, the caret sharing the primary half's disabled gate, and the four
+per-action pending-narration cases.
+
+**Verification**: `vitest --run` on `KanbanTaskDetailDialog*` + `KanbanView`
+= **184 passed, 0 failed**. `vue-tsc --noEmit` clean for the component. ESLint
+clean on all three touched files. `py_compile` clean on both Python tests.
+The full desktop suite has 26 pre-existing failures in unrelated files
+(ChatView, FilePickerDialog, workspacesStore); confirmed identical on a
+stashed clean tree.
+
+**Also fixed**: `docs/SPEC.md:269` claimed the Start-agent button sat
+"between Cancel and Save" — it sat after Save, and now it is a caret menu
+item. Corrected.
+
+### If you want to try a different option
+
+The split button is contained in one `<div ref="commitMenuRef">` in the
+footer. Option A is that div replaced by two `v-if`/`v-else` buttons in the
+old three-slot layout; Option C is the same plus a new row in the Settings
+block. `pendingAction`, the hover/focus classes, the `flex-wrap` and the
+ghost Cancel are option-independent and should be kept either way.
