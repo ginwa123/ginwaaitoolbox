@@ -1089,6 +1089,13 @@ test {
     _ = @import("modules/config/UserConfigStore.zig");
     _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
     _ = @import("service/signal_handlers_test.zig"); // SIGINT+SIGTERM graceful-shutdown contracts
+    // http_handlers/git_file_diffs.zig has inline tests for the diff
+    // splitter, the path extractor, and capDiff's truncation branch.
+    // `http_handlers/mod.zig` re-exports only `gitFileDiffsHandler`, and a
+    // re-export alone does not pull the file's tests into the test binary,
+    // so all of those tests were silently unrun. Same discovery workaround
+    // as Config.zig above — verified with a canary test, not inferred.
+    _ = @import("http_handlers/git_file_diffs.zig");
 }
 
 // ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───

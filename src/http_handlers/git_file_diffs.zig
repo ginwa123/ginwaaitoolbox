@@ -91,11 +91,24 @@ fn extractDiffPath(chunk: []const u8) ?[]const u8 {
     return null;
 }
 
+/// Marker appended to a diff that exceeded MAX_PER_FILE_BYTES.
+pub const TRUNCATION_SUFFIX = "\n... [truncated]\n";
+
+/// Cap a per-file diff at MAX_PER_FILE_BYTES.
+///
+/// Every length below is derived from the literal itself. A hand-written
+/// slack constant silently drifts out of sync with the suffix whenever the
+/// suffix is reworded, and `@memcpy` then panics on its length check —
+/// which is an `abort()`, not an error, so it takes the whole process down.
+/// The buffer length is also what the caller sees, so it must be the exact
+/// written length; anything longer would serialize uninitialized heap bytes
+/// to the client.
 fn capDiff(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
     if (s.len <= MAX_PER_FILE_BYTES) return try allocator.dupe(u8, s);
-    const buf = try allocator.alloc(u8, MAX_PER_FILE_BYTES + 24);
+    const total = MAX_PER_FILE_BYTES + TRUNCATION_SUFFIX.len;
+    const buf = try allocator.alloc(u8, total);
     @memcpy(buf[0..MAX_PER_FILE_BYTES], s[0..MAX_PER_FILE_BYTES]);
-    @memcpy(buf[MAX_PER_FILE_BYTES..], "\n... [truncated]\n");
+    @memcpy(buf[MAX_PER_FILE_BYTES..total], TRUNCATION_SUFFIX);
     return buf;
 }
 
@@ -289,4 +302,72 @@ test "splitCombinedDiff empty input" {
     var map = try splitCombinedDiff(allocator, "");
     defer map.deinit();
     try std.testing.expectEqual(@as(usize, 0), map.count());
+}
+
+test "capDiff passes through content at or below the cap" {
+    const allocator = std.testing.allocator;
+    const exact = try allocator.alloc(u8, MAX_PER_FILE_BYTES);
+    defer allocator.free(exact);
+    @memset(exact, 'x');
+
+    // Exactly at the cap — boundary, must NOT truncate.
+    const at = try capDiff(allocator, exact);
+    defer allocator.free(at);
+    try std.testing.expectEqual(MAX_PER_FILE_BYTES, at.len);
+    try std.testing.expectEqualSlices(u8, exact, at);
+
+    // One below the cap.
+    const under = try capDiff(allocator, exact[0 .. MAX_PER_FILE_BYTES - 1]);
+    defer allocator.free(under);
+    try std.testing.expectEqual(MAX_PER_FILE_BYTES - 1, under.len);
+    try std.testing.expectEqualSlices(u8, exact[0 .. MAX_PER_FILE_BYTES - 1], under);
+}
+
+test "capDiff truncates one byte over the cap" {
+    const allocator = std.testing.allocator;
+    const over = try allocator.alloc(u8, MAX_PER_FILE_BYTES + 1);
+    defer allocator.free(over);
+    @memset(over, 'a');
+
+    // This is the call that used to abort the process: it panicked with
+    // "source and destination arguments have non-equal lengths" because the
+    // destination slice was 24 bytes and the suffix literal was 17.
+    const capped = try capDiff(allocator, over);
+    defer allocator.free(capped);
+
+    // Exactly the bytes written. A longer slice would ship uninitialized
+    // heap memory to the client through the JSON response.
+    try std.testing.expectEqual(MAX_PER_FILE_BYTES + TRUNCATION_SUFFIX.len, capped.len);
+    try std.testing.expectEqualSlices(u8, over[0..MAX_PER_FILE_BYTES], capped[0..MAX_PER_FILE_BYTES]);
+    try std.testing.expectEqualStrings(TRUNCATION_SUFFIX, capped[MAX_PER_FILE_BYTES..]);
+}
+
+test "capDiff output length is independent of how far over the cap the input is" {
+    const allocator = std.testing.allocator;
+    for ([_]usize{ MAX_PER_FILE_BYTES + 1, MAX_PER_FILE_BYTES + 2, MAX_PER_FILE_BYTES * 4 }) |len| {
+        const over = try allocator.alloc(u8, len);
+        defer allocator.free(over);
+        @memset(over, 'q');
+
+        const capped = try capDiff(allocator, over);
+        defer allocator.free(capped);
+        try std.testing.expectEqual(MAX_PER_FILE_BYTES + TRUNCATION_SUFFIX.len, capped.len);
+        try std.testing.expectEqualStrings(TRUNCATION_SUFFIX, capped[MAX_PER_FILE_BYTES..]);
+    }
+}
+
+test "capDiff allocates its buffer length from the suffix literal" {
+    // Static contract: the truncation branch must never carry a hand-written
+    // slack constant next to the suffix literal. Such a constant silently
+    // drifts when the literal is edited, and @memcpy's length check turns
+    // that drift into a process-wide abort.
+    const src = @embedFile("git_file_diffs.zig");
+    // Both needles are assembled from fragments on purpose. A literal here
+    // would live inside `src` and satisfy its own search, making the check
+    // vacuous — the first draft of this test did exactly that and passed
+    // against the very bug it was meant to catch.
+    const slack = "MAX_PER_FILE_BYTES + " ++ "24";
+    const derived = "MAX_PER_FILE_BYTES + " ++ "TRUNCATION_SUFFIX.len";
+    try std.testing.expect(!std.mem.containsAtLeast(u8, src, 1, slack));
+    try std.testing.expect(std.mem.containsAtLeast(u8, src, 1, derived));
 }
