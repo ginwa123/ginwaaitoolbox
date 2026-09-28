@@ -439,16 +439,18 @@ const handleItemDragEnd = () => {
             Add Kanban
           </button>
         </li>
-        <!-- NEW (design-mode feature, plan:
-                   docs/superpowers/plans/2026-06-13-design-mode.md):
-                   Third dropdown option for creating a design-mode
-                   workspace item. Sidebar.handleAddItem routes the
-                   'design' itemType to the new AddDesignDialog. -->
+        <!-- Design mode is paused: the option stays listed so the
+             feature set is discoverable, but the button is disabled
+             like "Add Project" so nobody can open AddDesignDialog.
+             Re-enable by restoring the @click + classes below —
+             Sidebar.handleAddItem still routes 'design'. -->
         <li>
           <button
-            @click="handleAddItem(workspace.id, 'design')"
-            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            disabled
+            class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
             style="color: var(--semantic-text)"
+            title="Design mode is temporarily disabled"
+            aria-disabled="true"
             data-testid="workspace-add-design-option"
           >
             Add Design (alpha)
@@ -468,16 +470,18 @@ const handleItemDragEnd = () => {
             Add Agent
           </button>
         </li>
-        <!-- Workspace routines (Migration 084, plan
-                   2026-09-10-workspace-items-routines): fifth dropdown
-                   option for creating a Routine workspace item.
-                   Sidebar.handleAddItem routes the 'routine' itemType
-                   to the new AddRoutineItemDialog. -->
+        <!-- Workspace routines (Migration 084) are paused for the same
+             reason as design mode: the option stays listed but the
+             button is disabled so nobody can open
+             AddRoutineItemDialog. Sidebar.handleAddItem still routes
+             'routine'. -->
         <li>
           <button
-            @click="handleAddItem(workspace.id, 'routine')"
-            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            disabled
+            class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
             style="color: var(--semantic-text)"
+            title="Routines are temporarily disabled"
+            aria-disabled="true"
             data-testid="workspace-add-routine-option"
           >
             Add Routine
