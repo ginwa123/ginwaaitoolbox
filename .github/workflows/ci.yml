@@ -220,52 +220,34 @@ jobs:
           # is what makes that true.
           echo "PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
 
-      - name: Install vcpkg + MSVC build tools (Windows)
+      - name: Set up MSVC environment (Windows)
         if: runner.os == 'Windows'
-        # The `windows-2022` image already ships BOTH prerequisites ready:
-        #   - Visual Studio Enterprise 2022 with the C++ workload
-        #     (cl.exe / link.exe / rc.exe plus the Windows 11 SDK), and
-        #   - vcpkg already bootstrapped at C:\vcpkg\vcpkg.exe
-        # so the old detect -> winget-install -> bootstrap-vcpkg ladder is
-        # gone, along with the two bootstrap steps that existed only to put
-        # pwsh and Git-for-Windows on PATH (the image has both).
+        # The windows-2022 image already has VS 2022 with the C++
+        # workload. This action's only job is to export that environment
+        # (cl.exe / link.exe / INCLUDE / LIB) to $GITHUB_PATH and
+        # $GITHUB_ENV so every LATER step sees it — each `run:` block is
+        # a brand-new process, so Set-Item on Env: would not survive.
         #
+        # This replaces a hand-rolled `vswhere` + `cmd /c "call vcvars64
+        # .bat && set"` + parse-and-forward loop. That loop passed
+        # actionlint, passed review, and then failed on its first real
+        # run (CI 36459257214, 2026-09-28) with:
+        #   Add-Content: Cannot bind argument to parameter 'Path'
+        #   because it is null.            [at `Add-Content -Path $env:GITHUB_ENV`]
+        # Hand-rolling GitHub's environment plumbing was the mistake;
+        # a maintained action is the right level of abstraction for it.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
         # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
-        # windows). The image has PowerShell 7 on PATH, so this is a plain
-        # 7.x run with no PowerShell 5.1 lexer quirks to work around.
-        #
-        # MSVC env propagation: every `run:` block is a brand-new process, so
-        # vcvars64's PATH/INCLUDE/LIB must be written to $GITHUB_ENV —
-        # Set-Item on Env: only lasts for THIS step. We snapshot the
-        # pre-call values, source vcvars64, and forward only the variables
-        # that actually changed.
+        # windows). The image ships vcpkg already bootstrapped at
+        # C:\vcpkg, so this is normally a no-op; the clone-and-bootstrap
+        # path exists for an image that ever stops shipping it.
         shell: pwsh
         run: |
-          # Locate the VC toolset. vswhere ships in the image and answers in
-          # milliseconds; the old
-          # `Get-ChildItem C:\ -Filter vcvars64.bat -Recurse` walk took
-          # minutes and matched whichever VS install it happened to reach
-          # first (BuildTools/Enterprise/Preview).
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path -LiteralPath $vswhere)) {
-            Write-Error "vswhere.exe not found at $vswhere"
-            exit 1
-          }
-          # Select-Object -First 1: `-products *` can return several
-          # installationPath lines, and a string[] would make Join-Path
-          # bind only the first element.
-          $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
-          if (-not $vsRoot) {
-            Write-Error "no Visual Studio install with the C++ workload (searched via $vswhere)"
-            exit 1
-          }
-          $vcvars = Join-Path $vsRoot 'VC\Auxiliary\Build\vcvars64.bat'
-          if (-not (Test-Path -LiteralPath $vcvars)) {
-            Write-Error "vcvars64.bat not found at $vcvars"
-            exit 1
-          }
-          Write-Host ("ok MSVC toolset at " + $vcvars)
-
           if (Test-Path "C:\vcpkg\vcpkg.exe") {
             Write-Host "ok vcpkg already bootstrapped at C:\vcpkg"
           } else {
@@ -274,40 +256,15 @@ jobs:
             C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
           }
 
-          # PowerShell's native-argument passing is 'Windows' (legacy) on
-          # Windows by default, which is what keeps the embedded double
-          # quotes below intact. Pin it: under 'Standard' they would be
-          # escaped as \" , cmd.exe would fail to resolve the batch file,
-          # and the loop would forward nothing.
-          $PSNativeCommandArgumentPassing = 'Windows'
-
-          # Source vcvars64.bat and forward the env delta to $GITHUB_ENV.
-          # `cmd /c "call ... && set"` captures the post-call environment in
-          # one go; we diff it against the pre-call snapshot and forward
-          # only what is new. (Writing a wrapper .bat with Out-File instead
-          # produced CRLF+BOM that cmd.exe mis-parsed on paths with parens.)
-          $watch = "PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VCToolsInstallDir"
-          $envBefore = @{}
-          foreach ($k in $watch.Split("|")) {
-            $envBefore[$k] = [System.Environment]::GetEnvironmentVariable($k, "Process")
-          }
-          foreach ($line in (cmd /c ('call "' + $vcvars + '" >NUL && set'))) {
-            if ($line -match "^($watch)=") {
-              $name, $value = $line -split "=", 2
-              if ($envBefore[$name] -eq $value) { continue }
-              Set-Item -Path ("Env:" + $name) -Value $value
-              Add-Content -Path $env.GITHUB_ENV -Value ($name + "=" + $value)
-            }
-          }
           # Fail here, loudly, rather than letting the next step discover a
-          # missing cl.exe as a confusing Zig link error.
+          # missing cl.exe as a confusing Zig link error. This is the
+          # check that says the step above actually worked.
           if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
-            Write-Error "cl.exe still not on PATH after sourcing vcvars64.bat"
+            Write-Error "cl.exe is not on PATH -- ilammy/msvc-dev-cmd did not run"
             exit 1
           }
-          Write-Host "ok MSVC env exported to GITHUB_ENV"
-
-
+          Write-Host "ok MSVC toolchain on PATH"
+          $global:LASTEXITCODE = 0
       - name: Install vcpkg ports (Windows)
         if: runner.os == 'Windows'
         # `shell: pwsh` per the project rule. See the comment on

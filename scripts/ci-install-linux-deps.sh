@@ -28,8 +28,16 @@ set -euo pipefail
 # show` is NOT used as the probe: its exit code for an unknown package has
 # varied across apt releases, which turns a missing package into either a
 # silent skip or a confusing "E: Unable to locate package" on a real one.
+#
+# `grep -c`, NOT `grep -q`, and that is load-bearing under `set -o
+# pipefail`: `grep -q` exits on the first match and closes the pipe, so
+# apt-cache dies on SIGPIPE and the pipeline reports failure even though
+# grep matched. Every package then looks unavailable and this script
+# installs nothing while still exiting 0 on the failure path. `grep -c`
+# consumes all input, so no SIGPIPE. It still exits 1 on zero matches,
+# which is the signal we want.
 pkg_available() {
-    apt-cache policy "$1" 2>/dev/null | grep -q '^  Candidate:'
+    apt-cache policy "$1" 2>/dev/null | grep -c '^  Candidate:' >/dev/null
 }
 
 apt_install() {
