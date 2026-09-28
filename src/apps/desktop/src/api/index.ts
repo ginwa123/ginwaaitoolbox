@@ -1406,12 +1406,7 @@ function parseTimestamp(ts: number | string): number {
   // If timestamp looks like nanoseconds (> 1e12), convert to seconds
   return num > 1e12 ? Math.floor(num / 1e9) : num
 }
-export async function getChatHistory(
-  sessionId: string,
-  limit = 50,
-  cursor?: string,
-  direction: 'asc' | 'desc' = 'desc',
-): Promise<{
+export type ChatHistoryResponse = {
   messages: Message[]
   has_more: boolean
   next_cursor: string | null
@@ -1434,69 +1429,118 @@ export async function getChatHistory(
   max_capacity_total_tokens?: number
   total_count?: number
   skills?: SkillInfo[]
-}> {
+}
+
+/**
+ * The transcript endpoint, WITHOUT the swallow.
+ *
+ * `getChatHistory` (below) catches every failure and hands back an empty
+ * transcript. That is the right contract for the three best-effort metadata
+ * callers — AppLayout's cwd fallback, ChatView's `refreshWorktreeBinding`, and
+ * the older-page prefetch — where a dead backend must degrade quietly.
+ *
+ * It is the WRONG contract for the initial transcript load: an empty transcript
+ * there is indistinguishable from "this session has no messages", so a slow or
+ * erroring backend made the chatview claim a full session was empty ("How can
+ * I help you?"). Callers that must be able to tell "empty" from "unavailable"
+ * use this function and handle the rejection themselves.
+ *
+ * `timeoutMs` lets the transcript load outlive apiFetch's 15 s default: a
+ * `limit=1000` page carrying base64 image_urls and tool JSON routinely needs
+ * longer, and that abort is what turned a slow server into a phantom empty
+ * session.
+ */
+export async function fetchChatHistory(
+  sessionId: string,
+  limit = 50,
+  cursor?: string,
+  direction: 'asc' | 'desc' = 'desc',
+  timeoutMs?: number,
+): Promise<ChatHistoryResponse> {
+  const params = new URLSearchParams({
+    sort_by: 'created_at',
+    direction,
+    limit: limit.toString(),
+  })
+  if (cursor) {
+    params.set('cursor', cursor)
+  }
+  // silent: true — the failure is the caller's to handle (the chatview's retry
+  // loop + inline error UI for the transcript; a console.log for the
+  // best-effort metadata callers), so a toast on 404/5xx would be noise.
+  //
+  // `timeoutMs` is forwarded so the initial transcript load can outlive
+  // apiFetch's 15 s default: a `limit=1000` page carrying base64 image_urls
+  // and tool JSON routinely needs longer, and that abort is what turned a slow
+  // server into a phantom empty session. Left undefined, the default stands.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+  const data = await apiFetch<any>(
+    `/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`,
+    { silent: true, ...(timeoutMs === undefined ? {} : { timeoutMs }) },
+  )
+  return {
+    messages: data.messages.map(
+      (msg: {
+        id: string
+        role: string
+        content: string
+        created_at: number | string
+        tool_name?: string
+        diffview_before?: string
+        diffview_after?: string
+        image_url?: string
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
+        tool_calls_json?: any
+        reasoning_content?: string
+      }) => ({
+        ...msg,
+        content: msg.content,
+        created_at: parseTimestamp(msg.created_at),
+        tool_name: msg.tool_name,
+        diffview_before: msg.diffview_before,
+        diffview_after: msg.diffview_after,
+        image_url: msg.image_url,
+        tool_calls_json: msg.tool_calls_json,
+        // 2026-08-23 hidden-messages fix — pass the thinking model's
+        // reasoning through to ChatView (backend already returns it).
+        reasoning_content: msg.reasoning_content || undefined,
+      }),
+    ),
+    has_more: data.has_more,
+    next_cursor: data.next_cursor,
+    cwd: data.cwd,
+    git_worktree_cwd: data.git_worktree_cwd,
+    pr_url: data.pr_url,
+    pr_provider: data.pr_provider,
+    // 2026-08-07-profile-persist-read — read the per-session
+    // selected profile name so the chatview chip can show the
+    // persisted selection on page refresh. Empty string from the
+    // backend (= "no profile set") is preserved here; ChatView
+    // coerces empty → null before assigning to selectedProfile.
+    selected_profile_model: data.selected_profile_model,
+    max_total_tokens: data.max_total_tokens,
+    max_capacity_total_tokens: data.max_capacity_total_tokens,
+    total_count: data.total_count,
+    skills: data.skills,
+  }
+}
+
+/**
+ * The transcript endpoint, best-effort: a failure yields an EMPTY transcript
+ * rather than a rejection.
+ *
+ * Correct for the metadata callers above. NOT correct for the initial
+ * transcript load, which must use `fetchChatHistory` so a failed fetch can
+ * never be mistaken for an empty session.
+ */
+export async function getChatHistory(
+  sessionId: string,
+  limit = 50,
+  cursor?: string,
+  direction: 'asc' | 'desc' = 'desc',
+): Promise<ChatHistoryResponse> {
   try {
-    const params = new URLSearchParams({
-      sort_by: 'created_at',
-      direction,
-      limit: limit.toString(),
-    })
-    if (cursor) {
-      params.set('cursor', cursor)
-    }
-    // silent: true — AppLayout.fetchChatSessionCwd swallows this
-    // error to fall back to a message-derived cwd, so a toast on
-    // 404/5xx would be noise.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-    const data = await apiFetch<any>(
-      `/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`,
-      { silent: true },
-    )
-    return {
-      messages: data.messages.map(
-        (msg: {
-          id: string
-          role: string
-          content: string
-          created_at: number | string
-          tool_name?: string
-          diffview_before?: string
-          diffview_after?: string
-          image_url?: string
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-          tool_calls_json?: any
-          reasoning_content?: string
-        }) => ({
-          ...msg,
-          content: msg.content,
-          created_at: parseTimestamp(msg.created_at),
-          tool_name: msg.tool_name,
-          diffview_before: msg.diffview_before,
-          diffview_after: msg.diffview_after,
-          image_url: msg.image_url,
-          tool_calls_json: msg.tool_calls_json,
-          // 2026-08-23 hidden-messages fix — pass the thinking model's
-          // reasoning through to ChatView (backend already returns it).
-          reasoning_content: msg.reasoning_content || undefined,
-        }),
-      ),
-      has_more: data.has_more,
-      next_cursor: data.next_cursor,
-      cwd: data.cwd,
-      git_worktree_cwd: data.git_worktree_cwd,
-      pr_url: data.pr_url,
-      pr_provider: data.pr_provider,
-      // 2026-08-07-profile-persist-read — read the per-session
-      // selected profile name so the chatview chip can show the
-      // persisted selection on page refresh. Empty string from the
-      // backend (= "no profile set") is preserved here; ChatView
-      // coerces empty → null before assigning to selectedProfile.
-      selected_profile_model: data.selected_profile_model,
-      max_total_tokens: data.max_total_tokens,
-      max_capacity_total_tokens: data.max_capacity_total_tokens,
-      total_count: data.total_count,
-      skills: data.skills,
-    }
+    return await fetchChatHistory(sessionId, limit, cursor, direction)
   } catch (error) {
     // Return empty messages when LLM backend unavailable
     console.log(error)
