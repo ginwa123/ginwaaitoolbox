@@ -97,7 +97,9 @@ import { useChatRightSidebar } from './chat_right_sidebar/useChatRightSidebar'
 import { useNavigationStore } from '../../stores/navigation'
 import { useAgentErrorStore } from '../../stores/agentError'
 import type { AgentErrorEntry } from '../../stores/agentError'
-import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
+import { useInjectCodeViewer, useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
+import type { CodeViewerView } from '@/composables/useCodeEditor'
+import CodeViewerStage from './CodeViewerStage.vue'
 import { useRouter, useRoute } from 'vue-router'
 import CompactionCard from '../preview/CompactionCard.vue'
 // 2026-08-25 agent-error-card (task_1787663566535_2): dedicated renderer
@@ -612,6 +614,36 @@ const currentPath = ref<string | null>(null)
 const centerDiffScrollRef = ref<HTMLElement | null>(null)
 
 const showCenterDiff = computed(() => centerDiff.value !== null)
+
+/**
+ * The code viewer's open file, shared by `AppLayout` (which owns the
+ * session). Non-null ⇒ this chat renders the file in its center column,
+ * exactly where the stacked center diff goes, so the chat-owned right
+ * sidebar — the Explorer the user just clicked a file in — stays on
+ * screen. `null` outside an AppLayout subtree (unit tests), which is the
+ * pre-existing "no file open" state.
+ *
+ * The viewer wins over the diff stage: the diff's ⤴ button opens the
+ * file, so both can be true for one click.
+ */
+const codeViewer = useInjectCodeViewer()
+/**
+ * Plain (never-null) view model for the template: the injected session
+ * unwrapped, or an empty model when there is no provider (unit tests) /
+ * no open file. One object, so the template needs no null-narrowing.
+ */
+const codeViewerModel = computed<CodeViewerView>(() => ({
+  file: codeViewer?.file.value ?? null,
+  content: codeViewer?.content.value ?? '',
+  loading: codeViewer?.loading.value ?? false,
+  error: codeViewer?.error.value ?? null,
+  line: codeViewer?.requestedLine.value ?? null,
+  cwd: codeViewer?.cwd.value ?? '',
+  close: () => codeViewer?.close(),
+}))
+const showCodeViewer = computed(() => codeViewerModel.value.file !== null)
+/** Messages + composer are hidden while either center stage is up. */
+const showCenterStage = computed(() => showCenterDiff.value || showCodeViewer.value)
 
 function scrollToCenterFile(path: string) {
   // Click on an already-loaded file scrolls instead of refetching.
@@ -4312,7 +4344,7 @@ const compactSession = async () => {
         and `.last-transcript-row` in the style block).
       -->
       <div
-        v-show="!showCenterDiff"
+        v-show="!showCenterStage"
         ref="messagesWrapperRef"
         class="relative flex-1 min-h-0 flex flex-col messages-scroll-hide-native"
       >
@@ -5110,7 +5142,7 @@ const compactSession = async () => {
       <Transition name="fade">
         <button
           v-if="!isAtBottom && messageGroups.length > 0"
-          v-show="!showCenterDiff"
+          v-show="!showCenterStage"
           @click="scrollToBottom(true, 'user-button-click')"
           class="chat-scroll-to-bottom p-3 rounded-full shadow-lg transition-all duration-200 hover:scale-105"
           style="background-color: var(--color-violet); color: var(--color-bg)"
@@ -5159,7 +5191,7 @@ const compactSession = async () => {
       -->
       <div
         v-if="!hideInput"
-        v-show="!showCenterDiff"
+        v-show="!showCenterStage"
         :ref="setComposerDockEl"
         class="composer-dock p-4"
         data-testid="composer-dock"
@@ -5379,7 +5411,7 @@ const compactSession = async () => {
            in CenterDiffSection) so long lists scroll fast. Messages state
            is preserved (v-show) underneath. -->
       <div
-        v-if="showCenterDiff"
+        v-if="showCenterDiff && !showCodeViewer"
         class="flex-1 min-h-0 flex flex-col"
         data-testid="chat-center-diff"
       >
@@ -5444,6 +5476,27 @@ const compactSession = async () => {
             @comment-saved="onChatSidebarCommentSaved"
           />
         </div>
+      </div>
+
+      <!-- Code viewer stage: the open file, in the same center slot as the
+           stacked diff above, so the chat-owned right sidebar (Explorer /
+           Files changed / Terminal) stays visible next to it. This is the
+           path the user's own Explorer click takes. The session state is
+           injected by AppLayout (see `useInjectCodeViewer`). -->
+      <div
+        v-if="codeViewerModel.file"
+        class="flex-1 min-h-0 flex flex-col"
+        data-testid="chat-center-code"
+      >
+        <CodeViewerStage
+          :file="codeViewerModel.file"
+          :content="codeViewerModel.content"
+          :loading="codeViewerModel.loading"
+          :error="codeViewerModel.error"
+          :cwd="codeViewerModel.cwd"
+          :line="codeViewerModel.line"
+          @close="codeViewerModel.close()"
+        />
       </div>
     </div>
 
