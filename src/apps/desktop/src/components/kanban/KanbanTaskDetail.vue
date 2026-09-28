@@ -757,10 +757,12 @@ onMounted(() => {
   // NEW (Migration 070 — kanban-cwd-session-optional plan). Same
   // pattern for the per-task cwd picker.
   document.addEventListener('mousedown', handleDocumentClickCwd)
+  document.addEventListener('click', handleDocumentClickCommitMenu)
 })
 onUnmounted(() => {
   document.removeEventListener('click', handleDocumentClickColumn)
   document.removeEventListener('mousedown', handleDocumentClickCwd)
+  document.removeEventListener('click', handleDocumentClickCommitMenu)
 })
 
 // Dirty tracking — the Save button enables only when the form is
@@ -795,22 +797,40 @@ const canSave = computed<boolean>(() => isDirty.value && isValid.value)
 // just the title). The unattended toggle flows through separately.
 const canRunAgent = computed<boolean>(() => isValid.value)
 
-// NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
-// In-flight gate for the create-mode commit buttons. While the
-// host's create request is in flight (`creating` prop true), BOTH
-// buttons are disabled and their labels read "Creating…". The
-// handlers also early-return as belt-and-suspenders (a disabled
-// button drops clicks at the browser level, but the guard makes
-// the emit impossible even if a click slips through — e.g. the
-// mousedown-commits-draft path re-enabling the button mid-click).
+// In-flight gate for the create-mode commit controls. While the
+// host's create request is in flight (`creating` prop true) every
+// commit control is disabled. The handlers also early-return as
+// belt-and-suspenders (a disabled button drops clicks at the
+// browser level, but the guard makes the emit impossible even if a
+// click slips through — e.g. the mousedown-commits-draft path
+// re-enabling the button mid-click).
 const isCreating = computed<boolean>(() => props.creating === true)
 const canCommitCreate = computed<boolean>(() => !isCreating.value && isValid.value)
 
-// NEW (plan: 2026-08-18-kanban-task-detail-start-agent). Inject the
-// processingState map (provided by App.vue; populated via SSE worker
-// events). The Start agent button is `:disabled` when a worker is
-// already running for this task's session. Edit-mode only — create
-// mode has its own ▶ Create task & run agent button.
+// Which commit the user actually pressed. `creating` is one host flag
+// covering both create paths, so on its own the footer cannot tell
+// "Create task" from "▶ Create task & run agent" — both used to read
+// "Creating…" at the same time, side by side. The split button
+// narrates the pressed action on its primary half instead.
+//
+// The `null` branch is deliberate: the host can raise `creating`
+// through a path this dialog did not initiate, and then there is
+// nothing to attribute, so we fall back to the neutral "Creating…".
+const pendingAction = ref<'create' | 'create_and_run' | null>(null)
+
+const pendingCommitLabel = computed<string | null>(() => {
+  if (!isCreating.value) return null
+  return pendingAction.value === 'create_and_run' ? 'Starting…' : 'Creating…'
+})
+
+watch(isCreating, (busy) => {
+  if (!busy) pendingAction.value = null
+})
+
+// Inject the processingState map (provided by App.vue; populated via
+// SSE worker events). The Start agent menu item is `:disabled` when a
+// worker is already running for this task's session. Edit-mode only —
+// create mode has its own ▶ Create task & run agent control.
 //
 // Defensive: `inject()` may return `undefined` if the provider is
 // missing (e.g. tests that mount the dialog in isolation). The
@@ -822,6 +842,41 @@ const isWorkerRunning = computed<boolean>(() => {
   if (!props.task?.id) return false
   return processingState?.[props.task.id] === true
 })
+
+// ─── Commit split button ────────────────────────────────────────────────
+// The two commit actions are one split control: the left half is the
+// action we expect you to want, the caret menu holds the alternative
+// (create mode → "Create task only", edit mode → "▶ Start agent").
+//
+// The menu is always mounted and toggled with v-show rather than v-if.
+// display:none already removes a subtree from the a11y tree and the tab
+// order, so nothing is exposed while closed, and keeping it mounted
+// preserves the popup's state across toggles.
+const commitMenuOpen = ref(false)
+const commitMenuRef = ref<HTMLElement | null>(null)
+
+const toggleCommitMenu = () => {
+  commitMenuOpen.value = !commitMenuOpen.value
+}
+
+const closeCommitMenu = () => {
+  commitMenuOpen.value = false
+}
+
+// A menu item commits the form, so it must close the menu it came from —
+// otherwise the popup sits over the panel the action just navigated to.
+const runMenuAction = (action: () => void) => {
+  closeCommitMenu()
+  action()
+}
+
+const handleDocumentClickCommitMenu = (event: MouseEvent) => {
+  if (!commitMenuOpen.value) return
+  const target = event.target as Node | null
+  if (commitMenuRef.value && target && !commitMenuRef.value.contains(target)) {
+    closeCommitMenu()
+  }
+}
 
 // ─── Handlers ───────────────────────────────────────────────────────────
 
@@ -849,7 +904,6 @@ const handleEnterKey = () => {
 
 const handleSave = () => {
   if (!canSave.value) return
-  // NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
   // In-flight guard: while the host's create request is in flight,
   // drop further Save clicks so a double-click can't emit `create`
   // twice (duplicate tasks). Edit mode is unaffected — the host
@@ -868,6 +922,9 @@ const handleSave = () => {
   // reactively, but the read here is intentional — the Save button
   // is disabled while canSave is false.
   if (!canSave.value) return
+  // Attribute the in-flight state to this action so the split button can
+  // narrate which commit the user actually pressed.
+  if (isCreateMode.value) pendingAction.value = 'create'
   if (isCreateMode.value) {
     emit('create', {
       mode: 'create',
@@ -939,20 +996,20 @@ const handleClose = () => {
   emit('close')
 }
 
-// NEW (plan: 2026-08-06-kanban-create-task-run-agent). Mirror of
-// handleSave but for the "Create task & run agent" button. Emits
-// `create-and-run` with mode='create_and_run' so the host can
+// Mirror of handleSave but for the create dialog's primary half
+// ("▶ Create task & run agent"), and for Enter on the name field.
+// Emits `create-and-run` with mode='create_and_run' so the host can
 // branch. Same payload as `create` (same fields, different mode
 // discriminator) so the host's single handler can switch on mode.
 const handleRunAgent = () => {
   if (!canRunAgent.value) return
-  // NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
   // In-flight guard: while the host's create request is in flight,
   // drop further clicks so a double-click can't emit
   // `create-and-run` twice (duplicate tasks + duplicate agents).
   if (isCreating.value) return
   tagsInputRef.value?.commitDraft()
   if (!canRunAgent.value) return
+  pendingAction.value = 'create_and_run'
   emit('create-and-run', {
     mode: 'create_and_run',
     name: name.value.trim(),
@@ -994,6 +1051,13 @@ const commitTagsDraftOnSaveMouseDown = () => {
 }
 
 const handleKeydown = (event: KeyboardEvent) => {
+  // Escape peels one layer at a time: an open commit menu absorbs the key
+  // instead of the whole panel closing and losing the form.
+  if (event.key === 'Escape' && commitMenuOpen.value) {
+    event.stopPropagation()
+    closeCommitMenu()
+    return
+  }
   if (event.key === 'Escape') handleClose()
 }
 
@@ -1206,7 +1270,7 @@ const isMediaLoading = computed<boolean>(() => {
       <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">
         {{
           isCreateMode
-            ? 'Create a new task. Optionally start an agent on it right after.'
+            ? 'Create a new task, or start an agent on it right away.'
             : 'Edit name, description, and tags. Changes save on click.'
         }}
       </p>
@@ -1802,109 +1866,152 @@ const isMediaLoading = computed<boolean>(() => {
       </div>
     </div>
 
-    <!-- Actions — sticky so Save/Cancel stay reachable on long
+    <!-- Actions — sticky so the commit row stays reachable on long
          forms (the host cover container scrolls, not this card).
-         Secondary buttons (Cancel, Start agent / Create task & run
-         agent) share the same outline + muted-text style for visual
-         consistency. The primary button (Save / Create task) keeps
-         the gradient so the user can tell at a glance which action
-         is the default commit. -->
+
+         Cancel is a ghost button: a border on a button means "this is
+         one of the choices you make", and Cancel is the absence of
+         one. It must not compete with the commit action beside it.
+
+         The two commit actions are one split control. The left half is
+         the action we expect you to want; the caret menu holds the
+         alternative. Create mode's half is "▶ Create task & run
+         agent" — which is also what Enter on the name field does, so
+         the visual default and the keyboard default agree. Edit mode's
+         half is "Save" and the menu holds "▶ Start agent". -->
     <div
-      class="px-5 py-4 shrink-0 sticky bottom-0 z-10 flex justify-end gap-2"
+      class="px-5 py-4 shrink-0 sticky bottom-0 z-10 flex flex-wrap justify-end gap-2"
       style="border-top: 1px solid var(--color-border); background-color: var(--semantic-card-bg)"
     >
       <button
         type="button"
         @click="handleClose"
         data-testid="kanban-task-detail-cancel"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
-        style="
-          background-color: transparent;
-          border: 1px solid var(--color-border);
-          color: var(--semantic-text-muted);
-        "
+        class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+        style="color: var(--semantic-text-dim)"
+        title="Discard and close"
       >
         Cancel
       </button>
-      <button
-        type="button"
-        @mousedown="commitTagsDraftOnSaveMouseDown"
-        @click="handleSave"
-        :disabled="isCreateMode ? !canCommitCreate : !canSave"
-        data-testid="kanban-task-detail-save"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        style="
-          background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
-          color: var(--color-bg);
-        "
-      >
-        <!-- NEW (plan: 2026-08-24-kanban-create-run-disable-double-click).
-                   While the create request is in flight the label reads
-                   "Creating…" so the user sees the click registered and
-                   has no reason to click again. -->
-        {{ isCreateMode ? (isCreating ? 'Creating…' : 'Create task') : 'Save' }}
-      </button>
-      <!-- NEW (plan: 2026-08-06-kanban-create-task-run-agent).
-                 Outlined secondary button only in create mode. Sibling
-                 to the primary "Create task" button — visually
-                 subordinate so the safe default stays discoverable. The
-                 ▶ play-icon prefix mirrors the routine "Run now" card
-                 button for muscle memory. Disabled when name is empty;
-                 description is NOT required (empty description degrades
-                 to a queued message that is just the title). -->
-      <button
-        v-if="isCreateMode"
-        type="button"
-        @click="handleRunAgent"
-        :disabled="!canCommitCreate"
-        data-testid="kanban-task-detail-create-and-run"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        style="
-          background-color: transparent;
-          border: 1px solid var(--color-border);
-          color: var(--semantic-text-muted);
-        "
-        title="Create the task and start the agent. The title + description becomes the first user message."
-      >
-        <span aria-hidden="true">▶</span>
-        <span class="ml-1">{{ isCreating ? 'Creating…' : 'Create task & run agent' }}</span>
-      </button>
-      <!-- NEW (plan: 2026-08-18-kanban-task-detail-start-agent).
-                 Outlined secondary button only in edit mode. Sibling
-                 to the primary "Save" button — visually subordinate
-                 so the safe default stays discoverable. The ▶ play-
-                 icon prefix matches the create-mode ▶ Create task &
-                 run agent button (and the routine Run now card) for
-                 muscle memory. Edit mode's counterpart to the create-
-                 mode "Create task & run agent" — kicks off the agent
-                 on an existing task's session WITHOUT queueing a new
-                 user message. The agent runs on whatever chat history
-                 is already in the session. Disabled when a worker is
-                 already running for this task's session (the
-                 frontend's best-effort check; the backend's atomic
-                 DB lookup is the source of truth and returns 409 on
-                 race). -->
-      <button
-        v-if="!isCreateMode"
-        type="button"
-        @click="handleStartAgent"
-        :disabled="isWorkerRunning"
-        :title="
-          isWorkerRunning
-            ? 'A worker is already running on this task — wait for it to finish before starting a new agent.'
-            : 'Trigger the agent on the existing chat context. No new message is queued — the agent resumes whatever context is already in the session.'
-        "
-        data-testid="kanban-task-detail-start-agent"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        style="
-          background-color: transparent;
-          border: 1px solid var(--color-border);
-          color: var(--semantic-text-muted);
-        "
-      >
-        <span aria-hidden="true">▶</span>
-        <span class="ml-1">Start agent</span>
-      </button>
+
+      <div ref="commitMenuRef" class="relative shrink-0 flex">
+        <!-- Primary half. Gradient, rounded on the left, butted against
+             the caret with a hairline seam. -->
+        <button
+          v-if="isCreateMode"
+          type="button"
+          @mousedown="commitTagsDraftOnSaveMouseDown"
+          @click="handleRunAgent"
+          :disabled="!canCommitCreate"
+          data-testid="kanban-task-detail-create-and-run"
+          class="px-3 py-1.5 rounded-l-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+          style="
+            background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+            color: var(--color-bg);
+          "
+          title="Create the task and start the agent. The title + description becomes the first user message. (Enter)"
+        >
+          <span
+            v-if="isCreating"
+            aria-hidden="true"
+            class="inline-block w-3 h-3 rounded-full align-[-2px] mr-1.5"
+            style="
+              border: 2px solid rgba(24, 22, 22, 0.35);
+              border-top-color: var(--color-bg);
+              animation: ktd-spin 0.7s linear infinite;
+            "
+          ></span>
+          <template v-if="isCreating">{{ pendingCommitLabel }}</template>
+          <template v-else
+            ><span aria-hidden="true">▶</span
+            ><span class="ml-1">Create task &amp; run agent</span></template
+          >
+        </button>
+        <button
+          v-else
+          type="button"
+          @mousedown="commitTagsDraftOnSaveMouseDown"
+          @click="handleSave"
+          :disabled="!canSave"
+          data-testid="kanban-task-detail-save"
+          class="px-3 py-1.5 rounded-l-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+          style="
+            background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+            color: var(--color-bg);
+          "
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          @click.stop="toggleCommitMenu"
+          :disabled="isCreateMode ? !canCommitCreate : !canSave"
+          data-testid="kanban-task-detail-commit-caret"
+          class="px-2 py-1.5 rounded-r-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+          style="
+            background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
+            color: var(--color-bg);
+            border-left: 1px solid rgba(24, 22, 22, 0.25);
+          "
+          aria-haspopup="menu"
+          :aria-expanded="commitMenuOpen"
+          aria-label="More commit options"
+          title="More commit options"
+        >
+          <span aria-hidden="true" class="text-[10px] leading-none">{{
+            commitMenuOpen ? '▲' : '▼'
+          }}</span>
+        </button>
+
+        <!-- Alternative commit. v-show, not v-if: display:none already
+             pulls the subtree out of the a11y tree and the tab order,
+             so a mounted-but-closed menu exposes nothing. -->
+        <div
+          v-show="commitMenuOpen"
+          role="menu"
+          data-testid="kanban-task-detail-commit-menu"
+          class="absolute bottom-full right-0 mb-2 z-20 py-1 rounded-lg shadow-lg min-w-[230px]"
+          style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border)"
+        >
+          <button
+            v-if="isCreateMode"
+            type="button"
+            role="menuitem"
+            @mousedown="commitTagsDraftOnSaveMouseDown"
+            @click="runMenuAction(handleSave)"
+            :disabled="!canCommitCreate"
+            data-testid="kanban-task-detail-save"
+            class="w-full px-3 py-2 text-left text-sm transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[--color-blue]"
+            style="color: var(--semantic-text)"
+          >
+            <span>Create task only</span>
+            <span class="block text-[11px] mt-0.5" style="color: var(--semantic-text-dim)">
+              Add it to the board without starting a worker.
+            </span>
+          </button>
+          <button
+            v-else
+            type="button"
+            role="menuitem"
+            @click="runMenuAction(handleStartAgent)"
+            :disabled="isWorkerRunning"
+            :title="
+              isWorkerRunning
+                ? 'A worker is already running on this task — wait for it to finish before starting a new agent.'
+                : 'Trigger the agent on the existing chat context. No new message is queued — the agent resumes whatever context is already in the session.'
+            "
+            data-testid="kanban-task-detail-start-agent"
+            class="w-full px-3 py-2 text-left text-sm transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[--color-blue]"
+            style="color: var(--semantic-text)"
+          >
+            <span aria-hidden="true">▶</span>
+            <span class="ml-1">Start agent</span>
+            <span class="block text-[11px] mt-0.5" style="color: var(--semantic-text-dim)">
+              Resume the agent on this task's existing chat context.
+            </span>
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1959,5 +2066,21 @@ const isMediaLoading = computed<boolean>(() => {
 <style scoped>
 .kanban-task-detail {
   /* Inline side-panel: the host controls width + scroll. */
+}
+
+/* The commit button's in-flight spinner. Declared here rather than as
+   a Tailwind `animate-spin` utility because the ring needs a
+   token-matched border colour to read against the violet→blue
+   gradient, and inline `style` on the element already carries it. */
+@keyframes ktd-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*='ktd-spin'] {
+    animation: none !important;
+  }
 }
 </style>

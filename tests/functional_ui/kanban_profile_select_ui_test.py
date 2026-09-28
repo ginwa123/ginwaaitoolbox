@@ -307,7 +307,13 @@ def test_dialog_create_task_persists_picked_profile_in_db(
         ).first.click()
         page.wait_for_timeout(100)
 
-    # 5. Click "Create task" (the primary save button).
+    # 5. Commit via "Create task only". The create dialog's footer is a
+    #    split button — the left half is "▶ Create task & run agent", so
+    #    the plain create has to be opened from the caret menu first.
+    caret = page.locator('[data-testid="kanban-task-detail-commit-caret"]').first
+    assert caret.count() > 0, "commit split caret not found"
+    caret.click()
+    page.wait_for_timeout(150)
     save_button = page.locator(
         '[data-testid="kanban-task-detail-save"]'
     ).first
@@ -497,6 +503,12 @@ def test_dialog_picked_profile_surfaces_in_chatview_chip(
     ).first.click()
     page.wait_for_timeout(100)
 
+    # The create dialog's footer is a split button; "Create task only"
+    # lives in the caret menu, so open it before clicking.
+    page.locator(
+        '[data-testid="kanban-task-detail-commit-caret"]'
+    ).first.click()
+    page.wait_for_timeout(150)
     page.locator(
         '[data-testid="kanban-task-detail-save"]'
     ).first.click()
