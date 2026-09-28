@@ -135,14 +135,12 @@ describe('fileNameOf', () => {
 
 function makeSession(overrides?: {
   readFile?: (cwd: string, path: string) => Promise<{ content: string }>
-  writeFile?: (cwd: string, path: string, content: string) => Promise<unknown>
 }) {
   const syncUrl = vi.fn()
   const readFile =
     overrides?.readFile ?? vi.fn(async (_cwd: string, _path: string) => ({ content: 'hello' }))
-  const writeFile = overrides?.writeFile ?? vi.fn(async () => undefined)
-  const session = useCodeEditorSession({ readFile, writeFile, syncUrl })
-  return { session, syncUrl, readFile: readFile as ReturnType<typeof vi.fn>, writeFile }
+  const session = useCodeEditorSession({ readFile, syncUrl })
+  return { session, syncUrl, readFile: readFile as ReturnType<typeof vi.fn> }
 }
 
 describe('openFile', () => {
@@ -263,16 +261,5 @@ describe('restoreFromUrl', () => {
     expect(readFile).not.toHaveBeenCalled()
     expect(session.file.value?.path).toBe('/w/a.md')
     expect(session.error.value).toBe('No working directory')
-  })
-})
-
-describe('save', () => {
-  it('writes with the stored cwd', async () => {
-    const { session, writeFile } = makeSession()
-    await session.openFile({ filePath: '/w/a.md', cwd: '/w' })
-    await session.save('new body')
-
-    expect(writeFile).toHaveBeenCalledWith('/w', '/w/a.md', 'new body')
-    expect(session.content.value).toBe('new body')
   })
 })

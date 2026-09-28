@@ -4630,26 +4630,6 @@ export function fileDownloadUrl(
   return `${API_BASE}/files/download?session_id=${encodeURIComponent(sessionId)}&path=${encodeURIComponent(filePath)}&disposition=${disposition}`
 }
 
-// Write file content API (for CodeEditor save)
-export async function writeFileContent(
-  cwd: string,
-  filePath: string,
-  content: string,
-): Promise<{ success: boolean; message?: string }> {
-  // silent: true — AppLayout surfaces save failures inline in the
-  // code editor; a toast would duplicate the message.
-  return await apiFetch<{ success: boolean; message?: string }>('/system/folder', {
-    method: 'POST',
-    body: {
-      action: 'write',
-      path: cwd,
-      file: filePath,
-      content,
-    },
-    silent: true,
-  })
-}
-
 // Git Stage/Unstage API
 export interface GitStageResponse {
   success: boolean

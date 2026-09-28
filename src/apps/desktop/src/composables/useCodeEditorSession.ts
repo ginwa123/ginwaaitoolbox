@@ -17,11 +17,12 @@ import type { OpenInCodeEditorOptions } from './useCodeEditor'
 //      and a bad base64 link nulled the file with no error, so the
 //      editor mounted (or unmounted) with an empty view.
 //
-// This composable owns the whole open → fetch → URL-sync →
-// restore → save cycle. AppLayout instantiates it once and binds
-// its template to the exposed refs; all openers (sidebar explorer,
-// diff views, tool-output cards) keep calling the injected
-// `openInCodeEditor` which now delegates here.
+// This composable owns the whole open → fetch → URL-sync → restore
+// cycle. AppLayout instantiates it once and binds its template to the
+// exposed refs; all openers (sidebar explorer, diff views, tool-output
+// cards) keep calling the injected `openInCodeEditor` which now
+// delegates here. The viewer is read-only, so there is no save step:
+// the backend registers no write route (only `GET /api/system/folder`).
 
 // An absolute path is shown as-is; only relative paths are joined
 // with the cwd. Mirrors the backend `is_abs` check in
@@ -123,7 +124,6 @@ export function resolveFileParam(raw: string): string {
 
 export type CodeEditorSessionDeps = {
   readFile: (cwd: string, path: string) => Promise<{ content: string }>
-  writeFile: (cwd: string, path: string, content: string) => Promise<unknown>
   syncUrl: (args: { path: string; cwd: string; line: number | null }) => void
 }
 
@@ -140,9 +140,9 @@ export function useCodeEditorSession(deps: CodeEditorSessionDeps) {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const requestedLine = ref<number | null>(null)
-  // The cwd the file was opened with, stored explicitly. Reads and
-  // saves always use this — never a recomputed sidebar value that
-  // may have changed or resolved to '' since the file was opened.
+  // The cwd the file was opened with, stored explicitly. Reads always
+  // use this — never a recomputed sidebar value that may have changed
+  // or resolved to '' since the file was opened.
   const cwd = ref<string>('')
   // Key of the last fully-resolved session (load or error). Guards
   // the open → router.replace → watcher → restore echo so one user
@@ -268,20 +268,6 @@ export function useCodeEditorSession(deps: CodeEditorSessionDeps) {
     }
   }
 
-  async function save(next: string): Promise<void> {
-    if (!file.value) return
-    if (!cwd.value) {
-      error.value = 'No working directory'
-      return
-    }
-    try {
-      await deps.writeFile(cwd.value, file.value.path, next)
-      content.value = next
-    } catch {
-      error.value = 'Failed to save file'
-    }
-  }
-
   return {
     file,
     content,
@@ -291,7 +277,6 @@ export function useCodeEditorSession(deps: CodeEditorSessionDeps) {
     cwd,
     openFile,
     restoreFromUrl,
-    save,
     clear,
   }
 }
