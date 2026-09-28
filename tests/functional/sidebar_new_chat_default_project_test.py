@@ -230,3 +230,59 @@ def test_a_chat_in_the_default_project_resolves_its_cwd_to_home(
     assert not cwd.endswith(sandbox_suffix), (
         f"the agent fell back to a per-session sandbox instead of HOME: {cwd!r}"
     )
+
+
+def test_a_corrupted_default_name_is_repaired_over_the_wire(
+    harness: FunctionalHarness,
+) -> None:
+    """A default project whose name was corrupted by the old build heals itself.
+
+    The allocator bug wrote 0xAA poison bytes into the name, which the sidebar
+    rendered as ``[ 170, 170, … ]``. Fixing the bug stops new damage, but the
+    rows are already in the user's database — so the read path rewrites any name
+    that is empty, not valid UTF-8, or full of control characters.
+
+    Corrupting the row directly through SQLite is the only way to reproduce the
+    pre-fix state: a clean binary will never write a bad name again.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    ws_id = _create_workspace(harness)
+    default = _defaults(harness, ws_id)[0]
+
+    db = list(Path(harness.temp_dir).rglob("agent.db"))
+    assert db, "expected an agent.db under the harness HOME"
+    con = sqlite3.connect(str(db[0]))
+    try:
+        con.execute(
+            "UPDATE workspace_items SET name = ? WHERE id = ?",
+            (b"\xaa" * 8, default["id"]),
+        )
+        con.commit()
+
+        # A plain list read — the same call the sidebar makes — repairs it.
+        items = _items(harness, ws_id)
+        healed = next(i for i in items if i["id"] == default["id"])
+        assert healed["name"] == "Project Default", (
+            f"the corrupted name should have been repaired, got {healed['name']!r}"
+        )
+
+        # And the repair is persisted, so it does not churn on every read.
+        stored = con.execute(
+            "SELECT name FROM workspace_items WHERE id = ?", (default["id"],)
+        ).fetchone()[0]
+        assert stored == "Project Default", f"the row was not rewritten: {stored!r}"
+
+        # A real name is left alone — the repair must never clobber a rename.
+        con.execute(
+            "UPDATE workspace_items SET name = 'Renamed by hand' WHERE id = ?",
+            (default["id"],),
+        )
+        con.commit()
+        again = next(i for i in _items(harness, ws_id) if i["id"] == default["id"])
+        assert again["name"] == "Renamed by hand", (
+            f"a user rename must survive the repair, got {again['name']!r}"
+        )
+    finally:
+        con.close()
