@@ -84,6 +84,13 @@ suite: 4151 passed / 25 failed (the 25 are the pre-existing ones; the two
 center-diff gate specs this change touched now pass again). vue-tsc,
 oxlint, eslint clean.
 
+Numbers above are from the first verification pass; the branch was later
+rebased onto `main` (which had landed the floating-composer feature —
+conflict resolved by keeping `main`'s `composer-dock` markup and swapping
+only the visibility gate). Re-verified on the rebased branch: 4/4
+production-bundle UI tests, 4169 passed / 25 pre-existing failures, zero
+new against the new `main` baseline.
+
 ## Out of scope (follow-ups worth their own card)
 
 1. **`PropertiesPanel.vue`** carries the same `@vite-ignore` monaco import, so its design-HTML editor falls back to the textarea placeholder ("TODO: install monaco-editor…") in production. Unlike the code viewer it degrades gracefully, and the fix is a bundle-size decision (monaco as a lazy chunk vs. another zero-dep editor), so it is deliberately left alone.
