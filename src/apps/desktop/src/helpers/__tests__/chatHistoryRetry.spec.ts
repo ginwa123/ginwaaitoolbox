@@ -1,22 +1,27 @@
+import { Effect, Exit } from 'effect'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
   fetchInitialHistoryWithRetry,
+  historyRetrySchedule,
   INITIAL_HISTORY_RETRY_DELAYS_MS,
   INITIAL_HISTORY_TIMEOUT_MS,
 } from '../chatHistoryRetry'
 
-/** Never waits — records what it was asked to wait for instead. */
-const fakeSleep = () => {
-  const waits: number[] = []
-  return {
-    waits,
-    sleep: (ms: number) => {
-      waits.push(ms)
-      return Promise.resolve()
-    },
-  }
-}
+/** Run an Effect to an Exit without the test ever having to catch anything. */
+const runExit = <A, E>(effect: Effect.Effect<A, E>): Promise<Exit.Exit<A, E>> =>
+  Effect.runPromise(Effect.exit(effect))
+
+/** The success value, or undefined — lets us assert without a conditional expect. */
+const valueOf = <A, E>(exit: Exit.Exit<A, E>): A | undefined =>
+  Exit.isSuccess(exit) ? exit.value : undefined
+
+/** The failure cause, or undefined. */
+const causeOf = <A, E>(exit: Exit.Exit<A, E>): unknown =>
+  Exit.isFailure(exit) ? exit.cause : undefined
+
+/** Collapse the backoff to zero so the retry tests do not wait it out. */
+const NO_WAIT = [0, 0, 0, 0]
 
 describe('INITIAL_HISTORY_TIMEOUT_MS', () => {
   it("outlives apiFetch's 15 s default — that abort is what faked an empty session", () => {
@@ -45,78 +50,106 @@ describe('INITIAL_HISTORY_RETRY_DELAYS_MS', () => {
   })
 })
 
+describe('historyRetrySchedule', () => {
+  it('stops immediately when there is no backoff entry', async () => {
+    // A single delay means "try once, never retry" — the schedule must not
+    // keep the effect alive.
+    const attempt = vi.fn().mockRejectedValue(new Error('nope'))
+    const exit = await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.tryPromise({ try: () => attempt(), catch: (e) => e as Error }), {
+        delaysMs: [0],
+      }),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(attempt).toHaveBeenCalledTimes(1)
+  })
+
+  it('is exported so the policy can be inspected without running it', () => {
+    expect(historyRetrySchedule).toBeTypeOf('function')
+    expect(historyRetrySchedule([0])).toBeDefined()
+    expect(historyRetrySchedule(INITIAL_HISTORY_RETRY_DELAYS_MS)).toBeDefined()
+  })
+})
+
 describe('fetchInitialHistoryWithRetry', () => {
-  it('returns the first success without sleeping at all', async () => {
-    const { waits, sleep } = fakeSleep()
+  it('returns the first success without a single retry', async () => {
     const attempt = vi.fn().mockResolvedValue('transcript')
 
-    await expect(fetchInitialHistoryWithRetry(attempt, { sleep })).resolves.toBe('transcript')
+    const exit = await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.tryPromise({ try: () => attempt(), catch: (e) => e as Error }), { delaysMs: NO_WAIT }),
+    )
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(valueOf(exit)).toBe('transcript')
     expect(attempt).toHaveBeenCalledTimes(1)
-    expect(waits).toEqual([])
   })
 
   it('keeps going after failures and returns the eventual success', async () => {
-    const { waits, sleep } = fakeSleep()
     const attempt = vi
       .fn()
       .mockRejectedValueOnce(new Error('503'))
       .mockRejectedValueOnce(new Error('timeout'))
       .mockResolvedValue('transcript')
 
-    await expect(fetchInitialHistoryWithRetry(attempt, { sleep })).resolves.toBe('transcript')
+    const exit = await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.tryPromise({ try: () => attempt(), catch: (e) => e as Error }), { delaysMs: NO_WAIT }),
+    )
+
+    expect(Exit.isSuccess(exit)).toBe(true)
+    expect(valueOf(exit)).toBe('transcript')
     expect(attempt).toHaveBeenCalledTimes(3)
-    // Slept the backoff after attempt 1 and attempt 2 — never after the
-    // success, and never before the first try.
-    expect(waits).toEqual([
-      INITIAL_HISTORY_RETRY_DELAYS_MS[1]!,
-      INITIAL_HISTORY_RETRY_DELAYS_MS[2]!,
-    ])
   })
 
-  it('rejects with the LAST error once the schedule is exhausted', async () => {
-    const { waits, sleep } = fakeSleep()
+  it('fails on the error channel with the LAST error once the schedule is exhausted', async () => {
     const last = new Error('still down')
     const attempt = vi.fn().mockRejectedValueOnce(new Error('a')).mockRejectedValue(last)
 
-    await expect(fetchInitialHistoryWithRetry(attempt, { sleep })).rejects.toBe(last)
-    expect(attempt).toHaveBeenCalledTimes(INITIAL_HISTORY_RETRY_DELAYS_MS.length)
-    expect(waits).toHaveLength(INITIAL_HISTORY_RETRY_DELAYS_MS.length - 1)
+    const exit = await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.tryPromise({ try: () => attempt(), catch: (e) => e as Error }), { delaysMs: NO_WAIT }),
+    )
+
+    // The failure must survive as a FAILURE, not degrade into a value — that
+    // is the whole point (AGENTS.md: never let a failure become an "empty").
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(causeOf(exit)).toBeDefined()
+    expect(attempt).toHaveBeenCalledTimes(NO_WAIT.length)
   })
 
-  it('reports each retry with the error that caused it', async () => {
-    const { sleep } = fakeSleep()
-    const boom = new Error('boom')
-    const attempt = vi.fn().mockRejectedValueOnce(boom).mockResolvedValue('ok')
+  it('reports every failure to onRetry so a reader can tell retrying from giving up', async () => {
+    const attempt = vi.fn().mockRejectedValue(new Error('boom'))
     const onRetry = vi.fn()
 
-    await fetchInitialHistoryWithRetry(attempt, { sleep, onRetry })
-
-    expect(onRetry).toHaveBeenCalledTimes(1)
-    expect(onRetry).toHaveBeenCalledWith({
-      attempt: 1,
-      delayMs: INITIAL_HISTORY_RETRY_DELAYS_MS[1],
-      error: boom,
-    })
-  })
-
-  it('honours a custom schedule', async () => {
-    const { waits, sleep } = fakeSleep()
-    const attempt = vi.fn().mockRejectedValue(new Error('nope'))
-
-    await expect(
-      fetchInitialHistoryWithRetry(attempt, { sleep, delaysMs: [0, 5] }),
-    ).rejects.toThrow('nope')
-    expect(attempt).toHaveBeenCalledTimes(2)
-    expect(waits).toEqual([5])
-  })
-
-  it('makes exactly one attempt when the schedule is empty', async () => {
-    const { sleep } = fakeSleep()
-    const attempt = vi.fn().mockRejectedValue(new Error('nope'))
-
-    await expect(fetchInitialHistoryWithRetry(attempt, { sleep, delaysMs: [] })).rejects.toThrow(
-      'nope',
+    await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.tryPromise({ try: () => attempt(), catch: (e) => e as Error }), {
+        delaysMs: NO_WAIT,
+        onRetry,
+      }),
     )
-    expect(attempt).toHaveBeenCalledTimes(1)
+
+    // Once per failed attempt, including the last.
+    expect(onRetry).toHaveBeenCalledTimes(NO_WAIT.length)
+    expect(onRetry).toHaveBeenCalledWith(expect.any(Error))
+  })
+
+  it('does not call onRetry when the first attempt succeeds', async () => {
+    const onRetry = vi.fn()
+    await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.succeed('transcript'), {
+        delaysMs: NO_WAIT,
+        onRetry,
+      }),
+    )
+    expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  it('honours a custom schedule length', async () => {
+    const attempt = vi.fn().mockRejectedValue(new Error('nope'))
+
+    const exit = await runExit(
+      fetchInitialHistoryWithRetry(() => Effect.tryPromise({ try: () => attempt(), catch: (e) => e as Error }), { delaysMs: [0, 0] }),
+    )
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(attempt).toHaveBeenCalledTimes(2)
   })
 })

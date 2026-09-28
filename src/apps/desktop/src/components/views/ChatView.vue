@@ -35,10 +35,13 @@ import {
 import FileInput from '../file/FileInput.vue'
 import { installSseBus, useSseBus } from '../../helpers/sseBus'
 import { readGitStatusCache } from '../../helpers/gitStatusCache'
+import { Effect } from 'effect'
+import { runEffectExit } from '../../helpers/effectRuntime'
 import {
   fetchInitialHistoryWithRetry,
   INITIAL_HISTORY_TIMEOUT_MS,
 } from '../../helpers/chatHistoryRetry'
+import { ChatHistoryError } from '../../api'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {
   isBackgroundCommandOutput,
@@ -2707,9 +2710,13 @@ const applyDeltaExtra = (extra: {
  * One attempt at the initial load: cache-first paint, then the network page.
  *
  * Split out of `loadChatHistory` so the retry loop can re-run the WHOLE
- * attempt (cache-prime included) after a failed network fetch. Throws on
- * failure — the caller's `catch` is the only place that decides what a failed
+ * attempt (cache-prime included) after a failed network fetch. It fails —
+ * the caller's error channel is the only place that decides what a failed
  * transcript means, and it must never be "this session is empty".
+ *
+ * The body is still promise-shaped (it awaits IndexedDB reads and the
+ * network page); `runHistoryLoadAttemptEffect` is the one place that bridges
+ * it onto the Effect seam.
  */
 const runHistoryLoadAttempt = async () => {
   // Cached mount: paint stored full-fidelity raws instantly (same mapper as
@@ -2782,12 +2789,19 @@ const runHistoryLoadAttempt = async () => {
     // Ignore — network path below is authoritative.
   }
 
-  const data = await api.fetchChatHistory(
-    sessionId.value,
-    PAGE_SIZE,
-    undefined,
-    'desc',
-    INITIAL_HISTORY_TIMEOUT_MS,
+  // `fetchChatHistoryEffect`, not `getChatHistory`: the latter answers a
+  // failed fetch with an empty transcript, which is exactly the "this session
+  // has no messages" lie the empty state would then render. Here the failure
+  // is a `ChatHistoryError` on the error channel; `runPromise` re-raises it
+  // and `runHistoryLoadAttemptEffect` re-types it for the retry loop.
+  const data = await Effect.runPromise(
+    api.fetchChatHistoryEffect(
+      sessionId.value,
+      PAGE_SIZE,
+      undefined,
+      'desc',
+      INITIAL_HISTORY_TIMEOUT_MS,
+    ),
   )
 
   if (data.cwd) {
@@ -2936,6 +2950,24 @@ const runHistoryLoadAttempt = async () => {
 }
 
 /**
+ * The promise-shaped attempt above, as an `Effect`.
+ *
+ * `Effect.tryPromise` is the sanctioned bridge (see `sync/SessionEngineDb.ts`
+ * for the same shape): it is where a rejection becomes a typed
+ * `ChatHistoryError` instead of an unhandled throw, so the retry loop and the
+ * error state can both see it.
+ */
+const runHistoryLoadAttemptEffect = (): Effect.Effect<void, ChatHistoryError> =>
+  Effect.tryPromise({
+    try: runHistoryLoadAttempt,
+    catch: (cause) =>
+      new ChatHistoryError({
+        sessionId: sessionId.value,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
+
+/**
  * Initial load / refresh (the old `loadChatHistory(false)`).
  *
  * Wraps `runHistoryLoadAttempt` in the retry schedule, then decides what a
@@ -2963,24 +2995,24 @@ const loadChatHistory = async () => {
   // "Not known yet" until an attempt completes.
   historyConfirmed.value = false
 
-  try {
-    await fetchInitialHistoryWithRetry(runHistoryLoadAttempt, {
-      onRetry: ({ attempt, delayMs, error: reason }) => {
-        // Deliberately not the scroll logger: this is a network event, and
-        // its `reason` field is a closed `ScrollReason` union.
-        console.warn(
-          `[ChatView] transcript load attempt ${attempt} failed, retrying in ${delayMs}ms:`,
-          reason,
-        )
-      },
-    })
-  } catch (err) {
-    console.error('Failed to load chat history:', err)
-    error.value = 'Failed to load messages'
-    messages.value = []
-  } finally {
-    isLoading.value = false
-  }
+  // No try/catch: `ensuring` is the finally, `tapError` is the catch, and both
+  // are typed against the error channel. See AGENTS.md, "Frontend — No
+  // `try`/`catch` in the desktop app; use Effect-TS".
+  await runEffectExit(
+    Effect.ensuring(
+      Effect.tapError(fetchInitialHistoryWithRetry(runHistoryLoadAttemptEffect), (err) =>
+        Effect.sync(() => {
+          console.error('Failed to load chat history:', err)
+          error.value = 'Failed to load messages'
+          messages.value = []
+        }),
+      ),
+      Effect.sync(() => {
+        isLoading.value = false
+      }),
+    ),
+    'history.load',
+  )
 }
 
 // ─── Scroll ──────────────────────────────────────────────────────────────────

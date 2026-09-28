@@ -187,3 +187,75 @@ existing `?panel=` param so mount restores it.
   asserts the restored view (see `SidebarDiffPanel.tabs.spec.ts`).
 - ❌ Local-only `ref` booleans for view state in routed components.
 
+
+## Frontend — No `try`/`catch` in the desktop app; use Effect-TS
+
+New frontend code in `src/apps/desktop/` MUST express fallibility in the
+**type**, not in a `try`/`catch` block. `src/apps/desktop/src/sync/` is the
+reference implementation; the `effect` package is already a dependency.
+
+**Why — this is not a style preference, it is a correctness rule.**
+`SyncError.ts` says it outright: before Effect, *"a backend outage, a corrupt
+IndexedDB database and a legitimately empty result all reached the UI as the
+same value. The engine's callers could not tell 'there is nothing new' from
+'we could not check'."*
+
+PR #719 is that exact bug, live, in the chatview:
+
+```ts
+// ❌ The catch swallows the failure into a plausible-looking success.
+try {
+  const data = await api.getChatHistory(sid, PAGE_SIZE, undefined)
+  messages.value = data.messages
+} catch {
+  return { messages: [], has_more: false, next_cursor: null, skills: [] }
+}
+```
+
+`getChatHistory` returned `messages: []` on transport failure *and* on a real
+empty session, so `error` stayed `null`, and the empty state's
+`v-if="!isLoading && !error && messages.length === 0"` was true. A slow
+backend rendered **"How can I help you?"** for sessions full of messages. The
+`chat-load-error` block and its Retry button were **dead code** — the only
+route to them was a `catch` around a function that could never throw.
+
+### The rules
+
+- **A fallible operation returns `Effect<A, E>`, not a promise that may reject
+  and not a promise that may return a fake empty.** Declare the failure as a
+  tagged error (`Data.TaggedError`), as `sync/SyncError.ts` does.
+- **The caller picks the policy, and the policy is visible in the type.** Do
+  not hard-code "degrade to empty" inside the API layer — that is the move
+  that caused the bug. Offer both a rejecting variant and an explicitly
+  named best-effort wrapper, and make call sites say which one they want.
+- **Reuse the existing seam.** `runSyncEffect` / `runSyncEffectOr` /
+  `runSyncVoid` (`sync/runtime.ts`) are the Vue-`<script setup>` bridge: they
+  run an `Effect`, log the squashed cause in dev, and degrade to a value the
+  caller named. `Effect.runPromise(Effect.exit(effect))` + `Exit.isSuccess` is
+  the shape to copy for a new seam.
+- **Reserve `try`/`catch` for the genuinely exceptional**: a Vue event handler
+  that must not reject, a `finally` that releases a resource, or a parser
+  around untrusted input. Even there, say in a comment why the failure cannot
+  be handled by the type.
+- **Never let a caught error disappear into a value the UI cannot
+  distinguish from a legitimate answer.** If a fallback value is returned,
+  the reason must still reach a log or a ref.
+
+### Checklist before you commit frontend code
+
+- [ ] Did I add a `try`/`catch`? Can the failure live in the error channel instead?
+- [ ] Does any "empty" value get returned on the failure path? If so, is
+      "empty" still distinguishable from "unavailable" downstream?
+- [ ] Is any `error` ref effectively **write-only** (set, never rendered)?
+      That is the fingerprint of a swallowed failure.
+- [ ] Does the spec prove the failure path? A test that only seeds the happy
+      path will pass on code that has this bug.
+
+Repo-specific notes: `scrollLogger.*({ reason })` takes a closed `ScrollReason`
+union (a retry is not a scroll reason — use `console.warn`); `oxlint`'s
+`no-useless-catch` rejects a `catch (e) { throw e }` wrapper; and prettier
+wraps long `v-if` expressions across lines, so source-contract regexes must be
+whitespace-tolerant. See
+`.nalar/skills/chatview-empty-state-gate/SKILL.MD` for a worked example.
+
+

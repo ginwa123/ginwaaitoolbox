@@ -3,6 +3,8 @@
 
 import { createSseClient, type SseClient } from '../helpers/sseClient'
 import { readGitStatusCache, writeGitStatusCache } from '../helpers/gitStatusCache'
+import { Cause, Data, Effect } from 'effect'
+import { describeCause } from '../helpers/effectRuntime'
 
 export const API_BASE = '/api'
 
@@ -1406,6 +1408,44 @@ function parseTimestamp(ts: number | string): number {
   // If timestamp looks like nanoseconds (> 1e12), convert to seconds
   return num > 1e12 ? Math.floor(num / 1e9) : num
 }
+/**
+ * The transcript fetch failed — transport, non-2xx, or an abort.
+ *
+ * Deliberately coarse: the UI acts on "the transcript is unavailable", not on
+ * which kind of unavailable it is, and the retry policy is the same for all
+ * three. The point of the tag is only that the failure is DISTINGUISHABLE
+ * from an empty transcript — see the empty-state bug this replaced.
+ */
+export class ChatHistoryError extends Data.TaggedError('ChatHistoryError')<{
+  readonly sessionId: string
+  readonly reason: string
+}> {}
+
+/**
+ * What a best-effort transcript caller gets when the fetch failed. Named, not
+ * inlined, so the two shapes can be diffed by eye: every field is `undefined`
+ * or empty because the answer genuinely is unknown, and the only place this is
+ * legitimate is `getChatHistory`'s three metadata callers.
+ */
+const EMPTY_CHAT_HISTORY: ChatHistoryResponse = {
+  messages: [],
+  has_more: false,
+  next_cursor: null,
+  cwd: undefined,
+  git_worktree_cwd: undefined,
+  pr_url: undefined,
+  pr_provider: undefined,
+  // 2026-08-07-profile-persist-read — preserve the field shape on
+  // the error path so ChatView's `loadChatHistory` branch can
+  // safely read `data.selected_profile_model` (it'll be
+  // `undefined`, which ChatView coerces to `null`).
+  selected_profile_model: undefined,
+  max_total_tokens: undefined,
+  max_capacity_total_tokens: undefined,
+  total_count: undefined,
+  skills: [],
+}
+
 export type ChatHistoryResponse = {
   messages: Message[]
   has_more: boolean
@@ -1432,31 +1472,31 @@ export type ChatHistoryResponse = {
 }
 
 /**
- * The transcript endpoint, WITHOUT the swallow.
+ * The transcript endpoint, WITH the failure in the type.
  *
- * `getChatHistory` (below) catches every failure and hands back an empty
- * transcript. That is the right contract for the three best-effort metadata
- * callers — AppLayout's cwd fallback, ChatView's `refreshWorktreeBinding`, and
- * the older-page prefetch — where a dead backend must degrade quietly.
+ * Returns `Effect<ChatHistoryResponse, ChatHistoryError>`, so "the backend is
+ * unreachable" is a value the caller must handle — it cannot be mistaken for
+ * an empty transcript. That distinction is the whole fix: a slow or erroring
+ * backend previously returned `messages: []`, the empty state's `v-if` went
+ * true, and the chatview claimed a full session was empty ("How can I help
+ * you?"). See AGENTS.md, "Frontend — No `try`/`catch` in the desktop app".
  *
- * It is the WRONG contract for the initial transcript load: an empty transcript
- * there is indistinguishable from "this session has no messages", so a slow or
- * erroring backend made the chatview claim a full session was empty ("How can
- * I help you?"). Callers that must be able to tell "empty" from "unavailable"
- * use this function and handle the rejection themselves.
+ * `getChatHistory` (below) is the explicitly-named best-effort variant built
+ * on this one, for the three metadata callers whose fallback chains depend on
+ * degrading quietly.
  *
  * `timeoutMs` lets the transcript load outlive apiFetch's 15 s default: a
  * `limit=1000` page carrying base64 image_urls and tool JSON routinely needs
  * longer, and that abort is what turned a slow server into a phantom empty
  * session.
  */
-export async function fetchChatHistory(
+export function fetchChatHistoryEffect(
   sessionId: string,
   limit = 50,
   cursor?: string,
   direction: 'asc' | 'desc' = 'desc',
   timeoutMs?: number,
-): Promise<ChatHistoryResponse> {
+): Effect.Effect<ChatHistoryResponse, ChatHistoryError> {
   const params = new URLSearchParams({
     sort_by: 'created_at',
     direction,
@@ -1474,11 +1514,7 @@ export async function fetchChatHistory(
   // and tool JSON routinely needs longer, and that abort is what turned a slow
   // server into a phantom empty session. Left undefined, the default stands.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; the surrounding type is intentionally opaque.
-  const data = await apiFetch<any>(
-    `/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`,
-    { silent: true, ...(timeoutMs === undefined ? {} : { timeoutMs }) },
-  )
-  return {
+  const toResponse = (data: any): ChatHistoryResponse => ({
     messages: data.messages.map(
       (msg: {
         id: string
@@ -1522,47 +1558,45 @@ export async function fetchChatHistory(
     max_capacity_total_tokens: data.max_capacity_total_tokens,
     total_count: data.total_count,
     skills: data.skills,
-  }
+  })
+
+  return Effect.tryPromise({
+    try: () =>
+      apiFetch<any>(`/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`, {
+        silent: true,
+        ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      }),
+    catch: (cause) => new ChatHistoryError({ sessionId, reason: describeCause(Cause.fail(cause)) }),
+  }).pipe(Effect.map(toResponse))
 }
 
 /**
- * The transcript endpoint, best-effort: a failure yields an EMPTY transcript
- * rather than a rejection.
+ * Best-effort transcript: a failure yields an EMPTY transcript rather than a
+ * rejection, implemented on the Effect seam so no `try`/`catch` sits between
+ * the failure and the value the caller gets.
  *
- * Correct for the metadata callers above. NOT correct for the initial
- * transcript load, which must use `fetchChatHistory` so a failed fetch can
- * never be mistaken for an empty session.
+ * Correct ONLY for the three metadata callers — AppLayout's cwd fallback,
+ * ChatView's `refreshWorktreeBinding` (`limit=1`), and the older-page
+ * prefetch — whose fallback chains depend on degrading quietly. The initial
+ * transcript load must use `fetchChatHistoryEffect`, so "the backend is
+ * unreachable" can never be handed to the UI as "this session is empty".
  */
-export async function getChatHistory(
+export function getChatHistory(
   sessionId: string,
   limit = 50,
   cursor?: string,
   direction: 'asc' | 'desc' = 'desc',
 ): Promise<ChatHistoryResponse> {
-  try {
-    return await fetchChatHistory(sessionId, limit, cursor, direction)
-  } catch (error) {
-    // Return empty messages when LLM backend unavailable
-    console.log(error)
-    return {
-      messages: [],
-      has_more: false,
-      next_cursor: null,
-      cwd: undefined,
-      git_worktree_cwd: undefined,
-      pr_url: undefined,
-      pr_provider: undefined,
-      // 2026-08-07-profile-persist-read — preserve the field shape on
-      // the error path so ChatView's `loadChatHistory` branch can
-      // safely read `data.selected_profile_model` (it'll be
-      // `undefined`, which ChatView coerces to `null`).
-      selected_profile_model: undefined,
-      max_total_tokens: undefined,
-      max_capacity_total_tokens: undefined,
-      total_count: undefined,
-      skills: [],
-    }
-  }
+  return Effect.runPromise(
+    fetchChatHistoryEffect(sessionId, limit, cursor, direction).pipe(
+      Effect.catchAll((error) => {
+        // The reason is logged, not discarded — the AGENTS.md rule about
+        // never letting a caught error vanish into an indistinguishable value.
+        console.log(error)
+        return Effect.succeed(EMPTY_CHAT_HISTORY)
+      }),
+    ),
+  )
 }
 
 // Send a message to LLM
