@@ -1786,6 +1786,32 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 cflags[cn] = a;
                 cn += 1;
             }
+            // Debian/Ubuntu keep the glibc headers in a multiarch subdir
+            // and ship NO /usr/include/bits symlink, so with only
+            // /usr/include on the path the system headers' own
+            // `#include <bits/types.h>` resolves to nothing.
+            //
+            // That is invisible until a C++ TU reaches <ctime>: Zig's
+            // generic-glibc/time.h shim pulls in the system
+            // bits/types/time_t.h, which uses `__time64_t` under
+            // __USE_TIME_BITS64 — and `__time64_t` is defined in
+            // bits/types.h, the header that silently did not resolve.
+            // Result: "unknown type name '__time64_t'" in
+            // bits/types/struct_timeval.h, then an undeclared
+            // `__ts_sec` in libcxx's condition_variable.h.
+            //
+            // Arch and Fedora keep these headers flat in /usr/include,
+            // which is why this never showed up until CI left the Arch
+            // runner. Added conditionally so those distros are
+            // untouched — a non-existent -isystem dir is harmless, but
+            // being explicit keeps the flag list honest.
+            const multiarch_include = b.fmt("/usr/include/{s}-linux-gnu", .{@tagName(target.result.cpu.arch)});
+            if (dirExists(b, multiarch_include)) {
+                if (cn < cflags.len) {
+                    cflags[cn] = b.fmt("-isystem{s}", .{multiarch_include});
+                    cn += 1;
+                }
+            }
             if (libstdc_dir) |cxx| {
                 // System libstdc++: pin to the highest-version c++
                 // directory + its target-specific c++config.h. Both
