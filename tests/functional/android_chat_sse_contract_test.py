@@ -1,15 +1,18 @@
 """Wire-contract test for the native Android chat event stream.
 
-`HttpChatEventStream` subscribes to `?channels=llm,sessions,queue`
-(`ChatApi.eventsPath()`) on its own connection and decodes the frames in
-`decodeChatFrame`. The Kotlin unit tests feed that decoder hand-written
-strings, so a rename or a re-shape on the server only reaches them as a
-failure if somebody remembers to update the fixture — and until then the phone
-shows a chat that never updates, with nothing in any log.
+The app opens ONE connection for the whole process. `RootSseBus` subscribes to
+`?channels=llm,queue,sessions,workers` (`SseChannels.eventsPath()`) and fans the
+frames out to `ChatViewModel` and `WorkerActivityViewModel`, which each decode
+with `decodeChatFrame` and filter by `event.session_id`. The Kotlin unit tests
+feed that decoder hand-written strings, so a rename or a re-shape on the
+server only reaches them as a failure if somebody remembers to update the
+fixture — and until then the phone shows a chat that never updates, with
+nothing in any log.
 
 This file closes the gap from the other side: it asks a real `nalar` for the
 frames and asserts the exact fields the Kotlin reads. The sibling
-`android_workers_contract_test.py` does the same for the `workers` channel.
+`android_workers_contract_test.py` does the same for the `workers` frames that
+now arrive on the same connection.
 
 Two sources of frames, deliberately:
 
@@ -48,9 +51,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import FunctionalHarness  # noqa: E402
 
-#: `ChatApi.eventsPath()`. Spelled out rather than imported, because the point
-#: is to fail when one side moves and the other does not.
-CHAT_CHANNELS = "llm,sessions,queue"
+#: `SseChannels.eventsPath()`, minus the `/api/events?` prefix. Spelled out
+#: rather than imported, because the point is to fail when one side moves and
+#: the other does not.
+#:
+#: One set for the whole app, and deliberately *not* a per-session routing key
+#: (`llm:<session_id>` would need a socket per open chat — the two-connection
+#: shape the bus exists to remove). Every session's traffic arrives here and
+#: each subscriber filters by `event.session_id`.
+CHAT_CHANNELS = "llm,queue,sessions,workers"
 
 #: The names `decodeChatFrameUnsafe` has a branch for on these channels. A
 #: frame outside this set lands on its `else -> null` and is dropped in
@@ -213,7 +222,7 @@ def _emit(harness: FunctionalHarness, session_id: str, payload: dict) -> None:
 
 
 def test_the_chat_channel_set_is_accepted(harness):
-    """`channels=llm,sessions,queue` returns 200 SSE, not a terminated stream.
+    """The app's one channel set returns 200 SSE, not a terminated stream.
 
     `parseChannels` rejects an unknown token and the handler's only response to
     that is to close the stream — a 200 that never emits `connected`. The

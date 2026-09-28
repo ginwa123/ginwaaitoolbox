@@ -64,7 +64,7 @@ class HttpChatEventStream(
      * outright, so this is spelled out at each call site rather than assembled
      * from a set.
      */
-    private val path: String = ChatApi.eventsPath(),
+    private val path: String = SseChannels.eventsPath(),
 ) : ChatEventStream {
     private val normalizedBaseUrl = baseUrl.trimEnd('/')
     private val lock = Any()

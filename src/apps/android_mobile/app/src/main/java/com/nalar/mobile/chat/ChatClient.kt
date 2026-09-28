@@ -204,7 +204,8 @@ class ChatClient(
     )
 
     /**
-     * The sessions with a live worker, as a bootstrap for [WorkerApi.eventsPath].
+     * The sessions with a live worker, as a bootstrap for the running set
+     * that [com.nalar.mobile.worker.RunningSessionsStore] holds.
      *
      * The stream carries no replay, so a run that was already going when the app
      * opened produces no event at all — the list is the only way to learn about

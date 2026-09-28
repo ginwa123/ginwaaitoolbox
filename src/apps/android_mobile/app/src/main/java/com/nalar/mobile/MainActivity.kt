@@ -6,14 +6,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nalar.mobile.auth.AuthViewModel
+import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.chat.ChatUiState
 import com.nalar.mobile.chat.ChatViewModel
+import com.nalar.mobile.chat.SseBus
+import com.nalar.mobile.chat.SseBusHolder
 import com.nalar.mobile.network.NalarNavGraph
 import com.nalar.mobile.recents.HomeViewModel
 import com.nalar.mobile.storage.PrefsLastPositionStore
@@ -68,6 +75,17 @@ class MainActivity : ComponentActivity() {
                 )
                 val runningSessionIds by workerViewModel.runningSessionIds.collectAsState()
 
+                // The app's ONE event connection, opened here and nowhere else.
+                //
+                // The root owns it for the same reason the web app's root does:
+                // a socket opened per screen is a socket torn down per
+                // navigation, and two ViewModels with two sockets of opposite
+                // lifetimes can never agree about what is running. Both
+                // subscribers below are handed this one.
+                val sseBus: SseBus = remember(application) {
+                    SseBusHolder.get(SessionCookieStore(application))
+                }
+
                 // One sign-out, three entry points: the sidebar's "Log out", the
                 // retry screen's "Sign in", and a 401 from either cache. They are
                 // the same action, so they must purge the account-scoped caches
@@ -77,19 +95,45 @@ class MainActivity : ComponentActivity() {
                     homeViewModel.onSignedOut()
                     chatViewModel.onSignedOut()
                     workerViewModel.onSignedOut()
+                    sseBus.close()
                     authViewModel.logout()
                 }
 
-                // The signed-in account namespaces both caches and gates the
-                // worker subscription, whose handshake is a cookie the server
-                // answers once and never retries. Reacting to it here (rather
-                // than inside a ViewModel's init) means the first paint is
-                // already scoped to the right account, and signing out stops
-                // the stream and drops the ids.
+                // The signed-in account namespaces both caches AND owns the
+                // socket, whose handshake is a cookie the server answers once and
+                // never retries. Reacting to it here (rather than inside a
+                // ViewModel's init) means the first paint is already scoped to
+                // the right account.
+                //
+                // Gating `open()` on a non-null user is load-bearing: the pump
+                // treats a non-2xx handshake as terminal and returns instead of
+                // retrying, so a socket opened before the cookie exists burns
+                // its one handshake and then reports nothing for the life of the
+                // process — which reads as "no worker has ever run".
                 LaunchedEffect(authState.userId) {
                     homeViewModel.onUserChanged(authState.userId)
                     chatViewModel.onUserChanged(authState.userId)
                     workerViewModel.onUserChanged(authState.userId)
+                    if (authState.userId.isNullOrBlank()) sseBus.close() else sseBus.open()
+                }
+
+                // The workers socket is open for the whole process, so a run
+                // that ended while the app was backgrounded produced a
+                // `worker_deleted` this process never dispatched — and because
+                // the socket never dropped, no reconnect is coming to correct
+                // it. Coming back to the app is exactly when that stale set is
+                // most visible, so re-read the list on the way in. The periodic
+                // beat inside the ViewModel covers the same gap while the app is
+                // in use; this covers the moment the user looks at it.
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner, authState.userId) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_START) {
+                            workerViewModel.onForeground()
+                        }
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
                 }
 
                 // A 401 on any call means the saved cookie is dead; signing out

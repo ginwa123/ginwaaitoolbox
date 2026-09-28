@@ -46,7 +46,16 @@ import org.json.JSONObject
 class ChatViewModel(
     private val client: ChatClient,
     private val cache: ChatCache,
-    private val eventStream: ChatEventStream,
+    /**
+     * The app's ONE event connection, shared with the sidebar.
+     *
+     * Subscribed once, in `init`, for the life of the ViewModel — which is the
+     * life of the Activity. Previously this owned a second socket that was
+     * stopped and started on every session switch; the bus is opened at sign-in
+     * and never per chat, so "which chat is open" became a *filter* in
+     * [handleBusEvent] rather than a reason to reconnect.
+     */
+    private val bus: SseBus,
     // Reads a picked `content://` image into an encoded attachment. Injected
     // because it is the only part of the send path that needs a `Bitmap`, and
     // threading a `Context` in for it would put the Android framework in the
@@ -62,6 +71,20 @@ class ChatViewModel(
 
     private val _sessionExpired = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val sessionExpired: SharedFlow<Unit> = _sessionExpired.asSharedFlow()
+
+    /**
+     * Detaches from the root bus. Held because the subscription outlives every
+     * session: this ViewModel is Activity-scoped, so unsubscribing is tied to
+     * the Activity dying, not to the user leaving a chat.
+     */
+    private var unsubscribeFromBus: (() -> Unit)? = null
+
+    init {
+        unsubscribeFromBus = bus.subscribe(
+            onEvent = { event -> handleBusEvent(event) },
+            onState = { state -> handleBusState(state) },
+        )
+    }
 
     private var userId: String? = null
     private var loadJob: Job? = null
@@ -142,6 +165,16 @@ class ChatViewModel(
     @Volatile
     private var hasFreshContent: Boolean = false
 
+    /**
+     * Has the bus dropped and come back since the open chat was opened?
+     *
+     * Reset in [openSession], so what it actually answers is "did this chat miss
+     * anything?", which is the question that matters. That reading survived the
+     * move to one shared socket: the first `Live` *after* a chat is open is
+     * either a reconnect — in which case the refetch is the only repair, since
+     * the server keeps no replay buffer — or a connect the chat was already
+     * open for, in which case [openSession]'s own load covered the gap.
+     */
     private var hasConnectedStreamOnce = false
 
     /**
@@ -200,10 +233,9 @@ class ChatViewModel(
         queueJob?.cancel()
         stopJob?.cancel()
         answerJob?.cancel()
-        // A stream that is already up would keep delivering the PREVIOUS
-        // chat's events into the handlers captured for it, and this chat would
-        // sit there showing "connected" while never receiving a turn.
-        stopEventStream()
+        // Nothing to detach: the bus is already carrying this chat's events and
+        // the handlers below filter by the session the state says is open. The
+        // socket is not re-pointed per chat — see [handleBusEvent].
         liveMessageIds.clear()
         subAgentBatches.clear()
         olderCursor = null
@@ -244,7 +276,6 @@ class ChatViewModel(
 
         restoreOlderPage(sessionId, requestGeneration)
 
-        startEventStream(sessionId)
         revalidate(sessionId, requestGeneration)
         reattachInFlightTurn(sessionId, requestGeneration)
         loadProfiles(requestGeneration)
@@ -905,7 +936,8 @@ class ChatViewModel(
      */
     fun onSignedOut() {
         generation++
-        stopEventStream()
+        // The socket is not this ViewModel's to close any more -- `MainActivity`
+        // closes the bus, which is what holds the cookie.
         userId = null
         liveMessageIds.clear()
         subAgentBatches.clear()
@@ -927,21 +959,20 @@ class ChatViewModel(
     override fun onCleared() {
         cachePrimeJob?.cancel()
         olderPagePrimeJob?.cancel()
-        stopEventStream()
+        unsubscribeFromBus?.invoke()
+        unsubscribeFromBus = null
         super.onCleared()
     }
 
-    private fun startEventStream(sessionId: String) {
-        eventStream.start(
-            onEvent = { event -> handleStreamEvent(sessionId, event) },
-            onState = { state -> handleStreamState(sessionId, state) },
-        )
-    }
-
-    private fun stopEventStream() = eventStream.stop()
-
-    private fun handleStreamState(sessionId: String, state: ChatStreamState) {
-        if (_uiState.value.sessionId != sessionId) return
+    /**
+     * The bus's connection state, narrowed to the chat that is open.
+     *
+     * One socket means one set of transitions for the whole process, so this
+     * ignores them while no chat is open rather than letting a sidebar-driven
+     * reconnect grey out a transcript that is perfectly fine.
+     */
+    private fun handleBusState(state: ChatStreamState) {
+        val sessionId = _uiState.value.sessionId ?: return
         when (state) {
             is ChatStreamState.Live -> {
                 _uiState.update { it.copy(isLive = true) }
@@ -962,14 +993,33 @@ class ChatViewModel(
             is ChatStreamState.Reconnecting,
             -> _uiState.update { it.copy(isLive = false) }
 
+            // Terminal, so this is the last word on the turn. The pump
+            // `return`s on a rejected handshake instead of retrying
+            // (HttpChatEventStream: a non-2xx handshake is reported and the
+            // pump exits), which means neither `chunk_final` nor `llm_full` is
+            // ever coming for a turn that is still flagged as streaming. Left
+            // set, `isChatWorking` keeps the Stop button and the "Working…"
+            // label on screen for a run that cannot report anything again — the
+            // same argument the `ChatStreamEvent.Failed` branch below makes for
+            // an `is_error` frame.
             is ChatStreamState.Failed -> _uiState.update {
-                it.copy(isLive = false, errorMessage = state.message)
+                it.copy(isLive = false, errorMessage = state.message, isStreaming = false)
             }
         }
     }
 
-    private fun handleStreamEvent(sessionId: String, event: ChatStreamEvent) {
-        if (_uiState.value.sessionId != sessionId) return
+    /**
+     * One handler for every event on the shared bus, scoped to the open chat.
+     *
+     * The bus carries *all* sessions' `llm` and `queue` traffic — that is what
+     * makes one socket enough — so `sessionId` is read from the state on every
+     * event rather than captured when a stream was opened. Reading it live is
+     * also what makes the two filters below equivalent: an event that arrives
+     * between a session switch and the next paint is dropped by the state guard
+     * before the per-event one is even reached.
+     */
+    private fun handleBusEvent(event: ChatStreamEvent) {
+        val sessionId = _uiState.value.sessionId ?: return
         when (event) {
             is ChatStreamEvent.Connected -> Unit
 
@@ -1007,11 +1057,11 @@ class ChatViewModel(
             }
 
             // Worker liveness is not this screen's state. It is kept for the
-            // whole app in `RunningSessionsStore`, because the chat stream does
-            // not exist until a chat is opened and the sidebar is on screen
-            // precisely when no chat is open. `WorkerActivityViewModel` owns it
-            // off its own `workers` subscription, so nothing here needs this
-            // branch to do anything.
+            // whole app in `RunningSessionsStore` and fed by
+            // `WorkerActivityViewModel`, which is the *other* subscriber to this
+            // same bus. Both now see every worker frame, so this branch exists to
+            // say "deliberately not mine" rather than because the channel is
+            // elsewhere.
             is ChatStreamEvent.WorkerChanged -> Unit
         }
     }
@@ -1249,7 +1299,7 @@ class ChatViewModel(
                         ),
                     ),
                     cache = RoomChatCache(application),
-                    eventStream = HttpChatEventStream(sessionStore),
+                    bus = SseBusHolder.get(sessionStore),
                     imageReader = BitmapPickedImageReader(application.contentResolver),
                 )
             }

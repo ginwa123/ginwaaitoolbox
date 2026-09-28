@@ -1,6 +1,8 @@
 package com.nalar.mobile.worker
 
+import com.nalar.mobile.chat.SseChannels
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,11 +23,22 @@ class WorkerApiTest {
     }
 
     @Test
-    fun `the workers channel is its own subscription`() {
-        // Deliberately NOT `ChatApi.eventsPath()`. The chat stream is only
-        // opened by openSession, so a sidebar that waited on it would report
-        // "nothing running" exactly when no chat is open.
-        assertEquals("/api/events?channels=workers", WorkerApi.eventsPath())
+    fun `there is one channel set for the whole app, and it includes workers`() {
+        // The bus that owns the socket subscribes `llm` and `queue` as bare
+        // central keys with no session id and every subscriber filters by
+        // `event.session_id` itself. That is what lets one socket serve a chat
+        // AND a sidebar that is on screen precisely when no chat is open, which
+        // is why `workers` used to be a second connection and no longer is.
+        val path = SseChannels.eventsPath()
+
+        assertEquals("/api/events?channels=llm,queue,sessions,workers", path)
+        assertTrue("workers must be on the shared connection", path.contains("workers"))
+        assertTrue("llm must be on the shared connection", path.contains("llm"))
+        assertTrue("queue must be on the shared connection", path.contains("queue"))
+        assertTrue("sessions must be on the shared connection", path.contains("sessions"))
+        // A per-session routing key would need a socket per open chat, which is
+        // the thing this exists to avoid.
+        assertFalse("no per-session channel key", path.contains(":"))
     }
 
     @Test

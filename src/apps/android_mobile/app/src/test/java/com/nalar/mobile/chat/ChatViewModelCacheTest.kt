@@ -3,6 +3,7 @@ package com.nalar.mobile.chat
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.FakeSseBus
 import com.nalar.mobile.testing.InMemoryChatCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -113,38 +114,15 @@ class ChatViewModelCacheTest {
         }
     }
 
-    private class FakeEventStream : ChatEventStream {
-        var onEvent: ((ChatStreamEvent) -> Unit)? = null
-        var onState: ((ChatStreamState) -> Unit)? = null
-        var startCount = 0
-        var stopCount = 0
-
-        override fun start(
-            onEvent: (ChatStreamEvent) -> Unit,
-            onState: (ChatStreamState) -> Unit,
-        ) {
-            startCount++
-            this.onEvent = onEvent
-            this.onState = onState
-        }
-
-        override fun stop() {
-            stopCount++
-        }
-
-        fun emit(event: ChatStreamEvent) = onEvent?.invoke(event) ?: Unit
-        fun state(next: ChatStreamState) = onState?.invoke(next) ?: Unit
-    }
-
     private fun model(
         ioDispatcher: CoroutineDispatcher,
         cache: ChatCache = InMemoryChatCache(),
         transport: AuthTransport = FakeTransport(),
-        stream: FakeEventStream = FakeEventStream(),
+        bus: FakeSseBus = FakeSseBus(),
     ) = ChatViewModel(
         client = ChatClient(MemorySessionStore(), httpTransport = transport),
         cache = cache,
-        eventStream = stream,
+        bus = bus,
         ioDispatcher = ioDispatcher,
         nowMillis = { 1_789_451_234_000L },
     ).also { it.onUserChanged("user_a") }
@@ -223,13 +201,13 @@ class ChatViewModelCacheTest {
         val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "stale")))
         }
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, cache, stream = stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, cache, bus = bus)
 
         model.openSession("sess_1")
         // The cache read is in flight. A turn completes while it is there.
         s.main.advanceUntilIdle()
-        stream.emit(
+        bus.emit(
             ChatStreamEvent.Full(
                 "sess_1",
                 ChatMessage(
@@ -376,7 +354,7 @@ class ChatViewModelCacheTest {
         val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L, content = "A's secret")))
         }
-        val model = model(s.ioDispatcher, cache, stream = FakeEventStream())
+        val model = model(s.ioDispatcher, cache, bus = FakeSseBus())
         model.onUserChanged(null)
 
         model.openSession("sess_1")
@@ -409,8 +387,8 @@ class ChatViewModelCacheTest {
         val cache = InMemoryChatCache().apply {
             writeMessages("user_a", "sess_1", listOf(cachedRow("m1", 100L)))
         }
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, cache, stream = stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, cache, bus = bus)
         model.openSession("sess_1")
         s.drain()
 
@@ -419,43 +397,69 @@ class ChatViewModelCacheTest {
 
         assertTrue("sign-out must purge", cache.cleared)
         assertNull(cache.readMessages("user_a", "sess_1", 10))
-        assertTrue("the stream must be closed", stream.stopCount >= 1)
+        // The socket is the root's to close. A stop from here would be the
+        // two-socket architecture coming back, and would take the sidebar's
+        // worker subscription down with the chat's.
+        assertEquals("the chat must not close the shared bus", 0, bus.closeCount)
         assertTrue(model.uiState.value.messages.isEmpty())
     }
 
     // --- Streaming ---------------------------------------------------------
 
     @Test
-    fun `the stream is attached before the first fetch so no turn is missed`() = cacheTest { s ->
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, stream = stream)
+    fun `the bus is already attached before the first fetch so no turn is missed`() = cacheTest { s ->
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, bus = bus)
 
         model.openSession("sess_1")
 
         // A tool can finish while the initial load is in flight; a listener
         // attached afterwards can never see that event, and the backend has no
-        // replay to ask again.
-        assertEquals(1, stream.startCount)
+        // replay to ask again. The subscription is made in `init`, so it is
+        // attached before any session exists - and there is nothing to re-attach
+        // when one is opened, which is the whole point of the shared bus.
+        assertEquals(1, bus.subscriberCount)
         assertTrue(model.uiState.value.isLoading)
+
+        // Proved by delivery rather than by a counter: an event arriving during
+        // the load reaches the transcript of the chat that is open.
+        bus.emit(
+            ChatStreamEvent.Chunk(sessionId = "sess_1", index = 0, content = "mid-load"),
+        )
+        s.drain()
+        assertTrue(model.uiState.value.isStreaming)
     }
 
     @Test
-    fun `opening a second chat rebinds the stream instead of keeping the first`() = cacheTest { s ->
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, stream = stream)
+    fun `opening a second chat re-filters the bus instead of resubscribing`() = cacheTest { s ->
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, bus = bus)
 
         model.openSession("sess_1")
         s.drain()
-        assertEquals(1, stream.startCount)
+        assertEquals(1, bus.subscriberCount)
 
-        // A stream left bound to chat A keeps delivering A's events into
-        // handlers filtered to A, so B would sit there showing "connected" and
-        // never receive a turn. Only a process restart would fix it.
+        // A handler still filtered to chat A would drop every event for B, so B
+        // would sit there showing "connected" and never receive a turn. The fix
+        // used to be a stop-then-start; it is now reading the open session out
+        // of the state on every event, which is what the next two assertions
+        // prove.
         model.openSession("sess_2")
         s.drain()
 
-        assertTrue("the previous stream must be closed", stream.stopCount >= 1)
-        assertEquals("a fresh stream must be bound to the new chat", 2, stream.startCount)
+        assertEquals("switching chats must not churn the socket", 1, bus.subscriberCount)
+        assertEquals(0, bus.openCount)
+        assertEquals(0, bus.closeCount)
+
+        // A's event, after the switch, must not reach B.
+        bus.emit(ChatStreamEvent.Chunk(sessionId = "sess_1", index = 0, content = "for A"))
+        s.drain()
+        assertFalse("chat B must not take chat A's turn", model.uiState.value.isStreaming)
+
+        // B's must.
+        bus.emit(ChatStreamEvent.Chunk(sessionId = "sess_2", index = 0, content = "for B"))
+        s.drain()
+        assertTrue(model.uiState.value.isStreaming)
     }
 
     @Test
@@ -463,8 +467,8 @@ class ChatViewModelCacheTest {
         val transport = FakeTransport(
             messages = page(wire("m1", 100L), wire("m2", 200L), hasMore = true, nextCursor = "100"),
         )
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, bus)
         model.openSession("sess_1")
         s.drain()
         assertTrue("the first load is a full one", model.uiState.value.hasMoreOlder)
@@ -473,9 +477,9 @@ class ChatViewModelCacheTest {
         // definition, so the server answers has_more=false for it. Letting that
         // reset the paging state would switch off scroll-back for good.
         transport.messages = page(wire("m3", 300L))
-        stream.state(ChatStreamState.Live)
-        stream.state(ChatStreamState.Reconnecting)
-        stream.state(ChatStreamState.Live)
+        bus.state(ChatStreamState.Live)
+        bus.state(ChatStreamState.Reconnecting)
+        bus.state(ChatStreamState.Live)
         s.drain()
 
         assertTrue(
@@ -486,15 +490,15 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `chunks append rather than replace`() = cacheTest { s ->
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, stream = stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, bus = bus)
         model.openSession("sess_1")
         s.drain()
 
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "Hel"))
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "lo "))
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, reasoningContent = "hmm"))
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "world"))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "Hel"))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "lo "))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, reasoningContent = "hmm"))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "world"))
 
         val streaming = model.uiState.value.messages.single()
         // The backend sends raw provider deltas. Assigning would leave only the
@@ -508,13 +512,13 @@ class ChatViewModelCacheTest {
     @Test
     fun `a full frame replaces the streaming placeholder and lands in the cache`() = cacheTest { s ->
         val cache = InMemoryChatCache()
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, cache, stream = stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, cache, bus = bus)
         model.openSession("sess_1")
         s.drain()
 
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "partia"))
-        stream.emit(ChatStreamEvent.ChunkFinished("sess_1", 42))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "partia"))
+        bus.emit(ChatStreamEvent.ChunkFinished("sess_1", 42))
         val canonical = ChatMessage(
             id = "m9",
             role = ChatMessage.ROLE_ASSISTANT,
@@ -522,7 +526,7 @@ class ChatViewModelCacheTest {
             createdAtEpochMillis = nanoBase / 1_000_000L + 300L,
             sortKeyNanos = nanoBase + 300L,
         )
-        stream.emit(ChatStreamEvent.Full("sess_1", canonical))
+        bus.emit(ChatStreamEvent.Full("sess_1", canonical))
         s.drain()
 
         val messages = model.uiState.value.messages
@@ -537,16 +541,16 @@ class ChatViewModelCacheTest {
     @Test
     fun `a reconnect refetches because the server has no replay`() = cacheTest { s ->
         val transport = FakeTransport(messages = page(wire("m1", 100L)))
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, bus)
         model.openSession("sess_1")
         s.drain()
         val afterFirstLoad = transport.requestedPaths.size
 
-        stream.state(ChatStreamState.Live)
-        stream.state(ChatStreamState.Reconnecting)
+        bus.state(ChatStreamState.Live)
+        bus.state(ChatStreamState.Reconnecting)
         transport.messages = page(wire("m1", 100L), wire("m2", 200L, content = "while away"))
-        stream.state(ChatStreamState.Live)
+        bus.state(ChatStreamState.Live)
         s.drain()
 
         assertTrue(
@@ -562,8 +566,8 @@ class ChatViewModelCacheTest {
     @Test
     fun `a live row is not rolled back by a rest response that started earlier`() = cacheTest { s ->
         val transport = FakeTransport(messages = page())
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, bus)
         model.openSession("sess_1")
 
         // The tool's completed row arrives live while the fetch is in flight,
@@ -575,7 +579,7 @@ class ChatViewModelCacheTest {
             createdAtEpochMillis = nanoBase / 1_000_000L + 400L,
             sortKeyNanos = nanoBase + 400L,
         )
-        stream.emit(ChatStreamEvent.Full("sess_1", live))
+        bus.emit(ChatStreamEvent.Full("sess_1", live))
         transport.messages = page(
             """{"id":"tool_1","session_id":"sess_1","role":"tool","content":"running…","created_at":"${nanoBase + 400L}"}""",
         )
@@ -588,15 +592,15 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `an event for another chat is ignored`() = cacheTest { s ->
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, stream = stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, bus = bus)
         model.openSession("sess_1")
         s.drain()
 
-        stream.emit(
+        bus.emit(
             ChatStreamEvent.Chunk("sess_other", 0, content = "not for you"),
         )
-        stream.emit(
+        bus.emit(
             ChatStreamEvent.Full(
                 "sess_other",
                 ChatMessage("x", ChatMessage.ROLE_ASSISTANT, "not for you", 0L, nanoBase),
@@ -611,8 +615,8 @@ class ChatViewModelCacheTest {
     @Test
     fun `sending does not insert an optimistic bubble`() = cacheTest { s ->
         val transport = FakeTransport(messages = page())
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, InMemoryChatCache(), transport, bus)
         model.openSession("sess_1")
         s.drain()
 
@@ -700,7 +704,7 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `the re attached text never overwrites a stream that is already live`() = cacheTest { s ->
-        val stream = FakeEventStream()
+        val bus = FakeSseBus()
         val model = model(
             s.ioDispatcher,
             InMemoryChatCache(),
@@ -708,11 +712,11 @@ class ChatViewModelCacheTest {
                 messages = page(wire("m1", 100L)),
                 streamSnapshot = """{"active":true,"content":"stale snapshot"}""",
             ),
-            stream,
+            bus,
         )
         model.openSession("sess_1")
         // The live stream wins the race, as it should.
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "the live one"))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "the live one"))
         s.drain()
 
         assertEquals("the live one", model.uiState.value.messages.last().content)
@@ -769,12 +773,12 @@ class ChatViewModelCacheTest {
 
     @Test
     fun `stopping a run clears the header's claim that it is still working`() = cacheTest { s ->
-        val stream = FakeEventStream()
-        val model = model(s.ioDispatcher, InMemoryChatCache(), FakeTransport(), stream)
+        val bus = FakeSseBus()
+        val model = model(s.ioDispatcher, InMemoryChatCache(), FakeTransport(), bus)
         model.openSession("sess_1")
         s.drain()
 
-        stream.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "half an answer"))
+        bus.emit(ChatStreamEvent.Chunk("sess_1", 0, content = "half an answer"))
         s.drain()
         assertTrue("the header reads Working... mid-run", model.uiState.value.isStreaming)
 

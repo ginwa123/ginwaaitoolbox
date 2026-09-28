@@ -3,10 +3,13 @@
 The Android client's loading indicator (`src/apps/android_mobile/.../worker/`)
 is driven entirely by the backend's `worker` table: `GET /api/workers` for the
 bootstrap and the `worker_created` / `worker_updated` / `worker_deleted` SSE
-frames on `?channels=workers` for everything after. Nothing else in this repo's
-TypeScript reads the same two shapes for the *phone*, so a rename or a
-re-shape here is invisible to the desktop tests and shows up only as a spinner
-that never appears — or, worse, one that never goes away.
+frames for everything after. Those frames now arrive on the app's ONE shared
+connection, `?channels=llm,queue,sessions,workers` (see
+`src/apps/android_mobile/.../chat/SseBus.kt`) — `WorkerActivityViewModel` is the
+second subscriber to it rather than the owner of a second socket. Nothing else
+in this repo's TypeScript reads the same two shapes for the *phone*, so a rename
+or a re-shape here is invisible to the desktop tests and shows up only as a
+spinner that never appears — or, worse, one that never goes away.
 
 Two assumptions in the Kotlin are load-bearing and are what this file exists to
 pin:
@@ -19,6 +22,17 @@ pin:
      `WorkerApi.parseRunningSessionIds` projects the *presence* of a row down to
      the id set. Parse `is_running` instead and the client is right by accident
      until the backend stops hardcoding it.
+  3. "Presence" means presence *of a row that is not cancelled*. Stopping a run
+     does not delete its row -- `POST /api/llm/session/:session/stop` sets
+     `worker.cancelled = 1` and the loop reads it back to break out of itself --
+     so `GET /api/workers` filters `cancelled = 0` itself. Without that filter a
+     stopped run was reported as `status: "running"` and a phone keyed a spinner
+     on it for as long as the row lived, which is how a client could claim an
+     agent was working when nothing was. The filter itself is pinned by the
+     in-memory-SQLite tests in `src/http_handlers/worker_list.zig`; the reason
+     it cannot be re-derived from the wire here is that the stub LLM finishes a
+     run inside a millisecond, so there is no window in which a stop is
+     observable over HTTP.
 
 Run: pytest tests/functional/android_workers_contract_test.py
 """
@@ -259,15 +273,17 @@ def test_workers_channel_handshake(harness):
         response.close()
 
 
-def test_the_chat_channels_are_still_subscribable_separately(harness):
-    """The chat subscription must keep working unchanged.
+def test_the_shared_channel_set_carries_everything_the_app_needs(harness):
+    """One connection, four channels, and a typo in it is silent.
 
-    `ChatApi.eventsPath()` is `channels=llm,sessions,queue` and
-    `WorkerApi.eventsPath()` is `channels=workers`. The two are separate
-    connections, so a channel-list typo in either is silent: the stream simply
-    never delivers the events it was opened for.
+    `SseChannels.eventsPath()` is `llm,queue,sessions,workers` and it is the
+    app's only subscription. `parseChannels` rejects an unknown token and the
+    handler's only response is to close the stream, so a channel-list typo is a
+    200 that never emits `connected` — a spinner that never lights up and a
+    chat that never updates, with nothing in any log. Each channel is also
+    checked on its own so a failure names which one broke.
     """
-    for channels in ("llm,sessions,queue", "workers"):
+    for channels in ("llm,queue,sessions,workers", "llm", "queue", "sessions", "workers"):
         req = urllib.request.Request(
             f"http://127.0.0.1:{harness.port}/api/events?channels={channels}"
         )

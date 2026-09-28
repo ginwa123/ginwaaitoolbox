@@ -3,6 +3,7 @@ package com.nalar.mobile.chat
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.FakeSseBus
 import com.nalar.mobile.testing.InMemoryChatCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -83,14 +84,6 @@ class ChatViewModelAttachmentTest {
             )
     }
 
-    private class FakeEventStream : ChatEventStream {
-        override fun start(
-            onEvent: (ChatStreamEvent) -> Unit,
-            onState: (ChatStreamState) -> Unit,
-        ) = Unit
-
-        override fun stop() = Unit
-    }
 
     /**
      * A reader that answers from a table, so a test can name the exact
@@ -114,7 +107,7 @@ class ChatViewModelAttachmentTest {
     ) = ChatViewModel(
         client = ChatClient(MemorySessionStore(), httpTransport = transport),
         cache = InMemoryChatCache(),
-        eventStream = FakeEventStream(),
+        bus = FakeSseBus(),
         imageReader = reader,
         ioDispatcher = ioDispatcher,
     ).also { it.onUserChanged("user_a") }
