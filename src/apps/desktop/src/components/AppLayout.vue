@@ -975,7 +975,6 @@ const closeSkillViewer = () => {
 // links resolve without silent blanks.
 const codeEditorSession = useCodeEditorSession({
   readFile: (cwd, path) => api.readFileContent(cwd, path),
-  writeFile: (cwd, path, content) => api.writeFileContent(cwd, path, content),
   syncUrl: ({ path, line }) => {
     // Keep-append: the editor keys merge into the current URL so the
     // workspace/project/chat context in the path survives a reload.
@@ -1009,23 +1008,11 @@ const codeEditorError = codeEditorSession.error
 const codeEditorRequestedLine = codeEditorSession.requestedLine
 
 const openInCodeEditor: OpenInCodeEditorFn = async (opts: OpenInCodeEditorOptions) => {
-  console.log('[openInCodeEditor] filePath:', opts.filePath, 'cwd:', opts.cwd, 'line:', opts.line)
   // Clear other overlays to prevent priority conflicts
   gitViewerFile.value = null
   gitViewerStaged.value = false
   skillViewerSkill.value = null
   await codeEditorSession.openFile(opts)
-  console.log('[openInCodeEditor] codeEditorFile.value after set:', codeEditorFile.value?.path)
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept for diff readability.
-const _handleCodeEditorFileClick = (file: api.FolderEntry) => {
-  if (!rightSidebarCwd.value) return
-  return openInCodeEditor({
-    filePath: file.path,
-    fileName: file.name,
-    cwd: rightSidebarCwd.value,
-  })
 }
 
 // Expose openInCodeEditor to all descendants (tool output components) via inject
@@ -1054,10 +1041,6 @@ const closeCodeEditor = () => {
   // same pattern. For design items, also preserve pageId so the
   // active design page survives a reload.
   replaceWithCurrentContext()
-}
-
-const handleCodeEditorSave = async (content: string) => {
-  await codeEditorSession.save(content)
 }
 
 const handleSubmitReview = async (message: string) => {
@@ -2916,7 +2899,7 @@ defineExpose({
           </button>
         </div>
 
-        <!-- Code Editor -->
+        <!-- Code viewer -->
         <CodeEditor
           v-else
           :file-path="codeEditorFile.path"
@@ -2925,7 +2908,6 @@ defineExpose({
           :cwd="rightSidebarCwd"
           :line="codeEditorRequestedLine ?? undefined"
           @close="closeCodeEditor"
-          @save="handleCodeEditorSave"
         />
       </div>
 
