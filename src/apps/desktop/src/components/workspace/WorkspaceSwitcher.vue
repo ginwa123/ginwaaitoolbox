@@ -205,7 +205,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
   <div ref="rootRef" class="relative min-w-0" data-testid="workspace-switcher">
     <button
       type="button"
-      class="max-w-[180px] inline-flex items-center gap-1.5 text-sm font-semibold tracking-tight transition-opacity duration-150 hover:opacity-80"
+      class="max-w-[180px] inline-flex items-center gap-1.5 text-[var(--sb-fs-row)] font-semibold tracking-tight transition-opacity duration-150 hover:opacity-80"
       style="color: var(--semantic-text)"
       :title="`Workspace: ${triggerLabel}`"
       aria-haspopup="listbox"
@@ -217,7 +217,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
     >
       <template v-if="collapsed">
         <span
-          class="w-7 h-7 rounded-md flex items-center justify-center text-xs font-semibold tracking-tight border"
+          class="w-[var(--sb-hit)] h-[var(--sb-hit)] rounded-md flex items-center justify-center text-xs font-semibold tracking-tight border"
           style="border-color: var(--color-border); color: var(--semantic-text)"
           data-testid="workspace-switcher-monogram"
           >{{ triggerMonogram }}</span
@@ -226,7 +226,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
       <template v-else>
         <span class="truncate">{{ triggerLabel }}</span>
         <span
-          class="text-[10px] shrink-0"
+          class="text-[var(--sb-fs-icon)] shrink-0"
           style="color: var(--semantic-text-dim)"
           aria-hidden="true"
           >▾</span
@@ -271,7 +271,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
             >
               <span class="truncate">{{ ws.name }}</span>
               <span class="flex items-center gap-2 shrink-0">
-                <span class="text-[11px]" style="color: var(--semantic-text-dim)">{{
+                <span class="text-[var(--sb-fs-meta)]" style="color: var(--semantic-text-dim)">{{
                   ws.items_count ?? ws.items?.length ?? 0
                 }}</span>
                 <span

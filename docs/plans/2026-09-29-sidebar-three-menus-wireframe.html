@@ -1,0 +1,844 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wireframe — the three left-sidebar menus: New Chat · Recent · Projects (task_1790616057649_4)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #12120f; color: #c5c9c5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; padding: 24px; }
+  h1 { font-size: 19px; margin-bottom: 5px; }
+  h2 { font-size: 14px; margin: 28px 0 12px; padding-bottom: 6px; border-bottom: 1px solid #282727; }
+  h3 { font-size: 12px; margin: 0 0 8px; color: #a6a69c; text-transform: uppercase; letter-spacing: .07em; }
+  .sub { color: #a6a69c; font-size: 12px; margin-bottom: 20px; line-height: 1.75; max-width: 1120px; }
+  .sub code, code { background: #2a2825; padding: 1px 5px; border-radius: 4px; font-size: 11px; color: #c5c9c5; }
+  b { color: #c5c9c5; }
+  a { color: #8ba4b0; }
+  .row { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+
+  /* ── app chrome (mirrors the real sidebar tokens) ─────────────── */
+  .app { display: flex; width: 620px; height: 500px; border: 1px solid #282727; border-radius: 8px; overflow: hidden; background: #181616; }
+  .app.tall { height: 560px; }
+  .sidebar { width: 210px; flex-shrink: 0; background: #12120f; border-right: 1px solid #282727; display: flex; flex-direction: column; position: relative; }
+  .sb-head { height: 48px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 14px; border-bottom: 1px solid #282727; }
+  .sb-ws { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #c5c9c5; }
+  .sb-chev { font-size: 8px; color: #7a8382; }
+  .sb-acts { display: flex; gap: 12px; font-size: 11px; color: #a6a69c; }
+
+  /* NEW CHAT row — locked: bare text, never a filled button */
+  .sb-newchat { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #282727; cursor: pointer; }
+  .sb-newchat .pen { font-size: 13px; color: #7a8382; width: 13px; text-align: center; }
+  .sb-newchat .lbl { font-size: 11px; font-weight: 500; color: #a6a69c; flex: 1; }
+  .sb-newchat .kbd { font-size: 9px; color: #625e5a; border: 1px solid #282727; border-radius: 3px; padding: 1px 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .sb-newchat .split { font-size: 8px; color: #7a8382; }
+  .sb-newchat.hot { background: #1c1a18; }
+  .sb-newchat.hot .pen, .sb-newchat.hot .lbl { color: #c5c9c5; }
+  .sb-newchat.hot .kbd { color: #a6a69c; }
+  .sb-newchat.dis { opacity: .38; cursor: not-allowed; }
+  .sb-newchat .kbd-fly { display: none; }
+  .sb-newchat.hot .kbd-fly, .sb-newchat.hot .split { display: inline; }
+  .sb-newchat .kbd-rest { display: inline; }
+  .sb-newchat.hot .kbd-rest { display: none; }
+
+  /* one scroller for the whole nav */
+  .sb-nav { flex: 1; min-height: 0; overflow: hidden; padding: 8px 0 0; }
+  .sb-nav.sbscroll { overflow-y: auto; }
+  .sb-sec { display: flex; align-items: center; gap: 6px; font-size: 9px; letter-spacing: .09em; color: #625e5a; padding: 6px 14px 5px; }
+  .sb-sec .car { font-size: 7px; }
+  .sb-sec .grow { flex: 1; }
+  .sb-sec .act { font-size: 10px; color: #7a8382; letter-spacing: 0; text-transform: none; }
+  .sb-sec .act:hover { color: #c5c9c5; }
+  .sb-rule { height: 1px; background: #1e1d1c; margin: 7px 0 0; }
+
+  .sb-row { display: flex; align-items: center; gap: 7px; padding: 5px 14px; font-size: 11px; color: #7a8382; position: relative; }
+  .sb-row .bul { width: 4px; height: 4px; border-radius: 99px; background: #7a8382; opacity: .55; flex-shrink: 0; }
+  .sb-row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-row .when { font-size: 9px; color: #625e5a; flex-shrink: 0; }
+  .sb-row.on { color: #c5c9c5; background: #201e1c; }
+  .sb-row.on::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: #8992a7; }
+  .sb-row.hover { background: #1c1a18; }
+  .sb-row .crumb { font-size: 8.5px; color: #4d4a47; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+  .sb-row.stack { flex-direction: column; align-items: flex-start; gap: 1px; padding-top: 4px; padding-bottom: 4px; }
+  .sb-row.stack .line1 { display: flex; align-items: center; gap: 7px; width: 100%; }
+  .sb-row .acts { display: none; gap: 3px; align-items: center; }
+  .sb-row.hover .acts, .sb-row.on .acts { display: flex; }
+  .sb-row .acts i { font-style: normal; font-size: 10px; color: #7a8382; padding: 1px 3px; border-radius: 3px; }
+  .sb-row .acts i:hover { color: #c5c9c5; background: #2a2825; }
+
+  /* project rows */
+  .sb-proj { display: flex; align-items: center; gap: 6px; padding: 5px 14px; font-size: 11px; color: #7a8382; position: relative; }
+  .sb-proj .car { font-size: 7px; color: #625e5a; width: 8px; flex-shrink: 0; }
+  .sb-proj .gly { font-size: 11px; width: 13px; text-align: center; flex-shrink: 0; }
+  .sb-proj .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sb-proj .dot { width: 5px; height: 5px; border-radius: 99px; background: #6fa3a0; flex-shrink: 0; }
+  .sb-proj.hover { background: #1c1a18; }
+  .sb-proj .acts { display: none; gap: 3px; }
+  .sb-proj.hover .acts { display: flex; }
+  .sb-proj .acts i { font-style: normal; font-size: 11px; color: #7a8382; padding: 0 4px; border-radius: 3px; }
+  .sb-proj .acts i:hover { color: #c5c9c5; background: #2a2825; }
+  .sb-proj.lit { color: #c5c9c5; }
+
+  .sb-kids { margin: 0 0 0 27px; padding-left: 7px; border-left: 1px solid #1e1d1c; }
+
+  .sb-more { display: flex; align-items: center; gap: 6px; padding: 5px 14px 5px 27px; font-size: 10.5px; color: #6f7a8a; }
+  .sb-more:hover { color: #b3bcd0; }
+
+  /* search */
+  .sb-search { display: flex; align-items: center; gap: 6px; margin: 0 12px 4px; padding: 5px 8px; border: 1px solid #282727; border-radius: 6px; background: #181616; }
+  .sb-search .mag { font-size: 10px; color: #625e5a; }
+  .sb-search .ph { font-size: 10.5px; color: #4d4a47; flex: 1; }
+  .sb-search .kbd { font-size: 8.5px; color: #625e5a; border: 1px solid #282727; border-radius: 3px; padding: 0 3px; }
+  .sb-search.focus { border-color: #3f4a5c; }
+
+  .sb-empty { padding: 10px 14px; font-size: 10.5px; color: #4d4a47; line-height: 1.6; }
+  .sb-empty b { color: #7a8382; }
+
+  .sb-toggle { position: absolute; right: -8px; top: 24px; width: 17px; height: 17px; border-radius: 99px; background: #181616; border: 1px solid #282727; display: flex; align-items: center; justify-content: center; font-size: 8px; color: #a6a69c; z-index: 5; }
+  .sb-divider { height: 1px; background: #282727; margin: 0 0 0 0; }
+
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .m-head { height: 40px; flex-shrink: 0; display: flex; align-items: center; gap: 8px; padding: 0 14px; border-bottom: 1px solid #282727; }
+  .m-title { font-size: 12px; font-weight: 600; flex: 1; }
+  .m-path { font-size: 10px; color: #625e5a; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .m-body { flex: 1; padding: 14px; display: flex; flex-direction: column; gap: 9px; }
+  .bubble { max-width: 74%; padding: 7px 10px; border-radius: 8px; font-size: 11px; line-height: 1.55; }
+  .bubble.me { align-self: flex-end; background: #2a2825; color: #c5c9c5; }
+  .bubble.ai { align-self: flex-start; background: #1d2220; color: #7a8382; }
+  .m-input { margin: 0 14px 12px; height: 34px; border: 1px solid #282727; border-radius: 8px; display: flex; align-items: center; padding: 0 11px; font-size: 11px; color: #4d4a47; }
+
+  /* collapsed */
+  .app.collapsed { width: 300px; }
+  .sidebar.collapsed { width: 64px; }
+  .sb-head.collapsed { justify-content: center; padding: 0; }
+  .mono { font-size: 13px; color: #a6a69c; font-weight: 600; }
+  .sb-newchat.collapsed { justify-content: center; padding: 0; }
+  .sb-nav.collapsed { padding: 6px 0; }
+  .sb-nav.collapsed .sb-sec, .sb-nav.collapsed .sb-row .t, .sb-nav.collapsed .sb-row .acts, .sb-nav.collapsed .sb-proj .t, .sb-nav.collapsed .sb-search { display: none; }
+  .sb-nav.collapsed .sb-row, .sb-nav.collapsed .sb-proj { justify-content: center; padding: 6px 0; }
+
+  /* worker running — labelled, not a bare ring */
+  .run { display: inline-flex; align-items: center; gap: 3px; font-size: 8.5px; color: #8f9b7a; border: 1px solid #3a3f30; background: #1d2019; border-radius: 3px; padding: 0 3px; flex-shrink: 0; }
+  .spin { width: 8px; height: 8px; border: 1.5px solid #3a3f30; border-top-color: #8f9b7a; border-radius: 99px; animation: s .8s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+  .ring { width: 9px; height: 9px; border: 1.5px solid #3a3835; border-top-color: #c5c9c5; border-radius: 99px; flex-shrink: 0; }
+
+  /* annotation callouts */
+  .panel { border: 1px solid #282727; border-radius: 8px; background: #181616; padding: 12px 14px; max-width: 430px; }
+  .panel.wide { max-width: 100%; }
+  .panel ol, .panel ul { padding-left: 17px; }
+  .panel li { margin-bottom: 7px; line-height: 1.65; color: #a6a69c; }
+  .panel li:last-child { margin-bottom: 0; }
+  .cap { font-size: 10px; color: #625e5a; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 9px; }
+  .flow { display: flex; align-items: stretch; gap: 0; flex-wrap: wrap; }
+  .step { border: 1px solid #282727; border-radius: 7px; background: #181616; padding: 9px 11px; min-width: 152px; flex: 1; }
+  .step .n { font-size: 9px; color: #625e5a; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
+  .step .t { font-size: 11px; color: #c5c9c5; line-height: 1.5; }
+  .step .m { font-size: 9.5px; color: #7a8382; margin-top: 4px; line-height: 1.5; }
+  .arrow { align-self: center; padding: 0 7px; color: #4d4a47; font-size: 13px; }
+  .dec { display: inline-block; font-size: 9px; padding: 0 5px; border-radius: 3px; margin-right: 5px; }
+  .dec-a { background: rgba(137,146,167,.16); color: #b3bcd0; border: 1px solid rgba(137,146,167,.4); }
+  .dec-q { background: rgba(200,140,90,.14); color: #d8ab7a; border: 1px solid rgba(200,140,90,.38); }
+  .note { font-size: 11px; color: #7a8382; line-height: 1.7; margin-top: 10px; max-width: 700px; }
+  .kv { width: 100%; border-collapse: collapse; margin-top: 6px; }
+  .kv td { padding: 5px 8px; font-size: 11.5px; border-bottom: 1px solid #232221; color: #a6a69c; line-height: 1.55; vertical-align: top; }
+  .kv td:first-child { color: #c5c9c5; white-space: nowrap; width: 1%; }
+  .kv th { text-align: left; padding: 5px 8px; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; color: #625e5a; border-bottom: 1px solid #282727; }
+  .zone { font-size: 9px; letter-spacing: .07em; text-transform: uppercase; padding: 3px 7px; border-radius: 4px; display: inline-block; margin-bottom: 6px; }
+  .zone-safe { background: rgba(137,146,167,.16); color: #b3bcd0; border: 1px solid rgba(137,146,167,.4); }
+  .zone-bad { background: rgba(200,120,90,.14); color: #d8ab7a; border: 1px solid rgba(200,120,90,.4); }
+  .strike { text-decoration: line-through; opacity: .55; }
+</style>
+</head>
+<body>
+
+<h1>Wireframe — the three left-sidebar menus: <b>New Chat</b> · <b>Recent</b> · <b>Projects</b></h1>
+<div class="sub">
+  <b>Task</b> <code>task_1790616057649_4</code> &nbsp;·&nbsp; <b>Companion plan</b> <code>docs/plans/2026-09-29-sidebar-three-menus.md</code> &nbsp;·&nbsp; <b>Predecessors</b> <code>2026-09-22-revamp-workspace-ui-dropdown-projects</code>, <code>2026-09-27-sidebar-new-chat-default-project</code><br>
+  The sidebar has exactly <b>three menus</b> and every screenshot of it shows the same complaint: they are hard to tell apart.
+  <b>Recent</b> and <b>Projects</b> render identical rows for the same chats, <b>Projects</b> cannot be scanned because a kanban
+  looks like an agent, and the numbers next to each project are not what they claim. This wireframe gives each of the three
+  menus <b>one job</b> — Resume, Inventory, Act — and makes the two row types visually distinct.<br>
+  Colours, weights and geometry are the real tokens. The 210&nbsp;px sidebar is drawn narrow, as in the 2026-09-27 wireframe,
+  so the header/action/row geometry is legible at this size. Nothing here is code — every <code>path:line</code> is a
+  pointer to the current implementation the drawing is arguing with.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>1 — As shipped: three menus, and two of them do the same job</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">As shipped (today)</div>
+    <div class="app tall">
+      <div class="sidebar">
+        <div class="sb-head">
+          <div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div>
+          <div class="sb-acts">Settings · Logout</div>
+        </div>
+        <div class="sb-newchat">
+          <span class="pen">✎</span><span class="lbl">New Chat</span>
+        </div>
+        <div class="sb-nav">
+          <div class="sb-sec"><span class="car">▼</span> RECENT <span class="grow"></span><span class="act">↓</span></div>
+          <div class="sb-row hover"><span class="ring"></span><span class="t">3 mode workspace items have different appb…</span></div>
+          <div class="sb-row"><span class="ring"></span><span class="t">Adjust Readme.md</span></div>
+          <div class="sb-row on"><span class="bul"></span><span class="t">chance ci from self hosted to public ci run…</span><span class="when">51m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">2m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">9m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">add new menu on top left sidebar, name…</span><span class="when">51m</span></div>
+          <div class="sb-divider"></div>
+          <div class="sb-sec"><span class="car">▼</span> PROJECTS 9 <span class="grow"></span><span class="ring"></span><span class="act">+</span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="t">Project Default</span><span class="when">3</span><span class="acts"><i>+</i><i>×</i></span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="t">Ios Mobile</span><span class="acts"><i>×</i></span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="t">AGENTIC_KANBAN</span><span class="when">119</span><span class="acts"><i>×</i></span></div>
+          <div class="sb-proj lit"><span class="car">▼</span><span class="t">AGENTIC BASIC</span><span class="when">10</span><span class="acts"><i>×</i></span></div>
+          <div class="sb-kids">
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">hello-greeting</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">add-lightpanda-mcp-server</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+          </div>
+          <div class="sb-proj"><span class="car">▶</span><span class="t">sprint bulan juni</span><span class="when">34</span><span class="acts"><i>×</i></span></div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">chance ci from self hosted to public ci runner</span><span class="m-path">/app/…/projects/…/chat/…</span></div>
+        <div class="m-body">
+          <div class="bubble me">move the workflow to a public runner</div>
+          <div class="bubble ai">Updating <code>.github/workflows/ci.yml</code>…</div>
+          <div class="bubble ai">Done. Two jobs now run on <code>ubuntu-latest</code>.</div>
+        </div>
+        <div class="m-input">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="cap">What the reader is actually looking at</div>
+    <table class="kv">
+      <tr><td>New Chat</td><td>one action row, 40&nbsp;px, bare text</td></tr>
+      <tr><td>RECENT</td><td>a resizable pane pinned to <b>40&nbsp;%</b> of the nav height</td></tr>
+      <tr><td>PROJECTS</td><td>the rest of the nav, a second, independent scroller</td></tr>
+    </table>
+    <div style="height:11px"></div>
+    <div class="zone zone-bad">The overlap is not a bug that crept in</div>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c">
+      A project child <b>is</b> a chat. Migration 052 dropped
+      <code>workspace_item_tasks.session_id</code> because
+      <code>task.id</code> <i>is</i> the session id. And the RECENT list is
+      workspace-scoped by <i>unioning in exactly those task ids</i>:
+    </p>
+    <table class="kv" style="margin-top:7px">
+      <tr><td>scope</td><td><code>src/agentic_loop/workspace_scope.zig:89-91</code></td></tr>
+      <tr><td>query</td><td><code>src/agentic_loop/llm_history.zig:381</code><br><code>FROM sessions s … s.id IN (…)</code></td></tr>
+      <tr><td>schema</td><td><code>src/migrations/migration.zig:1048</code></td></tr>
+    </table>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:8px">
+      So every task whose chat has been run appears <b>twice</b> — once under RECENT,
+      once nested under its project. Duplication here is intentional and fine.
+      What is <b>missing</b> is any way to tell the two copies apart, which is
+      the whole of §3.
+    </p>
+  </div>
+
+</div>
+<div class="note">
+  <b>Note what is <i>not</i> wrong.</b> Duplicating a chat in a recency list and an inventory is correct — VS&nbsp;Code,
+  Slack and Linear all do it. The defect is that both lists draw the <b>same row</b> (4&nbsp;px bullet, name, right-hand
+  meta), so the second copy carries no information: you cannot tell whether a RECENT row <i>is</i> the project child you
+  expanded ten pixels below it, or a loose chat. §3 fixes the row, not the duplication.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>2 — Nine defects, each with the line that proves it</h2>
+<div class="row">
+  <div class="panel wide">
+    <div class="cap">Diagnosed 2026-09-29 — none of these is a taste preference</div>
+    <ol>
+      <li><b>P1 · The two menus are indistinguishable.</b> A project child and a RECENT row draw the same markup. There is no
+        type, no parent, no affordance that differs. <code>WorkspaceItemTaskRow.vue:158-325</code> vs <code>ChatsList.vue:969-1058</code>.</li>
+      <li><b>P2 · No item-type glyph anywhere.</b> Every project row is <code>▶</code> plus a name. Kanban, agent, design and
+        routine are told apart only by what happens when you click. <code>WorkspaceItem.vue:617-633</code> — and there is no
+        icon map in the codebase to draw one from.</li>
+      <li><b>P3 · The numbers are lies.</b> The <code>119</code> is <code>item.tasks.length</code> — rows paged in at 10&nbsp;per
+        page, not a total. <code>WorkspaceItem.vue:634-639</code>, <code>stores/workspaces.ts:915</code>. The backend
+        computes <b>no</b> <code>COUNT</code> at all: <code>http_response.zig:618</code> sets <code>.count = tasks.len</code>,
+        i.e. page length, and the client never surfaces it. The <code>9</code> is <code>workspace.items.length</code>,
+        ignoring the server's <code>items_count</code>. <code>ProjectsList.vue:391-394</code></li>
+      <li><b>P4 · Three always-on buttons per child row.</b> Pin, rename, delete sit at <code>opacity-60</code> on every row,
+        always. Ten children is thirty controls competing with the names. <code>WorkspaceItemTaskRow.vue:264-317</code>.</li>
+      <li><b>P5 · Children are unlabelled.</b> Under <code>AGENTIC BASIC</code>, seven consecutive rows read
+        <code>New Chat</code>. Nothing says which parent they belong to, or when they ran.</li>
+      <li><b>P6 · Two independent scrollers.</b> RECENT is a resizable pane pinned to 40&nbsp;% (<code>sidebar.ts:14</code>);
+        PROJECTS takes the remainder. Expanding a ten-child project scrolls RECENT out of view, and vice versa.</li>
+      <li><b>P7 · No search, and none is coming.</b> Deliberately removed in the v2 revamp —
+        <code>ProjectsList.vue:84-85</code> and <code>:411</code> — so with nine projects and one hundred-plus children there is
+        no way to find anything but scrolling.</li>
+      <li><b>P8 · RECENT has no empty state.</b> The only branch is a <code>Loading…</code> label;
+        <code>chatsTotal === 0</code> renders nothing at all. <code>ChatsList.vue:1061-1063</code>. PROJECTS has two proper
+        empty states; RECENT has zero.</li>
+      <li><b>P9 · No way out of a big project.</b> Android ships a <code>See all chats ›</code> button for exactly this
+        (<code>2026-09-27-android-sidebar-projects-wireframe.html</code>, decision 3). Desktop has only a
+        <code>Load more</code> button inside a pane you can accidentally resize away.</li>
+    </ol>
+  </div>
+</div>
+<div class="note">
+  Two more, smaller, that the drawings below fix as a side effect: <b>P10</b> — section collapse is
+  <code>localStorage</code>-only, never the URL (<code>stores/sidebar.ts:5,68-108</code>), which the repo's URL-sync rule
+  forbids. <b>P11</b> — the worker-running indicator is a bare ring, so it reads as a stray radio button; the only
+  <i>unambiguously</i> labelled state in the sidebar is the one nobody can read.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>3 — Menu 1 · New Chat: same bare-text weight, now a split action</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">As shipped</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-head">
+          <div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div>
+          <div class="sb-acts">Settings</div>
+        </div>
+        <div class="sb-newchat hot">
+          <span class="pen">✎</span><span class="lbl">New Chat</span>
+        </div>
+        <div class="sb-nav">
+          <div class="sb-sec"><span class="car">▼</span> RECENT</div>
+          <div class="sb-row"><span class="bul"></span><span class="t">chance ci from self hosted…</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Adjust Readme.md</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span></div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">chance ci from self hosted…</span></div>
+        <div class="m-body"><div class="bubble me">move to a public runner</div><div class="bubble ai">On it…</div></div>
+        <div class="m-input">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="cap">Proposed — hover reveals the split; click still goes to the default project</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-head">
+          <div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div>
+          <div class="sb-acts">Settings</div>
+        </div>
+        <div class="sb-newchat hot">
+          <span class="pen">✎</span><span class="lbl">New Chat</span>
+          <span class="split">▾</span><span class="kbd kbd-fly">⌘N</span>
+        </div>
+        <div class="sb-nav">
+          <div class="sb-sec"><span class="car">▼</span> RECENT</div>
+          <div class="sb-row"><span class="bul"></span><span class="t">chance ci from self hosted…</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Adjust Readme.md</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span></div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">chance ci from self hosted…</span></div>
+        <div class="m-body"><div class="bubble me">move to a public runner</div><div class="bubble ai">On it…</div></div>
+        <div class="m-input">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="cap">Non-negotiable, carried forward</div>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c">
+      The 2026-09-27 plan locked this row: <b>bare text, never a filled button</b> — the whole sidebar moved to a bare-text
+      treatment and a primary-coloured pill fights it. Placement is also fixed: a full-width 40&nbsp;px row under the 48&nbsp;px
+      header, with the collapse chevron at <code>top-24</code> so it does not land on top of it.
+    </p>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c;margin-top:8px">
+      Two additions, neither of which touches weight, colour or position:
+    </p>
+    <ul style="padding-left:17px;margin-top:5px">
+      <li style="font-size:11.5px;line-height:1.65;color:#a6a69c;margin-bottom:6px">
+        <b><code>⌘N</code></b>, revealed on hover/focus. The app's only always-reachable action has no keyboard
+        affordance and no discoverable shortcut today.</li>
+      <li style="font-size:11.5px;line-height:1.65;color:#a6a69c">
+        <b>A trailing <code>▾</code></b>. Today the <i>only</i> way to start a chat inside a named project is the
+        hover-only <code>+</code> buried at the end of a project row (<code>WorkspaceItem.vue:684-694</code>). The split
+        menu moves that one level up, where the action it modifies already lives.</li>
+    </ul>
+  </div>
+
+</div>
+<div class="note">
+  <b>The four states do not change</b> — idle, hover, creating (spinner + disabled), no-workspace (disabled with
+  <code>Select a workspace first</code>). They are already designed and shipped; this section does not reopen them.
+  The <b>64&nbsp;px collapsed rail keeps the icon-only form</b> with <code>aria-label="New Chat"</code>: a rail must not drop
+  the only always-visible chat affordance. The <code>▾</code> and <code>⌘N</code> simply do not render at that width.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>4 — Menu 2 · Recent becomes a <b>timeline</b>, not a second inventory</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">Proposed — 5-row preview, every row says where it lives</div>
+    <div class="app tall">
+      <div class="sidebar">
+        <div class="sb-head">
+          <div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div>
+          <div class="sb-acts">Settings</div>
+        </div>
+        <div class="sb-newchat"><span class="pen">✎</span><span class="lbl">New Chat</span><span class="kbd">⌘N</span></div>
+        <div class="sb-nav sbscroll">
+          <div class="sb-sec"><span class="car">▼</span> RECENT <span class="grow"></span><span class="act">↓</span></div>
+          <div class="sb-row stack">
+            <div class="line1"><span class="bul"></span><span class="t">3 mode workspace items have differ…</span><span class="run"><span class="spin"></span>run</span></div>
+            <div class="crumb">▸ AGENTIC_KANBAN</div>
+          </div>
+          <div class="sb-row stack">
+            <div class="line1"><span class="bul"></span><span class="t">Adjust Readme.md</span><span class="when">now</span></div>
+            <div class="crumb">▸ no project</div>
+          </div>
+          <div class="sb-row stack on">
+            <div class="line1"><span class="bul"></span><span class="t">chance ci from self hosted to publ…</span><span class="acts"><i>✎</i><i>×</i></span></div>
+            <div class="crumb">▸ sprint bulan juni</div>
+          </div>
+          <div class="sb-row stack">
+            <div class="line1"><span class="bul"></span><span class="t">New Chat</span><span class="when">2m</span></div>
+            <div class="crumb">▸ AGENTIC BASIC</div>
+          </div>
+          <div class="sb-row stack">
+            <div class="line1"><span class="bul"></span><span class="t">add new menu on top left sidebar…</span><span class="when">51m</span></div>
+            <div class="crumb">▸ AGENTIC_KANBAN</div>
+          </div>
+          <div class="sb-more">See all ›</div>
+          <div class="sb-divider"></div>
+          <div class="sb-sec"><span class="car">▼</span> PROJECTS <span class="grow"></span><span class="act">+</span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">🤖</span><span class="t">Project Default</span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">📁</span><span class="t">Ios Mobile</span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">▦</span><span class="t">AGENTIC_KANBAN</span></div>
+          <div class="sb-proj lit"><span class="car">▼</span><span class="gly">🤖</span><span class="t">AGENTIC BASIC</span></div>
+          <div class="sb-kids">
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⋯</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⋯</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">hello-greeting</span><span class="acts"><i>⋯</i></span></div>
+          </div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">chance ci from self hosted to public ci runner</span><span class="m-path">/app/…/projects/…/chat/…</span></div>
+        <div class="m-body"><div class="bubble me">move to a public runner</div><div class="bubble ai">Done — two jobs on ubuntu-latest.</div></div>
+        <div class="m-input">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="cap">The breadcrumb is the whole fix</div>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c">
+      Every RECENT row gains one line of dim text naming its parent — the project it belongs to, or
+      <b><code>no project</code></b> for a loose chat. That single line converts the duplication from noise into
+      information: you can now see that <code>Adjust Readme.md</code> is the loose chat you started at the top level, while
+      <code>New Chat · 2m</code> is a child of <code>AGENTIC BASIC</code>. Two copies of one chat, two different questions
+      answered.
+    </p>
+    <div style="height:10px"></div>
+    <table class="kv">
+      <tr><td>Preview cap</td><td>5 rows, then <code>See all ›</code> — mirrors the Android drawer, which already ships <code>PREVIEW_ROWS = 5</code></td></tr>
+      <tr><td>See all ›</td><td>navigates to a full list; the drawer does this today, the desktop never got it</td></tr>
+      <tr><td>Sort toggle</td><td>unchanged (<code>↓</code>/<code>↑</code> on the section header)</td></tr>
+      <tr><td>Time pill</td><td>unchanged, and now the <i>only</i> right-hand meta — the project-child rows drop theirs (§5)</td></tr>
+      <tr><td>Stale dot</td><td>unchanged — "AI is ahead of you", Migration 082</td></tr>
+      <tr><td>Running</td><td>bare ring → a labelled <code>◌ run</code> chip. See P11.</td></tr>
+      <tr><td>Row actions</td><td>none at rest today; become hover-revealed <code>✎ ×</code> + the existing right-click menu</td></tr>
+    </table>
+  </div>
+
+</div>
+<div class="note">
+  <b>No <code>+</code> on the header.</b> The 2026-09-22 revamp deleted the New Chat button from the Recents header on
+  purpose (<code>ChatsList.vue:918-920</code>), which is precisely why New Chat had to become its own row. This section
+  does not put it back.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>5 — Menu 3 · Projects becomes an <b>inventory</b>: glyphs in, lying numbers out</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">Proposed — scan by type, navigate by structure</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-head">
+          <div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div>
+          <div class="sb-acts">Settings</div>
+        </div>
+        <div class="sb-newchat"><span class="pen">✎</span><span class="lbl">New Chat</span><span class="kbd">⌘N</span></div>
+        <div class="sb-nav sbscroll">
+          <div class="sb-sec"><span class="car">▼</span> RECENT</div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Adjust Readme.md</span><span class="when">now</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">chance ci from self hosted…</span><span class="when">51m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">2m</span></div>
+          <div class="sb-more">See all ›</div>
+          <div class="sb-divider"></div>
+          <div class="sb-sec"><span class="car">▼</span> PROJECTS <span class="grow"></span><span class="act">+</span></div>
+          <div class="sb-search focus"><span class="mag">⌕</span><span class="ph">Filter projects &amp; chats…</span><span class="kbd">⌘P</span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">🤖</span><span class="t">Project Default</span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">📁</span><span class="t">Ios Mobile</span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">▦</span><span class="t">AGENTIC_KANBAN</span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-proj lit"><span class="car">▼</span><span class="gly">🤖</span><span class="t">AGENTIC BASIC</span><span class="dot"></span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-kids">
+            <div class="sb-row hover"><span class="bul"></span><span class="t">New Chat</span><span class="when">2m</span><span class="acts"><i>⋯</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">9m</span><span class="acts"><i>⋯</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">hello-greeting</span><span class="when">1h</span><span class="acts"><i>⋯</i></span></div>
+            <div class="sb-more">See all 10 chats ›</div>
+          </div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">📁</span><span class="t">sprint bulan juni</span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">🎨</span><span class="t">design</span><span class="acts"><i>⋯</i></span></div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main">
+        <div class="m-head"><span class="m-title">AGENTIC BASIC</span><span class="m-path">/app/…/projects/…</span></div>
+        <div class="m-body"><div class="bubble ai">Expanding a project opens its children in place — it does not navigate.</div></div>
+        <div class="m-input">Ask anything…</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel wide">
+    <div class="cap">Glyphs — taken from vocabulary the repo already committed to</div>
+    <table class="kv">
+      <tr><th>item_type</th><th>Glyph</th><th>Children shown</th><th>Today</th></tr>
+      <tr><td>kanban</td><td>▦</td><td>none — the board <i>is</i> the view</td><td rowspan="5" style="white-space:normal">all six draw the same <code>▶</code>; type is discoverable only by clicking <code>WorkspaceItem.vue:617-633</code></td></tr>
+      <tr><td>agent</td><td>🤖</td><td>chat rows</td></tr>
+      <tr><td>design</td><td>🎨</td><td>design-page rows</td></tr>
+      <tr><td>routine</td><td>⏱</td><td>none</td></tr>
+      <tr><td>folder</td><td>📁</td><td>chat rows</td></tr>
+      <tr><td>memory</td><td>🧠</td><td>chat rows</td></tr>
+      <tr><td><i>anything else</i></td><td>▤</td><td colspan="2" style="white-space:normal">fail soft — a new <code>item_type</code> must never render a nameless row. <code>item_type</code> is a bare <code>string</code> in TS (<code>stores/workspaces.ts:34</code>) and an unvalidated <code>TEXT</code> column server-side, so the unknown case is a real case.</td></tr>
+    </table>
+    <p style="font-size:11px;line-height:1.7;color:#7a8382;margin-top:9px">
+      This is not a new vocabulary. It is the set <code>docs/tabs.md:148</code> already specifies for the tab strip
+      (<i>"the glyph following the item type (▦ kanban, 🎨 design, 🤖 agent, ⏱ routine, 📁 folder, 🧠 memory)"</i>). The
+      sidebar has simply never adopted it.
+    </p>
+  </div>
+
+</div>
+<div class="note">
+  <b>The numbers come off, and they are not coming back as-is.</b> <code>119</code> next to
+  <code>AGENTIC_KANBAN</code> is <code>item.tasks.length</code> — the rows paged into memory at ten per page, not a count.
+  The backend computes no <code>COUNT</code> at all (<code>http_response.zig:618</code> returns
+  <code>.count = tasks.len</code>, the page length, and the client does not even read it). Printing a number you cannot get
+  for free is the rule the Android wireframe already wrote down, and the desktop breaks it. The honest number belongs on
+  <code>See all 10 chats ›</code>, and only once §11 adds a real <code>COUNT(*)</code> — the row itself carries a glyph
+  instead. The <code>9</code> on the header goes too, for a different reason: the section already lists every project.
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>6 — Row anatomy: two row types, three states, one active rule</h2>
+<div class="row">
+
+  <div class="panel">
+    <div class="cap">The type system this proposes</div>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c">
+      Three visual grammars, each doing exactly one job. Nothing may render two grammars at once.
+    </p>
+    <table class="kv" style="margin-top:7px">
+      <tr><th>Row</th><th>Leading</th><th>Second line</th><th>Right</th></tr>
+      <tr><td>Project</td><td>glyph <code>▦ 🤖 🎨</code></td><td>—</td><td><code>⋯</code> on hover</td></tr>
+      <tr><td>Chat</td><td>4&nbsp;px bullet</td><td>breadcrumb (RECENT only)</td><td>time · <code>⋯</code></td></tr>
+      <tr><td>Section</td><td>carate <code>▼</code></td><td>—</td><td>count removed, <code>+</code> kept</td></tr>
+    </table>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:9px">
+      <b>The glyph is the project row's identity</b> — so the chevron moves to the right of the name, or the glyph takes the
+      chevron's place and expansion is indicated by the whole row. What must not happen is today's arrangement, where
+      <code>▶</code> means <i>expands</i> on a kanban that has no children to expand.
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="cap">The active rule, which is still a TBD in the repo</div>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c">
+      A project row is a <b>filter</b> — it expands in place and never navigates. A chat row is a <b>destination</b> — it
+      navigates. That rule is already written down in the Android wireframe's tap-semantics table; this section applies it
+      to the desktop, where nothing states it.
+    </p>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:8px">
+      The active row gets a <b>2&nbsp;px left accent bar plus a fill</b>, derived from the URL — never from a store flag.
+      <code>docs/SPEC.md:971</code> has been sitting open on exactly this since 2026-08-06:
+    </p>
+    <p style="font-size:11px;line-height:1.7;color:#7a8382;margin-top:7px;font-style:italic">
+      <code>#TBD feat(sidebar): URL-driven single-active state — sidebar components derive "active" from
+      useCurrentMainView() (route.query), not store flags; 2px violet left accent bar on item + page rows</code>
+    </p>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:8px">
+      §5 draws the aqua dot on <code>AGENTIC BASIC</code> for exactly this reason: with
+      <code>/app/{ws}/projects/{pid}/chat/{tid}</code> in the URL, the sidebar must open that project and light that child
+      without the user having expanded anything.
+    </p>
+  </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>7 — One scroller, and the state that belongs in the URL</h2>
+<div class="row">
+
+  <div>
+    <div class="cap">As shipped — two panes, one drag handle</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-head"><div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div><div class="sb-acts">Settings</div></div>
+        <div class="sb-newchat"><span class="pen">✎</span><span class="lbl">New Chat</span></div>
+        <div class="sb-sec"><span class="car">▼</span> RECENT <span class="grow"></span><span class="act">↓</span></div>
+        <div class="sb-row"><span class="bul"></span><span class="t">Adjust Readme.md</span></div>
+        <div class="sb-row"><span class="bul"></span><span class="t">chance ci from self hosted…</span></div>
+        <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span></div>
+        <div class="sb-row"><span class="bul"></span><span class="t">add new menu on top left…</span></div>
+        <div class="sb-rule" style="position:relative"><div style="position:absolute;right:0;bottom:-3px;width:14px;height:5px;border-radius:99px;background:#282727"></div></div>
+        <div class="sb-sec"><span class="car">▼</span> PROJECTS 9 <span class="grow"></span><span class="act">+</span></div>
+        <div class="sb-proj"><span class="car">▶</span><span class="t">AGENTIC_KANBAN</span><span class="when">119</span></div>
+        <div class="sb-proj lit"><span class="car">▼</span><span class="t">AGENTIC BASIC</span><span class="when">10</span></div>
+        <div class="sb-kids">
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="acts"><i>⚲</i><i>✎</i><i>×</i></span></div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main"><div class="m-head"><span class="m-title">AGENTIC BASIC</span></div><div class="m-body"><div class="bubble ai">Expanding scrolls RECENT away.</div></div><div class="m-input">Ask anything…</div></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="cap">Proposed — one scroller; sections fold, they do not compete</div>
+    <div class="app">
+      <div class="sidebar">
+        <div class="sb-head"><div class="sb-ws">agentic coding <span class="sb-chev">▾</span></div><div class="sb-acts">Settings</div></div>
+        <div class="sb-newchat"><span class="pen">✎</span><span class="lbl">New Chat</span><span class="kbd">⌘N</span></div>
+        <div class="sb-nav sbscroll">
+          <div class="sb-sec"><span class="car">▼</span> RECENT <span class="grow"></span><span class="act">↓</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">Adjust Readme.md</span><span class="when">now</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">chance ci from self hosted…</span><span class="when">51m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">2m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">add new menu on top left…</span><span class="when">51m</span></div>
+          <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">9m</span></div>
+          <div class="sb-more">See all ›</div>
+          <div class="sb-divider"></div>
+          <div class="sb-sec"><span class="car">▼</span> PROJECTS <span class="grow"></span><span class="act">+</span></div>
+          <div class="sb-proj"><span class="car">▶</span><span class="gly">▦</span><span class="t">AGENTIC_KANBAN</span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-proj lit"><span class="car">▼</span><span class="gly">🤖</span><span class="t">AGENTIC BASIC</span><span class="dot"></span><span class="acts"><i>⋯</i></span></div>
+          <div class="sb-kids">
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">2m</span><span class="acts"><i>⋯</i></span></div>
+            <div class="sb-row"><span class="bul"></span><span class="t">New Chat</span><span class="when">9m</span><span class="acts"><i>⋯</i></span></div>
+          </div>
+        </div>
+        <div class="sb-toggle">‹</div>
+      </div>
+      <div class="main"><div class="m-head"><span class="m-title">AGENTIC BASIC</span></div><div class="m-body"><div class="bubble ai">One scroller. RECENT folds to five.</div></div><div class="m-input">Ask anything…</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="cap">URL, not localStorage</div>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c">
+      Today RECENT collapse, PROJECTS collapse, per-project expansion, sidebar width, sidebar collapse and the RECENT pane
+      height are <b>six separate <code>localStorage</code> keys</b> and <b>nothing about the sidebar's state is in the
+      route</b>. That is the one place this sidebar breaks the repo rule that a view switch must be deep-linkable.
+    </p>
+    <table class="kv" style="margin-top:7px">
+      <tr><td>Today</td><td><code>nalar-sidebar-nav-expanded</code>, <code>…-projects-expanded</code>, <code>…-chats-height</code>, <code>…-workspaces-expanded</code>, <code>nalar-workspace-item-tasks-expanded</code>, <code>sidebar-collapsed</code>, <code>sidebar-width</code></td></tr>
+      <tr><td>Proposed</td><td>section fold → the existing path + <code>?nav=</code>; sidebar geometry stays local (it is a window property, not a view)</td></tr>
+    </table>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:8px">
+      The active project is already in the URL — <code>/app/{ws}/projects/{pid}/chat/{tid}</code>. §6 only has to read it.
+    </p>
+  </div>
+
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>8 — Search: the decision this wireframe deliberately reopens</h2>
+<div class="row">
+  <div class="panel wide">
+    <div class="zone zone-bad">This contradicts a decision the human already made</div>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c">
+      The v2 sidebar revamp removed search on purpose. It is not an oversight and it is not commented as one — it is stated:
+    </p>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c;margin-top:7px">
+      <code>ProjectsList.vue:411</code> &nbsp;<i>"Search removed (v2 sidebar UX) — every project is listed."</i><br>
+      <code>ProjectsList.vue:84-85</code> &nbsp;<i>"Sidebar shows every project — the header search filter was removed."</i>
+    </p>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c;margin-top:9px">
+      The argument for putting it back is §2: the same workspace holds nine projects, one of them with a hundred-plus
+      children, and after this wireframe removes the number badges the tree is the <i>only</i> affordance for finding
+      anything. The argument against is real too — a filter that hides a project is a project you cannot see exists, and
+      the tree is nine rows tall.
+    </p>
+    <p style="font-size:11.5px;line-height:1.75;color:#a6a69c;margin-top:9px">
+      This is a question, not a proposal with a fait accompli. <b>Q1</b> in §10. If the answer is no, the tree survives as
+      drawn and only the URL work in §7 lands.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>9 — Keyboard: the whole nav is one roving list</h2>
+<div class="row">
+  <div class="panel wide">
+    <table class="kv">
+      <tr><th>Key</th><th>Does</th><th>Where it lives today</th></tr>
+      <tr><td><code>⌘N</code> / <code>Ctrl N</code></td><td>New Chat in the default project</td><td>new — the row exists, the shortcut does not</td></tr>
+      <tr><td><code>↑</code> <code>↓</code></td><td>move through every row of all three menus, flatten-to-flat</td><td>new</td></tr>
+      <tr><td><code>→</code></td><td>expand a project row; on a collapsed section, expand the section</td><td>new</td></tr>
+      <tr><td><code>←</code></td><td>collapse a project; from a child, jump to its parent row</td><td>new</td></tr>
+      <tr><td><code>Enter</code></td><td>chat row → navigate · project row → expand (never navigate)</td><td>partial — the workspace dropdown already does this</td></tr>
+      <tr><td><code>⌘P</code> / <code>⌘F</code></td><td>focus the Projects filter</td><td>new, and contingent on Q1</td></tr>
+      <tr><td><code>Esc</code></td><td>clear the filter, then close the New Chat split menu</td><td>new</td></tr>
+      <tr><td><code>Shift F10</code></td><td>context menu on the focused row</td><td>the menu exists; the key does not</td></tr>
+    </table>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:9px">
+      <b>No local <code>ref</code> holds "which row is focused".</b> The focus index is derived from the route, exactly like
+      the active row — otherwise the keyboard cursor and the highlighted row disagree, which is the bug
+      <code>docs/superpowers/specs/2026-08-06-sidebar-single-active-state-design.md</code> was written to prevent.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>10 — Decisions this wireframe depends on</h2>
+<div class="row">
+  <div class="panel">
+    <div class="cap">Proposing</div>
+    <ol style="list-style:none">
+      <li><span class="dec dec-a">D1</span><b>Duplication stays; the rows diverge.</b> RECENT keeps every task-backed chat. It
+        gains a breadcrumb; a project child never gets one. Rejected: de-duplicating RECENT against the tree — the tree is
+        collapsed most of the time, so "already visible" is not a property you can compute.</li>
+      <li><span class="dec dec-a">D2</span><b>RECENT is a 5-row timeline with <code>See all ›</code>.</b> The resizable pane and
+        the <code>Load more</code> row inside it are deleted. Rejected: keeping the 40&nbsp;% pane — it is the second scroller
+        in §7.</li>
+      <li><span class="dec dec-a">D3</span><b>Projects get the <code>docs/tabs.md:148</code> glyphs</b>, fail-soft to
+        <code>▤</code>. Rejected: the Android wireframe's <code>▦ ◍ ↻ ✎ ▤</code> set — a second vocabulary for the same six types
+        is worse than reusing the one the tab strip already ships.</li>
+      <li><span class="dec dec-a">D4</span><b>All row count badges are removed.</b> The honest count moves to
+        <code>See all N chats ›</code> and only once the backend returns a real total. Rejected: keeping <code>items_count</code>
+        on the section header — it is server-true but the section already lists every row.</li>
+      <li><span class="dec dec-a">D5</span><b>Row actions become hover-revealed <code>⋯</code></b> on both menus; the
+        existing right-click menu is unchanged and gains <code>Shift F10</code>. Rejected: keeping pin/rename/delete
+        always-on — thirty controls for ten rows.</li>
+      <li><span class="dec dec-a">D6</span><b>One scroller for the nav.</b> <code>chatsHeight</code> and its drag handle are
+        deleted; section fold state moves into the route as <code>?nav=</code>. Rejected: keeping the resize handle —
+        nothing in the app resizes a pane by dragging, and this one is not even reachable by keyboard.</li>
+      <li><span class="dec dec-a">D7</span><b>The active project auto-expands from the URL</b> and the active chat row gets a
+        2&nbsp;px accent bar. This closes <code>docs/SPEC.md:971</code>.</li>
+      <li><span class="dec dec-a">D8</span><b>RECENT gets a real empty state</b> — <i>"No chats yet — press ⌘N to start one."</i>
+        Rejected: the current silent <code>Loading…</code>.</li>
+      <li><span class="dec dec-a">D9</span><b>The running indicator is labelled</b> <code>◌ run</code>. Rejected: the bare
+        ring, which is the only state in the sidebar a user cannot read.</li>
+      <li><span class="dec dec-a">D10</span><b>New Chat gains <code>⌘N</code> and a <code>▾</code> split.</b> Weight, colour
+        and the <code>top-24</code> chevron are untouched — the 2026-09-27 decision holds.</li>
+    </ol>
+  </div>
+
+  <div class="panel">
+    <div class="cap">Still open — the reviewer's call</div>
+    <ol style="list-style:none">
+      <li style="margin-bottom:9px"><span class="dec dec-q">Q1</span><b>Does Projects get a filter box?</b> §8. This
+        reopens a deliberate 2026-09-22 removal. <b>Recommendation: yes</b> — nine projects and a hundred-plus children with
+        no other affordance. But it is the human's decision, and the wireframe stands without it.</li>
+      <li style="margin-bottom:9px"><span class="dec dec-q">Q2</span><b>Does the project row keep a chevron at all?</b> §6
+        draws <code>▶</code> beside the glyph, but a kanban and a routine have no children, so their chevron is a dead
+        control. Options: hide it for childless types, or drop it and indicate expansion on the row. <b>Recommendation:
+        hide it</b> — a control that cannot do anything should not be drawn.</li>
+      <li><span class="dec dec-q">Q3</span><b>Does a project child keep its own time pill?</b> §5 draws one, matching RECENT.
+        The data is there (<code>updated_at</code> on the task row) but it is a second number competing with the name inside
+        a 210&nbsp;px rail. <b>Recommendation: keep</b> — the seven identical <code>New Chat</code> rows are exactly the
+        case where a timestamp is the only thing that distinguishes them (P5).</li>
+    </ol>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:4px">
+      Nothing in §1–§7 depends on an answer here. Q1 gates only the search box; Q2 and Q3 change one glyph and one label.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>11 — What it costs, and what it buys back</h2>
+<div class="row">
+  <div class="panel">
+    <div class="cap">Backend — one small addition</div>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c">
+      <code>See all N chats ›</code> needs a <i>real</i> <code>N</code>. Today
+      <code>src/http_handlers/tasks_list.zig</code> contains no <code>COUNT(*)</code> at all; the response carries
+      <code>.count = tasks.len</code> — the page length — and <code>api/index.ts:722-726</code> does not even return it to
+      the caller.
+    </p>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:7px">
+      The change is a <code>COUNT</code> alongside the existing cursor-paginated <code>SELECT</code>, surfaced as a distinct
+      <code>total</code> field. <b>Not in this wireframe</b> — it is its own card, and until it lands the number does not
+      appear at all (D4).
+    </p>
+  </div>
+
+  <div class="panel">
+    <div class="cap">What gets deleted</div>
+    <ul>
+      <li><code>sidebarStore.chatsHeight</code> + its drag handle and the <code>MIN/MAX</code> clamp
+        (<code>stores/sidebar.ts:14</code>).</li>
+      <li>The <code>items.length</code> count on the PROJECTS header and the <code>tasks.length</code> badge on every project
+        row.</li>
+      <li>Two <code>localStorage</code> keys, replaced by <code>?nav=</code>.</li>
+      <li>The 3 always-on SVG buttons on every child row, collapsed into one <code>⋯</code>.</li>
+    </ul>
+    <p style="font-size:11.5px;line-height:1.7;color:#a6a69c;margin-top:6px">
+      No route is removed. <code>/app/{ws}/projects/{pid}/chat/{tid}</code> and
+      <code>/app/{ws}/chat/{sid}</code> both stay — a project child and a loose chat are different URLs today and stay
+      different.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>12 — How this gets verified</h2>
+<div class="note" style="max-width:1000px">
+  This is a wireframe, so nothing here runs yet. When it is implemented, the rules the repo already enforces apply in full:
+  <ul style="padding-left:17px;margin-top:6px">
+    <li><b>Not by starting a server and curling it.</b> Every route and wire payload graduates to
+      <code>tests/functional/harness.py</code> — a free port in 8080–8199, <b>never 8081</b>, and an isolated
+      <code>HOME</code> tmpdir.</li>
+    <li><b>Every view switch lands in the URL</b>, covered by a mount-with-query spec asserting the restored view and a
+      click spec asserting the query value — the <code>SidebarDiffPanel.tabs.spec.ts</code> pattern.</li>
+    <li><b>Route order is a live trap.</b> <code>matchRoute</code> walks routes in registration order
+      (<code>kabelweb src/server/router.zig:182</code>), so a new literal route registered after a <code>:param</code> route
+      is captured by the param. A unit test on the composable will not see it.</li>
+    <li><b>One spec per decision.</b> D4's "no count" and D7's "active row from the URL" are both assertions that are
+      cheap to write now and expensive to notice missing later.</li>
+  </ul>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════ -->
+<h2>13 — Explicitly not in this wireframe</h2>
+<div class="row">
+  <div class="panel wide">
+    <ul>
+      <li><b>The workspace header.</b> <code>▾ name  Settings  Logout</code> is settled by the 2026-09-22 revamp and is drawn
+        unchanged. It is the fourth menu and it is out of scope.</li>
+      <li><b>Per-mode sidebars.</b> There is exactly one <code>Sidebar.vue</code> shared by every mode; nothing here
+        proposes splitting it. (The appbar inconsistency across modes is a separate card.)</li>
+      <li><b>Any new route shape.</b> Existing URL contracts stand.</li>
+      <li><b>Drag-to-reorder of projects</b> and the <code>Add Project</code> row, which is still disabled
+        <i>"Coming soon"</i>.</li>
+      <li><b>Folder file listing</b> — a <code>folder</code> project expands to its chats like every other type.</li>
+      <li><b>The Android drawer.</b> Everything here should be mirrored there, but the drawer is its own card.</li>
+    </ul>
+  </div>
+</div>
+
+</body>
+</html>

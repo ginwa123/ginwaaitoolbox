@@ -363,18 +363,18 @@ const handleItemDragEnd = () => {
 </script>
 
 <template>
-  <div class="space-y-1 h-full flex flex-col">
+  <div class="flex flex-col h-full">
     <!-- Section Header — chevron + title left; busy slider + add-item
          menu right. Workspace-level create/rename/delete + reorder
          moved to the header WorkspaceSwitcher (revamp plan:
          docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md). -->
     <div class="relative shrink-0" data-workspace-menu>
       <button
-        class="px-3 py-2 flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity w-full text-left"
+        class="px-[var(--sb-gutter)] h-7 flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity w-full text-left border-b border-[--color-border]/40"
         @click="toggleProjectsSection"
       >
         <span
-          class="text-xs transition-transform duration-200"
+          class="text-[var(--sb-fs-icon)] transition-transform duration-200"
           :style="{
             transform: sidebarStore.projectsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
           }"
@@ -382,13 +382,13 @@ const handleItemDragEnd = () => {
           >▶</span
         >
         <span
-          class="text-xs font-semibold uppercase tracking-wider"
+          class="text-[var(--sb-fs-section)] font-semibold uppercase tracking-[0.08em]"
           style="color: var(--semantic-text-dim)"
           >Projects</span
         >
         <span
           v-if="workspace"
-          class="text-[11px]"
+          class="text-[var(--sb-fs-meta)]"
           style="color: var(--semantic-text-dim); opacity: 0.7"
           data-testid="projects-count"
           >{{ workspace.items.length }}</span
@@ -400,7 +400,7 @@ const handleItemDragEnd = () => {
         />
         <button
           v-if="sidebarStore.projectsExpanded && workspace"
-          class="ml-auto w-7 h-7 text-xl font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
+          class="ml-auto w-[var(--sb-hit)] h-[var(--sb-hit)] text-[var(--sb-fs-icon)] font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
           style="color: var(--semantic-text-dim); opacity: 0.7"
           title="Add Item"
           aria-label="Add Item"
@@ -497,13 +497,13 @@ const handleItemDragEnd = () => {
       class="flex-1 min-h-0 overflow-y-auto"
     >
       <Transition name="collapse">
-        <div v-show="sidebarStore.projectsExpanded" class="space-y-0.5 pb-2">
+        <div v-show="sidebarStore.projectsExpanded" class="pb-2">
           <!-- Selected workspace items (single workspace — revamp plan).
-               V2 compact indent: ml-1 pl-2 keeps the guide without
-               eating horizontal space for long names. -->
+               One indent step per level (--sb-indent); the row supplies
+               its own gutter, so the guide never double-counts. -->
           <ul
             v-if="workspace"
-            class="ml-1 pl-2 space-y-0.5 border-l"
+            class="ml-[var(--sb-indent)] space-y-0 border-l"
             style="border-color: var(--color-border)"
             @dragstart="handleItemDragStart"
             @dragover="handleItemDragOver"
@@ -546,7 +546,7 @@ const handleItemDragEnd = () => {
             />
             <li
               v-if="workspace.items.length === 0"
-              class="px-3 py-2 text-xs"
+              class="px-[var(--sb-gutter)] py-2 text-[var(--sb-fs-meta)]"
               style="color: var(--semantic-text-dim)"
               data-testid="projects-empty"
             >
@@ -555,7 +555,7 @@ const handleItemDragEnd = () => {
           </ul>
           <div
             v-else
-            class="px-3 py-2 text-xs"
+            class="px-[var(--sb-gutter)] py-2 text-[var(--sb-fs-meta)]"
             style="color: var(--semantic-text-dim)"
             data-testid="projects-no-workspace"
           >
