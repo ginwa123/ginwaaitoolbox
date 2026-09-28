@@ -61,6 +61,15 @@ pub const ReadWorkspaceSessionInput = struct {
     /// Order direction for READ. "asc" (chronological forward, default) or
     /// "desc" (most-recent-first). SEARCH always orders by FTS rank.
     order: []const u8 = "asc",
+    /// When true, the caller's OWN session is included in the results.
+    ///
+    /// Default false: the tool answers questions about OTHER sessions, so
+    /// the current session is filtered out of LIST and SEARCH, and READ /
+    /// SEARCH-WITHIN aimed at it is refused with a retry hint. Your live
+    /// context already holds the current session — echoing it back just
+    /// burns tokens. Pass true when you deliberately need it (e.g. pulling
+    /// your own messages that compaction dropped, via `compacted_only`).
+    is_current_session: bool = false,
 };
 
 /// Hard cap on how many `message_ids` the LLM can request at once.
@@ -87,6 +96,8 @@ pub const read_workspace_session_tool_system_prompt =
     \\- `query` → SEARCH message content across your workspace (FTS).
     \\- `session_id` → READ that session's messages. `query` + `session_id` → SEARCH-WITHIN one session.
     \\- Scope is automatic (your workspace only). Cross-workspace reads are denied, never leaked.
+    \\- Your OWN session is excluded by default in every behavior. Pass `is_current_session: true`
+    \\  only when you deliberately need it (e.g. your own messages dropped by compaction).
     \\
 ;
 
@@ -98,10 +109,12 @@ pub const read_workspace_session_tool = AgentTool{
         \\Discover, search, and read other chat sessions in YOUR workspace — including messages compacted out of the live context. Scope is derived server-side from your session: you can only ever see sessions in your own workspace. Reads of other workspaces' sessions are denied.
         \\
         \\FOUR BEHAVIORS (pick by params):
-        \\- LIST (neither `query` nor `session_id`): sessions in your workspace with name, status, message count, last activity, and a preview of the latest human message. Your own session is excluded. Use this when you need to find "the conversation about X" but don't know its session id.
+        \\- LIST (neither `query` nor `session_id`): sessions in your workspace with name, status, message count, last activity, and a preview of the latest human message. Your own session is excluded unless `is_current_session` is true. Use this when you need to find "the conversation about X" but don't know its session id.
         \\- SEARCH (`query` only): full-text search over message content across your workspace using SQLite FTS5. Filter by `role`/`tool_name`/`parent_session_id`/`agent`, time-bound via `since`/`until`, restrict to live or compacted rows via `live_only`/`compacted_only`, paginate with `offset` + `limit`. Returns ranked matches with a preview snippet + owning session id/name. For long result sets, read <total_count> and call again with offset=N until offset + count >= total_count.
         \\- READ (`session_id` only): messages of one session in your workspace (live + compacted). Returns an index (id, role, created_at, preview); pass `message_ids` (up to 50) for full <content> bodies. Use `order="desc"` for most-recent-first, `since`/`until` to paginate forward.
         \\- SEARCH-WITHIN (both `query` and `session_id`): FTS restricted to that one session (which must be in your workspace).
+        \\
+        \\YOUR OWN SESSION (all four behaviors): excluded by default. LIST/SEARCH filter it out; READ/SEARCH-WITHIN aimed at it return an `error` telling you to retry. Set `is_current_session: true` to opt back in — you already hold the current session in your live context, so only ask for it deliberately (e.g. `compacted_only` to recover messages compaction dropped).
         \\
         \\FTS QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — you can write `handle_tool.zig` or `AGENTS.md` without pre-escaping. Multi-word queries are joined with FTS5 OR (`a b` matches rows containing `a` OR `b`) for natural recall.
         \\
@@ -118,6 +131,7 @@ pub const read_workspace_session_tool = AgentTool{
         \\- agent: exact-match filter on the agent name (e.g. "main", "planning", "compaction").
         \\- live_only / compacted_only (mutually exclusive): restrict to messages still in your live context (is_feed_to_llm=1) vs. dropped by compaction (is_feed_to_llm=0). Default returns both.
         \\- since / until: YYYY-MM-DD HH:MM:SS inclusive bounds on created_at.
+        \\- is_current_session: when true, the CURRENT session is included in the results. Default false — your own session is excluded from LIST/SEARCH and refused by READ/SEARCH-WITHIN.
         \\- limit: max rows to return (default 20, max 200; LIST max 50).
         \\- offset: SEARCH only — skip first N matches for pagination.
         \\- order: READ only — "asc" (chronological forward, default) or "desc" (most-recent-first).
@@ -129,6 +143,8 @@ pub const read_workspace_session_tool = AgentTool{
         \\Example (read recent first): {"session_id": "s_42", "order": "desc"}
         \\Example (read full bodies): {"session_id": "s_42", "message_ids": "h_1781,h_1782"}
         \\Example (search within): {"session_id": "s_42", "query": "migration"}
+        \\Example (include your own session): {"is_current_session": true}
+        \\Example (own compacted messages): {"is_current_session": true, "compacted_only": true}
         ,
         .parameters = .{
             .type = "object",
@@ -147,6 +163,7 @@ pub const read_workspace_session_tool = AgentTool{
                 .{ .name = "limit", .type = "number", .description = "Max rows to return. Default 20, max 200 (LIST max 50)." },
                 .{ .name = "offset", .type = "number", .description = "SEARCH only. Skip first N matches for pagination." },
                 .{ .name = "order", .type = "string", .description = "READ only. 'asc' (chronological forward, default) or 'desc' (most-recent-first)." },
+                .{ .name = "is_current_session", .type = "boolean", .description = "When true, the current session is included in the results. Default false — your own session is excluded from LIST/SEARCH and refused by READ/SEARCH-WITHIN." },
             },
             .required = &.{},
         },
@@ -188,6 +205,46 @@ fn deniedJSON(allocator: std.mem.Allocator, session_id: []const u8) ![]u8 {
     }, .{});
 }
 
+/// Refusal for READ / SEARCH-WITHIN aimed at the caller's own session while
+/// `is_current_session` is false. Carries the behavior name and zero counts
+/// so the frontend renders its existing error panel instead of a blank
+/// list, plus a hint the LLM can act on by adding one param.
+fn currentSessionRefusedJSON(allocator: std.mem.Allocator, behavior: []const u8) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, .{
+        .behavior = behavior,
+        .is_current_session = false,
+        .count = 0,
+        .total_count = 0,
+        .@"error" = "Your own session is excluded by default — this tool reads OTHER conversations. Retry with is_current_session=true to include the current session.",
+    }, .{});
+}
+
+/// Owned copy of `ids` with the caller's own session removed, unless
+/// `include_caller`. Free with `workspace_scope.freeSessionIds`.
+///
+/// An EMPTY result means "no peer sessions at all" (e.g. the caller is the
+/// workspace's only session and is_current_session is false). Callers must
+/// treat that as an empty result set — handing an empty id list to the FTS
+/// query drops the `IN (...)` clause entirely and would leak every
+/// workspace's hits.
+fn withoutCallerSession(
+    allocator: std.mem.Allocator,
+    ids: []const []const u8,
+    caller_session_id: []const u8,
+    include_caller: bool,
+) ![][]u8 {
+    var out: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (out.items) |s| allocator.free(s);
+        out.deinit(allocator);
+    }
+    for (ids) |id| {
+        if (!include_caller and std.mem.eql(u8, id, caller_session_id)) continue;
+        try out.append(allocator, try allocator.dupe(u8, id));
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
 /// Execute read_workspace_session. Returns an XML string for the LLM.
 /// `caller_session_id` is the session invoking the tool (server-side,
 /// from the dispatch context — never from LLM input).
@@ -222,6 +279,17 @@ pub fn execute_read_workspace_session(
         return executeList(allocator, db, caller_session_id, input);
     }
 
+    // Self-targeting is opt-in. The tool exists to answer questions about
+    // OTHER conversations, so READ / SEARCH-WITHIN aimed at the caller's own
+    // session is refused with a hint instead of echoing back the context the
+    // LLM already holds. Gated before the workspace lookup — self always
+    // passes `isSameWorkspace`, so this is the only place that catches it.
+    if (want_read and !input.is_current_session and
+        std.mem.eql(u8, input.session_id, caller_session_id))
+    {
+        return currentSessionRefusedJSON(allocator, if (want_search) "search-within" else "read");
+    }
+
     // SEARCH / READ / SEARCH-WITHIN all need the caller's workspace.
     const ws = try workspace_scope.resolveWorkspaceId(allocator, db, caller_session_id);
     defer if (ws) |w| allocator.free(w);
@@ -232,7 +300,11 @@ pub fn execute_read_workspace_session(
     if (want_search and !want_read) {
         const ws_ids = try workspace_scope.workspaceSessionIds(allocator, db, ws.?);
         defer workspace_scope.freeSessionIds(allocator, ws_ids);
-        return executeSearch(allocator, db, ws_ids, null, feed_filter, input);
+        // Drop the caller unless asked for it. `executeSearch` treats an
+        // empty scoped set as "no results" rather than "no filter".
+        const scoped_ids = try withoutCallerSession(allocator, ws_ids, caller_session_id, input.is_current_session);
+        defer workspace_scope.freeSessionIds(allocator, scoped_ids);
+        return executeSearch(allocator, db, scoped_ids, null, feed_filter, input);
     }
 
     // READ or SEARCH-WITHIN: gate the target session first.
@@ -280,7 +352,8 @@ fn executeList(
 
     const list_limit = @min(input.limit, MAX_LIST_LIMIT);
 
-    // Metadata for every workspace session except the caller's own.
+    // Metadata for every workspace session except the caller's own —
+    // unless `is_current_session` opted it back in.
     // Bound IN-list (never string-interpolated ids).
     var metas: std.ArrayList(SessionMeta) = .empty;
     errdefer {
@@ -314,7 +387,7 @@ fn executeList(
         defer rows.deinit();
         while (try rows.next()) |row| {
             defer row.deinit(allocator);
-            if (std.mem.eql(u8, row.values[0], caller_session_id)) continue;
+            if (!input.is_current_session and std.mem.eql(u8, row.values[0], caller_session_id)) continue;
             if (metas.items.len >= list_limit) break;
             const preview = try latestUserPreview(allocator, db, row.values[0]);
             errdefer allocator.free(preview);
@@ -421,10 +494,20 @@ fn executeSearch(
         .offset = if (input.offset > 0) input.offset else null,
     };
 
-    const hits = llm_history.searchMessagesFts(allocator, db, input.query, opts) catch |err| {
-        const msg = try std.fmt.allocPrint(allocator, "FTS search failed: {s}", .{@errorName(err)});
-        defer allocator.free(msg);
-        return jsonError(allocator, msg);
+    const hits = blk: {
+        // An empty session-id set means "this workspace has no session other
+        // than yours" (the caller is alone and is_current_session is false).
+        // `searchMessagesFts` treats an empty `session_ids` as "no IN-clause"
+        // and would return hits from EVERY workspace, so short-circuit to an
+        // empty result set here instead.
+        if (ws_ids) |ids| {
+            if (ids.len == 0) break :blk try allocator.alloc(llm_history.SearchHit, 0);
+        }
+        break :blk llm_history.searchMessagesFts(allocator, db, input.query, opts) catch |err| {
+            const msg = try std.fmt.allocPrint(allocator, "FTS search failed: {s}", .{@errorName(err)});
+            defer allocator.free(msg);
+            return jsonError(allocator, msg);
+        };
     };
     defer {
         for (hits) |h| {
@@ -931,6 +1014,116 @@ test "read_workspace_session: LIST shows workspace peers, excludes self and othe
     try testing.expectEqual(@as(i64, 1), obj.get("count").?.integer);
 }
 
+test "read_workspace_session: LIST includes the caller's own session only when opted in" {
+    var s = try setupDb();
+    defer {
+        s.db.deinit();
+        s.threaded.deinit();
+    }
+    const alloc = testing.allocator;
+
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+        .is_current_session = true,
+    });
+    defer alloc.free(out);
+
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    const sessions = obj.get("sessions").?.array;
+    // s1 (caller) and s3 (peer) both listed; s2 is another workspace.
+    try testing.expect(hasSessionId(sessions, "s1"));
+    try testing.expect(hasSessionId(sessions, "s3"));
+    try testing.expect(!hasSessionId(sessions, "s2"));
+    try testing.expectEqual(@as(i64, 2), obj.get("count").?.integer);
+}
+
+test "read_workspace_session: SEARCH excludes the current session by default, includes it on opt-in" {
+    var s = try setupDb();
+    defer {
+        s.db.deinit();
+        s.threaded.deinit();
+    }
+    const alloc = testing.allocator;
+
+    // h1 lives in s1, the caller — filtered out by default.
+    const default_out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+        .query = "login",
+    });
+    defer alloc.free(default_out);
+    const default_parsed = try parseTestJson(alloc, default_out);
+    defer default_parsed.deinit();
+    const default_results = default_parsed.value.object.get("results").?.array;
+    try testing.expect(!hasResultId(default_results, "h1"));
+    try testing.expect(hasResultId(default_results, "h2"));
+
+    // Opting back in surfaces the caller's own rows.
+    const opted = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+        .query = "login",
+        .is_current_session = true,
+    });
+    defer alloc.free(opted);
+    const opted_parsed = try parseTestJson(alloc, opted);
+    defer opted_parsed.deinit();
+    const opted_results = opted_parsed.value.object.get("results").?.array;
+    try testing.expect(hasResultId(opted_results, "h1"));
+    try testing.expect(hasResultId(opted_results, "h2"));
+}
+
+test "read_workspace_session: SEARCH with no peer session returns empty, never a global hit" {
+    var s = try setupDb();
+    defer {
+        s.db.deinit();
+        s.threaded.deinit();
+    }
+    const alloc = testing.allocator;
+
+    // w3 has exactly one session (s4) and it is the caller. Excluding the
+    // caller leaves an empty id set — which must read as "no results", not
+    // as "no filter", or the FTS query would sweep every workspace.
+    try s.db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position)
+        \\VALUES ('i3', 'w3', 'kanban', 'C', '/proj/c', 1)
+    , &.{});
+    try s.db.exec(alloc,
+        "INSERT INTO sessions (id, name, status, cwd) VALUES ('s4', 'Alone', 'active', '/proj/c')",
+        &.{},
+    );
+    // h4 is in w1 and h6 in the caller's w3: both match "unicorn".
+    try s.db.exec(alloc,
+        \\INSERT INTO llm_history (id, session_id, role, response_content, is_feed_to_llm)
+        \\VALUES ('h4', 's3', 'user', 'unicorn parade downtown', 1),
+        \\       ('h6', 's4', 'user', 'unicorn parade upstairs', 1)
+    , &.{});
+
+    const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s4", .{
+        .query = "unicorn",
+    });
+    defer alloc.free(out);
+    const parsed = try parseTestJson(alloc, out);
+    defer parsed.deinit();
+    const obj = parsed.value.object;
+    try testing.expectEqualStrings("search", obj.get("behavior").?.string);
+    try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
+    try testing.expectEqual(@as(i64, 0), obj.get("total_count").?.integer);
+    // Neither the other workspace's row nor the caller's own row leaks.
+    const results = obj.get("results").?.array;
+    try testing.expect(!hasResultId(results, "h4"));
+    try testing.expect(!hasResultId(results, "h6"));
+
+    // Opting in finds the caller's own row — and still nothing from w1.
+    const opted = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s4", .{
+        .query = "unicorn",
+        .is_current_session = true,
+    });
+    defer alloc.free(opted);
+    const opted_parsed = try parseTestJson(alloc, opted);
+    defer opted_parsed.deinit();
+    const opted_results = opted_parsed.value.object.get("results").?.array;
+    try testing.expect(hasResultId(opted_results, "h6"));
+    try testing.expect(!hasResultId(opted_results, "h4"));
+}
+
 test "read_workspace_session: SEARCH is workspace-scoped" {
     var s = try setupDb();
     defer {
@@ -941,6 +1134,7 @@ test "read_workspace_session: SEARCH is workspace-scoped" {
 
     const out = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .query = "login",
+        .is_current_session = true,
     });
     defer alloc.free(out);
 
@@ -1036,7 +1230,7 @@ test "read_workspace_session: caller without workspace gets a clean error" {
     try testing.expect(std.mem.indexOf(u8, parsed.value.object.get("error").?.string, "not linked to any workspace") != null);
 }
 
-test "read_workspace_session: self-read allowed, guards enforced" {
+test "read_workspace_session: self-read refused by default, allowed on opt-in, guards enforced" {
     var s = try setupDb();
     defer {
         s.db.deinit();
@@ -1044,14 +1238,41 @@ test "read_workspace_session: self-read allowed, guards enforced" {
     }
     const alloc = testing.allocator;
 
-    // Reading your own session always works (no leak possible).
+    // Reading your own session needs an explicit opt-in — otherwise the
+    // response is a hint, not your own history back.
     const self = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
         .session_id = "s1",
     });
     defer alloc.free(self);
     const self_parsed = try parseTestJson(alloc, self);
     defer self_parsed.deinit();
-    try testing.expect(hasResultId(self_parsed.value.object.get("message_index").?.array, "h1"));
+    try testing.expectEqualStrings("read", self_parsed.value.object.get("behavior").?.string);
+    try testing.expect(self_parsed.value.object.get("is_current_session").?.bool == false);
+    try testing.expect(std.mem.indexOf(u8, self_parsed.value.object.get("error").?.string, "is_current_session=true") != null);
+    // No content leaks through the refusal.
+    try testing.expect(std.mem.indexOf(u8, self, "login bug") == null);
+
+    // SEARCH-WITHIN on your own session is refused the same way.
+    const self_search = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+        .session_id = "s1",
+        .query = "login",
+    });
+    defer alloc.free(self_search);
+    const self_search_parsed = try parseTestJson(alloc, self_search);
+    defer self_search_parsed.deinit();
+    try testing.expectEqualStrings("search-within", self_search_parsed.value.object.get("behavior").?.string);
+    try testing.expect(std.mem.indexOf(u8, self_search_parsed.value.object.get("error").?.string, "is_current_session=true") != null);
+    try testing.expect(std.mem.indexOf(u8, self_search, "login bug") == null);
+
+    // Opting in restores the read.
+    const opted = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
+        .session_id = "s1",
+        .is_current_session = true,
+    });
+    defer alloc.free(opted);
+    const opted_parsed = try parseTestJson(alloc, opted);
+    defer opted_parsed.deinit();
+    try testing.expect(hasResultId(opted_parsed.value.object.get("message_index").?.array, "h1"));
 
     // live_only + compacted_only rejected.
     const both = try rws.execute_read_workspace_session(alloc, s.threaded.io(), &s.db, "s1", .{
@@ -1069,4 +1290,38 @@ test "read_workspace_session: self-read allowed, guards enforced" {
     });
     defer alloc.free(caps);
     try testing.expect(std.mem.indexOf(u8, caps, "Too many message_ids") != null);
+}
+
+test "read_workspace_session: tool schema advertises is_current_session and defaults it off" {
+    // The JSON schema IS the wire contract with the LLM provider — the
+    // registry HTTP endpoint only exposes {name, description}, so this is
+    // the only place the new param can be asserted for the wire.
+    const props = rws.read_workspace_session_tool.function.parameters.properties;
+
+    var found = false;
+    for (props) |p| {
+        if (!std.mem.eql(u8, p.name, "is_current_session")) continue;
+        found = true;
+        try testing.expectEqualStrings("boolean", p.type);
+        // The description has to say the default is off, otherwise the model
+        // has no reason to ever set it.
+        try testing.expect(std.mem.indexOf(u8, p.description, "Default false") != null);
+    }
+    try testing.expect(found);
+
+    // Optional param — putting it in `required` would break every existing
+    // call that omits it.
+    for (rws.read_workspace_session_tool.function.parameters.required) |r| {
+        try testing.expect(!std.mem.eql(u8, r, "is_current_session"));
+    }
+
+    // The struct default is what actually excludes the current session when
+    // the model never sends the key at all.
+    const default_input = ReadWorkspaceSessionInput{};
+    try testing.expect(!default_input.is_current_session);
+
+    // The tool description and system prompt both have to teach the flag, or
+    // the model sees a param with no guidance.
+    try testing.expect(std.mem.indexOf(u8, rws.read_workspace_session_tool.function.description, "is_current_session") != null);
+    try testing.expect(std.mem.indexOf(u8, rws.read_workspace_session_tool_system_prompt, "is_current_session") != null);
 }
