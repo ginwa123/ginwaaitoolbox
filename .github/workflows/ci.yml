@@ -1886,27 +1886,36 @@ jobs:
           emulator-boot-timeout: 900
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
+          # ONE physical line, and that is the whole constraint.
+          #
+          # android-emulator-runner@v2 is a Node action, and it does not hand
+          # this input to a shell. `parseScript` in its src/script-parser.ts
+          # splits the string on newlines, trims each line, DROPS every line
+          # starting with `#`, then main.ts runs each survivor as its own
+          # `exec.exec('sh', ['-c', line])`. One shell per line, no state
+          # shared between them.
+          #
+          # That is what killed this step twice, and neither failure was in
+          # pytest. `set -euo pipefail` on its own line ran under dash (this
+          # is `/usr/bin/sh`), which has no `pipefail`: `/usr/bin/sh: 1: set:
+          # Illegal option -o pipefail`, 4 minutes after a cold emulator boot.
+          # Rewriting it to `set -eu` only traded one illusion for another —
+          # `-e` and a `status=0` assignment die with the shell that set them —
+          # and the trailing `\` line-continuation survived as a LITERAL
+          # argument, so pytest exited 4 with `ERROR: file or directory not
+          # found: \`.
+          #
+          # So: one line, `;`-separated, no continuation, no `pipefail`, and
+          # no `tee` (`$?` after a pipe is tee's status, not pytest's). The
+          # redirect is what writes the log the "Upload the reports" step
+          # picks up, `cat` puts it in the job log either way, and the
+          # explicit `exit` is what carries pytest's verdict out — the
+          # action's own `exec.exec` throws on a non-zero status, so a bare
+          # last-line `cat` would have reported success on a failed suite.
+          # These `#` lines are stripped by `parseScript`, so they cost
+          # nothing.
           script: |
-            # POSIX sh only, deliberately. android-emulator-runner@v2 runs
-            # this input with `/usr/bin/sh` regardless of the job's default
-            # shell, and on Ubuntu that is dash — `set -o pipefail` is a
-            # bashism there, so the previous version of this block died with
-            # `/usr/bin/sh: 1: set: Illegal option -o pipefail` after the
-            # emulator had already booted. No pipeline either: `$?` after a
-            # pipe is tee's status, not pytest's, so the exit code is
-            # captured by hand and re-raised, and the log file the report
-            # step uploads is written by the redirect.
-            set -eu
-            # `ANDROID_SERIAL` is deliberately NOT set: with a single clean adb
-            # server the suite discovers the emulator itself, and hardcoding
-            # `emulator-5554` would break the day the action picks another port.
-            # (The suite's own README says to set it locally, where a real phone
-            # attached alongside the emulator is the normal case.)
-            status=0
-            "$NALAR_FUNC_VENV_DIR/bin/python" -m pytest tests/functional_android/ -q -rs \
-              > /tmp/android-functional-test.log 2>&1 || status=$?
-            cat /tmp/android-functional-test.log
-            exit $status
+            "$NALAR_FUNC_VENV_DIR/bin/python" -m pytest tests/functional_android/ -q -rs > /tmp/android-functional-test.log 2>&1; status=$?; cat /tmp/android-functional-test.log; exit $status
 
       - name: Upload the reports
         # `if: always()` so a failing run still publishes the instrumented JUnit
@@ -1969,13 +1978,17 @@ jobs:
     # already exists before the apk lands, so the page can never show an apk
     # with no install instructions on it.
     #
-    # The trade-off, stated rather than hidden: a red cell in the backend
-    # matrix keeps this apk unpublished too. That is the honest behaviour for
-    # a "latest GREEN main build" release, and it is how the desktop assets
-    # are already gated -- each by its own cell's success. Relax it to
-    # `if: always() && needs.backend.result != 'cancelled'` if the apk should
-    # ride along on a partial-green run; the ordering argument above holds
-    # either way, because `always()` still waits for the matrix to finish.
+    # Ordering AND nothing else, deliberately. A bare `needs:` skips the job
+    # the moment any cell is red, and the cell most often red is an unrelated
+    # one -- on PR #727 the Windows compile error kept this job from running
+    # at all, which would mean a PR could break the Android build and nobody
+    # finds out until merge. `always()` still WAITS for the whole matrix, so
+    # the race-avoidance argument above is untouched; all this does is stop a
+    # red cell from being a reason to skip.
+    #
+    # `!= 'cancelled'` rather than `always()` so a cancelled run releases the
+    # machine instead of starting a 30-minute Gradle build nobody wants.
+    if: ${{ always() && needs.backend.result != 'cancelled' }}
     needs: backend
     # A cold Gradle distribution download plus the whole AndroidX/Compose
     # dependency graph. Well inside this, and short of the default 360 so a
