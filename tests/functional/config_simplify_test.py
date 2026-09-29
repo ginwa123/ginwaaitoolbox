@@ -110,10 +110,29 @@ def preboot(default_nalar_bin):
         orig_xdg_cache_home = os.environ.get("XDG_CACHE_HOME", "")
         env = os.environ.copy()
         env["HOME"] = str(temp_dir)
+        # XDG isolation applies on every platform, not just Windows: on Linux
+        # getDefaultConfigDir resolves $XDG_CONFIG_HOME/nalar before
+        # $HOME/.config/nalar, so a child that inherits the parent's
+        # XDG_CONFIG_HOME (set to /home/runner/.config on the GH ubuntu
+        # runner) writes config.json outside temp_dir and the assertions
+        # below read a file this server never wrote. Mirrors
+        # FunctionalHarness.boot.
+        xdg_config = temp_dir / ".config"
+        xdg_state = temp_dir / ".local" / "state"
+        xdg_data = temp_dir / ".local" / "share"
+        xdg_cache = temp_dir / ".cache"
+        xdg_config.mkdir(parents=True, exist_ok=True)
+        xdg_state.mkdir(parents=True, exist_ok=True)
+        xdg_data.mkdir(parents=True, exist_ok=True)
+        xdg_cache.mkdir(parents=True, exist_ok=True)
+        env["XDG_CONFIG_HOME"] = str(xdg_config)
+        env["XDG_STATE_HOME"] = str(xdg_state)
+        env["XDG_DATA_HOME"] = str(xdg_data)
+        env["XDG_CACHE_HOME"] = str(xdg_cache)
         if os.name == "nt":
             # Windows nalar reads %APPDATA%/nalar/config.json
             # (Config.zig windows branch) — NOT HOME/.config. Point
-            # the child's APPDATA/LOCALAPPDATA/USERPROFILE/XDG_* at
+            # the child's APPDATA/LOCALAPPDATA/USERPROFILE at
             # the tempdir (mirroring FunctionalHarness.boot); without
             # this the binary reads/writes the REAL %APPDATA% config
             # and the seeded file is invisible (all 4 tests fail +
@@ -122,21 +141,9 @@ def preboot(default_nalar_bin):
             appdata_local = temp_dir / "AppData" / "Local"
             (appdata_roaming / "nalar").mkdir(parents=True, exist_ok=True)
             appdata_local.mkdir(parents=True, exist_ok=True)
-            xdg_config = temp_dir / ".config"
-            xdg_state = temp_dir / ".local" / "state"
-            xdg_data = temp_dir / ".local" / "share"
-            xdg_cache = temp_dir / ".cache"
-            xdg_config.mkdir(parents=True, exist_ok=True)
-            xdg_state.mkdir(parents=True, exist_ok=True)
-            xdg_data.mkdir(parents=True, exist_ok=True)
-            xdg_cache.mkdir(parents=True, exist_ok=True)
             env["USERPROFILE"] = str(temp_dir)
             env["APPDATA"] = str(appdata_roaming)
             env["LOCALAPPDATA"] = str(appdata_local)
-            env["XDG_CONFIG_HOME"] = str(xdg_config)
-            env["XDG_STATE_HOME"] = str(xdg_state)
-            env["XDG_DATA_HOME"] = str(xdg_data)
-            env["XDG_CACHE_HOME"] = str(xdg_cache)
         proc = subprocess.Popen(
             [str(bin_path), "--port", str(chosen_port)],
             stdout=log_file,
