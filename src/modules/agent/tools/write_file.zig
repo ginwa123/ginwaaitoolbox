@@ -1379,7 +1379,12 @@ test "parentDirToCreate: a drive-root file resolves to the drive root on Windows
 // drive-root path must succeed rather than fail inside createDirPath.
 test "writeFile: create_with_dir succeeds for a file in the drive root on Windows" {
     if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
-    const target = try std.fmt.allocPrint(std.testing.allocator, "C:\\nalar_wf_test_{d}.txt", .{@as(u32, @truncate(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds))});
+    // `std.Io.Timestamp.nanoseconds` is `i96`, and `@truncate` refuses a
+    // signed source ("expected unsigned integer type, found 'i96'"), so
+    // reinterpret it unsigned first and keep the low 32 bits.
+    const now_ns = std.Io.Timestamp.now(std.testing.io, .real).nanoseconds;
+    const unique = @as(u32, @truncate(@as(u96, @bitCast(now_ns))));
+    const target = try std.fmt.allocPrint(std.testing.allocator, "C:\\nalar_wf_test_{d}.txt", .{unique});
     defer std.testing.allocator.free(target);
     defer std.Io.Dir.cwd().deleteFile(std.testing.io, target) catch {};
 
