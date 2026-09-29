@@ -36,6 +36,7 @@ test {
     _ = @import("on_event_sent_design.zig"); // Phase 2 — inlined 5 tests from on_event_sent_design_test.zig
     _ = @import("inherited_context.zig"); // Phase 3 — inlined tests from inherited_context_test.zig
     _ = @import("agent_memories.zig"); // Phase 3 — inlined tests from agent_memories_test.zig
+    _ = @import("skill_evals_db.zig"); // Skill Evals — usage ledger writers + parsing
     _ = @import("session_plan.zig"); // 2026-08-19-session-plan-agent-tool — inlined 6 tests from session_plan_test.zig
     _ = @import("retry_delay_ms.zig"); // inlined 1 stress test from retry_delay_ms_race_test.zig
     _ = @import("prompts_make_plan_context.zig"); // inlined 3 live-DB tests from prompts_make_plan_context_test.zig
