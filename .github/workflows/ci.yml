@@ -1363,6 +1363,32 @@ jobs:
             (Win key -> "Nalar"). `-Uninstall` removes it again.
             Install both binaries with
             `sudo scripts/install-nalar-desktop.sh` after downloading.
+            Android ships `Nalar-android-debug.apk` -- the Kotlin/Compose
+            client from src/apps/android_mobile, minSdk 26 (Android 8.0),
+            signed with the auto-generated Android SDK debug key. It is
+            the DEBUG variant because no release keystore is committed and
+            none is configured, so a release-signed apk cannot be built
+            from this repo; `-debug` in the asset name and this sentence
+            are the disclosure. Play Protect will warn, and this apk
+            cannot later be upgraded by a properly-signed one without an
+            uninstall first (Android refuses an upgrade whose signing key
+            differs). It is a real client, not a stub -- the API host is
+            compiled in (BuildConfig.API_BASE_URL) and, with no
+            `-PnalarBaseUrl` override, points at
+            https://agent.ginwa.site, the same host a release build would
+            use, so sign in with your nalar account. The apk does NOT ship
+            or start a server: run nalar somewhere, and this app talks to
+            it. Install with `adb install Nalar-android-debug.apk` (device
+            connected, USB debugging on), or copy the file to the phone and
+            open it, allowing "install unknown apps" for whatever handles
+            the tap. To aim it at a nalar on your own machine instead,
+            rebuild with `-PnalarBaseUrl=http://10.0.2.2:<port>` -- that
+            address is the emulator's alias for the host's loopback, which
+            is how the app reaches a server bound to 127.0.0.1 -- or use
+            `adb reverse tcp:<port> tcp:<port>`. Either route is plain
+            HTTP, which only the debug variant allows: its network
+            security config permits cleartext to 10.0.2.2, localhost and
+            127.0.0.1 and refuses it everywhere else.
           prerelease: true
           make_latest: false
           files: bin-stage-${{ matrix.target.zig }}/*
@@ -1900,3 +1926,181 @@ jobs:
             src/apps/android_mobile/app/build/reports/
           if-no-files-found: ignore
           retention-days: 7
+
+  android-apk:
+    # Builds the Android client and publishes its apk onto the SAME rolling
+    # `ci-latest` release the backend matrix fills, so one page carries the
+    # desktop binaries and the phone client.
+    #
+    # A SEPARATE job rather than a fourth cell in the backend matrix. Those
+    # cells are `include`-only COMPLETE cells, and every downstream step reads
+    # `matrix.target.zig` / `matrix.target.step` (cache key, staging dir name,
+    # release asset glob, the `!= '__SKIP__'` smoke-test gate). An Android
+    # entry would have to invent a zig triple to keep that shape, and the
+    # triple would be a lie -- nothing here is built by zig. The toolchain
+    # argues the same way: JDK 17 + Gradle + the Android SDK are only worth
+    # standing up on ubuntu-24.04, and a fourth cell would drag that install
+    # onto macos-15 and windows-2022 as well for no build that could use it.
+    name: android-apk (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    # Same reason the backend job asks for it: softprops/action-gh-release
+    # needs write access to contents to create or update the release, and the
+    # workflow default is `contents: read`. Job-level, like backend's, so the
+    # other jobs are unaffected.
+    permissions:
+      contents: write
+    # ORDERING, and the reason this is a `needs:` successor rather than a
+    # fourth CONCURRENT publisher aimed at the same tag. A GitHub Release is
+    # a single row: `name`, `body` and the asset set are last-writer-wins
+    # across publishers, and softprops/action-gh-release@v2 takes no lock
+    # over the tag.
+    #
+    # v2 does now recover from a lost create race -- a 422 whose error code is
+    # `already_exists` makes it log "race condition detected" and retry into
+    # the update path -- so a fourth concurrent publisher would not hard-fail
+    # the job. It is worse than that: the loser then UPDATES the release with
+    # its own config, so the release page's text becomes a function of which
+    # job happened to finish last. The three backend cells can afford exactly
+    # that, because all three send the same body. This job would not.
+    #
+    # `needs: backend` makes it run strictly after the whole matrix, so it is
+    # always the last writer and always writes only an asset (it sends no
+    # `body:` and no `name:` at all -- see the publish step), and the release
+    # already exists before the apk lands, so the page can never show an apk
+    # with no install instructions on it.
+    #
+    # The trade-off, stated rather than hidden: a red cell in the backend
+    # matrix keeps this apk unpublished too. That is the honest behaviour for
+    # a "latest GREEN main build" release, and it is how the desktop assets
+    # are already gated -- each by its own cell's success. Relax it to
+    # `if: always() && needs.backend.result != 'cancelled'` if the apk should
+    # ride along on a partial-green run; the ordering argument above holds
+    # either way, because `always()` still waits for the matrix to finish.
+    needs: backend
+    # A cold Gradle distribution download plus the whole AndroidX/Compose
+    # dependency graph. Well inside this, and short of the default 360 so a
+    # wedged dependency resolver releases the machine instead of sitting on
+    # it for six hours.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        # Load-bearing, not cosmetic, and the failure is undiagnosable: AGP
+        # 8.7.3 rejects a newer JDK and aborts with a bare version number and
+        # no stack trace -- on a machine defaulting to JDK 27 the entire error
+        # message is `27`.
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        # `packages` is load-bearing for the same reason as in
+        # android-functional-test: without it the action runs
+        # `sdkmanager tools`, and Google removed that package, so sdkmanager
+        # exits 1 with "Failed to find package 'tools'".
+        # platforms;android-35 matches compileSdk = 35. build-tools;35.0.0 is
+        # what actually assembles and signs the apk -- aapt2, zipalign and
+        # apksigner all come from there, and nothing else in this job
+        # produces a package.
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+
+      - name: Set up Gradle
+        # Caches the distribution AND the dependency graph, so the second run
+        # of this job does not re-download the AndroidX/Compose tree.
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the debug APK
+        # `assembleDebug`, not `assembleRelease`. There is no release
+        # keystore in this repository and no signing secret configured, so
+        # `:app:assembleRelease` yields an UNSIGNED apk that Android refuses
+        # to install -- worse than useless on a release page, because it
+        # looks like the artifact. Generating a keystore here would be worse
+        # still: the SDK debug key is a well-known throwaway anyone can sign
+        # with, and calling that "signed" would be a distinction without a
+        # difference. So the apk is debug-signed, the ASSET NAME says
+        # `-debug`, and the release body says it in words.
+        #
+        # No `-PnalarBaseUrl`, on purpose: with the property absent the debug
+        # variant falls back to the production host (app/build.gradle.kts), so
+        # this apk talks to the same https://agent.ginwa.site a release build
+        # would -- which is what makes it worth publishing to anyone. Passing
+        # 10.0.2.2 here would bake a host that only means anything on a CI
+        # emulator into the file every downloader gets.
+        #
+        # `./gradlew` is committed mode 100755, so it runs without a chmod
+        # step, and `--console=plain` is what the functional Android suite
+        # already passes, so the two Gradle invocations in this workflow
+        # produce comparable logs.
+        #
+        # No `ci-install-linux-deps.sh` call: that script installs the
+        # webview2 / sqlite / GTK / PostgreSQL stack that the ZIG build links.
+        # Everything this build needs is the JDK plus the SDK packages above.
+        working-directory: src/apps/android_mobile
+        shell: bash
+        run: ./gradlew :app:assembleDebug --console=plain
+
+      - name: Stage the debug APK
+        # Its own staging dir, matching the backend's `bin-stage-<triple>`
+        # convention: four jobs publish to one release, and a shared
+        # directory is a filename collision waiting for the first target
+        # triple that repeats.
+        #
+        # Renamed on the way in, because the asset name is the only place the
+        # debug-vs-release distinction survives once `app-debug.apk` is on
+        # someone's phone. `Nalar-` (capital) because this is the installable
+        # app bundle, the same role `Nalar-aarch64-macos.zip` plays for
+        # Nalar.app; the lowercase `nalar-*` names all describe binaries you
+        # run in a terminal, which is not what an apk is.
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="src/apps/android_mobile/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$src" ]; then
+            echo "✗ $src missing -- :app:assembleDebug produced no apk" >&2
+            exit 1
+          fi
+          stage="bin-stage-android"
+          mkdir -p "$stage"
+          cp "$src" "$stage/Nalar-android-debug.apk"
+          ls -l "$stage"
+
+      - name: Publish the APK to the rolling ci-latest release
+        # Same release, same tag, same event gate as the backend job: a PR
+        # builds and stages but never publishes -- zero quota usage, and a
+        # pull_request from a fork has no write token at all. A broken Android
+        # build SHOULD still go red on a PR, which is why the gate is on this
+        # step and not on the job.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          # `prerelease` / `make_latest` are spelled out rather than left
+          # implicit. Neither input has a `default:` in the action's action.yml,
+          # so omitting `prerelease` makes v2 inherit it from the existing
+          # release (`config.input_prerelease !== undefined ? ... :
+          # existingRelease.prerelease`) and omitting `make_latest` sends
+          # nothing at all. Both are harmless in the update path and both are
+          # guesses in the CREATE path, so this job says what it means and
+          # cannot become the one that decides whether the rolling release is
+          # still a prerelease. (The create path is unreachable from here --
+          # see the ordering comment on `needs:` -- but "unreachable" is a
+          # fact about a dependency, not a reason to leave a flag implicit.)
+          prerelease: true
+          make_latest: false
+          # NO `body:` and NO `name:` here, and that omission is load-bearing.
+          # In v2's update path the body is `workflowBody || existingBody`
+          # and the name is `config.input_name || existingRelease.name`, so an
+          # unset body leaves the desktop install instructions exactly where
+          # they are. Sending one would be the bug: the LAST publisher's text
+          # wins, this job publishes after the backend cells, and an
+          # android-only body would replace every desktop install
+          # instruction on the page. That is also why the Android section
+          # lives in the backend job's `body:` next to the assets it
+          # describes, and why this step contributes the asset and nothing
+          # else.
+          files: bin-stage-android/*
