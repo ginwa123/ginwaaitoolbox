@@ -46,7 +46,7 @@
 //!   / `child.stderr` are set to `null` before anything else happens, so
 //!   std's `childCleanupPosix` has nothing to close and `closeFd` can
 //!   never abort. The descriptors are closed exactly once, by
-//!   [`closeTolerant`], which swallows every errno.
+//!   [`closeTolerant`], which swallows every failure.
 //! - **Drains stdout and stderr concurrently**, on one thread each, so
 //!   neither pipe can fill up and block the child.
 //! - **Bounds the run with a deadline.** On expiry the child is killed
@@ -85,11 +85,27 @@ const posix_process_groups = switch (builtin.os.tag) {
     else => true,
 };
 
+/// "This pipe does not exist" for a [`std.Io.File.Handle`].
+///
+/// The handle type is `fd_t` (an `i32`) on POSIX, so `-1` is the
+/// natural invalid value, but it is a `HANDLE` (a `*anyopaque`) on
+/// Windows, where the conventional invalid value is
+/// `INVALID_HANDLE_VALUE`. One literal cannot spell both, so the
+/// sentinel is a per-OS comptime constant; anything that wants to
+/// compare a handle against "none" must compare against this, never
+/// against a hard-coded `-1`.
+const no_handle: std.Io.File.Handle = switch (builtin.os.tag) {
+    .windows => std.os.windows.INVALID_HANDLE_VALUE,
+    else => -1,
+};
+
 /// Output + exit status of a finished child. Both buffers are owned by
 /// the caller; release them with [`Result.deinit`].
 pub const Result = struct {
     /// How the child terminated. When `timed_out` is true this is the
-    /// signal we sent to stop it, not a self-reported exit.
+    /// termination WE forced, not a self-reported one: `.signal` with
+    /// `KILL` on POSIX, `.unknown` on Windows (whose `Child.kill` is
+    /// `TerminateProcess` and reports no signal).
     term: std.process.Child.Term,
     /// Captured stdout, at most `Options.max_output_bytes` long.
     stdout: []u8,
@@ -136,18 +152,32 @@ pub const RunError = std.mem.Allocator.Error ||
 /// close exactly once, being defensive is the whole point: a
 /// double-close must degrade to "leak one fd", never to "kill the
 /// server". See the module doc for the crash this replaces.
-fn closeTolerant(fd: std.posix.fd_t) void {
-    if (fd < 0) return;
-    while (true) {
-        switch (std.posix.errno(std.posix.system.close(fd))) {
-            // A signal arrived mid-close; POSIX says the descriptor may
-            // or may not have been released, so retrying is the only way
-            // to be sure. (Zig's own closeFd treats INTR as success; for
-            // a best-effort close either is acceptable, and retrying
-            // risks closing a recycled descriptor, so match std here.)
-            .INTR => return,
-            else => return,
-        }
+fn closeTolerant(handle: std.Io.File.Handle) void {
+    if (handle == no_handle) return;
+    // `builtin.os.tag` is comptime-known, so only the taken branch is
+    // ever analysed: the POSIX body never has to typecheck on Windows
+    // and the Windows body never has to link on POSIX.
+    switch (builtin.os.tag) {
+        .windows => {
+            // Same call `Io.Threaded.fileClose` makes on Windows, and
+            // already void/tolerant there. Calling it ourselves is
+            // still the right move: it documents that this descriptor
+            // is OURS, and it stays correct if std ever routes Windows
+            // through the aborting `closeFd` too.
+            std.os.windows.CloseHandle(handle);
+        },
+        else => {
+            switch (std.posix.errno(std.posix.system.close(handle))) {
+                // A signal arrived mid-close; POSIX says the descriptor
+                // may or may not have been released, so retrying is the
+                // only way to be sure. (Zig's own closeFd treats INTR as
+                // success; for a best-effort close either is
+                // acceptable, and retrying risks closing a recycled
+                // descriptor, so match std here.)
+                .INTR => {},
+                else => {},
+            }
+        },
     }
 }
 
@@ -268,9 +298,9 @@ pub fn run(
     // `closeFd` -> `unreachable` path is unreachable. This is the fix
     // for the process-wide SIGABRT.
     const child_pid = child.id;
-    const out_fd = if (child.stdout) |f| f.handle else -1;
+    const out_handle = if (child.stdout) |f| f.handle else no_handle;
     child.stdout = null;
-    const err_fd = if (child.stderr) |f| f.handle else -1;
+    const err_handle = if (child.stderr) |f| f.handle else no_handle;
     child.stderr = null;
     // `.stdin = .ignore` means no stdin pipe, but be explicit so a
     // future options change cannot resurrect the same hazard.
@@ -284,16 +314,16 @@ pub fn run(
     defer gpa.destroy(out);
     const errs = gpa.create(Drain) catch return error.OutOfMemory;
     defer gpa.destroy(errs);
-    out.* = .{ .gpa = gpa, .io = io, .file = .{ .handle = out_fd, .flags = .{ .nonblocking = false } }, .cap = opts.max_output_bytes };
-    errs.* = .{ .gpa = gpa, .io = io, .file = .{ .handle = err_fd, .flags = .{ .nonblocking = false } }, .cap = opts.max_output_bytes };
+    out.* = .{ .gpa = gpa, .io = io, .file = .{ .handle = out_handle, .flags = .{ .nonblocking = false } }, .cap = opts.max_output_bytes };
+    errs.* = .{ .gpa = gpa, .io = io, .file = .{ .handle = err_handle, .flags = .{ .nonblocking = false } }, .cap = opts.max_output_bytes };
     defer {
         // Only reached when we DID join the threads (or when the spawn
         // of a thread failed and we drained inline), so this frees the
         // captured bytes exactly once.
         if (!out.orphaned) out.release();
         if (!errs.orphaned) errs.release();
-        closeTolerant(out_fd);
-        closeTolerant(err_fd);
+        closeTolerant(out_handle);
+        closeTolerant(err_handle);
     }
 
     // Concurrent drain. Two independent pipes means neither can fill up
@@ -323,12 +353,18 @@ pub fn run(
         // the pipes open, then `kill` (which also reaps, and asserts
         // the pipes are detached — they are). After it returns
         // `child.id` is null and `child.wait` must not be called.
-        if (own_pg) {
-            if (child_pid) |pid| {
-                // Negative pid targets the process group. The pid is
-                // still reserved (the child is unreaped), so there is no
-                // reuse hazard here.
-                std.posix.kill(-pid, .KILL) catch {};
+        // `posix_process_groups` is a comptime constant, so on Windows
+        // this block is dropped before `std.posix.kill` is analysed —
+        // and it must be dropped, since there is no process group to
+        // kill and no negative pid to pass.
+        if (posix_process_groups) {
+            if (own_pg) {
+                if (child_pid) |pid| {
+                    // Negative pid targets the process group. The pid is
+                    // still reserved (the child is unreaped), so there is no
+                    // reuse hazard here.
+                    std.posix.kill(-pid, .KILL) catch {};
+                }
             }
         }
         child.kill(io);
@@ -351,7 +387,7 @@ pub fn run(
     const result: Result = .{
         .term = if (timed_out)
             // We chose this term; the child never got to report one.
-            .{ .signal = signalForKill() }
+            termForKill()
         else
             // Safe to call: pipes are detached so `childCleanupPosix`
             // has nothing to close.
@@ -369,9 +405,20 @@ fn bothDone(out: *const Drain, errs: *const Drain) bool {
     return out.finished.load(.acquire) and errs.finished.load(.acquire);
 }
 
-fn signalForKill() std.posix.SIG {
-    if (builtin.os.tag == .windows) return @enumFromInt(0);
-    return std.posix.SIG.KILL;
+/// The [`Result.term`] we report when WE killed the child on the
+/// deadline path. The child never got to report a termination, so
+/// there is no real one to describe.
+fn termForKill() std.process.Child.Term {
+    return switch (builtin.os.tag) {
+        // Windows `Child.kill` is `TerminateProcess`: there is no
+        // signal, and `Child.wait` never yields `.signal` there either
+        // (it reports `.exited` from the process exit status, or
+        // `.unknown` when the query fails). `.unknown` is both honest
+        // and legal — the old `@enumFromInt(0)` spelled an out-of-range
+        // value for `std.c.SIG`'s exhaustive enum, which traps in Debug.
+        .windows => .{ .unknown = 0 },
+        else => .{ .signal = std.posix.SIG.KILL },
+    };
 }
 
 // ===== Tests =====
@@ -517,7 +564,18 @@ test "run: honours cwd" {
     const gpa = testing.allocator;
     var r = try run(gpa, testing.io, &.{ SH, "-c", "pwd" }, .{ .cwd = "/tmp" });
     defer r.deinit(gpa);
-    try testing.expectEqualStrings("/tmp\n", r.stdout);
+
+    // Assert against the CANONICAL form of the directory we asked for,
+    // not the literal string we passed in. `pwd` reports the physical
+    // path, and on macOS `/tmp` is a symlink to `/private/tmp` — so the
+    // child is in exactly the right directory while the literal "/tmp"
+    // is the wrong expectation. That mismatch is a macOS-only CI
+    // failure; resolving both sides tests the actual contract (the cwd
+    // we asked for is the cwd the child got) on every platform.
+    const canonical_tmp = try std.Io.Dir.realPathFileAbsoluteAlloc(testing.io, "/tmp", gpa);
+    defer gpa.free(canonical_tmp);
+
+    try testing.expectEqualStrings(canonical_tmp, std.mem.trimEnd(u8, r.stdout, "\r\n"));
 }
 
 test "run: non-UTF8 bytes survive capture" {
