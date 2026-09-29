@@ -5,8 +5,8 @@
 //! docs/superpowers/plans/2026-08-23-model-thinking.md).
 //!
 //! Both helpers are pure and side-effect-free — no allocations, no
-//! global state — so they're trivially testable in isolation (see
-//! `parse_thinking_test.zig`).
+//! global state — so they're trivially testable in isolation (see the
+//! `test` blocks at the bottom of this file).
 //!
 //! ## Why a separate file?
 //!
@@ -95,4 +95,79 @@ pub fn parseReasoningEffort(raw: []const u8) ReasoningEffortError![]const u8 {
     if (std.mem.eql(u8, raw, "high")) return "high";
     if (std.mem.eql(u8, raw, "auto")) return "auto";
     return error.InvalidReasoningEffort;
+}
+
+// ===== Tests merged from parse_thinking_test.zig (2026-09-29 flatten) =====
+// Tests for parse_thinking.zig — pure helpers `parseThinkingString` and
+// `parseReasoningEffort`. Cover the new UI semantics (Auto / On / Off)
+// plus the legacy string->bool mapping (true / false / auto).
+//
+// Like the rest of the config module, this file is reached via a
+// `_ = @import("parse_thinking.zig");` line in Config.zig.
+
+const testing = std.testing;
+
+test "parseThinkingString auto -> null (inherit)" {
+    try testing.expectEqual(@as(?bool, null), try parseThinkingString("auto"));
+}
+
+test "parseThinkingString on -> true (extended reasoning enabled)" {
+    try testing.expectEqual(@as(?bool, true), try parseThinkingString("on"));
+}
+
+test "parseThinkingString off -> false (extended reasoning disabled)" {
+    try testing.expectEqual(@as(?bool, false), try parseThinkingString("off"));
+}
+
+test "parseThinkingString true -> true (legacy UI wrote boolean strings)" {
+    try testing.expectEqual(@as(?bool, true), try parseThinkingString("true"));
+}
+
+test "parseThinkingString false -> false (legacy)" {
+    try testing.expectEqual(@as(?bool, false), try parseThinkingString("false"));
+}
+
+test "parseThinkingString empty -> null (auto)" {
+    try testing.expectEqual(@as(?bool, null), try parseThinkingString(""));
+}
+
+test "parseThinkingString garbage -> error.InvalidThinkingMode" {
+    try testing.expectError(error.InvalidThinkingMode, parseThinkingString("maybe"));
+}
+
+test "parseThinkingString leading whitespace stripped" {
+    // Defensive: tolerate one accidental leading space (frontend types
+    // shouldn't carry whitespace, but a hand-edited config.json might).
+    try testing.expectEqual(@as(?bool, true), try parseThinkingString(" on"));
+    try testing.expectEqual(@as(?bool, false), try parseThinkingString("off "));
+}
+
+test "parseReasoningEffort low" {
+    try testing.expectEqualStrings("low", try parseReasoningEffort("low"));
+}
+
+test "parseReasoningEffort medium" {
+    try testing.expectEqualStrings("medium", try parseReasoningEffort("medium"));
+}
+
+test "parseReasoningEffort high" {
+    try testing.expectEqualStrings("high", try parseReasoningEffort("high"));
+}
+
+test "parseReasoningEffort auto" {
+    try testing.expectEqualStrings("auto", try parseReasoningEffort("auto"));
+}
+
+test "parseReasoningEffort empty -> auto" {
+    try testing.expectEqualStrings("auto", try parseReasoningEffort(""));
+}
+
+test "parseReasoningEffort garbage -> error.InvalidReasoningEffort" {
+    try testing.expectError(error.InvalidReasoningEffort, parseReasoningEffort("super"));
+}
+
+test "parseReasoningEffort is case-sensitive (Anthropic / OpenAI treat LOW/low the same but we do NOT silently lowercase)" {
+    // The frontend always sends lowercase; we accept only lowercase.
+    // Uppercase would surface as an error so the user notices a misconfig.
+    try testing.expectError(error.InvalidReasoningEffort, parseReasoningEffort("LOW"));
 }

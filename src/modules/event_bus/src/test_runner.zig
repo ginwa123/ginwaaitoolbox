@@ -10,10 +10,14 @@
 //!
 //! Using a dedicated test_runner.zig avoids the cycle that would arise
 //! if `event.zig` itself contained a `test { _ = @import(...) }` block
-//! referencing `event_test.zig` (which in turn imports `event.zig`).
+//! importing itself.
 //! The test_runner.zig file only contains a `test {...}` block; it
 //! has no other dependencies, so there's nothing to cycle.
 
 test {
-    _ = @import("event_test.zig");
+    // 2026-09-29 flatten: event_test.zig was merged inline into event.zig.
+    // Importing the implementation file (not the test file) is what keeps
+    // those tests discoverable, and this runner still holds no other
+    // dependency, so the cycle the header describes stays avoided.
+    _ = @import("event.zig");
 }

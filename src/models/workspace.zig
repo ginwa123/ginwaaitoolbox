@@ -57,3 +57,66 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .position = self.position,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "workspace: init + deinit + field access" {
+    var w = try init(testing.allocator, .{
+        .id = "ws_1",
+        .name = "My Workspace",
+        .position = 5,
+    });
+    defer deinit(&w, testing.allocator);
+
+    // External callers can read fields directly (file-level struct).
+    try testing.expectEqualStrings("ws_1", w.id);
+    try testing.expectEqualStrings("My Workspace", w.name);
+    try testing.expectEqual(@as(i64, 5), w.position);
+    try testing.expect(w.created_at == null);
+    try testing.expect(w.updated_at == null);
+}
+
+test "workspace: clone produces independent copy" {
+    var original = try init(testing.allocator, .{
+        .id = "ws_1",
+        .name = "Original",
+    });
+    defer deinit(&original, testing.allocator);
+
+    var copy = try clone(&original, testing.allocator);
+    defer deinit(&copy, testing.allocator);
+
+    try testing.expectEqualStrings("ws_1", copy.id);
+    try testing.expectEqualStrings("Original", copy.name);
+    // Deep copy — different backing allocations.
+    try testing.expect(original.id.ptr != copy.id.ptr);
+    try testing.expect(original.name.ptr != copy.name.ptr);
+}
+
+test "every model: clone is deep copy with distinct pointers" {
+    var w = try init(testing.allocator, .{
+        .id = "ws_1",
+        .name = "Original",
+        .position = 1,
+    });
+    defer deinit(&w, testing.allocator);
+
+    var copy = try clone(&w, testing.allocator);
+    defer deinit(&copy, testing.allocator);
+
+    // Strings point to different heap allocations.
+    try testing.expect(w.id.ptr != copy.id.ptr);
+    try testing.expect(w.name.ptr != copy.name.ptr);
+    // But have equal contents.
+    try testing.expectEqualStrings(w.id, copy.id);
+    try testing.expectEqualStrings(w.name, copy.name);
+}

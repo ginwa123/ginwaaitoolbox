@@ -98,3 +98,38 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .count = self.count,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "log: init + deinit with unix-ms timestamp" {
+    var l = try init(testing.allocator, .{
+        .id = "log_1",
+        .created_at = 1786000000000,
+        .level = "error",
+        .kind = "console_error",
+        .message = "Something broke",
+        .stack = "Error: foo\n  at bar.js:1:1",
+        .line = 42,
+        .route_path = "/workspaces",
+        .session_id = "session_1",
+        .count = 3,
+    });
+    defer deinit(&l, testing.allocator);
+
+    try testing.expectEqual(@as(i64, 1786000000000), l.created_at);
+    try testing.expectEqualStrings("error", l.level);
+    try testing.expectEqualStrings("console_error", l.kind);
+    try testing.expectEqualStrings("Something broke", l.message);
+    try testing.expectEqualStrings("Error: foo\n  at bar.js:1:1", l.stack.?);
+    try testing.expectEqual(@as(i64, 42), l.line.?);
+    try testing.expectEqual(@as(i64, 3), l.count);
+}

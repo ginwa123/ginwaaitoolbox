@@ -75,10 +75,10 @@
 //! Every static-contract test that does multi-line literal matching.
 //! Examples that MUST use this helper:
 //!
-//!   - `src/http_handlers/git_status_test.zig`
-//!   - `src/modules/agent/tools/set_git_worktree_test.zig`
-//!   - `src/http_handlers/kanban_*_test.zig`
-//!   - any other `*_test.zig` that uses `indexOf` on a multi-line
+//!   - the inline tests at the bottom of `src/http_handlers/git_status.zig`
+//!   - the inline tests in `src/modules/agent/tools/set_git_worktree.zig`
+//!   - the inline tests in `src/http_handlers/kanban_*.zig`
+//!   - any other static-contract test that uses `indexOf` on a multi-line
 //!     literal against source bytes.
 //!
 //! ## When this bites
@@ -145,6 +145,32 @@ pub fn normalizeLineEndings(allocator: std.mem.Allocator, source: []const u8) ![
     return out[0..dst];
 }
 
+// ─── The impl/tests boundary ───────────────────────────────────────────────
+
+/// The first marker a test suite carries once it is merged into its
+/// implementation file. Must stay byte-identical to the marker the 2026-09-29
+/// flatten writes (`// ===== Tests merged from <file> (YYYY-MM-DD flatten) =====`).
+pub const merged_tests_marker = "// ===== Tests merged from";
+
+/// Slice a source file down to its IMPLEMENTATION half: everything before the
+/// first `merged_tests_marker`.
+///
+/// A static-contract test greps its own file's source for a needle. Before the
+/// tests moved inline that was safe, because the needles lived only in the
+/// impl. After the merge the test is physically inside the file it greps, so
+/// every "this must NOT appear" / "this must appear exactly once" assertion
+/// finds its own source and passes or fails for the wrong reason. Slicing at
+/// the marker restores "the impl, without its tests".
+///
+/// The returned buffer is heap-allocated and owned by the caller; `source` is
+/// read-only. A file with no marker comes back as a plain dupe, so callers can
+/// use this unconditionally on any source file.
+pub fn implementationOnly(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const end = std.mem.indexOf(u8, source, merged_tests_marker) orelse source.len;
+    return try allocator.dupe(u8, source[0..end]);
+}
+
+
 // ─── Tests for the helper itself ────────────────────────────────────────────
 
 test "normalizeLineEndings: LF input unchanged" {
@@ -201,4 +227,41 @@ test "normalizeLineEndings: lone \\n (Unix) and \\r\\n (Windows) coexist" {
     const result = try normalizeLineEndings(allocator, input);
     defer allocator.free(result);
     try std.testing.expectEqualStrings(expected, result);
+}
+
+test "implementationOnly: file with no marker is returned whole" {
+    const allocator = std.testing.allocator;
+    const input = "pub fn a() void {}\n";
+    const result = try implementationOnly(allocator, input);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(input, result);
+}
+
+test "implementationOnly: truncates at the first merged-tests marker" {
+    const allocator = std.testing.allocator;
+    const input =
+        "pub fn a() void {}\n" ++
+        merged_tests_marker ++
+        " x_test.zig (2026-09-29 flatten) =====\n" ++
+        "test \"a still calls a\" { _ = a; }\n" ++
+        merged_tests_marker ++
+        " y_test.zig (2026-09-29 flatten) =====\n" ++
+        "test \"b\" {}\n";
+    const result = try implementationOnly(allocator, input);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("pub fn a() void {}\n", result);
+}
+
+test "implementationOnly: the test half is what it removes" {
+    const allocator = std.testing.allocator;
+    const input =
+        "pub fn a() void {}\n" ++
+        merged_tests_marker ++
+        " x_test.zig (2026-09-29 flatten) =====\n" ++
+        "const needle = \"needle\";\n";
+    const result = try implementationOnly(allocator, input);
+    defer allocator.free(result);
+    // The point of the helper: a needle that only appears in the test half
+    // must NOT be findable in the sliced result.
+    try std.testing.expect(std.mem.indexOf(u8, result, "needle") == null);
 }

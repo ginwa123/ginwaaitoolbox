@@ -71,3 +71,31 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .status = self.status,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "session_background_process: init + deinit" {
+    var p = try init(testing.allocator, .{
+        .session_id = "session_1",
+        .pid = 12345,
+        .command = "npm run dev",
+        .log_path = "/tmp/dev.log",
+        .started_at = 1786000000,
+        .status = "running",
+    });
+    defer deinit(&p, testing.allocator);
+
+    try testing.expectEqual(@as(i64, 12345), p.pid);
+    try testing.expectEqualStrings("npm run dev", p.command);
+    try testing.expectEqualStrings("/tmp/dev.log", p.log_path);
+    try testing.expectEqualStrings("running", p.status);
+}

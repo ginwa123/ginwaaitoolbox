@@ -1,9 +1,9 @@
 
 test {
-    _ = @import("routines/model_test.zig");
-    _ = @import("routines/cron_test.zig");
-    _ = @import("routines/fire_test.zig");
-    _ = @import("routines/scheduler_test.zig");
+    _ = @import("routines/model.zig");
+    _ = @import("routines/cron.zig");
+    _ = @import("routines/fire.zig");
+    _ = @import("routines/Scheduler.zig");
     // Inline retry-loop hygiene tests (CallResponse deinit, literal-free
     // errdefer, stale retry-cause capture) live in workflow.zig itself —
     // registered here so zig build test actually runs them.
@@ -76,19 +76,16 @@ _ = @import("../../http_handlers/local_memories_create.zig");
 _ = @import("../../http_handlers/local_memories_update.zig");
 _ = @import("../../http_handlers/local_memories_delete.zig");
 _ = @import("../../http_handlers/local_memories_list.zig");
-    // MCP test endpoint (PR #373): inline static-contract tests for route
-    // registration, error mapping, retry guard, and the JSON-safe stderr
-    // sanitizer. Importing the file surfaces the `test "..."` blocks
-    // here to zig build test — mirrors start_agent.zig / session_create.zig.
-    _ = @import("../../http_handlers/mcp_test.zig");
+    // The MCP-probe (PR #373), LLM-probe and OS-notify-probe HTTP handlers
+    // now live at the bottom of http_handlers/mod.zig together with their
+    // static-contract test blocks (the former mcp_test.zig / llm_test.zig /
+    // notify_test.zig). One import surfaces all three; listing them
+    // separately would be three registrations of a single file.
+    _ = @import("../../http_handlers/mod.zig");
     // Browser-mode (web launch) status endpoint (plan
     // 2026-09-10-web-launch-toggle): handler + buildWebUrl unit tests +
-    // static contracts live in the single file, mirroring mcp_test.zig.
+    // static contracts live in the single file.
     _ = @import("../../http_handlers/web_status.zig");
-    // LLM profile Test probe: validation + probe-body builders + reply
-    // parsers + route/export static contracts live in the single file,
-    // mirroring mcp_test.zig above.
-    _ = @import("../../http_handlers/llm_test.zig");
 _ = @import("../../http_handlers/frontend_log_post.zig");
 _ = @import("../../http_handlers/frontend_log_get.zig");
 _ = @import("../../http_handlers/system_folder.zig");
