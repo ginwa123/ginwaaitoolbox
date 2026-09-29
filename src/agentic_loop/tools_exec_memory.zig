@@ -357,3 +357,64 @@ test "execSaveMemory: a session with no resolvable workspace writes to the '' bu
     defer row.deinit(alloc);
     try testing.expectEqualStrings("", row.values[0]);
 }
+
+test "a workspace_id smuggled into the tool payload is ignored — the session still decides" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try linkSessionToWorkspace(alloc, &ctx.db, "sess_alpha", "ws_alpha", "item_alpha");
+    try linkSessionToWorkspace(alloc, &ctx.db, "sess_beta", "ws_beta", "item_beta");
+
+    const alpha_ctx = ctxForSession(alloc, &ctx.db, "sess_alpha");
+    const beta_ctx = ctxForSession(alloc, &ctx.db, "sess_beta");
+
+    // A note in beta, so alpha has something it must NOT be able to reach.
+    const beta_seed = try execSaveMemory(beta_ctx, fakeToolCall("save_memory", "{\"content\":\"beta only: the vault token\"}"));
+    defer if (beta_seed.output_allocated) alloc.free(beta_seed.output);
+    const beta_env = try std.json.parseFromSlice(std.json.Value, alloc, beta_seed.output, .{});
+    defer beta_env.deinit();
+    const beta_id = try alloc.dupe(u8, beta_env.value.object.get("data").?.object.get("id").?.string);
+    defer alloc.free(beta_id);
+
+    // Alpha tries to WRITE into beta by naming it. `ignore_unknown_fields`
+    // drops the key, and the row is filed under alpha's own workspace.
+    const smuggle_save =
+        \\{"content":"alpha tries to plant a note in beta","workspace_id":"ws_beta","workspace":"ws_beta","scope":"ws_beta"}
+    ;
+    const planted = try execSaveMemory(alpha_ctx, fakeToolCall("save_memory", smuggle_save));
+    defer if (planted.output_allocated) alloc.free(planted.output);
+    const planted_env = try std.json.parseFromSlice(std.json.Value, alloc, planted.output, .{});
+    defer planted_env.deinit();
+    try testing.expect(planted_env.value.object.get("success").?.bool);
+    try testing.expectEqualStrings("ws_alpha", planted_env.value.object.get("data").?.object.get("workspace_id").?.string);
+
+    var q = try ctx.db.query(alloc, "SELECT workspace_id FROM agent_memories WHERE content = ?", &.{"alpha tries to plant a note in beta"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("ws_alpha", row.values[0]);
+
+    // Alpha tries to READ beta by naming it — both by search and by id.
+    const smuggle_search =
+        \\{"query":"vault token","workspace_id":"ws_beta"}
+    ;
+    const peek = try execLoadMemory(alpha_ctx, fakeToolCall("load_memory", smuggle_search));
+    defer if (peek.output_allocated) alloc.free(peek.output);
+    const peek_env = try std.json.parseFromSlice(std.json.Value, alloc, peek.output, .{});
+    defer peek_env.deinit();
+    try testing.expectEqual(@as(i64, 0), peek_env.value.object.get("data").?.object.get("count").?.integer);
+
+    const smuggle_id = try std.fmt.allocPrint(
+        alloc,
+        "{{\"id\":\"{s}\",\"workspace_id\":\"ws_beta\"}}",
+        .{beta_id},
+    );
+    defer alloc.free(smuggle_id);
+    const peek_id = try execLoadMemory(alpha_ctx, fakeToolCall("load_memory", smuggle_id));
+    defer if (peek_id.output_allocated) alloc.free(peek_id.output);
+    const peek_id_env = try std.json.parseFromSlice(std.json.Value, alloc, peek_id.output, .{});
+    defer peek_id_env.deinit();
+    try testing.expect(!peek_id_env.value.object.get("success").?.bool);
+}

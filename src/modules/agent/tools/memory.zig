@@ -809,6 +809,55 @@ test "save_memory_tool: parameters include content and tags (no id — append-on
     try testing.expect(!found_id);
 }
 
+// ─── workspace_id is NOT a model-suppliable field (Migration 095) ─────
+//
+// The backend resolves the workspace from `ctx.session_id`; the model
+// never names it. These three assertions exist so a future edit that adds
+// `workspace_id` to a tool schema fails the suite instead of quietly
+// re-opening the cross-workspace read.
+
+test "neither memory tool schema exposes a workspace_id parameter" {
+    for (save_memory_tool.function.parameters.properties) |prop| {
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace_id"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "scope"));
+    }
+    for (load_memory_tool.function.parameters.properties) |prop| {
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace_id"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "scope"));
+    }
+    for (save_memory_tool.function.parameters.required) |r| {
+        try testing.expect(!std.mem.eql(u8, r, "workspace_id"));
+    }
+    for (load_memory_tool.function.parameters.required) |r| {
+        try testing.expect(!std.mem.eql(u8, r, "workspace_id"));
+    }
+}
+
+test "neither *Input struct has a workspace_id field" {
+    // These two literals are the assertion: if someone adds a
+    // `workspace_id` field to either struct, the suite stops BUILDING
+    // rather than quietly accepting a model-supplied scope.
+    const save: SaveMemoryInput = .{ .content = "c", .tags = "t" };
+    const load: LoadMemoryInput = .{ .query = "q" };
+    try testing.expect(save.content.len > 0);
+    try testing.expect(load.query.len > 0);
+
+    // The resolved scope travels as a separate trailing argument, not on
+    // the struct. A struct-literal call site therefore CANNOT forget to
+    // set it — the compiler asks for it. Pinning the signature here makes
+    // that guarantee explicit rather than incidental.
+    comptime {
+        const SaveFn = *const fn (std.mem.Allocator, *sqlite.SqliteBackend, SaveMemoryInput, []const u8) anyerror![]const u8;
+        const LoadFn = *const fn (std.mem.Allocator, *sqlite.SqliteBackend, LoadMemoryInput, []const u8) anyerror![]const u8;
+        const save_fn: SaveFn = &executeSaveMemory;
+        const load_fn: LoadFn = &executeLoadMemory;
+        _ = save_fn;
+        _ = load_fn;
+    }
+}
+
 test "save_memory_tool: returns success JSON payload on insert" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
