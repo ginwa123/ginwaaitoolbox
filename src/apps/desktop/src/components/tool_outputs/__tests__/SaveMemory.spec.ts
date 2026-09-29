@@ -1,19 +1,24 @@
 /**
  * Tests for SaveMemory.vue.
  *
+ * Card layout (the whole point of the component):
+ *   collapsed: `save_memory  <id>  ·  <tag> <tag> <tag> +N  ✓  +`
+ *   expanded:  the same header (it stays visible) + the stored note
+ *   The id and the tags live ONLY in the header — the expanded body must
+ *   not repeat them, because the header is right above it.
+ *
  * Verifies:
  *  - parses the success envelope (id + created_at + updated_at)
- *  - parses the error envelope (<error> tag → red border, no rows)
- *  - header label shows the truncated id + a body preview on success,
- *    "error" on failure
- *  - expanded body is exactly three things: id, tags, content (the
- *    timestamps live in the header hover title, not in rows)
- *  - renders the SAVED BODY + tags from the tool-call args (`parameters`),
+ *  - parses the error envelope (<error> tag → red border, no body)
+ *  - header shows the id + tag chips inline in BOTH states; no body preview
+ *  - the hover title carries the full id, every tag, the note and the
+ *    saved timestamp (the created/updated pair is not rendered as rows)
+ *  - renders the SAVED BODY from the tool-call args (`parameters`),
  *    because `executeSaveMemory` never echoes the note back
  *  - hides `content` from the Arguments block; copy button yields the full
  *    (unclipped) body
  *  - copy-id button is wired to clipboard (jsdom stub) and only present on success
- *  - empty envelope (no id, no timestamps) renders an empty-state hint
+ *  - a result with no body renders an empty-state hint
  *  - click on header toggles expanded state
  */
 import { mount } from '@vue/test-utils'
@@ -64,21 +69,29 @@ const makeErrorContent = (msg = 'content exceeds the 1 MiB per-memory cap') => (
 
 const makeEmptyContent = () => ({})
 
+// The saved note. `executeSaveMemory` deliberately does NOT echo the body
+// back (1 KiB–1 MiB would blow the LLM's context), so the card reads
+// `content` / `tags` from the tool-call args in `parameters`.
+const BODY = 'The user prefers dark mode for the editor and pnpm over npm.'
+const TAGS = 'preferences||user'
+
+const makeParams = (content: string, tags: string | null = TAGS) =>
+  JSON.stringify(tags === null ? { content } : { content, tags })
+
 // ────────────────────────────────────────────────────────────────────────
 // Tests
 // ────────────────────────────────────────────────────────────────────────
 
 describe('SaveMemory.vue — happy path', () => {
-  it('renders the tool name pill + truncated id in the header on success', () => {
+  it('renders the tool name pill + the id in the header on success', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeSuccessContent() },
     })
     expect(wrapper.find('[data-testid="save-memory"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('save_memory')
-    // Header shows the id (full id is 24 chars; within the flex-1 truncate
-    // element, vue's class applies ellipsis at render time but the text
-    // content itself is the full id).
-    expect(wrapper.text()).toContain('mem_aabbccdd11223344')
+    expect(wrapper.find('[data-testid="save-memory-header-id"]').text()).toBe(
+      'mem_aabbccdd11223344',
+    )
     expect(wrapper.text()).toContain('✓')
   })
 
@@ -86,8 +99,6 @@ describe('SaveMemory.vue — happy path', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeSuccessContent() },
     })
-    // Status indicator is the second-to-last span in the header (last is
-    // the +/− toggle). Both should be present.
     expect(wrapper.text()).toContain('✓')
     expect(wrapper.text()).not.toContain('✗')
   })
@@ -118,26 +129,18 @@ describe('SaveMemory.vue — happy path', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeSuccessContent() },
     })
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-memory-body"]').exists()).toBe(false)
   })
 
-  it('renders only the id row when expanded=true (no timestamp rows)', () => {
+  it('never renders timestamps as rows — they live in the hover title', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeSuccessContent(), expanded: true },
     })
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('mem_aabbccdd11223344')
-    // Timestamps are not rows — they moved to the header hover title.
     expect(wrapper.find('[data-testid="save-memory-created-at-row"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="save-memory-updated-at-row"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('2026-08-06 10:00:00')
     expect(wrapper.text()).not.toContain('2026-08-06 10:05:00')
-  })
 
-  it('keeps the saved timestamp reachable in the header hover title', () => {
-    const wrapper = mount(SaveMemory, {
-      props: { content: makeSuccessContent() },
-    })
     const title = wrapper.find('[data-testid="save-memory-header-label"]').attributes('title')
     expect(title).toContain('saved 2026-08-06 10:00:00')
   })
@@ -152,7 +155,7 @@ describe('SaveMemory.vue — error path', () => {
     expect(wrapper.text()).toContain('content exceeds the 1 MiB per-memory cap')
   })
 
-  it('shows the red � status on error', () => {
+  it('shows the red ✗ status on error', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeErrorContent() },
     })
@@ -171,17 +174,14 @@ describe('SaveMemory.vue — error path', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeErrorContent() },
     })
-    // Header text is the flex-1 truncate span — verify it includes
-    // "error" verbatim.
-    expect(wrapper.text()).toContain('error')
+    expect(wrapper.find('[data-testid="save-memory-header-label"]').text()).toBe('error')
     expect(wrapper.text()).not.toContain('mem_')
   })
 
-  it('does not render the id row when in error state', () => {
+  it('does not render the stored body when in error state', () => {
     const wrapper = mount(SaveMemory, {
-      props: { content: makeErrorContent(), expanded: true },
+      props: { content: makeErrorContent(), parameters: makeParams(BODY), expanded: true },
     })
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="save-memory-content-row"]').exists()).toBe(false)
   })
 })
@@ -192,15 +192,13 @@ describe('SaveMemory.vue — expand/collapse interaction', () => {
       props: { content: makeSuccessContent() },
       attachTo: document.body,
     })
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-memory-body"]').exists()).toBe(false)
 
-    // Click header (the role=button div).
     await wrapper.find('[role="button"]').trigger('click')
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="save-memory-body"]').exists()).toBe(true)
 
-    // Click again — collapses.
     await wrapper.find('[role="button"]').trigger('click')
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-memory-body"]').exists()).toBe(false)
   })
 
   it('clicking the copy-id button does NOT toggle expanded state', async () => {
@@ -213,19 +211,19 @@ describe('SaveMemory.vue — expand/collapse interaction', () => {
     expect(clipboardWrites).toEqual(['mem_aabbccdd11223344'])
     // Body still collapsed (the click was stopPropagation'd inside the
     // copy handler, so it didn't bubble to the header).
-    expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-memory-body"]').exists()).toBe(false)
 
     wrapper.unmount()
   })
 })
 
 describe('SaveMemory.vue — empty envelope edge case', () => {
-  it('renders an empty-state hint when envelope has no fields', async () => {
+  it('renders an empty-state hint when there is no body', async () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeEmptyContent(), expanded: true },
     })
     expect(wrapper.find('[data-testid="save-memory-empty"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('no fields in envelope')
+    expect(wrapper.text()).toContain('no content in envelope')
   })
 
   it('still shows ✓ status on an empty envelope (no error tag)', () => {
@@ -237,16 +235,8 @@ describe('SaveMemory.vue — empty envelope edge case', () => {
 })
 
 // ────────────────────────────────────────────────────────────────────────
-// The saved body. `executeSaveMemory` deliberately does NOT echo the
-// stored note back (1 KiB–1 MiB would blow the LLM's context), so the card
-// reads `content` / `tags` from the tool-call args in `parameters`.
+// The saved body.
 // ────────────────────────────────────────────────────────────────────────
-
-const BODY = 'The user prefers dark mode for the editor and pnpm over npm.'
-const TAGS = 'preferences||user'
-
-const makeParams = (content: string, tags: string | null = TAGS) =>
-  JSON.stringify(tags === null ? { content } : { content, tags })
 
 describe('SaveMemory.vue — saved body', () => {
   it('renders the note body from the tool-call args when expanded', () => {
@@ -288,71 +278,6 @@ describe('SaveMemory.vue — saved body', () => {
     )
   })
 
-  it('renders tags as individual chips (|| separated)', () => {
-    const wrapper = mount(SaveMemory, {
-      props: { content: makeSuccessContent(), parameters: makeParams(BODY), expanded: true },
-    })
-    expect(wrapper.find('[data-testid="save-memory-tags-row"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="save-memory-tag-0"]').text()).toBe('preferences')
-    expect(wrapper.find('[data-testid="save-memory-tag-1"]').text()).toBe('user')
-  })
-
-  it('splits tags sent with the | separator the LLM often uses', () => {
-    const wrapper = mount(SaveMemory, {
-      props: {
-        content: makeSuccessContent(),
-        parameters: makeParams(BODY, 'demo|tool-test|nalar'),
-        expanded: true,
-      },
-    })
-    expect(wrapper.findAll('[data-testid^="save-memory-tag-"]')).toHaveLength(3)
-  })
-
-  it('omits the tags row when no tags were sent', () => {
-    const wrapper = mount(SaveMemory, {
-      props: {
-        content: makeSuccessContent(),
-        parameters: makeParams(BODY, null),
-        expanded: true,
-      },
-    })
-    expect(wrapper.find('[data-testid="save-memory-tags-row"]').exists()).toBe(false)
-    // The meta row still renders for the id alone.
-    expect(wrapper.find('[data-testid="save-memory-meta-row"]').exists()).toBe(true)
-  })
-
-  it('puts the id and the tags on ONE row, not two', () => {
-    const wrapper = mount(SaveMemory, {
-      props: { content: makeSuccessContent(), parameters: makeParams(BODY), expanded: true },
-    })
-    const meta = wrapper.find('[data-testid="save-memory-meta-row"]')
-    expect(meta.exists()).toBe(true)
-    // Both halves are children of the same element → one visual line.
-    expect(meta.find('[data-testid="save-memory-id-row"]').exists()).toBe(true)
-    expect(meta.find('[data-testid="save-memory-tags-row"]').exists()).toBe(true)
-    // …and it wraps rather than overflowing.
-    expect(meta.classes()).toContain('flex-wrap')
-    // One line, so both labels appear in the row's own text.
-    expect(meta.text()).toContain('Id:')
-    expect(meta.text()).toContain('Tags:')
-  })
-
-  it('renders the meta row for tags alone when the result has no id', () => {
-    const wrapper = mount(SaveMemory, {
-      props: {
-        content: {},
-        parameters: makeParams(BODY),
-        expanded: true,
-      },
-    })
-    const meta = wrapper.find('[data-testid="save-memory-meta-row"]')
-    expect(meta.exists()).toBe(true)
-    expect(meta.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
-    expect(meta.find('[data-testid="save-memory-tags-row"]').exists()).toBe(true)
-    // Tags are a field — the "no fields" hint must not fire.
-    expect(wrapper.find('[data-testid="save-memory-empty"]').exists()).toBe(false)
-  })
-
   it('shows a size + line-count badge for the body', () => {
     const wrapper = mount(SaveMemory, {
       props: {
@@ -363,32 +288,6 @@ describe('SaveMemory.vue — saved body', () => {
     })
     const badge = wrapper.find('[data-testid="save-memory-content-size"]').text()
     expect(badge).toContain('B · 2 lines')
-  })
-
-  it('previews the body in the header, after the id, on one line', () => {
-    const wrapper = mount(SaveMemory, {
-      props: { content: makeSuccessContent(), parameters: makeParams('line one\nline two') },
-    })
-    const label = wrapper.find('[data-testid="save-memory-header-label"]').text()
-    // Newlines are collapsed so a multi-line note still fits the header row.
-    expect(label).toBe('mem_aabbccdd11223344 · line one line two')
-  })
-
-  it('puts the full body in the header hover title', () => {
-    const wrapper = mount(SaveMemory, {
-      props: { content: makeSuccessContent(), parameters: makeParams(BODY) },
-    })
-    const title = wrapper.find('[data-testid="save-memory-header-label"]').attributes('title')
-    expect(title).toContain(BODY)
-  })
-
-  it('leaves the header as the bare id when there is no body', () => {
-    const wrapper = mount(SaveMemory, {
-      props: { content: makeSuccessContent() },
-    })
-    expect(wrapper.find('[data-testid="save-memory-header-label"]').text()).toBe(
-      'mem_aabbccdd11223344',
-    )
   })
 
   it('hides content from the Arguments block so it is not repeated', () => {
@@ -445,5 +344,114 @@ describe('SaveMemory.vue — saved body', () => {
     })
     expect(wrapper.find('[data-testid="save-memory-running"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="save-memory-content"]').text()).toBe(BODY)
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────
+// Id + tags: header only, in both states.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('SaveMemory.vue — id + tags live in the header', () => {
+  it('shows the id and the tags on ONE header line, in the collapsed state', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent(), parameters: makeParams(BODY) },
+    })
+    const header = wrapper.find('[data-testid="save-memory-header-label"]')
+    // Both halves live in the same element → one line.
+    expect(header.find('[data-testid="save-memory-header-id"]').exists()).toBe(true)
+    expect(header.find('[data-testid="save-memory-header-tags"]').exists()).toBe(true)
+    // The chips are in the header, so they need no expansion.
+    expect(header.find('[data-testid="save-memory-tag-0"]').text()).toBe('preferences')
+    expect(header.find('[data-testid="save-memory-tag-1"]').text()).toBe('user')
+  })
+
+  it('keeps the same header when expanded — the body adds only the note', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent(), parameters: makeParams(BODY), expanded: true },
+    })
+    const header = wrapper.find('[data-testid="save-memory-header-label"]')
+    expect(header.find('[data-testid="save-memory-header-id"]').exists()).toBe(true)
+    expect(header.find('[data-testid="save-memory-header-tags"]').exists()).toBe(true)
+
+    // The expanded body must NOT repeat the header's two facts. (The
+    // Arguments <details> legitimately still lists the raw `tags` — check
+    // the chips, not the string, so that block is out of scope.)
+    const body = wrapper.find('[data-testid="save-memory-body"]')
+    expect(body.text()).not.toContain('mem_aabbccdd11223344')
+    expect(body.findAll('[data-testid^="save-memory-tag-"]')).toHaveLength(0)
+    expect(body.find('[data-testid="save-memory-content"]').text()).toBe(BODY)
+  })
+
+  it('splits tags sent with the | separator the LLM often uses', () => {
+    const wrapper = mount(SaveMemory, {
+      props: {
+        content: makeSuccessContent(),
+        parameters: makeParams(BODY, 'demo|tool-test|nalar'),
+      },
+    })
+    const header = wrapper.find('[data-testid="save-memory-header-label"]')
+    expect(header.find('[data-testid="save-memory-tag-0"]').text()).toBe('demo')
+    expect(header.find('[data-testid="save-memory-tag-2"]').text()).toBe('nalar')
+  })
+
+  it('collapses a long tag list to 3 chips + a +N chip', () => {
+    const wrapper = mount(SaveMemory, {
+      props: {
+        content: makeSuccessContent(),
+        parameters: makeParams(BODY, 'a||b||c||d||e'),
+      },
+    })
+    const header = wrapper.find('[data-testid="save-memory-header-label"]')
+    expect(header.findAll('[data-testid^="save-memory-tag-"]')).toHaveLength(3)
+    expect(header.find('[data-testid="save-memory-header-tags-more"]').text()).toBe('+2')
+    // Nothing is lost — the hover title lists every tag.
+    const title = header.attributes('title') ?? ''
+    expect(title).toContain('Tags: a, b, c, d, e')
+  })
+
+  it('omits the tag chips entirely when no tags were sent', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent(), parameters: makeParams(BODY, null) },
+    })
+    const header = wrapper.find('[data-testid="save-memory-header-label"]')
+    expect(header.find('[data-testid="save-memory-header-tags"]').exists()).toBe(false)
+    expect(header.find('[data-testid="save-memory-header-id"]').exists()).toBe(true)
+  })
+
+  it('shows the tags with no fabricated id when the result envelope has no id', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: {}, parameters: makeParams(BODY) },
+    })
+    const header = wrapper.find('[data-testid="save-memory-header-label"]')
+    // The id slot still renders (it is a fixed part of the layout) but
+    // falls back to "unknown" — it must not invent a mem_* id.
+    expect(header.find('[data-testid="save-memory-header-id"]').text()).toBe('unknown')
+    expect(header.find('[data-testid="save-memory-header-tags"]').exists()).toBe(true)
+  })
+
+  it('does NOT preview the body in the header (expanding is for that)', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent(), parameters: makeParams(BODY) },
+    })
+    expect(wrapper.find('[data-testid="save-memory-header-label"]').text()).not.toContain(BODY)
+  })
+
+  it('leaves the header as the bare id when there is no body and no tags', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent() },
+    })
+    expect(wrapper.find('[data-testid="save-memory-header-label"]').text()).toBe(
+      'mem_aabbccdd11223344',
+    )
+  })
+
+  it('puts the full id, the note and the timestamp in the hover title', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent(), parameters: makeParams(BODY) },
+    })
+    const title = wrapper.find('[data-testid="save-memory-header-label"]').attributes('title')
+    expect(title).toContain('mem_aabbccdd11223344')
+    expect(title).toContain(BODY)
+    expect(title).toContain('saved 2026-08-06 10:00:00')
   })
 })

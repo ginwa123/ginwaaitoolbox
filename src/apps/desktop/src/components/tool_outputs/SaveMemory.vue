@@ -26,24 +26,23 @@
   written file body from `parameters` and hides it from the Arguments
   block via `:exclude`.
 
-  Header (always visible):
-    `save_memory → <id> · <content preview> ✓`   (success)
-    `save_memory → error ✗`                      (failure)
-  Hover shows the full body (capped) so the note can be read without
-  expanding, plus the saved timestamp.
+  Header — the SAME in both states, because the header stays visible
+  while the card is expanded:
+    `save_memory → <id> · <tag> <tag> <tag> +N ✓`  (success)
+    `save_memory → error ✗`                       (failure)
+  The body is deliberately NOT previewed here — it is the one thing
+  expanding is for. At most `HEADER_MAX_TAGS` chips show; the tail
+  collapses to `+N` and the full list lives in the hover title (full id,
+  every tag, the note, `saved <timestamp>`) and in Arguments.
 
-  Expanded body (click header to toggle) — one meta line, then the body:
-    `Id: mem_… · Tags: convention tooling` on a single flex-wrap row
-    (the chips spill to a second visual line on a narrow card), then the
-    stored body in a scrollable `pre` with a size badge and a copy button.
-    The `created_at` / `updated_at` timestamps are NOT rows: they are both
-    `CURRENT_TIMESTAMP` at INSERT time, so they carry one fact, not two.
-    They live in the header's hover title instead.
+  Expanded body (click header to toggle) — the body, and nothing else:
+    The stored note in a scrollable `pre` with a size badge and a copy
+    button. The id and the tags are already in the header directly above,
+    so repeating them here would print the same two facts twice.
+    Bodies above `MAX_DISPLAY_CHARS` are clipped for display with an
+    explicit "N more characters not shown" note; the copy button always
+    copies the FULL body.
     Error: red error block with the full error message.
-
-  Bodies above `MAX_DISPLAY_CHARS` are clipped for display with an
-  explicit "N more characters not shown" note; the copy button always
-  copies the FULL body.
 
   Style is consistent with the rest of the tool_outputs components
   (LoadMemory, KanbanMove, ReadWorkspaceSession): monospace, rounded-md,
@@ -186,30 +185,29 @@ const isSuccess = computed(() => errorMessage.value === null)
 
 const statusIndicator = computed(() => (isRunning.value ? '…' : isSuccess.value ? '✓' : '✗'))
 
-/** One-line form of the body for the header: newlines collapsed so a
- *  multi-line note still renders on the single-line header row. */
+/** One-line form of the body for the header's hover tooltip: newlines
+ *  collapsed so a multi-line note still fits one tooltip line. */
 const contentOneLine = computed(() => (savedContent.value ?? '').replace(/\s+/g, ' ').trim())
 
-/** Header label: "<id> · <preview>" on success, "error" on failure. The
- *  id stays first — it is the row's identity — and the preview answers
- *  "what did it actually save?" without an extra click. */
-const headerLabel = computed(() => {
-  if (!isSuccess.value) return 'error'
-  const id = memoryId.value ?? 'unknown'
-  const preview = contentOneLine.value
-  if (preview === '') return id
-  return `${id} · ${truncateMiddle(preview, 48)}`
-})
+/** Chips shown in the header. The header is a single line, so a memory
+ *  carrying a dozen tags would otherwise blow the row out; the tail
+ *  collapses into a `+N` chip. Nothing is lost — the hover title and the
+ *  Arguments block both carry the full list. */
+const HEADER_MAX_TAGS = 3
+const headerTags = computed(() => savedTags.value.slice(0, HEADER_MAX_TAGS))
+const hiddenTagCount = computed(() => Math.max(0, savedTags.value.length - HEADER_MAX_TAGS))
 
-/** Hover title: the full id (no truncation) plus the body capped at
- *  MAX_TOOLTIP_CHARS. The timestamps moved here when the expanded body
- *  was cut down to id / tags / content — they stay reachable without
- *  spending two rows of vertical space on `CURRENT_TIMESTAMP` values
- *  that are identical for created and updated. On error, the full text. */
+/** Hover title: the full id, every tag, the body capped at
+ *  MAX_TOOLTIP_CHARS, and the saved timestamp. The `created_at` /
+ *  `updated_at` pair moved here when the expanded body was cut down to
+ *  the body alone — they stay reachable without spending a row on two
+ *  `CURRENT_TIMESTAMP` values that are always equal. On error, the full
+ *  error text. */
 const headerTitle = computed(() => {
   if (!isSuccess.value) return errorMessage.value ?? ''
   const parts: string[] = []
   if (memoryId.value) parts.push(memoryId.value)
+  if (savedTags.value.length > 0) parts.push(`Tags: ${savedTags.value.join(', ')}`)
   if (contentOneLine.value) parts.push(clip(contentOneLine.value, MAX_TOOLTIP_CHARS))
   const stamp = [createdAt.value, updatedAt.value].filter((t) => !!t)
   if (stamp.length > 0) parts.push(`saved ${stamp.join(' → ')}`)
@@ -292,14 +290,6 @@ function utf8Len(s: string): number {
   return n
 }
 
-/** Truncate `s` to `max` chars, keeping both ends (a memory's tail
- *  usually carries the "so what", its head the subject). */
-function truncateMiddle(s: string, max: number): string {
-  if (s.length <= max) return s
-  const half = Math.max(2, Math.floor((max - 1) / 2))
-  return `${s.slice(0, half)}…${s.slice(s.length - half)}`
-}
-
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
@@ -321,12 +311,56 @@ function formatBytes(n: number): string {
       tabindex="0"
     >
       <span class="text-[var(--color-violet)] font-semibold text-dense">save_memory</span>
+
+      <!-- Header summary — the same in BOTH states, because the header
+           stays visible when the card expands: `save_memory  <id>  ·  tags`.
+           Expanding only adds the body below, so the id and the tags are
+           never printed twice. The body is NOT previewed here; it is the
+           one thing expanding is for. -->
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
+        class="flex flex-1 min-w-0 items-baseline gap-1 text-left text-[var(--semantic-text-muted)] text-dense"
         :title="headerTitle"
         data-testid="save-memory-header-label"
       >
-        {{ headerLabel }}
+        <template v-if="isSuccess">
+          <span class="truncate" data-testid="save-memory-header-id">
+            {{ memoryId ?? 'unknown' }}
+          </span>
+          <span
+            v-if="headerTags.length > 0"
+            class="text-[var(--semantic-text-dim)] shrink-0"
+            aria-hidden="true"
+          >
+            ·
+          </span>
+          <span
+            v-if="headerTags.length > 0"
+            class="flex shrink-0 items-baseline gap-1 overflow-hidden"
+            data-testid="save-memory-header-tags"
+          >
+            <span
+              v-for="(tag, i) in headerTags"
+              :key="`${tag}-${i}`"
+              class="tag-chip"
+              :title="`tag: ${tag}`"
+              :data-testid="`save-memory-tag-${i}`"
+            >
+              {{ tag }}
+            </span>
+            <!-- A memory can carry a dozen tags; the header is one line,
+                 so the tail collapses into a count. The full list stays
+                 in the hover title and in Arguments. -->
+            <span
+              v-if="hiddenTagCount > 0"
+              class="tag-chip"
+              :title="savedTags.join(', ')"
+              data-testid="save-memory-header-tags-more"
+            >
+              +{{ hiddenTagCount }}
+            </span>
+          </span>
+        </template>
+        <span v-else class="truncate">error</span>
       </span>
 
       <!-- Status indicator -->
@@ -361,7 +395,11 @@ function formatBytes(n: number): string {
     </div>
 
     <!-- Expanded content -->
-    <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
+    <div
+      v-if="isExpanded"
+      class="border-t border-[var(--color-border)] bg-black/[0.02]"
+      data-testid="save-memory-body"
+    >
       <!-- Error message -->
       <div
         v-if="errorMessage"
@@ -372,59 +410,11 @@ function formatBytes(n: number): string {
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
 
-      <!-- Success path: one meta line (id · tags) + the stored body.
-           Timestamps live in the header tooltip instead of taking up
-           rows here. -->
+      <!-- Success path: just the stored body. The id and the tags live in
+           the header, which stays visible while expanded — repeating them
+           here would print the same two facts twice. -->
       <template v-if="isSuccess">
-        <!-- Id and tags share a single line — they are both short
-             attributes of the same row, and stacking them cost two rows
-             to say "mem_xxx / a couple of chips". `flex-wrap` lets the
-             chips spill to a second visual line on a narrow card. -->
-        <div
-          v-if="memoryId || savedTags.length > 0"
-          class="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
-          data-testid="save-memory-meta-row"
-        >
-          <span
-            v-if="memoryId"
-            class="flex items-baseline gap-2 shrink-0 min-w-0"
-            data-testid="save-memory-id-row"
-          >
-            <span class="font-semibold text-[var(--semantic-text-muted)]">Id:</span>
-            <span class="text-[var(--semantic-text)]">{{ memoryId }}</span>
-          </span>
-
-          <!-- Muted separator — same ` · ` idiom as LoadMemory's summary. -->
-          <span
-            v-if="memoryId && savedTags.length > 0"
-            class="text-[var(--semantic-text-dim)] shrink-0"
-            aria-hidden="true"
-          >
-            ·
-          </span>
-
-          <!-- Tags chips (mirrors LoadMemory's per-entry chips). -->
-          <span
-            v-if="savedTags.length > 0"
-            class="flex flex-wrap items-baseline gap-2 min-w-0"
-            data-testid="save-memory-tags-row"
-          >
-            <span class="font-semibold text-[var(--semantic-text-muted)] shrink-0">Tags:</span>
-            <span class="flex flex-wrap gap-1 min-w-0">
-              <span
-                v-for="(tag, i) in savedTags"
-                :key="`${tag}-${i}`"
-                class="tag-chip"
-                :title="`tag: ${tag}`"
-                :data-testid="`save-memory-tag-${i}`"
-              >
-                {{ tag }}
-              </span>
-            </span>
-          </span>
-        </div>
-
-        <!-- The stored body — the whole point of the card. -->
+        <!-- The stored body — the whole point of expanding. -->
         <div v-if="hasBody" class="px-2 py-1.5" data-testid="save-memory-content-row">
           <div class="flex items-center gap-2 mb-1">
             <span class="font-semibold text-[var(--semantic-text-muted)] shrink-0">Content:</span>
@@ -458,11 +448,11 @@ function formatBytes(n: number): string {
         <!-- Edge case: nothing to show at all (no id, no tags, no body).
              A muted hint so the user knows the card is empty, not stuck. -->
         <div
-          v-if="!memoryId && savedTags.length === 0 && !hasBody"
+          v-if="!hasBody"
           class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
           data-testid="save-memory-empty"
         >
-          (no fields in envelope)
+          (no content in envelope)
         </div>
       </template>
       <ToolParameters :parameters="parameters" :exclude="ARGS_EXCLUDE" />
