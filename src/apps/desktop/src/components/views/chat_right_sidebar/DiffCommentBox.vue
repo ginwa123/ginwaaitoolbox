@@ -259,7 +259,7 @@ watch(draftKey, loadDraft);
 <template>
   <div class="flex flex-col gap-2" data-testid="diff-comment-box">
     <div
-      class="text-xs truncate"
+      class="text-dense truncate"
       style="color: var(--semantic-text-dim)"
       data-testid="diff-comment-range"
     >
@@ -267,7 +267,7 @@ watch(draftKey, loadDraft);
     </div>
     <textarea
       v-model="draft"
-      class="w-full rounded p-2 text-xs"
+      class="w-full rounded p-2 text-dense"
       style="
         min-height: 72px;
         background: var(--semantic-input-bg, transparent);
@@ -280,7 +280,7 @@ watch(draftKey, loadDraft);
     <div class="flex items-center gap-2">
       <button
         type="button"
-        class="px-3 py-1.5 text-xs rounded"
+        class="px-3 py-1.5 text-dense rounded"
         style="background: var(--color-green); color: var(--color-bg)"
         data-testid="diff-comment-save"
         @click="onSave"
@@ -289,7 +289,7 @@ watch(draftKey, loadDraft);
       </button>
       <button
         type="button"
-        class="px-3 py-1.5 text-xs rounded"
+        class="px-3 py-1.5 text-dense rounded"
         style="border: 1px solid var(--color-border); color: var(--semantic-text)"
         data-testid="diff-comment-copy"
         @click="onCopy"
@@ -298,7 +298,7 @@ watch(draftKey, loadDraft);
       </button>
       <span
         v-if="showSaved"
-        class="text-xs"
+        class="text-dense"
         style="color: var(--color-green)"
         data-testid="diff-comment-saved"
       >
@@ -306,7 +306,7 @@ watch(draftKey, loadDraft);
       </span>
       <span
         v-if="showCopied"
-        class="text-xs"
+        class="text-dense"
         style="color: var(--color-green)"
         data-testid="diff-comment-copied"
       >

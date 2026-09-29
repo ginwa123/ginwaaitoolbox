@@ -56,15 +56,15 @@ const formatDate = (ts: number | undefined): string => {
             style="border-bottom: 1px solid var(--color-border);"
           >
             <div class="flex items-center gap-2">
-              <span class="text-xl">🧠</span>
+              <span class="text-title">🧠</span>
               <h3
-                class="text-base font-semibold"
+                class="text-lead font-semibold"
                 style="color: var(--semantic-text);"
               >
                 Loaded Skills
               </h3>
               <span
-                class="px-2 py-0.5 text-xs rounded-full"
+                class="px-2 py-0.5 text-dense rounded-full"
                 style="background-color: var(--semantic-active-bg); color: var(--semantic-text-dim);"
               >
                 {{ skills.length }}
@@ -84,8 +84,8 @@ const formatDate = (ts: number | undefined): string => {
           <!-- Skills List -->
           <div class="flex-1 overflow-y-auto p-3">
             <div v-if="skills.length === 0" class="text-center py-8">
-              <span class="text-3xl mb-2 block">📭</span>
-              <p class="text-sm" style="color: var(--semantic-text-dim);">
+              <span class="text-display mb-2 block">📭</span>
+              <p class="text-body" style="color: var(--semantic-text-dim);">
                 No skills loaded for this session
               </p>
             </div>
@@ -99,23 +99,23 @@ const formatDate = (ts: number | undefined): string => {
                 style="background-color: var(--semantic-active-bg); border: 1px solid var(--color-border);"
               >
                 <div class="flex items-start gap-3">
-                  <span class="text-xl mt-0.5">📜</span>
+                  <span class="text-title mt-0.5">📜</span>
                   <div class="flex-1 min-w-0">
                     <h4
-                      class="text-sm font-medium truncate"
+                      class="text-body font-medium truncate"
                       style="color: var(--semantic-text);"
                     >
                       {{ skill.skill_name }}
                     </h4>
                     <p
                       v-if="skill.loaded_at"
-                      class="text-xs mt-0.5"
+                      class="text-dense mt-0.5"
                       style="color: var(--semantic-text-dim);"
                     >
                       Loaded: {{ formatDate(skill.loaded_at) }}
                     </p>
                     <p
-                      class="text-xs mt-1 line-clamp-2"
+                      class="text-dense mt-1 line-clamp-2"
                       style="color: var(--semantic-text-dim);"
                     >
                       {{ skill.content?.substring(0, 150) }}{{ skill.content?.length > 150 ? '...' : '' }}
@@ -138,7 +138,7 @@ const formatDate = (ts: number | undefined): string => {
           <!-- Footer -->
           <div
             v-if="sessionCwd"
-            class="px-5 py-3 shrink-0 text-xs"
+            class="px-5 py-3 shrink-0 text-dense"
             style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
           >
             Session working directory: {{ sessionCwd }}

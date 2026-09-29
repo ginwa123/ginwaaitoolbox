@@ -43,7 +43,7 @@ function update<K extends keyof LlmConfig>(key: K, value: LlmConfig[K]) {
   emit('update:modelValue', { ...props.modelValue, [key]: value })
 }
 
-const inputBase = 'w-full px-3 h-8 rounded-md border text-sm font-sans transition-colors duration-150'
+const inputBase = 'w-full px-3 h-8 rounded-md border text-body font-sans transition-colors duration-150'
 const inputStyle = (hasError?: boolean): Record<string, string> => ({
   backgroundColor: 'var(--semantic-content-bg)',
   color: 'var(--semantic-text)',
@@ -55,7 +55,7 @@ const inputStyle = (hasError?: boolean): Record<string, string> => ({
   colorScheme: 'dark',
 })
 
-const labelBase = 'block text-xs font-medium mb-1.5'
+const labelBase = 'block text-dense font-medium mb-1.5'
 const labelStyle = { color: 'var(--semantic-text-muted)' }
 const helperStyle = { color: 'var(--semantic-text-dim)' }
 const errorStyle = { color: 'var(--color-red)' }
@@ -161,7 +161,7 @@ const isOpenAIStyle = computed(
         :style="inputStyle(!!errors?.model)"
         data-testid="model-input"
       />
-      <p v-if="errors?.model" class="text-xs mt-1" :style="errorStyle">{{ errors.model }}</p>
+      <p v-if="errors?.model" class="text-dense mt-1" :style="errorStyle">{{ errors.model }}</p>
     </div>
 
     <!-- Base URL -->
@@ -176,7 +176,7 @@ const isOpenAIStyle = computed(
         :style="inputStyle(!!errors?.base_url)"
         data-testid="base-url-input"
       />
-      <p v-if="errors?.base_url" class="text-xs mt-1" :style="errorStyle">{{ errors.base_url }}</p>
+      <p v-if="errors?.base_url" class="text-dense mt-1" :style="errorStyle">{{ errors.base_url }}</p>
     </div>
 
     <!-- Thinking / Temperature / URL style — 3 columns -->
@@ -214,7 +214,7 @@ const isOpenAIStyle = computed(
           <option value="0.5" />
           <option value="1" label="1 — Balanced" />
         </datalist>
-        <p v-if="temperatureError" class="text-xs mt-1" :style="errorStyle">{{ temperatureError }}</p>
+        <p v-if="temperatureError" class="text-dense mt-1" :style="errorStyle">{{ temperatureError }}</p>
       </div>
       <div>
         <label :class="labelBase" :style="labelStyle">URL style</label>
@@ -246,7 +246,7 @@ const isOpenAIStyle = computed(
       <div v-if="isAnthropic">
         <label :class="labelBase" :style="labelStyle">
           Thinking budget tokens
-          <span class="block text-xs mt-0.5" :style="helperStyle">
+          <span class="block text-dense mt-0.5" :style="helperStyle">
             Anthropic only. Min 1024. Null = heuristic / adaptive.
           </span>
         </label>
@@ -273,7 +273,7 @@ const isOpenAIStyle = computed(
       <div v-if="isOpenAIStyle">
         <label :class="labelBase" :style="labelStyle">
           Reasoning effort
-          <span class="block text-xs mt-0.5" :style="helperStyle">
+          <span class="block text-dense mt-0.5" :style="helperStyle">
             OpenAI / Responses only (o1/o3/GPT-5/DeepSeek-R1).
           </span>
         </label>
@@ -317,22 +317,22 @@ const isOpenAIStyle = computed(
           :aria-label="showKey ? 'Hide API key' : 'Show API key'"
           :title="showKey ? 'Hide' : 'Show'"
           data-testid="api-key-toggle"
-          class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-xs"
+          class="absolute right-2 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-dense"
           style="color: var(--semantic-text-dim);"
         >{{ showKey ? '◉' : '○' }}</button>
       </div>
-      <p v-if="errors?.api_key" class="text-xs mt-1" :style="errorStyle">{{ errors.api_key }}</p>
+      <p v-if="errors?.api_key" class="text-dense mt-1" :style="errorStyle">{{ errors.api_key }}</p>
     </div>
 
     <!-- Compaction overrides (per-profile) — plan 2026-07-07-compaction-inline -->
     <div class="border-t pt-4 mt-2" style="border-color: var(--color-border);">
-      <h3 class="font-mono text-xs uppercase tracking-wider mb-3" :style="labelStyle">
+      <h3 class="font-mono text-dense uppercase tracking-wider mb-3" :style="labelStyle">
         ── Compaction overrides ──
       </h3>
 
       <div class="space-y-3">
         <div>
-          <label class="flex items-start gap-2 cursor-pointer text-sm">
+          <label class="flex items-start gap-2 cursor-pointer text-body">
             <input
               :checked="modelValue.max_capacity_tokens !== null"
               @change="setCapacityOverride(($event.target as HTMLInputElement).checked)"
@@ -343,7 +343,7 @@ const isOpenAIStyle = computed(
             />
             <span>
               <span :style="labelStyle">Override the context window</span>
-              <span class="block text-xs mt-0.5" :style="helperStyle">
+              <span class="block text-dense mt-0.5" :style="helperStyle">
                 Falls back to top-level defaults → built-in.
               </span>
             </span>
@@ -369,7 +369,7 @@ const isOpenAIStyle = computed(
         </div>
 
         <div>
-          <label class="flex items-start gap-2 cursor-pointer text-sm">
+          <label class="flex items-start gap-2 cursor-pointer text-body">
             <input
               :checked="modelValue.compaction_threshold_percent !== null"
               @change="setThresholdOverride(($event.target as HTMLInputElement).checked)"
@@ -380,7 +380,7 @@ const isOpenAIStyle = computed(
             />
             <span>
               <span :style="labelStyle">Override the compaction threshold</span>
-              <span class="block text-xs mt-0.5" :style="helperStyle">
+              <span class="block text-dense mt-0.5" :style="helperStyle">
                 Falls back to top-level defaults → built-in 80.
               </span>
             </span>
@@ -392,7 +392,7 @@ const isOpenAIStyle = computed(
         >
           <div class="flex items-center justify-between mb-1.5">
             <label :class="labelBase" :style="labelStyle" class="!mb-0">Threshold (%)</label>
-            <span class="font-mono text-xs" :style="labelStyle">{{ thresholdDisplay }}</span>
+            <span class="font-mono text-dense" :style="labelStyle">{{ thresholdDisplay }}</span>
           </div>
           <input
             :value="thresholdDisplay"

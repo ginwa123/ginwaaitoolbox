@@ -53,19 +53,19 @@ const handleError = (message: string) => {
       >
         <div class="flex items-start justify-between gap-2 mb-4 shrink-0">
           <h2
-            class="text-base font-semibold"
+            class="text-lead font-semibold"
             style="color: var(--semantic-text);"
           >Memories</h2>
           <button
             @click="handleCreateClick"
-            class="px-3 py-1 text-xs rounded font-medium shrink-0"
+            class="px-3 py-1 text-dense rounded font-medium shrink-0"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
             title="Create a new memory"
           >
             + New Memory
           </button>
         </div>
-        <p class="text-sm mb-4 shrink-0" style="color: var(--semantic-text-muted);">
+        <p class="text-body mb-4 shrink-0" style="color: var(--semantic-text-muted);">
           Global markdown notes the agent can reference. Files live in <code>~/.config/nalar/memories/</code>.
         </p>
         <div class="flex-1 overflow-y-auto min-h-0">
@@ -85,7 +85,7 @@ const handleError = (message: string) => {
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
       >
         <h2
-          class="text-base font-semibold p-4 shrink-0"
+          class="text-lead font-semibold p-4 shrink-0"
           style="color: var(--semantic-text); border-bottom: 1px solid var(--color-border);"
         >Memory</h2>
         <div class="flex-1 overflow-hidden">

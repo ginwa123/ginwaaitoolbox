@@ -164,14 +164,14 @@ onBeforeUnmount(() => {
           <div>
             <h3
               id="create-worktree-title"
-              class="text-base font-semibold flex items-center gap-2"
+              class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
               <span aria-hidden="true">🌳</span>
               Create a worktree
             </h3>
             <p
-              class="text-xs mt-1"
+              class="text-dense mt-1"
               style="color: var(--semantic-text-dim);"
             >
               Pick a parent directory and a short name
@@ -182,7 +182,7 @@ onBeforeUnmount(() => {
             @click="onClose"
             :disabled="isSubmitting"
             data-testid="create-worktree-close"
-            class="opacity-60 hover:opacity-100 text-base shrink-0"
+            class="opacity-60 hover:opacity-100 text-lead shrink-0"
             style="color: var(--semantic-text);"
           >
             ✕
@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
         <!-- Parent directory -->
         <div class="px-5 pb-4">
           <label
-            class="block text-xs font-medium mb-2"
+            class="block text-dense font-medium mb-2"
             style="color: var(--semantic-text-dim);"
           >
             Parent directory
@@ -201,7 +201,7 @@ onBeforeUnmount(() => {
             type="button"
             @click="showPicker = true"
             data-testid="create-worktree-choose-parent"
-            class="w-full px-3 py-2 rounded-lg text-sm flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
+            class="w-full px-3 py-2 rounded-lg text-body flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
             :style="{
               backgroundColor: parentDir && parentDir !== '/'
                 ? 'var(--semantic-active-bg)'
@@ -219,7 +219,7 @@ onBeforeUnmount(() => {
               {{ parentDir === '/' ? 'Choose parent directory…' : parentDir }}
             </span>
             <span
-              class="text-xs shrink-0"
+              class="text-dense shrink-0"
               style="color: var(--semantic-text-dim);"
               aria-hidden="true"
             >
@@ -231,7 +231,7 @@ onBeforeUnmount(() => {
         <!-- Basename + hint -->
         <div class="px-5 pb-4">
           <label
-            class="block text-xs font-medium mb-2"
+            class="block text-dense font-medium mb-2"
             style="color: var(--semantic-text-dim);"
           >
             Name
@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
             data-testid="create-worktree-name"
             type="text"
             placeholder="auth-fix"
-            class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 font-mono"
+            class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200 font-mono"
             style="
               background-color: var(--semantic-sidebar-bg);
               border: 1px solid var(--color-border);
@@ -251,7 +251,7 @@ onBeforeUnmount(() => {
             @keyup.enter="onSubmit"
           />
           <p
-            class="text-[10px] mt-2"
+            class="text-micro mt-2"
             style="color: var(--semantic-text-dim);"
           >
             The worktree will be created at
@@ -269,7 +269,7 @@ onBeforeUnmount(() => {
             @click="onClose"
             :disabled="isSubmitting"
             data-testid="create-worktree-cancel"
-            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+            class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -283,7 +283,7 @@ onBeforeUnmount(() => {
             @click="onSubmit"
             :disabled="!canSubmit"
             data-testid="create-worktree-submit"
-            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+            class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
             :class="!canSubmit ? 'opacity-50 cursor-not-allowed' : 'hover:opacity-80'"
             style="
               background-color: var(--color-violet);

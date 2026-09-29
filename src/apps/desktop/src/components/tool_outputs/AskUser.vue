@@ -472,7 +472,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': state === 'invalid' }"
     data-testid="ask-user-card"
     :data-state="state"
@@ -491,7 +491,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
     <!-- Collapsed one-liner: the resolved outcome, for every resolved state. -->
     <div
       v-if="!isExpanded && state !== 'pending' && state !== 'invalid'"
-      class="px-2 pb-2 font-sans text-xs"
+      class="px-2 pb-2 font-sans text-dense"
       style="color: var(--semantic-text-dim)"
       data-testid="ask-user-collapsed-summary"
     >
@@ -512,14 +512,14 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
            bottom of this file keep the type at card scale. -->
       <div
         v-if="parsed.question"
-        class="markdown-content ask-user-question px-2 py-2 font-sans text-sm"
+        class="markdown-content ask-user-question px-2 py-2 font-sans text-body"
         style="color: var(--semantic-text)"
         data-testid="ask-user-question"
         v-html="questionHtml"
       />
 
       <!-- Invalid / failed call -->
-      <div v-if="state === 'invalid'" class="px-2 pb-2 font-sans text-xs text-red-500">
+      <div v-if="state === 'invalid'" class="px-2 pb-2 font-sans text-dense text-red-500">
         {{ parsed.error }}
       </div>
 
@@ -540,15 +540,15 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
             :data-testid="`ask-user-option-${index}`"
             @click="toggleOption(option)"
           >
-            <span class="mt-0.5 shrink-0 text-[0.65rem]" style="color: var(--semantic-text-dim)">
+            <span class="mt-0.5 shrink-0 text-micro" style="color: var(--semantic-text-dim)">
               {{ index + 1 }}
             </span>
-            <span class="flex-1 font-sans text-[0.8rem]" style="color: var(--semantic-text)">
+            <span class="flex-1 font-sans text-dense" style="color: var(--semantic-text)">
               {{ optionLabels[index] ?? option }}
             </span>
             <span
               v-if="option === parsed.recommended"
-              class="shrink-0 rounded-full border border-green-500/40 px-1.5 text-[0.6rem] text-green-500"
+              class="shrink-0 rounded-full border border-green-500/40 px-1.5 text-micro text-green-500"
             >
               recommended
             </span>
@@ -557,7 +557,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 
         <div v-if="parsed.allowFreeText" class="px-2 pb-2">
           <label
-            class="mb-1 flex items-center gap-2 font-sans text-xs"
+            class="mb-1 flex items-center gap-2 font-sans text-dense"
             style="color: var(--semantic-text-dim)"
           >
             <input
@@ -572,7 +572,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
             v-model="freeText"
             rows="3"
             data-testid="ask-user-freetext"
-            class="w-full resize-y rounded-md border bg-transparent px-2 py-1.5 font-sans text-xs leading-relaxed"
+            class="w-full resize-y rounded-md border bg-transparent px-2 py-1.5 font-sans text-dense leading-relaxed"
             style="
               border-color: var(--color-border);
               color: var(--semantic-text);
@@ -589,7 +589,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
         <div class="flex items-center gap-2 border-t border-[var(--color-border)] px-2 py-2">
           <button
             type="button"
-            class="rounded-md px-3 py-1 font-sans text-xs font-semibold"
+            class="rounded-md px-3 py-1 font-sans text-dense font-semibold"
             style="background: var(--color-violet); color: var(--color-bg)"
             :disabled="!canSend"
             :class="{ 'cursor-not-allowed opacity-50': !canSend }"
@@ -604,7 +604,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
           </button>
           <button
             type="button"
-            class="rounded-md border px-3 py-1 font-sans text-xs"
+            class="rounded-md border px-3 py-1 font-sans text-dense"
             style="border-color: var(--color-border); color: var(--semantic-text-dim)"
             :disabled="submitting"
             data-testid="ask-user-skip"
@@ -612,14 +612,14 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
           >
             Skip
           </button>
-          <span class="ml-auto text-[0.65rem]" style="color: var(--semantic-text-dim)">
+          <span class="ml-auto text-micro" style="color: var(--semantic-text-dim)">
             1–{{ options.length || 1 }} pick · ⏎ send · esc skip
           </span>
         </div>
 
         <div
           v-if="sendFailed"
-          class="px-2 pb-2 font-sans text-xs text-red-500"
+          class="px-2 pb-2 font-sans text-dense text-red-500"
           data-testid="ask-user-error"
         >
           Couldn't send your answer — the server is unreachable.
@@ -630,7 +630,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
       <!-- RESOLVED states -->
       <div v-else-if="state === 'answered'" class="px-2 pb-2">
         <span
-          class="inline-flex items-center gap-2 rounded-md border border-green-500/30 px-2 py-1 font-sans text-xs text-green-500"
+          class="inline-flex items-center gap-2 rounded-md border border-green-500/30 px-2 py-1 font-sans text-dense text-green-500"
           data-testid="ask-user-answer-chip"
         >
           ✓ {{ answerChip }}
@@ -639,7 +639,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 
       <div
         v-else-if="state === 'skipped'"
-        class="px-2 pb-2 font-sans text-xs"
+        class="px-2 pb-2 font-sans text-dense"
         style="color: var(--semantic-text-dim)"
         data-testid="ask-user-skipped"
       >
@@ -648,7 +648,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 
       <div
         v-else-if="state === 'abandoned'"
-        class="px-2 pb-2 font-sans text-xs"
+        class="px-2 pb-2 font-sans text-dense"
         style="color: var(--semantic-text-dim)"
         data-testid="ask-user-abandoned"
       >
@@ -657,7 +657,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 
       <div
         v-else-if="state === 'unavailable'"
-        class="px-2 pb-2 font-sans text-xs"
+        class="px-2 pb-2 font-sans text-dense"
         style="color: var(--semantic-text-dim)"
         data-testid="ask-user-unavailable"
       >
@@ -673,7 +673,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 /*
  * The question renders through the global `.markdown-content` rules, which
  * are tuned for the chat transcript: an `h1` there is 1.5rem and a `<p>`
- * carries 0.75rem of bottom margin. Both are wrong inside a `text-xs` card
+ * carries 0.75rem of bottom margin. Both are wrong inside a `text-dense` card
  * next to a row of option buttons — the question would dwarf the answer
  * surface. These overrides pull the whole scale down to card size and cap
  * a pasted code block so the Send row stays on screen.

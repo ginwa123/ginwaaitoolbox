@@ -412,7 +412,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="isError ? 'border-red-500/50 opacity-90' : ''"
     data-testid="read-workspace-session"
   >
@@ -423,9 +423,9 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">read_workspace_session</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">read_workspace_session</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="summaryText"
       >
         {{ summaryText }}
@@ -434,29 +434,29 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       <!-- "showing N of M" badge when paginated -->
       <span
         v-if="count !== null && totalCount !== null && totalCount !== count"
-        class="text-[0.65rem] font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
+        class="text-micro font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
         :title="`Page contains ${count} entries out of ${totalCount} total matches`"
         data-testid="read-workspace-session-page-badge"
       >
         {{ count }} of {{ totalCount }}
       </span>
 
-      <span v-if="isError" class="text-red-500 text-[0.65rem] font-medium shrink-0"> Error </span>
+      <span v-if="isError" class="text-red-500 text-micro font-medium shrink-0"> Error </span>
 
-      <span v-if="isDenied" class="text-yellow-500 text-[0.65rem] font-medium shrink-0">
+      <span v-if="isDenied" class="text-yellow-500 text-micro font-medium shrink-0">
         Denied
       </span>
 
       <span
         v-if="isRunning"
         data-testid="read-workspace-session-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+        class="text-micro text-yellow-500 animate-pulse shrink-0"
         >running…</span
       >
 
       <span
         v-if="hasEntries || isError || isDenied || hasArgs"
-        class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
+        class="w-4 text-center text-[var(--semantic-text-muted)] text-body shrink-0"
       >
         {{ isExpanded ? '−' : '+' }}
       </span>
@@ -466,7 +466,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
          user sees the failure without an extra click. -->
     <div
       v-if="isError"
-      class="border-t border-[var(--color-border)] px-3 py-2 text-red-500 text-[0.72rem] break-words"
+      class="border-t border-[var(--color-border)] px-3 py-2 text-red-500 text-meta break-words"
       data-testid="read-workspace-session-error"
     >
       {{ errorMessage }}
@@ -476,7 +476,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
          caller's workspace; no content is ever rendered here. -->
     <div
       v-else-if="isDenied"
-      class="border-t border-[var(--color-border)] px-3 py-2 text-yellow-500 text-[0.72rem] break-words"
+      class="border-t border-[var(--color-border)] px-3 py-2 text-yellow-500 text-meta break-words"
       data-testid="read-workspace-session-denied"
     >
       {{ deniedMessage ?? 'Session is not in your workspace.' }}
@@ -489,7 +489,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
          no entries. Saves the user a click to discover "no results". -->
     <div
       v-else-if="!hasEntries"
-      class="border-t border-[var(--color-border)] px-3 py-4 text-center text-[var(--semantic-text-muted)] text-xs"
+      class="border-t border-[var(--color-border)] px-3 py-4 text-center text-[var(--semantic-text-muted)] text-dense"
       data-testid="read-workspace-session-empty"
     >
       <template v-if="behavior === 'list'"> No other sessions in your workspace </template>
@@ -519,7 +519,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <div class="flex items-start gap-2 min-w-0">
             <!-- Session name -->
             <span
-              class="font-semibold text-[var(--semantic-text)] text-xs truncate max-w-[200px]"
+              class="font-semibold text-[var(--semantic-text)] text-dense truncate max-w-[200px]"
               :title="session.name || session.id"
               :data-testid="`list-entry-name-${idx}`"
             >
@@ -543,14 +543,14 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <!-- Status -->
             <span
               v-if="session.status"
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
             >
               {{ session.status }}
             </span>
 
             <!-- Message count -->
             <span
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
               :title="`${session.message_count} messages`"
             >
               {{ session.message_count }} msgs
@@ -559,7 +559,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <!-- Last activity -->
             <span
               v-if="session.last_activity"
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
               :title="`Last activity ${session.last_activity}`"
             >
               {{ session.last_activity }}
@@ -569,7 +569,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <!-- Preview -->
           <p
             v-if="session.preview"
-            class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+            class="mt-1 ml-0 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
             :data-testid="`list-entry-preview-${idx}`"
           >
             {{ session.preview }}
@@ -612,7 +612,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <!-- Session name + id (truncated) -->
             <span
               v-if="entry.session_name || entry.session_id"
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0 max-w-[140px] truncate"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0 max-w-[140px] truncate"
               :title="entry.session_id"
             >
               in {{ entry.session_name || entry.session_id }}
@@ -621,7 +621,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <!-- Timestamp -->
             <span
               v-if="entry.created_at"
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
               :title="`Created at ${entry.created_at}`"
             >
               {{ entry.created_at }}
@@ -631,7 +631,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <!-- Snippet with [match] markers highlighted -->
           <p
             v-if="entry.snippet"
-            class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+            class="mt-1 ml-0 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
             :data-testid="`search-entry-snippet-${idx}`"
           >
             <template v-for="(seg, segIdx) in parseSnippet(entry.snippet)" :key="segIdx">
@@ -679,7 +679,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             <!-- Timestamp -->
             <span
               v-if="entry.created_at"
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
               :title="`Created at ${entry.created_at}`"
             >
               {{ entry.created_at }}
@@ -707,7 +707,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <!-- Preview (always present when not in error) -->
           <p
             v-if="entry.preview"
-            class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+            class="mt-1 ml-0 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
             :data-testid="`read-entry-preview-${idx}`"
           >
             {{ entry.preview }}

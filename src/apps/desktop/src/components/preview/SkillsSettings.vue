@@ -34,10 +34,10 @@ const handleSkillError = (message: string) => {
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
       >
         <h2
-          class="text-base font-semibold mb-4 shrink-0"
+          class="text-lead font-semibold mb-4 shrink-0"
           style="color: var(--semantic-text);"
         >Skills</h2>
-        <p class="text-sm mb-4 shrink-0" style="color: var(--semantic-text-muted);">
+        <p class="text-body mb-4 shrink-0" style="color: var(--semantic-text-muted);">
           Available AI capabilities and workflows.
         </p>
         <div class="flex-1 overflow-y-auto min-h-0">
@@ -57,7 +57,7 @@ const handleSkillError = (message: string) => {
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
       >
         <h2
-          class="text-base font-semibold p-4 shrink-0"
+          class="text-lead font-semibold p-4 shrink-0"
           style="color: var(--semantic-text); border-bottom: 1px solid var(--color-border);"
         >Skill Detail</h2>
         <div class="flex-1 overflow-hidden">

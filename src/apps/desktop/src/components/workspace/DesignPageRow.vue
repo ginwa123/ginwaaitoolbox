@@ -198,7 +198,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
   <div
     role="button"
     tabindex="0"
-    class="flex items-center gap-2 px-3 py-1 rounded text-xs group/page cursor-pointer transition-all duration-200 w-full text-left"
+    class="flex items-center gap-2 px-3 py-1 rounded text-dense group/page cursor-pointer transition-all duration-200 w-full text-left"
     :style="{
       color: isCurrentMainView ? 'var(--color-aqua)' : 'var(--semantic-text-dim)',
       backgroundColor: isCurrentMainView ? 'var(--semantic-active-bg)' : 'transparent',
@@ -246,7 +246,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
         @click.stop="toggleMenu"
         @keydown.stop
       >
-        <span class="text-base leading-none">⋮</span>
+        <span class="text-lead leading-none">⋮</span>
       </button>
       <!--
         Dropdown — same width + style as the kanban-column menu
@@ -261,7 +261,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
         <li>
           <button
             type="button"
-            class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+            class="w-full px-3 py-2 text-left text-body hover:opacity-80"
             style="color: var(--semantic-text)"
             :data-testid="`design-page-menu-rename-${page.id}`"
             @click="handleMenuRename"
@@ -272,7 +272,7 @@ const handleKeydown = (event: KeyboardEvent): void => {
         <li>
           <button
             type="button"
-            class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+            class="w-full px-3 py-2 text-left text-body hover:opacity-80"
             style="color: #ef4444"
             :data-testid="`design-page-menu-delete-${page.id}`"
             @click="handleMenuDelete"

@@ -67,7 +67,7 @@ const emit = defineEmits<{
     data-testid="chat-app-bar"
   >
     <span
-      class="text-sm font-semibold truncate flex-1 min-w-0"
+      class="text-body font-semibold truncate flex-1 min-w-0"
       style="color: var(--semantic-text)"
       data-testid="chat-app-bar-title"
     >
@@ -79,7 +79,7 @@ const emit = defineEmits<{
     <button
       v-if="showSidebarToggle"
       type="button"
-      class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
+      class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-body hover:opacity-70 transition-opacity"
       style="color: var(--semantic-text-dim)"
       title="Toggle changes sidebar (Cmd/Ctrl+B)"
       aria-label="Toggle changes sidebar"
@@ -91,7 +91,7 @@ const emit = defineEmits<{
 
     <button
       type="button"
-      class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
+      class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-title-sm hover:opacity-70 transition-opacity"
       style="color: var(--semantic-text-dim)"
       title="Close chat"
       aria-label="Close chat"

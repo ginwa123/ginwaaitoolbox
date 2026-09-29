@@ -75,7 +75,7 @@ watch(
       :data-tab-id="tab.id"
       :data-active="modelValue === tab.id ? 'true' : 'false'"
       @click="emit('update:modelValue', tab.id)"
-      class="relative px-4 h-10 text-sm font-medium transition-colors duration-150"
+      class="relative px-4 h-10 text-body font-medium transition-colors duration-150"
       :style="{
         color: modelValue === tab.id ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
       }"

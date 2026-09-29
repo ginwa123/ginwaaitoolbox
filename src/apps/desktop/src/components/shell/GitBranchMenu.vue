@@ -28,7 +28,7 @@ const emit = defineEmits<{
     <div
       data-testid="git-branch-menu"
       role="menu"
-      class="fixed z-50 py-1 text-xs rounded-lg shadow-lg"
+      class="fixed z-50 py-1 text-dense rounded-lg shadow-lg"
       :style="{
         left: `${x}px`,
         top: `${y}px`,

@@ -260,7 +260,7 @@ defineExpose({ onSave })
           class="flex items-center justify-between px-5 h-12 border-b shrink-0"
           style="border-color: var(--color-border);"
         >
-          <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">
+          <h3 class="text-body font-semibold" style="color: var(--semantic-text);">
             {{ mode === 'add' ? 'Add MCP server' : 'Edit MCP server' }}
           </h3>
           <button
@@ -268,14 +268,14 @@ defineExpose({ onSave })
             data-testid="http-close-btn"
             @click="emit('cancel')"
             aria-label="Close"
-            class="w-7 h-7 flex items-center justify-center text-sm"
+            class="w-7 h-7 flex items-center justify-center text-body"
             style="color: var(--semantic-text-muted);"
           >✕</button>
         </div>
 
         <!-- Body: transport toggle + Name + URL + Headers. -->
         <div class="p-5 space-y-4 overflow-y-auto" style="max-height: 70vh;" data-testid="http-form">
-          <div class="flex items-center gap-2 text-xs" data-testid="transport-toggle">
+          <div class="flex items-center gap-2 text-dense" data-testid="transport-toggle">
             <button
               type="button"
               data-testid="transport-toggle-http"
@@ -297,19 +297,19 @@ defineExpose({ onSave })
           </div>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">Name</label>
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">Name</label>
             <input
               type="text"
               :value="modelValue.name"
               :disabled="mode === 'edit'"
               data-testid="name-input"
-              class="w-full px-2.5 h-8 rounded-md text-xs border outline-none"
+              class="w-full px-2.5 h-8 rounded-md text-dense border outline-none"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
               @input="(e) => emit('update:modelValue', { ...modelValue, name: (e.target as HTMLInputElement).value })"
             />
           </div>
 
-          <label class="flex items-center gap-2 text-xs cursor-pointer" style="color: var(--semantic-text);">
+          <label class="flex items-center gap-2 text-dense cursor-pointer" style="color: var(--semantic-text);">
             <input
               type="checkbox"
               data-testid="enabled-checkbox"
@@ -320,7 +320,7 @@ defineExpose({ onSave })
           </label>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">
               URL
               <span style="color: var(--color-red);">*</span>
             </label>
@@ -329,11 +329,11 @@ defineExpose({ onSave })
               :value="modelValue.url"
               placeholder="https://example.com/mcp"
               data-testid="url-input"
-              class="w-full px-2.5 h-8 rounded-md text-xs font-mono border outline-none"
+              class="w-full px-2.5 h-8 rounded-md text-dense font-mono border outline-none"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
               @input="updateUrl"
             />
-            <p v-if="errors?.url" class="text-xs mt-1" style="color: var(--color-red);">{{ errors.url }}</p>
+            <p v-if="errors?.url" class="text-dense mt-1" style="color: var(--color-red);">{{ errors.url }}</p>
           </div>
 
           <McpHeadersEditor
@@ -345,7 +345,7 @@ defineExpose({ onSave })
           <div
             v-if="testResult"
             data-testid="test-result"
-            class="px-3 py-2 rounded-md text-xs border"
+            class="px-3 py-2 rounded-md text-dense border"
             :style="testResult.ok
               ? {
                   borderColor: 'var(--color-green)',
@@ -369,13 +369,13 @@ defineExpose({ onSave })
             <div
               v-if="!testResult.ok"
               data-testid="test-error"
-              class="mt-1 font-mono text-[11px]"
+              class="mt-1 font-mono text-meta"
               style="color: var(--semantic-text-muted);"
             >{{ testResult.error }}</div>
             <ul
               v-if="testResult.ok && testResult.tools.length > 0"
               data-testid="test-tools"
-              class="mt-1.5 font-mono text-[11px] space-y-0.5"
+              class="mt-1.5 font-mono text-meta space-y-0.5"
             >
               <li
                 v-for="tool in testResult.tools"
@@ -394,7 +394,7 @@ defineExpose({ onSave })
           <button
             type="button"
             data-testid="test-btn"
-            class="px-3 h-8 rounded-md text-xs border transition-colors duration-150"
+            class="px-3 h-8 rounded-md text-dense border transition-colors duration-150"
             :style="{
               borderColor: 'var(--color-border)',
               color: testing ? 'var(--semantic-text-dim)' : 'var(--semantic-text)',
@@ -409,14 +409,14 @@ defineExpose({ onSave })
             <button
               type="button"
               data-testid="cancel-btn"
-              class="px-3 h-8 rounded-md text-xs border"
+              class="px-3 h-8 rounded-md text-dense border"
               style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
               @click="emit('cancel')"
             >Cancel</button>
             <button
               type="button"
               data-testid="save-btn"
-              class="px-3 h-8 rounded-md text-xs font-medium border"
+              class="px-3 h-8 rounded-md text-dense font-medium border"
               :style="{
                 borderColor: 'var(--color-violet)',
                 backgroundColor: 'var(--color-violet)',
@@ -454,7 +454,7 @@ defineExpose({ onSave })
           class="flex items-center justify-between px-5 h-12 border-b shrink-0"
           style="border-color: var(--color-border);"
         >
-          <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">
+          <h3 class="text-body font-semibold" style="color: var(--semantic-text);">
             {{ mode === 'add' ? 'Add MCP server' : 'Edit MCP server' }}
           </h3>
           <button
@@ -462,14 +462,14 @@ defineExpose({ onSave })
             data-testid="stdio-close-btn"
             @click="emit('cancel')"
             aria-label="Close"
-            class="w-7 h-7 flex items-center justify-center text-sm"
+            class="w-7 h-7 flex items-center justify-center text-body"
             style="color: var(--semantic-text-muted);"
           >✕</button>
         </div>
 
         <!-- Body: transport toggle + the stdio fields. -->
         <div class="p-5 space-y-4 overflow-y-auto" style="max-height: 70vh;" data-testid="stdio-form">
-          <div class="flex items-center gap-2 text-xs" data-testid="transport-toggle">
+          <div class="flex items-center gap-2 text-dense" data-testid="transport-toggle">
             <button
               type="button"
               data-testid="transport-toggle-http"
@@ -491,19 +491,19 @@ defineExpose({ onSave })
           </div>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">Name</label>
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">Name</label>
             <input
               type="text"
               :value="modelValue.name"
               :disabled="mode === 'edit'"
               data-testid="name-input"
-              class="w-full px-2.5 h-8 rounded-md text-xs border outline-none"
+              class="w-full px-2.5 h-8 rounded-md text-dense border outline-none"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
               @input="(e) => emit('update:modelValue', { ...modelValue, name: (e.target as HTMLInputElement).value })"
             />
           </div>
 
-          <label class="flex items-center gap-2 text-xs cursor-pointer" style="color: var(--semantic-text);">
+          <label class="flex items-center gap-2 text-dense cursor-pointer" style="color: var(--semantic-text);">
             <input
               type="checkbox"
               data-testid="enabled-checkbox"
@@ -514,7 +514,7 @@ defineExpose({ onSave })
           </label>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">
               Command
               <span style="color: var(--color-red);">*</span>
             </label>
@@ -523,15 +523,15 @@ defineExpose({ onSave })
               :value="modelValue.command"
               placeholder="mcp-hello-world"
               data-testid="command-input"
-              class="w-full px-2.5 h-8 rounded-md text-xs font-mono border outline-none"
+              class="w-full px-2.5 h-8 rounded-md text-dense font-mono border outline-none"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
               @input="updateCommand"
             />
-            <p v-if="errors?.command" class="text-xs mt-1" style="color: var(--color-red);">{{ errors.command }}</p>
+            <p v-if="errors?.command" class="text-dense mt-1" style="color: var(--color-red);">{{ errors.command }}</p>
           </div>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">
               Arguments <span style="color: var(--semantic-text-dim);">(one per line)</span>
             </label>
             <textarea
@@ -539,13 +539,13 @@ defineExpose({ onSave })
               rows="3"
               placeholder="server.js&#10;--port&#10;3001"
               data-testid="args-textarea"
-              class="w-full px-2.5 py-1.5 rounded-md text-xs font-mono border outline-none resize-y"
+              class="w-full px-2.5 py-1.5 rounded-md text-dense font-mono border outline-none resize-y"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
             ></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">
               Environment <span style="color: var(--semantic-text-dim);">(KEY=VALUE, one per line)</span>
             </label>
             <textarea
@@ -553,13 +553,13 @@ defineExpose({ onSave })
               rows="2"
               placeholder="NODE_ENV=production"
               data-testid="env-textarea"
-              class="w-full px-2.5 py-1.5 rounded-md text-xs font-mono border outline-none resize-y"
+              class="w-full px-2.5 py-1.5 rounded-md text-dense font-mono border outline-none resize-y"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
             ></textarea>
           </div>
 
           <div>
-            <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text);">
+            <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text);">
               Working directory <span style="color: var(--semantic-text-dim);">(optional)</span>
             </label>
             <input
@@ -567,7 +567,7 @@ defineExpose({ onSave })
               type="text"
               placeholder="/absolute/path"
               data-testid="cwd-input"
-              class="w-full px-2.5 h-8 rounded-md text-xs font-mono border outline-none"
+              class="w-full px-2.5 h-8 rounded-md text-dense font-mono border outline-none"
               style="background-color: var(--semantic-content-bg); border-color: var(--color-border); color: var(--semantic-text);"
             />
           </div>
@@ -581,7 +581,7 @@ defineExpose({ onSave })
           <div
             v-if="testResult"
             data-testid="test-result"
-            class="px-3 py-2 rounded-md text-xs border"
+            class="px-3 py-2 rounded-md text-dense border"
             :style="testResult.ok
               ? {
                   borderColor: 'var(--color-green)',
@@ -605,13 +605,13 @@ defineExpose({ onSave })
             <div
               v-if="!testResult.ok"
               data-testid="test-error"
-              class="mt-1 font-mono text-[11px]"
+              class="mt-1 font-mono text-meta"
               style="color: var(--semantic-text-muted);"
             >{{ testResult.error }}</div>
             <ul
               v-if="testResult.ok && testResult.tools.length > 0"
               data-testid="test-tools"
-              class="mt-1.5 font-mono text-[11px] space-y-0.5"
+              class="mt-1.5 font-mono text-meta space-y-0.5"
             >
               <li
                 v-for="tool in testResult.tools"
@@ -634,7 +634,7 @@ defineExpose({ onSave })
           <button
             type="button"
             data-testid="test-btn"
-            class="px-3 h-8 rounded-md text-xs border transition-colors duration-150"
+            class="px-3 h-8 rounded-md text-dense border transition-colors duration-150"
             :style="{
               borderColor: 'var(--color-border)',
               color: testing ? 'var(--semantic-text-dim)' : 'var(--semantic-text)',
@@ -649,14 +649,14 @@ defineExpose({ onSave })
             <button
               type="button"
               data-testid="cancel-btn"
-              class="px-3 h-8 rounded-md text-xs border"
+              class="px-3 h-8 rounded-md text-dense border"
               style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
               @click="emit('cancel')"
             >Cancel</button>
             <button
               type="button"
               data-testid="save-btn"
-              class="px-3 h-8 rounded-md text-xs font-medium border"
+              class="px-3 h-8 rounded-md text-dense font-medium border"
               :style="{
                 borderColor: 'var(--color-violet)',
                 backgroundColor: 'var(--color-violet)',

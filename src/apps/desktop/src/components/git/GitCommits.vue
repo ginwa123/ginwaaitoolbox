@@ -241,8 +241,8 @@ defineExpose({ refresh })
 
     <!-- Error -->
     <div v-else-if="error" class="flex-1 flex flex-col items-center justify-center p-4 text-center">
-      <span class="text-2xl mb-2">⚠️</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">{{ error }}</p>
+      <span class="text-title-lg mb-2">⚠️</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">{{ error }}</p>
     </div>
 
     <!-- Not a git repo -->
@@ -250,8 +250,8 @@ defineExpose({ refresh })
       v-else-if="!isGitRepo || !hasInput"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-3xl mb-3">🌿</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">
+      <span class="text-display mb-3">🌿</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">
         {{ !hasInput ? 'Select a workspace to view commits' : 'Not a git repository' }}
       </p>
     </div>
@@ -261,9 +261,9 @@ defineExpose({ refresh })
       v-else-if="commits.length === 0"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-3xl mb-3">📭</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">No commits yet</p>
-      <p v-if="branch" class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+      <span class="text-display mb-3">📭</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">No commits yet</p>
+      <p v-if="branch" class="text-dense mt-1" style="color: var(--semantic-text-dim)">
         Branch: {{ branch }}
       </p>
     </div>
@@ -271,7 +271,7 @@ defineExpose({ refresh })
     <!-- Commit list -->
     <template v-else>
       <div
-        class="px-3 py-2 text-xs flex items-center gap-2 shrink-0"
+        class="px-3 py-2 text-dense flex items-center gap-2 shrink-0"
         style="border-bottom: 1px solid var(--color-border)"
       >
         <span style="color: var(--semantic-text-muted)">🌿</span>
@@ -301,7 +301,7 @@ defineExpose({ refresh })
       <div class="flex-1 overflow-y-auto" @scroll="onScroll">
         <template v-for="commit in commits" :key="commit.sha">
           <button
-            class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors hover:bg-white/5"
+            class="w-full flex items-center gap-2 px-3 py-1.5 text-body text-left transition-colors hover:bg-white/5"
             :style="{
               backgroundColor:
                 selectedSha === commit.sha ? 'var(--semantic-active-bg)' : 'transparent',
@@ -309,11 +309,11 @@ defineExpose({ refresh })
             :title="`${commit.sha}\n${commit.author} — ${formatDate(commit.timestamp)}\n\n${commit.subject}`"
             @click="selectCommit(commit)"
           >
-            <span class="shrink-0 font-mono text-xs" style="color: var(--color-green)">
+            <span class="shrink-0 font-mono text-dense" style="color: var(--color-green)">
               {{ commit.short_sha }}
             </span>
             <span
-              class="shrink-0 text-xs font-medium"
+              class="shrink-0 text-dense font-medium"
               style="color: var(--color-violet)"
               :title="commit.author"
             >
@@ -335,22 +335,22 @@ defineExpose({ refresh })
               background-color: rgba(255, 255, 255, 0.02);
             "
           >
-            <div class="text-xs font-mono break-all" style="color: var(--color-green)">
+            <div class="text-dense font-mono break-all" style="color: var(--color-green)">
               {{ commit.sha }}
             </div>
-            <div class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+            <div class="text-dense mt-1" style="color: var(--semantic-text-dim)">
               {{ commit.author }} &lt;{{ commit.email }}&gt; · {{ formatDate(commit.timestamp) }}
             </div>
             <p
               v-if="detailCache[commit.sha]?.body"
-              class="text-xs mt-1 whitespace-pre-wrap"
+              class="text-dense mt-1 whitespace-pre-wrap"
               style="color: var(--semantic-text)"
             >
               {{ detailCache[commit.sha]?.body }}
             </p>
             <div
               v-if="detailLoading === commit.sha"
-              class="text-xs mt-1"
+              class="text-dense mt-1"
               style="color: var(--semantic-text-dim)"
             >
               Loading files…
@@ -361,7 +361,7 @@ defineExpose({ refresh })
             >
               <template v-for="file in detailCache[commit.sha]?.files ?? []" :key="file.path">
                 <button
-                  class="w-full flex items-center gap-2 text-xs text-left rounded px-1 py-0.5 transition-colors hover:bg-white/5"
+                  class="w-full flex items-center gap-2 text-dense text-left rounded px-1 py-0.5 transition-colors hover:bg-white/5"
                   :title="`Show diff at ${commit.short_sha}`"
                   @click="toggleFile(commit, file)"
                 >
@@ -441,7 +441,7 @@ defineExpose({ refresh })
       </div>
 
       <div
-        class="px-3 py-1.5 text-xs text-right shrink-0"
+        class="px-3 py-1.5 text-dense text-right shrink-0"
         style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim)"
       >
         {{ footerLabel }}

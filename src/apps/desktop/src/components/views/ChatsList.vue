@@ -923,13 +923,13 @@ defineExpose({
       @click="toggleNavSection"
     >
       <span
-        class="text-[var(--sb-fs-icon)] transition-transform duration-200"
+        class="text-meta transition-transform duration-200"
         :style="{ transform: sidebarStore.navExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }"
         style="color: var(--semantic-text-dim)"
         >▶</span
       >
       <span
-        class="text-[var(--sb-fs-section)] font-semibold uppercase tracking-[0.08em]"
+        class="text-micro font-semibold uppercase tracking-[0.08em]"
         style="color: var(--semantic-text-dim)"
         data-testid="recent-section-title"
         >Recent</span
@@ -944,7 +944,7 @@ defineExpose({
           "
           :aria-label="chatsSortDirection === 'desc' ? 'Sort: newest first' : 'Sort: oldest first'"
           data-testid="chats-sort-toggle"
-          class="w-[var(--sb-hit)] h-[var(--sb-hit)] text-[var(--sb-fs-icon)] font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
+          class="w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
           style="color: var(--semantic-text-dim); opacity: 0.7"
         >
           {{ chatsSortDirection === 'desc' ? '↓' : '↑' }}
@@ -969,7 +969,7 @@ defineExpose({
             @click="onChatRowClick($event, item)"
             @auxclick="onChatRowAuxClick($event, item)"
             @contextmenu.prevent="onChatRowContextMenu($event, item)"
-            class="relative w-full flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-[var(--sb-fs-row)] transition-all duration-150 border-t border-transparent overflow-hidden"
+            class="relative w-full flex items-center gap-2 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-all duration-150 border-t border-transparent overflow-hidden"
             :class="isCurrentChat(item.id) ? 'border-[--color-border]/60' : ''"
             :style="
               isCurrentChat(item.id)
@@ -1004,12 +1004,12 @@ defineExpose({
                     d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9"
                   />
                 </svg>
-                <span v-if="prConflicts[item.id]" class="ml-0.5 text-[var(--sb-fs-meta)] font-bold">⚠</span>
+                <span v-if="prConflicts[item.id]" class="ml-0.5 text-micro font-bold">⚠</span>
               </span>
               {{ item.name }}
               <span
                 v-if="item.sub_agent_name"
-                class="ml-1 text-[var(--sb-fs-meta)] font-mono"
+                class="ml-1 text-micro font-mono"
                 style="color: var(--color-violet)"
                 :title="
                   item.parent_session_id ? 'Sub-agent of ' + item.parent_session_id : 'Sub-agent'
@@ -1028,7 +1028,7 @@ defineExpose({
             <!-- Keep the spinner as the only right-side activity marker while processing. -->
             <span
               v-if="!processingState[item.id]"
-              class="text-[var(--sb-fs-meta)] opacity-60 shrink-0 ml-2 flex items-center gap-1"
+              class="text-micro opacity-60 shrink-0 ml-2 flex items-center gap-1"
             >
               <span
                 v-if="isStale(item.last_human_touched_at, item.updated_at)"
@@ -1059,7 +1059,7 @@ defineExpose({
       <!-- Loading indicator -->
       <div v-if="chatsLoading" class="py-2 text-center shrink-0">
         <span
-          class="px-[var(--sb-gutter)] py-2 text-[var(--sb-fs-meta)]"
+          class="px-[var(--sb-gutter)] py-2 text-micro"
           style="color: var(--semantic-text-dim)"
           >Loading...</span
         >

@@ -182,7 +182,7 @@ watch(
           ? `New worktree branches from: ${selected}`
           : 'New worktree branches from the repo HEAD'
       "
-      class="px-2.5 py-1 rounded-md text-xs hover:opacity-80 inline-flex items-center gap-1.5 transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+      class="px-2.5 py-1 rounded-md text-dense hover:opacity-80 inline-flex items-center gap-1.5 transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
       :style="{
         backgroundColor: 'var(--semantic-sidebar-bg)',
         border: '1px solid var(--color-border)',
@@ -200,7 +200,7 @@ watch(
         {{ selected || 'HEAD (default)' }}
       </span>
       <span
-        class="text-[10px] shrink-0"
+        class="text-micro shrink-0"
         style="color: var(--semantic-text-dim);"
       >▾</span>
     </button>
@@ -221,7 +221,7 @@ watch(
           type="text"
           v-model="search"
           placeholder="Search branches…"
-          class="w-full px-2 py-1 rounded-md text-xs font-mono"
+          class="w-full px-2 py-1 rounded-md text-dense font-mono"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -235,7 +235,7 @@ watch(
       <div class="max-h-[260px] overflow-y-auto">
         <button
           type="button"
-          class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between gap-2"
+          class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center justify-between gap-2"
           style="color: var(--semantic-text);"
           data-testid="git-base-branch-select-clear"
           @click="select('')"
@@ -246,7 +246,7 @@ watch(
 
         <div
           v-if="loading"
-          class="px-3 py-2 text-xs"
+          class="px-3 py-2 text-dense"
           style="color: var(--semantic-text-muted);"
           data-testid="git-base-branch-select-loading"
         >
@@ -257,7 +257,7 @@ watch(
           <button
             v-if="customRef !== ''"
             type="button"
-            class="w-full text-left px-3 py-2 text-xs font-mono hover:opacity-80 flex items-center gap-2"
+            class="w-full text-left px-3 py-2 text-dense font-mono hover:opacity-80 flex items-center gap-2"
             style="
               color: var(--semantic-text);
               border-top: 1px solid var(--color-border);
@@ -272,7 +272,7 @@ watch(
             v-for="(branch, idx) in filtered"
             :key="branch.name"
             type="button"
-            class="w-full text-left px-3 py-1.5 text-xs font-mono hover:opacity-80 flex items-center justify-between gap-2"
+            class="w-full text-left px-3 py-1.5 text-dense font-mono hover:opacity-80 flex items-center justify-between gap-2"
             :style="{
               color: 'var(--semantic-text)',
               borderTop: '1px solid var(--color-border)',
@@ -298,7 +298,7 @@ watch(
 
           <div
             v-if="filtered.length === 0"
-            class="px-3 py-2 text-xs"
+            class="px-3 py-2 text-dense"
             style="color: var(--semantic-text-muted);"
             data-testid="git-base-branch-select-empty"
           >

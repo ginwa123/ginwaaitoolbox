@@ -1447,7 +1447,7 @@ defineExpose({
       <div v-if="!isCollapsed" class="flex items-center gap-3">
         <button
           @click="goToSettings"
-          class="text-[var(--sb-fs-meta)] font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+          class="text-micro font-medium transition-colors duration-150 hover:text-[--semantic-text]"
           style="color: var(--semantic-text-dim)"
           title="Settings"
           aria-label="Settings"
@@ -1459,7 +1459,7 @@ defineExpose({
           v-if="authEnabled"
           :disabled="loggingOut"
           @click="handleLogout"
-          class="text-[var(--sb-fs-meta)] font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+          class="text-micro font-medium transition-colors duration-150 hover:text-[--semantic-text]"
           style="color: var(--semantic-text-dim)"
           title="Log out"
           aria-label="Log out"
@@ -1501,13 +1501,13 @@ defineExpose({
       @click="handleNewChat"
     >
       <span
-        class="w-[var(--sb-hit)] text-center text-[var(--sb-fs-icon)] leading-none"
+        class="w-[var(--sb-hit)] text-center text-meta leading-none"
         :style="{ color: 'var(--semantic-text-dim)' }"
         aria-hidden="true"
       >{{ isCreatingChat ? '◌' : '✎' }}</span>
       <span
         v-if="!isCollapsed"
-        class="text-[var(--sb-fs-row)] font-medium"
+        class="text-dense font-medium"
         :style="{ color: 'var(--semantic-text-dim)' }"
       >New Chat</span>
     </button>

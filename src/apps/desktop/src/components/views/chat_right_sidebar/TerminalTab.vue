@@ -584,7 +584,7 @@ onUnmounted(() => {
         type="button"
         role="tab"
         :aria-selected="s.id === activeId"
-        class="flex items-center gap-1 text-[11px] rounded px-2 py-0.5 whitespace-nowrap hover:opacity-80"
+        class="flex items-center gap-1 text-meta rounded px-2 py-0.5 whitespace-nowrap hover:opacity-80"
         :style="
           s.id === activeId
             ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
@@ -608,7 +608,7 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
-        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
+        class="text-meta rounded px-2 py-0.5 hover:opacity-70 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed"
         style="color: var(--semantic-text-dim)"
         :title="
           sessions.length >= MAX_TERMINALS
@@ -622,7 +622,7 @@ onUnmounted(() => {
         +
       </button>
       <span
-        class="text-[11px] whitespace-nowrap"
+        class="text-meta whitespace-nowrap"
         style="color: var(--semantic-text-dim)"
         data-testid="terminal-count"
         :title="`${sessions.length} of ${MAX_TERMINALS} terminals`"
@@ -630,7 +630,7 @@ onUnmounted(() => {
         {{ sessions.length }}/{{ MAX_TERMINALS }}
       </span>
       <span
-        class="text-[11px] truncate flex-1 text-right"
+        class="text-meta truncate flex-1 text-right"
         style="color: var(--semantic-text-dim)"
         data-testid="terminal-cwd"
         :title="cwd"
@@ -639,7 +639,7 @@ onUnmounted(() => {
       </span>
       <button
         type="button"
-        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
+        class="text-meta rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Reconnect active session (new shell)"
         data-testid="terminal-reconnect"
@@ -649,7 +649,7 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
-        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
+        class="text-meta rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Clear terminal"
         data-testid="terminal-clear"
@@ -659,7 +659,7 @@ onUnmounted(() => {
       </button>
       <button
         type="button"
-        class="text-[11px] rounded px-2 py-0.5 hover:opacity-70"
+        class="text-meta rounded px-2 py-0.5 hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Kill active session"
         data-testid="terminal-kill"
@@ -675,13 +675,13 @@ onUnmounted(() => {
         class="absolute inset-0 flex flex-col items-center justify-center gap-2 text-center px-4"
         data-testid="terminal-empty"
       >
-        <div class="text-xs" style="color: var(--semantic-text)">No terminal yet</div>
-        <div class="text-[11px]" style="color: var(--semantic-text-dim)">
+        <div class="text-dense" style="color: var(--semantic-text)">No terminal yet</div>
+        <div class="text-meta" style="color: var(--semantic-text-dim)">
           Terminals only start when you ask - nothing spawns on open.
         </div>
         <button
           type="button"
-          class="text-xs rounded px-3 py-1.5 hover:opacity-80"
+          class="text-dense rounded px-3 py-1.5 hover:opacity-80"
           style="background: var(--semantic-active-bg); color: var(--semantic-text)"
           data-testid="terminal-empty-new"
           @click="newSession"
@@ -691,7 +691,7 @@ onUnmounted(() => {
       </div>
     </div>
     <div
-      class="px-3 h-6 shrink-0 flex items-center text-[11px] truncate"
+      class="px-3 h-6 shrink-0 flex items-center text-meta truncate"
       style="color: var(--semantic-text-dim); border-top: 1px solid var(--color-border)"
       data-testid="terminal-status"
     >

@@ -249,7 +249,7 @@ const handleSkillClick = (skill: api.Skill) => {
       <div class="flex flex-1">
         <button
           @click="activeTab = 'explorer'"
-          class="flex-1 h-full px-3 text-sm font-medium transition-colors"
+          class="flex-1 h-full px-3 text-body font-medium transition-colors"
           :style="{
             color: activeTab === 'explorer' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'explorer' ? 'var(--semantic-active-bg)' : 'transparent',
@@ -261,7 +261,7 @@ const handleSkillClick = (skill: api.Skill) => {
         </button>
         <button
           @click="activeTab = 'git'"
-          class="flex-1 h-full px-3 text-sm font-medium transition-colors flex items-center justify-center gap-1"
+          class="flex-1 h-full px-3 text-body font-medium transition-colors flex items-center justify-center gap-1"
           :style="{
             color: activeTab === 'git' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'git' ? 'var(--semantic-active-bg)' : 'transparent',
@@ -272,7 +272,7 @@ const handleSkillClick = (skill: api.Skill) => {
           Git
           <span
             v-if="hasChanges"
-            class="px-1.5 py-0.5 rounded text-xs font-medium"
+            class="px-1.5 py-0.5 rounded text-dense font-medium"
             style="background-color: var(--color-orange); color: var(--color-bg)"
           >
             {{ changesCount }}
@@ -280,7 +280,7 @@ const handleSkillClick = (skill: api.Skill) => {
         </button>
         <button
           @click="activeTab = 'skills'"
-          class="flex-1 h-full px-3 text-sm font-medium transition-colors flex items-center justify-center gap-1"
+          class="flex-1 h-full px-3 text-body font-medium transition-colors flex items-center justify-center gap-1"
           :style="{
             color: activeTab === 'skills' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'skills' ? 'var(--semantic-active-bg)' : 'transparent',
@@ -331,8 +331,8 @@ const handleSkillClick = (skill: api.Skill) => {
           v-else-if="gitError"
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-2xl mb-2">⚠️</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim)">
+          <span class="text-title-lg mb-2">⚠️</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim)">
             {{ gitError }}
           </p>
         </div>
@@ -342,8 +342,8 @@ const handleSkillClick = (skill: api.Skill) => {
           v-else-if="!isGitRepo || !hasInput"
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-3xl mb-3">🌿</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim)">
+          <span class="text-display mb-3">🌿</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim)">
             {{ !hasInput ? 'Select a workspace to view git status' : 'Not a git repository' }}
           </p>
         </div>
@@ -352,7 +352,7 @@ const handleSkillClick = (skill: api.Skill) => {
         <div v-else class="flex-1 flex flex-col min-h-0">
           <div class="flex shrink-0" style="border-bottom: 1px solid var(--color-border)">
             <button
-              class="flex-1 px-3 py-1.5 text-xs font-medium transition-colors"
+              class="flex-1 px-3 py-1.5 text-dense font-medium transition-colors"
               :style="{
                 color: gitView === 'changes' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
                 borderBottom:
@@ -363,7 +363,7 @@ const handleSkillClick = (skill: api.Skill) => {
               Changes
             </button>
             <button
-              class="flex-1 px-3 py-1.5 text-xs font-medium transition-colors"
+              class="flex-1 px-3 py-1.5 text-dense font-medium transition-colors"
               :style="{
                 color: gitView === 'commits' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
                 borderBottom:
@@ -380,9 +380,9 @@ const handleSkillClick = (skill: api.Skill) => {
               v-if="!hasChanges"
               class="flex-1 flex flex-col items-center justify-center p-4 text-center"
             >
-              <span class="text-3xl mb-3">✓</span>
-              <p class="text-xs" style="color: var(--semantic-text-dim)">Working tree clean</p>
-              <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+              <span class="text-display mb-3">✓</span>
+              <p class="text-dense" style="color: var(--semantic-text-dim)">Working tree clean</p>
+              <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
                 Branch: {{ branch }}
               </p>
             </div>
@@ -391,7 +391,7 @@ const handleSkillClick = (skill: api.Skill) => {
             <div v-else class="flex-1 overflow-y-auto">
               <!-- Branch info -->
               <div
-                class="px-3 py-2 text-xs flex items-center gap-2"
+                class="px-3 py-2 text-dense flex items-center gap-2"
                 style="border-bottom: 1px solid var(--color-border)"
               >
                 <span style="color: var(--semantic-text-muted)">🌿</span>
@@ -421,7 +421,7 @@ const handleSkillClick = (skill: api.Skill) => {
               <!-- Staged Changes -->
               <div v-if="stagedFiles.length > 0" class="py-1">
                 <div
-                  class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+                  class="px-3 py-1.5 text-dense font-semibold uppercase tracking-wide"
                   style="color: var(--color-green)"
                 >
                   Staged Changes ({{ stagedFiles.length }})
@@ -429,15 +429,15 @@ const handleSkillClick = (skill: api.Skill) => {
                 <button
                   v-for="file in stagedFiles"
                   :key="'staged-' + file.path"
-                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
                   @click="handleFileClick(file, true)"
                 >
-                  <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
+                  <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
                   <span class="flex-1 truncate text-left" style="color: var(--semantic-text)">
                     {{ file.path }}
                   </span>
                   <span
-                    class="text-xs px-1.5 py-0.5 rounded"
+                    class="text-dense px-1.5 py-0.5 rounded"
                     style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green)"
                   >
                     {{ getDisplayStatus(file).text }}
@@ -448,7 +448,7 @@ const handleSkillClick = (skill: api.Skill) => {
               <!-- Unstaged Changes -->
               <div v-if="unstagedFiles.length > 0" class="py-1">
                 <div
-                  class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+                  class="px-3 py-1.5 text-dense font-semibold uppercase tracking-wide"
                   style="color: var(--color-orange)"
                 >
                   Changes ({{ unstagedFiles.length }})
@@ -456,15 +456,15 @@ const handleSkillClick = (skill: api.Skill) => {
                 <button
                   v-for="file in unstagedFiles"
                   :key="'unstaged-' + file.path"
-                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
                   @click="handleFileClick(file, false)"
                 >
-                  <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
+                  <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
                   <span class="flex-1 truncate text-left" style="color: var(--semantic-text)">
                     {{ file.path }}
                   </span>
                   <span
-                    class="text-xs px-1.5 py-0.5 rounded"
+                    class="text-dense px-1.5 py-0.5 rounded"
                     style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange)"
                   >
                     {{ getDisplayStatus(file).text }}
@@ -475,7 +475,7 @@ const handleSkillClick = (skill: api.Skill) => {
               <!-- Untracked Files -->
               <div v-if="untrackedFiles.length > 0" class="py-1">
                 <div
-                  class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+                  class="px-3 py-1.5 text-dense font-semibold uppercase tracking-wide"
                   style="color: var(--semantic-text-dim)"
                 >
                   Untracked ({{ untrackedFiles.length }})
@@ -483,15 +483,15 @@ const handleSkillClick = (skill: api.Skill) => {
                 <button
                   v-for="file in untrackedFiles"
                   :key="'untracked-' + file.path"
-                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
                   @click="handleFileClick(file, false)"
                 >
-                  <span class="text-base">❓</span>
+                  <span class="text-lead">❓</span>
                   <span class="flex-1 truncate text-left" style="color: var(--semantic-text-muted)">
                     {{ file.path }}
                   </span>
                   <span
-                    class="text-xs px-1.5 py-0.5 rounded"
+                    class="text-dense px-1.5 py-0.5 rounded"
                     style="
                       background-color: rgba(156, 163, 175, 0.2);
                       color: var(--semantic-text-dim);

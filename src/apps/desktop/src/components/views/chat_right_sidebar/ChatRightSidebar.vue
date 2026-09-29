@@ -171,7 +171,7 @@ defineExpose({
       class="flex items-center gap-2 px-3 h-10 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
-      <span class="text-xs font-semibold flex-1" style="color: var(--semantic-text)">
+      <span class="text-dense font-semibold flex-1" style="color: var(--semantic-text)">
         {{
           activePanel === 'explorer'
             ? 'Explorer'
@@ -201,7 +201,7 @@ defineExpose({
         type="button"
         role="tab"
         :aria-selected="activePanel === 'explorer'"
-        class="flex-1 text-center text-xs rounded-t px-2 py-1.5"
+        class="flex-1 text-center text-dense rounded-t px-2 py-1.5"
         :style="
           activePanel === 'explorer'
             ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
@@ -216,7 +216,7 @@ defineExpose({
         type="button"
         role="tab"
         :aria-selected="activePanel === 'changes'"
-        class="flex-1 text-center text-xs rounded-t px-2 py-1.5"
+        class="flex-1 text-center text-dense rounded-t px-2 py-1.5"
         :style="
           activePanel === 'changes'
             ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'
@@ -231,7 +231,7 @@ defineExpose({
         type="button"
         role="tab"
         :aria-selected="activePanel === 'terminal'"
-        class="flex-1 text-center text-xs rounded-t px-2 py-1.5"
+        class="flex-1 text-center text-dense rounded-t px-2 py-1.5"
         :style="
           activePanel === 'terminal'
             ? 'background: var(--semantic-active-bg); color: var(--semantic-text)'

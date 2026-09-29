@@ -286,7 +286,7 @@ function formatElapsed(ms: number): string {
 
 <template>
   <div 
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': failedCount > 0 || liveSummary.failed > 0 || hasFailed }"
   >
     <!-- Header -->
@@ -296,7 +296,7 @@ function formatElapsed(ms: number): string {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">spawn_sub_agent</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">spawn_sub_agent</span>
       <span class="flex-1 truncate text-left text-[var(--color-violet)] font-medium" :title="(inLiveMode ? liveProgress.length : isStarting ? expectedCount : agentCount) + ' sub-agent(s)'">
         <template v-if="inLiveMode">
           {{ liveProgress.length }} sub-agent{{ liveProgress.length !== 1 ? 's' : '' }}
@@ -311,7 +311,7 @@ function formatElapsed(ms: number): string {
       </span>
       <span
         v-if="hasInheritedContext"
-        class="text-[10px] text-[var(--color-violet)] opacity-70 whitespace-nowrap"
+        class="text-micro text-[var(--color-violet)] opacity-70 whitespace-nowrap"
         title="At least one sub-agent was spawned with parent conversation history"
       >
         ↻ with parent history
@@ -348,7 +348,7 @@ function formatElapsed(ms: number): string {
         </span>
       </span>
       <!-- Toggle caret: hidden in live/starting mode (body is always shown). -->
-      <span v-if="!inLiveMode && !isStarting && (agentCount > 0 || agents.length > 0)" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span v-if="!inLiveMode && !isStarting && (agentCount > 0 || agents.length > 0)" class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -363,10 +363,10 @@ function formatElapsed(ms: number): string {
           <div class="overflow-hidden">
             <div class="flex items-center gap-1 px-2 py-1.5 select-none">
               <span class="w-2 h-2 rounded-full shrink-0 bg-yellow-500 animate-pulse" data-testid="starting-row-dot"></span>
-              <span class="text-[var(--semantic-text-muted)] text-xs" data-testid="starting-row-text">
+              <span class="text-[var(--semantic-text-muted)] text-dense" data-testid="starting-row-text">
                 Spawning sub-agent{{ expectedCount !== 1 ? 's' : '' }}…
               </span>
-              <span v-if="expectedCount > 0" class="text-[10px] text-[var(--semantic-text-muted)] whitespace-nowrap">
+              <span v-if="expectedCount > 0" class="text-micro text-[var(--semantic-text-muted)] whitespace-nowrap">
                 {{ expectedCount }} requested
               </span>
             </div>
@@ -374,7 +374,7 @@ function formatElapsed(ms: number): string {
               <div
                 v-for="(arg, idx) in subAgentArgs"
                 :key="`starting-${idx}`"
-                class="text-xs text-[var(--semantic-text-muted)] truncate"
+                class="text-dense text-[var(--semantic-text-muted)] truncate"
                 :title="arg.instruction"
               >
                 • {{ arg.agent_name }}
@@ -390,11 +390,11 @@ function formatElapsed(ms: number): string {
           <div class="overflow-hidden">
             <div class="flex items-center gap-1 px-2 py-1.5 select-none bg-red-500/5">
               <span class="w-2 h-2 rounded-full shrink-0 bg-red-500" data-testid="start-error-dot"></span>
-              <span class="text-xs text-red-500 font-medium" data-testid="start-error-label">failed to spawn</span>
+              <span class="text-dense text-red-500 font-medium" data-testid="start-error-label">failed to spawn</span>
             </div>
             <div v-if="startError" class="px-3 py-2 bg-red-500/5">
               <pre
-                class="whitespace-pre-wrap break-all text-xs leading-relaxed text-red-500 max-w-full min-w-0 overflow-x-auto"
+                class="whitespace-pre-wrap break-all text-dense leading-relaxed text-red-500 max-w-full min-w-0 overflow-x-auto"
                 data-testid="start-error-text"
               >{{ startError }}</pre>
             </div>
@@ -425,10 +425,10 @@ function formatElapsed(ms: number): string {
                 "
                 :data-testid="`live-dot-${idx}`"
               ></span>
-              <span class="text-[var(--semantic-text)] font-medium text-xs">{{ row.name || `agent_${idx}` }}</span>
+              <span class="text-[var(--semantic-text)] font-medium text-dense">{{ row.name || `agent_${idx}` }}</span>
               <span
                 v-if="subAgentArgs?.[idx]?.inherited_context && subAgentArgs[idx].inherited_context !== 'none'"
-                class="text-[10px] px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
+                class="text-micro px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
                 style="background-color: var(--color-violet); color: white; opacity: 0.85;"
                 :title="`Parent history: ${describeInheritedContext(subAgentArgs[idx].inherited_context!)}`"
               >
@@ -436,20 +436,20 @@ function formatElapsed(ms: number): string {
               </span>
               <span
                 v-if="row.sessionId"
-                class="text-[var(--semantic-text-muted)] text-xs font-mono truncate max-w-[120px]"
+                class="text-[var(--semantic-text-muted)] text-dense font-mono truncate max-w-[120px]"
                 :title="row.sessionId"
               >
                 {{ row.sessionId }}
               </span>
               <span
                 v-if="formatElapsed(row.elapsedMs)"
-                class="text-[10px] text-[var(--semantic-text-muted)] whitespace-nowrap"
+                class="text-micro text-[var(--semantic-text-muted)] whitespace-nowrap"
               >
                 {{ formatElapsed(row.elapsedMs) }}
               </span>
               <button
                 v-if="row.sessionId"
-                class="text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] px-1 rounded text-xs leading-none"
+                class="text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] px-1 rounded text-dense leading-none"
                 data-testid="peek-button"
                 :title="`Peek into ${row.name}'s progress`"
                 @click.stop="peekLiveAgent(idx, row)"
@@ -459,19 +459,19 @@ function formatElapsed(ms: number): string {
               <span class="flex-1"></span>
               <span
                 v-if="row.status === 'done'"
-                class="text-xs text-green-500"
+                class="text-dense text-green-500"
               >
                 done
               </span>
               <span
                 v-else-if="row.status === 'failed'"
-                class="text-xs text-red-500"
+                class="text-dense text-red-500"
               >
                 failed
               </span>
               <span
                 v-else
-                class="text-xs text-[var(--semantic-text-muted)]"
+                class="text-dense text-[var(--semantic-text-muted)]"
                 data-testid="running-badge"
               >
                 running
@@ -497,21 +497,21 @@ function formatElapsed(ms: number): string {
               class="w-2 h-2 rounded-full shrink-0"
               :class="agent.success ? 'bg-green-500' : 'bg-red-500'"
             ></span>
-            <span class="text-[var(--semantic-text)] font-medium text-xs">{{ agent.name }}</span>
+            <span class="text-[var(--semantic-text)] font-medium text-dense">{{ agent.name }}</span>
             <span
               v-if="agent.randomFallback"
-              class="text-[10px] px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
+              class="text-micro px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
               style="background-color: var(--semantic-text-muted); color: white; opacity: 0.85;"
               title="Requested agent_name was not found in LlmConfig.sub_agents; a random name was used and the orchestrator's default model was applied."
             >
               random
             </span>
-            <span v-if="agent.sessionId" class="text-[var(--semantic-text-muted)] text-xs font-mono truncate max-w-[120px]" :title="agent.sessionId">
+            <span v-if="agent.sessionId" class="text-[var(--semantic-text-muted)] text-dense font-mono truncate max-w-[120px]" :title="agent.sessionId">
               {{ agent.sessionId }}
             </span>
             <span
               v-if="subAgentArgs?.[idx]?.inherited_context && subAgentArgs[idx].inherited_context !== 'none'"
-              class="text-[10px] px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
+              class="text-micro px-1.5 py-0.5 rounded font-mono whitespace-nowrap"
               style="background-color: var(--color-violet); color: white; opacity: 0.85;"
               :title="`Parent history: ${describeInheritedContext(subAgentArgs[idx].inherited_context!)}`"
             >
@@ -523,7 +523,7 @@ function formatElapsed(ms: number): string {
                  without leaving the parent chat. -->
             <button
               v-if="agent.sessionId"
-              class="text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] px-1 rounded text-xs leading-none"
+              class="text-[var(--semantic-text-muted)] hover:text-[var(--color-violet)] px-1 rounded text-dense leading-none"
               data-testid="peek-button"
               :title="`Peek into ${agent.name}'s progress`"
               @click.stop="peekAgent(idx, agent)"
@@ -533,25 +533,25 @@ function formatElapsed(ms: number): string {
             <span class="flex-1"></span>
             <span 
               v-if="agent.success" 
-              class="text-xs text-green-500"
+              class="text-dense text-green-500"
             >
               success
             </span>
             <span 
               v-else 
-              class="text-xs text-red-500"
+              class="text-dense text-red-500"
             >
               failed
             </span>
             <button 
               v-if="agent.response && expandedAgents.has(idx)"
-              class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+              class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
               @click.stop="copyResponse($event, agent.response!)" 
               title="Copy response"
             >
               ⎘
             </button>
-            <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+            <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
               {{ expandedAgents.has(idx) ? '−' : '+' }}
             </span>
           </div>
@@ -559,13 +559,13 @@ function formatElapsed(ms: number): string {
           <!-- Expanded agent response/error -->
           <div v-if="expandedAgents.has(idx) && agent.response" class="px-3 py-2 bg-black/[0.02]">
             <pre 
-              class="whitespace-pre-wrap break-all text-xs leading-relaxed max-h-64 overflow-y-auto max-w-full min-w-0 overflow-x-auto"
+              class="whitespace-pre-wrap break-all text-dense leading-relaxed max-h-64 overflow-y-auto max-w-full min-w-0 overflow-x-auto"
               style="color: var(--semantic-text);"
             >{{ agent.response }}</pre>
           </div>
           <div v-if="expandedAgents.has(idx) && agent.error" class="px-3 py-2 bg-red-500/5">
             <pre 
-              class="whitespace-pre-wrap break-all text-xs leading-relaxed text-red-500 max-w-full min-w-0 overflow-x-auto"
+              class="whitespace-pre-wrap break-all text-dense leading-relaxed text-red-500 max-w-full min-w-0 overflow-x-auto"
             >{{ agent.error }}</pre>
           </div>
         </div>

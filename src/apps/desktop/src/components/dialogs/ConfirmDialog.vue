@@ -42,10 +42,10 @@ const handleClose = () => {
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
         >
           <div class="px-5 pt-5 pb-4">
-            <h3 class="text-base font-semibold" style="color: var(--semantic-text);">
+            <h3 class="text-lead font-semibold" style="color: var(--semantic-text);">
               {{ title || 'Confirm' }}
             </h3>
-            <p class="text-sm mt-2" style="color: var(--semantic-text-muted);">
+            <p class="text-body mt-2" style="color: var(--semantic-text-muted);">
               {{ message }}
             </p>
           </div>
@@ -53,14 +53,14 @@ const handleClose = () => {
           <div class="px-5 pb-5 flex justify-end gap-2">
             <button
               @click="handleClose"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
             >
               {{ cancelText || 'Cancel' }}
             </button>
             <button
               @click="handleConfirm"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:opacity-80"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 hover:opacity-80"
               style="background-color: var(--semantic-error); color: white;"
             >
               {{ confirmText || 'Delete' }}

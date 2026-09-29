@@ -80,7 +80,7 @@ const otherPages = computed(() => {
           class="flex items-center justify-between px-4 py-3"
           :style="{ borderBottom: '1px solid var(--color-border)' }"
         >
-          <h3 class="text-base font-semibold" style="color: var(--semantic-text);">
+          <h3 class="text-lead font-semibold" style="color: var(--semantic-text);">
             Move "{{ elementName }}" to which page?
           </h3>
           <button
@@ -99,7 +99,7 @@ const otherPages = computed(() => {
         <div class="overflow-y-auto px-2 py-2" :style="{ maxHeight: '60vh' }">
           <div
             v-if="otherPages.length === 0"
-            class="px-4 py-8 text-center text-sm"
+            class="px-4 py-8 text-center text-body"
             style="color: var(--semantic-text-dim);"
             data-testid="move-to-page-dialog-only-page"
           >
@@ -115,7 +115,7 @@ const otherPages = computed(() => {
             @click="emit('select', page.id)"
           >
             <span class="truncate">{{ page.name || '(untitled)' }}</span>
-            <span class="text-sm" style="color: var(--semantic-text-dim);">→</span>
+            <span class="text-body" style="color: var(--semantic-text-dim);">→</span>
           </button>
         </div>
       </div>

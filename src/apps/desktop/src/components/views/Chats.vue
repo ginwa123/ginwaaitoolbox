@@ -46,13 +46,13 @@ async function handleCreateWorkspace() {
     data-testid="home-landing"
     class="flex flex-col items-center justify-center h-full px-6 text-center"
   >
-    <span class="text-3xl leading-none" style="color: var(--color-violet)" aria-hidden="true"
+    <span class="text-display leading-none" style="color: var(--color-violet)" aria-hidden="true"
       >✦</span
     >
 
     <h1
       data-testid="home-wordmark"
-      class="mt-4 text-4xl font-semibold tracking-tight"
+      class="mt-4 text-display-lg font-semibold tracking-tight"
       style="color: var(--semantic-text)"
     >
       nalar
@@ -60,7 +60,7 @@ async function handleCreateWorkspace() {
 
     <p
       data-testid="home-tagline"
-      class="mt-2 text-xs uppercase"
+      class="mt-2 text-dense uppercase"
       style="color: var(--semantic-text-muted); letter-spacing: 0.2em"
     >
       AI agent workspace
@@ -68,7 +68,7 @@ async function handleCreateWorkspace() {
 
     <p
       data-testid="home-blurb"
-      class="mt-6 max-w-[520px] text-sm leading-relaxed"
+      class="mt-6 max-w-[520px] text-body leading-relaxed"
       style="color: var(--semantic-text-muted)"
     >
       Nalar is an AI agent workspace. It runs your own model against real files: chat with it, break
@@ -84,7 +84,7 @@ async function handleCreateWorkspace() {
         v-model="workspaceName"
         data-testid="home-workspace-name"
         type="text"
-        class="w-[240px] rounded-md px-3 py-2 text-sm"
+        class="w-[240px] rounded-md px-3 py-2 text-body"
         style="
           background-color: var(--semantic-card-bg);
           border: 1px solid var(--color-border);
@@ -96,7 +96,7 @@ async function handleCreateWorkspace() {
       <button
         type="submit"
         data-testid="home-create-workspace-submit"
-        class="rounded-md px-3 py-2 text-sm font-semibold transition-opacity hover:opacity-90 disabled:opacity-50"
+        class="rounded-md px-3 py-2 text-body font-semibold transition-opacity hover:opacity-90 disabled:opacity-50"
         style="background-color: var(--color-violet); color: #fff"
         :disabled="!workspaceName.trim() || isCreating"
       >
@@ -104,7 +104,7 @@ async function handleCreateWorkspace() {
       </button>
     </form>
 
-    <p class="mt-10 text-xs" style="color: var(--semantic-text-dim)" data-testid="home-hint">
+    <p class="mt-10 text-dense" style="color: var(--semantic-text-dim)" data-testid="home-hint">
       Create a workspace, then start a project, kanban, or design canvas inside it.
     </p>
   </div>

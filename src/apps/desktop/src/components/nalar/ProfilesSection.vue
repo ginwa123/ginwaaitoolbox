@@ -92,16 +92,16 @@ function compactionSummary(profile: ProfileRow): string {
     <!-- Header with active pill + reset button + add button -->
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <span class="text-xs font-mono" style="color: var(--semantic-text-dim);">Active</span>
+        <span class="text-dense font-mono" style="color: var(--semantic-text-dim);">Active</span>
         <span
           v-if="activeProfile"
           data-testid="active-pill"
-          class="text-xs px-2 h-6 inline-flex items-center rounded-md font-mono"
+          class="text-dense px-2 h-6 inline-flex items-center rounded-md font-mono"
           style="background-color: var(--color-violet); color: #181616;"
         >{{ activeProfile }}</span>
         <span
           v-else
-          class="text-xs italic"
+          class="text-dense italic"
           style="color: var(--semantic-text-dim);"
         >(none — pick one below)</span>
         <!-- Reset: only when a profile is currently active. Clears
@@ -113,7 +113,7 @@ function compactionSummary(profile: ProfileRow): string {
           data-testid="reset-active-btn"
           :title="`Clear active profile — every chat will use the top-level config`"
           @click="emit('clearActive')"
-          class="px-2 h-6 rounded-md text-[10px] font-mono border transition-colors duration-150 hover:opacity-80"
+          class="px-2 h-6 rounded-md text-micro font-mono border transition-colors duration-150 hover:opacity-80"
           style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
         >Reset</button>
       </div>
@@ -121,7 +121,7 @@ function compactionSummary(profile: ProfileRow): string {
         type="button"
         data-testid="add-btn"
         @click="emit('add')"
-        class="px-3 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+        class="px-3 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
         style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
       >+ Add profile</button>
     </div>
@@ -155,7 +155,7 @@ function compactionSummary(profile: ProfileRow): string {
                 :aria-expanded="isExpanded(profileExpansionKey(profile.name))"
                 :data-testid="`expand-btn-${profile.name}`"
                 @click="toggleExpand(profileExpansionKey(profile.name))"
-                class="w-4 h-4 flex items-center justify-center text-xs font-mono hover:opacity-80"
+                class="w-4 h-4 flex items-center justify-center text-dense font-mono hover:opacity-80"
                 style="color: var(--semantic-text-muted);"
               >{{ isExpanded(profileExpansionKey(profile.name)) ? '▼' : '▶' }}</button>
               <span
@@ -164,17 +164,17 @@ function compactionSummary(profile: ProfileRow): string {
                 style="background-color: var(--color-violet);"
                 aria-label="Active"
               />
-              <span class="text-sm font-medium" style="color: var(--semantic-text);">{{ profile.name }}</span>
+              <span class="text-body font-medium" style="color: var(--semantic-text);">{{ profile.name }}</span>
               <span
                 v-if="activeProfile === profile.name"
-                class="text-[10px] px-1.5 h-5 inline-flex items-center rounded font-mono"
+                class="text-micro px-1.5 h-5 inline-flex items-center rounded font-mono"
                 style="background-color: var(--color-violet); color: #181616;"
               >active</span>
             </div>
-            <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
+            <div class="text-dense font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
               {{ profile.model }} · {{ profile.base_url || '—' }}
             </div>
-            <div class="text-xs font-mono mt-1" style="color: var(--semantic-text-dim);">
+            <div class="text-dense font-mono mt-1" style="color: var(--semantic-text-dim);">
               <template v-if="profile.sub_agents && profile.sub_agents.length > 0">
                 <span style="color: var(--color-violet);">▾ {{ profile.sub_agents.length }} sub-agent{{ profile.sub_agents.length === 1 ? '' : 's' }}</span>
               </template>
@@ -188,7 +188,7 @@ function compactionSummary(profile: ProfileRow): string {
                  set. Clicking Edit still opens the full modal where
                  the override can be toggled. -->
             <div
-              class="text-xs font-mono mt-0.5 truncate"
+              class="text-dense font-mono mt-0.5 truncate"
               style="color: var(--semantic-text-dim);"
               data-testid="compaction-summary"
             >
@@ -201,21 +201,21 @@ function compactionSummary(profile: ProfileRow): string {
               type="button"
               data-testid="set-active-btn"
               @click="emit('setActive', profile.name)"
-              class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense border transition-colors duration-150"
               style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
             >Set active</button>
             <button
               type="button"
               data-testid="edit-btn"
               @click="emit('edit', profile)"
-              class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense border transition-colors duration-150"
               style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
             >Edit</button>
             <button
               type="button"
               data-testid="delete-btn"
               @click="emit('delete', profile.name)"
-              class="px-2.5 h-7 rounded-md text-xs transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense transition-colors duration-150"
               style="color: var(--color-red);"
               aria-label="Delete profile"
             >⌫</button>
@@ -231,7 +231,7 @@ function compactionSummary(profile: ProfileRow): string {
         >
           <div
             v-if="!profile.sub_agents || profile.sub_agents.length === 0"
-            class="text-xs italic py-1"
+            class="text-dense italic py-1"
             style="color: var(--semantic-text-dim);"
           >
             No sub-agents yet. Add one below — each profile owns its sub-agents.
@@ -251,22 +251,22 @@ function compactionSummary(profile: ProfileRow): string {
                   :aria-expanded="isExpanded(subAgentExpansionKey(profile.name, sa.name))"
                   :data-testid="`expand-sub-agent-btn-${profile.name}-${sa.name}`"
                   @click="toggleExpand(subAgentExpansionKey(profile.name, sa.name))"
-                  class="w-3 h-3 shrink-0 flex items-center justify-center text-[10px] font-mono hover:opacity-80"
+                  class="w-3 h-3 shrink-0 flex items-center justify-center text-micro font-mono hover:opacity-80"
                   style="color: var(--semantic-text-muted);"
                 >{{ isExpanded(subAgentExpansionKey(profile.name, sa.name)) ? '▼' : '▶' }}</button>
                 <div class="flex-1 min-w-0">
-                  <div class="text-xs font-medium" style="color: var(--semantic-text);">{{ sa.name }}</div>
+                  <div class="text-dense font-medium" style="color: var(--semantic-text);">{{ sa.name }}</div>
                   <div
                     v-if="isExpanded(subAgentExpansionKey(profile.name, sa.name))"
                     class="min-w-0"
                     :data-testid="`sub-agent-details-${profile.name}-${sa.name}`"
                   >
-                    <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
+                    <div class="text-dense font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
                       {{ sa.model }} · {{ sa.base_url || '—' }}
                     </div>
                     <div
                       v-if="sa.system_prompt"
-                      class="text-xs mt-1"
+                      class="text-dense mt-1"
                       style="color: var(--semantic-text-muted); white-space: pre-wrap;"
                     >{{ sa.system_prompt }}</div>
                   </div>
@@ -276,14 +276,14 @@ function compactionSummary(profile: ProfileRow): string {
                     type="button"
                     :data-testid="`edit-sub-agent-btn-${profile.name}-${sa.name}`"
                     @click="emit('editSubAgent', profile.name, sa)"
-                    class="px-2 h-6 rounded text-xs border transition-colors duration-150"
+                    class="px-2 h-6 rounded text-dense border transition-colors duration-150"
                     style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
                   >Edit</button>
                   <button
                     type="button"
                     :data-testid="`delete-sub-agent-btn-${profile.name}-${sa.name}`"
                     @click="emit('deleteSubAgent', profile.name, sa.name)"
-                    class="px-2 h-6 rounded text-xs transition-colors duration-150"
+                    class="px-2 h-6 rounded text-dense transition-colors duration-150"
                     style="color: var(--color-red);"
                     :aria-label="`Delete sub-agent ${sa.name}`"
                   >⌫</button>
@@ -295,7 +295,7 @@ function compactionSummary(profile: ProfileRow): string {
             type="button"
             :data-testid="`add-sub-agent-btn-${profile.name}`"
             @click="emit('addSubAgent', profile.name)"
-            class="px-2.5 h-7 rounded text-xs font-medium border transition-colors duration-150"
+            class="px-2.5 h-7 rounded text-dense font-medium border transition-colors duration-150"
             style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
           >+ Add sub-agent</button>
         </div>

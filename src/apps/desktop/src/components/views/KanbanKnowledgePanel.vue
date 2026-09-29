@@ -227,7 +227,7 @@ const handlePromptRemove = async (promptId: string) => {
   <div data-testid="kanban-knowledge-panel">
     <div
       v-if="loading"
-      class="px-5 py-8 text-sm text-center"
+      class="px-5 py-8 text-body text-center"
       style="color: var(--semantic-text-dim)"
       data-testid="kanban-knowledge-loading"
     >
@@ -235,7 +235,7 @@ const handlePromptRemove = async (promptId: string) => {
     </div>
     <div
       v-else-if="loadError && !config"
-      class="px-5 py-6 text-sm text-center"
+      class="px-5 py-6 text-body text-center"
       style="color: rgb(239, 68, 68)"
       data-testid="kanban-knowledge-error"
     >
@@ -253,15 +253,15 @@ const handlePromptRemove = async (promptId: string) => {
       <!-- ─── Knowledge section ─── -->
       <section data-testid="kanban-agent-knowledge-panel">
         <div class="flex items-center justify-between mb-2">
-          <h4 class="text-sm font-semibold" style="color: var(--semantic-text)">
+          <h4 class="text-body font-semibold" style="color: var(--semantic-text)">
             Knowledge
-            <span class="ml-1 text-xs font-normal" style="color: var(--semantic-text-dim)">
+            <span class="ml-1 text-dense font-normal" style="color: var(--semantic-text-dim)">
               ({{ knowledges.length }})
             </span>
           </h4>
           <button
             type="button"
-            class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+            class="px-2 py-1 rounded text-dense font-medium hover:opacity-80 transition-opacity"
             style="
               background-color: var(--semantic-sidebar-bg);
               border: 1px solid var(--color-border);
@@ -277,7 +277,7 @@ const handlePromptRemove = async (promptId: string) => {
           <li
             v-for="k in knowledges"
             :key="k.id"
-            class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+            class="flex items-center gap-2 px-3 py-2 rounded-lg text-dense"
             style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border)"
             :data-testid="`kanban-agent-knowledge-row-${k.id}`"
           >
@@ -313,7 +313,7 @@ const handlePromptRemove = async (promptId: string) => {
         </ul>
         <p
           v-else
-          class="text-xs"
+          class="text-dense"
           style="color: var(--semantic-text-dim)"
           data-testid="kanban-agent-knowledge-empty"
         >
@@ -324,15 +324,15 @@ const handlePromptRemove = async (promptId: string) => {
       <!-- ─── System Prompt section ─── -->
       <section data-testid="kanban-agent-system-prompt-panel">
         <div class="flex items-center justify-between mb-2">
-          <h4 class="text-sm font-semibold" style="color: var(--semantic-text)">
+          <h4 class="text-body font-semibold" style="color: var(--semantic-text)">
             System Prompt
-            <span class="ml-1 text-xs font-normal" style="color: var(--semantic-text-dim)">
+            <span class="ml-1 text-dense font-normal" style="color: var(--semantic-text-dim)">
               ({{ systemPrompts.length }})
             </span>
           </h4>
           <button
             type="button"
-            class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+            class="px-2 py-1 rounded text-dense font-medium hover:opacity-80 transition-opacity"
             style="
               background-color: var(--semantic-sidebar-bg);
               border: 1px solid var(--color-border);
@@ -353,7 +353,7 @@ const handlePromptRemove = async (promptId: string) => {
           <li
             v-for="p in systemPrompts"
             :key="p.id"
-            class="flex items-center gap-2 px-3 py-2 rounded-lg text-xs"
+            class="flex items-center gap-2 px-3 py-2 rounded-lg text-dense"
             style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border)"
             :data-testid="`kanban-agent-system-prompt-row-${p.id}`"
           >
@@ -389,7 +389,7 @@ const handlePromptRemove = async (promptId: string) => {
         </ul>
         <p
           v-else
-          class="text-xs"
+          class="text-dense"
           style="color: var(--semantic-text-dim)"
           data-testid="kanban-agent-system-prompt-empty"
         >
@@ -400,7 +400,7 @@ const handlePromptRemove = async (promptId: string) => {
       <!-- Non-fatal mutation error banner -->
       <p
         v-if="loadError && config"
-        class="text-xs px-3 py-2 rounded-lg"
+        class="text-dense px-3 py-2 rounded-lg"
         style="color: rgb(239, 68, 68); background-color: rgba(239, 68, 68, 0.08)"
         data-testid="kanban-knowledge-mutation-error"
       >
@@ -415,7 +415,7 @@ const handlePromptRemove = async (promptId: string) => {
       class="px-5 py-8 flex flex-col items-center gap-3"
       data-testid="kanban-knowledge-unconfigured"
     >
-      <p class="text-sm text-center" style="color: var(--semantic-text-dim)">
+      <p class="text-body text-center" style="color: var(--semantic-text-dim)">
         No knowledge or system prompt entries yet. Enable a tool on the
         <strong>Tools</strong> tab first to create this board's agent
         config, then come back here.

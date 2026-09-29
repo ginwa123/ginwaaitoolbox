@@ -257,7 +257,7 @@ describe('AskUser — rendering', () => {
   it('gives the free-text box room for a real answer', () => {
     const wrapper = mountCard(pendingData({ options: [] }))
     const box = wrapper.find('[data-testid="ask-user-freetext"]')
-    // Three rows of `text-xs` plus a min-height, not the original two-line sliver.
+    // Three rows of `text-dense` plus a min-height, not the original two-line sliver.
     expect(box.attributes('rows')).toBe('3')
     expect(box.attributes('style')).toContain('min-height')
     wrapper.unmount()

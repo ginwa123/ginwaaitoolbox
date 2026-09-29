@@ -172,7 +172,7 @@ const copyPath = async (e: Event, path: string) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
     :data-testid="`generate-image-card`"
   >
@@ -183,26 +183,26 @@ const copyPath = async (e: Event, path: string) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">generate_image</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">generate_image</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="headerTitle"
       >
         {{ headerLabel }}
       </span>
 
       <!-- Right meta -->
-      <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-xs">
+      <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-dense">
         {{ rightMeta }}
       </span>
 
       <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
+      <span class="text-dense font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
 
       <!-- Toggle indicator -->
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -212,7 +212,7 @@ const copyPath = async (e: Event, path: string) => {
       <!-- Error message -->
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
@@ -224,7 +224,7 @@ const copyPath = async (e: Event, path: string) => {
         <div
           v-for="img in parsed.images"
           :key="img.path"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
           :data-testid="`generate-image-row-${img.index}`"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">
@@ -237,7 +237,7 @@ const copyPath = async (e: Event, path: string) => {
             {{ (img.bytes / 1024).toFixed(1) }} KB · {{ img.mime }}
           </span>
           <button
-            class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+            class="px-1 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
             title="Copy path"
             :data-testid="`generate-image-copy-${img.index}`"
             @click="(e) => copyPath(e, img.path)"
@@ -249,7 +249,7 @@ const copyPath = async (e: Event, path: string) => {
         <!-- revised_prompt (DALL-E 3 / gpt-image-1 only) -->
         <div
           v-if="parsed.revisedPrompt"
-          class="flex gap-2 px-2 py-1.5 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-dense"
           :data-testid="`generate-image-revised-prompt`"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">

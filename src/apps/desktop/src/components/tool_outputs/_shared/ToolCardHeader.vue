@@ -17,7 +17,7 @@ import { useInjectOpenInCodeEditor } from '@/composables/useCodeEditor'
  *   - expand/collapse chevron
  *   - click + keyboard handling for expand
  *
- * The caller wraps this in a `<div class="font-mono text-xs rounded-md ...">`
+ * The caller wraps this in a `<div class="font-mono text-dense rounded-md ...">`
  * card frame (which controls the red border on error).
  */
 interface Props {
@@ -120,28 +120,28 @@ const openInEditorClick = (e: Event) => {
     @click="handleHeaderClick"
     @keydown="handleHeaderKeyDown"
   >
-    <span class="text-[var(--color-violet)] font-semibold text-xs">{{ toolName }}</span>
-    <span v-if="inlineTag" class="text-xs" :class="inlineTagClass">{{ inlineTag }}</span>
+    <span class="text-[var(--color-violet)] font-semibold text-dense">{{ toolName }}</span>
+    <span v-if="inlineTag" class="text-dense" :class="inlineTagClass">{{ inlineTag }}</span>
     <span
-      class="flex-1 min-w-0 truncate text-left text-xs"
+      class="flex-1 min-w-0 truncate text-left text-dense"
       :class="primaryClass"
       :title="primaryTitle ?? primary ?? ''"
       data-testid="tool-card-primary"
       >{{ primary || 'unknown' }}</span
     >
-    <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-xs">{{ rightMeta }}</span>
+    <span v-if="rightMeta" class="text-[var(--semantic-text-muted)] text-dense">{{ rightMeta }}</span>
     <span
       v-if="running"
       data-testid="tool-card-running"
-      class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+      class="text-micro text-yellow-500 animate-pulse shrink-0"
       >running…</span
     >
-    <span class="text-xs font-semibold" :class="success ? 'text-green-500' : 'text-red-500'">
+    <span class="text-dense font-semibold" :class="success ? 'text-green-500' : 'text-red-500'">
       {{ success ? '✓' : '✗' }}
     </span>
     <button
       v-if="showCopy && hasCopyValue"
-      class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+      class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
       :title="`Copy ${toolName}`"
       @click="copyToClipboard"
     >
@@ -162,7 +162,7 @@ const openInEditorClick = (e: Event) => {
         />
       </svg>
     </button>
-    <span v-if="expandable" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+    <span v-if="expandable" class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
       {{ expanded ? '−' : '+' }}
     </span>
   </div>

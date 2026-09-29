@@ -162,7 +162,7 @@ const DiffSplitSide = defineComponent({
         return h(
           'div',
           {
-            class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+            class: 'overflow-x-auto text-dense leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
           },
           [
             h(
@@ -178,7 +178,7 @@ const DiffSplitSide = defineComponent({
       return h(
         'div',
         {
-          class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+          class: 'overflow-x-auto text-dense leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
         },
         [
           h(
@@ -329,7 +329,7 @@ const DiffUnifiedSide = defineComponent({
         return h(
           'div',
           {
-            class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+            class: 'overflow-x-auto text-dense leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
           },
           [
             h(
@@ -345,7 +345,7 @@ const DiffUnifiedSide = defineComponent({
       return h(
         'div',
         {
-          class: 'overflow-x-auto text-xs leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
+          class: 'overflow-x-auto text-dense leading-relaxed font-mono bg-[var(--semantic-card-bg)]',
         },
         [
           h(
@@ -462,7 +462,7 @@ void readMode
   >
     <!-- Header: file-path title, change count, mode toggle -->
     <div
-      class="flex items-center justify-between gap-2 px-2 py-1 border-b border-[var(--color-border)] bg-black/[0.02] text-xs"
+      class="flex items-center justify-between gap-2 px-2 py-1 border-b border-[var(--color-border)] bg-black/[0.02] text-dense"
     >
       <div class="flex items-center gap-2 truncate">
         <span class="text-[var(--color-violet)] font-semibold">diff</span>
@@ -480,7 +480,7 @@ void readMode
         <div class="inline-flex rounded border border-[var(--color-border)] overflow-hidden">
           <button
             type="button"
-            class="px-2 py-0.5 text-xs border-none cursor-pointer"
+            class="px-2 py-0.5 text-dense border-none cursor-pointer"
             :class="
               mode === 'split'
                 ? 'bg-[var(--color-violet)] text-white'
@@ -492,7 +492,7 @@ void readMode
           </button>
           <button
             type="button"
-            class="px-2 py-0.5 text-xs border-none cursor-pointer"
+            class="px-2 py-0.5 text-dense border-none cursor-pointer"
             :class="
               mode === 'unified'
                 ? 'bg-[var(--color-violet)] text-white'
@@ -510,7 +510,7 @@ void readMode
     <div v-if="mode === 'split'" class="flex divide-x divide-[var(--color-border)]">
       <div class="flex-1 min-w-0">
         <div
-          class="px-2 py-0.5 text-xs font-semibold uppercase bg-black/[0.02] border-b border-[var(--color-border)] text-red-500"
+          class="px-2 py-0.5 text-dense font-semibold uppercase bg-black/[0.02] border-b border-[var(--color-border)] text-red-500"
         >
           Before
         </div>
@@ -518,7 +518,7 @@ void readMode
       </div>
       <div class="flex-1 min-w-0">
         <div
-          class="px-2 py-0.5 text-xs font-semibold uppercase bg-black/[0.02] border-b border-[var(--color-border)] text-green-500"
+          class="px-2 py-0.5 text-dense font-semibold uppercase bg-black/[0.02] border-b border-[var(--color-border)] text-green-500"
         >
           After
         </div>

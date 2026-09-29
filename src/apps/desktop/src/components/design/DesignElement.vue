@@ -902,7 +902,7 @@ onUnmounted(() => {
            the fetch returning. -->
       <div
         v-else-if="isLoadingHtml"
-        class="absolute inset-0 flex items-center justify-center text-[10px]"
+        class="absolute inset-0 flex items-center justify-center text-micro"
         style="color: var(--semantic-text-dim)"
         data-testid="design-element-loading"
       >
@@ -955,7 +955,7 @@ onUnmounted(() => {
     <!-- Element name label (top-left corner) — useful when the shape
          is small / fill is invisible. -->
     <div
-      class="absolute -top-5 left-0 text-[10px] pointer-events-none whitespace-nowrap"
+      class="absolute -top-5 left-0 text-micro pointer-events-none whitespace-nowrap"
       style="color: var(--semantic-text-dim)"
       v-if="selected && !previewMode"
     >

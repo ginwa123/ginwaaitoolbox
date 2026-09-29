@@ -256,14 +256,14 @@ watch(() => props.show, async (show) => {
           <div class="px-5 pt-5 pb-4">
             <h3
               id="add-memory-title"
-              class="text-base font-semibold flex items-center gap-2"
+              class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
               <span aria-hidden="true">📝</span>
               Add Markdown
             </h3>
             <p
-              class="text-xs mt-1"
+              class="text-dense mt-1"
               style="color: var(--semantic-text-dim);"
             >
               The memory file is created at
@@ -274,7 +274,7 @@ watch(() => props.show, async (show) => {
           <!-- Folder picker -->
           <div class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Folder
@@ -283,7 +283,7 @@ watch(() => props.show, async (show) => {
               type="button"
               @click="showPicker = true"
               data-testid="add-memory-choose-folder"
-              class="w-full px-3 py-2 rounded-lg text-sm flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
+              class="w-full px-3 py-2 rounded-lg text-body flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
               :style="{
                 backgroundColor: cwd
                   ? 'var(--semantic-active-bg)'
@@ -302,13 +302,13 @@ watch(() => props.show, async (show) => {
               </span>
               <span
                 v-if="cwd"
-                class="text-xs shrink-0"
+                class="text-dense shrink-0"
                 style="color: var(--semantic-text-dim);"
                 aria-hidden="true"
               >Browse</span>
               <span
                 v-else
-                class="text-xs shrink-0"
+                class="text-dense shrink-0"
                 style="color: var(--semantic-text-dim);"
                 aria-hidden="true"
               >📂</span>
@@ -318,7 +318,7 @@ watch(() => props.show, async (show) => {
           <!-- Name -->
           <div class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Name (must end in <code>.md</code>)
@@ -329,7 +329,7 @@ watch(() => props.show, async (show) => {
               type="text"
               placeholder="my-memory.md"
               data-testid="add-memory-name"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 font-mono"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200 font-mono"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -343,7 +343,7 @@ watch(() => props.show, async (show) => {
           <!-- Content -->
           <div class="px-5 pb-4 flex-1 flex flex-col overflow-hidden">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Initial Content
@@ -352,7 +352,7 @@ watch(() => props.show, async (show) => {
               v-model="content"
               data-testid="add-memory-content"
               rows="6"
-              class="flex-1 w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 font-mono resize-none"
+              class="flex-1 w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200 font-mono resize-none"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -370,7 +370,7 @@ watch(() => props.show, async (show) => {
               @click="handleClose"
               :disabled="isSubmitting"
               data-testid="add-memory-cancel"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -390,7 +390,7 @@ watch(() => props.show, async (show) => {
                 !isValidMemoryName(name.trim())
               "
               data-testid="add-memory-submit"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
                 background: linear-gradient(
                   135deg,

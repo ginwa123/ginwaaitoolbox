@@ -187,7 +187,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !parsed.success }"
     data-testid="used-tools"
   >
@@ -212,7 +212,7 @@ const handleToggle = (next: boolean) => {
       <!-- Error body — visible when expanded AND the call failed. -->
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="used-tools-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -222,7 +222,7 @@ const handleToggle = (next: boolean) => {
       <!-- Empty result (valid response, nothing equipped for this session). -->
       <div
         v-else-if="parsed.isEmpty"
-        class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-xs"
+        class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-dense"
         data-testid="used-tools-empty"
       >
         No tools equipped for this session.
@@ -235,12 +235,12 @@ const handleToggle = (next: boolean) => {
             type="text"
             placeholder="Filter by name or description…"
             spellcheck="false"
-            class="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-transparent px-1.5 py-0.5 text-xs text-[var(--semantic-text)] placeholder:text-[var(--semantic-text-muted)] focus:outline-none focus:border-[var(--color-violet)]"
+            class="min-w-0 flex-1 rounded border border-[var(--color-border)] bg-transparent px-1.5 py-0.5 text-dense text-[var(--semantic-text)] placeholder:text-[var(--semantic-text-muted)] focus:outline-none focus:border-[var(--color-violet)]"
             data-testid="used-tools-filter"
           />
           <span
             v-if="isFiltered"
-            class="text-[0.65rem] text-[var(--semantic-text-muted)] shrink-0"
+            class="text-micro text-[var(--semantic-text-muted)] shrink-0"
             data-testid="used-tools-filter-count"
           >
             {{ visibleRows.length }}/{{ parsed.rows.length }}
@@ -249,7 +249,7 @@ const handleToggle = (next: boolean) => {
 
         <div
           v-if="isFiltered && visibleRows.length === 0"
-          class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-xs"
+          class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-dense"
           data-testid="used-tools-no-match"
         >
           No tool matches "{{ filter.trim() }}".
@@ -268,7 +268,7 @@ const handleToggle = (next: boolean) => {
               }}</span>
               <span
                 v-if="row.isMcp"
-                class="text-[0.65rem] px-1 rounded bg-green-500/10 text-green-500"
+                class="text-micro px-1 rounded bg-green-500/10 text-green-500"
                 data-testid="used-tools-mcp-chip"
                 >mcp</span
               >
