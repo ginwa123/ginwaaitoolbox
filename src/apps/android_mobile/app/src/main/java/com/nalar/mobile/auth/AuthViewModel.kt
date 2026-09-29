@@ -104,7 +104,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         sessionStore = SessionCookieStore(application),
         // Recording wraps the real transport so the inspector shows the same
         // bytes the auth flow sent, including a rejected sign-in.
-        httpTransport = RecordingAuthTransport(HttpsAuthTransport(AuthConfig.BASE_URL)),
+        httpTransport = RecordingAuthTransport(HttpsAuthTransport { AuthConfig.BASE_URL }),
         meCache = RoomAuthMeCache(application),
     )
     private val _uiState = MutableStateFlow(AuthUiState())
@@ -149,6 +149,40 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 else -> authUiStateFor(result)
+            }
+        }
+    }
+
+    /**
+     * The reader pointed the app at a different server.
+     *
+     * The one thing that must happen here is that the app stops presenting the
+     * old server's identity. A session cookie is a bearer credential issued by
+     * one deployment: the new one has never seen it, and the account-scoped
+     * caches are that deployment's rows under a namespace derived from it. So
+     * the cookie and the `/me` cache go, the phase lands on [SessionPhase.NeedsLogin]
+     * without a restore — asking the new server about a cookie it did not issue
+     * can only produce a 401, which would read as "wrong password" rather than
+     * as "different server" — and the sign-in form is what the reader sees
+     * next, which is the thing they asked for by changing the server.
+     *
+     * The in-flight restore is cancelled first. Left running it would land its
+     * verdict *after* this one and put the app back on the old server's answer,
+     * which is the failure mode where the change appears to have not taken.
+     */
+    fun onServerChanged() {
+        restoreJob?.cancel()
+        if (_uiState.value.isLoggingOut) return
+        _uiState.update { it.copy(isLoggingOut = true) }
+
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { client.forgetSession() }
+            // A device that could not drop its own cookie has to say so, rather
+            // than showing a login form that will silently be signed straight
+            // back in by the cookie still on disk.
+            _uiState.value = when (result) {
+                is AuthResult.Unavailable -> signedOutUiStateFor(result)
+                else -> AuthUiState(phase = SessionPhase.NeedsLogin)
             }
         }
     }

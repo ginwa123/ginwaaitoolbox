@@ -4,8 +4,9 @@ import com.nalar.mobile.BuildConfig
 import com.nalar.mobile.http.HttpHeader
 import com.nalar.mobile.http.HttpRequestSpec
 import com.nalar.mobile.http.HttpsHttpExchange
-import org.json.JSONObject
+import com.nalar.mobile.server.requireUsableBaseUrl
 import java.net.HttpURLConnection
+import org.json.JSONObject
 
 data class AuthUser(
     val id: String,
@@ -62,29 +63,36 @@ interface AuthTransport {
     )
 }
 
-class HttpsAuthTransport(baseUrl: String) : AuthTransport {
-    private val normalizedBaseUrl = baseUrl.trimEnd('/')
+/**
+ * The real transport, over a host that can change while this object lives.
+ *
+ * [baseUrlProvider] is called on **every request**, not once here. That is the
+ * difference between this being a setting and this being a constant: a captured
+ * `val` would mean the app could only ever be pointed at the host it was
+ * constructed with, and the four ViewModels that build a transport each do so
+ * during `MainActivity`'s first composition, so a change would need the whole
+ * graph torn down. Reading per request means the change lands on the next call.
+ *
+ * The scheme guard moved with it, from `init` to [request]. It used to run
+ * before anything was asked of the client, which was safe only because the host
+ * was a build constant. Now a host is a person-typed setting, and a value this
+ * build cannot open a socket to has to fail as a rejected request — the
+ * `AuthResult.Unavailable` a person can read — rather than as an
+ * `IllegalArgumentException` out of a constructor, which would be a launch crash
+ * with no way to reach the screen that fixes it.
+ */
+class HttpsAuthTransport(
+    private val baseUrlProvider: () -> String,
+) : AuthTransport {
+    // Deliberately no `String` overload. One would let
+    // `HttpsAuthTransport(AuthConfig.BASE_URL)` keep compiling and keep
+    // capturing, which is the whole bug this class was changed to remove — and
+    // it would do so with no warning, at every call site. A lambda is the only
+    // way in, so a caller that wants a fixed host writes `{ host }` and says so.
     private val exchange = HttpsHttpExchange(
         connectTimeoutMillis = NETWORK_TIMEOUT_MILLIS,
         readTimeoutMillis = NETWORK_TIMEOUT_MILLIS,
     )
-
-    init {
-        // HTTPS is still the rule. The one exception is a debug build that has
-        // been pointed at a nalar running on the machine hosting the emulator —
-        // the functional UI suite's seam — and `ALLOW_INSECURE_HTTP` is false in
-        // every release build, so this cannot reach a shipped APK.
-        require(
-            normalizedBaseUrl.startsWith("https://") ||
-                (BuildConfig.ALLOW_INSECURE_HTTP && normalizedBaseUrl.startsWith("http://")),
-        ) {
-            if (BuildConfig.ALLOW_INSECURE_HTTP) {
-                "Nalar API must use HTTP or HTTPS"
-            } else {
-                "Nalar API must use HTTPS"
-            }
-        }
-    }
 
     override fun post(
         path: String,
@@ -109,10 +117,11 @@ class HttpsAuthTransport(baseUrl: String) : AuthTransport {
         body: String?,
         headers: Map<String, String>,
     ): AuthHttpResponse {
+        val baseUrl = requireUsableBaseUrl(baseUrlProvider())
         val response = exchange.execute(
             HttpRequestSpec(
                 method = method,
-                url = "$normalizedBaseUrl$path",
+                url = "$baseUrl$path",
                 headers = headers.map { (name, value) -> HttpHeader(name, value) },
                 body = body,
             ),
@@ -133,12 +142,13 @@ class HttpsAuthTransport(baseUrl: String) : AuthTransport {
 
 class AuthClient(
     private val sessionStore: SessionStore,
-    baseUrl: String = AuthConfig.BASE_URL,
+    baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     httpTransport: AuthTransport? = null,
     private val meCache: AuthMeCache? = null,
     private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
-    private val transport: AuthTransport = httpTransport ?: HttpsAuthTransport(baseUrl)
+    private val transport: AuthTransport =
+        httpTransport ?: HttpsAuthTransport(baseUrlProvider)
 
     fun login(email: String, password: String): AuthResult {
         val requestBody = JSONObject()
@@ -277,7 +287,22 @@ class AuthClient(
                 // Local logout must still succeed when the server is unreachable.
             }
         }
-        // Do this first: once the cookie is gone there is no fingerprint, so
+        return forgetSession()
+    }
+
+    /**
+     * Drops the saved session without asking any server about it.
+     *
+     * [logout] posts first so the server can end its own side; this does not,
+     * and the difference is the whole reason it is a separate method rather than
+     * a flag. When the reader points the app at a different server, the cookie
+     * in hand was issued by the *old* one and means nothing to the new one —
+     * posting it would be sending one deployment's credential to another
+     * deployment, to a host the person just typed. So switching servers forgets
+     * locally and lets the next sign-in establish a new one.
+     */
+    fun forgetSession(): AuthResult {
+        // The cache first: once the cookie is gone there is no fingerprint, so
         // the entry would otherwise be orphaned rather than erased.
         meCache?.clear()
         return try {

@@ -44,6 +44,15 @@ class InsecureHttpExchangeTest {
     private lateinit var server: ServerSocket
     private val accepted = CopyOnWriteArrayList<Socket>()
 
+    /**
+     * The request lines the stub was actually handed.
+     *
+     * The stub answers 200 to anything, so a doubled slash in the path — the
+     * whole point of the normalisation-order test — is invisible in the status
+     * code. The bytes the client wrote are the only place it shows up.
+     */
+    private val requestLines = CopyOnWriteArrayList<String>()
+
     @Before
     fun startServer() {
         server = ServerSocket(0)
@@ -61,6 +70,7 @@ class InsecureHttpExchangeTest {
                         // Never read past the blank line: there is no body here.
                         val reader: BufferedReader = socket.getInputStream().bufferedReader()
                         var line = reader.readLine()
+                        if (line != null) requestLines += line
                         while (line != null && line.isNotEmpty()) line = reader.readLine()
                         val body = """{"ok":true}"""
                         val head = buildString {
@@ -92,7 +102,23 @@ class InsecureHttpExchangeTest {
 
     private fun baseUrl() = "http://127.0.0.1:${server.localPort}"
 
-    // ─── the constructor guard ─────────────────────────────────────────────
+    // ─── the guard, on the request path ────────────────────────────────────
+    //
+    // These three moved from "constructing it is the assertion" to "the request
+    // is the assertion". The host is a person-typed setting now, resolved per
+    // request, so the scheme rule has to be enforced where the value is used:
+    // an `IllegalArgumentException` out of a constructor would crash the app on
+    // launch for a value the person set, with no way to reach the screen that
+    // would fix it.
+
+    /** Fails the first request to [url], and returns what refused it. */
+    private fun refusalFor(url: String): IllegalArgumentException =
+        assertThrows(
+            "$url must be refused",
+            IllegalArgumentException::class.java,
+        ) {
+            HttpsAuthTransport { url }.get(path = "/api/auth/me", headers = emptyMap())
+        }
 
     @Test
     fun `the debug build accepts a plain-http base url`() {
@@ -101,15 +127,21 @@ class InsecureHttpExchangeTest {
             BuildConfig.ALLOW_INSECURE_HTTP,
         )
 
-        // Constructing *is* the assertion.
-        HttpsAuthTransport(baseUrl())
+        // 127.0.0.1 is one of the three hosts the debug
+        // `network_security_config.xml` grants cleartext to, so the request goes
+        // out over plain HTTP and the scheme rule stays out of it.
+        val response = HttpsAuthTransport { baseUrl() }
+            .get(path = "/api/auth/me", headers = emptyMap())
+
+        // A round trip, not a construction: the scheme rule now lives on the
+        // request path, so the only proof that it let this through is a server
+        // answering.
+        assertEquals(200, response.statusCode)
     }
 
     @Test
     fun `a scheme that is neither http nor https is still refused`() {
-        val thrown = assertThrows(IllegalArgumentException::class.java) {
-            HttpsAuthTransport("ftp://127.0.0.1:${server.localPort}")
-        }
+        val thrown = refusalFor("ftp://127.0.0.1:${server.localPort}")
 
         assertTrue(
             "the failure has to name the rule it broke, not just 'invalid': ${thrown.message}",
@@ -121,8 +153,15 @@ class InsecureHttpExchangeTest {
     fun `a trailing slash does not change the decision`() {
         // The normalisation happens before the guard, so this pins the order:
         // a guard that ran first would accept `http://x/` and then build
-        // `http://x//api/...` URLs.
-        HttpsAuthTransport("${baseUrl()}/")
+        // `http://x//api/...` URLs. The stub answers 200 to anything, so the
+        // request line is where a doubled slash would actually show up.
+        HttpsAuthTransport { "${baseUrl()}/" }
+            .get(path = "/api/auth/me", headers = emptyMap())
+
+        assertTrue(
+            "a doubled slash reached the server: $requestLines",
+            requestLines.any { it == "GET /api/auth/me HTTP/1.1" },
+        )
     }
 
     // ─── the two exchanges ─────────────────────────────────────────────────

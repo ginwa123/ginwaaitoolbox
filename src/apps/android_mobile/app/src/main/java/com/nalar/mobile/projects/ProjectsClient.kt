@@ -19,10 +19,11 @@ import java.net.HttpURLConnection
  */
 class ProjectsClient(
     private val sessionStore: SessionStore,
-    baseUrl: String = AuthConfig.BASE_URL,
+    baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     httpTransport: AuthTransport? = null,
 ) {
-    private val transport: AuthTransport = httpTransport ?: HttpsAuthTransport(baseUrl)
+    private val transport: AuthTransport =
+        httpTransport ?: HttpsAuthTransport(baseUrlProvider)
 
     /** Every project in one workspace. Not paginated — the endpoint takes none. */
     fun loadProjects(workspaceId: String): RecentsResult<List<ProjectSummary>> = get(

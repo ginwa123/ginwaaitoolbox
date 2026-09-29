@@ -33,10 +33,11 @@ sealed interface ChatResult<out T> {
  */
 class ChatClient(
     private val sessionStore: SessionStore,
-    baseUrl: String = AuthConfig.BASE_URL,
+    baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     httpTransport: AuthTransport? = null,
 ) {
-    private val transport: AuthTransport = httpTransport ?: HttpsAuthTransport(baseUrl)
+    private val transport: AuthTransport =
+        httpTransport ?: HttpsAuthTransport(baseUrlProvider)
 
     fun loadMessages(
         sessionId: String,

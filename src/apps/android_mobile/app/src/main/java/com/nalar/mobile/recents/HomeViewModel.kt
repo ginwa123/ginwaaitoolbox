@@ -1218,7 +1218,7 @@ class HomeViewModel(
                         // Recorded like auth, so the inspector shows the exact
                         // bytes the sidebar sent.
                         httpTransport = RecordingAuthTransport(
-                            HttpsAuthTransport(AuthConfig.BASE_URL),
+                            HttpsAuthTransport { AuthConfig.BASE_URL },
                         ),
                     ),
                     cache = RoomRecentsCache(application),
@@ -1228,7 +1228,7 @@ class HomeViewModel(
                     projectsClient = ProjectsClient(
                         sessionStore = SessionCookieStore(application),
                         httpTransport = RecordingAuthTransport(
-                            HttpsAuthTransport(AuthConfig.BASE_URL),
+                            HttpsAuthTransport { AuthConfig.BASE_URL },
                         ),
                     ),
                     projectsCache = RoomProjectsCache(application),

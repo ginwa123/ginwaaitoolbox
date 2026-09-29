@@ -15,7 +15,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.AuthViewModel
+import com.nalar.mobile.server.PrefsBaseUrlStore
+import com.nalar.mobile.server.ServerChange
+import com.nalar.mobile.server.ServerUrl
 import com.nalar.mobile.auth.SessionCookieStore
 import com.nalar.mobile.chat.ChatUiState
 import com.nalar.mobile.chat.ChatViewModel
@@ -84,6 +88,53 @@ class MainActivity : ComponentActivity() {
                 // subscribers below are handed this one.
                 val sseBus: SseBus = remember(application) {
                     SseBusHolder.get(SessionCookieStore(application))
+                }
+
+                // Sampled here so the server row redraws the moment the holder
+                // changes. Collected above the graph, which is right here
+                // precisely because the change *is* an app-wide event: every
+                // auth-scoped screen below is re-placed by it.
+                val serverBaseUrl by ServerUrl.current.collectAsState()
+
+                // The one place a server change becomes an app-wide reset.
+                //
+                // Not `signOut`, and the difference is the point. A sign-out
+                // posts `/api/auth/logout` so the old server can end its own
+                // side; a *server change* must not, because by the time this
+                // runs the app is already pointed somewhere else and that POST
+                // would be one deployment's cookie sent to another deployment,
+                // to a host the person just typed. So the cookie, the `/me`
+                // cache, the account-scoped rows and the open socket are dropped
+                // locally, and the next sign-in establishes a new session.
+                val onChangeServer: (String) -> ServerChange = { raw ->
+                    val change = ServerUrl.update(raw)
+                    // Re-saving the address already in use changes nothing, and
+                    // must cost nothing: signing the person out to re-point the
+                    // app at the same server would be a surprising price for
+                    // pressing Save.
+                    if (change is ServerChange.Applied && change.baseUrl != serverBaseUrl) {
+                        homeViewModel.onSignedOut()
+                        chatViewModel.onSignedOut()
+                        workerViewModel.onSignedOut()
+                        sseBus.close()
+                        authViewModel.onServerChanged()
+                    }
+                    change
+                }
+
+                val onUseDefaultServer: () -> ServerChange = {
+                    val change = ServerUrl.resetToBuildDefault()
+                    // Same shape as the branch above, reached from a button
+                    // rather than a field, so it shares its "changed or not"
+                    // question instead of assuming the answer.
+                    if (change is ServerChange.Applied && change.baseUrl != serverBaseUrl) {
+                        homeViewModel.onSignedOut()
+                        chatViewModel.onSignedOut()
+                        workerViewModel.onSignedOut()
+                        sseBus.close()
+                        authViewModel.onServerChanged()
+                    }
+                    change
                 }
 
                 // One sign-out, three entry points: the sidebar's "Log out", the
@@ -208,6 +259,10 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     runningSessionIds = runningSessionIds,
+                    serverBaseUrl = serverBaseUrl,
+                    defaultServerBaseUrl = AuthConfig.BUILD_DEFAULT_BASE_URL,
+                    onChangeServer = onChangeServer,
+                    onUseDefaultServer = onUseDefaultServer,
                 )
             }
         }

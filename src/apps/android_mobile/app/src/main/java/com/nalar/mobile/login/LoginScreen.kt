@@ -61,6 +61,10 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.nalar.mobile.auth.AuthConfig
+import com.nalar.mobile.server.ServerAddressDialog
+import com.nalar.mobile.server.ServerAddressRow
+import com.nalar.mobile.server.ServerChange
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarAccentSoft
 import com.nalar.mobile.ui.NalarAqua
@@ -112,7 +116,17 @@ fun LoginScreen(
     authError: String? = null,
     isAuthenticating: Boolean = false,
     onOpenNetworkInspector: () -> Unit = {},
+    /**
+     * The server this app is pointed at, and the way to point it somewhere
+     * else. Defaults keep the screen renderable in a test that is not about
+     * this, exactly like every other defaulted action on it.
+     */
+    serverBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    defaultServerBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    onChangeServer: (String) -> ServerChange = { ServerChange.Applied(serverBaseUrl) },
+    onUseDefaultServer: () -> ServerChange = { ServerChange.Applied(defaultServerBaseUrl) },
 ) {
+    var serverDialogOpen by remember { mutableStateOf(false) }
     var email by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var passwordVisible by remember { mutableStateOf(false) }
@@ -154,6 +168,19 @@ fun LoginScreen(
                 imageVector = Icons.Filled.Insights,
                 contentDescription = "Open network inspector",
                 tint = NalarDim,
+            )
+        }
+
+        // In the `Box` beside the form, not inside it: the dialog is about the
+        // server rather than about the account, so it has to sit outside the
+        // card the credentials are in or it reads as part of the sign-in.
+        if (serverDialogOpen) {
+            ServerAddressDialog(
+                currentBaseUrl = serverBaseUrl,
+                defaultBaseUrl = defaultServerBaseUrl,
+                onSave = onChangeServer,
+                onUseDefault = onUseDefaultServer,
+                onDismiss = { serverDialogOpen = false },
             )
         }
 
@@ -336,6 +363,19 @@ fun LoginScreen(
             }
 
             Spacer(Modifier.height(24.dp))
+
+            // Below the card, above the sign-off line, and on both auth screens.
+            // A self-hoster installing the app has to be able to find this
+            // before the first sign-in, and a one-line row with the host spelled
+            // out is what tells them the app is even capable of pointing
+            // somewhere else.
+            ServerAddressRow(
+                baseUrl = serverBaseUrl,
+                onChange = { serverDialogOpen = true },
+                modifier = Modifier.widthIn(max = 420.dp),
+            )
+
+            Spacer(Modifier.height(12.dp))
 
             Text(
                 text = "Nalar · your private AI workspace",

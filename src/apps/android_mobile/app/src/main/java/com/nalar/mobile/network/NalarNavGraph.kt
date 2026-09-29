@@ -48,8 +48,10 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import kotlinx.coroutines.flow.StateFlow
 import androidx.navigation.navDeepLink
+import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.AuthRestoringScreen
 import com.nalar.mobile.auth.AuthUiState
+import com.nalar.mobile.server.ServerChange
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatScreen
 import com.nalar.mobile.chat.ChatUiState
@@ -350,6 +352,20 @@ fun NalarNavGraph(
      * rendered with inert data needs no worker behind it.
      */
     runningSessionIds: Set<String> = emptySet(),
+    /**
+     * The server this app is pointed at, and the two ways to change it.
+     *
+     * Sampled as a **value** above the `NavHost`, not collected here. The
+     * server only ever changes from a dialog the person opened themselves, and
+     * the change already re-places every auth-scoped view — so there is nothing
+     * for a subscription to save here, and collecting it would put a
+     * recomposition of the whole graph (drawer included) on the critical path of
+     * every keystroke in the field.
+     */
+    serverBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    defaultServerBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    onChangeServer: (String) -> ServerChange = { ServerChange.Applied(serverBaseUrl) },
+    onUseDefaultServer: () -> ServerChange = { ServerChange.Applied(defaultServerBaseUrl) },
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -624,6 +640,10 @@ fun NalarNavGraph(
                     errorMessage = authState.errorMessage,
                     onRetry = onRetrySession,
                     onUseAnotherAccount = onUseAnotherAccount,
+                    serverBaseUrl = serverBaseUrl,
+                    defaultServerBaseUrl = defaultServerBaseUrl,
+                    onChangeServer = onChangeServer,
+                    onUseDefaultServer = onUseDefaultServer,
                 )
 
                 SessionPhase.NeedsLogin -> LoginScreen(
@@ -633,6 +653,10 @@ fun NalarNavGraph(
                         onSignIn(credentials.email, credentials.password)
                     },
                     onOpenNetworkInspector = openInspector,
+                    serverBaseUrl = serverBaseUrl,
+                    defaultServerBaseUrl = defaultServerBaseUrl,
+                    onChangeServer = onChangeServer,
+                    onUseDefaultServer = onUseDefaultServer,
                 )
 
                 SessionPhase.Authenticated -> MobileHomeScreen(

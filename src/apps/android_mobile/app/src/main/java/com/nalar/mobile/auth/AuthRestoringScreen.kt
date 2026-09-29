@@ -17,11 +17,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.nalar.mobile.server.ServerAddressDialog
+import com.nalar.mobile.server.ServerAddressRow
+import com.nalar.mobile.server.ServerChange
 import com.nalar.mobile.ui.NalarAccent
 import com.nalar.mobile.ui.NalarBackground
 import com.nalar.mobile.ui.NalarBorder
@@ -36,7 +43,23 @@ fun AuthRestoringScreen(
     errorMessage: String? = null,
     onRetry: (() -> Unit)? = null,
     onUseAnotherAccount: (() -> Unit)? = null,
+    /**
+     * The server, and the way to change it — offered **only in the error
+     * state**, because this is where a wrong or unreachable address lands.
+     *
+     * The restore call goes to whatever host the app is pointed at, fails, and
+     * the screen says "Session check failed" with a Try again button. Try again
+     * against a typo'd domain fails identically, for ever, and the only way out
+     * is a control this screen has to offer itself: the login screen's server
+     * row is one "Sign in" tap away, and a person who cannot reach their server
+     * is exactly the person who most needs to change which server that is.
+     */
+    serverBaseUrl: String? = null,
+    defaultServerBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    onChangeServer: ((String) -> ServerChange)? = null,
+    onUseDefaultServer: (() -> ServerChange)? = null,
 ) {
+    var serverDialogOpen by remember { mutableStateOf(false) }
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -45,6 +68,20 @@ fun AuthRestoringScreen(
             .navigationBarsPadding(),
         contentAlignment = Alignment.Center,
     ) {
+        if (serverDialogOpen && serverBaseUrl != null && onChangeServer != null) {
+            ServerAddressDialog(
+                currentBaseUrl = serverBaseUrl,
+                defaultBaseUrl = defaultServerBaseUrl,
+                onSave = onChangeServer,
+                // The "Use the default server" escape hatch is a no-op here in
+                // the sense that it is a second, equally valid way to say the
+                // same thing; it is wired to the same callback so both end in
+                // one purge.
+                onUseDefault = onUseDefaultServer ?: { ServerChange.Applied(defaultServerBaseUrl) },
+                onDismiss = { serverDialogOpen = false },
+            )
+        }
+
         Column(
             modifier = Modifier.padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -109,6 +146,16 @@ fun AuthRestoringScreen(
                     color = NalarDim,
                     textAlign = TextAlign.Center,
                 )
+
+                // Not a tab and not a separate route: a dialog over the screen
+                // the person is already on, so the way back is the way they
+                // arrived.
+                if (serverBaseUrl != null && onChangeServer != null) {
+                    ServerAddressRow(
+                        baseUrl = serverBaseUrl,
+                        onChange = { serverDialogOpen = true },
+                    )
+                }
             }
         }
     }
