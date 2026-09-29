@@ -1414,11 +1414,18 @@ test "writeFile - two consecutive calls return independent path allocations" {
 // documents the agreement rather than a regression test. The regression
 // itself is Windows-only and lives in the two Windows-gated tests below,
 // plus the static contract that `write_file` no longer hand-rolls dirname.
-test "parentDirToCreate: POSIX nested paths resolve normally (guard, not a regression test)" {
+test "parentDirToCreate: nested paths resolve normally (guard, not a regression test)" {
+    // True on every platform: std.fs.path.dirname treats both separators
+    // as separators, so a `/`-joined path has the same parent on Windows.
     try std.testing.expectEqualStrings("/a/b", parentDirToCreate("/a/b/c.txt").?);
-    // On a POSIX host `D:/notes.txt` has parent `D:` — that is the correct
-    // POSIX answer, and it is exactly what the old scan produced. This is
-    // why the drive-root bug never reproduced off Windows.
+    // POSIX-only, and the difference IS the point. On a POSIX host
+    // `D:/notes.txt` has parent `D:` — the correct POSIX answer, and
+    // exactly what the old hand-rolled scan produced, which is why the
+    // drive-root bug never reproduced off Windows. On Windows the same
+    // input is `D:/`, because a drive root keeps its separator. So this
+    // line is POSIX-only by construction, and asserting the POSIX value
+    // on Windows would be asserting the bug back into existence.
+    if (@import("builtin").os.tag == .windows) return;
     try std.testing.expectEqualStrings("D:", parentDirToCreate("D:/notes.txt").?);
 }
 
@@ -1446,6 +1453,26 @@ test "parentDirToCreate: a drive-root file resolves to the drive root on Windows
 // drive-root path must succeed rather than fail inside createDirPath.
 test "writeFile: create_with_dir succeeds for a file in the drive root on Windows" {
     if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    // Whether a drive ROOT is writable is a property of the machine, not of
+    // this code, and a GitHub-hosted Windows runner says no: `C:\`'s DACL
+    // grants Authenticated Users "Create folders" but not "Create files", so
+    // the write below dies with AccessDenied and says nothing at all about
+    // the bug under test. Probe with the same call shape first and skip with
+    // the reason, rather than reporting a red that a maintainer has to
+    // reverse-engineer from a return trace.
+    //
+    // The CAUSE stays pinned on this platform even when this skips: the two
+    // tests above assert `parentDirToCreate` directly with no I/O at all,
+    // and the static-contract test below pins that the tool delegates to
+    // `std.fs.path.dirname` rather than re-deriving a parent by scanning.
+    const probe = "C:\\nalar_wf_probe.txt";
+    std.Io.Dir.cwd().deleteFile(std.testing.io, probe) catch {};
+    std.Io.Dir.cwd().createFile(std.testing.io, probe, .{}) catch |err| {
+        std.debug.print("skipping: drive root is not writable ({s})\n", .{@errorName(err)});
+        return error.SkipZigTest;
+    };
+    std.Io.Dir.cwd().deleteFile(std.testing.io, probe) catch {};
+
     // `std.Io.Timestamp.nanoseconds` is `i96`, and `@truncate` refuses a
     // signed source ("expected unsigned integer type, found 'i96'"), so
     // reinterpret it unsigned first and keep the low 32 bits.
