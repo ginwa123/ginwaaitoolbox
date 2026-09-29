@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
@@ -19,47 +21,50 @@ pub const WriteFileResult = struct {
     }
 };
 
+/// Parent directory to create for `path`, or null when there is nothing to
+/// create.
+///
+/// This replaces a hand-rolled "index of the last separator" scan. That
+/// scan was separator-aware but not *root*-aware: for `C:\notes.txt` it
+/// cut at index 2 and produced `"C:"`, which is a DRIVE-RELATIVE name and
+/// not a directory, so `createDirPath` failed on a file that was plainly
+/// writable. On POSIX the same input shape is `/notes.txt`, where the index
+/// is 0 and the old `> 0` guard skipped the call entirely — which is why
+/// the bug only ever appeared on Windows.
+///
+/// `std.fs.path.dirname` is the one answer that is correct on every
+/// platform: it knows about volumes, UNC shares, and both separators, and
+/// it returns null when the parent is a root that already exists.
+pub fn parentDirToCreate(path: []const u8) ?[]const u8 {
+    return std.fs.path.dirname(path);
+}
+
 pub fn writeFile(
     allocator: std.mem.Allocator,
     io: std.Io,
     input: WriteFileInput,
 ) !WriteFileResult {
     const path = input.path;
+    // See helpers/path_validate.zig — a malformed NT name panics the
+    // process rather than failing this call.
+    if (invalidPathReason(path)) |reason| {
+        std.log.debug("write_file rejected path: {s}", .{reason});
+        return error.InvalidPathReason;
+    }
 
     // If create_with_dir is true, proactively create parent directories with makePath
     if (input.create_with_dir) {
-        // Look for the LAST path separator to find the parent directory.
-        // On POSIX the separator is `/`; on Windows both `/` and `\` are
-        // accepted by the kernel (forward slashes get translated to
-        // backslashes inside the runtime), so we check for either to
-        // keep the test paths portable across `std.fs.path.join` output
-        // (which uses `\` on Windows hosts).
-        const last_sep_pos = blk: {
-            const last_fwd = std.mem.lastIndexOf(u8, path, "/");
-            const last_back = std.mem.lastIndexOf(u8, path, "\\");
-            break :blk @max(last_fwd orelse 0, last_back orelse 0);
-        };
-        if (last_sep_pos > 0) {
-            const dir_path = path[0..last_sep_pos];
+        if (parentDirToCreate(path)) |dir_path| {
             try std.Io.Dir.cwd().createDirPath(io, dir_path);
         }
     }
 
     const file = std.Io.Dir.cwd().createFile(io, path, .{}) catch |err| {
         if (err == error.FileNotFound) {
-            var path_copy = try allocator.dupe(u8, path);
+            const path_copy = try allocator.dupe(u8, path);
             defer allocator.free(path_copy);
 
-            // Windows path: std.fs.path.join produces `\`-separated
-            // paths, so accept either separator when locating the
-            // parent directory.
-            const last_sep_pos = blk: {
-                const last_fwd = std.mem.lastIndexOf(u8, path_copy, "/");
-                const last_back = std.mem.lastIndexOf(u8, path_copy, "\\");
-                break :blk @max(last_fwd orelse 0, last_back orelse 0);
-            };
-            if (last_sep_pos > 0) {
-                const dir_path = path_copy[0..last_sep_pos];
+            if (parentDirToCreate(path_copy)) |dir_path| {
                 try std.Io.Dir.cwd().createDirPath(io, dir_path);
                 const file = try std.Io.Dir.cwd().createFile(io, path, .{});
                 defer std.Io.File.close(file, io);
@@ -1328,4 +1333,95 @@ test "writeFile - two consecutive calls return independent path allocations" {
     r1.deinit(testing.allocator);
     try testing.expectEqualStrings(path_b, r2.path);
     r2.deinit(testing.allocator);
+}
+
+// ─── Parent-directory resolution ─────────────────────────────────────────
+// The bug this pins: the previous "index of the last separator" scan cut
+// `C:\notes.txt` at index 2 and handed `"C:"` — a drive-RELATIVE name, not
+// a directory — to `createDirPath`, which then failed on a file that was
+// perfectly writable. On POSIX the equivalent path is `/notes.txt`, whose
+// separator index is 0, so the old `> 0` guard skipped the call and the bug
+// was invisible off Windows.
+// The hand-rolled scan and `std.fs.path.dirname` AGREE on POSIX, so there
+// is no Linux-observable behaviour change here — this test is a guard that
+// documents the agreement rather than a regression test. The regression
+// itself is Windows-only and lives in the two Windows-gated tests below,
+// plus the static contract that `write_file` no longer hand-rolls dirname.
+test "parentDirToCreate: POSIX nested paths resolve normally (guard, not a regression test)" {
+    try std.testing.expectEqualStrings("/a/b", parentDirToCreate("/a/b/c.txt").?);
+    // On a POSIX host `D:/notes.txt` has parent `D:` — that is the correct
+    // POSIX answer, and it is exactly what the old scan produced. This is
+    // why the drive-root bug never reproduced off Windows.
+    try std.testing.expectEqualStrings("D:", parentDirToCreate("D:/notes.txt").?);
+}
+
+test "parentDirToCreate: normal nested paths are unchanged" {
+    try std.testing.expectEqualStrings("/a/b", parentDirToCreate("/a/b/c.txt").?);
+    try std.testing.expectEqualStrings("/a", parentDirToCreate("/a/b").?);
+    // A bare name has no parent to create.
+    try std.testing.expect(parentDirToCreate("notes.txt") == null);
+    try std.testing.expect(parentDirToCreate("") == null);
+}
+
+// Windows-only: the drive-root case can only be observed on a host whose
+// `std.fs.path.dirname` understands volumes, so the value is asserted here
+// and the `[Windows]` CI cell is what runs it. On POSIX the same input
+// legitimately has no parent.
+test "parentDirToCreate: a drive-root file resolves to the drive root on Windows" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    try std.testing.expectEqualStrings("C:\\", parentDirToCreate("C:\\notes.txt").?);
+    try std.testing.expectEqualStrings("C:\\a\\b", parentDirToCreate("C:\\a\\b\\c.txt").?);
+    // Forward slashes are what git and Zig's own path.join emit.
+    try std.testing.expectEqualStrings("C:/a/b", parentDirToCreate("C:/a/b/c.txt").?);
+}
+
+// End-to-end on the platform that has the bug: create_with_dir against a
+// drive-root path must succeed rather than fail inside createDirPath.
+test "writeFile: create_with_dir succeeds for a file in the drive root on Windows" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    const target = try std.fmt.allocPrint(std.testing.allocator, "C:\\nalar_wf_test_{d}.txt", .{@as(u32, @truncate(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds))});
+    defer std.testing.allocator.free(target);
+    defer std.Io.Dir.cwd().deleteFile(std.testing.io, target) catch {};
+
+    var result = try writeFile(std.testing.allocator, std.testing.io, .{
+        .path = target,
+        .content = "root file",
+        .create_with_dir = true,
+    });
+    defer result.deinit(std.testing.allocator);
+
+    const read = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, target, std.testing.allocator, std.Io.Limit.limited(1 << 16));
+    defer std.testing.allocator.free(read);
+    try std.testing.expectEqualStrings("root file", read);
+}
+
+// Static contract. The value-level tests above can only run on Windows,
+// because the bug has no POSIX manifestation — `std.fs.path.dirname` and
+// the old hand-rolled scan return the same thing for every POSIX input. So
+// pin the CAUSE here instead: the tool must delegate to `dirname` rather
+// than re-deriving a parent by scanning for the last separator. This is
+// the repo's existing idiom (cf. tool_calls_json_wire_shape_test.zig) and
+// it is the only assertion that can fail on a Linux runner.
+test "static contract: write_file delegates parent-dir resolution to std.fs.path.dirname" {
+    // Scan only the IMPLEMENTATION. `@embedFile` returns this whole file,
+    // and the forbidden patterns below appear verbatim inside this test —
+    // scanning the full text would always find itself.
+    const full = @embedFile("write_file.zig");
+    const impl_end = std.mem.indexOf(u8, full, "// ─── Parent-directory resolution") orelse full.len;
+    const src = full[0..impl_end];
+
+    try std.testing.expect(std.mem.indexOf(u8, src, "pub fn parentDirToCreate") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "return std.fs.path.dirname(path);") != null);
+
+    // No hand-rolled separator scan may survive in the tool body: that scan
+    // is what produced the bare drive name for a drive-root file.
+    const backslash_scan = "lastIndexOf(u8, path," ++ " \"";
+    const forward_scan = "lastIndexOf(u8, path," ++ " \"/";
+    try std.testing.expect(std.mem.indexOf(u8, src, backslash_scan) == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, forward_scan) == null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "last_sep_pos") == null);
+
+    // Both call sites must go through the helper.
+    try std.testing.expect(std.mem.indexOf(u8, src, "parentDirToCreate(path)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, src, "parentDirToCreate(path_copy)") != null);
 }

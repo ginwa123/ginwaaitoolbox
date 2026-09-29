@@ -1,6 +1,10 @@
 const std = @import("std");
 const posix = std.posix;
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
+const text_normalize = @import("helpers").text_normalize;
+const normalizeLineEndings = text_normalize.normalizeLineEndings;
 const BashInput = schemas.BashInput;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
@@ -29,11 +33,33 @@ pub fn readFile(
     path: []const u8,
     opts: ReadFileOptions,
 ) !ReadFileResult {
+    // The LLM chooses this path. On Windows a malformed NT name makes std's
+    // Io backend `ntstatusBug()` — a panic that kills the process, not just
+    // this call. See helpers/path_validate.zig.
+    if (invalidPathReason(path)) |reason| {
+        std.log.debug("read_file rejected path: {s}", .{reason});
+        return error.InvalidPathReason;
+    }
+
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
     defer std.Io.File.close(file, io);
 
-    const raw = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize)));
-    defer allocator.free(raw);
+    const on_disk = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, std.Io.Limit.limited(std.math.maxInt(usize)));
+    defer allocator.free(on_disk);
+
+    // Hand the model the LF form. `text_replace` normalizes the target file
+    // to LF BEFORE it searches for `old_str` (see its `had_crlf` branch), so
+    // returning the raw CRLF bytes here guarantees that anything the model
+    // copies out of this read fails to match on a Windows-authored file.
+    // The bytes on disk are untouched — this only changes what the model
+    // sees, and a bare `\r` (a Mac Classic line ending) is preserved by
+    // `normalizeLineEndings` rather than being silently eaten.
+    const normalized = if (std.mem.indexOf(u8, on_disk, "\r\n") != null)
+        try normalizeLineEndings(allocator, on_disk)
+    else
+        null;
+    defer if (normalized) |n| allocator.free(n);
+    const raw = normalized orelse on_disk;
 
     // count lines
     var total_lines: usize = 0;
@@ -189,6 +215,116 @@ test "read_file paginated slice is raw with correct start/end lines" {
     try std.testing.expectEqual(@as(usize, 4), result.total_lines);
     try std.testing.expectEqual(@as(usize, 1), result.start_line);
     try std.testing.expectEqual(@as(usize, 2), result.end_line);
+}
+
+// ─── CRLF contract ───────────────────────────────────────────────────────
+// `text_replace` normalizes the file to LF *before* it searches for
+// `old_str` (text_replace.zig: `had_crlf` → `normalizeLineEndings` →
+// `indexOf`). So the string the model copies out of `read_file` has to be
+// the LF form, or every exact-match edit against a Windows-authored file
+// fails with OldStrNotFound. That makes this a correctness contract
+// between the two tools, not a cosmetic one.
+const text_replace = @import("text_replace.zig");
+
+fn writeTmp(allocator: std.mem.Allocator, tmp: *std.testing.TmpDir, name: []const u8, data: []const u8) ![]const u8 {
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data = data });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    return std.fs.path.join(allocator, &.{ path_buf[0..n], name });
+}
+
+test "read_file strips CR from a CRLF file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const abs = try writeTmp(std.testing.allocator, &tmp, "crlf.txt", "alpha\r\nbeta\r\ngamma\r\n");
+    defer std.testing.allocator.free(abs);
+
+    var result = try readFile(std.testing.allocator, std.testing.io, abs, .{});
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(std.mem.indexOfScalar(u8, result.content, '\r') == null);
+    try std.testing.expectEqualStrings("alpha\nbeta\ngamma\n", result.content);
+    // Pagination metadata must be untouched by the normalization: CRLF has
+    // exactly one '\n' per line, so the counts cannot move.
+    try std.testing.expectEqual(@as(usize, 3), result.total_lines);
+    try std.testing.expectEqual(@as(usize, 0), result.start_line);
+    try std.testing.expectEqual(@as(usize, 2), result.end_line);
+}
+
+test "read_file CRLF paginated slice is LF and correctly bounded" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const abs = try writeTmp(std.testing.allocator, &tmp, "crlf_page.txt", "l1\r\nl2\r\nl3\r\nl4\r\n");
+    defer std.testing.allocator.free(abs);
+
+    var result = try readFile(std.testing.allocator, std.testing.io, abs, .{ .offset = 1, .limit = 2 });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("l2\nl3\n", result.content);
+    try std.testing.expectEqual(@as(usize, 4), result.total_lines);
+    try std.testing.expectEqual(@as(usize, 1), result.start_line);
+    try std.testing.expectEqual(@as(usize, 2), result.end_line);
+}
+
+// THE end-to-end contract: whatever read_file hands the model must be
+// directly usable as `old_str` by text_replace. Before the fix this failed
+// with OldStrNotFound on every CRLF file, because the model echoed the
+// '\r' it had been shown and text_replace searches LF-normalized content.
+test "read_file output is directly usable as text_replace old_str (CRLF round trip)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const abs = try writeTmp(std.testing.allocator, &tmp, "roundtrip.txt", "package main\r\n\r\nfunc main() {}\r\n");
+    defer std.testing.allocator.free(abs);
+
+    var result = try readFile(std.testing.allocator, std.testing.io, abs, .{});
+    defer result.deinit(std.testing.allocator);
+
+    var applied = text_replace.executeTextReplace(
+        std.testing.allocator,
+        std.testing.io,
+        abs,
+        result.content,
+        "package main\n\nfunc main() { }\n",
+    ) catch |err| {
+        std.debug.print("text_replace rejected what read_file returned: {s}\n", .{@errorName(err)});
+        return err;
+    };
+    defer applied.deinit(std.testing.allocator);
+
+    const final = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        abs,
+        std.testing.allocator,
+        std.Io.Limit.limited(1 << 20),
+    );
+    defer std.testing.allocator.free(final);
+    // The contract under test is that the exact string read_file handed the
+    // model was ACCEPTED by text_replace. What text_replace then writes back
+    // (LF here) is its own concern and deliberately not asserted here.
+    try std.testing.expectEqualStrings("package main\n\nfunc main() { }\n", final);
+}
+
+// Guard against over-normalizing: a bare CR is a Mac Classic line ending,
+// not a CRLF artefact, and must survive. Same for an LF file.
+test "read_file leaves LF files and bare-CR content alone" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const lf = try writeTmp(std.testing.allocator, &tmp, "lf.txt", "a\nb\n");
+    defer std.testing.allocator.free(lf);
+    {
+        var r = try readFile(std.testing.allocator, std.testing.io, lf, .{});
+        defer r.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings("a\nb\n", r.content);
+    }
+
+    const bare = try writeTmp(std.testing.allocator, &tmp, "bare_cr.txt", "a\rb");
+    defer std.testing.allocator.free(bare);
+    {
+        var r = try readFile(std.testing.allocator, std.testing.io, bare, .{});
+        defer r.deinit(std.testing.allocator);
+        try std.testing.expectEqualStrings("a\rb", r.content);
+    }
 }
 
 test "toJSONSuccess payload carries raw content and line range" {

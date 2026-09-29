@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const helpers = @import("helpers");
@@ -905,6 +907,15 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
     // caller bugs. Catching them here gives the LLM a clear, actionable
     // error message instead of a silent empty result.
     if (input.pattern.len == 0) return error.EmptyPattern;
+
+    // The LLM chooses `path`; on Windows a malformed NT name panics the
+    // process inside std's Io backend rather than failing this call.
+    if (input.path.len > 0) {
+        if (invalidPathReason(input.path)) |reason| {
+            std.log.debug("glob rejected path: {s}", .{reason});
+            return error.InvalidPath;
+        }
+    }
 
     // Whitespace-only pattern check. We strip ASCII whitespace and
     // accept the result iff non-empty.

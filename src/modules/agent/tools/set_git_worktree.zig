@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const schemas = @import("schemas.zig");
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
@@ -67,9 +68,9 @@ pub const set_git_worktree_tool = AgentTool{
     .function = .{
         .name = "set_git_worktree",
         .description =
-            \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Pass `base` (e.g. 'origin/main') to create the branch FROM that ref instead of the repo's current HEAD — the kanban note carries it as the `Base:` line. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
-            \\
-            \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
+        \\Create a git worktree at an absolute path you provide and bind it as the session's working directory. Canonical root is `$HOME/.config/nalar/.worktrees/<task-slug>` (e.g. '/home/you/.config/nalar/.worktrees/fix-login') — the kanban dialog prefills this as the `Path:` line after `#Notes UseGitWorktree`. A custom absolute path elsewhere is accepted for ad-hoc use. While bound, bash/read_file/write_file/text_replace/glob/search operate on the worktree instead of the session's original cwd. The branch defaults to 'worktree/<basename(path)>'. Pass `base` (e.g. 'origin/main') to create the branch FROM that ref instead of the repo's current HEAD — the kanban note carries it as the `Base:` line. If a path starts with `~/`, expand `~` to `$HOME` before calling (non-absolute paths are rejected). Call again with a different path to switch the binding to that worktree. Pass clear=true to remove the worktree directory and clear the binding.
+        \\
+        \\On error, recover by: (1) the tool pre-checks for path collisions before invoking git, so a "path already exists" error means the path is occupied by an existing worktree — pass `branch=<existing-branch>` to auto-bind to it, or pick a different path; (2) for branch conflicts (a different worktree already has the same branch checked out), pass `branch=''` to use the auto-derived name `worktree/<basename(path)>`; (3) NEVER `rm -rf` the conflicting path — there may be uncommitted work in it. Use `bash` + `git -C <repo> worktree list --porcelain` to inspect the current state if the error is unclear.
         ,
         .parameters = .{
             .type = "object",
@@ -299,11 +300,16 @@ pub fn classifyPath(
     defer allocator.free(git_path);
 
     const git_contents = std.Io.Dir.cwd().readFileAlloc(
-        io, git_path, allocator, .limited(std.Io.Dir.max_path_bytes),
+        io,
+        git_path,
+        allocator,
+        .limited(std.Io.Dir.max_path_bytes),
     ) catch {
         // No .git file → plain directory.
         const msg = try std.fmt.allocPrint(
-            allocator, "plain directory at {s}", .{target},
+            allocator,
+            "plain directory at {s}",
+            .{target},
         );
         return .{ .plain_directory = msg };
     };
@@ -318,7 +324,9 @@ pub fn classifyPath(
     }
     // .git file is malformed (e.g. raw gitdir without "gitdir: " prefix).
     return .{ .plain_directory = try std.fmt.allocPrint(
-        allocator, "malformed .git file at {s}: {s}", .{ target, git_contents },
+        allocator,
+        "malformed .git file at {s}: {s}",
+        .{ target, git_contents },
     ) };
 }
 
@@ -333,7 +341,50 @@ pub fn classifyPath(
 /// branch refs/heads/refactor/x
 /// ```
 /// (The `branch` line is absent for detached HEAD worktrees.)
-fn parseAndMatchBlock(
+/// Do two strings denote the same directory, even though they were written
+/// with different separators or a trailing slash?
+///
+/// git for Windows prints worktree paths with FORWARD slashes
+/// (`worktree C:/Users/me/wt`) while the model, told to pass an absolute
+/// path, sends BACKSLASHES (`C:\Users\me\wt`). A raw `std.mem.eql`
+/// therefore never matches on Windows, so a live, registered worktree
+/// falls through to the `.orphaned_worktree` arm — whose error tells the
+/// model to run `git worktree prune && rm -rf <path>` on the very
+/// directory that holds its in-flight work.
+///
+/// Canonicalization (`realPath`) would be the ideal answer but is not
+/// always available: the not-found arm compares a path that does not exist
+/// yet. So this compares on the normalized form instead — separators
+/// unified, trailing separators dropped, and case ignored on Windows only
+/// (where the filesystem does; on Linux `wt` and `WT` are two directories).
+pub fn pathsDenoteSameDir(a: []const u8, b: []const u8) bool {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (true) {
+        // Skip trailing/duplicate separators on both sides.
+        while (i < a.len and isPathSep(a[i])) : (i += 1) {}
+        while (j < b.len and isPathSep(b[j])) : (j += 1) {}
+
+        const a_end = i >= a.len;
+        const b_end = j >= b.len;
+        if (a_end or b_end) return a_end and b_end;
+
+        if (!eqlPathChar(a[i], b[j])) return false;
+        i += 1;
+        j += 1;
+    }
+}
+
+fn isPathSep(c: u8) bool {
+    return c == '/' or c == '\\';
+}
+
+fn eqlPathChar(a: u8, b: u8) bool {
+    if (builtin.os.tag == .windows) return std.ascii.toLower(a) == std.ascii.toLower(b);
+    return a == b;
+}
+
+pub fn parseAndMatchBlock(
     allocator: std.mem.Allocator,
     block: []const u8,
     target: []const u8,
@@ -355,7 +406,13 @@ fn parseAndMatchBlock(
     }
 
     const wt_path = worktree_path orelse return null;
-    if (!std.mem.eql(u8, wt_path, target)) return null;
+    // Not `std.mem.eql`: git's separator choice differs from the model's on
+    // Windows, and a false negative here means advising `rm -rf` on a live
+    // worktree. See `pathsDenoteSameDir`.
+    // Not `std.mem.eql`: git's separator choice differs from the model's on
+    // Windows, and a false negative here means advising `rm -rf` on a live
+    // worktree. See `pathsDenoteSameDir`.
+    if (!pathsDenoteSameDir(wt_path, target)) return null;
 
     const commit_owned = try allocator.dupe(u8, commit orelse "");
     errdefer allocator.free(commit_owned);
@@ -499,31 +556,28 @@ pub fn rewriteGitStderr(
     //    but if a race or precheck failure let it through, give actionable
     //    advice here.
     if (std.mem.indexOf(u8, raw_stderr, "already exists") != null) {
-        return try std.fmt.allocPrint(allocator,
-            "the directory '{s}' already exists on disk and could not be auto-bound. " ++
+        return try std.fmt.allocPrint(allocator, "the directory '{s}' already exists on disk and could not be auto-bound. " ++
             "Either pick a different path, or run `git -C <repo> worktree list --porcelain` " ++
             "to see which branch currently occupies it, then re-call set_git_worktree with " ++
-            "`branch=<existing-branch>` to bind to it.",
-            .{worktree_path});
+            "`branch=<existing-branch>` to bind to it.", .{worktree_path});
     }
     // 2. "fatal: 'X' is already checked out at 'Y'" — branch conflict,
     //    not a path conflict. The fix is to pick a different branch
     //    name (or let it default to worktree/<basename>).
     if (std.mem.indexOf(u8, raw_stderr, "is already checked out") != null) {
-        return try std.fmt.allocPrint(allocator,
-            "branch '{s}' is already checked out by another worktree. " ++
+        return try std.fmt.allocPrint(allocator, "branch '{s}' is already checked out by another worktree. " ++
             "Pass `branch=''` (empty) to use the auto-derived branch name " ++
-            "`worktree/<basename(path)>`, or pick a different branch name.",
-            .{branch});
+            "`worktree/<basename(path)>`, or pick a different branch name.", .{branch});
     }
     // 3. "fatal: not a git repository" — the session's cwd isn't in a
     //    git repo. This usually means the session was started outside
     //    of one, or a parent process chdir'd away.
     if (std.mem.indexOf(u8, raw_stderr, "not a git repository") != null) {
-        return try allocator.dupe(u8,
+        return try allocator.dupe(
+            u8,
             "the current working directory is not inside a git repository. " ++
-            "set_git_worktree requires being called from within a git repo " ++
-            "(or a worktree of one).",
+                "set_git_worktree requires being called from within a git repo " ++
+                "(or a worktree of one).",
         );
     }
     // 4. "fatal: invalid reference: X" — the branch name has bad
@@ -533,17 +587,13 @@ pub fn rewriteGitStderr(
     //    fetched yet), so point at it instead of at the new branch name.
     if (std.mem.indexOf(u8, raw_stderr, "invalid reference") != null) {
         if (base.len > 0) {
-            return try std.fmt.allocPrint(allocator,
-                "the base ref '{s}' could not be resolved by git. " ++
+            return try std.fmt.allocPrint(allocator, "the base ref '{s}' could not be resolved by git. " ++
                 "Run `git fetch origin` (the ref may not be fetched yet) or pick " ++
-                "a different base branch, then retry. git said: {s}",
-                .{ base, raw_stderr });
+                "a different base branch, then retry. git said: {s}", .{ base, raw_stderr });
         }
-        return try std.fmt.allocPrint(allocator,
-            "the branch name '{s}' is invalid (git refused it). " ++
+        return try std.fmt.allocPrint(allocator, "the branch name '{s}' is invalid (git refused it). " ++
             "Valid branch names must not contain spaces, '..', '~', '^', ':', " ++
-            "'?', '*', '[', '\\', and may not end with '.lock' or '/'.",
-            .{branch});
+            "'?', '*', '[', '\\', and may not end with '.lock' or '/'.", .{branch});
     }
     // 5. Default: return the raw stderr verbatim. The user (LLM) gets
     //    exactly what git said, no more, no less.
@@ -820,24 +870,18 @@ pub fn executeSetGitWorktreeToString(
                     );
                     return successSetToXml(allocator, session_id, worktree_path, rwt.branch, "");
                 }
-                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
-                    "path '{s}' is already a worktree on branch '{s}' (you requested '{s}'). " ++
+                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator, "path '{s}' is already a worktree on branch '{s}' (you requested '{s}'). " ++
                     "Either pick a different path, or pass branch='{s}' to bind to the existing worktree, " ++
-                    "or ask the user how to resolve the conflict (merge, rename, or remove the existing branch).",
-                    .{ worktree_path, rwt.branch, branch, rwt.branch }));
+                    "or ask the user how to resolve the conflict (merge, rename, or remove the existing branch).", .{ worktree_path, rwt.branch, branch, rwt.branch }));
             },
             .orphaned_worktree => |gitdir| {
-                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
-                    "path '{s}' is an orphaned worktree directory (has .git file pointing at {s}, " ++
+                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator, "path '{s}' is an orphaned worktree directory (has .git file pointing at {s}, " ++
                     "but is not registered with git). Run `git worktree prune && rm -rf {s}` to clean up, " ++
-                    "then retry set_git_worktree.",
-                    .{ worktree_path, gitdir, worktree_path }));
+                    "then retry set_git_worktree.", .{ worktree_path, gitdir, worktree_path }));
             },
             .plain_directory => |desc| {
-                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator,
-                    "path '{s}' already exists but is not a worktree directory ({s}). " ++
-                    "Remove it manually (after backing up any important content) or pick a different path.",
-                    .{ worktree_path, desc }));
+                return xmlError(allocator, session_id, try std.fmt.allocPrint(allocator, "path '{s}' already exists but is not a worktree directory ({s}). " ++
+                    "Remove it manually (after backing up any important content) or pick a different path.", .{ worktree_path, desc }));
             },
         }
     }
