@@ -1102,6 +1102,17 @@ test {
     // so all of those tests were silently unrun. Same discovery workaround
     // as Config.zig above — verified with a canary test, not inferred.
     _ = @import("http_handlers/git_file_diffs.zig");
+    // The `gh` handlers spawn child processes, and their inline tests
+    // (JSON payload shapes, error mapping, and the `run_captured`
+    // contract) never ran — same discovery gap as git_file_diffs above.
+    // `runGhPrView` in particular shipped with ZERO functional tests and
+    // then aborted the whole server from
+    // `std/Io/Threaded.zig:closeFd` <- `childCleanupPosix` <- `Child.wait`
+    // (`thread N panic: reached unreachable code`), which is exactly the
+    // class of bug the wiring assertions below are supposed to catch.
+    _ = @import("http_handlers/git_pr_status.zig");
+    _ = @import("http_handlers/git_pr_create.zig");
+    _ = @import("http_handlers/git_pr_diff.zig");
 }
 
 // ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───
