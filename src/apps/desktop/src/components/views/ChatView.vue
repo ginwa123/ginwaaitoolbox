@@ -3059,6 +3059,36 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
   }
 }
 
+// ─── Follow the newest turn ──────────────────────────────────────────────────
+//
+// "Take me to the newest turn", as an explicit act by the reader rather than an
+// inference from where they happen to be sitting. Sending and queueing are
+// that act: the reader is looking at history, they ask for a turn, and the turn
+// they asked for is what they should be looking at.
+//
+// It has to re-arm `isAtBottom` and not merely pass `force = true`, because
+// `isAtBottom` is what three separate gates read afterwards — the
+// `messages.length` watcher returns early without it, `onContentShift` skips,
+// and a non-forced `scrollToBottom` does nothing. A reader scrolled up into
+// history is `isAtBottom === false` by definition, and there is no optimistic
+// push (see `handleFileInputSubmit`), so the turn that answers the send arrives
+// over SSE a frame or two later and is exactly the content those gates are
+// there to follow.
+//
+// A forced scroll alone cannot do this. It writes `container.scrollTop` and
+// leaves the flag to the native `scroll` event that follows — and the browser
+// fires none when the write is a no-op, which is the common case here: the
+// scroller's sizer already reports a max scrollTop that the container is
+// sitting at. The flag then stays false and the turn lands below the fold with
+// nothing left to bring it up. Setting the flag first is what makes the
+// follow deterministic instead of a race with an event that may not come.
+const followNewestTurn = (trigger: string) => {
+  isAtBottom.value = true
+  lastAutoStickAt.value = Date.now()
+  scrollLogger.markProgrammatic()
+  scrollToBottom(true, trigger)
+}
+
 // Triggered by VirtualScroller when the user scrolls within `loadMoreThreshold`
 // of the top (because `loadMoreAtTop` is true). Auto-paginates older messages.
 //
@@ -3909,6 +3939,13 @@ const connectSse = () => {
         id: event.id ?? `q-${Date.now()}`,
         message: event.message,
       })
+      // A queued turn renders no transcript row — it is only ever a row in the
+      // composer's queue panel — so nothing in `messages` grows and none of
+      // the auto-stick triggers fire. The row that finally reaches the
+      // transcript is the live worker draining this turn, which can be minutes
+      // away, and by then the reader may well have scrolled off the end. Arm
+      // the follow now, at the moment they asked for the turn.
+      followNewestTurn('queue-queued')
     } else if (event.action === 'deleted') {
       queuedMessages.value = queuedMessages.value.filter((m) => m.id !== event.id)
     }
@@ -4224,7 +4261,7 @@ watch(
 
 const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   await nextTick()
-  scrollToBottom(true, 'send-message')
+  followNewestTurn('send-message')
 
   const currentSessionId = sessionId.value
 
@@ -4293,6 +4330,12 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     })
   } finally {
     isSendingAttachments.value = false
+    // The first pin aimed at the bottom of the transcript as it stood BEFORE
+    // this turn — there is no optimistic push, so the turn is still in flight
+    // at this point and the bottom moves when it renders. Pin again against
+    // the settled position so the turn the server accepted is the one on
+    // screen, whether it arrived over SSE or was pushed here as an error card.
+    followNewestTurn('send-message-settled')
   }
 }
 
