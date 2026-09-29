@@ -14,6 +14,7 @@ import type {
   SseEvent,
   QueueMessageEvent,
   BackgroundProcessEvent,
+  SkillEvalEvent,
 } from '../api'
 
 // NOTE: Plan's Chunk 1 spec imports `KanbanEvent` and `LlmChunkEvent`
@@ -42,6 +43,13 @@ type SseEventMap = {
   // src/agentic_loop/background_process_events.zig. The bus routes both
   // to this single channel; the consumer filters by `session_id`.
   backgroundProcess: BackgroundProcessEvent
+  // Skill-eval lifecycle. The backend emits three granular names
+  // (`skill_evals_run_started` / `_run_finished` / `_result_applied`)
+  // that share the `SkillEvalEvent` payload — see
+  // src/agentic_loop/skill_eval_events.zig. The bus routes all three to
+  // this single channel; the consumer filters by `session_id` and
+  // re-fetches the eval list for the Evals tab.
+  skillEvals: SkillEvalEvent
 }
 
 type Listener<K extends keyof SseEventMap> = (event: SseEventMap[K]) => void
@@ -185,6 +193,7 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
     llm: new Set<Listener<'llm'>>(),
     queue: new Set<Listener<'queue'>>(),
     backgroundProcess: new Set<Listener<'backgroundProcess'>>(),
+    skillEvals: new Set<Listener<'skillEvals'>>(),
   }
 
   const state = shallowRef<SseState>('closed')
@@ -245,6 +254,10 @@ export function installSseBus(_app?: App, options?: SseBusInstallOptions): SseBu
         // backend emits on "background_process", frontend filters by
         // `event.session_id` in BackgroundCommandsPopup.vue.
         backgroundProcess: (e) => forward('backgroundProcess', e),
+        // Skill-eval lifecycle — same central-broadcast pattern: backend
+        // emits on "skill_evals", frontend filters by `event.session_id`
+        // in the Evals tab's store.
+        skillEvals: (e) => forward('skillEvals', e),
       },
       onError: (err) => {
         console.error('[sseBus] global SSE failed permanently:', err)

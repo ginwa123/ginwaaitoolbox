@@ -37,6 +37,7 @@ const AgentTool = @import("../modules/agent/tools/schemas.zig").AgentTool;
 const tools = @import("tools.zig");
 const skill_evals_db = @import("skill_evals_db.zig");
 const drift = @import("skill_evals_drift.zig");
+const skill_eval_events = @import("skill_eval_events.zig");
 const migration = @import("../migrations/migration.zig");
 
 const Verdict = skill_evals_db.Verdict;
@@ -104,6 +105,9 @@ pub const RunArgs = struct {
     /// `skill_evals.fact_lease_seconds` — how long a `computing` lease may sit
     /// before another session may take it over.
     fact_lease_seconds: u32 = 300,
+    /// The SSE bus, when the caller has one. Null in unit tests and in any
+    /// caller with no bus; the emit is then a no-op.
+    event_bus: ?*nalarcore.event_bus.EventBus = null,
 };
 
 /// Insert one result row. Private because it is the only writer of this table
@@ -372,11 +376,23 @@ pub fn runEval(
     skill_evals_db.finishRun(allocator, db, run_id, "done", 0, "") catch |err| {
         if (logger) |l| l.warnFmt("skill eval: could not finalize run {s}: {s}", .{ run_id, @errorName(err) });
     };
+    // Tell the UI the run finished, so the Evals tab refreshes without polling.
+    // Emitted AFTER finishRun so a listener that re-fetches sees the final
+    // status, not a `running` row.
+    skill_eval_events.emitSkillEvalEvent(allocator, args.event_bus, .{
+        .action = "run_finished",
+        .run_id = run_id,
+        .session_id = args.session_id,
+        .evaluated = outcome.evaluated,
+    });
     return outcome;
 }
 
 pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.ToolExecResult {
     const enabled = ctx.config.skill_evals.enabled;
+    // The SSE bus, when the singleton is up. Null in tests and in any
+    // dispatch with no live context — the emit is then a no-op.
+    const bus: ?*nalarcore.event_bus.EventBus = if (nalarcore.getSingleton()) |di| di.event_bus else |_| null;
     const outcome = runEval(ctx.allocator, ctx.io, ctx.db, ctx.logger, .{
         .session_id = ctx.session_id,
         .cwd = ctx.cwd,
@@ -387,6 +403,7 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
         .max_skills = ctx.config.skill_evals.max_skills_per_run,
         .include_listed_only = ctx.config.skill_evals.include_listed_without_loading,
         .fact_lease_seconds = ctx.config.skill_evals.fact_lease_seconds,
+        .event_bus = bus,
     }) catch |err| {
         const msg = try std.fmt.allocPrint(ctx.allocator, "run_skill_eval failed: {s}", .{@errorName(err)});
         defer ctx.allocator.free(msg);

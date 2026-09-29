@@ -262,6 +262,13 @@ pub fn parseChannels(allocator: std.mem.Allocator, raw: []const u8) ChannelParse
             // Single key covers both granular event types; the frontend
             // filters by `data.session_id` JS-side.
             try routing_keys.append(allocator, try allocator.dupe(u8, "background_process"));
+        } else if (std.mem.eql(u8, token, "skill_evals")) {
+            // Skill-eval lifecycle (`skill_evals_run_started` /
+            // `_run_finished` / `_result_applied` on the central
+            // "skill_evals" key — see skill_eval_events.zig). Single key
+            // covers all three granular event types; the frontend filters
+            // by `data.session_id` JS-side.
+            try routing_keys.append(allocator, try allocator.dupe(u8, "skill_evals"));
         } else if (std.mem.eql(u8, token, "design_element")) {
             // Design-mode element mutations. The frontend
             // `createUnifiedSseConnection` sends this token; the
@@ -359,6 +366,16 @@ pub const CallbackUnifiedDesignElementStream = struct {
 pub const CallbackUnifiedBackgroundProcessStream = struct {
     pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
         forwardToClients("background_process", data);
+    }
+};
+
+/// Callback for the central "skill_evals" routing key. Forwards to every
+/// client registered under "skill_evals" — the frontend listener then
+/// filters by `data.session_id` on the JS side and re-fetches the eval
+/// list for the Evals tab.
+pub const CallbackUnifiedSkillEvalsStream = struct {
+    pub fn callback(data: ai_mod.on_event_sent.SseEvent) void {
+        forwardToClients("skill_evals", data);
     }
 };
 
@@ -503,6 +520,8 @@ pub fn unifiedEventsStreamHandler(
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedDesignElementStream.callback) catch {};
             } else if (std.mem.eql(u8, rk, "background_process")) {
                 event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedBackgroundProcessStream.callback) catch {};
+            } else if (std.mem.eql(u8, rk, "skill_evals")) {
+                event_bus.subscribe(ai_mod.on_event_sent.SseEvent, rk, CallbackUnifiedSkillEvalsStream.callback) catch {};
             }
         }
 

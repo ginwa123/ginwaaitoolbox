@@ -3523,6 +3523,19 @@ export interface BackgroundProcessEvent {
   command: string
 }
 
+// Skill-eval lifecycle SSE event (see
+// src/agentic_loop/skill_eval_events.zig). All three granular wire names
+// (`skill_evals_run_started` / `_run_finished` / `_result_applied`) share
+// this payload; the consumer filters by `session_id` and re-fetches the
+// eval list for the Evals tab.
+export interface SkillEvalEvent {
+  action: 'run_started' | 'run_finished' | 'result_applied'
+  run_id: string
+  session_id: string
+  evaluated: number
+  result_id: string
+}
+
 // GET queued messages
 export interface QueuedMessage {
   id: string
@@ -3655,6 +3668,15 @@ export interface UnifiedChannels {
    */
   backgroundProcess?: (event: BackgroundProcessEvent) => void
   /**
+   * Subscribe to skill-eval lifecycle events. The backend emits three
+   * granular names (`skill_evals_run_started`, `skill_evals_run_finished`,
+   * `skill_evals_result_applied`) that share the same `SkillEvalEvent`
+   * payload. All three route on the central `skill_evals` key — the
+   * consumer filters by `event.session_id` JS-side and re-fetches the
+   * eval list for the Evals tab.
+   */
+  skillEvals?: (event: SkillEvalEvent) => void
+  /**
    * Subscribe to design-mode element mutations. The backend emits
    * three granular event names (`design_element_created`,
    * `design_element_updated`, `design_element_deleted`) that share
@@ -3719,6 +3741,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
     tokens.push(opts.channels.queue.sessionId ? `queue:${opts.channels.queue.sessionId}` : 'queue')
   }
   if (opts.channels.backgroundProcess) tokens.push('background_process')
+  if (opts.channels.skillEvals) tokens.push('skill_evals')
 
   // Empty subscriptions are meaningless; the backend would 400 anyway.
   // Throw early with a developer-friendly message. The console.error
@@ -3819,6 +3842,14 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       // 'connecting' until the stream closes — indistinguishable
       // from a dead backend.
       'auth_error',
+      // Skill-eval lifecycle (see src/agentic_loop/skill_eval_events.zig).
+      // Three granular names share one payload; all route on the central
+      // `skill_evals` key. Without pre-registration the browser drops them
+      // before onEvent ever fires, so the Evals tab would never refresh
+      // after an eval finished — indistinguishable from a dead stream.
+      'skill_evals_run_started',
+      'skill_evals_run_finished',
+      'skill_evals_result_applied',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -3894,6 +3925,24 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.backgroundProcess(data as BackgroundProcessEvent)
         } catch (err) {
           console.error('[unifiedSSE] background_process event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Skill-eval lifecycle. All three granular names share the
+      // `SkillEvalEvent` payload — the consumer filters by `session_id`
+      // and re-fetches the eval list for the Evals tab.
+      if (
+        eventType === 'skill_evals_run_started' ||
+        eventType === 'skill_evals_run_finished' ||
+        eventType === 'skill_evals_result_applied'
+      ) {
+        if (!opts.channels.skillEvals) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.skillEvals(data as SkillEvalEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] skill_evals event parse failed:', err, raw)
         }
         return
       }

@@ -21,6 +21,7 @@ const std = @import("std");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
 const skill_evals_db = nalarcore.skill_evals_db;
+const skill_eval_events = nalarcore.skill_eval_events;
 
 pub const SkillEvalsError = error{
     Internal,
@@ -288,6 +289,8 @@ fn applyUseCase(
         }
     }
 
+    emitApplied(allocator, di, result_id);
+
     return std.json.Stringify.valueAlloc(allocator, ApplyJson{
         .result_id = result_id,
         .skill_name = row.skill_name,
@@ -295,6 +298,19 @@ fn applyUseCase(
         .applied = true,
         .message = "the verdict was recorded as applied",
     }, .{}) catch return error.Internal;
+}
+
+/// Tell the UI a verdict was applied, so the Evals tab can refresh. Emitted
+/// after the claim is recorded; a failure here must not fail the apply.
+fn emitApplied(
+    allocator: std.mem.Allocator,
+    di: *nalarcore.ContextIPCTui,
+    result_id: []const u8,
+) void {
+    skill_eval_events.emitSkillEvalEvent(allocator, di.event_bus, .{
+        .action = "result_applied",
+        .result_id = result_id,
+    });
 }
 
 /// Hash the skill body as it is on disk right now, or null when it cannot be
