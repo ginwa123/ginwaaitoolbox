@@ -318,24 +318,18 @@ fn testStdio(
             return TestError.SendFailed;
         };
 
-        // Send the full MCP handshake in ONE write. The SDK reads
-        // stdin as line-delimited JSON — each `\n` ends a message.
-        // Sending all three lines in one writeStreamingAll means
-        // they all land in the kernel pipe buffer together; the SDK
-        // processes them in order when it attaches its listener.
-        const full_payload = std.fmt.allocPrint(
-            allocator,
-            "{s}{s}{s}",
-            .{ init_body, initialized_body, tools_list_body },
-        ) catch {
-            freeStderrs(allocator, &stderrs_buf, attempts_used);
-            return TestError.OutOfMemory;
-        };
-        // NOTE: no `defer free` here — this is inside `while(true)`,
-        // and `defer` would run at function exit, leaking one
-        // allocation per retry iteration. Free explicitly on every
-        // path below (success, retry-continue, error-return).
-        std.Io.File.writeStreamingAll(stdin_file, io, full_payload) catch |err| {
+        // Send ONLY `initialize` first. The MCP handshake is ordered:
+        // client sends `initialize`, the server replies, and only THEN
+        // may the client send `notifications/initialized` and issue
+        // requests like `tools/list`. Pipelining all three lines into
+        // one write (as this did) hands the SDK a `tools/list` request
+        // that is already in the pipe buffer before it has finished
+        // initializing — the SDK then drops it rather than answering,
+        // and our reader waits out the full deadline on a response that
+        // is never coming. Because every retry replayed the same
+        // out-of-order sequence, the 19 remaining attempts could not
+        // rescue it either.
+        std.Io.File.writeStreamingAll(stdin_file, io, init_body) catch |err| {
             logger.warnFmt("[mcp_test] stdio send failed: {s}", .{@errorName(err)});
             if (attempts_used < 20) {
                 const stderr_dup = allocator.dupe(u8, @errorName(err)) catch
@@ -356,19 +350,15 @@ fn testStdio(
                 ) catch null;
                 freeStderrs(allocator, &stderrs_buf, attempts_used);
                 out_err_detail.* = detail;
-                allocator.free(full_payload);
                 return TestError.SendFailed;
             }
             reg.markStale(preview_name);
-            allocator.free(full_payload);
             std.Io.Clock.Duration.sleep(
                 .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
                 io,
             ) catch {};
             continue;
         };
-        // Write succeeded — payload is on the wire, free it now.
-        allocator.free(full_payload);
 
         // Read the initialize response (1st response). If we get
         // EOF, the SDK is dead → cold-start race → retry.
@@ -385,7 +375,7 @@ fn testStdio(
                 };
                 const stderr_msg = drainStderr(allocator, io, client.stderr);
                 @memcpy(attempts_codes[attempts_used * 8 ..][0..code.len], code);
-                @memset(attempts_codes[attempts_used * 8 + code.len ..][0..8 - code.len], ' ');
+                @memset(attempts_codes[attempts_used * 8 + code.len ..][0 .. 8 - code.len], ' ');
                 stderrs_buf[attempts_used] = stderr_msg;
                 attempts_used += 1;
             }
@@ -425,6 +415,62 @@ fn testStdio(
         // NOTE: no `defer free` — inside `while(true)`, defer runs at
         // function exit. Free explicitly on every path below.
 
+        // The server has answered `initialize`, so the session is live.
+        // NOW send `notifications/initialized` followed by the
+        // `tools/list` request. These two ARE safe to batch — the
+        // notification is what puts the SDK into its initialized state,
+        // and the SDK processes stdin in order, so the request that
+        // follows it is handled against a connected transport.
+        const post_init_payload = std.fmt.allocPrint(
+            allocator,
+            "{s}{s}",
+            .{ initialized_body, tools_list_body },
+        ) catch {
+            freeStderrs(allocator, &stderrs_buf, attempts_used);
+            allocator.free(init_resp);
+            return TestError.OutOfMemory;
+        };
+        // No `defer` — this is inside `while(true)`, so free explicitly
+        // on every path below (success, error-return).
+        std.Io.File.writeStreamingAll(stdin_file, io, post_init_payload) catch |err| {
+            logger.warnFmt(
+                "[mcp_test] stdio post-init send failed: {s}",
+                .{@errorName(err)},
+            );
+            if (attempts_used < 20) {
+                const stderr_dup = allocator.dupe(u8, @errorName(err)) catch
+                    allocator.dupe(u8, "OOM") catch unreachable;
+                @memcpy(attempts_codes[attempts_used * 8 ..][0..2], "SF");
+                @memset(attempts_codes[attempts_used * 8 + 2 ..][0..6], ' ');
+                stderrs_buf[attempts_used] = stderr_dup;
+                attempts_used += 1;
+            }
+            if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.SendFailed) {
+                reg.markStale(preview_name);
+                const detail = formatAttemptsDetail(
+                    allocator,
+                    @errorName(err),
+                    attempts_used,
+                    &attempts_codes,
+                    &stderrs_buf,
+                ) catch null;
+                freeStderrs(allocator, &stderrs_buf, attempts_used);
+                out_err_detail.* = detail;
+                allocator.free(post_init_payload);
+                allocator.free(init_resp);
+                return TestError.SendFailed;
+            }
+            reg.markStale(preview_name);
+            allocator.free(post_init_payload);
+            allocator.free(init_resp);
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
+                io,
+            ) catch {};
+            continue;
+        };
+        allocator.free(post_init_payload);
+
         // We got the initialize response — SDK is alive. Read the
         // tools/list response (2nd response). Same retry semantics.
         const tools_deadline_ns: u64 = if (attempt == 1)
@@ -440,7 +486,7 @@ fn testStdio(
                 };
                 const stderr_msg = drainStderr(allocator, io, client.stderr);
                 @memcpy(attempts_codes[attempts_used * 8 ..][0..code.len], code);
-                @memset(attempts_codes[attempts_used * 8 + code.len ..][0..8 - code.len], ' ');
+                @memset(attempts_codes[attempts_used * 8 + code.len ..][0 .. 8 - code.len], ' ');
                 stderrs_buf[attempts_used] = stderr_msg;
                 attempts_used += 1;
             }
@@ -880,8 +926,7 @@ pub fn mcpTestHandler(
     try buf.print(allocator, "{{\"ok\":true,\"transport\":\"{s}\",\"tools\":[", .{outcome.transport});
     for (outcome.tools, 0..) |tool, i| {
         if (i > 0) try buf.appendSlice(allocator, ",");
-        try buf.print(allocator, "{{\"name\":{f},\"description\":{f}}}",
-            .{ std.json.fmt(tool.name, .{}), std.json.fmt(tool.description, .{}) });
+        try buf.print(allocator, "{{\"name\":{f},\"description\":{f}}}", .{ std.json.fmt(tool.name, .{}), std.json.fmt(tool.description, .{}) });
     }
     try buf.appendSlice(allocator, "]}");
     const data = try buf.toOwnedSlice(allocator);
@@ -1049,7 +1094,7 @@ test "formatAttemptsDetail: sanitizes C0 control chars from stderr (JSON-safe)" 
 
     // Build a stderr blob with: ESC, newline, NUL, BEL, printable.
     const dirty_stderr = "\x1b[31mfatal\x1b[0m: \nmcp.connect failed\n\x00\x07";
-    var stderrs = [_][]const u8{ dirty_stderr };
+    var stderrs = [_][]const u8{dirty_stderr};
     // Mirror production code: codes buffer is 8 bytes per attempt,
     // padded with SPACE (0x20) after the short code. Using NUL (0x00)
     // here would break the sanitizer's invariant that codes_text is
