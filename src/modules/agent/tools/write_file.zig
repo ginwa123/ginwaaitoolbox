@@ -39,6 +39,28 @@ pub fn parentDirToCreate(path: []const u8) ?[]const u8 {
     return std.fs.path.dirname(path);
 }
 
+/// Create `dir_path`, unless it is already there.
+///
+/// `createDirPath` reports an EXISTING directory as an error, and on Windows
+/// that includes a drive root: `create_with_dir = true` for a file sitting
+/// directly in `C:\` walks into `createDirPath(io, "C:\\")` and dies, even
+/// though there is provably nothing to create. Probing first makes every
+/// platform agree on the "already there" case, and turns the common
+/// already-exists path into a single stat instead of a walk plus a failed
+/// create.
+///
+/// Any error other than "not there" is still surfaced: a permission problem
+/// on an existing parent should not be silently reinterpreted as "create it".
+fn ensureDir(io: std.Io, dir_path: []const u8) !void {
+    if (std.Io.Dir.cwd().access(io, dir_path, .{})) |_| {
+        return;
+    } else |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    }
+    try std.Io.Dir.cwd().createDirPath(io, dir_path);
+}
+
 pub fn writeFile(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -55,7 +77,7 @@ pub fn writeFile(
     // If create_with_dir is true, proactively create parent directories with makePath
     if (input.create_with_dir) {
         if (parentDirToCreate(path)) |dir_path| {
-            try std.Io.Dir.cwd().createDirPath(io, dir_path);
+            try ensureDir(io, dir_path);
         }
     }
 
@@ -65,7 +87,7 @@ pub fn writeFile(
             defer allocator.free(path_copy);
 
             if (parentDirToCreate(path_copy)) |dir_path| {
-                try std.Io.Dir.cwd().createDirPath(io, dir_path);
+                try ensureDir(io, dir_path);
                 const file = try std.Io.Dir.cwd().createFile(io, path, .{});
                 defer std.Io.File.close(file, io);
 
