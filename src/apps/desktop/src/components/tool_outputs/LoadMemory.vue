@@ -471,7 +471,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
    Kept local (scoped) so styles don't leak. */
 .entry-id {
   font-family: monospace;
-  font-size: 10px;
+  font-size: var(--text-micro);
   color: var(--semantic-text-dim);
   max-width: 140px;
   overflow: hidden;
@@ -499,7 +499,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
 
 .tag-chip {
   font-family: monospace;
-  font-size: 10px;
+  font-size: var(--text-micro);
   background-color: rgba(99, 102, 241, 0.12);
   color: rgb(99, 102, 241);
   padding: 1px 5px;
@@ -512,7 +512,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
   border: none;
   cursor: pointer;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 600;
   color: var(--semantic-text-muted);
   padding: 0;
@@ -528,7 +528,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
 }
 
 .content-toggle-icon {
-  font-size: 8px;
+  font-size: var(--text-micro);
   width: 10px;
   text-align: center;
 }
@@ -540,7 +540,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
   border-radius: 4px;
   border: 1px solid var(--color-border);
   font-family: monospace;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;

@@ -276,7 +276,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       }"
     >
-      <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
+      <table class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px">
         <tbody>
           <template v-for="(line, idx) in lines" :key="idx">
             <tr v-if="line.type === 'hunk'">

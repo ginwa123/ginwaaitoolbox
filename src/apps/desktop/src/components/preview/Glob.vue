@@ -236,7 +236,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 .gl-title {
   color: var(--color-violet);
   font-weight: 600;
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
 }
 
 .gl-pattern {
@@ -251,7 +251,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 .gl-summary {
   margin-left: auto;
   color: var(--semantic-text-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-micro);
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -259,24 +259,24 @@ const handleOpenInEditor = (e: Event, path: string) => {
 
 .gl-offset {
   color: var(--semantic-text-dim);
-  font-size: 0.6rem;
+  font-size: var(--text-micro);
 }
 
 .gl-warning-text {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: var(--text-micro);
   color: var(--color-orange);
 }
 
 .gl-error-text {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: var(--text-micro);
   color: #f87171;
 }
 
 .gl-toggle {
   color: var(--semantic-text-muted);
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
   width: 1rem;
   text-align: center;
 }
@@ -304,7 +304,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 .gl-file-path {
   flex: 1;
   color: var(--semantic-text);
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -318,7 +318,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
   color: var(--semantic-text-muted);
   opacity: 0;
   transition: opacity 0.15s;
-  font-size: 0.85rem;
+  font-size: var(--text-meta);
   flex-shrink: 0;
 }
 

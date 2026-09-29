@@ -232,7 +232,7 @@ onMounted(() => {
       class="flex-1 overflow-auto diff-wrap"
       :style="{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }"
     >
-      <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px;">
+      <table class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px;">
         <tbody>
           <template v-for="(line, idx) in diffLines" :key="idx">
             <!-- Hunk header -->
@@ -411,7 +411,7 @@ onMounted(() => {
 .mini-chat-popup .mini-chat-code pre {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--semantic-text);
   white-space: pre-wrap;

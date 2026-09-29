@@ -227,7 +227,7 @@ const handleClose = () => {
         This file is empty
       </div>
 
-      <table v-else class="w-full border-collapse" style="font-size: 12px; line-height: 20px">
+      <table v-else class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px">
         <tbody>
           <tr
             v-for="(line, idx) in lines"

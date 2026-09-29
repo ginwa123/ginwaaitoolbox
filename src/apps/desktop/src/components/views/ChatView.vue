@@ -5729,7 +5729,7 @@ const compactSession = async () => {
   border-radius: 0.375rem;
   margin: 0.25rem 0;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   line-height: 1.5;
 }
 
@@ -5764,7 +5764,7 @@ const compactSession = async () => {
 
 :deep(.file-path) {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   padding: 0.25rem 0.5rem;
   background-color: rgba(139, 92, 246, 0.1);
   border-radius: 0.25rem;
@@ -5774,14 +5774,14 @@ const compactSession = async () => {
 
 :deep(.search-file) {
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: var(--text-body);
   color: var(--color-violet);
   margin-top: 0.5rem;
 }
 
 :deep(.search-line) {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   padding: 0.125rem 0.5rem;
 }
 
@@ -5801,7 +5801,7 @@ const compactSession = async () => {
 :deep(.file-content) {
   margin-top: 0.25rem;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   line-height: 1.5;
   background-color: rgba(0, 0, 0, 0.04);
   border-radius: 0.375rem;
@@ -5865,7 +5865,7 @@ const compactSession = async () => {
   align-items: center;
   gap: 0.35rem;
   color: var(--color-violet);
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-family: var(--font-mono);
@@ -5884,19 +5884,19 @@ const compactSession = async () => {
   background-color: var(--color-bg-p2);
   border: 1px solid var(--color-border-light);
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
   font-family: var(--font-mono);
   color: var(--color-aqua);
 }
 
 :deep(.tool-inline) {
-  font-size: 0.8rem;
+  font-size: var(--text-dense);
   color: var(--color-violet);
   font-family: monospace;
 }
 
 :deep(.tool-inline-result) {
-  font-size: 0.8rem;
+  font-size: var(--text-dense);
   color: var(--semantic-text-dim);
   font-family: monospace;
 }
@@ -6186,7 +6186,7 @@ const compactSession = async () => {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: var(--text-dense);
   font-weight: 500;
   color: var(--semantic-text-dim);
   background: transparent;
@@ -6226,7 +6226,7 @@ const compactSession = async () => {
   align-items: center;
   gap: 6px;
   padding: 6px 4px;
-  font-size: 12px;
+  font-size: var(--text-dense);
   color: var(--semantic-text-dim);
   white-space: nowrap;
 }

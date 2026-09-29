@@ -204,7 +204,7 @@ const statusClass = computed(() => {
   box-shadow: -10px 0 30px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
-  font-size: 12px;
+  font-size: var(--text-dense);
 }
 
 .peek-header {
@@ -219,10 +219,10 @@ const statusClass = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--text-dense);
 }
 .peek-kind {
-  font-size: 10px;
+  font-size: var(--text-micro);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--semantic-text-muted);
@@ -237,7 +237,7 @@ const statusClass = computed(() => {
   max-width: 180px;
 }
 .peek-status {
-  font-size: 11px;
+  font-size: var(--text-meta);
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
@@ -259,7 +259,7 @@ const statusClass = computed(() => {
   50%      { opacity: 0.5; transform: scale(1.4); }
 }
 .peek-instruction {
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--semantic-text-muted);
   margin-top: 2px;
   overflow: hidden;
@@ -268,7 +268,7 @@ const statusClass = computed(() => {
   margin: 0;
 }
 .peek-open-full {
-  font-size: 11px;
+  font-size: var(--text-meta);
   padding: 4px 8px;
   border-radius: 4px;
   background: var(--semantic-content-bg);
@@ -292,7 +292,7 @@ const statusClass = computed(() => {
   cursor: pointer;
   border: 1px solid transparent;
   background: transparent;
-  font-size: 14px;
+  font-size: var(--text-body);
 }
 .peek-close:hover {
   color: var(--semantic-text);
@@ -307,11 +307,11 @@ const statusClass = computed(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: var(--text-meta);
 }
 .peek-error-message { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 .peek-error-retry {
-  font-size: 10px;
+  font-size: var(--text-micro);
   padding: 2px 6px;
   border-radius: 3px;
   border: 1px solid rgba(239, 68, 68, 0.3);
@@ -338,7 +338,7 @@ const statusClass = computed(() => {
 .peek-footer {
   padding: 8px 16px;
   border-top: 1px solid var(--color-border);
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--semantic-text-muted);
   display: flex;
   align-items: center;

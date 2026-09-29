@@ -460,7 +460,7 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
   cursor: pointer;
   text-align: left;
   font-family: inherit;
-  font-size: 12px;
+  font-size: var(--text-dense);
   color: inherit;
 }
 
@@ -501,7 +501,7 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
 .menu-chev {
   flex: none;
   color: var(--semantic-text-dim);
-  font-size: 13px;
+  font-size: var(--text-dense);
   line-height: 1;
 }
 
@@ -509,7 +509,7 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
   width: 0.625rem;
   flex: none;
   color: var(--color-aqua);
-  font-size: 9px;
+  font-size: var(--text-micro);
   line-height: 1;
 }
 

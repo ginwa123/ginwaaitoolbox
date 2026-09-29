@@ -380,7 +380,7 @@ defineExpose({ refresh })
                 <div
                   v-if="inlineDiff && openFileKey === fileKey(commit.sha, file.path)"
                   class="ml-4 rounded overflow-x-auto font-mono"
-                  style="border: 1px solid var(--color-border); font-size: 11px"
+                  style="border: 1px solid var(--color-border); font-size: var(--text-meta)"
                 >
                   <div
                     v-if="fileDiffLoading[fileKey(commit.sha, file.path)]"
