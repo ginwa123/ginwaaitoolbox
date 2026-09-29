@@ -6,7 +6,8 @@
  *  - parses the error envelope (<error> tag → red border, no rows)
  *  - header label shows the truncated id + a body preview on success,
  *    "error" on failure
- *  - expanded body renders the id / tags / created / updated rows
+ *  - expanded body is exactly three things: id, tags, content (the
+ *    timestamps live in the header hover title, not in rows)
  *  - renders the SAVED BODY + tags from the tool-call args (`parameters`),
  *    because `executeSaveMemory` never echoes the note back
  *  - hides `content` from the Arguments block; copy button yields the full
@@ -120,16 +121,25 @@ describe('SaveMemory.vue — happy path', () => {
     expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
   })
 
-  it('renders id/created_at/updated_at rows when expanded=true', () => {
+  it('renders only the id row when expanded=true (no timestamp rows)', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeSuccessContent(), expanded: true },
     })
     expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="save-memory-created-at-row"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="save-memory-updated-at-row"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('mem_aabbccdd11223344')
-    expect(wrapper.text()).toContain('2026-08-06 10:00:00')
-    expect(wrapper.text()).toContain('2026-08-06 10:05:00')
+    // Timestamps are not rows — they moved to the header hover title.
+    expect(wrapper.find('[data-testid="save-memory-created-at-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-memory-updated-at-row"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('2026-08-06 10:00:00')
+    expect(wrapper.text()).not.toContain('2026-08-06 10:05:00')
+  })
+
+  it('keeps the saved timestamp reachable in the header hover title', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent() },
+    })
+    const title = wrapper.find('[data-testid="save-memory-header-label"]').attributes('title')
+    expect(title).toContain('saved 2026-08-06 10:00:00')
   })
 })
 
@@ -167,13 +177,12 @@ describe('SaveMemory.vue — error path', () => {
     expect(wrapper.text()).not.toContain('mem_')
   })
 
-  it('does not render id/created/updated rows when in error state', () => {
+  it('does not render the id row when in error state', () => {
     const wrapper = mount(SaveMemory, {
       props: { content: makeErrorContent(), expanded: true },
     })
     expect(wrapper.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="save-memory-created-at-row"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="save-memory-updated-at-row"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="save-memory-content-row"]').exists()).toBe(false)
   })
 })
 

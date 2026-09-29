@@ -127,7 +127,7 @@
   </div>
 
   <div class="demo">
-    <h2>Expanded — id · tags · timestamps · the stored body</h2>
+    <h2>Expanded — id · tags · the stored body (nothing else)</h2>
     <div class="chat-tool-card">
       <div class="header">
         <span class="tool">save_memory</span>
@@ -145,12 +145,6 @@
             <span class="tag-chip">convention</span>
             <span class="tag-chip">tooling</span>
           </span>
-        </div>
-        <div class="row">
-          <span class="k">Created:</span><span class="v">2026-09-29 19:24:14</span>
-        </div>
-        <div class="row">
-          <span class="k">Updated:</span><span class="v">2026-09-29 19:24:14</span>
         </div>
         <div class="content-wrap">
           <div class="content-head">
@@ -173,6 +167,10 @@
         </details>
       </div>
     </div>
+    <p style="font-size:12px;color:var(--semantic-text-dim);margin:8px 0 0">
+      The <code>created_at</code> / <code>updated_at</code> timestamps are not rows — they are both
+      <code>CURRENT_TIMESTAMP</code> at INSERT. Hover the header to read them.
+    </p>
   </div>
 
   <div class="demo">

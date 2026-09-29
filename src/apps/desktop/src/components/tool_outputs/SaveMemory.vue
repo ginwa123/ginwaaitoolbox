@@ -30,13 +30,15 @@
     `save_memory → <id> · <content preview> ✓`   (success)
     `save_memory → error ✗`                      (failure)
   Hover shows the full body (capped) so the note can be read without
-  expanding.
+  expanding, plus the saved timestamp.
 
-  Expanded body (click header to toggle):
-    Success: id (copy) · tags chips · created_at · updated_at · the
-             stored body in a scrollable `pre` with a size badge and a
-             copy button.
-    Error:   red error block with the full error message.
+  Expanded body (click header to toggle) — three rows, nothing else:
+    Id · Tags (chips) · the stored body in a scrollable `pre` with a
+    size badge and a copy button.
+    The `created_at` / `updated_at` timestamps are NOT rows: they are both
+    `CURRENT_TIMESTAMP` at INSERT time, so they carry one fact, not two.
+    They live in the header's hover title instead.
+    Error: red error block with the full error message.
 
   Bodies above `MAX_DISPLAY_CHARS` are clipped for display with an
   explicit "N more characters not shown" note; the copy button always
@@ -199,13 +201,17 @@ const headerLabel = computed(() => {
 })
 
 /** Hover title: the full id (no truncation) plus the body capped at
- *  MAX_TOOLTIP_CHARS, so power users can hover-read the note without
- *  expanding. On error, the full error text. */
+ *  MAX_TOOLTIP_CHARS. The timestamps moved here when the expanded body
+ *  was cut down to id / tags / content — they stay reachable without
+ *  spending two rows of vertical space on `CURRENT_TIMESTAMP` values
+ *  that are identical for created and updated. On error, the full text. */
 const headerTitle = computed(() => {
   if (!isSuccess.value) return errorMessage.value ?? ''
   const parts: string[] = []
   if (memoryId.value) parts.push(memoryId.value)
   if (contentOneLine.value) parts.push(clip(contentOneLine.value, MAX_TOOLTIP_CHARS))
+  const stamp = [createdAt.value, updatedAt.value].filter((t) => !!t)
+  if (stamp.length > 0) parts.push(`saved ${stamp.join(' → ')}`)
   return parts.join('\n')
 })
 
@@ -239,8 +245,8 @@ const hasBody = computed(() => {
 // ---- Actions ---------------------------------------------------------------
 
 const toggle = () => {
-  // Always expandable on success (3 timestamp rows + the body) or error
-  // (1 row). On empty/missing envelopes (no id + no error) we still allow
+  // Always expandable on success (id + tags + the body) or error (1 row).
+  // On empty/missing envelopes (no id + no error) we still allow
   // expansion so the user sees "what's in here" — but it's a no-op
   // visually when there are no fields.
   isExpanded.value = !isExpanded.value
@@ -365,7 +371,8 @@ function formatBytes(n: number): string {
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
 
-      <!-- Success path: id + tags + created_at + updated_at + body rows -->
+      <!-- Success path: id + tags + the stored body. Timestamps live in
+           the header tooltip instead of taking up two rows here. -->
       <template v-if="isSuccess">
         <div
           v-if="memoryId"
@@ -396,28 +403,6 @@ function formatBytes(n: number): string {
               {{ tag }}
             </span>
           </span>
-        </div>
-
-        <div
-          v-if="createdAt"
-          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
-          data-testid="save-memory-created-at-row"
-        >
-          <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Created:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
-            createdAt
-          }}</span>
-        </div>
-
-        <div
-          v-if="updatedAt"
-          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
-          data-testid="save-memory-updated-at-row"
-        >
-          <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Updated:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
-            updatedAt
-          }}</span>
         </div>
 
         <!-- The stored body — the whole point of the card. -->
@@ -451,10 +436,10 @@ function formatBytes(n: number): string {
           </p>
         </div>
 
-        <!-- Edge case: empty envelope (no id, no timestamps, no body). Show a
-             muted hint so the user knows the card is empty, not stuck. -->
+        <!-- Edge case: empty envelope (no id, no body). Show a muted hint
+             so the user knows the card is empty, not stuck. -->
         <div
-          v-if="!memoryId && !createdAt && !updatedAt && !hasBody"
+          v-if="!memoryId && !hasBody"
           class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
           data-testid="save-memory-empty"
         >
