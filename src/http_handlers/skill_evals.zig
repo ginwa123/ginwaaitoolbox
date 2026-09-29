@@ -25,6 +25,11 @@ const skill_evals_db = nalarcore.skill_evals_db;
 pub const SkillEvalsError = error{
     Internal,
     InvalidLimit,
+    MissingResultId,
+    ResultNotFound,
+    AlreadyApplied,
+    Stale,
+    NotApplicable,
 };
 
 pub const MAX_LIMIT: u32 = 100;
@@ -171,6 +176,146 @@ fn summaryUseCase(
 }
 
 // =====================================================================
+// Increment 7 — the apply endpoint
+// =====================================================================
+
+/// What the apply endpoint did, for the response body.
+const ApplyJson = struct {
+    result_id: []const u8,
+    skill_name: []const u8,
+    action: []const u8,
+    applied: bool,
+    message: []const u8,
+};
+
+/// Read one result row by id, or null. Used by the apply path, which needs the
+/// row's verdict and base hash before it can decide anything.
+fn readResultById(
+    allocator: std.mem.Allocator,
+    db: *nalarcore.sqlite.SqliteBackend,
+    result_id: []const u8,
+) !?skill_evals_db.ResultRow {
+    var q = try db.query(allocator,
+        \\SELECT r.id, r.run_id, r.skill_key, r.skill_name, r.status, r.verdict,
+        \\       COALESCE(f.freshness, 0), COALESCE(f.accuracy, 0), COALESCE(f.duplication, 0),
+        \\       COALESCE(r.rationale, ''),
+        \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
+        \\       COALESCE(r.base_content_hash, ''),
+        \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
+        \\  FROM skill_eval_results r
+        \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
+        \\                              AND f.verdict_intrinsic != 'computing'
+        \\ WHERE r.id = ?
+    , &.{result_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return null;
+    defer row.deinit(allocator);
+    return skill_evals_db.ResultRow{
+        .id = try allocator.dupe(u8, row.values[0]),
+        .run_id = try allocator.dupe(u8, row.values[1]),
+        .skill_key = try allocator.dupe(u8, row.values[2]),
+        .skill_name = try allocator.dupe(u8, row.values[3]),
+        .status = try allocator.dupe(u8, row.values[4]),
+        .verdict = try allocator.dupe(u8, row.values[5]),
+        .freshness = std.fmt.parseInt(u8, row.values[6], 10) catch 0,
+        .accuracy = std.fmt.parseInt(u8, row.values[7], 10) catch 0,
+        .duplication = std.fmt.parseInt(u8, row.values[8], 10) catch 0,
+        .rationale = try allocator.dupe(u8, row.values[9]),
+        .missing_paths_json = try allocator.dupe(u8, row.values[10]),
+        .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
+        .base_content_hash = try allocator.dupe(u8, row.values[12]),
+        .applied = std.mem.eql(u8, row.values[13], "1"),
+        .apply_action = try allocator.dupe(u8, row.values[14]),
+    };
+}
+
+/// Apply one verdict.
+///
+/// The order matters and is the whole design:
+///
+///   1. Read the result. A missing row is a 404, not a 500.
+///   2. `claimApply` takes the exclusive right to apply it. Two clicks, two
+///      clients or two humans cannot both write the skill — the loser is told
+///      `already_applied` rather than silently overwriting.
+///   3. Re-check the body hash. Between the eval and the click a human may have
+///      edited the skill, and applying a verdict computed against the OLD body
+///      would write a stale proposal over fresh work. On a mismatch we
+///      `releaseApply` (or the verdict becomes unapplicable forever) and
+///      `markResultStale` (so the UI can offer a re-evaluate), then 409.
+///   4. Only then is the action recorded.
+///
+/// `apply_mode` is deliberately NOT consulted here: this endpoint is the human
+/// clicking Apply, which is the `propose` flow's terminal step. The automatic
+/// modes are a separate, later decision.
+fn applyUseCase(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    result_id: []const u8,
+    action: []const u8,
+) SkillEvalsError![]const u8 {
+    if (result_id.len == 0) return error.MissingResultId;
+
+    const di = nalarcore.getSingleton() catch return error.Internal;
+    const db = di.db;
+
+    const row = (readResultById(allocator, db, result_id) catch return error.Internal) orelse
+        return error.ResultNotFound;
+    defer row.deinit(allocator);
+
+    // A verdict that is already stale is not applicable — the body moved on and
+    // the proposal no longer describes it.
+    if (std.mem.eql(u8, row.status, "stale")) return error.Stale;
+
+    const claim = skill_evals_db.claimApply(allocator, db, result_id, action) catch return error.Internal;
+    switch (claim) {
+        .missing => return error.ResultNotFound,
+        .already_applied => return error.AlreadyApplied,
+        .won => {},
+    }
+
+    // The hash re-check. `base_content_hash` is the body the eval judged; if the
+    // file on disk no longer hashes to it, the verdict is about a body that is
+    // gone.
+    const current = readCurrentSkillHash(allocator, io, di, row.skill_name) catch null;
+    if (current) |hash| {
+        defer allocator.free(hash);
+        if (row.base_content_hash.len > 0 and !std.mem.eql(u8, hash, row.base_content_hash)) {
+            // Give the claim back FIRST, or the verdict can never be applied
+            // again even after a re-evaluate.
+            skill_evals_db.releaseApply(allocator, db, result_id) catch {};
+            skill_evals_db.markResultStale(allocator, db, result_id) catch {};
+            return error.Stale;
+        }
+    }
+
+    return std.json.Stringify.valueAlloc(allocator, ApplyJson{
+        .result_id = result_id,
+        .skill_name = row.skill_name,
+        .action = action,
+        .applied = true,
+        .message = "the verdict was recorded as applied",
+    }, .{}) catch return error.Internal;
+}
+
+/// Hash the skill body as it is on disk right now, or null when it cannot be
+/// read. Local scope first, then global — the same order `use_skill` resolves
+/// with, so we compare against the file the agent would actually get.
+fn readCurrentSkillHash(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    di: *nalarcore.ContextIPCTui,
+    skill_name: []const u8,
+) !?[]u8 {
+    const body = nalarcore.skill_mod.parse_skill(allocator, io, skill_name, false, di.environment) orelse
+        nalarcore.skill_mod.parse_skill(allocator, io, skill_name, true, di.environment) orelse
+        return null;
+    defer allocator.free(body);
+    var buf: [64]u8 = undefined;
+    skill_evals_db.sha256Hex(body, &buf);
+    return try allocator.dupe(u8, buf[0..]);
+}
+
+// =====================================================================
 // Handlers
 // =====================================================================
 
@@ -185,10 +330,20 @@ fn errorResponse(
     const status: u16 = switch (err) {
         error.Internal => 500,
         error.InvalidLimit => 400,
+        error.MissingResultId => 400,
+        error.ResultNotFound => 404,
+        error.AlreadyApplied => 409,
+        error.Stale => 409,
+        error.NotApplicable => 409,
     };
     const message: []const u8 = switch (err) {
         error.Internal => "Internal server error",
         error.InvalidLimit => "limit must be a positive integer",
+        error.MissingResultId => "result_id is required",
+        error.ResultNotFound => "no such result",
+        error.AlreadyApplied => "this verdict has already been applied",
+        error.Stale => "the skill body changed since this verdict was computed; re-evaluate it",
+        error.NotApplicable => "this verdict cannot be applied",
     };
     return res.jsonResponse(.{
         .status_code = status,
@@ -220,6 +375,28 @@ pub fn skillEvalsSummaryHandler(
     const session_id = req.query.get("session_id") orelse "";
 
     const body = summaryUseCase(allocator, session_id) catch |err| return errorResponse(allocator, res, err);
+
+    return res.jsonResponse(.{ .status_code = 200, .data = body });
+}
+
+/// `POST /api/skill-evals/results/apply?result_id=...&action=...`
+///
+/// A POST because it mutates: it records that a human accepted a verdict. The
+/// `result_id` is a QUERY parameter rather than a path segment on purpose — a
+/// `/results/:result_id/apply` route would put a `:param` under this prefix,
+/// and `matchRoute` walks the table in registration order, so any literal
+/// registered after it would be shadowed. Keeping every route here a literal
+/// removes the ordering rule from the design entirely.
+pub fn skillEvalsApplyHandler(
+    ctx: gserverz.HttpContext,
+    req: gserverz.HttpRequest,
+    res: gserverz.HttpResponse,
+) !gserverz.HttpResponse {
+    const allocator = ctx.allocator;
+    const result_id = req.query.get("result_id") orelse "";
+    const action = req.query.get("action") orelse "apply";
+
+    const body = applyUseCase(allocator, ctx.io, result_id, action) catch |err| return errorResponse(allocator, res, err);
 
     return res.jsonResponse(.{ .status_code = 200, .data = body });
 }

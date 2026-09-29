@@ -1687,6 +1687,10 @@ pub const ResultRow = struct {
     rationale: []u8,
     missing_paths_json: []u8,
     intrinsic_fact_id: []u8,
+    /// The hash of the body this verdict was computed against. The apply path
+    /// re-checks it: if the file changed since the eval, the proposal describes
+    /// a body that is gone.
+    base_content_hash: []u8,
     applied: bool,
     apply_action: []u8,
 
@@ -1700,6 +1704,7 @@ pub const ResultRow = struct {
         allocator.free(self.rationale);
         allocator.free(self.missing_paths_json);
         allocator.free(self.intrinsic_fact_id);
+        allocator.free(self.base_content_hash);
         allocator.free(self.apply_action);
     }
 };
@@ -1714,6 +1719,7 @@ pub fn listResults(
         \\       COALESCE(f.freshness, 0), COALESCE(f.accuracy, 0), COALESCE(f.duplication, 0),
         \\       COALESCE(r.rationale, ''),
         \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
+        \\       COALESCE(r.base_content_hash, ''),
         \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
         \\  FROM skill_eval_results r
         \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
@@ -1743,8 +1749,9 @@ pub fn listResults(
             .rationale = try allocator.dupe(u8, row.values[9]),
             .missing_paths_json = try allocator.dupe(u8, row.values[10]),
             .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
-            .applied = std.mem.eql(u8, row.values[12], "1"),
-            .apply_action = try allocator.dupe(u8, row.values[13]),
+            .base_content_hash = try allocator.dupe(u8, row.values[12]),
+            .applied = std.mem.eql(u8, row.values[13], "1"),
+            .apply_action = try allocator.dupe(u8, row.values[14]),
         });
     }
     return try out.toOwnedSlice(allocator);

@@ -246,6 +246,7 @@ pub const skillsListHandler = @import("skills_list.zig").skillsListHandler;
 // Skill Evals — the read surface (see docs/plans/2026-09-27-skill-evals.md §4.10).
 pub const skillEvalsRunsHandler = @import("skill_evals.zig").skillEvalsRunsHandler;
 pub const skillEvalsSummaryHandler = @import("skill_evals.zig").skillEvalsSummaryHandler;
+pub const skillEvalsApplyHandler = @import("skill_evals.zig").skillEvalsApplyHandler;
 pub const skillDetailHandler = @import("skill_detail.zig").skillDetailHandler;
 pub const skillDeleteHandler = @import("skill_delete.zig").skillDeleteHandler;
 

@@ -610,6 +610,10 @@ pub fn main(init: std.process.Init) !void {
     // hazard to remember. Plan: docs/plans/2026-09-27-skill-evals.md §4.10.
     try authed.get("/api/skill-evals/runs", ai_mod.http_handlers.skillEvalsRunsHandler);
     try authed.get("/api/skill-evals/summary", ai_mod.http_handlers.skillEvalsSummaryHandler);
+    // The apply endpoint. `result_id` is a QUERY parameter, not a path segment,
+    // so this stays a literal and there is still no `:param` under this prefix
+    // to shadow a later route.
+    try authed.post("/api/skill-evals/results/apply", ai_mod.http_handlers.skillEvalsApplyHandler);
 
     // Memories routes
     try authed.get("/api/memories", ai_mod.http_handlers.memoriesListHandler);
