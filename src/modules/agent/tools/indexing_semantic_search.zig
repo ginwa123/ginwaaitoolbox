@@ -964,3 +964,268 @@ pub fn search(
 
     return error.OutOfMemory;
 }
+
+// ===== Tests merged from indexing_semantic_search_test.zig (2026-09-29 flatten) =====
+// NOTE: this suite is still NOT registered (see
+// src/modules/agent/test_runner.zig). Unlike the two design tools above, no
+// `pub const` chain reaches this file, so it stays out of the test binary —
+// the same state it was in before the 2026-09-29 flatten. Register it once
+// `search` stops being a `!void` placeholder.
+//
+// NOT REGISTERED: no registrar imports this file, so these tests are not
+// discovered by `zig build test`. That was already true before the
+// 2026-09-29 flatten (nothing imported the former `*_test.zig`), and it
+// stays true here: the suite below has never been compiled, and compiling
+// it now fails because it still asserts the pre-2026-09-18 XML tool-output
+// envelope. Re-assert it against the JSON envelope in its own change.
+const testing = std.testing;
+
+// ============================================================================
+// Test: Chunk Single Function
+// ============================================================================
+
+test "testChunkSingleFunction" {
+    const allocator = testing.allocator;
+
+    const content =
+        \\fn myFunction() void {
+        \\    std.debug.print("Hello\n", .{});
+        \\}
+    ;
+
+    const chunks = try chunkFile(allocator, "test.zig", content, 500);
+    defer {
+        for (chunks) |c| {
+            allocator.free(c.file_path);
+            allocator.free(c.content);
+        }
+        allocator.free(chunks);
+    }
+
+    // May produce 1 or 2 chunks depending on trailing content handling
+    try testing.expect(chunks.len >= 1);
+    try testing.expectEqual(@as(u32, 0), chunks[0].chunk_id);
+    try testing.expect(!chunks[0].oversized);
+}
+
+// ============================================================================
+// Test: Chunk Multiple Functions
+// ============================================================================
+
+test "testChunkMultipleFunctions" {
+    const allocator = testing.allocator;
+
+    const content =
+        \\fn funcA() void {}
+        \\
+        \\fn funcB() void {}
+        \\
+        \\fn funcC() void {}
+        \\
+        \\fn funcD() void {}
+        \\
+        \\fn funcE() void {}
+    ;
+
+    const chunks = try chunkFile(allocator, "test.zig", content, 500);
+    defer {
+        for (chunks) |c| {
+            allocator.free(c.file_path);
+            allocator.free(c.content);
+        }
+        allocator.free(chunks);
+    }
+
+    // May produce 5-6 chunks depending on trailing content handling
+    try testing.expect(chunks.len >= 5);
+    for (0..@min(chunks.len, 5)) |i| {
+        try testing.expect(chunks[i].content.len > 0);
+    }
+}
+
+// ============================================================================
+// Test: Chunk Non-Code File (Markdown)
+// ============================================================================
+
+test "testChunkNonCode" {
+    const allocator = testing.allocator;
+
+    const content =
+        \\# Title
+        \\
+        \\Paragraph one.
+        \\
+        \\Paragraph two.
+    ;
+
+    const chunks = try chunkFile(allocator, "readme.md", content, 500);
+    defer {
+        for (chunks) |c| {
+            allocator.free(c.file_path);
+            allocator.free(c.content);
+        }
+        allocator.free(chunks);
+    }
+
+    try testing.expect(chunks.len >= 1);
+}
+
+// ============================================================================
+// Test: Gitignore Glob Matching
+// ============================================================================
+
+test "testGitignoreGlob" {
+    // Test *.o pattern
+    try testing.expect(gitignoreGlobMatch("*.o", "test.o", false));
+    try testing.expect(!gitignoreGlobMatch("*.o", "test.c", false));
+
+    // Test build/* pattern
+    try testing.expect(gitignoreMatch("build/", "build/output", true));
+    try testing.expect(gitignoreMatch("build/", "build/", true));
+
+    // Test negation pattern - this tests the matching logic
+    // *.o should NOT match keep.o when the glob is properly respecting characters
+    try testing.expect(!gitignoreGlobMatch("build/*.txt", "keep.o", false));
+}
+
+// ============================================================================
+// Test: Binary Content Detection
+// ============================================================================
+
+test "testBinarySniff" {
+    // Null byte in content
+    try testing.expect(isBinaryContent("hello\x00world"));
+
+    // No null bytes
+    try testing.expect(!isBinaryContent("hello world"));
+    try testing.expect(!isBinaryContent("line1\nline2\nline3"));
+}
+
+// ============================================================================
+// Test: Normalization
+// ============================================================================
+
+test "testNormalization" {
+    var v: [4]f32 = .{ 3.0, 4.0, 0.0, 0.0 };
+    normalize(&v);
+
+    // Compute magnitude
+    var mag: f32 = 0;
+    for (v) |x| mag += x * x;
+    mag = @sqrt(mag);
+
+    try testing.expect(@abs(mag - 1.0) < 0.0001);
+}
+
+// ============================================================================
+// Test: Dot Product
+// ============================================================================
+
+test "testDotProduct" {
+    const a: [3]f32 = .{ 1.0, 2.0, 3.0 };
+    const b: [3]f32 = .{ 4.0, 5.0, 6.0 };
+
+    const result = dotProduct(&a, &b);
+    // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+    try testing.expect(@abs(result - 32.0) < 0.0001);
+}
+
+// ============================================================================
+// Test: Hash Computation
+// ============================================================================
+
+test "testHashDiff" {
+    const content1 = "hello world";
+    const content2 = "hello world";
+    const content3 = "different content";
+
+    const hash1 = computeHash(content1);
+    const hash2 = computeHash(content2);
+    const hash3 = computeHash(content3);
+
+    try testing.expectEqual(hash1, hash2);
+    try testing.expect(!std.mem.eql(u8, &hash1, &hash3));
+}
+
+// ============================================================================
+// Test: Search Results Structure
+// ============================================================================
+
+test "testSearchResultsStructure" {
+    const result = SearchResult{
+        .file_path = "test.zig",
+        .start_line = 10,
+        .end_line = 20,
+        .snippet = "test content snippet",
+        .score = 0.95,
+    };
+
+    try testing.expectEqualStrings("test.zig", result.file_path);
+    try testing.expectEqual(@as(u32, 10), result.start_line);
+    try testing.expectEqual(@as(u32, 20), result.end_line);
+    try testing.expectEqualStrings("test content snippet", result.snippet);
+    try testing.expectEqual(@as(f32, 0.95), result.score);
+}
+
+// ============================================================================
+// Test: Chunk Info Structure
+// ============================================================================
+
+test "testChunkInfoStructure" {
+    const chunk = ChunkInfo{
+        .chunk_id = 5,
+        .file_path = "myfile.zig",
+        .start_line = 1,
+        .end_line = 10,
+        .content = "fn test() {}",
+        .oversized = false,
+    };
+
+    try testing.expectEqual(@as(u32, 5), chunk.chunk_id);
+    try testing.expectEqualStrings("myfile.zig", chunk.file_path);
+    try testing.expect(!chunk.oversized);
+}
+
+// ============================================================================
+// Test: File Entry Structure
+// ============================================================================
+
+test "testFileEntryStructure" {
+    const entry = FileEntry{
+        .path = "/path/to/file.zig",
+        .content = "file content",
+        .mtime = 1234567890,
+    };
+
+    try testing.expectEqualStrings("/path/to/file.zig", entry.path);
+    try testing.expectEqualStrings("file content", entry.content);
+    try testing.expectEqual(@as(i64, 1234567890), entry.mtime);
+}
+
+// NOTE: the former `testSearchEmptyIndex` was dropped with the flatten. It
+// asserted that `search` returns zero results for an empty index, but
+// `search` is still the `!void` placeholder that always fails with
+// error.OutOfMemory, so the test described an API that does not exist yet
+// and had never been compiled. Re-add it when `search` returns
+// `[]const SearchResult`.
+
+// ============================================================================
+// Test: Index Manifest Structure
+// ============================================================================
+
+test "testIndexManifestStructure" {
+    const manifest = IndexManifest{
+        .version = 1,
+        .dimensions = 768,
+        .chunk_count = 100,
+        .indexed_files = &.{},
+        .last_updated = 1234567890,
+        .memory_bytes = 307200,
+        .oversized_chunks = &.{},
+    };
+
+    try testing.expectEqual(@as(u32, 1), manifest.version);
+    try testing.expectEqual(@as(u32, 768), manifest.dimensions);
+    try testing.expectEqual(@as(u32, 100), manifest.chunk_count);
+    try testing.expectEqual(@as(u64, 307200), manifest.memory_bytes);
+}

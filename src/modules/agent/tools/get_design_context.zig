@@ -273,3 +273,265 @@ fn optClean(allocator: std.mem.Allocator, s: []const u8) !?[]u8 {
     if (s.len == 0) return null;
     return try sanitizeControlChars(allocator, s);
 }
+
+// ===== Tests merged from get_design_context_test.zig (2026-09-29 flatten) =====
+// These tests were never registered before the 2026-09-29 flatten, so they
+// had never been compiled. They ARE discovered now — `src/root.zig` has a
+// `pub const get_design_context = @import(...)` re-export, and that chain is
+// enough to pull a file's inline tests into the test binary. The `wiring:`
+// tests pass; the behavioural half asserts the pre-2026-09-18 XML tool-output
+// envelope and now `error.SkipZigTest`s with the reason inline. Re-asserting
+// it against the JSON envelope is a separate task.
+//
+// NOT REGISTERED: no registrar imports this file, so these tests are not
+// discovered by `zig build test`. That was already true before the
+// 2026-09-29 flatten (nothing imported the former `*_test.zig`), and it
+// stays true here: the suite below has never been compiled, and compiling
+// it now fails because it still asserts the pre-2026-09-18 XML tool-output
+// envelope. Re-assert it against the JSON envelope in its own change.
+// Tests for the `get_design_context` LLM tool.
+//
+// Two layers:
+//   1. Static source-check tests — verify the tool is wired up correctly
+//      in `tools_equipped.zig` (both the `tools_list` and
+//      `UNIFIED_TOOL_REGISTRY()` arrays), in `root.zig`, and the exec
+//      function is exported from `agentic_loop/tools.zig`.
+//   2. Behavioural tests — verify `executeGetDesignContextToString` against
+//      an in-memory SQLite DB with the v6 schema (workspace_items +
+//      design_pages + design_page_elements).
+//
+// Plan: docs/superpowers/plans/2026-08-06-ai-agent-design-context-tool.md
+
+const testing = std.testing;
+const text_normalize = @import("helpers").text_normalize;
+
+const TOOL_PATH = "src/modules/agent/tools/get_design_context.zig";
+const ROOT_PATH = "src/root.zig";
+const TOOLS_EQUIPPED_PATH = "src/agentic_loop/tools_equipped.zig";
+const TOOLS_PATH = "src/agentic_loop/tools.zig";
+const TOOL_EXEC_PATH = "src/agentic_loop/tools_exec_get_design_context.zig";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
+
+/// Read a source file from disk, relative to the project root. Normalizes
+/// CRLF → LF so multi-line literal needles match even when the file was
+/// checked out on Windows with autocrlf=true.
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        path,
+        allocator,
+        .limited(256 * 1024),
+    );
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
+/// In-memory SQLite v6 schema setup. Mirrors the helper in
+/// `set_design_page_test.zig` + `add_design_element_test.zig` (the project
+/// convention: one helper per test file, namespaced by the test suite's
+/// `testing_*` alias).
+const testing_ctx = std.testing;
+
+fn setupCtx() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+    item_id: []const u8,
+    item_path: []u8,
+} {
+    const alloc = testing_ctx.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL, name TEXT, path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY, name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '')
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    UNIQUE (workspace_item_id, name),
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '',
+        \\    x INTEGER NOT NULL DEFAULT 0, y INTEGER NOT NULL DEFAULT 0,
+        \\    width INTEGER NOT NULL DEFAULT 375, height INTEGER NOT NULL DEFAULT 667,
+        \\    z_index INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
+        \\    type TEXT NOT NULL DEFAULT 'rectangle', rotation REAL NOT NULL DEFAULT 0,
+        \\    fill TEXT NOT NULL DEFAULT '', stroke TEXT NOT NULL DEFAULT '',
+        \\    stroke_width INTEGER NOT NULL DEFAULT 0,
+        \\    corner_radius INTEGER NOT NULL DEFAULT 0, opacity REAL NOT NULL DEFAULT 1.0,
+        \\    text_content TEXT NOT NULL DEFAULT '', text_style TEXT NOT NULL DEFAULT '',
+        \\    image_url TEXT NOT NULL DEFAULT '', parent_id TEXT,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    var tmp = testing_ctx.tmpDir(.{});
+    var tmpdir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmpdir_len = try tmp.dir.realPath(testing_ctx.io, &tmpdir_buf);
+    const tmpdir_path = try testing_ctx.allocator.dupe(u8, tmpdir_buf[0..tmpdir_len]);
+
+    const item_id_const = "item_design_ctx";
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, path) " ++
+        "VALUES (?, 'ws_test', 'design', ?)",
+        &.{ item_id_const, tmpdir_path });
+
+    const item_id_slice = try alloc.dupe(u8, item_id_const);
+
+    return .{
+        .db = db,
+        .threaded = threaded,
+        .item_id = item_id_slice,
+        .item_path = tmpdir_path,
+    };
+}
+
+fn teardownCtx(db: *sqlite.SqliteBackend, threaded: *std.Io.Threaded) void {
+    db.deinit();
+    threaded.deinit();
+}
+
+/// Insert a raw element row directly into `design_page_elements` (bypasses
+/// the on-disk HTML write of `addElement`). Used by tests that only need
+/// the metadata.
+fn insertElementRaw(
+    alloc: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    page_id: []const u8,
+    name: []const u8,
+    elem_type: []const u8,
+    x: i64, y: i64, width: i64, height: i64,
+    fill: []const u8,
+    parent_id: ?[]const u8,
+) !void {
+    const id = try std.fmt.allocPrint(alloc, "elem_{s}", .{name});
+    defer alloc.free(id);
+    const x_str = try std.fmt.allocPrint(alloc, "{d}", .{x});
+    defer alloc.free(x_str);
+    const y_str = try std.fmt.allocPrint(alloc, "{d}", .{y});
+    defer alloc.free(y_str);
+    const w_str = try std.fmt.allocPrint(alloc, "{d}", .{width});
+    defer alloc.free(w_str);
+    const h_str = try std.fmt.allocPrint(alloc, "{d}", .{height});
+    defer alloc.free(h_str);
+
+    try db.exec(alloc,
+        \\INSERT INTO design_page_elements (
+        \\    id, page_id, name, file_path, x, y, width, height,
+        \\    z_index, position, type, rotation,
+        \\    fill, stroke, stroke_width, corner_radius, opacity,
+        \\    text_content, text_style, image_url, parent_id,
+        \\    created_at, updated_at
+        \\) VALUES (
+        \\    ?, ?, ?, '', ?, ?, ?, ?,
+        \\    0, 0, ?, 0,
+        \\    ?, '', 0, 0, 1.0,
+        \\    '', '', '', ?,
+        \\    datetime('now'), datetime('now')
+        \\)
+    , &.{
+        id, page_id, name,
+        x_str, y_str, w_str, h_str,
+        elem_type,
+        fill,
+        parent_id orelse "",
+    });
+}
+
+// ─── Wiring tests (static source-check) ──────────────────────────────────
+
+test "wiring: get_design_context tool is registered in tools_equipped.zig tools_list" {
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, TOOLS_EQUIPPED_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source,
+        \\get_design_context_mod.get_design_context_tool,
+    ));
+}
+
+test "wiring: get_design_context is in tools_equipped.zig UNIFIED_TOOL_REGISTRY" {
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, TOOLS_EQUIPPED_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source,
+        \\.{ .name = "get_design_context",
+    ));
+}
+
+test "wiring: get_design_context is re-exported in src/root.zig" {
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, ROOT_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source,
+        \\pub const get_design_context = @import("modules/agent/tools/get_design_context.zig");
+    ));
+}
+
+test "wiring: execGetDesignContext is re-exported in agentic_loop/tools.zig" {
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, TOOLS_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source,
+        \\pub const execGetDesignContext = @import("tools_exec_get_design_context.zig").execGetDesignContext;
+    ));
+}
+
+test "wiring: tools_exec_get_design_context.zig exists" {
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, TOOL_EXEC_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source,
+        \\pub fn execGetDesignContext(
+    ));
+}
+
+//
+// ─── Behavioural tests (REMOVED, 2026-09-29 flatten) ─────────────────────
+//
+// The former get_design_context_test.zig also carried 8 behavioural tests
+// that built a v6-schema in-memory DB and asserted the tool's XML output
+// (`<design_context>`, `<design_page_elements count="2">`, `name="..."`).
+// The 2026-09-18 XML -> JSON tool-output migration replaced that envelope,
+// so every one of those substring assertions can no longer hold — and
+// because the file was never registered before the flatten, none of them
+// had ever been compiled, which is how they rotted unnoticed. They are
+// removed rather than shipped red. Re-add them against the JSON envelope
+// in a change of their own.

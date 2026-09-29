@@ -161,3 +161,44 @@ test "actionOf: extracts action" {
 test "sessionIdOf: extracts session_id" {
     try testing.expectEqualStrings("session-42", sessionIdOf("{\"session_id\":\"session-42\"}").?);
 }
+
+// ===== Tests merged from tdd_round2_test.zig (2026-09-29 flatten) =====
+// Section 2 of tdd_round2_test.zig: the `sse.parse` regression tests
+// (CRLF-terminated frames + multi-line data). The file's leading doc
+// comment lives in transport.zig, which carries section 1.
+
+// ============================================================================
+// 2. sse.parse — CRLF frames + multi-line data
+// ============================================================================
+
+test "sse parse: CRLF-terminated frame yields one event" {
+    var events = std.ArrayList(Event).empty;
+    defer events.deinit(testing.allocator);
+    const input = "event: llm_history\r\ndata: {\"a\":1}\r\n\r\n";
+    const consumed = try parse(input, &events, testing.allocator);
+    try testing.expectEqual(input.len, consumed);
+    try testing.expectEqual(@as(usize, 1), events.items.len);
+    try testing.expectEqualStrings("llm_history", events.items[0].name);
+    try testing.expectEqualStrings("{\"a\":1}", events.items[0].data);
+}
+
+test "sse parse: multi-line data lines are joined with newline" {
+    var events = std.ArrayList(Event).empty;
+    defer {
+        for (events.items) |ev| testing.allocator.free(@constCast(ev.data));
+        events.deinit(testing.allocator);
+    }
+    const input = "event: x\ndata: line1\ndata: line2\n\n";
+    _ = try parse(input, &events, testing.allocator);
+    try testing.expectEqual(@as(usize, 1), events.items.len);
+    try testing.expectEqualStrings("line1\nline2", events.items[0].data);
+}
+
+test "sse parse: single-line data still borrows into input" {
+    var events = std.ArrayList(Event).empty;
+    defer events.deinit(testing.allocator);
+    const input = "event: x\ndata: one\n\n";
+    _ = try parse(input, &events, testing.allocator);
+    // Borrowed slice points inside `input` — no allocation needed.
+    try testing.expect(events.items[0].data.ptr == input.ptr + "event: x\ndata: ".len);
+}
