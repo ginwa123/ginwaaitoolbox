@@ -367,6 +367,75 @@ fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
     return null;
 }
 
+/// Numeric dotted-version compare: true when `a` is a HIGHER version than
+/// `b`.
+///
+/// String ordering is wrong for these directory names: `"10.0.10240.0" <
+/// "10.0.26100.0"` lexicographically, so a `lessThan` on the raw name picks
+/// the OLDER SDK. Components are compared as integers, left to right; a
+/// missing component counts as 0 (so `10.0.26100` == `10.0.26100.0`).
+fn versionGreater(a: []const u8, b: []const u8) bool {
+    var ai = std.mem.splitScalar(u8, a, '.');
+    var bi = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const an = ai.next();
+        const bn = bi.next();
+        if (an == null and bn == null) return false;
+        const av = if (an) |s| std.fmt.parseInt(u64, s, 10) catch 0 else 0;
+        const bv = if (bn) |s| std.fmt.parseInt(u64, s, 10) catch 0 else 0;
+        if (av != bv) return av > bv;
+    }
+}
+
+/// Return `<root>/<highest-versioned subdirectory that actually contains
+/// every name in `required_files`, or null when none does.
+///
+/// Do NOT use `firstSubdir` for the Windows SDK. `Windows Kits/10/Lib` on
+/// the windows-2022 image holds several decoy version directories next to
+/// the real one, and `Dir.iterate` order is undefined, so `firstSubdir`
+/// hands back whichever wins the race:
+///   * `10.0.10240.0`  — no `um/x64` at all
+///   * `wdf0.26100.0`  — has an `um/x64`, but it is EMPTY (WDF stub)
+/// Either one costs the link uuid / shlwapi / version, which is exactly
+/// what `-luuid -lshlwapi -lversion` below need:
+///   warning: unable to open library directory
+///     '...\Lib\10.0.10240.0\um\x64': FileNotFound
+///   error: lld-link: could not open 'libuuid.a': No such file or directory
+///
+/// Hence the probe checks the real `.lib` FILES, not just the directory.
+fn newestSubdirWith(b: *std.Build, root: []const u8, required_files: []const []const u8) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{ .iterate = true }) catch return null;
+    defer d.close(b.graph.io);
+    var best_name: ?[]const u8 = null;
+    var it = d.iterate();
+    while (it.next(b.graph.io) catch null) |entry| {
+        // `.sym_link` counts: the real SDK leaves ship as links (the image
+        // has `wdf0.26100.0` alongside a plain `wdf`), and a dangling one
+        // is rejected by the file probe below anyway.
+        if (entry.kind != .directory and entry.kind != .sym_link) continue;
+        const candidate = b.fmt("{s}/{s}", .{ root, entry.name });
+        var complete = true;
+        for (required_files) |f| {
+            if (!fileExists(b.fmt("{s}/{s}", .{ candidate, f }))) {
+                complete = false;
+                break;
+            }
+        }
+        if (!complete) continue;
+        if (best_name == null or versionGreater(entry.name, best_name.?)) {
+            // MUST dupe: `entry.name` points into the iterator's name buffer,
+            // which the next `it.next()` overwrites. Storing the slice made
+            // `best_name` a dangling view that later read as a FRANKENSTEIN
+            // name ("wdf0.26100.0" — the next entry's bytes over the tail of
+            // "10.0.26100.0"), so the resolver returned a path to a
+            // directory that does not exist.
+            best_name = b.dupe(entry.name);
+        }
+    }
+    return if (best_name) |n| b.fmt("{s}/{s}", .{ root, n }) else null;
+}
+
 /// Return `<root>/<first-subdirectory>`, or null when `root` doesn't
 /// exist or contains no subdirectories. Used to resolve opaque version
 /// directories (`14.44.35207`, `10.0.22621.0`) without hard-coding them.
@@ -2116,8 +2185,19 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // will then fail loudly on the missing lib).
                 stagePrunedMsvcrt(b, msvc_lib_root, stage_dir);
             }
-            const kit_lib_root = firstSubdir(b, "C:/Program Files (x86)/Windows Kits/10/Lib") orelse
-                firstSubdir(b, "C:/Program Files/Windows Kits/10/Lib");
+            // The exact libs `-luuid -lshlwapi -lversion` below need. Probing
+            // the FILES (not just the `um/x64` dir) is what skips the
+            // `wdf0.26100.0` decoy, whose um/x64 exists but is empty.
+            // See newestSubdirWith's doc comment.
+            const kit_lib_root = newestSubdirWith(
+                b,
+                "C:/Program Files (x86)/Windows Kits/10/Lib",
+                &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
+            ) orelse newestSubdirWith(
+                b,
+                "C:/Program Files/Windows Kits/10/Lib",
+                &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
+            );
             if (kit_lib_root) |kl| {
                 desktop_exe.root_module.addLibraryPath(.{
                     .cwd_relative = b.fmt("{s}/um/x64", .{kl}),

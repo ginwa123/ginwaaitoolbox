@@ -455,11 +455,14 @@ test "readLogTruncated strips NUL bytes" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(testing.io, .{ .sub_path = "nul.log", .data = "a\x00b\x00c" });
+    // "nul" is a reserved DOS device name on Windows — `nul.log` makes
+    // NtOpenFile return STATUS_OBJECT_NAME_INVALID, which Zig surfaces as
+    // error.BadPathName (not FileNotFound) on `statFile`. Use a plain name.
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "with_nuls.log", .data = "a\x00b\x00c" });
 
     var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const dir_len = try tmp.dir.realPath(testing.io, &dir_buf);
-    const path = try std.fs.path.join(testing.allocator, &.{ dir_buf[0..dir_len], "nul.log" });
+    const path = try std.fs.path.join(testing.allocator, &.{ dir_buf[0..dir_len], "with_nuls.log" });
     defer testing.allocator.free(path);
 
     const got = try readLogTruncated(testing.allocator, testing.io, path, 100);

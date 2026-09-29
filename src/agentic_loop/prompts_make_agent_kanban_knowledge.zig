@@ -267,13 +267,23 @@ fn insertConfig(ctx: *TestCtx, config_id: []const u8, workspace_item_id: []const
 }
 
 var test_file_counter: std.atomic.Value(u64) = .init(0);
-fn writeTestFile(allocator: std.mem.Allocator, io: std.Io, contents: []const u8) ![]u8 {
+
+/// Writes `contents` to a uniquely-named file inside `tmp` and returns its
+/// ABSOLUTE path (caller-owned: `alloc.free` it).
+///
+/// The path comes from `testing.tmpDir` (`.zig-cache/tmp/<random>/`) rather
+/// than a literal `/tmp/...`: on Windows `/tmp/x` resolves to `D:\tmp\x`,
+/// whose parent directory does not exist, so `createFileAbsolute` fails
+/// with `error.FileNotFound`. The knowledge reader asserts `isAbsolute`
+/// before `openFileAbsolute`, so the returned path must stay absolute.
+fn writeTestFile(tmp: *std.testing.TmpDir, allocator: std.mem.Allocator, io: std.Io, contents: []const u8) ![]u8 {
     const n = test_file_counter.fetchAdd(1, .seq_cst);
-    const path = try std.fmt.allocPrint(allocator, "/tmp/test_agent_kanban_knowledge_{d}.md", .{n});
-    const file = try std.Io.Dir.createFileAbsolute(io, path, .{});
-    defer std.Io.File.close(file, io);
-    try std.Io.File.writeStreamingAll(file, io, contents);
-    return path;
+    var name_buf: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buf, "test_agent_kanban_knowledge_{d}.md", .{n});
+    try tmp.dir.writeFile(io, .{ .sub_path = name, .data = contents });
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &dir_buf);
+    return std.fs.path.join(allocator, &.{ dir_buf[0..dir_len], name });
 }
 
 test "makeAgentKanbanKnowledge: returns empty slice when session_id is empty" {
@@ -351,9 +361,10 @@ test "makeAgentKanbanKnowledge: renders ## Kanban Knowledge section with file co
     try insertConfig(&ctx, "ws_item_1", "ws_item_1");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    const tmp_path = try writeTestFile(alloc, ctx.threaded.io(), "# Board Knowledge\n\nThis file contains board instructions.\n");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_path = try writeTestFile(&tmp, alloc, ctx.threaded.io(), "# Board Knowledge\n\nThis file contains board instructions.\n");
     defer alloc.free(tmp_path);
-    defer std.Io.Dir.deleteFileAbsolute(ctx.threaded.io(), tmp_path) catch {};
 
     try ctx.db.exec(alloc,
         "INSERT INTO agent_kanban_knowledges (id, kanban_id, file_path, label, position) VALUES ('kn_1', 'ws_item_1', ?, '', 0)",
@@ -378,12 +389,12 @@ test "makeAgentKanbanKnowledge: respects position DESC ordering" {
     try insertConfig(&ctx, "ws_item_1", "ws_item_1");
     try insertSession(&ctx, "sess_1", "ws_item_1");
 
-    const path_low = try writeTestFile(alloc, ctx.threaded.io(), "content_low_marker\n");
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path_low = try writeTestFile(&tmp, alloc, ctx.threaded.io(), "content_low_marker\n");
     defer alloc.free(path_low);
-    defer std.Io.Dir.deleteFileAbsolute(ctx.threaded.io(), path_low) catch {};
-    const path_high = try writeTestFile(alloc, ctx.threaded.io(), "content_high_marker\n");
+    const path_high = try writeTestFile(&tmp, alloc, ctx.threaded.io(), "content_high_marker\n");
     defer alloc.free(path_high);
-    defer std.Io.Dir.deleteFileAbsolute(ctx.threaded.io(), path_high) catch {};
 
     try ctx.db.exec(alloc,
         "INSERT INTO agent_kanban_knowledges (id, kanban_id, file_path, label, position) VALUES ('kn_low', 'ws_item_1', ?, '', 0)",
