@@ -1,6 +1,7 @@
 pub const xml = @import("xml.zig");
 pub const db_path = @import("db_path.zig");
 pub const process = @import("process.zig");
+pub const run_captured = @import("run_captured.zig");
 pub const process_status = @import("process_status.zig");
 pub const random = @import("random.zig");
 pub const dir = @import("dir.zig");

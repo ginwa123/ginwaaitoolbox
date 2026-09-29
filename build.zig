@@ -2684,6 +2684,25 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // curl/ssl/crypto via the module graph. See the kabelweb repo.)
     test_step.dependOn(&run_mod_tests.step);
 
+    // `run_captured.zig` lives in the standalone `helpers` PACKAGE, so
+    // its inline tests are not reachable from `src/root.zig` and the
+    // mod_tests binary above never compiles them. It needs its own
+    // test root: this is the regression suite for the child-process
+    // spawn path that used to abort the whole server (EBADF in
+    // `Io.Threaded.closeFd` via `Child.wait` -> `childCleanupPosix`)
+    // and to deadlock on >64 KiB of child stderr. The file has no
+    // package imports (std only), so it builds standalone.
+    const run_captured_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/run_captured.zig"),
+            .target = test_target,
+            .optimize = optimize,
+        }),
+    });
+    const run_run_captured_tests = b.addRunArtifact(run_captured_tests);
+    test_step.dependOn(&run_run_captured_tests.step);
+    b.step("test:helpers:run_captured", "Run run_captured helper tests").dependOn(&run_run_captured_tests.step);
+
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
     // external URL dependency, and a consumer build never runs a
