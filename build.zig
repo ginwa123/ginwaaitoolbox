@@ -428,6 +428,7 @@ fn newestSubdirWith(b: *std.Build, root: []const u8, required_files: []const []c
             best_name = entry.name;
         }
     }
+    std.debug.print("[sdk-choose] root={s} => {s}\n", .{ root, if (best_name) |n| n else "NULL" });
     return if (best_name) |n| b.fmt("{s}/{s}", .{ root, n }) else null;
 }
 
@@ -2193,6 +2194,7 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 "C:/Program Files/Windows Kits/10/Lib",
                 &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
             );
+            std.debug.print("[sdk-choose] CALLSITE kl={s}\n", .{kit_lib_root orelse "NULL"});
             if (kit_lib_root) |kl| {
                 desktop_exe.root_module.addLibraryPath(.{
                     .cwd_relative = b.fmt("{s}/um/x64", .{kl}),
