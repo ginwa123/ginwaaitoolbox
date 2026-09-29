@@ -56,7 +56,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import uuid
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -99,7 +99,7 @@ class DbSeed:
     """DB-seed helpers for the chatview UI tests.
 
     Each method INSERTs one row and returns the inserted primary key
-    (a string like ``"msg_<uuid12>"`` for ``llm_history`` rows, or
+    (a 19-digit nanosecond timestamp for ``llm_history`` rows, or
     the caller-supplied ``session_id`` for ``sessions`` rows).
 
     Methods accept a ``sqlite3.Connection`` as their first argument —
@@ -191,13 +191,37 @@ class DbSeed:
 
     # ─── llm_history helpers ───────────────────────────────────────────────
 
-    def _gen_id(self) -> str:
-        """Generate a unique ``llm_history.id`` string.
+    #: Monotonic floor for generated ids. One per DbSeed class, so two seeders
+    #: in one test still produce ordered, unique ids.
+    _last_generated_id: int = 0
 
-        Format: ``msg_<12 hex chars>``. The hex is from ``uuid4`` so
-        collision risk across tests is negligible.
+    def _gen_id(self) -> str:
+        """Generate a chronologically ordered ``llm_history.id``.
+
+        Production ids are 19-digit nanosecond timestamps
+        (``1790544236357615490``), and that shape is load-bearing rather than
+        cosmetic: it is what makes ``ORDER BY id`` a chronological order.
+
+        Which matters here because the two clients sort by different keys. The
+        web client asks for ``sort_by=created_at``, so a test that passes
+        explicit ``created_at`` values gets the order it asked for whatever the
+        ids are. The Android client asks for ``sort_by=id&direction=asc``, and
+        does so deliberately — its own comment records that ``created_at``
+        orders page 1 by the *session's* timestamp and later pages by the
+        message's, so ``id`` is the only key consistent across pages.
+
+        So a random id renders a seeded transcript in random order on the phone
+        while looking perfectly correct in a browser: a silent difference
+        between the two suites, and one no amount of care in a test file can
+        compensate for. Equal-length numeric strings sort lexicographically in
+        numeric order, so monotonic-and-nanosecond-shaped is sufficient.
         """
-        return "msg_" + uuid.uuid4().hex[:12]
+        cls = type(self)
+        now_ns = time.time_ns()
+        if now_ns <= cls._last_generated_id:
+            now_ns = cls._last_generated_id + 1
+        cls._last_generated_id = now_ns
+        return str(now_ns)
 
     def _epoch_microseconds(self, created_at: str | None) -> int | None:
         """Convert a UTC ISO-8601 timestamp to ``created_at_nano`` (microseconds).
@@ -227,6 +251,7 @@ class DbSeed:
         text: str,
         image_urls: list[str] | None = None,
         created_at: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         """INSERT a row with ``role='user'`` (is_input=1).
 
@@ -241,9 +266,10 @@ class DbSeed:
                 default (CURRENT_TIMESTAMP) is used.
 
         Returns:
-            The inserted ``llm_history.id`` (e.g. ``"msg_a1b2c3d4e5f6"``).
+            The inserted ``llm_history.id`` — a 19-digit nanosecond
+                timestamp, the same shape production writes.
         """
-        msg_id = self._gen_id()
+        msg_id = message_id or self._gen_id()
         image_url_value = "||".join(image_urls) if image_urls else None
         created_at_nano = self._epoch_microseconds(created_at)
 
@@ -278,6 +304,7 @@ class DbSeed:
         reasoning_content: str | None = None,
         is_thinking: bool = False,
         created_at: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         """INSERT a row with ``role='assistant'`` (is_output=1).
 
@@ -303,7 +330,7 @@ class DbSeed:
         Returns:
             The inserted ``llm_history.id``.
         """
-        msg_id = self._gen_id()
+        msg_id = message_id or self._gen_id()
         created_at_nano = self._epoch_microseconds(created_at)
 
         # Tool calls: serialize (arguments is double-encoded JSON).
@@ -352,6 +379,7 @@ class DbSeed:
         tool_name: str,
         content: str,
         created_at: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         """INSERT a row with ``role='tool'`` (is_input=1, tool result).
 
@@ -374,7 +402,7 @@ class DbSeed:
         Returns:
             The inserted ``llm_history.id``.
         """
-        msg_id = self._gen_id()
+        msg_id = message_id or self._gen_id()
         created_at_nano = self._epoch_microseconds(created_at)
 
         cols = [
@@ -403,6 +431,7 @@ class DbSeed:
         session_id: str,
         text: str,
         created_at: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         """INSERT a row with ``role='system'`` (is_input=1).
 
@@ -411,7 +440,7 @@ class DbSeed:
         and the system role is present. Useful for testing custom
         system-prompt rendering.
         """
-        msg_id = self._gen_id()
+        msg_id = message_id or self._gen_id()
         created_at_nano = self._epoch_microseconds(created_at)
 
         cols = ["id", "session_id", "model", "role", "response_content", "is_input"]
@@ -437,6 +466,7 @@ class DbSeed:
         compacted_session_id: str | None = None,
         model: str = "claude-sonnet-4-5",
         created_at: str | None = None,
+        message_id: str | None = None,
     ) -> str:
         """INSERT a user row whose content is a ``<compact_messages>`` XML envelope.
 
@@ -505,6 +535,7 @@ class DbSeed:
             session_id,
             text=envelope_text,
             created_at=created_at,
+            message_id=message_id,
         )
 
     # ─── Utility helpers ───────────────────────────────────────────────────

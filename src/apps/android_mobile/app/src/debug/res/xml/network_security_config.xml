@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only cleartext allowance for the functional UI suite.
+
+  `10.0.2.2` is the Android emulator's own alias for the loopback interface of
+  the machine running the emulator. nalar binds 127.0.0.1 only: its CLI surface
+  is port, static-dir, http2, tls, tls-selfsigned and auth, with no host option
+  at all. So that alias is the way in from a device (and the reason this suite
+  does not use an `adb reverse` tunnel is that the adb client is unreliable on
+  the development box). It also means the hop is plain HTTP.
+
+  Scoped as narrowly as the job allows: three literal addresses, cleartext still
+  refused for everything else, and the whole file absent from a release build.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- The emulator's view of the host machine. -->
+        <domain includeSubdomains="false">10.0.2.2</domain>
+        <!-- A device reached through an `adb reverse` tunnel. -->
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

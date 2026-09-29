@@ -3,8 +3,6 @@ package com.nalar.mobile.http
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
-import java.net.URL
-import javax.net.ssl.HttpsURLConnection
 
 /**
  * A response body as bytes, plus the header line the caller needs to make a
@@ -57,8 +55,10 @@ class HttpsBinaryExchange(
 ) : BinaryHttpExchange {
 
     override fun execute(request: HttpRequestSpec): BinaryHttpResponseSpec {
-        val connection = (URL(request.url).openConnection() as? HttpsURLConnection)
-            ?: throw IOException("Request did not open an HTTPS connection")
+        // The same opener the JSON exchange uses, so "may this build speak plain
+        // HTTP" is decided in exactly one place and a file download can never
+        // disagree with an API call about it.
+        val connection = HttpsHttpExchange.openFor(request.url)
 
         try {
             connection.requestMethod = request.method

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug-only manifest overlay.
+
+  The functional UI suite points a debug APK at a nalar running on the machine
+  that hosts the emulator, and that request is plain HTTP. The main manifest sets
+  `android:usesCleartextTraffic="false"`, which on API 28+ is enforced by the
+  platform — the socket is refused before any application code runs, so no amount
+  of client-side care can get around it.
+
+  A `networkSecurityConfig` supersedes `usesCleartextTraffic` for the domains it
+  names, which is why the main manifest needs no edit: release has no such config
+  at all and keeps the blanket refusal, while debug names exactly three loopback
+  addresses and refuses cleartext everywhere else.
+
+  Nothing here ships. This file lives in the `debug` source set only, and
+  `AuthConfigContractTest` fails if a release source set ever grows one.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:networkSecurityConfig="@xml/network_security_config" />
+</manifest>
