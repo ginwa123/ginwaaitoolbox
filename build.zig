@@ -367,6 +367,55 @@ fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
     return null;
 }
 
+/// Numeric dotted-version compare: true when `a` is a HIGHER version than
+/// `b`.
+///
+/// String ordering is wrong for these directory names: `"10.0.10240.0" <
+/// "10.0.26100.0"` lexicographically, so a `lessThan` on the raw name picks
+/// the OLDER SDK. Components are compared as integers, left to right; a
+/// missing component counts as 0 (so `10.0.26100` == `10.0.26100.0`).
+fn versionGreater(a: []const u8, b: []const u8) bool {
+    var ai = std.mem.splitScalar(u8, a, '.');
+    var bi = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const an = ai.next();
+        const bn = bi.next();
+        if (an == null and bn == null) return false;
+        const av = if (an) |s| std.fmt.parseInt(u64, s, 10) catch 0 else 0;
+        const bv = if (bn) |s| std.fmt.parseInt(u64, s, 10) catch 0 else 0;
+        if (av != bv) return av > bv;
+    }
+}
+
+/// Return `<root>/<highest-versioned subdirectory that contains
+/// `required_sub>`, or null when none does.
+///
+/// Do NOT use `firstSubdir` for the Windows SDK. The windows-2022 image
+/// ships a `10.0.10240.0` stub next to the real `10.0.26100.0`, and
+/// `Dir.iterate` order is undefined, so `firstSubdir` can hand back the
+/// stub. Its `um/x64` is absent, and the link then dies with
+/// `unable to open library directory '...\Lib\10.0.10240.0\um\x64'`
+/// followed by `lld-link: could not open 'libuuid.a'` (uuid / shlwapi /
+/// version all live in that `um/x64` leaf).
+fn newestSubdirWith(b: *std.Build, root: []const u8, required_sub: []const u8) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{ .iterate = true }) catch return null;
+    defer d.close(b.graph.io);
+    var best_name: ?[]const u8 = null;
+    var it = d.iterate();
+    while (it.next(b.graph.io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        // Only consider versions that actually carry the leaf we need.
+        const probe = b.fmt("{s}/{s}/{s}", .{ root, entry.name, required_sub });
+        const leaf = std.Io.Dir.openDirAbsolute(b.graph.io, probe, .{}) catch continue;
+        leaf.close(b.graph.io);
+        if (best_name == null or versionGreater(entry.name, best_name.?)) {
+            best_name = entry.name;
+        }
+    }
+    return if (best_name) |n| b.fmt("{s}/{s}", .{ root, n }) else null;
+}
+
 /// Return `<root>/<first-subdirectory>`, or null when `root` doesn't
 /// exist or contains no subdirectories. Used to resolve opaque version
 /// directories (`14.44.35207`, `10.0.22621.0`) without hard-coding them.
@@ -2116,8 +2165,11 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // will then fail loudly on the missing lib).
                 stagePrunedMsvcrt(b, msvc_lib_root, stage_dir);
             }
-            const kit_lib_root = firstSubdir(b, "C:/Program Files (x86)/Windows Kits/10/Lib") orelse
-                firstSubdir(b, "C:/Program Files/Windows Kits/10/Lib");
+            // Newest version that actually ships `um/x64` — NOT firstSubdir,
+            // which can return the 10.0.10240.0 stub and lose uuid/shlwapi/
+            // version. See newestSubdirWith's doc comment.
+            const kit_lib_root = newestSubdirWith(b, "C:/Program Files (x86)/Windows Kits/10/Lib", "um/x64") orelse
+                newestSubdirWith(b, "C:/Program Files/Windows Kits/10/Lib", "um/x64");
             if (kit_lib_root) |kl| {
                 desktop_exe.root_module.addLibraryPath(.{
                     .cwd_relative = b.fmt("{s}/um/x64", .{kl}),
