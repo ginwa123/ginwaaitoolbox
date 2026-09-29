@@ -196,7 +196,7 @@ const closePopup = () => {
   padding: 2px 4px;
   background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
   color: white;
-  font-size: 9px;
+  font-size: var(--text-micro);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -265,11 +265,11 @@ const closePopup = () => {
 
 .popup-filename {
   color: white;
-  font-size: 14px;
+  font-size: var(--text-body);
 }
 
 .popup-size {
   color: rgba(255, 255, 255, 0.6);
-  font-size: 12px;
+  font-size: var(--text-dense);
 }
 </style>

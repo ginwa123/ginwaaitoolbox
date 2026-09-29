@@ -705,7 +705,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 .ask-user-question :deep(h4),
 .ask-user-question :deep(h5),
 .ask-user-question :deep(h6) {
-  font-size: 0.9rem;
+  font-size: var(--text-body);
   font-weight: 600;
   margin-top: 0.35rem;
   margin-bottom: 0.25rem;
@@ -722,7 +722,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 .ask-user-question :deep(blockquote) {
   margin: 0.3rem 0;
   padding: 0.1rem 0.5rem;
-  font-size: 0.8rem;
+  font-size: var(--text-dense);
 }
 
 /* A question is prose, not a diff — but the model does quote file lists,
@@ -730,7 +730,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 .ask-user-question :deep(pre) {
   max-height: 11rem;
   overflow: auto;
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   padding: 0.4rem 0.5rem;
 }
 
@@ -741,7 +741,7 @@ defineExpose({ submit, toggleOption, chooseFreeText, canSend, buildBody })
 .ask-user-question :deep(table) {
   display: block;
   overflow-x: auto;
-  font-size: 0.8rem;
+  font-size: var(--text-dense);
 }
 
 .ask-user-question :deep(a) {

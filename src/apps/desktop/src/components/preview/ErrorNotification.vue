@@ -38,7 +38,7 @@ const emit = defineEmits<{ dismiss: [] }>()
       </div>
       <button
         class="shrink-0 text-white opacity-70 hover:opacity-100"
-        style="background: none; border: none; font-size: 1.25rem; line-height: 1; cursor: pointer;"
+        style="background: none; border: none; font-size: var(--text-title); line-height: 1; cursor: pointer;"
         @click="emit('dismiss')"
         aria-label="Dismiss"
       >×</button>

@@ -312,22 +312,26 @@ function openInNewTab() {
   border-radius: 0.25rem;
   overflow-x: auto;
 }
+/* Type is NOT restated here. style.css already sets `.markdown-content`
+   h1-h4 and code off the scale, and a scoped :deep() rule outranks it —
+   so declaring a size here makes the SAME markdown render at one size in a
+   preview card and another in the transcript, which is the drift this
+   scale exists to stop. Proved in a browser: with the sizes restated
+   here the two hosts resolved to 20/18/16/12 against 24/20/18/14.
+   Margins and weights stay: the card is deliberately tighter than the
+   transcript, and that is a real difference worth keeping. */
 .markdown-content :deep(code) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.75rem;
 }
 .markdown-content :deep(h1) {
-  font-size: 1.25rem;
   font-weight: 700;
   margin: 0.5rem 0;
 }
 .markdown-content :deep(h2) {
-  font-size: 1.1rem;
   font-weight: 600;
   margin: 0.4rem 0;
 }
 .markdown-content :deep(h3) {
-  font-size: 1rem;
   font-weight: 600;
   margin: 0.3rem 0;
 }

@@ -173,21 +173,21 @@ async function onSubmit() {
   height: 36px;
   border-radius: 10px;
   font-weight: 700;
-  font-size: 18px;
+  font-size: var(--text-title-sm);
   color: var(--semantic-text);
   background: var(--color-bg-dim);
   border: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 .login-card h1 {
-  font-size: 18px;
+  font-size: var(--text-title-sm);
   font-weight: 650;
   letter-spacing: -0.01em;
   margin: 0;
   color: var(--semantic-text);
 }
 .login-sub {
-  font-size: 13px;
+  font-size: var(--text-dense);
   margin: 2px 0 0;
   color: var(--semantic-text-muted);
 }
@@ -195,7 +195,7 @@ async function onSubmit() {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 13px;
+  font-size: var(--text-dense);
   font-weight: 500;
   color: var(--semantic-text-muted);
 }
@@ -205,7 +205,7 @@ async function onSubmit() {
   border: 1px solid var(--color-border);
   background: var(--color-bg-dim);
   color: var(--semantic-text);
-  font-size: 14px;
+  font-size: var(--text-body);
   outline: none;
   width: 100%;
   box-sizing: border-box;
@@ -233,7 +233,7 @@ async function onSubmit() {
   border: 1px solid var(--color-border);
   background: transparent;
   color: var(--semantic-text-dim);
-  font-size: 12px;
+  font-size: var(--text-dense);
   font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
@@ -244,7 +244,7 @@ async function onSubmit() {
 }
 .error {
   color: var(--semantic-error);
-  font-size: 13px;
+  font-size: var(--text-dense);
   margin: 0;
   padding: 8px 12px;
   border-radius: 9px;
@@ -252,7 +252,7 @@ async function onSubmit() {
   border: 1px solid color-mix(in srgb, var(--semantic-error) 35%, transparent);
 }
 .muted {
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--semantic-text-muted);
   margin: 0;
 }
@@ -262,7 +262,7 @@ async function onSubmit() {
   border: none;
   background: var(--semantic-accent);
   color: #12120f;
-  font-size: 14px;
+  font-size: var(--text-body);
   font-weight: 650;
   cursor: pointer;
 }

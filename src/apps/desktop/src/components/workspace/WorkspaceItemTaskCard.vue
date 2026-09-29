@@ -651,7 +651,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
           style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red)"
           aria-label="Agent error — click card to view detail"
         >
-          <span style="color: var(--color-red); font-size: 10px; line-height: 1" aria-hidden="true"
+          <span style="color: var(--color-red); font-size: var(--text-micro); line-height: 1" aria-hidden="true"
             >⚠</span
           >
         </span>
@@ -669,7 +669,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
           data-testid="task-agent-error-tooltip"
         >
           <div class="flex items-center gap-2 mb-1.5">
-            <span style="color: var(--color-red); font-size: 11px" aria-hidden="true">⚠</span>
+            <span style="color: var(--color-red); font-size: var(--text-meta)" aria-hidden="true">⚠</span>
             <span class="text-meta font-medium" style="color: var(--color-red)">Agent error</span>
             <span
               v-if="errorRetryLabel"

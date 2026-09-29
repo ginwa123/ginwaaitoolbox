@@ -354,7 +354,7 @@ const toggleContent = (id: string): void => {
 
 <style scoped>
 .role-badge {
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -386,7 +386,7 @@ const toggleContent = (id: string): void => {
 
 .entry-id {
   font-family: monospace;
-  font-size: 10px;
+  font-size: var(--text-micro);
   color: var(--semantic-text-dim);
   max-width: 100px;
   overflow: hidden;
@@ -414,7 +414,7 @@ const toggleContent = (id: string): void => {
 
 .tool-pill {
   font-family: monospace;
-  font-size: 10px;
+  font-size: var(--text-micro);
   background-color: var(--semantic-card-bg);
   padding: 1px 5px;
   border-radius: 3px;
@@ -432,7 +432,7 @@ const toggleContent = (id: string): void => {
   border: none;
   cursor: pointer;
   font: inherit;
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 600;
   color: var(--semantic-text-muted);
   padding: 0;
@@ -448,7 +448,7 @@ const toggleContent = (id: string): void => {
 }
 
 .content-toggle-icon {
-  font-size: 8px;
+  font-size: var(--text-micro);
   width: 10px;
   text-align: center;
 }
@@ -460,7 +460,7 @@ const toggleContent = (id: string): void => {
   border-radius: 4px;
   border: 1px solid var(--color-border);
   font-family: monospace;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;
