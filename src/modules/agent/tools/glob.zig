@@ -1972,9 +1972,17 @@ test "glob: respect_ignore_files = false does NOT return a validation error" {
     var tmpdir = testing.tmpDir(.{});
     defer tmpdir.cleanup();
 
+    // `realPath` of the tmpdir, NOT ".": `invalidPathReason` refuses a
+    // relative path on Windows, so `.` returned error.InvalidPath there
+    // while passing on POSIX. The same `realPath` idiom is what the three
+    // tests below already use.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(std.testing.io, &path_buf);
+    const root_abs = path_buf[0..path_len];
+
     var result = try executeGlob(allocator, std.testing.io, .{
         .pattern = "*.txt",
-        .path = ".",
+        .path = root_abs,
         .respect_ignore_files = false,
     });
     defer result.deinit(allocator);

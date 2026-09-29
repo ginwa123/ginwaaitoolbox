@@ -495,7 +495,27 @@ test "executePresentFilesToString rejects relative path" {
     defer parsed.deinit();
     const obj = parsed.value.object;
     try testing.expect(obj.get("status").? == .null);
-    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "not absolute") != null);
+
+    // Two different guards reject a relative path, and which one fires
+    // first is platform-dependent:
+    //
+    //   - POSIX: `invalidPathReason` returns null (the shape is merely
+    //     unusual, not dangerous), so the `std.fs.path.isAbsolute` guard
+    //     below it produces "... is not absolute. Pass an ABSOLUTE path."
+    //   - Windows: the NT-name guard in helpers/path_validate.zig fires
+    //     first — a bare name reaches NtCreateFile as a malformed NT
+    //     name, which panics the process rather than failing the call —
+    //     and produces "... is not a valid path on this platform: path
+    //     must be an absolute Windows path (e.g. C:\dir\file)".
+    //
+    // Both refusals are correct; the test asserts the message that this
+    // platform actually emits rather than the POSIX-shaped one.
+    const err_msg = obj.get("error").?.string;
+    if (builtin.os.tag == .windows) {
+        try testing.expect(std.mem.indexOf(u8, err_msg, "absolute Windows path") != null);
+    } else {
+        try testing.expect(std.mem.indexOf(u8, err_msg, "not absolute") != null);
+    }
 }
 
 test "executePresentFilesToString rejects empty path" {

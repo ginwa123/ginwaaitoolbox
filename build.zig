@@ -2783,6 +2783,32 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     test_step.dependOn(&run_run_captured_tests.step);
     b.step("test:helpers:run_captured", "Run run_captured helper tests").dependOn(&run_run_captured_tests.step);
 
+    // Same story for `test_path.zig`: it is part of the standalone
+    // `helpers` PACKAGE (`@import("helpers").test_path.absPath` is how the
+    // agent tool tests build an absolute path), so its inline tests are
+    // not reachable from `src/root.zig` — and a relative import from
+    // there is rejected outright ("file exists in modules 'root' and
+    // 'helpers'"). Its own test root is the fix, exactly as above.
+    //
+    // These tests are load-bearing, not incidental: they assert that
+    // `absPath` emits a path the Windows branch of
+    // `helpers/path_validate.zig invalidPathReason` accepts. Checking
+    // that needs only `std.fs.path.isAbsoluteWindows`, a pure string
+    // function, so the Windows contract is verifiable on a Linux runner
+    // — the tool tests in this package have no such oracle.
+    const test_path_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/test_path.zig"),
+            .target = test_target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_test_path_tests = b.addRunArtifact(test_path_tests);
+    test_step.dependOn(&run_test_path_tests.step);
+    b.step("test:helpers:test_path", "Run test_path helper tests")
+        .dependOn(&run_test_path_tests.step);
+
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an
     // external URL dependency, and a consumer build never runs a

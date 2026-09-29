@@ -12,6 +12,7 @@ pub const xml_escape = @import("xml_escape.zig").xmlEscape;
 pub const sanitize_control_chars = @import("xml_escape.zig").sanitizeControlChars;
 pub const text_normalize = @import("text_normalize.zig");
 pub const path_validate = @import("path_validate.zig");
+pub const test_path = @import("test_path.zig");
 pub const xmlUnescape = @import("xml_unescape.zig").xmlUnescape;
 
 const std = @import("std");

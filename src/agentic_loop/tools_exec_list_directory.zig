@@ -181,9 +181,17 @@ test "execListDirectory: absolute path passes through and lists entries" {
 
 test "execListDirectory: absolute path returns success envelope without validator error" {
     // Absolute paths are used as-is (never joined onto ctx.cwd).
-    // Calling with `path: "/tmp"` (which exists on every Linux machine)
-    // MUST produce a success envelope containing `"path":"/tmp"`, and
-    // MUST NOT contain a relative-path resolution error.
+    // Calling with a real absolute directory MUST produce a success
+    // envelope containing that same path, and MUST NOT contain a
+    // relative-path resolution error.
+    //
+    // The path comes from a tmpDir `realPath`, NOT a hardcoded `/tmp`:
+    // `/tmp` is rooted-but-driveless on Windows, so `resolveAgainstCwd`
+    // treats it as relative, joins it onto `ctx.cwd`, and the tool then
+    // returns `PathNotAbsolute` — an error envelope, which is the
+    // opposite of the assertion below. `std.fs.path.isAbsolute`
+    // dispatches to `isAbsoluteWindows` on a Windows host, so only a
+    // drive-anchored path passes through untouched.
     //
     // Uses an arena to paper over the current `execListDirectory`
     // implementation allocating an intermediate `inner` XML string
@@ -195,6 +203,12 @@ test "execListDirectory: absolute path returns success envelope without validato
     defer arena.deinit();
     const a = arena.allocator();
 
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var tmp_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const tmp_len = try tmp.dir.realPath(std.testing.io, &tmp_buf);
+    const abs_dir = tmp_buf[0..tmp_len];
+
     var dummy_f32: f32 = 0.0;
     var dummy_bool: bool = false;
     const ctx = ToolExecContext{
@@ -204,6 +218,9 @@ test "execListDirectory: absolute path returns success envelope without validato
         .logger = undefined,
         .session_id = "test_session",
         .model = "test",
+        // A DIFFERENT absolute base, so "used as-is" stays observable: had
+        // the wrapper joined onto ctx.cwd, the reported path would not
+        // match `abs_dir`.
         .cwd = "/home/user/proj",
         .api_key = "test",
         .base_url = "test",
@@ -214,12 +231,24 @@ test "execListDirectory: absolute path returns success envelope without validato
         .active_loops = undefined,
     };
 
+    // Splice the path into the arguments JSON. It MUST be escaped: on
+    // Windows `abs_dir` contains `\`, and `{"path":"C:\Users\..."}` is
+    // malformed JSON (`\U` is not a valid escape) — the same trap the
+    // test above already handles with an explicit escape pass.
+    var escaped: std.ArrayList(u8) = .empty;
+    defer escaped.deinit(a);
+    for (abs_dir) |c| {
+        if (c == '\\' or c == '"') try escaped.append(a, '\\');
+        try escaped.append(a, c);
+    }
+    const args = try std.fmt.allocPrint(a, "{{\"path\":\"{s}\"}}", .{escaped.items});
+
     const tool_call = agent.ToolCall{
         .id = "call_1",
         .type = "function",
         .function = .{
             .name = "list_directory",
-            .arguments = "{\"path\":\"/tmp\"}",
+            .arguments = args,
         },
     };
 
@@ -231,7 +260,7 @@ test "execListDirectory: absolute path returns success envelope without validato
     defer parsed2.deinit();
     const obj2 = parsed2.value.object;
     try testing.expect(obj2.get("success").?.bool);
-    try testing.expectEqualStrings("/tmp", obj2.get("data").?.object.get("path").?.string);
+    try testing.expectEqualStrings(abs_dir, obj2.get("data").?.object.get("path").?.string);
     try testing.expect(obj2.get("error").? == .null);
 }
 
