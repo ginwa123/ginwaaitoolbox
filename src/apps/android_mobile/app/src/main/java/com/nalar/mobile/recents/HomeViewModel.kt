@@ -64,6 +64,16 @@ data class HomeUiState(
      */
     val isRecentsExpanded: Boolean = true,
     /**
+     * Whether the Recents section shows every loaded chat instead of the first
+     * few.
+     *
+     * False by default, and that default is the point: a phone drawer that
+     * opens on thirty chat titles is a drawer whose other sections are below
+     * the fold. Kept beside [isRecentsExpanded] — same drawer, same lifetime,
+     * same reason a fold has to outlive the sheet.
+     */
+    val isRecentsShowAll: Boolean = false,
+    /**
      * Whether the Projects section is unfolded. Expanded by default, matching
      * the desktop's `sidebarStore.projectsExpanded` — a section that has to be
      * opened before it is useful is a section most people never open.
@@ -764,6 +774,18 @@ class HomeViewModel(
      */
     fun toggleRecentsSection() {
         _uiState.update { it.copy(isRecentsExpanded = !it.isRecentsExpanded) }
+    }
+
+    /**
+     * Reveal the rest of the loaded chats, or fold them back to the preview.
+     *
+     * No fetch either way: the rows behind the cap are already paged into
+     * memory, and the tap is a visibility change rather than a question about
+     * the network. Paging itself starts only once the whole list is on screen
+     * and scrolled — see `recentsShowsChatFooter`.
+     */
+    fun toggleRecentsShowAll() {
+        _uiState.update { it.copy(isRecentsShowAll = !it.isRecentsShowAll) }
     }
 
     /**

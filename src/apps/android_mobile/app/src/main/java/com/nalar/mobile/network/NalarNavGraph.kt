@@ -300,6 +300,15 @@ fun NalarNavGraph(
      * that springs open on the reader every time they switch screens.
      */
     onToggleRecentsSection: () -> Unit = {},
+    /**
+     * Show the whole Recents list instead of its first few rows, or put the
+     * preview back.
+     *
+     * Reaches both drawers for the same reason [onToggleRecentsSection] does:
+     * they are one drawer, and a preview the reader expanded in the shell must
+     * still be expanded when they open the drawer from inside a chat.
+     */
+    onToggleRecentsShowAll: () -> Unit = {},
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -670,6 +679,8 @@ fun NalarNavGraph(
                     projectActions = projectActions,
                     recentsExpanded = homeState.isRecentsExpanded,
                     onToggleRecentsSection = onToggleRecentsSection,
+                    recentsShowAll = homeState.isRecentsShowAll,
+                    onToggleRecentsShowAll = onToggleRecentsShowAll,
                     // The drawer's top-level New Chat. The screen wraps this
                     // with the drawer dismissal; nothing here navigates — the
                     // createdChat collector above does, once the create lands.
@@ -803,6 +814,8 @@ fun NalarNavGraph(
                         // a chat.
                         recentsExpanded = homeState.isRecentsExpanded,
                         onToggleRecentsSection = onToggleRecentsSection,
+                        recentsShowAll = homeState.isRecentsShowAll,
+                        onToggleRecentsShowAll = onToggleRecentsShowAll,
                     )
                 },
             )

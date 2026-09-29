@@ -324,12 +324,15 @@ class RecentsSidebarTest {
                 updatedAtEpochMillis = now - index * 60_000L,
             )
         }
+        val showAll = mutableStateOf(false)
         composeTestRule.setContent {
             NalarTheme {
                 MobileHomeScreen(
                     workspaces = workspaces,
                     chats = manyChats,
                     drawerLayout = MobileDrawerLayout.Permanent,
+                    recentsShowAll = showAll.value,
+                    onToggleRecentsShowAll = { showAll.value = !showAll.value },
                     hasMoreChats = true,
                     onLoadMoreChats = { loadMoreCalls++ },
                 )
@@ -340,11 +343,62 @@ class RecentsSidebarTest {
         // the trigger and only reaching the end can arm it.
         assertEquals(0, loadMoreCalls)
 
+        // The drawer shows five of them until the reader asks, and there is
+        // nothing to scroll until they do — so paging is something the *whole*
+        // list does, and this test has to open it first.
+        composeTestRule.onNodeWithTag("recents_see_all").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("opening the list must not page on its own", 0, loadMoreCalls)
+
         composeTestRule.onNodeWithTag("sidebar_chat_list")
             .performScrollToIndex(55)
         composeTestRule.waitForIdle()
 
         assertTrue("scrolling to the end must page", loadMoreCalls >= 1)
+    }
+
+    @Test
+    fun aLongListOpensAsFiveRowsWithTheRestOneTapAway() {
+        // The feedback this feature answers: thirty rows of chat titles with
+        // the Projects section below the fold. The drawer is a switchboard, so
+        // the default is short and the rest is a row, not a scroll.
+        val manyChats = (1..30).map { index ->
+            ChatSummary(
+                id = "chat-$index",
+                workspaceId = "workspace-a",
+                title = "Chat $index",
+                updatedAtEpochMillis = now - index * 60_000L,
+            )
+        }
+        var showAllCalls = 0
+        val showAll = mutableStateOf(false)
+        composeTestRule.setContent {
+            NalarTheme {
+                MobileHomeScreen(
+                    workspaces = workspaces,
+                    chats = manyChats,
+                    drawerLayout = MobileDrawerLayout.Permanent,
+                    recentsShowAll = showAll.value,
+                    onToggleRecentsShowAll = {
+                        showAllCalls++
+                        showAll.value = !showAll.value
+                    },
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("chat_row_chat-5").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("chat_row_chat-6").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("recents_see_all").assertIsDisplayed()
+        composeTestRule.onNodeWithText("See 25 more chats").assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("recents_see_all").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals(1, showAllCalls)
+        composeTestRule.onNodeWithTag("sidebar_chat_list").performScrollToIndex(29)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("chat_row_chat-30").assertExists()
     }
 
     @Test
@@ -544,16 +598,21 @@ class RecentsSidebarTest {
                 updatedAtEpochMillis = now - index * 60_000L,
             )
         }
+        val showAll = mutableStateOf(false)
         composeTestRule.setContent {
             NalarTheme {
                 MobileHomeScreen(
                     workspaces = workspaces,
                     chats = manyChats,
                     drawerLayout = MobileDrawerLayout.Permanent,
+                    recentsShowAll = showAll.value,
+                    onToggleRecentsShowAll = { showAll.value = !showAll.value },
                 )
             }
         }
 
+        composeTestRule.onNodeWithTag("recents_see_all").performClick()
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("sidebar_chat_list").performTouchInput { swipeUp() }
         composeTestRule.waitForIdle()
 
