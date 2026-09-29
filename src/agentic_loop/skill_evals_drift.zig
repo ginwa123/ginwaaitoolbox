@@ -134,7 +134,40 @@ fn stripLineSuffix(token: []const u8) []const u8 {
 
 fn looksLikePath(token: []const u8) bool {
     if (token.len < 3 or token.len > 200) return false;
-    if (std.mem.indexOfScalar(u8, token, '/') != null) return true;
+    // A `/` is what makes a token a path. A bare filename is NOT checked: it
+    // would be stat'd against the repo root, where it almost never lives, so a
+    // skill that says "edit Sidebar.vue" would be reported as stale and the
+    // false positive would be cached into the shared fact. An honest "not
+    // checkable" beats a wrong verdict.
+    if (std.mem.indexOfScalar(u8, token, '/') == null) return false;
+    // A trailing slash is a directory prefix, not a file — and it is what a
+    // glob like `src/**/*.zig` leaves behind once the `*` segments are
+    // tokenized away. Stat'ing `src/` would be a meaningless check.
+    if (token[token.len - 1] == '/') return false;
+    return true;
+}
+
+fn shouldSkip(token: []const u8) bool {
+    // URLs are not repo paths. Match the scheme delimiter rather than a bare
+    // "http" prefix, which would also swallow real files like `http_server.zig`.
+    if (std.mem.indexOf(u8, token, "://") != null) return true;
+    if (std.mem.startsWith(u8, token, "//")) return true;
+    // A leading slash means an absolute path OR a route. A route is a short
+    // path-shaped string with no file extension (`/api/skills`); an absolute
+    // path is a real filesystem location and IS checked. Distinguishing them by
+    // extension is what keeps `/api/skills/:name` from being stat'd while
+    // `/home/u/proj/src/a.zig` still is.
+    if (token.len > 0 and token[0] == '/') {
+        if (!hasKnownExtension(token)) return true;
+    }
+    // Glob-ish or template-ish tokens: not a single concrete path.
+    if (std.mem.indexOfAny(u8, token, "*?<>$") != null) return true;
+    return false;
+}
+
+/// True when the token ends in one of the extensions a repo file plausibly has.
+/// Used only to tell an absolute FILE path from a route.
+fn hasKnownExtension(token: []const u8) bool {
     const known = [_][]const u8{
         ".zig", ".md",   ".ts",  ".vue", ".json", ".toml", ".sh",
         ".py",  ".yml",  ".yaml", ".sql", ".txt",  ".rs",
@@ -142,18 +175,6 @@ fn looksLikePath(token: []const u8) bool {
     for (known) |ext| {
         if (std.mem.endsWith(u8, token, ext)) return true;
     }
-    return false;
-}
-
-fn shouldSkip(token: []const u8) bool {
-    // URLs and protocol-relative refs are not repo paths.
-    if (std.mem.startsWith(u8, token, "http")) return true;
-    if (std.mem.startsWith(u8, token, "//")) return true;
-    // A bare leading slash with one segment (`/api/skills`) is a route, not a
-    // file, and stats against it would be a false "missing".
-    if (token.len > 0 and token[0] == '/') return true;
-    // Glob-ish or template-ish tokens: not a single concrete path.
-    if (std.mem.indexOfAny(u8, token, "*?<>$") != null) return true;
     return false;
 }
 
@@ -257,6 +278,15 @@ pub fn analyse(
     const paths = try extractPaths(allocator, body);
     defer freePaths(allocator, paths);
 
+    // A cwd that does not exist would turn every relative reference into a
+    // false "missing" — and a removed git worktree is a routine event in this
+    // repo, not an exotic one. Treat an unusable cwd exactly like an absent
+    // one: report nothing rather than 50 lies.
+    const cwd_usable = if (cwd.len == 0) false else blk: {
+        _ = std.Io.Dir.cwd().statFile(io, cwd, .{}) catch break :blk false;
+        break :blk true;
+    };
+
     for (paths) |p| {
         try referenced.append(allocator, p);
         if (p.len == 0) continue;
@@ -265,14 +295,19 @@ pub fn analyse(
         // `std.fs.path.join` keeps absolute when the root is absolute.
         const resolved: ?[]u8 = if (std.fs.path.isAbsolute(p))
             try allocator.dupe(u8, p)
-        else if (cwd.len > 0)
+        else if (cwd_usable)
             try std.fs.path.join(allocator, &.{ cwd, p })
         else
             null;
         if (resolved == null) continue;
         defer allocator.free(resolved.?);
 
-        _ = std.Io.Dir.cwd().statFile(io, resolved.?, .{}) catch {
+        _ = std.Io.Dir.cwd().statFile(io, resolved.?, .{}) catch |err| {
+            // Only a genuine "not there" is a stale path. A permission error, a
+            // symlink loop or a path whose parent is a file are all "cannot
+            // tell", and reporting them as rot would send a human to fix a
+            // skill that is perfectly current.
+            if (err != error.FileNotFound) continue;
             try missing.append(allocator, p);
             try findings.append(allocator, .{
                 .dimension = "stale_path",
@@ -303,6 +338,23 @@ pub fn analyse(
 
 // ─── tests ───────────────────────────────────────────────────────────────
 
+/// Parse the findings JSON and assert no finding claims severity `high`.
+///
+/// This is the real form of the module's central invariant. Asserting on
+/// `Analysis.has_high` cannot fail, because that field is a hard-coded `false`;
+/// asserting on the emitted severities fails the moment anyone adds a
+/// high-severity branch, which is the only way Tier 0 could ever authorise a
+/// deletion.
+fn assertNoHighSeverity(allocator: std.mem.Allocator, findings_json: []const u8) !void {
+    const parsed = try std.json.parseFromSlice([]Finding, allocator, findings_json, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+    for (parsed.value) |f| {
+        try testing.expect(!std.ascii.eqlIgnoreCase(f.severity, "high"));
+    }
+}
+
 test "extractPaths finds path-shaped tokens and rejects the rest" {
     const alloc = testing.allocator;
     const body =
@@ -311,35 +363,65 @@ test "extractPaths finds path-shaped tokens and rejects the rest" {
         \\See docs/plans/2026-09-27-skill-evals.md for context.
         \\Call `zig build test --summary all`. Visit https://example.com/src/fake.zig
         \\The route is /api/skills/:name and the glob is src/**/*.zig
-        \\The word workflow.zig is a bare filename too.
+        \\The word workflow.zig is a bare filename and is NOT checkable.
     ;
     const paths = try extractPaths(alloc, body);
     defer freePaths(alloc, paths);
 
-    var found_workflow = false;
-    var found_config = false;
-    var found_plan = false;
-    for (paths) |p| {
-        // The `:1598` suffix must be stripped: the file is what exists.
-        if (std.mem.eql(u8, p, "src/agentic_loop/workflow.zig")) found_workflow = true;
-        if (std.mem.eql(u8, p, "src/modules/config/Config.zig")) found_config = true;
-        if (std.mem.eql(u8, p, "docs/plans/2026-09-27-skill-evals.md")) found_plan = true;
-        // Never the URL, never the route, never the glob.
-        try testing.expect(std.mem.indexOf(u8, p, "example.com") == null);
-        try testing.expect(std.mem.indexOf(u8, p, "api/skills") == null);
-        try testing.expect(std.mem.indexOf(u8, p, "*") == null);
-        // No duplicates.
+    // The exact set, in order. Asserting the whole slice is what makes this
+    // test able to fail: the previous version scanned only the paths that were
+    // KEPT, so its negative assertions passed vacuously.
+    const expected = [_][]const u8{
+        "src/agentic_loop/workflow.zig",
+        "src/modules/config/Config.zig",
+        "docs/plans/2026-09-27-skill-evals.md",
+    };
+    try testing.expectEqual(expected.len, paths.len);
+    for (expected, paths) |want, got| {
+        try testing.expectEqualStrings(want, got);
     }
-    try testing.expect(found_workflow);
-    try testing.expect(found_config);
-    try testing.expect(found_plan);
+}
 
-    // De-duplication: the same path twice yields one entry.
-    var count: usize = 0;
-    for (paths) |p| {
-        if (std.mem.eql(u8, p, "src/modules/config/Config.zig")) count += 1;
-    }
-    try testing.expectEqual(@as(usize, 1), count);
+test "a bare filename is not treated as a checkable path" {
+    const alloc = testing.allocator;
+    // A bare filename would be stat'd against the repo root, where it almost
+    // never lives, so a healthy skill mentioning `Sidebar.vue` would be
+    // reported as stale — and that false positive is cached into the shared
+    // fact. An honest "not checkable" beats a wrong verdict.
+    const paths = try extractPaths(alloc, "Edit Sidebar.vue and tsconfig.app.json, then run it.");
+    defer freePaths(alloc, paths);
+    try testing.expectEqual(@as(usize, 0), paths.len);
+
+    // A token that is only an extension is not a path either.
+    const ext_only = try extractPaths(alloc, "edit the .zig file");
+    defer freePaths(alloc, ext_only);
+    try testing.expectEqual(@as(usize, 0), ext_only.len);
+}
+
+test "a multi-segment absolute path is checked, a one-segment route is not" {
+    const alloc = testing.allocator;
+    const paths = try extractPaths(alloc, "Read /home/u/proj/src/a.zig but the route is /api/skills");
+    defer freePaths(alloc, paths);
+    // The absolute FILE path is kept; the route (no extension) is not.
+    try testing.expectEqual(@as(usize, 1), paths.len);
+    try testing.expectEqualStrings("/home/u/proj/src/a.zig", paths[0]);
+}
+
+test "a glob's directory prefix is not treated as a path" {
+    const alloc = testing.allocator;
+    // `src/**/*.zig` tokenizes to `src/` once the `*` segments are stripped;
+    // stat'ing that would be a meaningless check on a directory prefix.
+    const paths = try extractPaths(alloc, "the glob is src/**/*.zig and also src/agentic_loop/*.zig");
+    defer freePaths(alloc, paths);
+    try testing.expectEqual(@as(usize, 0), paths.len);
+}
+
+test "a real file whose name starts with http is not mistaken for a URL" {
+    const alloc = testing.allocator;
+    const paths = try extractPaths(alloc, "See src/net/http_server.zig and https://example.com/x.zig");
+    defer freePaths(alloc, paths);
+    try testing.expectEqual(@as(usize, 1), paths.len);
+    try testing.expectEqualStrings("src/net/http_server.zig", paths[0]);
 }
 
 test "stripLineSuffix removes a :line and a :line:col but not a plain path" {
@@ -365,11 +447,14 @@ test "a missing referenced path is reported as needing an UPDATE, never a delete
 
     try testing.expectEqual(@as(u32, 1), a.missing_count);
     try testing.expectEqual(@as(u32, 1), a.finding_count);
-    // The invariant this module exists to keep.
+    // The invariant this module exists to keep, asserted on the ACTUAL
+    // severities rather than on the hard-coded `has_high` flag — which is a
+    // literal `false` and so could never fail.
     try testing.expect(!a.has_high);
     try testing.expectEqual(Verdict.update, a.verdict);
     try testing.expectEqual(Verdict.update, skill_evals_db.decideVerdict(a.verdict, a.has_high));
     try testing.expectEqualStrings("[\"src/this/path/does/not/exist.zig\"]", a.missing_paths_json);
+    try assertNoHighSeverity(alloc, a.findings_json);
 }
 
 test "a healthy skill is a keep with no findings" {
@@ -451,7 +536,166 @@ test "analyse tolerates a body full of hostile tokens without aborting" {
     // It RETURNED, which is the point — the *Absolute family would have aborted
     // the process here. Some of these tokens legitimately resolve to nothing
     // (`../../etc/passwd` under /tmp), so the verdict may be `update`; what must
-    // hold is that a mechanical check can never authorise a deletion.
-    try testing.expect(!a.has_high);
+    // hold is that a mechanical check can never authorise a deletion. Asserted
+    // on the emitted severities, not on the hard-coded `has_high` flag.
+    try assertNoHighSeverity(alloc, a.findings_json);
     try testing.expect(skill_evals_db.decideVerdict(a.verdict, a.has_high) != .delete);
+}
+
+test "a mixed body reports only the path that is actually missing" {
+    const alloc = testing.allocator;
+    // The case that proves a present path was FOUND rather than skipped: an
+    // all-missing body cannot distinguish "checked and failed" from "did not
+    // check at all".
+    const body =
+        \\---
+        \\name: mixed
+        \\description: mixed
+        \\---
+        \\Read src/agentic_loop/skill_evals_drift.zig then src/gone/forever.zig
+    ;
+    const a = try analyse(alloc, testing.io, ".", body);
+    defer a.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 1), a.missing_count);
+    try testing.expectEqualStrings("[\"src/gone/forever.zig\"]", a.missing_paths_json);
+    // Both were referenced; only one is missing.
+    try testing.expectEqualStrings(
+        "[\"src/agentic_loop/skill_evals_drift.zig\",\"src/gone/forever.zig\"]",
+        a.referenced_paths_json,
+    );
+}
+
+test "a cwd that does not exist reports nothing rather than 50 false misses" {
+    const alloc = testing.allocator;
+    // A removed git worktree is a routine event in this repo, so a stale cwd is
+    // a normal input, not an exotic one. Every relative path would fail to
+    // stat, and reporting them all as rot would be 50 lies.
+    const body =
+        \\---
+        \\name: gone-cwd
+        \\description: gone-cwd
+        \\---
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    const a = try analyse(alloc, testing.io, "/tmp/definitely-not-a-real-dir-xyz", body);
+    defer a.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 0), a.missing_count);
+    try testing.expectEqual(Verdict.keep, a.verdict);
+}
+
+test "a path that resolves to a directory is not a missing path" {
+    const alloc = testing.allocator;
+    const body =
+        \\---
+        \\name: dir
+        \\description: dir
+        \\---
+        \\See src/agentic_loop for the code.
+    ;
+    const a = try analyse(alloc, testing.io, ".", body);
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), a.missing_count);
+}
+
+test "extractPaths caps at MAX_REFERENCED_PATHS without erroring" {
+    const alloc = testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(alloc);
+    // 120 distinct paths, well past the 50 cap.
+    var i: u32 = 0;
+    while (i < 120) : (i += 1) {
+        try body.appendSlice(alloc, "src/dir");
+        var buf: [16]u8 = undefined;
+        const n = std.fmt.bufPrint(&buf, "{d}", .{i}) catch unreachable;
+        try body.appendSlice(alloc, n);
+        try body.appendSlice(alloc, "/file.zig ");
+    }
+    const paths = try extractPaths(alloc, body.items);
+    defer freePaths(alloc, paths);
+    // The cap holds and the overflow is silent, not an error.
+    try testing.expectEqual(MAX_REFERENCED_PATHS, paths.len);
+}
+
+test "extractPaths on a body of only delimiters or whitespace yields nothing" {
+    const alloc = testing.allocator;
+    for ([_][]const u8{ "", "   \n\t  ", "//", "`` ``", "()[]{}<>,;|*!?=" }) |body| {
+        const paths = try extractPaths(alloc, body);
+        defer freePaths(alloc, paths);
+        try testing.expectEqual(@as(usize, 0), paths.len);
+    }
+}
+
+test "analyse is deterministic: the same body twice is byte-identical" {
+    const alloc = testing.allocator;
+    const body =
+        \\---
+        \\name: det
+        \\description: det
+        \\---
+        \\Read src/agentic_loop/skill_evals_drift.zig and src/nope/gone.zig
+    ;
+    const a = try analyse(alloc, testing.io, ".", body);
+    defer a.deinit(alloc);
+    const b = try analyse(alloc, testing.io, ".", body);
+    defer b.deinit(alloc);
+
+    try testing.expectEqualStrings(a.findings_json, b.findings_json);
+    try testing.expectEqualStrings(a.missing_paths_json, b.missing_paths_json);
+    try testing.expectEqualStrings(a.referenced_paths_json, b.referenced_paths_json);
+    try testing.expectEqual(a.verdict, b.verdict);
+}
+
+test "a body at exactly MAX_BODY_BYTES is not flagged, one byte over is" {
+    const alloc = testing.allocator;
+    // The structural check is `> MAX_BODY_BYTES`, so the boundary itself is
+    // clean. Build a body with the frontmatter present so only the size
+    // finding can fire.
+    const prefix = "---\nname: big\ndescription: big\n---\n";
+    const at_cap = try alloc.alloc(u8, MAX_BODY_BYTES);
+    defer alloc.free(at_cap);
+    @memcpy(at_cap[0..prefix.len], prefix);
+    @memset(at_cap[prefix.len..], 'x');
+    const a = try analyse(alloc, testing.io, ".", at_cap);
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), a.finding_count);
+
+    const over = try alloc.alloc(u8, MAX_BODY_BYTES + 1);
+    defer alloc.free(over);
+    @memcpy(over[0..prefix.len], prefix);
+    @memset(over[prefix.len..], 'x');
+    const b = try analyse(alloc, testing.io, ".", over);
+    defer b.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), b.finding_count);
+    try testing.expectEqual(Verdict.update, b.verdict);
+}
+
+test "a path token containing quotes or a backslash survives JSON encoding" {
+    const alloc = testing.allocator;
+    const body =
+        \\---
+        \\name: hostile
+        \\description: hostile
+        \\---
+        \\Read src/we"ird/pa'th.zig and src/back\slash/x.zig
+    ;
+    const a = try analyse(alloc, testing.io, "/tmp", body);
+    defer a.deinit(alloc);
+    // The emitted JSON must parse — a raw quote would make the whole field
+    // unreadable for the client that parses it. Parsed as a generic Value
+    // because the static parser would try to read a bare string as a number.
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, a.missing_paths_json, .{});
+    defer parsed.deinit();
+    try testing.expect(parsed.value == .array);
+    try testing.expect(parsed.value.array.items.len >= 1);
+}
+
+test "stripLineSuffix handles a huge line number and a trailing colon" {
+    try testing.expectEqualStrings("a/b.zig", stripLineSuffix("a/b.zig:999999999999"));
+    try testing.expectEqualStrings("a/b.zig", stripLineSuffix("a/b.zig:12:5:9"));
+    // A trailing colon is not a line suffix.
+    try testing.expectEqualStrings("a/b.zig:", stripLineSuffix("a/b.zig:"));
+    // A colon at index 0 is not a line suffix.
+    try testing.expectEqualStrings(":12", stripLineSuffix(":12"));
 }

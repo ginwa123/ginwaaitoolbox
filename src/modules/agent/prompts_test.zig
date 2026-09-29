@@ -1740,10 +1740,19 @@ test "SkillEvalToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
     try std.testing.expect(contains(src, ".requires_tool = \"run_skill_eval\""));
 
     // And the tool it mandates must actually be equipped, or the rule is a
-    // lie. This assertion shipped WITH the tool, deliberately: asserting it
-    // earlier would have been asserting something untrue.
-    const equipped = @embedFile("../../agentic_loop/tools_equipped.zig");
-    try std.testing.expect(contains(equipped, "run_skill_eval"));
+    // lie. This asserts MEMBERSHIP of the table `filterAndMergeTools` actually
+    // iterates — a source grep for the string would pass on an entry in
+    // UNIFIED_TOOL_REGISTRY, which is the dispatcher's table and is never
+    // consulted when the tool list is built. That is exactly how the tool
+    // shipped unreachable once already.
+    const tools_equipped = @import("../../agentic_loop/tools_equipped.zig");
+    const equipped = tools_equipped.equips(std.testing.allocator);
+    defer std.testing.allocator.free(equipped);
+    var found = false;
+    for (equipped) |t| {
+        if (std.mem.eql(u8, t.function.name, "run_skill_eval")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 test "SkillEvalToolRule is appended unconditionally, beside the other mandates" {
