@@ -1861,14 +1861,26 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
           script: |
-            set -euo pipefail
+            # POSIX sh only, deliberately. android-emulator-runner@v2 runs
+            # this input with `/usr/bin/sh` regardless of the job's default
+            # shell, and on Ubuntu that is dash — `set -o pipefail` is a
+            # bashism there, so the previous version of this block died with
+            # `/usr/bin/sh: 1: set: Illegal option -o pipefail` after the
+            # emulator had already booted. No pipeline either: `$?` after a
+            # pipe is tee's status, not pytest's, so the exit code is
+            # captured by hand and re-raised, and the log file the report
+            # step uploads is written by the redirect.
+            set -eu
             # `ANDROID_SERIAL` is deliberately NOT set: with a single clean adb
             # server the suite discovers the emulator itself, and hardcoding
             # `emulator-5554` would break the day the action picks another port.
             # (The suite's own README says to set it locally, where a real phone
             # attached alongside the emulator is the normal case.)
+            status=0
             "$NALAR_FUNC_VENV_DIR/bin/python" -m pytest tests/functional_android/ -q -rs \
-              2>&1 | tee /tmp/android-functional-test.log
+              > /tmp/android-functional-test.log 2>&1 || status=$?
+            cat /tmp/android-functional-test.log
+            exit $status
 
       - name: Upload the reports
         # `if: always()` so a failing run still publishes the instrumented JUnit
