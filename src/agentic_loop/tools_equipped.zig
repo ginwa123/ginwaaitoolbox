@@ -99,6 +99,12 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         remove_skill_mod.remove_skill_tool,
         add_skill_mod.add_skill_tool,
         edit_skill_mod.edit_skill_tool,
+        // Skill Evals. Present in this table so `filterAndMergeTools` can find
+        // it when the config switch is on — the injection block iterates THIS
+        // list, not UNIFIED_TOOL_REGISTRY (which is the dispatcher's table).
+        // Being listed here does not equip it: the allowlist filter drops it
+        // unless the config injection re-adds it.
+        run_skill_eval_mod.run_skill_eval_tool,
         command_tool_mod.command_tool,
         read_file_mod.read_file_tool,
         write_file_mod.write_file_tool,

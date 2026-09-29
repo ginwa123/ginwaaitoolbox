@@ -77,6 +77,14 @@ pub fn sha256Hex(input: []const u8, out: *[64]u8) void {
     }
 }
 
+/// Monotonic counter for ledger row ids. Atomic because the ledger is written
+/// from tool dispatch, which can run on more than one thread in one process.
+var event_seq = std.atomic.Value(u64).init(0);
+
+fn nextEventSeq() u64 {
+    return event_seq.fetchAdd(1, .monotonic);
+}
+
 pub const SkillToolEventArgs = struct {
     io: std.Io,
     /// The session that ran the tool — the ledger's primary read key.
@@ -139,8 +147,16 @@ pub fn insertEvent(
         return;
     }
 
-    const id = try std.fmt.allocPrint(allocator, "sse:{d}_{d}", .{
+    // A per-call monotonic counter, not the caller's `ordinal` (which every
+    // non-`listed` call site passes as 0). Two `use_skill` completions in the
+    // same nanosecond — parallel tool dispatch, or two workspaces in one
+    // process — would otherwise collide on the PRIMARY KEY, and because this is
+    // a plain INSERT the loser's row would be silently dropped by the
+    // log-and-swallow policy, taking the skill out of the eval set entirely.
+    const seq = nextEventSeq();
+    const id = try std.fmt.allocPrint(allocator, "sse:{d}_{d}_{d}", .{
         std.Io.Timestamp.now(args.io, .real).nanoseconds,
+        seq,
         ordinal,
     });
     defer allocator.free(id);
@@ -770,7 +786,8 @@ pub fn claimFact(
         \\INSERT OR IGNORE INTO skill_eval_facts
         \\    (id, skill_key, content_hash, context_key, verdict_intrinsic, computed_at)
         \\VALUES
-        \\    (?, ?, ?, ?, 'computing', datetime('now'))
+        \\    (?, COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
+        \\     COALESCE(NULLIF(?, ''), ''), 'computing', datetime('now'))
     , &.{ id, skill_key, content_hash, context_key });
     if (db.changes() > 0) return .won;
 
@@ -798,16 +815,24 @@ pub const FactRow = struct {
     missing_paths_json: []u8,
     drift_commits_json: []u8,
 
+    /// Guarded like `Analysis.deinit` and `RunOutcome.deinit`: a field left at
+    /// its `&.{}` default is not an allocation, and freeing it would be a
+    /// double-free the moment a second constructor appears.
     pub fn deinit(self: FactRow, allocator: std.mem.Allocator) void {
-        allocator.free(self.id);
-        allocator.free(self.findings_json);
-        allocator.free(self.evidence_json);
-        allocator.free(self.proposed_content);
-        allocator.free(self.missing_paths_json);
-        allocator.free(self.drift_commits_json);
+        if (self.id.len > 0) allocator.free(self.id);
+        if (self.findings_json.len > 0) allocator.free(self.findings_json);
+        if (self.evidence_json.len > 0) allocator.free(self.evidence_json);
+        if (self.proposed_content.len > 0) allocator.free(self.proposed_content);
+        if (self.missing_paths_json.len > 0) allocator.free(self.missing_paths_json);
+        if (self.drift_commits_json.len > 0) allocator.free(self.drift_commits_json);
     }
 };
 
+/// Parse a stored score. Out-of-range values are clamped to the top of the
+/// scale rather than refused, because a fact row is already-published state and
+/// a reader must not be able to fail a whole eval run. `validateReport` is the
+/// gate that stops an out-of-range score being *written*; this is only the
+/// defensive read.
 fn parseScore(raw: []const u8) u8 {
     const n = std.fmt.parseInt(u8, raw, 10) catch return 0;
     return if (n > 3) 3 else n;
@@ -1033,18 +1058,22 @@ pub fn releaseApply(
 
 /// Mark a verdict as unapplicable because the body moved on. Recorded rather
 /// than deleted so the UI can offer a re-evaluate.
+///
+/// The missing paths are NOT written here: they are intrinsic and live on the
+/// fact, and `proposed_diff` means "the text this verdict would write into the
+/// skill" — storing a JSON array of paths there would make a future apply path
+/// write that array into a SKILL.MD. `status = 'stale'` plus the joined fact is
+/// the whole record.
 pub fn markResultStale(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     result_id: []const u8,
-    missing_paths_json: []const u8,
 ) !void {
     try db.exec(allocator,
         \\UPDATE skill_eval_results
-        \\   SET status = 'stale',
-        \\       proposed_diff = COALESCE(NULLIF(?, ''), '')
+        \\   SET status = 'stale'
         \\ WHERE id = ?
-    , &.{ missing_paths_json, result_id });
+    , &.{result_id});
 }
 
 fn resultExists(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, result_id: []const u8) !bool {
@@ -1381,14 +1410,17 @@ test "markResultStale records the refusal instead of deleting the verdict" {
         \\INSERT INTO skill_eval_results (id, run_id, skill_key, skill_name, status, verdict)
         \\VALUES ('res_1', 'run_1', 'global:foo', 'foo', 'done', 'update')
     , &.{});
-    try markResultStale(alloc, &ctx.db, "res_1", "[\"src/gone.zig\"]");
+    try markResultStale(alloc, &ctx.db, "res_1");
 
-    var q = try ctx.db.query(alloc, "SELECT status, proposed_diff FROM skill_eval_results WHERE id = 'res_1'", &.{});
+    var q = try ctx.db.query(alloc, "SELECT status, COALESCE(proposed_diff, '') FROM skill_eval_results WHERE id = 'res_1'", &.{});
     defer q.deinit();
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("stale", row.values[0]);
-    try testing.expectEqualStrings("[\"src/gone.zig\"]", row.values[1]);
+    // The missing paths are intrinsic and live on the fact; `proposed_diff`
+    // means "the text this verdict would write into the skill", so it must NOT
+    // be used as a scratch column for a JSON array of paths.
+    try testing.expectEqualStrings("", row.values[1]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1448,14 +1480,19 @@ pub fn sessionSkillSet(
         const hash = row.values[2];
         const loop_raw = row.values[3];
 
-        var slot: ?*SessionSkillUse = null;
-        for (out.items) |*it| {
+        // An INDEX, not a pointer: `out` is an ArrayList and the `append`
+        // below can reallocate its backing array, which would invalidate any
+        // pointer taken from an earlier iteration. Re-deriving the address from
+        // the index after the append is what makes that safe by construction
+        // rather than by luck of the current control flow.
+        var idx: ?usize = null;
+        for (out.items, 0..) |it, i| {
             if (std.mem.eql(u8, it.skill_name, name)) {
-                slot = it;
+                idx = i;
                 break;
             }
         }
-        if (slot == null) {
+        if (idx == null) {
             try out.append(allocator, .{
                 .skill_name = try allocator.dupe(u8, name),
                 .content_hash = try allocator.dupe(u8, ""),
@@ -1463,9 +1500,9 @@ pub fn sessionSkillSet(
                 .loaded = false,
                 .first_loop_index = null,
             });
-            slot = &out.items[out.items.len - 1];
+            idx = out.items.len - 1;
         }
-        const it = slot.?;
+        const it = &out.items[idx.?];
 
         if (std.mem.eql(u8, event, "listed")) {
             it.listed = true;
@@ -1680,6 +1717,7 @@ pub fn listResults(
         \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
         \\  FROM skill_eval_results r
         \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
+        \\                              AND f.verdict_intrinsic != 'computing'
         \\ WHERE r.run_id = ?
         \\ ORDER BY r.skill_name ASC, r.id ASC
     , &.{run_id});

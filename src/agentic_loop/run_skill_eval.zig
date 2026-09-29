@@ -71,6 +71,9 @@ pub const RunOutcome = struct {
     disabled: bool = false,
     /// No skill was loaded or offered this session, so there is nothing to do.
     nothing_loaded: bool = false,
+    /// The run could not even be claimed (a database error). Distinct from
+    /// `nothing_loaded`, which would be a false statement about the ledger.
+    failed: bool = false,
     /// A run already existed for this session. `run_id` names it; nothing was
     /// recomputed. This is the idempotency path, not an error.
     reused: bool = false,
@@ -98,6 +101,9 @@ pub const RunArgs = struct {
     max_skills: u32 = 8,
     /// `skill_evals.include_listed_without_loading`.
     include_listed_only: bool = true,
+    /// `skill_evals.fact_lease_seconds` — how long a `computing` lease may sit
+    /// before another session may take it over.
+    fact_lease_seconds: u32 = 300,
 };
 
 /// Insert one result row. Private because it is the only writer of this table
@@ -195,7 +201,11 @@ pub fn runEval(
         args.model,
     ) catch |err| {
         if (logger) |l| l.warnFmt("skill eval: could not claim a run: {s}", .{@errorName(err)});
-        return .{ .nothing_loaded = true };
+        // `errdefer` does not fire on a normal return, so the id must be freed
+        // here. Reporting this as `nothing_loaded` would also be a lie — the
+        // ledger was already read and it was not empty.
+        allocator.free(run_id);
+        return .{ .failed = true };
     };
     if (!claimed) {
         // The agent emitted two calls in one turn, or already evaluated this
@@ -203,6 +213,12 @@ pub fn runEval(
         allocator.free(run_id);
         return .{ .reused = true };
     }
+
+    // A run row now exists and holds the session's one-shot slot. If anything
+    // below fails, the row must not be left `running` — that would both show a
+    // permanently spinning run and, because the partial unique index still
+    // holds it, block every later eval for this session forever.
+    errdefer skill_evals_db.finishRun(allocator, db, run_id, "error", 0, "runEval failed mid-loop") catch {};
 
     var outcome = RunOutcome{ .run_id = run_id };
     var ordinal: u32 = 0;
@@ -261,6 +277,11 @@ pub fn runEval(
         defer analysis.deinit(allocator);
 
         var intrinsic_fact_id: []const u8 = "";
+        // Set only on the reuse path, where the id is a fresh dupe that this
+        // iteration owns. The `.won` path points at `result_id`, which is
+        // already deferred by the loop body.
+        var owned_fact_id: ?[]u8 = null;
+        defer if (owned_fact_id) |id| allocator.free(id);
         var verdict = skill_evals_db.decideVerdict(analysis.verdict, analysis.has_high);
 
         switch (claim) {
@@ -279,13 +300,45 @@ pub fn runEval(
                 if (skill_evals_db.readFact(allocator, db, skill_key, fact_key_hash, context_key) catch null) |fact| {
                     defer fact.deinit(allocator);
                     verdict = skill_evals_db.decideVerdict(fact.verdict, false);
+                    // Link the result to the fact it reused. Without this the
+                    // result row carries a verdict with no evidence: the LEFT
+                    // JOIN in `listResults` finds nothing, so the scores read 0
+                    // and `shared_fact` reports false for exactly the rows that
+                    // WERE shared. `fact.id` is freed by the `defer` above, so
+                    // it must be duped, not aliased.
+                    owned_fact_id = try allocator.dupe(u8, fact.id);
+                    intrinsic_fact_id = owned_fact_id.?;
                 }
             },
             .held => {
-                // Someone else is computing the same question right now. Do not
-                // duplicate it; record what Tier 0 already knows and let the
-                // owner's intrinsic verdict take over when it lands.
-                outcome.reused_facts += 1;
+                // Someone else is computing the same question right now — or a
+                // crashed owner left a lease behind. Try to take over an
+                // EXPIRED lease; a live one is left alone so the work is not
+                // duplicated. Without this a single crash poisons the fact for
+                // that question forever, because the unique index blocks every
+                // later claim and nothing ever reclaims the row.
+                const stolen = skill_evals_db.stealFact(
+                    allocator,
+                    db,
+                    skill_key,
+                    fact_key_hash,
+                    context_key,
+                    args.fact_lease_seconds,
+                ) catch false;
+                if (stolen) {
+                    _ = skill_evals_db.publishFact(allocator, db, result_id, .{
+                        .verdict = analysis.verdict,
+                        .freshness = if (analysis.missing_count > 0) 1 else 3,
+                        .findings_json = analysis.findings_json,
+                        .missing_paths_json = analysis.missing_paths_json,
+                        .evidence_json = analysis.findings_json,
+                    }) catch false;
+                    intrinsic_fact_id = result_id;
+                } else {
+                    // A live owner exists. Record what Tier 0 already knows and
+                    // let the owner's intrinsic verdict take over when it lands.
+                    outcome.reused_facts += 1;
+                }
             },
         }
 
@@ -333,6 +386,7 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
         .enabled = enabled,
         .max_skills = ctx.config.skill_evals.max_skills_per_run,
         .include_listed_only = ctx.config.skill_evals.include_listed_without_loading,
+        .fact_lease_seconds = ctx.config.skill_evals.fact_lease_seconds,
     }) catch |err| {
         const msg = try std.fmt.allocPrint(ctx.allocator, "run_skill_eval failed: {s}", .{@errorName(err)});
         defer ctx.allocator.free(msg);
@@ -343,6 +397,8 @@ pub fn execRunSkillEval(ctx: tools.ToolExecContext, tc: agent.ToolCall) !tools.T
 
     const inner = if (outcome.disabled)
         try ctx.allocator.dupe(u8, "{\"status\":\"disabled\",\"message\":\"Skill Evals are off. Ask the user to set skill_evals.enabled in config.json.\"}")
+    else if (outcome.failed)
+        try ctx.allocator.dupe(u8, "{\"status\":\"failed\",\"message\":\"The eval could not be started because of a database error. Nothing was evaluated.\"}")
     else if (outcome.reused)
         try ctx.allocator.dupe(u8, "{\"status\":\"already_evaluated\",\"message\":\"This session's skills were already evaluated; nothing was recomputed.\"}")
     else if (outcome.nothing_loaded)
