@@ -414,11 +414,15 @@ fn newestSubdirWith(b: *std.Build, root: []const u8, required_files: []const []c
         const candidate = b.fmt("{s}/{s}", .{ root, entry.name });
         var complete = true;
         for (required_files) |f| {
-            if (!fileExists(b.fmt("{s}/{s}", .{ candidate, f }))) {
+            const probe = b.fmt("{s}/{s}", .{ candidate, f });
+            const ok = fileExists(probe);
+            std.debug.print("[sdk-probe] {s} exists={}\n", .{ probe, ok });
+            if (!ok) {
                 complete = false;
                 break;
             }
         }
+        std.debug.print("[sdk-probe] -> {s} complete={} best_before={s}\n", .{ entry.name, complete, best_name orelse "null" });
         if (!complete) continue;
         if (best_name == null or versionGreater(entry.name, best_name.?)) {
             best_name = entry.name;
