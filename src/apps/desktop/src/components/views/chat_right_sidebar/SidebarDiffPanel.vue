@@ -7,6 +7,7 @@ import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
 import GitCommits from '../../git/GitCommits.vue'
+import SkillEvalsPanel from './SkillEvalsPanel.vue'
 import {
   parseUnifiedDiff,
   splitDiffByFile,
@@ -26,6 +27,8 @@ const props = defineProps<{
   prUrl?: string
   /** Effective provider for the attached PR (stored pr_provider). */
   prProvider?: string
+  /** The session whose skill evals the Evals tab shows. Empty = every session. */
+  sessionId?: string
 }>()
 
 const emit = defineEmits<{
@@ -68,12 +71,12 @@ const changeCount = computed(
 const router = useRouter()
 const route = useRoute()
 
-const readTabParam = (): 'files' | 'pr' | 'commits' | null => {
+const readTabParam = (): 'files' | 'pr' | 'commits' | 'evals' | null => {
   const v = route.query.panel
-  return v === 'files' || v === 'pr' || v === 'commits' ? v : null
+  return v === 'files' || v === 'pr' || v === 'commits' || v === 'evals' ? v : null
 }
 
-const syncTabParam = (tab: 'files' | 'pr' | 'commits' | null) => {
+const syncTabParam = (tab: 'files' | 'pr' | 'commits' | 'evals' | null) => {
   const query = { ...route.query }
   if (tab) query.panel = tab
   else delete query.panel
@@ -81,25 +84,30 @@ const syncTabParam = (tab: 'files' | 'pr' | 'commits' | null) => {
 }
 
 const isPrMode = computed(() => (props.prUrl ?? '').trim().length > 0)
-// Every view switch lands in the URL (?panel=files|pr|commits) so refresh,
-// Back/Forward, and shared links restore the same panel. The commits tab
-// is valid with or without an attached PR; ?panel=pr without a prUrl
-// still falls back to files (pre-commits behavior).
+// Every view switch lands in the URL (?panel=files|pr|commits|evals) so
+// refresh, Back/Forward, and shared links restore the same panel. The commits
+// tab is valid with or without an attached PR; ?panel=pr without a prUrl
+// still falls back to files (pre-commits behavior). The evals tab is
+// independent of PR mode — it shows the agent's self-eval verdicts.
 // The route read is guarded: hosts like ChatRightSidebar mount this panel
 // without a router (see ChatRightSidebar.spec.ts), where useRoute has no
 // current route — mount must never crash there.
-const initialTab = (): 'files' | 'pr' | 'commits' => {
-  let param: 'files' | 'pr' | 'commits' | null = null
+const initialTab = (): 'files' | 'pr' | 'commits' | 'evals' => {
+  let param: 'files' | 'pr' | 'commits' | 'evals' | null = null
   try {
     param = readTabParam()
   } catch {
     param = null
   }
+  // Evals is reachable regardless of PR mode: it is about the agent's
+  // self-assessment, not about the diff.
+  if (param === 'evals') return 'evals'
   if (isPrMode.value) return param ?? 'pr'
   return param === 'commits' ? 'commits' : 'files'
 }
-const activeTab = ref<'files' | 'pr' | 'commits'>(initialTab())
+const activeTab = ref<'files' | 'pr' | 'commits' | 'evals'>(initialTab())
 const showCommits = computed(() => activeTab.value === 'commits')
+const showEvals = computed(() => activeTab.value === 'evals')
 const showTabs = computed(() => isPrMode.value)
 const showPr = computed(() => isPrMode.value && activeTab.value === 'pr')
 const loadedTabs = ref(new Set<string>())
@@ -490,10 +498,12 @@ const loadFullList = async (cwd: string = props.cwd) => {
 // Per-tab lazy load: each side fetches once until cwd/prUrl changes.
 // The commits tab needs no panel-level fetch — GitCommits.vue loads
 // (and paginates) itself when it mounts.
-const loadTab = async (tab: 'files' | 'pr' | 'commits', force = false) => {
+const loadTab = async (tab: 'files' | 'pr' | 'commits' | 'evals', force = false) => {
   if (!force && loadedTabs.value.has(tab)) return
   if (tab === 'pr') await Promise.all([loadPrDiff(), loadPrStatus()])
   else if (tab === 'files') await loadGitStatus()
+  // 'commits' and 'evals' need no panel-level fetch: GitCommits.vue and
+  // SkillEvalsPanel.vue each load themselves when they mount.
   loadedTabs.value.add(tab)
 }
 
@@ -506,7 +516,7 @@ const refreshCurrentTab = async () => {
   else await loadTab('files', true)
 }
 
-const setActiveTab = (tab: 'files' | 'pr' | 'commits') => {
+const setActiveTab = (tab: 'files' | 'pr' | 'commits' | 'evals') => {
   activeTab.value = tab
   syncTabParam(tab)
   void loadTab(tab)
@@ -654,12 +664,13 @@ defineExpose({
 <template>
   <div class="flex flex-col h-full min-h-0" data-testid="sidebar-diff-panel">
     <div
-      v-if="showTabs"
+      v-if="showTabs || showEvals || !isPrMode"
       class="flex items-center gap-1 px-3 h-9 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
       role="tablist"
     >
       <button
+        v-if="isPrMode"
         type="button"
         class="text-xs px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-files"
@@ -679,6 +690,7 @@ defineExpose({
         Files changed{{ changeCount > 0 ? ` (${changeCount})` : '' }}
       </button>
       <button
+        v-if="isPrMode"
         type="button"
         class="text-xs px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-pr"
@@ -715,6 +727,25 @@ defineExpose({
         @click="setActiveTab('commits')"
       >
         Commits
+      </button>
+      <button
+        type="button"
+        class="text-xs px-2 py-1 rounded hover:opacity-80"
+        data-testid="sidebar-tab-evals"
+        role="tab"
+        :aria-selected="activeTab === 'evals'"
+        :style="
+          activeTab === 'evals'
+            ? {
+                color: 'var(--semantic-text)',
+                fontWeight: 600,
+                boxShadow: 'inset 0 -2px 0 0 var(--color-violet)',
+              }
+            : { color: 'var(--semantic-text)', opacity: '0.6' }
+        "
+        @click="setActiveTab('evals')"
+      >
+        Evals
       </button>
     </div>
     <div
@@ -822,7 +853,10 @@ defineExpose({
       </button>
     </div>
 
-    <div v-if="showCommits && !showPr" class="flex-1 min-h-0">
+    <div v-if="showEvals" class="flex-1 min-h-0">
+      <SkillEvalsPanel :session-id="sessionId" />
+    </div>
+    <div v-else-if="showCommits && !showPr" class="flex-1 min-h-0">
       <GitCommits :cwd="cwd" :inline-file-diff="false" @commit-file-click="onCommitFileClick" />
     </div>
     <div v-else class="flex-1 overflow-y-auto min-h-0">

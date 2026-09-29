@@ -3536,6 +3536,85 @@ export interface SkillEvalEvent {
   result_id: string
 }
 
+// ─── Skill Evals read surface (GET /api/skill-evals/*) ──────────────────
+
+export interface SkillEvalRun {
+  id: string
+  session_id: string
+  status: string
+  trigger: string
+  scope: string
+  skill_name: string
+  error: string
+  total_tokens: number
+  created_at: string
+}
+
+export interface SkillEvalResult {
+  id: string
+  skill_name: string
+  skill_key: string
+  status: string
+  verdict: string
+  freshness: number
+  accuracy: number
+  duplication: number
+  rationale: string
+  /** A JSON *string* (the stored array) — parse it before use. */
+  missing_paths: string
+  /** Whether the intrinsic half came from the shared fact cache. */
+  shared_fact: boolean
+  applied: boolean
+  apply_action: string
+}
+
+export interface SkillEvalsRunsResponse {
+  runs: SkillEvalRun[]
+  results: SkillEvalResult[]
+}
+
+export interface SkillEvalsSummaryResponse {
+  counts: { verdict: string; n: number }[]
+  total: number
+}
+
+export async function getSkillEvalsRuns(params: {
+  run_id?: string
+  session_id?: string
+  limit?: number
+} = {}): Promise<SkillEvalsRunsResponse> {
+  const q = new URLSearchParams()
+  if (params.run_id) q.set('run_id', params.run_id)
+  if (params.session_id) q.set('session_id', params.session_id)
+  if (params.limit !== undefined) q.set('limit', String(params.limit))
+  const suffix = q.toString() ? `?${q.toString()}` : ''
+  return await apiFetch<SkillEvalsRunsResponse>(`/skill-evals/runs${suffix}`)
+}
+
+export async function getSkillEvalsSummary(
+  sessionId = '',
+): Promise<SkillEvalsSummaryResponse> {
+  const suffix = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  return await apiFetch<SkillEvalsSummaryResponse>(`/skill-evals/summary${suffix}`)
+}
+
+/**
+ * Record that a human accepted a verdict.
+ *
+ * `result_id` is a QUERY parameter, not a path segment — the backend keeps
+ * every route under this prefix a literal so no `:param` route can shadow a
+ * later one. A 409 means either "already applied" or "the body changed since
+ * this verdict was computed"; both are surfaced to the caller rather than
+ * swallowed, because the UI must offer a re-evaluate in the second case.
+ */
+export async function applySkillEvalResult(
+  resultId: string,
+  action = 'apply',
+): Promise<{ result_id: string; skill_name: string; action: string; applied: boolean; message: string }> {
+  const q = new URLSearchParams({ result_id: resultId, action })
+  return await apiFetch(`/skill-evals/results/apply?${q.toString()}`, { method: 'POST' })
+}
+
 // GET queued messages
 export interface QueuedMessage {
   id: string
