@@ -387,17 +387,23 @@ fn versionGreater(a: []const u8, b: []const u8) bool {
     }
 }
 
-/// Return `<root>/<highest-versioned subdirectory that contains
-/// `required_sub>`, or null when none does.
+/// Return `<root>/<highest-versioned subdirectory that actually contains
+/// every name in `required_files`, or null when none does.
 ///
-/// Do NOT use `firstSubdir` for the Windows SDK. The windows-2022 image
-/// ships a `10.0.10240.0` stub next to the real `10.0.26100.0`, and
-/// `Dir.iterate` order is undefined, so `firstSubdir` can hand back the
-/// stub. Its `um/x64` is absent, and the link then dies with
-/// `unable to open library directory '...\Lib\10.0.10240.0\um\x64'`
-/// followed by `lld-link: could not open 'libuuid.a'` (uuid / shlwapi /
-/// version all live in that `um/x64` leaf).
-fn newestSubdirWith(b: *std.Build, root: []const u8, required_sub: []const u8) ?[]const u8 {
+/// Do NOT use `firstSubdir` for the Windows SDK. `Windows Kits/10/Lib` on
+/// the windows-2022 image holds several decoy version directories next to
+/// the real one, and `Dir.iterate` order is undefined, so `firstSubdir`
+/// hands back whichever wins the race:
+///   * `10.0.10240.0`  — no `um/x64` at all
+///   * `wdf0.26100.0`  — has an `um/x64`, but it is EMPTY (WDF stub)
+/// Either one costs the link uuid / shlwapi / version, which is exactly
+/// what `-luuid -lshlwapi -lversion` below need:
+///   warning: unable to open library directory
+///     '...\Lib\10.0.10240.0\um\x64': FileNotFound
+///   error: lld-link: could not open 'libuuid.a': No such file or directory
+///
+/// Hence the probe checks the real `.lib` FILES, not just the directory.
+fn newestSubdirWith(b: *std.Build, root: []const u8, required_files: []const []const u8) ?[]const u8 {
     if (b.graph.host.result.os.tag != .windows) return null;
     const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{ .iterate = true }) catch return null;
     defer d.close(b.graph.io);
@@ -405,10 +411,15 @@ fn newestSubdirWith(b: *std.Build, root: []const u8, required_sub: []const u8) ?
     var it = d.iterate();
     while (it.next(b.graph.io) catch null) |entry| {
         if (entry.kind != .directory) continue;
-        // Only consider versions that actually carry the leaf we need.
-        const probe = b.fmt("{s}/{s}/{s}", .{ root, entry.name, required_sub });
-        const leaf = std.Io.Dir.openDirAbsolute(b.graph.io, probe, .{}) catch continue;
-        leaf.close(b.graph.io);
+        const candidate = b.fmt("{s}/{s}", .{ root, entry.name });
+        var complete = true;
+        for (required_files) |f| {
+            if (!fileExists(b.fmt("{s}/{s}", .{ candidate, f }))) {
+                complete = false;
+                break;
+            }
+        }
+        if (!complete) continue;
         if (best_name == null or versionGreater(entry.name, best_name.?)) {
             best_name = entry.name;
         }
@@ -2165,11 +2176,19 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // will then fail loudly on the missing lib).
                 stagePrunedMsvcrt(b, msvc_lib_root, stage_dir);
             }
-            // Newest version that actually ships `um/x64` — NOT firstSubdir,
-            // which can return the 10.0.10240.0 stub and lose uuid/shlwapi/
-            // version. See newestSubdirWith's doc comment.
-            const kit_lib_root = newestSubdirWith(b, "C:/Program Files (x86)/Windows Kits/10/Lib", "um/x64") orelse
-                newestSubdirWith(b, "C:/Program Files/Windows Kits/10/Lib", "um/x64");
+            // The exact libs `-luuid -lshlwapi -lversion` below need. Probing
+            // the FILES (not just the `um/x64` dir) is what skips the
+            // `wdf0.26100.0` decoy, whose um/x64 exists but is empty.
+            // See newestSubdirWith's doc comment.
+            const kit_lib_root = newestSubdirWith(
+                b,
+                "C:/Program Files (x86)/Windows Kits/10/Lib",
+                &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
+            ) orelse newestSubdirWith(
+                b,
+                "C:/Program Files/Windows Kits/10/Lib",
+                &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
+            );
             if (kit_lib_root) |kl| {
                 desktop_exe.root_module.addLibraryPath(.{
                     .cwd_relative = b.fmt("{s}/um/x64", .{kl}),
