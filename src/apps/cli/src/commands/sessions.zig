@@ -28,3 +28,15 @@ pub fn run(args: Args, cfg: config.Config, io: std.Io) @import("root.zig").Dispa
     stdout_writer.interface.flush() catch return .err;
     return .ok;
 }
+
+// ===== Tests merged from sessions_test.zig (2026-09-29 flatten) =====
+// Tests for src/commands/sessions.zig (GET /api/llm/session).
+//
+// Real tests land when the command itself lands. This stub keeps
+// the test discovery in root.zig happy so the build doesn't break.
+
+const testing = std.testing;
+
+test "sessions: placeholder (command not yet implemented)" {
+    try testing.expect(true);
+}

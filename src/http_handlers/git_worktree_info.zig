@@ -188,9 +188,9 @@ const MAIN_PATH = "src/main.zig";
 const HTTP_RESP_PATH = "src/http_handlers/http_response.zig";
 
 /// Read a source file from disk, relative to the project root. Mirrors the
-/// pattern from `set_git_worktree_test.zig` — the project doesn't have a
-/// behavioral handler-test infrastructure, so we static-grep for required
-/// substrings.
+/// pattern from the inline tests in `set_git_worktree.zig` — the project
+/// doesn't have a behavioral handler-test infrastructure, so we static-grep
+/// for required substrings.
 fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     const raw = try std.Io.Dir.cwd().readFileAlloc(
         std.testing.io,

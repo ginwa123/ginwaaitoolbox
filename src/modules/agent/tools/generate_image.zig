@@ -770,7 +770,7 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
 /// Open a fresh `std.Io.Threaded` runtime for tests that need an Io
 /// (the save-to-disk helper needs it for `std.Io.Clock.now` and
 /// `std.Io.Dir.createFile`). Mirrors the helper in
-/// `kanban_list.zig` and `fire_test.zig:52-91`.
+/// `kanban_list.zig` and the `fireWorkspaceRoutine` tests in `routines/fire.zig`.
 fn setupIo() std.Io.Threaded {
     const threaded = std.Io.Threaded.init(testing.allocator, .{});
     return threaded;

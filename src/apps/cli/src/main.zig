@@ -99,8 +99,8 @@ pub fn main(init: std.process.Init) !void {
 
 test "main: placeholder smoke test" {
     // Real CLI behaviour is exercised by the subcommand tests
-    // (`commands/sessions_test.zig`, `commands/messages_test.zig`,
-    // `commands/send_test.zig`, `commands/events_test.zig`); the
+    // (the inline tests in `commands/sessions.zig`, `commands/messages.zig`,
+    // `commands/send.zig`, `commands/events.zig`); the
     // `main` symbol itself just glues them together and is tested
     // by the human-run smoke check.
     try std.testing.expect(true);
