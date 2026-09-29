@@ -956,6 +956,165 @@ pub fn publishFact(
     return db.changes() > 0;
 }
 
+// ─── the judge tier's writes ──────────────────────────────────────────────
+
+/// The session-relative half, as the judge submitted it and as
+/// `validateReport` allowed it through.
+///
+/// Separate from `FactValues` because these are per-SESSION facts. Two
+/// sessions that loaded the same skill disagree about `relevance` and `used`
+/// by definition, so they live on the result row, never on the shared fact.
+pub const JudgeValues = struct {
+    verdict: Verdict,
+    relevance: u8 = 0,
+    used: u8 = 0,
+    helpfulness: u8 = 0,
+    confidence: f32 = 0,
+    /// The sub-agent session that produced the report — the transcript anchor
+    /// a human reads when they want to know why.
+    sub_session_id: []const u8 = "",
+    /// `done` when a validated report landed, `needs_human` when it did not.
+    status: []const u8 = "done",
+    rationale: []const u8 = "",
+};
+
+/// Write the judge tier's half onto one result row.
+///
+/// One guarded statement, decided by `db.changes()`, for the reason every
+/// primitive in this file is one statement: there is no usable multi-statement
+/// transaction here, so a read-then-write would be a TOCTOU bug.
+///
+/// Two guards, both load-bearing:
+///
+///   * `verdict = ?` is written from the CALLER's already-validated value.
+///     This function has no opinion about which verdicts are legal — that is
+///     `validateReport`'s job and it runs before we get here. What this
+///     function guarantees is narrower and more important: a verdict that did
+///     not pass validation cannot reach this line, because there is no path
+///     from a raw `Report` to this call that skips it.
+///   * `applied_at IS NULL` means a result a human has already acted on can
+///     never be rewritten by a judge that lands late.
+pub fn updateJudgeResult(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    result_id: []const u8,
+    values: JudgeValues,
+) !bool {
+    // `exec` binds an empty slice as SQL NULL, so every number goes over the
+    // wire as a non-empty formatted string and every text column is
+    // COALESCE-wrapped (Migration 079's class).
+    const relevance = try std.fmt.allocPrint(allocator, "{d}", .{values.relevance});
+    defer allocator.free(relevance);
+    const used = try std.fmt.allocPrint(allocator, "{d}", .{values.used});
+    defer allocator.free(used);
+    const helpfulness = try std.fmt.allocPrint(allocator, "{d}", .{values.helpfulness});
+    defer allocator.free(helpfulness);
+    const confidence = try std.fmt.allocPrint(allocator, "{d:.4}", .{values.confidence});
+    defer allocator.free(confidence);
+
+    try db.exec(allocator,
+        \\UPDATE skill_eval_results
+        \\   SET relevance = ?, used = ?, helpfulness = ?, confidence = ?,
+        \\       verdict = COALESCE(NULLIF(?, ''), 'needs_human'),
+        \\       status = COALESCE(NULLIF(?, ''), 'needs_human'),
+        \\       rationale = COALESCE(NULLIF(?, ''), ''),
+        \\       sub_session_id = COALESCE(NULLIF(?, ''), '')
+        \\ WHERE id = ? AND applied_at IS NULL
+    , &.{
+        relevance,
+        used,
+        helpfulness,
+        confidence,
+        values.verdict.asString(),
+        values.status,
+        values.rationale,
+        values.sub_session_id,
+        result_id,
+    });
+    return db.changes() > 0;
+}
+
+/// Read the session-relative scores off one result row, for the read path and
+/// for tests. Null when the row does not exist.
+pub const JudgeScores = struct {
+    relevance: u8,
+    used: u8,
+    helpfulness: u8,
+    confidence: f32,
+    status: []u8,
+    verdict: []u8,
+    sub_session_id: []u8,
+
+    pub fn deinit(self: JudgeScores, allocator: std.mem.Allocator) void {
+        allocator.free(self.status);
+        allocator.free(self.verdict);
+        allocator.free(self.sub_session_id);
+    }
+};
+
+pub fn readJudgeScores(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    result_id: []const u8,
+) !?JudgeScores {
+    var q = try db.query(allocator,
+        \\SELECT relevance, used, helpfulness, confidence,
+        \\       COALESCE(status, ''), COALESCE(verdict, ''), COALESCE(sub_session_id, '')
+        \\  FROM skill_eval_results WHERE id = ?
+    , &.{result_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return null;
+    defer row.deinit(allocator);
+    return JudgeScores{
+        .relevance = parseScore(row.values[0]),
+        .used = parseScore(row.values[1]),
+        .helpfulness = parseScore(row.values[2]),
+        .confidence = std.fmt.parseFloat(f32, row.values[3]) catch 0,
+        .status = try allocator.dupe(u8, row.values[4]),
+        .verdict = try allocator.dupe(u8, row.values[5]),
+        .sub_session_id = try allocator.dupe(u8, row.values[6]),
+    };
+}
+
+/// The task this session was doing, as the judge needs to see it.
+///
+/// "Is this skill relevant?" has no referent without it, so this is not an
+/// optional input to the judge — it is what makes the session-relative half
+/// computable at all. The FIRST user message, not the last: a session that
+/// drifted over twenty turns has a first message that says what it set out to
+/// do.
+///
+/// Returns an empty string when the session has no user row (a session that
+/// only ever ran tools). The judge is told the context is empty rather than
+/// being handed nothing, and a thin context is a legitimate reason for it to
+/// answer `needs_human`.
+pub fn sessionTaskContext(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+    max_bytes: usize,
+) ![]u8 {
+    if (session_id.len == 0) return allocator.dupe(u8, "");
+    var q = try db.query(allocator,
+        \\SELECT response_content FROM llm_history
+        \\ WHERE session_id = ? AND role = 'user'
+        \\ ORDER BY created_at_nano ASC
+        \\ LIMIT 1
+    , &.{session_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return allocator.dupe(u8, "");
+    defer row.deinit(allocator);
+    const raw = row.values[0];
+    if (raw.len == 0) return allocator.dupe(u8, "");
+    if (raw.len <= max_bytes) return allocator.dupe(u8, raw);
+    // Truncated with a visible marker: a judge that reads half a task and
+    // reports confidently about all of it is the failure this guards.
+    return std.fmt.allocPrint(allocator, "{s}\n… [{d} more characters omitted]", .{
+        raw[0..max_bytes],
+        raw.len - max_bytes,
+    });
+}
+
 /// Claim the one self-prompted run a session is allowed. The agent can emit two
 /// `run_skill_eval` tool calls in a single turn and both would see "no run yet",
 /// so the partial unique index is the arbiter and `db.changes()` is how the
@@ -1915,4 +2074,156 @@ test "verdictCounts tallies per verdict and totals the whole table when unfilter
     var total: i64 = 0;
     for (all) |c| total += c.n;
     try testing.expectEqual(@as(i64, 4), total);
+}
+
+// ─── the judge tier's storage ─────────────────────────────────────────────
+
+fn seedResultRow(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, id: []const u8, verdict: []const u8) !void {
+    try db.exec(alloc,
+        \\INSERT INTO skill_eval_results (id, run_id, skill_key, skill_name, session_id, status, verdict, rationale)
+        \\VALUES (?, 'run_j', 'global:foo', 'foo', 'sess_j', 'done', ?, 'Tier 0 found no problem')
+    , &.{ id, verdict });
+}
+
+test "updateJudgeResult stores the session-relative half and round-trips" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seedResultRow(alloc, &ctx.db, "rj1", "keep");
+
+    try testing.expect(try updateJudgeResult(alloc, &ctx.db, "rj1", .{
+        .verdict = .keep,
+        .relevance = 3,
+        .used = 2,
+        .helpfulness = 3,
+        .confidence = 0.8,
+        .sub_session_id = "subagent_123_judge",
+        .status = "done",
+        .rationale = "Tier 0 found no problem; judge: it was exactly the right skill",
+    }));
+
+    const scores = (try readJudgeScores(alloc, &ctx.db, "rj1")).?;
+    defer scores.deinit(alloc);
+    try testing.expectEqual(@as(u8, 3), scores.relevance);
+    try testing.expectEqual(@as(u8, 2), scores.used);
+    try testing.expectEqual(@as(u8, 3), scores.helpfulness);
+    try testing.expectEqualStrings("keep", scores.verdict);
+    try testing.expectEqualStrings("done", scores.status);
+    try testing.expectEqualStrings("subagent_123_judge", scores.sub_session_id);
+    try testing.expect(std.math.isFinite(scores.confidence));
+    try testing.expect(@abs(scores.confidence - 0.8) < 0.01);
+}
+
+test "a judge may escalate a deterministic keep to delete" {
+    // The one escalation that exists, and the reason Tier 1 is worth its
+    // tokens: Tier 0 structurally cannot reach `delete`.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seedResultRow(alloc, &ctx.db, "rj2", "keep");
+
+    try testing.expect(try updateJudgeResult(alloc, &ctx.db, "rj2", .{
+        .verdict = .delete,
+        .relevance = 0,
+        .used = 0,
+        .helpfulness = 0,
+        .status = "done",
+        .rationale = "judge: the documented build step does not exist",
+    }));
+    const scores = (try readJudgeScores(alloc, &ctx.db, "rj2")).?;
+    defer scores.deinit(alloc);
+    try testing.expectEqualStrings("delete", scores.verdict);
+}
+
+test "a judge never rewrites a result a human already applied" {
+    // The apply endpoint is the human's decision. A judge that lands late —
+    // a slow sub-agent, a retried run — must not be able to overwrite it, and
+    // the guard is a predicate on the one statement, not a read-then-write.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try seedResultRow(alloc, &ctx.db, "rj3", "update");
+    try ctx.db.exec(alloc,
+        "UPDATE skill_eval_results SET applied_at = datetime('now'), apply_action = 'update' WHERE id = ?",
+        &.{"rj3"},
+    );
+
+    const wrote = try updateJudgeResult(alloc, &ctx.db, "rj3", .{
+        .verdict = .delete,
+        .status = "done",
+        .rationale = "a late judge",
+    });
+    try testing.expectEqual(false, wrote);
+
+    const scores = (try readJudgeScores(alloc, &ctx.db, "rj3")).?;
+    defer scores.deinit(alloc);
+    try testing.expectEqualStrings("update", scores.verdict);
+}
+
+test "updateJudgeResult on a missing row writes nothing and says so" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const wrote = try updateJudgeResult(alloc, &ctx.db, "does_not_exist", .{
+        .verdict = .delete,
+        .status = "done",
+    });
+    try testing.expectEqual(false, wrote);
+    try testing.expect((try readJudgeScores(alloc, &ctx.db, "does_not_exist")) == null);
+}
+
+test "sessionTaskContext returns the FIRST user message, marked when clipped" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Two user turns; the judge must see the one that says what the session
+    // set out to do, not the one it drifted to.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, model)
+        \\VALUES ('h2', 'sess_t', 'user', 'actually now do the other thing', 200, 'm')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, model)
+        \\VALUES ('h1', 'sess_t', 'user', 'fix the empty state in ChatView', 100, 'm')
+    , &.{});
+    // An assistant row that sorts first must not win.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, model)
+        \\VALUES ('h0', 'sess_t', 'assistant', 'I will look at ChatView', 50, 'm')
+    , &.{});
+
+    const task = try sessionTaskContext(alloc, &ctx.db, "sess_t", 4000);
+    defer alloc.free(task);
+    try testing.expectEqualStrings("fix the empty state in ChatView", task);
+
+    // Clipped rather than silently cut: a judge reading half a task and
+    // reporting confidently about all of it is the failure this prevents.
+    // 31 bytes in, 10 kept, so 21 are named as omitted.
+    const clipped = try sessionTaskContext(alloc, &ctx.db, "sess_t", 10);
+    defer alloc.free(clipped);
+    try testing.expectEqualStrings("fix the em\n… [21 more characters omitted]", clipped);
+}
+
+test "sessionTaskContext is empty, not an error, for a session with no user turn" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // A thin context is a legitimate reason for a judge to answer
+    // needs_human, so it is a value the caller can pass on — not a failure
+    // that would take the whole eval down.
+    const none = try sessionTaskContext(alloc, &ctx.db, "sess_never_existed", 4000);
+    defer alloc.free(none);
+    try testing.expectEqualStrings("", none);
+
+    const no_id = try sessionTaskContext(alloc, &ctx.db, "", 4000);
+    defer alloc.free(no_id);
+    try testing.expectEqualStrings("", no_id);
 }

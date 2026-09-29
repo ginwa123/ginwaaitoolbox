@@ -18,13 +18,20 @@
 //! keeps the wire surface to `properties: {}` — nothing to validate, nothing
 //! to get wrong.
 //!
-//! ## Tier 0 only, for now
+//! ## Two tiers, one tool
 //!
-//! This runs the deterministic half (see `skill_evals_drift.zig`) and stores
-//! the session-relative half as unknown. That is a complete, useful, zero-token
-//! eval: it answers "is this skill still true?" for the cheapest and most
-//! common failure. The LLM judge tier fans out sub-agents and fills the
-//! session-relative scores; it is additive and lands on top of this.
+//! Tier 0 (`skill_evals_drift.zig`) is deterministic: it checks whether the
+//! paths a skill names still exist, and it runs on every eval. Tier 1
+//! (`skill_eval_judge.zig`) is the LLM judge: a fresh sub-agent per skill fills
+//! the SESSION-RELATIVE half — `relevance`, `used`, `helpfulness` — which is
+//! the only way to reach a `delete` verdict. Tier 0 structurally cannot:
+//! no amount of missing-path evidence proves a skill is worthless, because
+//! worth depends on the task.
+//!
+//! Tier 1 is OFF by default and gated on `RunArgs.judge_enabled`, because it
+//! spends tokens: one sub-agent per skill, up to `max_skills` of them. Tier 0
+//! is a complete, useful, zero-token eval on its own and is what runs unless a
+//! caller opts in.
 
 const std = @import("std");
 const testing = std.testing;
@@ -38,6 +45,8 @@ const tools = @import("tools.zig");
 const skill_evals_db = @import("skill_evals_db.zig");
 const drift = @import("skill_evals_drift.zig");
 const skill_eval_events = @import("skill_eval_events.zig");
+const skill_eval_judge = @import("skill_eval_judge.zig");
+const batch = @import("sub_agent_batch.zig");
 const migration = @import("../migrations/migration.zig");
 
 const Verdict = skill_evals_db.Verdict;
@@ -108,11 +117,202 @@ pub const RunArgs = struct {
     /// The SSE bus, when the caller has one. Null in unit tests and in any
     /// caller with no bus; the emit is then a no-op.
     event_bus: ?*nalarcore.event_bus.EventBus = null,
+    /// Tier 1: fan out one judge sub-agent per skill. Off by default because
+    /// it spends tokens — up to `max_skills` sub-agent runs per eval. The
+    /// deterministic half is a complete eval on its own, so nothing is lost
+    /// by leaving this off.
+    judge_enabled: bool = false,
+    /// The judge reads code to check claims; it never writes. Kept to the
+    /// read-only set so a judge cannot edit the very skill it is judging, and
+    /// so `validateJobs`' main-agent-only rule has nothing to catch.
+    judge_tools: []const []const u8 = &.{ "read_file", "search", "glob" },
 };
 
+/// One skill waiting to be judged. Collected during the Tier-0 loop, which is
+/// where the body and the intrinsic verdict are already in hand.
+const JudgeCandidate = struct {
+    result_id: []u8,
+    skill_name: []u8,
+    /// The instruction to send, already built: the body has to be in scope
+    /// here anyway, and building it now keeps the fan-out loop free of
+    /// allocation that can fail halfway through a batch.
+    prompt: []u8,
+    /// The deterministic verdict this judge may only ESCALATE from.
+    intrinsic: Verdict,
+    /// The row's rationale so far, so a failed judge can append to it instead
+    /// of overwriting what Tier 0 established.
+    rationale: []u8,
+
+    fn deinit(self: JudgeCandidate, allocator: std.mem.Allocator) void {
+        allocator.free(self.result_id);
+        allocator.free(self.skill_name);
+        allocator.free(self.prompt);
+        allocator.free(self.rationale);
+    }
+};
+
+fn freeJudgeCandidates(allocator: std.mem.Allocator, items: []JudgeCandidate) void {
+    for (items) |c| c.deinit(allocator);
+    allocator.free(items);
+}
+
+/// Run the LLM judge tier over `candidates` and write the session-relative
+/// half back onto each result row.
+///
+/// Returns the number of rows a validated report reached. A judge that failed,
+/// wrote prose instead of JSON, or produced a report `validateReport` refused
+/// leaves the row's deterministic verdict exactly where it was and flips the
+/// status to `needs_human` — an unreadable report is an absence of evidence,
+/// and the deterministic half is evidence.
+///
+/// Every stored verdict comes from `skill_eval_judge.combineVerdict` over an
+/// already-validated report. There is no path from a raw `Report` to a write.
+///
+/// `!u32` rather than `u32` because building the per-row rationale allocates;
+/// the caller treats an out-of-memory as "the tier did not finish" and leaves
+/// the rows it already wrote alone, which is exactly what they say.
+fn runJudgeTier(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *sqlite.SqliteBackend,
+    logger: ?*logger_mod.Logger,
+    args: RunArgs,
+    run_id: []const u8,
+    candidates: []const JudgeCandidate,
+) !u32 {
+    const di = nalarcore.getSingleton() catch {
+        // No live context means no workflow, so no sub-agent can run. The
+        // deterministic results stay as they are; this is not a failure of
+        // the eval, only of the opt-in tier.
+        if (logger) |l| l.warnFmt("skill eval: judge tier skipped, no live agent context", .{});
+        return 0;
+    };
+    if (candidates.len == 0) return 0;
+
+    // Emitted once, before the fan-out, so a listener can show that the
+    // session-relative half is being computed rather than sitting at 0. It
+    // carries the RUN id (not a result id) because a listener re-fetches by
+    // run, and a result id would find nothing.
+    skill_eval_events.emitSkillEvalEvent(allocator, args.event_bus, .{
+        .action = "run_started",
+        .run_id = run_id,
+        .session_id = args.session_id,
+        .evaluated = @intCast(candidates.len),
+    });
+
+    const jobs = allocator.alloc(batch.BatchJob, candidates.len) catch {
+        if (logger) |l| l.warnFmt("skill eval: could not allocate {d} judge job(s)", .{candidates.len});
+        return 0;
+    };
+    defer allocator.free(jobs);
+    for (candidates, 0..) |c, i| {
+        jobs[i] = .{
+            // A label, not a config lookup: with `overrides` null the batch
+            // runner uses the orchestrator defaults and the parent's profile,
+            // so an unconfigured name cannot drag in a random agent.
+            .name = "skill-eval-judge",
+            .instruction = c.prompt,
+            .tools = args.judge_tools,
+            .overrides = null,
+        };
+    }
+
+    var outcome = batch.runBatch(.{
+        .allocator = allocator,
+        .io = io,
+        .db = db,
+        .logger = di.logger,
+        .parent_sess_id = args.session_id,
+        .cwd = args.cwd,
+        .environment = args.environment,
+        .selected_profile_model = args.profile,
+        // The eval has no tool_call of its own, so progress events are keyed
+        // to the run rather than to a chat card.
+        .tool_call_id = "",
+    }, jobs) catch |err| {
+        if (logger) |l| l.warnFmt("skill eval: judge batch failed: {s}", .{@errorName(err)});
+        return 0;
+    };
+    defer outcome.deinit();
+
+    var judged: u32 = 0;
+    for (candidates, 0..) |c, i| {
+        const result = outcome.results[i];
+        const unreadable = blk: {
+            if (!result.success) {
+                if (logger) |l| {
+                    l.warnFmt("skill eval: judge for '{s}' did not complete: {s}", .{
+                        c.skill_name,
+                        result.error_message orelse "no reason reported",
+                    });
+                }
+                break :blk "the judge sub-agent did not complete";
+            }
+            const text = result.response orelse break :blk "the judge returned no text";
+            // `var` because `deinit` takes a mutable pointer to release the
+            // report's arena.
+            var parsed = skill_eval_judge.parseReport(allocator, text) catch {
+                break :blk "the judge's reply could not be read";
+            } orelse break :blk "the judge's reply was not a JSON report";
+            defer parsed.deinit();
+
+            // THE trust boundary. Everything below runs only because this
+            // returned; a downgraded report reaches none of the writes.
+            const validation = skill_evals_db.validateReport(parsed.report);
+            if (validation.downgraded) {
+                if (logger) |l| l.warnFmt("skill eval: judge report for '{s}' refused: {s}", .{ c.skill_name, validation.reason });
+                const why = try std.fmt.allocPrint(allocator, "{s}; the judge's report was refused ({s})", .{ c.rationale, validation.reason });
+                defer allocator.free(why);
+                _ = skill_evals_db.updateJudgeResult(allocator, db, c.result_id, .{
+                    .verdict = c.intrinsic,
+                    .sub_session_id = result.session_id,
+                    .status = "needs_human",
+                    .rationale = why,
+                }) catch false;
+                continue;
+            }
+
+            const final = skill_eval_judge.combineVerdict(c.intrinsic, validation);
+            if (final == .delete and c.intrinsic != .delete) {
+                if (logger) |l| l.warnFmt("skill eval: judge escalated '{s}' to delete on a high-severity finding", .{c.skill_name});
+            }
+            const why = if (parsed.report.rationale.len > 0)
+                try std.fmt.allocPrint(allocator, "{s}; judge: {s}", .{ c.rationale, parsed.report.rationale })
+            else
+                try allocator.dupe(u8, c.rationale);
+            defer allocator.free(why);
+
+            _ = skill_evals_db.updateJudgeResult(allocator, db, c.result_id, .{
+                .verdict = final,
+                .relevance = parsed.report.relevance,
+                .used = parsed.report.used,
+                .helpfulness = parsed.report.helpfulness,
+                .confidence = parsed.report.confidence,
+                .sub_session_id = result.session_id,
+                .status = "done",
+                .rationale = why,
+            }) catch false;
+            judged += 1;
+            continue;
+        };
+
+        // Unreachable in practice — the block above either continues or sets
+        // a reason — but Zig needs the `catch` on the JSON parse to have a
+        // value, and a fall-through here would be an unrecorded judgement.
+        const why = try std.fmt.allocPrint(allocator, "{s}; {s}", .{ c.rationale, unreadable });
+        defer allocator.free(why);
+        _ = skill_evals_db.updateJudgeResult(allocator, db, c.result_id, .{
+            .verdict = c.intrinsic,
+            .sub_session_id = result.session_id,
+            .status = "needs_human",
+            .rationale = why,
+        }) catch false;
+    }
+    return judged;
+}
+
 /// Insert one result row. Private because it is the only writer of this table
-/// today and it is not a primitive anyone else should reach for; when the LLM
-/// tier lands it should move next to the fact primitives in `skill_evals_db`.
+/// today and it is not a primitive anyone else should reach for.
 fn insertResult(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
@@ -226,6 +426,17 @@ pub fn runEval(
 
     var outcome = RunOutcome{ .run_id = run_id };
     var ordinal: u32 = 0;
+    // Only populated when the judge tier is on, so the default path allocates
+    // nothing beyond the results it already writes.
+    var candidates: std.ArrayList(JudgeCandidate) = .empty;
+    defer {
+        for (candidates.items) |c| c.deinit(allocator);
+        candidates.deinit(allocator);
+    }
+    // Read once for the whole run: every judge asks the same "what was this
+    // session for", and re-querying it per skill would be N identical reads.
+    var task_context: []u8 = &.{};
+    defer if (task_context.len > 0) allocator.free(task_context);
 
     for (set) |use| {
         if (outcome.evaluated >= args.max_skills) {
@@ -357,6 +568,42 @@ pub fn runEval(
 
         try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "done", verdict, intrinsic_fact_id, body_hash, rationale);
 
+        // Everything the judge needs is in scope right here, so the candidate
+        // is captured now rather than re-derived later. `body` is still owned
+        // by this iteration, which is why the prompt is BUILT now and the body
+        // is not stored.
+        if (args.judge_enabled) {
+            if (task_context.len == 0) {
+                task_context = skill_evals_db.sessionTaskContext(allocator, db, args.session_id, 4_000) catch
+                    try allocator.dupe(u8, "");
+            }
+            const summary = try std.fmt.allocPrint(allocator, "{d} referenced path(s) no longer exist", .{analysis.missing_count});
+            const prompt = skill_eval_judge.buildPrompt(allocator, .{
+                .skill_name = use.skill_name,
+                .skill_body = body,
+                .task_context = task_context,
+                .loaded = use.loaded,
+                .intrinsic_summary = summary,
+                .cwd = args.cwd,
+            }) catch {
+                allocator.free(summary);
+                if (logger) |l| l.warnFmt("skill eval: could not build the judge prompt for '{s}'", .{use.skill_name});
+                continue;
+            };
+            allocator.free(summary);
+
+            candidates.append(allocator, .{
+                .result_id = try allocator.dupe(u8, result_id),
+                .skill_name = try allocator.dupe(u8, use.skill_name),
+                .prompt = prompt,
+                .intrinsic = verdict,
+                .rationale = try allocator.dupe(u8, rationale),
+            }) catch {
+                allocator.free(prompt);
+                if (logger) |l| l.warnFmt("skill eval: could not queue '{s}' for judging", .{use.skill_name});
+            };
+        }
+
         outcome.evaluated += 1;
         switch (verdict) {
             .keep => outcome.keep += 1,
@@ -371,6 +618,26 @@ pub fn runEval(
                 l.debugFmt("skill eval: '{s}' was offered and never loaded", .{use.skill_name});
             }
         }
+    }
+
+    // Tier 1, after the deterministic half is on disk and before the run is
+    // closed: the judge UPDATEs rows that already exist, so it has to run
+    // while the run is still open. A run that reaches here with no candidates
+    // (nothing was evaluated, or the tier is off) skips it entirely.
+    if (args.judge_enabled and candidates.items.len > 0) {
+        // An out-of-memory part-way through is NOT a reason to fail the eval:
+        // the deterministic half is already stored and correct. Whatever rows
+        // the judge reached say `done`; the rest still say whatever Tier 0
+        // said, with their session-relative scores at 0.
+        const judged = runJudgeTier(allocator, io, db, logger, args, run_id, candidates.items) catch |err| blk: {
+            if (logger) |l| l.warnFmt("skill eval: judge tier did not finish: {s}", .{@errorName(err)});
+            break :blk 0;
+        };
+        if (logger) |l| l.debugFmt("skill eval: {d} of {d} judge report(s) validated for run {s}", .{ judged, candidates.items.len, run_id });
+        // The counts describe the deterministic pass, which is what the
+        // summary reports. A judge that was refused did not change a verdict,
+        // so folding it into `needs_human` here would double-count rows that
+        // are already counted.
     }
 
     skill_evals_db.finishRun(allocator, db, run_id, "done", 0, "") catch |err| {
@@ -938,4 +1205,68 @@ test "a run that fails mid-loop is finalized as error, not left running" {
     const row = (try q.next()) orelse return error.RowMissing;
     defer row.deinit(alloc);
     try testing.expectEqualStrings("error", row.values[0]);
+}
+
+test "judge_enabled with no live agent context still completes the deterministic half" {
+    // A unit test has no singleton, so no sub-agent can run. The point of the
+    // guard at the top of `runJudgeTier` is that this is a SKIP, not a crash
+    // and not a lost eval: the deterministic result is still written, still
+    // says what Tier 0 said, and the run still closes as `done`.
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try seedLoaded(alloc, &ctx.db, ctx.threaded.io(), "sess_j1", "some-skill");
+
+    var outcome = try runEval(alloc, ctx.threaded.io(), &ctx.db, null, .{
+        .session_id = "sess_j1",
+        .cwd = ".",
+        .environment = null,
+        .enabled = true,
+        .max_skills = 4,
+        .judge_enabled = true,
+    });
+    defer outcome.deinit(alloc);
+
+    // The skill body does not exist on disk, so Tier 0 records a
+    // `needs_human` result — and the judge tier did not disturb it.
+    try testing.expectEqual(@as(i64, 1), try countResults(alloc, &ctx.db));
+
+    const rows = try skill_evals_db.listResults(alloc, &ctx.db, outcome.run_id);
+    defer skill_evals_db.freeResultRows(alloc, rows);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqualStrings("needs_human", rows[0].verdict);
+    try testing.expectEqualStrings("needs_human", rows[0].status);
+    // Nothing was judged, so the session-relative half is untouched at 0 —
+    // never a fabricated score.
+    const scores = (try skill_evals_db.readJudgeScores(alloc, &ctx.db, rows[0].id)).?;
+    defer scores.deinit(alloc);
+    try testing.expectEqual(@as(u8, 0), scores.relevance);
+    try testing.expectEqual(@as(u8, 0), scores.used);
+    try testing.expectEqual(@as(u8, 0), scores.helpfulness);
+    try testing.expectEqualStrings("", scores.sub_session_id);
+}
+
+test "the judge tier is off unless a caller opts in" {
+    // `judge_enabled` defaults false, so the shipped tool spends nothing on
+    // sub-agents. This pins the default: a future edit that flips it would
+    // start billing a sub-agent per skill on every eval.
+    const args = RunArgs{
+        .session_id = "s",
+        .cwd = ".",
+        .environment = null,
+        .enabled = true,
+    };
+    try testing.expectEqual(false, args.judge_enabled);
+    // And the allowlist the judge runs with is read-only: a judge that could
+    // write could edit the very skill it is judging.
+    for (args.judge_tools) |tool| {
+        try testing.expect(std.mem.eql(u8, tool, "read_file") or
+            std.mem.eql(u8, tool, "search") or
+            std.mem.eql(u8, tool, "glob"));
+    }
+    // `runBatch` refuses a batch whose allowlist is empty or wildcard, so the
+    // judge's tools must satisfy the same policy the tool's do.
+    try batch.validateJobs(&.{.{ .name = "skill-eval-judge", .instruction = "judge", .tools = args.judge_tools }});
 }
