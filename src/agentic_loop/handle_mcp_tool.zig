@@ -196,8 +196,8 @@ pub fn handle_mcp_tool_run(
 /// content (the `result.content[0].text` field, freshly allocated).
 ///
 /// `deadline_ns` is forwarded to both send and recv. On
-/// `SendTimeout` / `RecvTimeout`, the registry's `markStale` is
-/// called so the next `getOrSpawn` for `server_name` spawns a
+/// `SendTimeout` / `RecvTimeout`, the lease is marked stale
+/// so the next `acquire` for `server_name` spawns a
 /// fresh child. Self-healing: a single hung tool call doesn't
 /// permanently brick subsequent calls.
 fn callViaStdio(
@@ -246,8 +246,17 @@ fn callViaStdio(
     var attempt: u8 = 0;
     var resp: []u8 = undefined;
     var resp_owned = false;
+    // `resp` is allocated from the client's arena, which dies with the
+    // child — so the lease that guards it has to outlive the retry loop
+    // (the parse below runs after it). A per-attempt `defer` releases on
+    // every retry / error path; the successful attempt parks its lease
+    // in `held` instead, and the function-scope defer hands it back.
+    var held: ?mcp_stdio.Lease = null;
+    defer {
+        if (held) |*h| h.release();
+    }
     while (attempt < 3) : (attempt += 1) {
-        const client = reg.getOrSpawn(server_name, argv) catch |err| {
+        var lease = reg.acquire(server_name, argv, .{}) catch |err| {
             logger.errFmt("stdio MCP spawn failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
             last_err = err;
             if (attempt + 1 < 3) {
@@ -255,6 +264,10 @@ fn callViaStdio(
             }
             return error.FailedToCallMCPServer;
         };
+        defer {
+            if (held == null) lease.release();
+        }
+        const client = lease.client();
 
         const req = try buildToolCallRequestBody(allocator, tool_name, arguments_json);
         defer allocator.free(req);
@@ -263,7 +276,7 @@ fn callViaStdio(
         client.sendNDJSON(req) catch |err| {
             logger.errFmt("stdio MCP send failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
             last_err = err;
-            if (err == error.SendTimeout or err == error.BrokenPipe) reg.markStale(server_name);
+            if (err == error.SendTimeout or err == error.BrokenPipe) lease.markStale();
             const is_retryable = err == error.BrokenPipe or err == error.SendTimeout;
             if (is_retryable and attempt + 1 < 3) {
                 continue;
@@ -273,7 +286,7 @@ fn callViaStdio(
         const r = client.recv(deadline_ns, null) catch |err| {
             logger.errFmt("stdio MCP recv failed for {s}.{s}: {s}", .{ server_name, tool_name, @errorName(err) });
             last_err = err;
-            if (err == error.RecvTimeout) reg.markStale(server_name);
+            if (err == error.RecvTimeout) lease.markStale();
             const is_retryable = err == error.RecvTimeout or err == error.UnexpectedEof or err == error.BrokenPipe;
             if (is_retryable and attempt + 1 < 3) {
                 continue;
@@ -282,13 +295,14 @@ fn callViaStdio(
         };
         resp = r;
         resp_owned = true;
+        held = lease;
         break;
     }
     if (!resp_owned) return last_err;
-    // NOTE: no errdefer free of `resp` here — it is owned by the registry
-    // arena (client.allocator), never transferred to the caller (every
-    // return below dupes into `allocator`), so the arena reclaims it.
-    // Freeing via `allocator` would be an invalid free under
+    // NOTE: no errdefer free of `resp` here — it is owned by the client's
+    // own arena (client.allocator()), never transferred to the caller
+    // (every return below dupes into `allocator`), so that arena
+    // reclaims it. Freeing via `allocator` would be an invalid free under
     // DebugAllocator (same bug class as fetchToolsFromServerStdio's
     // `defer allocator.free(resp)`).
 
