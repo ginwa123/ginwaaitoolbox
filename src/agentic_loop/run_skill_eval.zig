@@ -589,3 +589,336 @@ test "max_skills bounds the work and records the remainder as skipped" {
     try testing.expectEqual(@as(u32, 1), out.skipped);
     try testing.expectEqual(@as(i64, 2), try countResults(alloc, &ctx.db));
 }
+
+test "max_skills = 0 evaluates nothing and does not crash" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try seedLoaded(alloc, &ctx.db, ctx.threaded.io(), "sess_1", "fake-one");
+    try seedLoaded(alloc, &ctx.db, ctx.threaded.io(), "sess_1", "fake-two");
+
+    const out = try runEval(alloc, ctx.threaded.io(), &ctx.db, null, .{
+        .session_id = "sess_1",
+        .cwd = "/tmp",
+        .environment = null,
+        .enabled = true,
+        .max_skills = 0,
+    });
+    defer out.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 0), out.evaluated);
+    try testing.expectEqual(@as(u32, 2), out.skipped);
+    try testing.expectEqual(@as(i64, 0), try countResults(alloc, &ctx.db));
+}
+
+// ─── the publish / reuse paths ───────────────────────────────────────────
+//
+// These need a skill that actually EXISTS on disk, because every test above
+// names a skill that does not and therefore exits at the "body could not be
+// read" branch. That branch is ~15% of runEval; the publish, reuse and
+// changed-body paths below are the rest, and they are where the fact cache
+// lives.
+
+/// Write `<xdg>/nalar/skills/<name>/SKILL.MD` and return the xdg root. The
+/// caller owns the tmpdir and must remove it.
+///
+/// The GLOBAL path is used rather than the local one because
+/// `get_local_skills_path` resolves against the PROCESS cwd, which a test
+/// cannot change; the global path is resolved from the environment map the
+/// caller passes in, which a test fully controls.
+fn seedSkillOnDisk(alloc: std.mem.Allocator, io: std.Io, xdg_root: []const u8, name: []const u8, body: []const u8) !void {
+    const dir = try std.fs.path.join(alloc, &.{ xdg_root, "nalar", "skills", name });
+    defer alloc.free(dir);
+    try std.Io.Dir.cwd().createDirPath(io, dir);
+    const file = try std.fs.path.join(alloc, &.{ dir, "SKILL.MD" });
+    defer alloc.free(file);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = body });
+}
+
+fn makeTmpRoot(alloc: std.mem.Allocator, io: std.Io, tag: []const u8) ![]u8 {
+    var buf: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&buf, "skilleval-test-{s}-{d}", .{
+        tag,
+        std.Io.Timestamp.now(io, .real).nanoseconds,
+    });
+    const root = try std.fs.path.join(alloc, &.{ "/tmp", name });
+    try std.Io.Dir.cwd().createDirPath(io, root);
+    return root;
+}
+
+/// An environment map whose XDG_CONFIG_HOME points at `xdg_root`, so
+/// `parse_skill(..., is_global=true, env)` finds the seeded skill.
+fn makeEnv(alloc: std.mem.Allocator, xdg_root: []const u8) !std.process.Environ.Map {
+    var env = std.process.Environ.Map.init(alloc);
+    try env.put("XDG_CONFIG_HOME", xdg_root);
+    return env;
+}
+
+test "a real skill is published as a fact and linked from the result" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    const root = try makeTmpRoot(alloc, io, "publish");
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        alloc.free(root);
+    }
+    var env = try makeEnv(alloc, root);
+    defer env.deinit();
+
+    // A body whose only reference resolves, so Tier 0 says `keep`.
+    const body =
+        \\---
+        \\name: real-skill
+        \\description: a skill that exists
+        \\---
+        \\## Procedure
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    try seedSkillOnDisk(alloc, io, root, "real-skill", body);
+    try seedLoaded(alloc, &ctx.db, io, "sess_1", "real-skill");
+
+    const out = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_1",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+
+    try testing.expectEqual(@as(u32, 1), out.evaluated);
+    try testing.expectEqual(@as(u32, 1), out.keep);
+    try testing.expectEqual(@as(u32, 0), out.reused_facts);
+
+    // The FACT must exist and be published (not left as a `computing` lease).
+    var fq = try ctx.db.query(alloc,
+        "SELECT verdict_intrinsic, freshness FROM skill_eval_facts", &.{});
+    defer fq.deinit();
+    const frow = (try fq.next()) orelse return error.RowMissing;
+    defer frow.deinit(alloc);
+    try testing.expectEqualStrings("keep", frow.values[0]);
+    try testing.expectEqualStrings("3", frow.values[1]);
+
+    // And the RESULT must point at it, or the LEFT JOIN loses the evidence.
+    var rq = try ctx.db.query(alloc,
+        "SELECT intrinsic_fact_id, base_content_hash, status FROM skill_eval_results", &.{});
+    defer rq.deinit();
+    const rrow = (try rq.next()) orelse return error.RowMissing;
+    defer rrow.deinit(alloc);
+    try testing.expect(rrow.values[0].len > 0);
+    try testing.expectEqualStrings("done", rrow.values[2]);
+    // The base hash must be the hash of the body that was read.
+    var expected: [64]u8 = undefined;
+    skill_evals_db.sha256Hex(body, &expected);
+    try testing.expectEqualStrings(expected[0..], rrow.values[1]);
+}
+
+test "a second session reuses the shared fact AND links the result to it" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    const root = try makeTmpRoot(alloc, io, "reuse");
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        alloc.free(root);
+    }
+    var env = try makeEnv(alloc, root);
+    defer env.deinit();
+
+    const body =
+        \\---
+        \\name: shared-skill
+        \\description: shared
+        \\---
+        \\## Procedure
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    try seedSkillOnDisk(alloc, io, root, "shared-skill", body);
+
+    // Session A computes and publishes the fact.
+    try seedLoaded(alloc, &ctx.db, io, "sess_a", "shared-skill");
+    const a = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_a",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+    });
+    defer a.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), a.reused_facts);
+
+    // Session B evaluates the SAME body in the same repo: the fact is reused.
+    try seedLoaded(alloc, &ctx.db, io, "sess_b", "shared-skill");
+    const b = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_b",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+    });
+    defer b.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), b.reused_facts);
+    try testing.expectEqual(@as(u32, 1), b.keep);
+
+    // Exactly one fact for the question — the cache did its job.
+    var fq = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skill_eval_facts", &.{});
+    defer fq.deinit();
+    const frow = (try fq.next()) orelse return error.RowMissing;
+    defer frow.deinit(alloc);
+    try testing.expectEqualStrings("1", frow.values[0]);
+
+    // BOTH results must carry the fact id. This is the assertion that catches
+    // the `.reusable` branch dropping it: without the link the LEFT JOIN finds
+    // nothing, the scores read 0, and `shared_fact` reports false for exactly
+    // the row that WAS shared.
+    var rq = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM skill_eval_results WHERE intrinsic_fact_id != ''", &.{});
+    defer rq.deinit();
+    const rrow = (try rq.next()) orelse return error.RowMissing;
+    defer rrow.deinit(alloc);
+    try testing.expectEqualStrings("2", rrow.values[0]);
+}
+
+test "a body edited between the read and the eval is reported as changed" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    const root = try makeTmpRoot(alloc, io, "changed");
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        alloc.free(root);
+    }
+    var env = try makeEnv(alloc, root);
+    defer env.deinit();
+
+    // The ledger records a hash of the body the session READ...
+    try seedLoaded(alloc, &ctx.db, io, "sess_1", "edited-skill");
+    // ...but the file on disk is now different.
+    const new_body =
+        \\---
+        \\name: edited-skill
+        \\description: edited after the read
+        \\---
+        \\## Procedure
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    try seedSkillOnDisk(alloc, io, root, "edited-skill", new_body);
+
+    const out = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_1",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+    });
+    defer out.deinit(alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT rationale FROM skill_eval_results", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    // The `changed` branch has its own rationale; nothing else produces it.
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "the body changed since this session read it") != null);
+}
+
+test "a skill that was only LISTED is still evaluated when configured" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    const root = try makeTmpRoot(alloc, io, "listed");
+    defer {
+        std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        alloc.free(root);
+    }
+    var env = try makeEnv(alloc, root);
+    defer env.deinit();
+
+    const body =
+        \\---
+        \\name: offered-only
+        \\description: offered and ignored
+        \\---
+        \\## Procedure
+        \\Read src/agentic_loop/skill_evals_drift.zig
+    ;
+    try seedSkillOnDisk(alloc, io, root, "offered-only", body);
+
+    // Only a `listed` event — the agent was offered the skill and never read it.
+    const listed =
+        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"offered-only","description":"d","path":"/p"}],"local_skills":[],"cwd":"/cwd"},"error":null,"v":1}
+    ;
+    skill_evals_db.recordSkillToolEvents(alloc, &ctx.db, null, .{
+        .io = io,
+        .session_id = "sess_1",
+        .tool_name = "list_skills",
+        .tool_result_json = listed,
+        .loop_index = 1,
+        .llm_history_id = "h1",
+    });
+
+    // With include_listed_only = true (the default) it IS evaluated: "the agent
+    // was handed the right skill and ignored it" is a real finding.
+    const with_listed = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_1",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+        .include_listed_only = true,
+    });
+    defer with_listed.deinit(alloc);
+    try testing.expectEqual(@as(u32, 1), with_listed.evaluated);
+
+    // With it off, the same session skips it.
+    const without = try runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_2",
+        .cwd = ".",
+        .environment = &env,
+        .enabled = true,
+        .include_listed_only = false,
+    });
+    defer without.deinit(alloc);
+    try testing.expectEqual(@as(u32, 0), without.evaluated);
+}
+
+test "a run that fails mid-loop is finalized as error, not left running" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    const io = ctx.threaded.io();
+
+    // A session with a ledger row, so the run is claimed...
+    try seedLoaded(alloc, &ctx.db, io, "sess_1", "whatever");
+    // ...then drop the results table so the first insertResult fails. This is
+    // the shape of any transient DB error mid-loop.
+    try ctx.db.exec(alloc, "DROP TABLE skill_eval_results", &.{});
+
+    const result = runEval(alloc, io, &ctx.db, null, .{
+        .session_id = "sess_1",
+        .cwd = "/tmp",
+        .environment = null,
+        .enabled = true,
+    });
+    // It must propagate an error...
+    try testing.expectError(error.PrepareFailed, result);
+
+    // ...and the run must NOT be left `running`. A stuck run both shows a
+    // permanently spinning UI and, because the partial unique index still holds
+    // the row, blocks every later eval for this session forever.
+    var q = try ctx.db.query(alloc, "SELECT status FROM skill_eval_runs", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("error", row.values[0]);
+}
