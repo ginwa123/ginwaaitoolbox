@@ -1159,18 +1159,19 @@ test "saveImageToDisk creates the generated_images subdirectory if missing" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const tmp_cwd = "/tmp/nalar-generate-image-mkdir";
-    std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
-    defer std.Io.Dir.cwd().deleteTree(io, tmp_cwd) catch {};
-    try std.Io.Dir.cwd().createDirPath(io, tmp_cwd);
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &dir_buf);
+    const tmp_cwd = dir_buf[0..dir_len];
 
     // generated_images/ does NOT exist yet — saveImageToDisk must create it.
     const path = try generate_image.saveImageToDisk(alloc, io, tmp_cwd, "AAAA", 0, "image/png");
     defer alloc.free(path);
 
     // Verify the dir now exists by writing a sentinel file inside it
-    try std.Io.Dir.cwd().createDirPath(io, "/tmp/nalar-generate-image-mkdir/generated_images");
-    const f = try std.Io.Dir.cwd().createFile(io, "/tmp/nalar-generate-image-mkdir/generated_images/.sentinel", .{});
+    try tmp.dir.createDirPath(io, "generated_images");
+    const f = try tmp.dir.createFile(io, "generated_images/.sentinel", .{});
     std.Io.File.close(f, io);
 }
 

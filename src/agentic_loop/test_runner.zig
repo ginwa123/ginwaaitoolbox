@@ -54,6 +54,7 @@ test {
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
     _ = @import("tool_calls_json_wire_shape_test.zig"); // task_1787590621966_10 — SSE tool_calls_json must be a JSON STRING (frontend .trim() crash regression lock)
     _ = @import("mcp_fetch_once_test.zig"); // mcp-fetch-once-cache — tools/list fetched once, cached on singleton, run reads snapshot
+    _ = @import("windows_posix_tmp_path_test.zig"); // run 36496521345 — no test may open/create a file at a literal `/tmp/...` path (8 Windows-only failures)
     _ = @import("tools_wrap_output.zig");
     _ = @import("tool_output_json_contract_test.zig"); // Phase 0 RED: JSON envelope contract (fails until Phase 1)
     _ = @import("workflow_compact_message.zig"); // merged single file — helpers + orchestration + all inline tests
