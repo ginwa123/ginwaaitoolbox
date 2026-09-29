@@ -32,6 +32,12 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalarcore = @import("nalarcore");
 const gserverz = nalarcore.gserverz;
+// The one containment rule, shared with the `present_files` agent tool. The
+// two disagreed once — the tool accepted any absolute path while this
+// handler 403'd anything outside the session working directory — and the
+// result was a rendered card whose every preview / download failed.
+// See docs/plans/2026-09-29-present-files-sandbox-parity.md.
+const file_sandbox = @import("../modules/agent/tools/file_sandbox.zig");
 
 /// Cap mirrors `present_files.zig:MAX_FILE_BYTES` so every presented
 /// file is downloadable. Must stay in sync (see the sync test below).
@@ -106,58 +112,6 @@ pub fn mimeForPath(path: []const u8) []const u8 {
     return "application/octet-stream";
 }
 
-/// True when `resolved` lives inside `root` (or equals it). Mirrors
-/// `static_files.zig:isInsideRoot` — the trailing-separator check
-/// prevents `/tmp/abc` prefix-matching `/tmp/abcd/...`. Accepts both
-/// separators so Windows realPaths (`C:\...`) compare correctly.
-pub fn isInsideRoot(root: []const u8, resolved: []const u8) bool {
-    if (!std.mem.startsWith(u8, resolved, root)) return false;
-    if (resolved.len == root.len) return true;
-    const next_char = resolved[root.len];
-    return next_char == '/' or next_char == '\\';
-}
-
-pub const SessionRootError = error{
-    SessionNotFound,
-    NoWorkingDirectory,
-    OutOfMemory,
-    QueryFailed,
-};
-
-/// Resolve the session's sandbox root: `git_worktree_cwd` when set,
-/// else `cwd`. Returns an owned dupe the caller frees. Unknown session
-/// → `SessionNotFound` (handler maps to 404); session with neither
-/// column set → `NoWorkingDirectory` (handler maps to 403 — fail
-/// closed rather than serving unconstrained).
-pub fn resolveSessionRoot(
-    allocator: std.mem.Allocator,
-    db: *nalarcore.sqlite.SqliteBackend,
-    session_id: []const u8,
-) SessionRootError![]u8 {
-    var rows = db.query(
-        allocator,
-        "SELECT COALESCE(git_worktree_cwd, ''), COALESCE(cwd, '') FROM sessions WHERE id = ?",
-        &.{session_id},
-    ) catch return error.QueryFailed;
-    defer rows.deinit();
-
-    const row_opt = rows.next() catch return error.QueryFailed;
-    const row = row_opt orelse return error.SessionNotFound;
-    defer row.deinit(allocator);
-
-    const worktree_cwd = row.values[0];
-    const cwd = row.values[1];
-    const root = if (worktree_cwd.len > 0) worktree_cwd else cwd;
-    if (root.len == 0) return error.NoWorkingDirectory;
-    // `root` is later handed to `std.Io.Dir.realPathFileAbsoluteAlloc`, which
-    // asserts `path.isAbsolute(...)`. That assertion ABORTS the whole process
-    // (Debug/ReleaseSafe) rather than returning an error, and `sessions.cwd` is
-    // NOT validated as absolute at every write path (e.g. a session created
-    // with a relative `cwd_session`) — so refuse a non-absolute root here.
-    if (!std.fs.path.isAbsolute(root)) return error.NoWorkingDirectory;
-    return allocator.dupe(u8, root) catch return error.OutOfMemory;
-}
-
 // =====================================================================
 // Handler
 // =====================================================================
@@ -197,15 +151,18 @@ pub fn filesDownloadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
         );
     }
     // Defense in depth (mirrors `static_files.resolve`): the
-    // canonicalization below is the real protection.
-    if (std.mem.indexOf(u8, path_param, "..") != null) {
+    // canonicalization below is the real protection. Segments only — a
+    // filename may legitimately contain dots (`report..html`), and the
+    // shared helper is what the `present_files` tool checks with, so both
+    // sides of the contract agree on what a traversal is.
+    if (file_sandbox.hasParentSegment(path_param)) {
         return gserverz.HttpResponse.init(403, "Forbidden", allocator).withJson(
             try http_response.makeErrorResponse(allocator, .{ .@"error" = "Path traversal rejected" }),
         );
     }
 
     const di = try nalarcore.getSingleton();
-    const root = resolveSessionRoot(allocator, di.db, session_id) catch |err| switch (err) {
+    const root = file_sandbox.resolveSessionRoot(allocator, di.db, session_id) catch |err| switch (err) {
         error.SessionNotFound => return gserverz.HttpResponse.init(404, "Not Found", allocator).withJson(
             try http_response.makeErrorResponse(allocator, .{ .@"error" = "Session not found" }),
         ),
@@ -237,7 +194,7 @@ pub fn filesDownloadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
     defer allocator.free(root_canon_z);
     const root_canon: []const u8 = root_canon_z;
 
-    if (!isInsideRoot(root_canon, canon)) {
+    if (!file_sandbox.isInsideRoot(root_canon, canon, file_sandbox.nativeStyle())) {
         return gserverz.HttpResponse.init(403, "Forbidden", allocator).withJson(
             try http_response.makeErrorResponse(allocator, .{ .@"error" = "Path escapes the session working directory" }),
         );
@@ -302,6 +259,21 @@ pub fn filesDownloadHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest
 
 const testing = std.testing;
 
+const text_normalize = @import("helpers").text_normalize;
+
+const HANDLER_PATH = "src/http_handlers/files_download.zig";
+
+fn readSource(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(256 * 1024));
+    const normalized = try text_normalize.normalizeLineEndings(allocator, raw);
+    allocator.free(raw);
+    return normalized;
+}
+
+fn contains(haystack: []const u8, needle: []const u8) bool {
+    return std.mem.indexOf(u8, haystack, needle) != null;
+}
+
 test "parseDisposition defaults to attachment and rejects unknown" {
     try testing.expectEqual(Disposition.attachment, try parseDisposition(null));
     try testing.expectEqual(Disposition.attachment, try parseDisposition("attachment"));
@@ -319,15 +291,52 @@ test "mimeForPath maps common extensions and falls back to octet-stream" {
     try testing.expectEqualStrings("application/octet-stream", mimeForPath("/a/file.unknownext"));
 }
 
-test "isInsideRoot matches static_files semantics" {
-    try testing.expect(isInsideRoot("/tmp/abc", "/tmp/abc"));
-    try testing.expect(isInsideRoot("/tmp/abc", "/tmp/abc/file.txt"));
-    try testing.expect(!isInsideRoot("/tmp/abc", "/tmp/abcd/file.txt"));
-    try testing.expect(!isInsideRoot("/tmp/abc", "/etc/passwd"));
-    try testing.expect(isInsideRoot("C:\\work", "C:\\work\\file.txt"));
+test "the shared rule is the one this endpoint applies" {
+    // The container / sibling / drive-letter cases live in
+    // `file_sandbox.zig` (they need the explicit PathStyle to be testable
+    // from a posix host). This only pins that the handler reaches for it.
+    const style = file_sandbox.nativeStyle();
+    try testing.expect(file_sandbox.isInsideRoot("/tmp/abc", "/tmp/abc", style));
+    try testing.expect(file_sandbox.isInsideRoot("/tmp/abc", "/tmp/abc/file.txt", style));
+    try testing.expect(!file_sandbox.isInsideRoot("/tmp/abc", "/tmp/abcd/file.txt", style));
+    try testing.expect(!file_sandbox.isInsideRoot("/tmp/abc", "/etc/passwd", style));
+    // `..` is a traversal; a dotted filename is not (the tool agrees).
+    try testing.expect(file_sandbox.hasParentSegment("/tmp/abc/../x"));
+    try testing.expect(!file_sandbox.hasParentSegment("/tmp/abc/report..html"));
 }
 
 test "MAX_DOWNLOAD_BYTES stays in sync with the tool cap" {
     const present_files = @import("../modules/agent/tools/present_files.zig");
     try testing.expectEqual(present_files.MAX_FILE_BYTES, MAX_DOWNLOAD_BYTES);
+}
+
+test "the download endpoint delegates containment to the shared file_sandbox rule" {
+    // The two halves of one contract must not keep private copies: the tool
+    // accepted any absolute path while this handler 403'd anything outside
+    // the session working directory, so a presented card could never be
+    // previewed. Plan: docs/plans/2026-09-29-present-files-sandbox-parity.md
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+    if (!contains(source, "@import(\"../modules/agent/tools/file_sandbox.zig\")")) {
+        std.debug.print("!! files_download.zig does not import the shared file_sandbox rule !!\n", .{});
+        return error.SharedRuleNotImported;
+    }
+}
+
+test "the download endpoint has no private containment copy" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, HANDLER_PATH);
+    defer allocator.free(source);
+    // Assembled at runtime: a literal needle in this file would match itself.
+    const private_is_inside = "fn isInside" ++ "Root";
+    const private_root = "fn resolveSession" ++ "Root";
+    if (contains(source, private_is_inside)) {
+        std.debug.print("!! files_download.zig defines its own isInsideRoot — the shared rule is file_sandbox.isInsideRoot !!\n", .{});
+        return error.PrivateContainmentCopy;
+    }
+    if (contains(source, private_root)) {
+        std.debug.print("!! files_download.zig defines its own resolveSessionRoot — the shared rule is file_sandbox.resolveSessionRoot !!\n", .{});
+        return error.PrivateRootResolutionCopy;
+    }
 }

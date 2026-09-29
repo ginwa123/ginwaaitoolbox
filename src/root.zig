@@ -916,6 +916,7 @@ pub const move_element_to_page = @import("modules/agent/tools/move_element_to_pa
 pub const get_design_context = @import("modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("modules/agent/tools/preview_design_page.zig");
 pub const present_files = @import("modules/agent/tools/present_files.zig");
+pub const file_sandbox = @import("modules/agent/tools/file_sandbox.zig");
 
 pub const config = @import("modules/config/Config.zig");
 pub const parse_thinking = @import("modules/config/parse_thinking.zig");
@@ -1068,6 +1069,10 @@ test {
     // lazy-compilation workaround as cleanup_stale_worker above.
     _ = @import("agentic_loop/update_worker.zig");
     _ = @import("http_handlers/worker_list.zig");
+    // The download endpoint half of the present_files contract: it holds the
+    // status mapping tests plus the static checks that keep it on the shared
+    // file_sandbox rule (docs/plans/2026-09-29-present-files-sandbox-parity.md).
+    _ = @import("http_handlers/files_download.zig");
     // schedulers/cleanup_stale_background_process.zig has inline tests
     // (mirrors cleanup_stale_worker pattern). Re-imported here for the
     // same reason — see plan 2026-08-19-cleanup-stale-background-process.

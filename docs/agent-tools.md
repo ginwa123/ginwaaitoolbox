@@ -30,6 +30,13 @@ first save it with `write_file`, then present the saved file.
 - Empty or relative `path`
 - File not found (or is a directory)
 - File exceeds 50 MiB
+- `path` outside the session working directory (`git_worktree_cwd ?? cwd`),
+  or containing a `..` segment — the tool applies the same rule as
+  `GET /api/files/download`, because a file the endpoint refuses to serve
+  would render a card whose every preview and download 403s. The error
+  names both the file and the working directory, and tells the model to
+  copy the file in first. See
+  `docs/plans/2026-09-29-present-files-sandbox-parity.md`.
 
 **Frontend rendering** (`PresentFiles.vue`; text source via the shared
 `PreviewContentRenderer.vue`):
