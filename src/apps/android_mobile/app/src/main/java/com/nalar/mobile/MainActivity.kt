@@ -187,6 +187,7 @@ class MainActivity : ComponentActivity() {
                     createdChats = homeViewModel.createdChat,
                     onDismissTaskCreateError = homeViewModel::dismissTaskCreateError,
                     onToggleRecentsSection = homeViewModel::toggleRecentsSection,
+            onToggleRecentsShowAll = homeViewModel::toggleRecentsShowAll,
                     onRetryHome = homeViewModel::refresh,
                     onOpenSession = chatViewModel::openSession,
                     onChatDraftChanged = chatViewModel::onDraftChanged,

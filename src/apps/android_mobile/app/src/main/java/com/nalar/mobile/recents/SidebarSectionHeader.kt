@@ -73,8 +73,13 @@ internal fun SidebarSectionHeader(
         color = NalarBackground,
         contentColor = NalarDim,
     ) {
+        // 6dp, not 10dp. This row's own padding sits on top of every gap around
+        // it — the spacer above the scroller, the 8dp above the Projects
+        // header, and the list's 4dp `spacedBy` — so 10dp here was slack only
+        // the *sections* carried while their rows carried 4dp, and the word
+        // "Recent" read as a heading a row and a half away from its list.
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {

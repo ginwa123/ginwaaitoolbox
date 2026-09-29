@@ -82,6 +82,23 @@ import kotlinx.coroutines.flow.distinctUntilChanged
  */
 private const val LOAD_MORE_INDEX_THRESHOLD = 2
 
+/**
+ * How many chats the Recents section shows before the reader asks for more.
+ *
+ * A drawer on a phone is a switchboard, not an archive: thirty rows of chat
+ * titles push the Projects section — the part of this drawer people navigate
+ * *by* — off the bottom of the screen, and the last thing a reader wants from
+ * opening a drawer is to land in the middle of a list they did not scroll to.
+ * Five is roughly one screenful on a tall phone, which is the whole point:
+ * everything else in the drawer stays reachable without scrolling.
+ *
+ * The rest of the rows are one tap away ([RecentsSeeAllRow]) rather than gone,
+ * so nothing is lost — it is only the *default* that is short. The header's
+ * count keeps saying the true total, so a folded section still reports what is
+ * in it.
+ */
+private const val RECENTS_PREVIEW_LIMIT = 5
+
 /** Reserved key for the footer row, which is not a chat. */
 private const val LOAD_MORE_KEY = "__chats_footer__"
 
@@ -92,6 +109,9 @@ private const val CHATS_STATE_KEY = "__chats_state__"
 private const val RECENTS_HEADER_KEY = "__recents_header__"
 
 private const val PROJECTS_HEADER_KEY = "__projects_header__"
+
+/** Reserved key for the row past the Recents preview limit, and back again. */
+private const val SEE_ALL_KEY = "__recents_see_all__"
 
 /**
  * The gap above the Projects header, as its own row.
@@ -137,18 +157,56 @@ private const val CONTENT_TYPE_PROJECT = "project"
  * of rows from the bottom, which is how the last page of a long list arrives
  * only after they have scrolled past it.
  *
+ * [rowsAfterChats] counts the rows that sit between the last chat and that
+ * footer — currently the "Show fewer" row, which is drawn only once the list is
+ * open. It is a parameter rather than a `+ 1` folded in here because the row is
+ * conditional, and a constant would arm the trigger one row early for every
+ * reader who never opens the list.
+ *
  * A pure function rather than an inline expression because this is the one
  * piece of the drawer's paging rule that a layout test cannot pin: proving a
  * one-row shift would need a viewport measured to the row, and a test that
  * depends on the exact row height silently stops testing anything the moment
  * the row's padding changes.
  */
-internal fun chatRegionEndIndex(visibleChatCount: Int, recentsExpanded: Boolean): Int? =
+internal fun chatRegionEndIndex(
+    visibleChatCount: Int,
+    recentsExpanded: Boolean,
+    rowsAfterChats: Int = 0,
+): Int? =
     if (!recentsExpanded || visibleChatCount <= 0) {
         null
     } else {
-        RECENTS_HEADER_ROWS + visibleChatCount
+        RECENTS_HEADER_ROWS + visibleChatCount + rowsAfterChats
     }
+
+/**
+ * How many chat rows the Recents section renders.
+ *
+ * The cap and the override in one function because they are one decision, and
+ * two call sites computing "show five, unless the reader asked for all" is two
+ * places for the list to disagree with itself — the count the rows are built
+ * from and the count the paging trigger counts.
+ *
+ * `showAll` only ever wins when there *is* something more: a workspace with
+ * three chats renders three either way, so there is no second shape for a
+ * short list to fall into.
+ */
+internal fun recentsVisibleChatCount(totalChats: Int, showAll: Boolean): Int =
+    if (showAll) totalChats else minOf(totalChats, RECENTS_PREVIEW_LIMIT)
+
+/**
+ * Whether this view of the section draws the paging footer — and therefore
+ * whether scrolling it can ask for the next page.
+ *
+ * False exactly when rows are being held back behind the "See all" row. That
+ * view has nothing to scroll: its trigger would arm on the very first layout
+ * and fetch page after page behind a row the reader has not tapped, which is
+ * the 60-row drawer complaint this cap exists to answer, rebuilt out of network
+ * requests. The rows beyond the cap are one tap away, and the tap is the fetch.
+ */
+internal fun recentsShowsChatFooter(totalChats: Int, showAll: Boolean): Boolean =
+    showAll || totalChats <= RECENTS_PREVIEW_LIMIT
 
 @Composable
 fun RecentsSidebar(
@@ -231,6 +289,17 @@ fun RecentsSidebar(
     recentsExpanded: Boolean = true,
     onToggleRecents: () -> Unit = {},
     /**
+     * Whether the reader has asked to see past the [RECENTS_PREVIEW_LIMIT]-row
+     * preview, and the tap that asks (or un-asks).
+     *
+     * Hoisted beside [recentsExpanded] for the same reason, and the same
+     * consequence if it were not: the shell's drawer and the chat route's are
+     * one drawer, so a preview the reader had expanded in one and lost in the
+     * other is a drawer that forgets what they asked for.
+     */
+    recentsShowAll: Boolean = false,
+    onToggleRecentsShowAll: () -> Unit = {},
+    /**
      * The top-level "New Chat" row: create a chat in the workspace's default
      * project and open it.
      *
@@ -271,6 +340,8 @@ fun RecentsSidebar(
             projectActions = projectActions,
             recentsExpanded = recentsExpanded,
             onToggleRecents = onToggleRecents,
+            recentsShowAll = recentsShowAll,
+            onToggleRecentsShowAll = onToggleRecentsShowAll,
             isCreatingChat = isCreatingChat,
             onNewChat = onNewChat,
         )
@@ -328,6 +399,13 @@ private fun SidebarBody(
     projectActions: ProjectsActions,
     recentsExpanded: Boolean,
     onToggleRecents: () -> Unit,
+    /**
+     * Whether the recents show every loaded chat or only the first few, and the
+     * tap that changes it. See [recentsVisibleChatCount] for the count and
+     * [recentsShowsChatFooter] for why a short preview does not page.
+     */
+    recentsShowAll: Boolean,
+    onToggleRecentsShowAll: () -> Unit,
     /**
      * The top-level "New Chat" row's busy flag and its tap. No defaults, like
      * the two above: this is a private composable with exactly one caller, and
@@ -400,11 +478,30 @@ private fun SidebarBody(
             )
         }
 
-        Spacer(Modifier.height(24.dp))
+        // Half of what this was. 24dp of nothing between "New Chat" and the
+        // first section read as two unrelated blocks on a phone, and a drawer
+        // whose sections cannot be seen together is a drawer that has to be
+        // scrolled to be *read*. 12dp still separates them as sections.
+        Spacer(Modifier.height(12.dp))
 
         val visibleChats = selectedWorkspaceId
             ?.let { workspaceId -> recentChatsForWorkspace(chats, workspaceId) }
             .orEmpty()
+
+        // The rows this view renders, which is not the number loaded: past the
+        // preview limit the rest waits behind the "See all" row. Both the row
+        // count and the paging arithmetic below read these, so they cannot
+        // drift apart.
+        val renderedChatCount = recentsVisibleChatCount(visibleChats.size, recentsShowAll)
+        // The inverse of the footer rule, named for what it means rather than
+        // what it is not: rows are being held back behind the "See all" row.
+        val chatsAreCapped = !recentsShowsChatFooter(visibleChats.size, recentsShowAll)
+        // Whether the "See all" row has anything to do at all. A short list has
+        // nothing to reveal and nothing to put away, so the row is absent in
+        // *both* directions — including in a workspace the reader had opened the
+        // list in elsewhere, where "See 0 more chats" would be a lie with a
+        // button attached to it.
+        val canRevealOrHideRecents = visibleChats.size > RECENTS_PREVIEW_LIMIT
 
         val listState = rememberLazyListState()
 
@@ -418,7 +515,22 @@ private fun SidebarBody(
         // Index of the recents footer, which is the last row belonging to the
         // chat list. Everything after it is the Projects section. Null when
         // there is nothing there to page.
-        val chatRegionEnd = chatRegionEndIndex(visibleChats.size, recentsExpanded)
+        // Null whenever the footer is not drawn — the preview, and a folded
+        // section. The preview's five rows fit on the screen, so its trigger
+        // would arm immediately and page a list the reader is one tap away
+        // from asking for.
+        val chatRegionEnd = if (chatsAreCapped) {
+            null
+        } else {
+            chatRegionEndIndex(
+                visibleChatCount = renderedChatCount,
+                recentsExpanded = recentsExpanded,
+                // The "Show fewer" row, when the list is open: it is between the
+                // last chat and the footer, and the footer is what this index
+                // means.
+                rowsAfterChats = if (canRevealOrHideRecents) 1 else 0,
+            )
+        }
 
         // One page per approach to the end of the *chat* region.
         //
@@ -525,8 +637,10 @@ private fun SidebarBody(
                         }
                     }
                 } else {
+                    val renderedChats = visibleChats.take(renderedChatCount)
+
                     items(
-                        items = visibleChats,
+                        items = renderedChats,
                         key = { chat -> chat.id },
                         contentType = { CONTENT_TYPE_CHAT },
                     ) { chat ->
@@ -542,20 +656,42 @@ private fun SidebarBody(
                         )
                     }
 
-                    item(key = LOAD_MORE_KEY, contentType = CONTENT_TYPE_SENTINEL) {
-                        ChatListFooter(
-                            isLoading = isLoadingMore,
-                            // Claiming the end while more may still exist is a lie
-                            // the user reads first and then has to watch retracted.
-                            hasReachedEnd = !hasMoreChats,
-                        )
+                    // The way past the cap, and the way back. It replaces the
+                    // paging footer rather than sitting above it: with rows
+                    // held back there is no end of the list to report, and a
+                    // "Scroll for older chats" hint under a list that does not
+                    // scroll is an instruction that cannot be followed.
+                    if (canRevealOrHideRecents) {
+                        item(key = SEE_ALL_KEY, contentType = CONTENT_TYPE_SENTINEL) {
+                            RecentsSeeAllRow(
+                                hiddenChatCount = visibleChats.size - renderedChatCount,
+                                showingAll = recentsShowAll,
+                                onClick = onToggleRecentsShowAll,
+                            )
+                        }
+                    }
+
+                    if (!chatsAreCapped) {
+                        item(key = LOAD_MORE_KEY, contentType = CONTENT_TYPE_SENTINEL) {
+                            ChatListFooter(
+                                isLoading = isLoadingMore,
+                                // Claiming the end while more may still exist is
+                                // a lie the user reads first and then has to
+                                // watch retracted.
+                                hasReachedEnd = !hasMoreChats,
+                            )
+                        }
                     }
                 }
             }
 
             // ── Projects ──────────────────────────────────────────────────
+            // 20dp here, plus the 4dp `spacedBy` above it and the header's own
+            // 6dp, put a 30dp canyon between the last chat and the word
+            // "Projects" — the largest gap in a drawer whose rows are 40dp
+            // apart. 8dp leaves the sections visibly separate and nothing more.
             item(key = PROJECTS_GAP_KEY, contentType = CONTENT_TYPE_SENTINEL) {
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(8.dp))
             }
 
             stickyHeader(key = PROJECTS_HEADER_KEY, contentType = CONTENT_TYPE_SECTION_HEADER) {
@@ -763,9 +899,12 @@ private fun AccountFooter(
  * The row under the last chat: a spinner while the next page is in flight, and
  * an end-of-list marker only once the server has said there is nothing more.
  *
- * It is always present, rather than shown conditionally, so the list's total
- * item count is stable across a page append — otherwise appending shifts every
- * index and the scroll watcher re-evaluates mid-animation.
+ * It is always present *for as long as it is the last row of the chat region*,
+ * rather than shown and hidden, so the list's total item count is stable across
+ * a page append — otherwise appending shifts every index and the scroll watcher
+ * re-evaluates mid-animation. The one exception is the capped preview, which
+ * does not end in a list at all: there the "See all" row stands in for it, and
+ * the reason is in `recentsShowsChatFooter`.
  */
 /**
  * The recents list's footer, reused verbatim by the project-chats screen.

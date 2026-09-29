@@ -132,6 +132,17 @@ fun MobileHomeScreen(
     recentsExpanded: Boolean = true,
     onToggleRecentsSection: () -> Unit = {},
     /**
+     * Whether the recents are showing every loaded chat rather than the first
+     * few, and the tap that changes it.
+     *
+     * Hoisted, not local, for the same reason [recentsExpanded] is: this screen
+     * composes the drawer twice and the chat route composes the same one again,
+     * so a preview held locally here would be gone by the time the reader
+     * looked at a chat.
+     */
+    recentsShowAll: Boolean = false,
+    onToggleRecentsShowAll: () -> Unit = {},
+    /**
      * The top-level "New Chat" row's busy flag and its tap.
      *
      * Threaded rather than owned here for the same reason the section fold is:
@@ -270,6 +281,8 @@ fun MobileHomeScreen(
                             projectActions = projectActions,
                             recentsExpanded = recentsExpanded,
                             onToggleRecentsSection = onToggleRecentsSection,
+                            recentsShowAll = recentsShowAll,
+                            onToggleRecentsShowAll = onToggleRecentsShowAll,
                             isCreatingChat = isCreatingChat,
                             onNewChat = newChatAndClose,
                         )
@@ -317,6 +330,8 @@ fun MobileHomeScreen(
                             projectActions = projectActions,
                             recentsExpanded = recentsExpanded,
                             onToggleRecentsSection = onToggleRecentsSection,
+                            recentsShowAll = recentsShowAll,
+                            onToggleRecentsShowAll = onToggleRecentsShowAll,
                             isCreatingChat = isCreatingChat,
                             onNewChat = newChatAndClose,
                         )
