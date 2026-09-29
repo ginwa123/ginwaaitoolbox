@@ -808,7 +808,8 @@ def _find_free_port(start: int | None = None) -> int:
     """Find a free port for the nalar backend.
 
     Default behaviour (no ``start``): pick a random port from the wide
-    range ``[RANDOM_PORT_START, RANDOM_PORT_END]`` (40k-60k). Random
+    range ``[RANDOM_PORT_START, RANDOM_PORT_END]`` (20k-32k, clear of
+    the kernel's ephemeral pool). Random
     selection avoids the two pathologies the previous sequential scan
     suffered in CI:
 

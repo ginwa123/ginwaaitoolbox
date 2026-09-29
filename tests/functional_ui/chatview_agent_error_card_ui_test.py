@@ -57,6 +57,11 @@ from pathlib import Path
 
 import pytest
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
@@ -91,11 +96,12 @@ def _seed_db_path(h: UIHarness) -> Path:
     return h.temp_dir / ".config" / "nalar" / "agent.db"
 
 
-def _seed_session(h: UIHarness, session_id: str) -> None:
+def _seed_session(h: UIHarness, workspace_id: str, session_id: str) -> None:
     """Seed one session with a short alternating history."""
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Agent error card test")
+        bind_session_workspace(conn, workspace_id, session_id)
         stamps = DbSeed.baseline_timestamps(count=4, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "Hello agent", created_at=stamps[0])
         seed.seed_assistant_message(conn, session_id, "Hi! How can I help?", created_at=stamps[1])
@@ -113,13 +119,9 @@ def _emit_llm_event(h: UIHarness, session_id: str, payload: dict) -> None:
     )
 
 
-def _open_chat(page, h: UIHarness, session_id: str) -> None:
+def _open_chat(page, h: UIHarness, workspace_id: str, session_id: str) -> None:
     page.set_viewport_size({"width": 1440, "height": 900})
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="domcontentloaded",
-        timeout=30000,
-    )
+    open_chatview(page, h, workspace_id, session_id)
     # Wait for the seeded history to render before firing events.
     # NOTE: no fixed sleep here — SSE readiness is handled by
     # _emit_and_wait_for's emit-with-retry loop (see below). A fixed
@@ -238,8 +240,9 @@ def test_is_error_event_renders_agent_error_card_not_user_bubble(
     AgentErrorCard, NOT as a plain user chat bubble."""
     h = ui_harness
     session_id = "sess_agent_err_001"
-    _seed_session(h, session_id)
-    _open_chat(page, h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_session(h, workspace_id, session_id)
+    _open_chat(page, h, workspace_id, session_id)
 
     # Pre-condition: no error cards yet.
     assert page.locator('[data-testid="agent-error-card"]').count() == 0
@@ -297,8 +300,9 @@ def test_normal_full_event_still_renders_as_assistant_message(
     the transcript as a regular assistant message."""
     h = ui_harness
     session_id = "sess_agent_err_002"
-    _seed_session(h, session_id)
-    _open_chat(page, h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_session(h, workspace_id, session_id)
+    _open_chat(page, h, workspace_id, session_id)
 
     _emit_and_wait_for(
         h,
@@ -336,8 +340,9 @@ def test_multiple_error_events_latest_wins_overwrites_in_place(
     """
     h = ui_harness
     session_id = "sess_agent_err_003"
-    _seed_session(h, session_id)
-    _open_chat(page, h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_session(h, workspace_id, session_id)
+    _open_chat(page, h, workspace_id, session_id)
 
     # Sequential + retry: emit #1 until the card shows 1/10, THEN emit
     # #2 until it flips to 2/10. The old code fired both blind with a

@@ -65,7 +65,7 @@ new dimension is the **Vite process**.
 Run quick:
     from harness import UIHarness
     with UIHarness.boot() as h:
-        print(h.web_url())  # http://127.0.0.1:<random-port-in-40k-60k>/
+        print(h.web_url())  # http://127.0.0.1:<vite-port>/
 """
 
 from __future__ import annotations
@@ -87,6 +87,8 @@ from typing import Any, Iterator, Sequence
 # Reuse the existing harness — battle-tested for boot + teardown.
 from harness import (
     DEFAULT_PORT,
+    RANDOM_PORT_END,
+    RANDOM_PORT_START,
     FunctionalHarness,
     FunctionalHarnessError,
     REQUIRED_TMP_SUBSTR,
@@ -108,15 +110,15 @@ from harness import (
 #: regardless of bind() success.
 VITE_RESERVED_PORTS: tuple[int, ...] = (5173, 8081)
 
-#: Legacy constants retained for the harness_safety_test contract
-#: (``VITE_PORT_START`` > 5173, ``VITE_PORT_END`` > ``VITE_PORT_START``,
-#: range does NOT include 8081). The harness now uses random selection
-#: in the much wider shared range 40k-60k (see ``harness.RANDOM_PORT_*``),
-#: not this legacy scan range — these constants are kept purely as a
-#: documentation hint for developers reading the old README. The
-#: ``VITE_PORT_START`` below is the floor; real ports land in 40k-60k.
-VITE_PORT_START = 40000
-VITE_PORT_END = 60000
+#: The range ``_find_free_vite_port`` actually draws from. It re-exports
+#: the shared harness range instead of carrying its own numbers, because
+#: commit f131e6c4 moved that range out of the kernel's ephemeral pool
+#: (40000-60000 -> 20000-32000) and the copy left here went stale —
+#: ``harness_safety_test`` then asserted a range the picker never used.
+#: Re-exporting keeps one source of truth: change the range in
+#: ``harness.py`` and every contract test follows.
+VITE_PORT_START = RANDOM_PORT_START
+VITE_PORT_END = RANDOM_PORT_END
 
 #: Vite ready timeout. Vite's first compile + module-graph build takes
 #: ~5-15s on a warm cache, more on cold. We poll vite's HTTP root for
@@ -588,9 +590,10 @@ class UIHarness:
 def _find_free_vite_port(suggested: int | None) -> int:
     """Find a free port for vite.
 
-    Strategy: random selection from ``[VITE_PORT_START, VITE_PORT_END]``
-    (the wide 40k-60k shared range). Avoids the two CI pathologies the
-    previous sequential scan suffered from:
+    Strategy: random selection from the shared ``harness.RANDOM_PORT_*``
+    range (re-exported as ``VITE_PORT_START`` / ``VITE_PORT_END``).
+    Avoids the two CI pathologies the previous sequential scan suffered
+    from:
 
       1. **Sequential consumption** — every UI test boot incremented
          the port, so a long suite filled the legacy 5180..5299 window
@@ -603,7 +606,7 @@ def _find_free_vite_port(suggested: int | None) -> int:
          Combined with the narrow sequential scan, this caused
          repeated test failures on shared CI runners.
 
-    Random pick from 20k ports with 50 attempts is collision-proof
+    Random pick from 12k ports with 50 attempts is collision-proof
     for any realistic host occupancy. Vite-specific reserved ports
     (``5173, 8081``) are excluded via ``reserved=`` so the picker
     never lands on Vite's default or the dev backend.
@@ -643,7 +646,7 @@ def run_quick(
     Example::
 
         with run_quick() as h:
-            print(h.web_url())  # http://127.0.0.1:<random-port-in-40k-60k>/
+            print(h.web_url())  # http://127.0.0.1:<vite-port>/
     """
     h = UIHarness.boot(
         nalar_bin, port=port, stub_llm_profile=stub_llm_profile

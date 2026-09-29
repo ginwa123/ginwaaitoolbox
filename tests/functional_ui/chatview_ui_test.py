@@ -26,6 +26,11 @@ from pathlib import Path
 
 import pytest
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed, TINY_PNG_DATA_URL
 from ui_harness import UIHarness
 
@@ -41,49 +46,6 @@ def _seed_db_path(h: UIHarness) -> Path:
     re-validates as belt-and-suspenders.
     """
     return h.temp_dir / ".config" / "nalar" / "agent.db"
-
-
-def _open_chatview(page, h: UIHarness, session_id: str, timeout_ms: int = 30000) -> None:
-    """Navigate to the chatview for ``session_id`` and wait for it to mount.
-
-    URL routing note: the chatview is rendered by AppLayout.vue
-    via the branch ``<ChatView v-else-if="activeChatId.startsWith('chat-')">``.
-    The router path ``/app/chat/:sessionId`` itself does NOT auto-set
-    ``activeChatId`` — that param is only read if the user is already
-    in a workspace context. The canonical URL is the query-param shape
-    ``/app?view=chat&session=<session_id>`` (set via
-    ``AppLayout.handleNavigate`` when ``view.startsWith('chat-')``),
-    which writes ``activeChatId = "chat-<session_id>"`` and renders
-    the real ``<ChatView>`` (not the stub ``<Chats>`` view).
-
-    App-bar testid caveat: the shared app bar
-    (``data-testid="chat-app-bar"``, title
-    ``data-testid="chat-app-bar-title"``) is gated by ChatView's
-    ``v-if="showHeader"``, and AppLayout passes ``show-header`` only
-    for TASK chats (the kanban / agent / standard workspace-item
-    branches — see ChatAppBar.vue). This helper opens a BARE chat
-    (``/app?view=chat&session=…`` → the standalone
-    ``<ChatView v-else-if="activeChatId.startsWith('chat-')">``
-    branch), which deliberately stays headerless, so the app bar is
-    absent here. Tests must wait for the empty-state copy or for a
-    specific message text (NOT an app-bar testid).
-    """
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=timeout_ms,
-    )
-    # The chatview's empty-state H3 ("How can I help you?") is the
-    # most reliable "Vue mounted something chatview-shaped" signal.
-    # It's rendered when the messages list is empty (which is what
-    # tests want to wait for BEFORE seeding — but since we seed
-    # before navigating, the empty-state copies only show for the
-    # "empty session" test; for the others, the seeded message text
-    # is the right marker).
-    # We don't wait_for_selector here — let each test decide what
-    # to wait for via _wait_for_text or _wait_for_message_text.
-    # The page.goto with wait_until="domcontentloaded" is enough
-    # to ensure the Vue app has mounted the chatview component.
 
 
 def _wait_for_text(page, text: str, timeout_ms: int = 10000) -> None:
@@ -118,11 +80,13 @@ def test_chatview_renders_empty_state(ui_harness: UIHarness, page) -> None:
     """
     h = ui_harness
     session_id = "sess_chatview_empty_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Empty Chat")
+        bind_session_workspace(conn, workspace_id, session_id)
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The empty-state H3 is "How can I help you?"; the subtitle is
     # "Start a conversation by typing a message below".
     _wait_for_text(page, "How can I help you?")
@@ -137,16 +101,18 @@ def test_chatview_renders_plain_user_assistant_exchange(
     """A session with 1 user + 1 assistant message renders both bubbles."""
     h = ui_harness
     session_id = "sess_chatview_plain_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Plain Chat")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "hi there", created_at=ts[0])
         seed.seed_assistant_message(
             conn, session_id, "hello! how can I help?", created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     _wait_for_text(page, "hi there")
     _wait_for_text(page, "hello! how can I help?")
 
@@ -171,9 +137,11 @@ def test_chatview_renders_multi_turn_conversation(ui_harness: UIHarness, page) -
     """
     h = ui_harness
     session_id = "sess_chatview_multi_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Multi-turn")
+        bind_session_workspace(conn, workspace_id, session_id)
         # 8 messages × 30s gap = 4 minutes of conversation.
         ts = DbSeed.baseline_timestamps(count=8, interval_seconds=30)
         for i in range(4):
@@ -185,7 +153,7 @@ def test_chatview_renders_multi_turn_conversation(ui_harness: UIHarness, page) -
                 created_at=ts[i * 2 + 1],
             )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
 
     # The newest message ("assistant reply 4") is the last to render and
     # is always in the visible viewport (the chatview auto-scrolls to
@@ -222,6 +190,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
     """
     h = ui_harness
     session_id = "sess_chatview_toolresult_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     # The shell tool envelope (JSON, per the tool-output JSON schema).
     shell_output = json.dumps(
@@ -245,6 +214,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Tool-call result")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "list files", created_at=ts[0])
         seed.seed_assistant_message(
@@ -263,7 +233,7 @@ def test_chatview_renders_tool_call_result_pair(ui_harness: UIHarness, page) -> 
             created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The shell tool header shows the command ("$ ls") and the tool
     # name ("bash" pill). Both are visible in the collapsed state.
     _wait_for_text(page, "ls")
@@ -290,6 +260,7 @@ def test_chatview_renders_markdown_in_assistant_message(
     """
     h = ui_harness
     session_id = "sess_chatview_markdown_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     md_text = (
         "# Heading\n"
@@ -301,11 +272,12 @@ def test_chatview_renders_markdown_in_assistant_message(
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Markdown")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "tell me a story", created_at=ts[0])
         seed.seed_assistant_message(conn, session_id, md_text, created_at=ts[1])
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # Wait for the markdown content to render. The .markdown-content
     # class is applied to the rendered HTML wrapper.
     page.wait_for_selector(".markdown-content", timeout=10000)
@@ -338,10 +310,12 @@ def test_chatview_renders_user_message_with_images(
     """
     h = ui_harness
     session_id = "sess_chatview_images_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     urls = [TINY_PNG_DATA_URL, TINY_PNG_DATA_URL]
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Images")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(
             conn, session_id, "look at these screenshots",
@@ -351,7 +325,7 @@ def test_chatview_renders_user_message_with_images(
             conn, session_id, "I see two images.", created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The chatview renders one .chat-attached-image-thumb per URL.
     # We seeded 2 images → 2 thumbnails.
     page.wait_for_selector(".chat-attached-image-thumb", timeout=10000)
@@ -382,6 +356,7 @@ def test_chatview_renders_reasoning_content(ui_harness: UIHarness, page) -> None
     """
     h = ui_harness
     session_id = "sess_chatview_reasoning_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     trace = "think about this carefully"
     response_text = (
@@ -390,6 +365,7 @@ def test_chatview_renders_reasoning_content(ui_harness: UIHarness, page) -> None
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Reasoning")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "list files", created_at=ts[0])
         # The assistant content wraps the reasoning in <thinking> tags.
@@ -402,7 +378,7 @@ def test_chatview_renders_reasoning_content(ui_harness: UIHarness, page) -> None
             created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The reasoning trace inner text is rendered.
     _wait_for_text(page, trace)
     # The plain-text response portion is also rendered.
@@ -422,6 +398,7 @@ def test_chatview_renders_code_block_copy_button(ui_harness: UIHarness, page) ->
     """
     h = ui_harness
     session_id = "sess_chatview_copy_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     code_text = (
         "Here is the snippet:\n"
@@ -433,11 +410,12 @@ def test_chatview_renders_code_block_copy_button(ui_harness: UIHarness, page) ->
     )
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Copy button")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "show me", created_at=ts[0])
         seed.seed_assistant_message(conn, session_id, code_text, created_at=ts[1])
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The pre block is rendered.
     page.wait_for_selector(".markdown-content pre", timeout=10000)
     # The copy button is added by setupCodeBlockCopyButtons; the
@@ -479,10 +457,12 @@ def test_chatview_renders_compaction_card(ui_harness: UIHarness, page) -> None:
     """
     h = ui_harness
     session_id = "sess_chatview_compaction_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     summary_text = "Compacted 12 messages into a high-level summary."
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Compaction")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_compaction_user_message(
             conn, session_id,
@@ -495,7 +475,7 @@ def test_chatview_renders_compaction_card(ui_harness: UIHarness, page) -> None:
             created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The <CompactionCard> has data-testid="compaction-card" (verified
     # at preview/CompactionCard.vue:2).
     page.wait_for_selector('[data-testid="compaction-card"]', timeout=10000)

@@ -9,7 +9,8 @@ range, which caused two CI failures:
      holding 100+ TIME_WAITs could collide with the narrow scan range.
 
 This file pins the new contract: ``find_free_port_random()`` picks from
-a wide range (40k-60k), skips reserved ports, and exhausts gracefully.
+a wide range (20k-32k, clear of the kernel's ephemeral pool), skips
+reserved ports, and exhausts gracefully.
 The parallel regression for the sequential path (``_find_free_port``
 with an explicit ``start=``) lives in ``harness_orphan_reap_test.py``.
 

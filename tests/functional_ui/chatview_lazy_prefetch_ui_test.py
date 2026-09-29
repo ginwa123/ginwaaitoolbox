@@ -51,6 +51,11 @@ from pathlib import Path
 
 import pytest
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
@@ -84,7 +89,9 @@ def _seed_db_path(h: UIHarness) -> Path:
     return h.temp_dir / ".config" / "nalar" / "agent.db"
 
 
-def _seed_session(h: UIHarness, session_id: str, newer: int, older: int) -> None:
+def _seed_session(
+    h: UIHarness, workspace_id: str, session_id: str, newer: int, older: int
+) -> None:
     """Seed ``newer`` recent + ``older`` chronologically-older messages.
 
     The messages endpoint pages with ``direction=desc`` + ``cursor``
@@ -95,6 +102,7 @@ def _seed_session(h: UIHarness, session_id: str, newer: int, older: int) -> None
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, f"Prefetch {newer}+{older}")
+        bind_session_workspace(conn, workspace_id, session_id)
         stamps = DbSeed.baseline_timestamps(count=newer, interval_seconds=30)
         for i in range(newer):
             body = BODY_TEMPLATE.format(i=i)
@@ -240,19 +248,16 @@ _DOM_AUDIT_SCRIPT = r"""
 }
 """
 
-def _open_chatview_probed(page, h: UIHarness, session_id: str, timeout_ms: int = 30000) -> None:
+def _open_chatview_probed(
+    page, h: UIHarness, workspace_id: str, session_id: str, timeout_ms: int = 30000
+) -> None:
     """Install the fetch probe, then open the chatview for ``session_id``.
 
-    Canonical URL shape is the query-param one (``/app?view=chat&session=``):
-    ``/app/chat/:sessionId`` does NOT set ``activeChatId`` on its own — see the
-    routing note in ``chatview_ui_test.py``.
+    ``open_chatview`` navigates the workspace-scoped deep link, which
+    ``AppLayout.handleBootUrl`` adopts without a session-detail round-trip.
     """
     page.add_init_script(_PROBE_INIT_SCRIPT)
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=timeout_ms,
-    )
+    open_chatview(page, h, workspace_id, session_id, timeout_ms)
 
 
 def _wait_for_initial_load(page, timeout_ms: int = 20000) -> None:
@@ -309,13 +314,14 @@ def test_prefetch_request_is_issued_before_the_scroll_reaches_the_top(ui_harness
     """
     h = ui_harness
     session_id = "sess-prefetch-hard-gate"
-    _seed_session(h, session_id, newer=NEWER_COUNT, older=OLDER_SINGLE_PAGE)
+    workspace_id = create_workspace(h)
+    _seed_session(h, workspace_id, session_id, newer=NEWER_COUNT, older=OLDER_SINGLE_PAGE)
 
     # Capture the app's scroll-logger lines (asserted on below).
     console_lines: list[str] = []
     page.on("console", lambda msg: console_lines.append(msg.text))
 
-    _open_chatview_probed(page, h, session_id)
+    _open_chatview_probed(page, h, workspace_id, session_id)
     _wait_for_initial_load(page)
     assert page.evaluate(_OBSERVE_SCRIPT) is True, "chat scroller not found"
 
@@ -436,9 +442,10 @@ def test_exhausted_history_never_fires_a_scroll_back_request(ui_harness, page) -
     """No older rows → no prefetch, ever (the arm must respect has_more)."""
     h = ui_harness
     session_id = "sess-prefetch-exhausted"
-    _seed_session(h, session_id, newer=40, older=0)
+    workspace_id = create_workspace(h)
+    _seed_session(h, workspace_id, session_id, newer=40, older=0)
 
-    _open_chatview_probed(page, h, session_id)
+    _open_chatview_probed(page, h, workspace_id, session_id)
     _wait_for_initial_load(page)
     assert page.evaluate(_OBSERVE_SCRIPT) is True, "chat scroller not found"
 
@@ -455,9 +462,10 @@ def test_pagination_continues_across_pages_with_distinct_cursors(ui_harness, pag
     """Scroll-back must keep working page after page (arms the NEXT page)."""
     h = ui_harness
     session_id = "sess-prefetch-multipage"
-    _seed_session(h, session_id, newer=NEWER_COUNT, older=OLDER_MULTI_PAGE)
+    workspace_id = create_workspace(h)
+    _seed_session(h, workspace_id, session_id, newer=NEWER_COUNT, older=OLDER_MULTI_PAGE)
 
-    _open_chatview_probed(page, h, session_id)
+    _open_chatview_probed(page, h, workspace_id, session_id)
     _wait_for_initial_load(page)
     assert page.evaluate(_OBSERVE_SCRIPT) is True, "chat scroller not found"
 

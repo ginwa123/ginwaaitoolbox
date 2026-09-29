@@ -20,7 +20,7 @@ Each test:
    present_files tool result) pointing at it — the exact wire shape
    production stores.
 3. Drives headless Chromium at
-   ``<vite_url>/app?view=chat&session=<id>``, expands the card, and
+   ``<vite_url>/app/<workspace_id>/chat/<id>``, expands the card, and
    asserts the framed document actually RENDERS (the thing jsdom can
    never prove: real Chromium executes srcdoc + runs sandboxed
    scripts).
@@ -31,6 +31,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
@@ -41,20 +46,6 @@ from ui_harness import UIHarness
 def _seed_db_path(h: UIHarness) -> Path:
     """Path to the harness's isolated agent.db (DbSeed re-validates)."""
     return h.temp_dir / ".config" / "nalar" / "agent.db"
-
-
-def _open_chatview(page, h: UIHarness, session_id: str, timeout_ms: int = 30000) -> None:
-    """Navigate to the chatview for ``session_id``.
-
-    Canonical URL shape (see chatview_ui_test.py): the query-param form
-    ``/app?view=chat&session=<id>`` — the router path alone does not set
-    AppLayout's activeChatId.
-    """
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=timeout_ms,
-    )
 
 
 MARKER = "WIREFRAME_INLINE_OK_7f3a"
@@ -104,9 +95,11 @@ def test_present_files_html_renders_inline_in_chatview(
     # 2. Lock the root cause on the wire: framing headers present, body
     #    byte-identical. (Session row must exist first — the endpoint
     #    resolves the sandbox root from it.)
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Present Files", cwd=str(h.temp_dir))
+        bind_session_workspace(conn, workspace_id, session_id)
 
     dl = h.http(
         "GET",
@@ -176,7 +169,7 @@ def test_present_files_html_renders_inline_in_chatview(
         )
 
     # 4. Open chatview, expand the (collapsed-by-default) card.
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector('[data-testid="present-files-card"]', timeout=15000)
     card = page.locator('[data-testid="present-files-card"]').first
     card.scroll_into_view_if_needed()
