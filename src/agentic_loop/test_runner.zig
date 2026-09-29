@@ -111,6 +111,10 @@ test {
     // per-thread struct. Drops of these regress user-visible
     // progress to "0 sub-agents".
     _ = @import("tools_exec_spawn_sub_agent.zig");
+    // present_files exec adapter — the sandbox root it resolves from the
+    // session row is what keeps a card servable by /api/files/download
+    // (docs/plans/2026-09-29-present-files-sandbox-parity.md).
+    _ = @import("tools_exec_present_files.zig");
     // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
     // in-flight stream buffer registry + snapshot getter. Tests inline.
     _ = @import("stream_snapshot.zig");

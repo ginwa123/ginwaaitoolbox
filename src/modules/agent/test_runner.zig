@@ -42,6 +42,12 @@ test {
     // Bash tool cross-platform tests
     _ = @import("tools/bash_test.zig");
 
+    // Shared file-sandbox rule shared by present_files + /api/files/download
+    // (docs/plans/2026-09-29-present-files-sandbox-parity.md). Listed here
+    // because a `pub const` re-export alone does not pull inline tests into
+    // the test binary.
+    _ = @import("tools/file_sandbox.zig");
+
     // Shared shell core + pwsh tool tests (Task 1 + 3 of 2026-08-14-pwsh-tool.md)
 
     // Search tool edge cases (validation + behavioral + static-contract)
@@ -92,4 +98,7 @@ test {
     _ = @import("tools/set_element_parent.zig");
     _ = @import("tools/search.zig");
     _ = @import("tools/memories.zig");
+    // present_files + its shared file_sandbox rule (the sandbox tests below
+    // need the tool's own tests discoverable from one `--test-filter`).
+    _ = @import("tools/present_files.zig");
 }
