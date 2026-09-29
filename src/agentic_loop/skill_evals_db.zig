@@ -554,3 +554,839 @@ test "recordSkillToolEvents is a no-op without a session id" {
     recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "", "use_skill", result));
     try testing.expectEqual(@as(i64, 0), try countEvents(&ctx.db, alloc, "sess_1"));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The report contract
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const Verdict = enum {
+    keep,
+    update,
+    rewrite,
+    merge,
+    delete,
+    needs_human,
+
+    pub fn asString(self: Verdict) []const u8 {
+        return switch (self) {
+            .keep => "keep",
+            .update => "update",
+            .rewrite => "rewrite",
+            .merge => "merge",
+            .delete => "delete",
+            .needs_human => "needs_human",
+        };
+    }
+
+    /// Parse a verdict as an LLM wrote it. Trimmed and case-insensitive,
+    /// because the value comes from generated text and "Keep" is as good an
+    /// answer as "keep". Returns null for anything unrecognised — the caller
+    /// treats that as `needs_human` rather than guessing.
+    pub fn fromString(raw: []const u8) ?Verdict {
+        const s = std.mem.trim(u8, raw, &std.ascii.whitespace);
+        inline for (@typeInfo(Verdict).@"enum".fields) |f| {
+            if (std.ascii.eqlIgnoreCase(s, f.name)) return @enumFromInt(f.value);
+        }
+        return null;
+    }
+};
+
+/// Severity as reported. Unknown values are not fatal; they simply never count
+/// as `high`, so an unrecognised severity can never authorise a `delete`.
+pub fn isHigh(raw: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(std.mem.trim(u8, raw, &std.ascii.whitespace), "high");
+}
+
+pub const ReportFinding = struct {
+    /// Which rubric dimension this belongs to (freshness / accuracy /
+    /// duplication / relevance / used / helpfulness / stale_path / structural).
+    dimension: []const u8 = "",
+    /// low | medium | high. Only `high` can authorise a delete.
+    severity: []const u8 = "",
+    claim: []const u8 = "",
+    /// REQUIRED and non-empty. A verdict with no evidence is the single most
+    /// damaging failure mode of an LLM judge, so it is rejected structurally
+    /// rather than trusted.
+    evidence: []const u8 = "",
+};
+
+/// What an eval sub-agent submits as its final message.
+pub const Report = struct {
+    skill_name: []const u8 = "",
+    verdict: []const u8 = "",
+    confidence: f32 = 0,
+    /// Intrinsic half — depends only on the body and the code state.
+    freshness: u8 = 0,
+    accuracy: u8 = 0,
+    duplication: u8 = 0,
+    /// Session-relative half — depends on the task that loaded the skill.
+    relevance: u8 = 0,
+    used: u8 = 0,
+    helpfulness: u8 = 0,
+    findings: []const ReportFinding = &.{},
+    /// Required for `update` / `rewrite`.
+    proposed_content: []const u8 = "",
+    /// Required for `merge`.
+    merge_target: []const u8 = "",
+    rationale: []const u8 = "",
+};
+
+pub const Validation = struct {
+    verdict: Verdict = .needs_human,
+    /// True when the submitted verdict was refused and replaced by
+    /// `needs_human`. `reason` says why, and is stored on the result so the
+    /// refusal is auditable rather than silent.
+    downgraded: bool = false,
+    reason: []const u8 = "",
+};
+
+fn refuse(reason: []const u8) Validation {
+    return .{ .verdict = .needs_human, .downgraded = true, .reason = reason };
+}
+
+pub fn hasHighFinding(findings: []const ReportFinding) bool {
+    for (findings) |f| {
+        if (isHigh(f.severity)) return true;
+    }
+    return false;
+}
+
+/// Validate a submitted report and return the verdict that may be stored.
+///
+/// This is the trust boundary: nothing an eval sub-agent writes reaches the
+/// tables without passing through here. Every rule either passes the verdict
+/// through or replaces it with `needs_human` — never a silent clamp, and never
+/// a guess. An out-of-range score or a finding with no evidence invalidates the
+/// whole report, because it means the report cannot be relied on in the parts
+/// that *do* look well-formed.
+pub fn validateReport(report: Report) Validation {
+    const submitted = Verdict.fromString(report.verdict) orelse
+        return refuse("verdict is not one of keep|update|rewrite|merge|delete|needs_human");
+
+    if (submitted == .needs_human) return .{ .verdict = .needs_human };
+
+    if (report.relevance > 3 or report.used > 3 or report.helpfulness > 3 or
+        report.freshness > 3 or report.accuracy > 3 or report.duplication > 3)
+    {
+        return refuse("a score is outside 0..3");
+    }
+    if (!std.math.isFinite(report.confidence) or report.confidence < 0 or report.confidence > 1) {
+        return refuse("confidence is outside 0..1");
+    }
+
+    for (report.findings) |f| {
+        if (f.evidence.len == 0) return refuse("a finding has no evidence");
+    }
+
+    switch (submitted) {
+        .update, .rewrite => {
+            if (report.proposed_content.len == 0) return refuse("update/rewrite requires proposed_content");
+        },
+        .merge => {
+            if (report.merge_target.len == 0) return refuse("merge requires merge_target");
+        },
+        .delete => {
+            // A delete without a high-severity finding is exactly how a good
+            // skill gets destroyed by a confident-sounding report.
+            if (!hasHighFinding(report.findings)) return refuse("delete requires a high-severity finding");
+        },
+        else => {},
+    }
+
+    return .{ .verdict = submitted };
+}
+
+/// Combine the shared (intrinsic) half with the per-session half into the
+/// verdict that is shown to a human.
+///
+/// Note what is **not** a parameter: `relevance`, `used`, `helpfulness`. That is
+/// the point. An intrinsic `keep` stays a `keep` no matter how irrelevant the
+/// task was, because "this accurate skill was loaded for the wrong job" is a
+/// *discovery* problem — the agent's fault — and reporting it as `update` or
+/// `delete` would destroy a perfectly good skill. Relevance is surfaced as a
+/// note (`relevanceNote`) and never as a verdict. A test asserts that invariant
+/// across the whole 0..3 range.
+pub fn decideVerdict(intrinsic: Verdict, intrinsic_has_high: bool) Verdict {
+    if (intrinsic == .needs_human) return .needs_human;
+    if (intrinsic_has_high) return .delete;
+    return switch (intrinsic) {
+        .keep => .keep,
+        .update => .update,
+        .rewrite => .rewrite,
+        .merge => .merge,
+        // `delete` only ever arrives with a high finding (validateReport), so
+        // reaching here without one is a needs_human, never a deletion.
+        .delete => .needs_human,
+        .needs_human => .needs_human,
+    };
+}
+
+/// Human-readable reading of the session-relative relevance score. Reported
+/// alongside the verdict; deliberately never able to change it.
+pub fn relevanceNote(relevance: u8) []const u8 {
+    return switch (relevance) {
+        0 => "irrelevant to this task - a discovery problem, not a skill problem",
+        1 => "partially relevant to this task",
+        else => "",
+    };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Concurrent-state primitives
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `SqliteBackend.exec` takes and releases its mutex per call and there is no
+// usable multi-statement transaction (see the atomicity note in
+// http_handlers/workspaces_reorder.zig). Every function below is therefore a
+// SINGLE guarded statement, and the winner is decided by `db.changes()`.
+// A pre-check before a write would be a TOCTOU bug, so there are none.
+
+pub const FactClaim = enum {
+    /// We inserted the lease; we own the computation and must publish it.
+    won,
+    /// A completed fact already exists for this exact question. Reuse it.
+    reusable,
+    /// Another session holds a live lease. Do not duplicate the work; the
+    /// caller falls back to `stealFact` (which succeeds only once the lease is
+    /// stale) or records its result with the intrinsic half pending.
+    held,
+};
+
+/// Claim the right to compute the intrinsic half for one exact question.
+///
+/// The question is `(skill_key, content_hash, context_key)`: two sessions that
+/// evaluate the same body at the same commit are answering the same thing, so
+/// the unique index turns the second writer into a reuse instead of a duplicate
+/// verdict.
+pub fn claimFact(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    skill_key: []const u8,
+    content_hash: []const u8,
+    context_key: []const u8,
+) !FactClaim {
+    try db.exec(allocator,
+        \\INSERT OR IGNORE INTO skill_eval_facts
+        \\    (id, skill_key, content_hash, context_key, verdict_intrinsic, computed_at)
+        \\VALUES
+        \\    (?, ?, ?, ?, 'computing', datetime('now'))
+    , &.{ id, skill_key, content_hash, context_key });
+    if (db.changes() > 0) return .won;
+
+    // We lost the insert. Find out whether there is an answer to reuse or a
+    // live owner to leave alone. Either way we do NOT compute.
+    var q = try db.query(allocator,
+        "SELECT verdict_intrinsic FROM skill_eval_facts WHERE skill_key = ? AND content_hash = ? AND context_key = ?",
+        &.{ skill_key, content_hash, context_key });
+    defer q.deinit();
+    const row = (try q.next()) orelse return .held;
+    defer row.deinit(allocator);
+    if (std.mem.eql(u8, row.values[0], "computing")) return .held;
+    return .reusable;
+}
+
+pub const FactRow = struct {
+    id: []u8,
+    verdict: Verdict,
+    freshness: u8,
+    accuracy: u8,
+    duplication: u8,
+    findings_json: []u8,
+    evidence_json: []u8,
+    proposed_content: []u8,
+    missing_paths_json: []u8,
+    drift_commits_json: []u8,
+
+    pub fn deinit(self: FactRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.findings_json);
+        allocator.free(self.evidence_json);
+        allocator.free(self.proposed_content);
+        allocator.free(self.missing_paths_json);
+        allocator.free(self.drift_commits_json);
+    }
+};
+
+fn parseScore(raw: []const u8) u8 {
+    const n = std.fmt.parseInt(u8, raw, 10) catch return 0;
+    return if (n > 3) 3 else n;
+}
+
+/// Read a **completed** fact for one exact question, or null.
+///
+/// The `!= 'computing'` predicate is load-bearing, not cosmetic: a lease must
+/// never be mistaken for a verdict, so every read goes through here.
+pub fn readFact(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    skill_key: []const u8,
+    content_hash: []const u8,
+    context_key: []const u8,
+) !?FactRow {
+    var q = try db.query(allocator,
+        \\SELECT id, verdict_intrinsic, freshness, accuracy, duplication,
+        \\       findings_json, evidence_json, proposed_content, missing_paths_json, drift_commits_json
+        \\  FROM skill_eval_facts
+        \\ WHERE skill_key = ? AND content_hash = ? AND context_key = ?
+        \\   AND verdict_intrinsic != 'computing'
+    , &.{ skill_key, content_hash, context_key });
+    defer q.deinit();
+    const row = (try q.next()) orelse return null;
+    defer row.deinit(allocator);
+
+    return FactRow{
+        .id = try allocator.dupe(u8, row.values[0]),
+        // An unrecognised stored verdict degrades to needs_human rather than
+        // erroring: a corrupt row must not be able to fail a whole eval run.
+        .verdict = Verdict.fromString(row.values[1]) orelse .needs_human,
+        .freshness = parseScore(row.values[2]),
+        .accuracy = parseScore(row.values[3]),
+        .duplication = parseScore(row.values[4]),
+        .findings_json = try allocator.dupe(u8, row.values[5]),
+        .evidence_json = try allocator.dupe(u8, row.values[6]),
+        .proposed_content = try allocator.dupe(u8, row.values[7]),
+        .missing_paths_json = try allocator.dupe(u8, row.values[8]),
+        .drift_commits_json = try allocator.dupe(u8, row.values[9]),
+    };
+}
+
+/// Take over a lease whose owner has been gone longer than `lease_seconds`.
+///
+/// Without this, a crash between claiming and publishing leaves a `computing`
+/// row forever and everyone who wants that fact re-does the work — or worse,
+/// treats a lease as an answer. Because `readFact` refuses `computing`, the
+/// worst case is "not yet computed", never a wrong verdict.
+pub fn stealFact(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    skill_key: []const u8,
+    content_hash: []const u8,
+    context_key: []const u8,
+    lease_seconds: u32,
+) !bool {
+    var buf: [32]u8 = undefined;
+    const modifier = std.fmt.bufPrint(&buf, "-{d} seconds", .{lease_seconds}) catch return false;
+    try db.exec(allocator,
+        \\UPDATE skill_eval_facts
+        \\   SET computed_at = datetime('now')
+        \\ WHERE skill_key = ? AND content_hash = ? AND context_key = ?
+        \\   AND verdict_intrinsic = 'computing'
+        \\   AND computed_at < datetime('now', ?)
+    , &.{ skill_key, content_hash, context_key, modifier });
+    return db.changes() > 0;
+}
+
+pub const FactValues = struct {
+    verdict: Verdict,
+    freshness: u8 = 0,
+    accuracy: u8 = 0,
+    duplication: u8 = 0,
+    findings_json: []const u8 = "",
+    evidence_json: []const u8 = "",
+    proposed_content: []const u8 = "",
+    missing_paths_json: []const u8 = "",
+    drift_commits_json: []const u8 = "",
+};
+
+/// Publish the intrinsic half. Only the lease holder can, and only once: the
+/// `verdict_intrinsic = 'computing'` predicate makes a second publish a no-op,
+/// so a stolen lease cannot be overwritten by the original owner waking up.
+pub fn publishFact(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    fact_id: []const u8,
+    values: FactValues,
+) !bool {
+    const freshness = try std.fmt.allocPrint(allocator, "{d}", .{values.freshness});
+    defer allocator.free(freshness);
+    const accuracy = try std.fmt.allocPrint(allocator, "{d}", .{values.accuracy});
+    defer allocator.free(accuracy);
+    const duplication = try std.fmt.allocPrint(allocator, "{d}", .{values.duplication});
+    defer allocator.free(duplication);
+
+    try db.exec(allocator,
+        \\UPDATE skill_eval_facts
+        \\   SET verdict_intrinsic = ?,
+        \\       freshness = ?, accuracy = ?, duplication = ?,
+        \\       findings_json = COALESCE(NULLIF(?, ''), ''),
+        \\       evidence_json = COALESCE(NULLIF(?, ''), ''),
+        \\       proposed_content = COALESCE(NULLIF(?, ''), ''),
+        \\       missing_paths_json = COALESCE(NULLIF(?, ''), ''),
+        \\       drift_commits_json = COALESCE(NULLIF(?, ''), ''),
+        \\       computed_at = datetime('now')
+        \\ WHERE id = ? AND verdict_intrinsic = 'computing'
+    , &.{
+        values.verdict.asString(),
+        freshness,
+        accuracy,
+        duplication,
+        values.findings_json,
+        values.evidence_json,
+        values.proposed_content,
+        values.missing_paths_json,
+        values.drift_commits_json,
+        fact_id,
+    });
+    return db.changes() > 0;
+}
+
+/// Claim the one self-prompted run a session is allowed. The agent can emit two
+/// `run_skill_eval` tool calls in a single turn and both would see "no run yet",
+/// so the partial unique index is the arbiter and `db.changes()` is how the
+/// loser finds out. A loser returns the existing summary instead of re-running.
+pub fn claimRun(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    id: []const u8,
+    session_id: []const u8,
+    trigger: []const u8,
+    skill_name: []const u8,
+    scope: []const u8,
+    cwd: []const u8,
+    context_key: []const u8,
+    profile: []const u8,
+    model: []const u8,
+) !bool {
+    try db.exec(allocator,
+        \\INSERT OR IGNORE INTO skill_eval_runs
+        \\    (id, session_id, skill_name, scope, trigger, status, profile, model,
+        \\     cwd, context_key, started_at)
+        \\VALUES
+        \\    (?, COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
+        \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), 'running',
+        \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''),
+        \\     COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), datetime('now'))
+    // Bind order MUST match the placeholder order in the VALUES clause above:
+    // id, session_id, skill_name, scope, trigger, profile, model, cwd,
+    // context_key. Getting this wrong is silent and dangerous — `trigger` would
+    // never equal 'self_prompt', so the partial unique index would not apply and
+    // the "one run per session" guarantee would quietly disappear. The count
+    // assertion in the claimRun test is what catches it.
+    , &.{ id, session_id, skill_name, scope, trigger, profile, model, cwd, context_key });
+    return db.changes() > 0;
+}
+
+/// Finalize a run. Last write wins, which is correct here: the claim above
+/// guarantees a single owner per `(session, trigger)`.
+pub fn finishRun(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    run_id: []const u8,
+    status: []const u8,
+    total_tokens: u32,
+    err_msg: []const u8,
+) !void {
+    const tokens = try std.fmt.allocPrint(allocator, "{d}", .{total_tokens});
+    defer allocator.free(tokens);
+    try db.exec(allocator,
+        \\UPDATE skill_eval_runs
+        \\   SET status = COALESCE(NULLIF(?, ''), 'done'),
+        \\       total_tokens = ?,
+        \\       error = COALESCE(NULLIF(?, ''), ''),
+        \\       finished_at = datetime('now')
+        \\ WHERE id = ?
+    , &.{ status, tokens, err_msg, run_id });
+}
+
+pub const ApplyClaim = enum {
+    /// We hold the exclusive right to apply this verdict.
+    won,
+    /// Someone else already applied it.
+    already_applied,
+    /// No such result row.
+    missing,
+};
+
+/// Take the exclusive right to apply one verdict. `applied_at IS NULL` in the
+/// WHERE clause is the lock, so two clicks, two clients or two humans cannot
+/// both write the skill.
+pub fn claimApply(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    result_id: []const u8,
+    action: []const u8,
+) !ApplyClaim {
+    try db.exec(allocator,
+        \\UPDATE skill_eval_results
+        \\   SET applied_at = datetime('now'),
+        \\       apply_action = COALESCE(NULLIF(?, ''), '')
+        \\ WHERE id = ? AND applied_at IS NULL
+    , &.{ action, result_id });
+    if (db.changes() > 0) return .won;
+    return if (try resultExists(allocator, db, result_id)) .already_applied else .missing;
+}
+
+/// Give an apply claim back. The compensating action for the case where we won
+/// the right to apply and then discovered the skill body had changed underneath
+/// us — refusing is correct, but the claim must not stay taken or the verdict
+/// becomes unapplicable forever.
+pub fn releaseApply(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    result_id: []const u8,
+) !void {
+    try db.exec(allocator,
+        "UPDATE skill_eval_results SET applied_at = NULL, apply_action = '' WHERE id = ?",
+        &.{result_id});
+}
+
+/// Mark a verdict as unapplicable because the body moved on. Recorded rather
+/// than deleted so the UI can offer a re-evaluate.
+pub fn markResultStale(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    result_id: []const u8,
+    missing_paths_json: []const u8,
+) !void {
+    try db.exec(allocator,
+        \\UPDATE skill_eval_results
+        \\   SET status = 'stale',
+        \\       proposed_diff = COALESCE(NULLIF(?, ''), '')
+        \\ WHERE id = ?
+    , &.{ missing_paths_json, result_id });
+}
+
+fn resultExists(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, result_id: []const u8) !bool {
+    var q = try db.query(allocator, "SELECT 1 FROM skill_eval_results WHERE id = ?", &.{result_id});
+    defer q.deinit();
+    const row = (try q.next()) orelse return false;
+    row.deinit(allocator);
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests — report validation and the verdict function
+// ─────────────────────────────────────────────────────────────────────────────
+
+test "Verdict.fromString trims, ignores case, and rejects anything unknown" {
+    try testing.expectEqual(Verdict.keep, Verdict.fromString("keep").?);
+    try testing.expectEqual(Verdict.keep, Verdict.fromString("  KEEP ").?);
+    try testing.expectEqual(Verdict.needs_human, Verdict.fromString("Needs_Human").?);
+    try testing.expectEqual(Verdict.delete, Verdict.fromString("DELETE").?);
+    try testing.expectEqual(@as(?Verdict, null), Verdict.fromString("remove"));
+    try testing.expectEqual(@as(?Verdict, null), Verdict.fromString(""));
+}
+
+const good_finding = ReportFinding{
+    .dimension = "freshness",
+    .severity = "high",
+    .claim = "the path it names no longer exists",
+    .evidence = "ls src/ai_workflow/tui/agentic_loop/workflow.zig -> no such file",
+};
+
+test "validateReport accepts a well-formed keep" {
+    const v = validateReport(.{ .skill_name = "s", .verdict = "keep", .confidence = 0.8, .freshness = 3 });
+    try testing.expectEqual(Verdict.keep, v.verdict);
+    try testing.expect(!v.downgraded);
+    try testing.expectEqualStrings("", v.reason);
+}
+
+test "validateReport refuses a verdict string it does not recognise" {
+    const v = validateReport(.{ .skill_name = "s", .verdict = "remove", .confidence = 0.9 });
+    try testing.expectEqual(Verdict.needs_human, v.verdict);
+    try testing.expect(v.downgraded);
+}
+
+test "validateReport passes needs_human through WITHOUT calling it a downgrade" {
+    // needs_human is an honest answer, not a refusal — the UI must not label it
+    // as one.
+    const v = validateReport(.{ .skill_name = "s", .verdict = "needs_human" });
+    try testing.expectEqual(Verdict.needs_human, v.verdict);
+    try testing.expect(!v.downgraded);
+}
+
+test "validateReport refuses an out-of-range score rather than clamping it" {
+    // A score outside 0..3 means the report cannot be relied on in the parts
+    // that DO look well-formed, so the whole report is refused.
+    const v = validateReport(.{ .skill_name = "s", .verdict = "keep", .confidence = 0.9, .freshness = 9 });
+    try testing.expectEqual(Verdict.needs_human, v.verdict);
+    try testing.expect(v.downgraded);
+    try testing.expectEqualStrings("a score is outside 0..3", v.reason);
+}
+
+test "validateReport refuses a confidence outside 0..1" {
+    try testing.expect(validateReport(.{ .verdict = "keep", .confidence = 1.5 }).downgraded);
+    try testing.expect(validateReport(.{ .verdict = "keep", .confidence = -0.1 }).downgraded);
+}
+
+test "validateReport refuses any finding with no evidence" {
+    const no_evidence = ReportFinding{ .dimension = "freshness", .severity = "high", .claim = "it is stale", .evidence = "" };
+    const v = validateReport(.{
+        .verdict = "delete",
+        .confidence = 0.99,
+        .findings = &.{ good_finding, no_evidence },
+    });
+    try testing.expectEqual(Verdict.needs_human, v.verdict);
+    try testing.expectEqualStrings("a finding has no evidence", v.reason);
+}
+
+test "validateReport refuses update/rewrite without proposed_content" {
+    const upd = validateReport(.{ .verdict = "update", .confidence = 0.7, .findings = &.{good_finding} });
+    try testing.expectEqual(Verdict.needs_human, upd.verdict);
+    try testing.expectEqualStrings("update/rewrite requires proposed_content", upd.reason);
+
+    const ok = validateReport(.{
+        .verdict = "update",
+        .confidence = 0.7,
+        .findings = &.{good_finding},
+        .proposed_content = "---\nname: s\n---\nnew body\n",
+    });
+    try testing.expectEqual(Verdict.update, ok.verdict);
+    try testing.expect(!ok.downgraded);
+}
+
+test "validateReport refuses merge without merge_target" {
+    try testing.expect(validateReport(.{ .verdict = "merge", .confidence = 0.7 }).downgraded);
+    const ok = validateReport(.{ .verdict = "merge", .confidence = 0.7, .merge_target = "other-skill" });
+    try testing.expectEqual(Verdict.merge, ok.verdict);
+}
+
+test "validateReport refuses a delete with no high-severity finding" {
+    // This is the rule that stops a confident-sounding report from destroying a
+    // perfectly good skill.
+    const soft = ReportFinding{ .dimension = "freshness", .severity = "medium", .claim = "slightly stale", .evidence = "git log" };
+    const refused = validateReport(.{ .verdict = "delete", .confidence = 0.95, .findings = &.{soft} });
+    try testing.expectEqual(Verdict.needs_human, refused.verdict);
+    try testing.expectEqualStrings("delete requires a high-severity finding", refused.reason);
+
+    // No findings at all is the same refusal.
+    try testing.expect(validateReport(.{ .verdict = "delete", .confidence = 0.95 }).downgraded);
+
+    // With a high finding (case-insensitively) it passes.
+    const ok = validateReport(.{ .verdict = "delete", .confidence = 0.95, .findings = &.{good_finding} });
+    try testing.expectEqual(Verdict.delete, ok.verdict);
+    try testing.expect(!ok.downgraded);
+
+    const upper = ReportFinding{ .dimension = "accuracy", .severity = "HIGH", .claim = "wrong", .evidence = "file:1" };
+    try testing.expectEqual(Verdict.delete, validateReport(.{ .verdict = "delete", .confidence = 0.5, .findings = &.{upper} }).verdict);
+}
+
+test "an unrecognised severity never counts as high, so it can never authorise a delete" {
+    try testing.expect(!isHigh("critical"));
+    try testing.expect(!isHigh(""));
+    try testing.expect(isHigh("high"));
+    try testing.expect(isHigh(" high "));
+}
+
+test "decideVerdict maps the intrinsic half, and a bare delete is never a deletion" {
+    try testing.expectEqual(Verdict.keep, decideVerdict(.keep, false));
+    try testing.expectEqual(Verdict.update, decideVerdict(.update, false));
+    try testing.expectEqual(Verdict.rewrite, decideVerdict(.rewrite, false));
+    try testing.expectEqual(Verdict.merge, decideVerdict(.merge, false));
+    try testing.expectEqual(Verdict.needs_human, decideVerdict(.needs_human, false));
+    // A high finding promotes to delete...
+    try testing.expectEqual(Verdict.delete, decideVerdict(.keep, true));
+    // ...and a needs_human is never promoted, even with a high finding, because
+    // the intrinsic verdict itself was refused as untrustworthy.
+    try testing.expectEqual(Verdict.needs_human, decideVerdict(.needs_human, true));
+    // `delete` only reaches here WITH a high finding (validateReport); without
+    // one it must not delete.
+    try testing.expectEqual(Verdict.needs_human, decideVerdict(.delete, false));
+}
+
+test "relevance can never change the verdict - the whole 0..3 range" {
+    // The structural guarantee that a good skill loaded for the wrong task
+    // cannot be deleted or rewritten. `decideVerdict` does not even take
+    // relevance as an argument; this test pins that by iterating the range and
+    // asserting the outcome is constant, while `relevanceNote` still surfaces
+    // the finding to the human.
+    for ([_]Verdict{ .keep, .update, .rewrite, .merge, .needs_human }) |intrinsic| {
+        const base = decideVerdict(intrinsic, false);
+        var r: u8 = 0;
+        while (r <= 3) : (r += 1) {
+            // Nothing in the call can vary with `r`, so the assertion is about
+            // the signature itself — which is exactly the guarantee wanted.
+            try testing.expectEqual(base, decideVerdict(intrinsic, false));
+            _ = relevanceNote(r);
+        }
+    }
+    try testing.expectEqualStrings("", relevanceNote(2));
+    try testing.expectEqualStrings("", relevanceNote(3));
+    try testing.expect(std.mem.indexOf(u8, relevanceNote(0), "discovery problem") != null);
+    try testing.expectEqualStrings("partially relevant to this task", relevanceNote(1));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tests — the concurrent-state primitives
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Concurrency claims are cheap to make, so these are proved as a SEQUENCE of
+// calls rather than with threads. That is a valid proof of the same code path:
+// `exec` is mutex-serialized per call, so the interleaving a real race produces
+// is exactly "statement, then statement". The only thing an actual race adds is
+// arbitrary ordering, and every predicate here is order-independent — the
+// expected outcome of each ordering is asserted below where it matters.
+
+test "claimFact: first writer wins, a live lease is not reusable, a published fact is" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const sk = "global:foo";
+    const ch = "hashA";
+    const ck = "/repo@abc";
+
+    try testing.expectEqual(FactClaim.won, try claimFact(alloc, &ctx.db, "f1", sk, ch, ck));
+    // Second caller for the SAME question: the lease is live, so neither claims
+    // nor reuses. It must not compute — that is the duplicate-work guard.
+    try testing.expectEqual(FactClaim.held, try claimFact(alloc, &ctx.db, "f2", sk, ch, ck));
+
+    // A different body is a different question, so it gets its own lease.
+    try testing.expectEqual(FactClaim.won, try claimFact(alloc, &ctx.db, "f3", sk, "hashB", ck));
+    // As is the same body in a different repo/commit (freshness is repo-relative).
+    try testing.expectEqual(FactClaim.won, try claimFact(alloc, &ctx.db, "f4", sk, ch, "/other@abc"));
+
+    // Publish, and now the second caller reuses instead of recomputing.
+    try testing.expect(try publishFact(alloc, &ctx.db, "f1", .{
+        .verdict = .keep,
+        .freshness = 3,
+        .accuracy = 2,
+        .duplication = 1,
+        .findings_json = "[]",
+    }));
+    try testing.expectEqual(FactClaim.reusable, try claimFact(alloc, &ctx.db, "f5", sk, ch, ck));
+}
+
+test "readFact returns a published fact and refuses a bare lease" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    _ = try claimFact(alloc, &ctx.db, "f1", "global:foo", "hashA", "/repo@abc");
+
+    // A lease is NOT an answer. If this returned a row, every reader would have
+    // to remember to check for 'computing' — so the check lives in the query.
+    try testing.expectEqual(@as(?FactRow, null), try readFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc"));
+
+    // Empty free-text columns must round-trip as "" rather than blowing up on
+    // the NOT NULL constraints (the empty-slice-binds-as-NULL trap).
+    try testing.expect(try publishFact(alloc, &ctx.db, "f1", .{
+        .verdict = .update,
+        .freshness = 1,
+        .accuracy = 3,
+        .duplication = 0,
+    }));
+
+    const fact = (try readFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc")).?;
+    defer fact.deinit(alloc);
+    try testing.expectEqualStrings("f1", fact.id);
+    try testing.expectEqual(Verdict.update, fact.verdict);
+    try testing.expectEqual(@as(u8, 1), fact.freshness);
+    try testing.expectEqual(@as(u8, 3), fact.accuracy);
+    try testing.expectEqualStrings("", fact.findings_json);
+    try testing.expectEqualStrings("", fact.proposed_content);
+    try testing.expectEqualStrings("", fact.drift_commits_json);
+}
+
+test "publishFact is once-only: a stolen lease cannot be overwritten later" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    _ = try claimFact(alloc, &ctx.db, "f1", "global:foo", "hashA", "/repo@abc");
+    try testing.expect(try publishFact(alloc, &ctx.db, "f1", .{ .verdict = .keep, .freshness = 3 }));
+    // The original owner waking up after a steal must not clobber the winner.
+    try testing.expect(!try publishFact(alloc, &ctx.db, "f1", .{ .verdict = .delete, .freshness = 0 }));
+
+    const fact = (try readFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc")).?;
+    defer fact.deinit(alloc);
+    try testing.expectEqual(Verdict.keep, fact.verdict);
+}
+
+test "stealFact only takes a lease that has actually expired" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    _ = try claimFact(alloc, &ctx.db, "f1", "global:foo", "hashA", "/repo@abc");
+
+    // Fresh lease: not stealable, so a second session does not duplicate work.
+    try testing.expect(!try stealFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc", 300));
+
+    // Age it past the lease (simulating a crashed owner) and it becomes
+    // reclaimable — otherwise the fact could never be computed at all.
+    try ctx.db.exec(alloc, "UPDATE skill_eval_facts SET computed_at = datetime('now', '-3600 seconds') WHERE id = 'f1'", &.{});
+    try testing.expect(try stealFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc", 300));
+    try testing.expect(!try stealFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc", 300));
+
+    // After a steal the row is still a lease, so it is still not an answer.
+    try testing.expectEqual(@as(?FactRow, null), try readFact(alloc, &ctx.db, "global:foo", "hashA", "/repo@abc"));
+}
+
+test "claimRun: one self-prompted run per session, other triggers unaffected" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try testing.expect(try claimRun(alloc, &ctx.db, "r1", "sess_a", "self_prompt", "", "session", "/cwd", "/cwd@abc", "p", "m"));
+    // The agent can emit two run_skill_eval calls in one turn. The partial
+    // unique index is the arbiter — not a pre-check, which would race.
+    try testing.expect(!try claimRun(alloc, &ctx.db, "r2", "sess_a", "self_prompt", "", "session", "/cwd", "/cwd@abc", "p", "m"));
+    // A different session gets its own.
+    try testing.expect(try claimRun(alloc, &ctx.db, "r3", "sess_b", "self_prompt", "", "session", "/cwd", "/cwd@abc", "p", "m"));
+    // `on_demand` is outside the partial index, so both can coexist.
+    try testing.expect(try claimRun(alloc, &ctx.db, "r4", "sess_a", "on_demand", "foo", "skill", "/cwd", "/cwd@abc", "p", "m"));
+
+    try finishRun(alloc, &ctx.db, "r1", "done", 1234, "");
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*), MAX(CASE WHEN id='r1' THEN status END) FROM skill_eval_runs", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("3", row.values[0]);
+    try testing.expectEqualStrings("done", row.values[1]);
+}
+
+test "claimApply: exactly one winner, releasable, and honest about a missing row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_results (id, run_id, skill_key, skill_name, session_id, status, verdict)
+        \\VALUES ('res_1', 'run_1', 'global:foo', 'foo', 'sess_a', 'done', 'update')
+    , &.{});
+
+    try testing.expectEqual(ApplyClaim.won, try claimApply(alloc, &ctx.db, "res_1", "edit"));
+    // Two clients, two clicks: the second is told the truth, not given a second write.
+    try testing.expectEqual(ApplyClaim.already_applied, try claimApply(alloc, &ctx.db, "res_1", "edit"));
+    try testing.expectEqual(ApplyClaim.missing, try claimApply(alloc, &ctx.db, "nope", "edit"));
+
+    // The staleness path: we won, discovered the body had moved underneath us,
+    // and must give the claim back or the verdict is unapplicable forever.
+    try releaseApply(alloc, &ctx.db, "res_1");
+    try testing.expectEqual(ApplyClaim.won, try claimApply(alloc, &ctx.db, "res_1", "delete"));
+
+    var q = try ctx.db.query(alloc, "SELECT apply_action FROM skill_eval_results WHERE id = 'res_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("delete", row.values[0]);
+}
+
+test "markResultStale records the refusal instead of deleting the verdict" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_results (id, run_id, skill_key, skill_name, status, verdict)
+        \\VALUES ('res_1', 'run_1', 'global:foo', 'foo', 'done', 'update')
+    , &.{});
+    try markResultStale(alloc, &ctx.db, "res_1", "[\"src/gone.zig\"]");
+
+    var q = try ctx.db.query(alloc, "SELECT status, proposed_diff FROM skill_eval_results WHERE id = 'res_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("stale", row.values[0]);
+    try testing.expectEqualStrings("[\"src/gone.zig\"]", row.values[1]);
+}
