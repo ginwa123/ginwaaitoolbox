@@ -406,7 +406,7 @@ test "executeSetGitWorktreeToString calls classifyPath before runGitWorktreeAdd"
         std.debug.print("!! set_git_worktree.zig does not call classifyPath on worktree_path !!\n", .{});
         return error.ClassifyPathCallMissing;
     };
-    const add_idx = std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch, base)") orelse {
+    const add_idx = std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, resolved_repo_root, worktree_path, branch, base)") orelse {
         std.debug.print("!! set_git_worktree.zig is missing the runGitWorktreeAdd call !!\n", .{});
         return error.RunGitWorktreeAddCallMissing;
     };
@@ -686,7 +686,7 @@ test "runGitWorktreeAdd receives the base from executeSetGitWorktreeToString" {
     const source = try readSource(allocator, TOOL_PATH);
     defer allocator.free(source);
     // The base must flow into the git call, not just be parsed.
-    if (std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, cwd, worktree_path, branch, base)") == null) {
+    if (std.mem.indexOf(u8, source, "runGitWorktreeAdd(allocator, io, resolved_repo_root, worktree_path, branch, base)") == null) {
         std.debug.print("!! set_git_worktree.zig does not pass `base` to runGitWorktreeAdd !!\n", .{});
         return error.BaseNotForwardedToGit;
     }
@@ -909,4 +909,495 @@ test "static contract: parseAndMatchBlock does not compare worktree paths with s
     try testing.expect(std.mem.indexOf(u8, source, "fn parseAndMatchBlock(") != null);
     try testing.expect(std.mem.indexOf(u8, source, "pathsDenoteSameDir(wt_path, target)") != null);
     try testing.expect(std.mem.indexOf(u8, source, "pub fn pathsDenoteSameDir(") != null);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2026-09-29 — the false "orphaned worktree" verdict
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Session `task_1790705960891291926` got this back for a worktree that
+// git HAD registered on the very same machine:
+//
+//   Error: path '/…/.worktrees/skill-evals-impl-1790542117855' is an
+//   orphaned worktree directory (has .git file pointing at
+//   /…/.git/worktrees/skill-evals-impl-1790542117855\n, but is not
+//   registered with git). Run `git worktree prune && rm -rf /…` to
+//   clean up, then retry set_git_worktree.
+//
+// The agent then ran `git worktree list --porcelain` itself and found
+// the entry, one message later. Two things are wrong with that error:
+//
+//   1. It is FALSE. The session's `sessions.cwd` was the empty string
+//      (a kanban task with no resolved working directory), so
+//      `runGitWorktreeList` spawned `git worktree list --porcelain`
+//      with an empty cwd, the spawn failed, and the *diagnostic string
+//      it returns in place of a listing* got parsed as if it were the
+//      listing. Nothing matched, `classifyPath` fell through to the
+//      `.git` file, and "absent from a list that never ran" became
+//      "not registered with git".
+//
+//   2. It is DESTRUCTIVE. The recovery advice is `rm -rf` on a live
+//      worktree — the same advice that would delete a sibling
+//      session's uncommitted work. The `rm -rf` in the message is not
+//      git's; nalar wrote it.
+//
+// The tests below pin the fix: a worktree's own admin directory
+// (`<repo>/.git/worktrees/<name>`) is the registration record git
+// itself reads, so it — not a possibly-failed listing — is what proves
+// registration or orphanhood.
+
+const run_captured = @import("helpers").run_captured;
+
+/// Skip the calling test when the host has no usable `git` on PATH.
+fn requireGit() !void {
+    var child = std.process.spawn(std.testing.io, .{
+        .argv = &.{ "git", "--version" },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    _ = child.wait(std.testing.io) catch return error.SkipZigTest;
+}
+
+/// A throwaway git repository with one commit, inside `std.testing.tmpDir`
+/// (which roots under `.zig-cache/tmp/`, so it is never the developer's
+/// own repository and never collides with their 272 real worktrees).
+const GitFixture = struct {
+    tmp: std.testing.TmpDir,
+    root: []u8,
+    repo: []u8,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) !GitFixture {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const real = try tmp.dir.realPath(std.testing.io, &buf);
+        const root = try allocator.dupe(u8, buf[0..real]);
+        errdefer allocator.free(root);
+        const repo = try std.fmt.allocPrint(allocator, "{s}/repo", .{root});
+        errdefer allocator.free(repo);
+
+        var fx = GitFixture{ .tmp = tmp, .root = root, .repo = repo, .allocator = allocator };
+        try fx.git(&.{ "init", "-q", "--initial-branch=main", repo });
+        // `git worktree add` needs a resolvable start-point, so the repo
+        // needs one commit before it can hand out a branch.
+        try fx.git(&.{
+            "-C", repo, "-c", "user.email=nalar@example.com", "-c", "user.name=nalar",
+            "commit", "-q", "--allow-empty", "-m", "init",
+        });
+        return fx;
+    }
+
+    fn deinit(self: *GitFixture) void {
+        self.tmp.cleanup();
+        self.allocator.free(self.root);
+        self.allocator.free(self.repo);
+    }
+
+    fn git(self: *GitFixture, argv: []const []const u8) !void {
+        var full: std.ArrayList([]const u8) = .empty;
+        defer full.deinit(self.allocator);
+        try full.append(self.allocator, "git");
+        try full.appendSlice(self.allocator, argv);
+        var r = run_captured.run(self.allocator, std.testing.io, full.items, .{
+            .timeout_ms = 60_000,
+        }) catch return error.SkipZigTest;
+        defer r.deinit(self.allocator);
+        if (r.term.exited != 0) {
+            std.debug.print("!! git {any} exited {any}: {s}\n", .{ argv, r.term, r.stderr });
+            return error.GitCommandFailed;
+        }
+    }
+
+    /// `git worktree add -b worktree/<name> <root>/<name>` — the exact
+    /// shape `executeSetGitWorktreeToString` creates.
+    fn addWorktree(self: *GitFixture, name: []const u8) ![]u8 {
+        const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.root, name });
+        errdefer self.allocator.free(path);
+        const branch = try std.fmt.allocPrint(self.allocator, "worktree/{s}", .{name});
+        defer self.allocator.free(branch);
+        try self.git(&.{ "-C", self.repo, "worktree", "add", "-b", branch, path });
+        return path;
+    }
+
+    /// The admin directory git keeps for a linked worktree — the
+    /// registration record. Deleting it is what makes a worktree a
+    /// genuine orphan.
+    fn adminDir(self: *GitFixture, name: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "{s}/.git/worktrees/{s}", .{ self.repo, name });
+    }
+};
+
+test "classifyPath: an empty session cwd still recognises a REGISTERED worktree (2026-09-29 regression)" {
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+    const wt = try fx.addWorktree("wt");
+    defer allocator.free(wt);
+
+    // `repo_root` is what `executeSetGitWorktreeToString` forwards as
+    // `ctx.cwd`. The failing session had `sessions.cwd = ''`.
+    const state = try swt.classifyPath(allocator, std.testing.io, "", wt);
+    defer swt.freePathState(allocator, state);
+
+    switch (state) {
+        .registered_worktree => |rwt| try testing.expectEqualStrings("worktree/wt", rwt.branch),
+        else => {
+            std.debug.print(
+                "!! an empty repo_root turned a REGISTERED worktree into '{s}' — this is the 2026-09-29 false 'orphaned' bug !!\n",
+                .{@tagName(state)},
+            );
+            return error.RegisteredWorktreeMisclassified;
+        },
+    }
+}
+
+test "classifyPath: a registered worktree classifies the same with an empty repo_root as with the real one" {
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+    const wt = try fx.addWorktree("wt");
+    defer allocator.free(wt);
+
+    const with_root = try swt.classifyPath(allocator, std.testing.io, fx.repo, wt);
+    defer swt.freePathState(allocator, with_root);
+    const without_root = try swt.classifyPath(allocator, std.testing.io, "", wt);
+    defer swt.freePathState(allocator, without_root);
+
+    try testing.expectEqual(@as(std.meta.Tag(swt.PathState), .registered_worktree), @as(std.meta.Tag(swt.PathState), std.meta.activeTag(with_root)));
+    try testing.expectEqual(@as(std.meta.Tag(swt.PathState), .registered_worktree), @as(std.meta.Tag(swt.PathState), std.meta.activeTag(without_root)));
+}
+
+test "classifyPath: a worktree whose admin dir is gone IS an orphan (proven, not inferred)" {
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+    const wt = try fx.addWorktree("wt");
+    defer allocator.free(wt);
+
+    // Stand in for `git worktree prune` (or an admin dir deleted out
+    // from under a live directory). The `.git` FILE in the worktree
+    // still points at it — that is exactly the state the old code
+    // called "orphaned", and here it genuinely is one.
+    const admin = try fx.adminDir("wt");
+    defer allocator.free(admin);
+    std.Io.Dir.cwd().deleteTree(std.testing.io, admin) catch |err| {
+        std.debug.print("!! could not delete {s}: {s}\n", .{ admin, @errorName(err) });
+        return error.AdminDirDeleteFailed;
+    };
+
+    const state = try swt.classifyPath(allocator, std.testing.io, "", wt);
+    defer swt.freePathState(allocator, state);
+    switch (state) {
+        .orphaned_worktree => |gitdir| try testing.expectEqualStrings(admin, std.mem.trim(u8, gitdir, " \t\r\n")),
+        else => {
+            std.debug.print("!! a worktree with no admin dir classified as '{s}', expected 'orphaned_worktree' !!\n", .{@tagName(state)});
+            return error.OrphanNotDetected;
+        },
+    }
+}
+
+test "classifyPath: the orphan gitdir carries no trailing newline from the .git file" {
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+    const wt = try fx.addWorktree("wt");
+    defer allocator.free(wt);
+    const admin = try fx.adminDir("wt");
+    defer allocator.free(admin);
+    std.Io.Dir.cwd().deleteTree(std.testing.io, admin) catch return error.AdminDirDeleteFailed;
+
+    const state = try swt.classifyPath(allocator, std.testing.io, "", wt);
+    defer swt.freePathState(allocator, state);
+    const gitdir = switch (state) {
+        .orphaned_worktree => |g| g,
+        else => return error.OrphanNotDetected,
+    };
+    // A `.git` file is written as "gitdir: <path>\n"; the payload used
+    // to keep the newline, which is how the live error read
+    // "…/skill-evals-impl-1790542117855\n, but is not registered".
+    try testing.expect(std.mem.indexOfScalar(u8, gitdir, '\n') == null);
+    try testing.expect(std.mem.indexOfScalar(u8, gitdir, '\r') == null);
+}
+
+test "classifyPath: a plain directory is still a plain directory with an empty repo_root" {
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+
+    const plain = try std.fmt.allocPrint(allocator, "{s}/not-a-worktree", .{fx.root});
+    defer allocator.free(plain);
+    std.Io.Dir.cwd().createDirPath(std.testing.io, plain) catch return error.MkdirFailed;
+
+    const state = try swt.classifyPath(allocator, std.testing.io, "", plain);
+    defer swt.freePathState(allocator, state);
+    try testing.expectEqual(
+        @as(std.meta.Tag(swt.PathState), .plain_directory),
+        @as(std.meta.Tag(swt.PathState), std.meta.activeTag(state)),
+    );
+}
+
+test "classifyPath: a path that does not exist is not_found regardless of repo_root" {
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+
+    const missing = try std.fmt.allocPrint(allocator, "{s}/never-created", .{fx.root});
+    defer allocator.free(missing);
+
+    for ([_][]const u8{ "", fx.repo }) |root| {
+        const state = try swt.classifyPath(allocator, std.testing.io, root, missing);
+        defer swt.freePathState(allocator, state);
+        try testing.expectEqual(
+            @as(std.meta.Tag(swt.PathState), .not_found),
+            @as(std.meta.Tag(swt.PathState), std.meta.activeTag(state)),
+        );
+    }
+}
+
+// ─── The advice itself ────────────────────────────────────────────────
+//
+// `rm -rf` on a directory that may hold a sibling session's uncommitted
+// work is not a recovery step, it is a data-loss footgun, and nalar — not
+// git — is the one writing it. Pin the wording.
+
+test "the false 'is not registered with git' claim is gone from the impl" {
+    const source = try readSource(testing.allocator, TOOL_PATH);
+    defer testing.allocator.free(source);
+
+    // The claim itself, not the token "rm -rf": the tool description
+    // deliberately contains "NEVER `rm -rf`" as a prohibition and the
+    // prose comments cite the old wording, both of which are correct
+    // and should stay. What must not come back is the assertion that a
+    // path with a .git file is "not registered with git" — that is the
+    // false statement the 2026-09-29 tool output made.
+    if (std.mem.indexOf(u8, source, "but is not registered with git") != null) {
+        std.debug.print(
+            "!! set_git_worktree.zig still asserts 'not registered with git' — that claim is what told a model to delete a live worktree !!\n",
+            .{},
+        );
+        return error.FalseRegistrationClaimStillPresent;
+    }
+}
+
+test "orphanedWorktreeMessage is non-destructive and offers a preserving recovery" {
+    const allocator = testing.allocator;
+    const msg = try swt.orphanedWorktreeMessage(
+        allocator,
+        "/abs/.worktrees/skill-evals-impl-1790542117855",
+        "/abs/repo/.git/worktrees/skill-evals-impl-1790542117855",
+    );
+    defer allocator.free(msg);
+
+    try testing.expect(std.mem.indexOf(u8, msg, "rm -rf") == null);
+    try testing.expect(std.mem.indexOf(u8, msg, "move it aside") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "/abs/.worktrees/skill-evals-impl-1790542117855") != null);
+    try testing.expect(std.mem.indexOf(u8, msg, "/abs/repo/.git/worktrees/skill-evals-impl-1790542117855") != null);
+    // It must not assert "git says it is not registered" any more — that
+    // is the false claim the whole bug was.
+    try testing.expect(std.mem.indexOf(u8, msg, "is not registered with git") == null);
+}
+
+test "unverifiedWorktreeMessage tells the model to treat the directory as live" {
+    const allocator = testing.allocator;
+    const msg = try swt.unverifiedWorktreeMessage(
+        allocator,
+        "/abs/.worktrees/foo",
+        "/abs/repo/.git/worktrees/foo",
+        "the session has no working directory, so `git worktree list` could not be run",
+    );
+    defer allocator.free(msg);
+
+    try testing.expect(std.mem.indexOf(u8, msg, "rm -rf") == null);
+    try testing.expect(std.mem.indexOf(u8, msg, "LIVE worktree") != null);
+    // The reason the verdict was unproven must be shown, not swallowed.
+    try testing.expect(std.mem.indexOf(u8, msg, "no working directory") != null);
+}
+
+// ─── Pure helpers: the gitdir pointer and the admin directory ──────────
+
+test "parseGitdirPointer strips the newline git always writes" {
+    // The 2026-09-29 tool output literally read
+    // "…/skill-evals-impl-1790542117855\n, but is not registered with git".
+    try testing.expectEqualStrings(
+        "/abs/repo/.git/worktrees/foo",
+        swt.parseGitdirPointer("gitdir: /abs/repo/.git/worktrees/foo\n").?,
+    );
+    try testing.expectEqualStrings(
+        "/abs/repo/.git/worktrees/foo",
+        swt.parseGitdirPointer("gitdir: /abs/repo/.git/worktrees/foo\r\n").?,
+    );
+    try testing.expectEqualStrings(
+        "/abs/repo/.git/worktrees/foo",
+        swt.parseGitdirPointer("gitdir: /abs/repo/.git/worktrees/foo").?,
+    );
+    // A second space after the colon is not part of the path.
+    try testing.expectEqualStrings(
+        "/abs/repo/.git/worktrees/foo",
+        swt.parseGitdirPointer("gitdir:  /abs/repo/.git/worktrees/foo\n").?,
+    );
+}
+
+test "parseGitdirPointer rejects anything that is not a gitdir pointer" {
+    try testing.expect(swt.parseGitdirPointer("") == null);
+    try testing.expect(swt.parseGitdirPointer("gitdir:\n") == null);
+    try testing.expect(swt.parseGitdirPointer("gitdir:   \n") == null);
+    try testing.expect(swt.parseGitdirPointer("gitdir:/abs/no-space\n") == null);
+    try testing.expect(swt.parseGitdirPointer("/abs/repo/.git/worktrees/foo\n") == null);
+    try testing.expect(swt.parseGitdirPointer("ref: refs/heads/main\n") == null);
+}
+
+test "worktreeAdminDir recognises a linked worktree's admin directory" {
+    const cases = [_][]const u8{
+        "/abs/repo/.git/worktrees/foo",
+        "/abs/repo/.git/worktrees/foo-bar_baz.1",
+        "C:/Users/me/repo/.git/worktrees/fix-login",
+        "C:\\Users\\me\\repo\\.git\\worktrees\\fix-login",
+        // git on Windows can leave a trailing separator behind.
+        "/abs/repo/.git/worktrees/foo/",
+    };
+    for (cases) |gitdir| {
+        const admin = swt.worktreeAdminDir(gitdir) orelse {
+            std.debug.print("!! worktreeAdminDir did not recognise '{s}' !!\n", .{gitdir});
+            return error.AdminDirNotRecognised;
+        };
+        // A trailing separator is trimmed, because that trimmed path is
+        // what gets handed to the existence check.
+        try testing.expectEqualStrings(std.mem.trimEnd(u8, gitdir, "/\\"), admin);
+    }
+}
+
+test "worktreeAdminDir refuses gitdir pointers that are not worktrees" {
+    const not_worktrees = [_][]const u8{
+        // A submodule's .git file — same `gitdir:` shape, different meaning.
+        "/abs/super/.git/modules/sub",
+        // The main repository has no admin directory of its own.
+        "/abs/repo/.git",
+        // The worktrees directory itself, with no name after it.
+        "/abs/repo/.git/worktrees",
+        // A name is required, not just the directory.
+        "/abs/repo/.git/worktrees/",
+        // `.git` must be its own component, not a prefix of something.
+        "/abs/repo/.gitmodules/worktrees/foo",
+        // Not a worktree: one level too shallow.
+        "/abs/repo/worktrees/foo",
+        "",
+        "/",
+    };
+    for (not_worktrees) |gitdir| {
+        try testing.expect(swt.worktreeAdminDir(gitdir) == null);
+    }
+}
+
+// ─── The listing is a secondary source, not the only one ────────────────
+
+test "parseWorktreeList finds a block in a synthetic listing" {
+    const listing =
+        \\worktree /abs/repo
+        \\HEAD 1111111111111111111111111111111111111111
+        \\branch refs/heads/main
+        \\
+        \\worktree /abs/wt/one
+        \\HEAD 2222222222222222222222222222222222222222
+        \\branch refs/heads/worktree/one
+        \\
+        \\
+    ;
+    const allocator = testing.allocator;
+    const hit = (try swt.parseWorktreeList(allocator, listing, "/abs/wt/one")).?;
+    defer {
+        allocator.free(hit.branch_ref);
+        allocator.free(hit.branch);
+        allocator.free(hit.commit);
+        allocator.free(hit.path);
+    }
+    try testing.expectEqualStrings("worktree/one", hit.branch);
+    try testing.expectEqualStrings("refs/heads/worktree/one", hit.branch_ref);
+    try testing.expectEqualStrings("2222222222222222222222222222222222222222", hit.commit);
+
+    // The last block has no trailing blank line — the loop must not need one.
+    const no_trailing_blank =
+        \\worktree /abs/wt/two
+        \\HEAD 3333333333333333333333333333333333333333
+        \\branch refs/heads/worktree/two
+    ;
+    const hit2 = (try swt.parseWorktreeList(allocator, no_trailing_blank, "/abs/wt/two")).?;
+    defer {
+        allocator.free(hit2.branch_ref);
+        allocator.free(hit2.branch);
+        allocator.free(hit2.commit);
+        allocator.free(hit2.path);
+    }
+    try testing.expectEqualStrings("worktree/two", hit2.branch);
+}
+
+test "parseWorktreeList returns null for an absent or empty listing" {
+    const allocator = testing.allocator;
+    const listing =
+        \\worktree /abs/repo
+        \\HEAD 1111111111111111111111111111111111111111
+        \\branch refs/heads/main
+        \\
+    ;
+    try testing.expect((try swt.parseWorktreeList(allocator, listing, "/abs/wt/absent")) == null);
+    try testing.expect((try swt.parseWorktreeList(allocator, "", "/abs/wt/absent")) == null);
+    // A block that names no path at all must not crash or match.
+    try testing.expect((try swt.parseWorktreeList(allocator, "HEAD abc\n\n", "/abs/wt/absent")) == null);
+}
+
+test "max_worktree_list_bytes leaves headroom over a 272-worktree repository" {
+    // 272 worktrees measured 59,257 bytes on the machine where the bug
+    // was reported. The old 64 KiB cap was already 90% consumed; anything
+    // near it meant every later worktree was silently unparseable.
+    const measured = 59_257;
+    try testing.expect(swt.max_worktree_list_bytes > measured * 10);
+}
+
+// ─── resolveRepoRoot ───────────────────────────────────────────────────
+
+test "resolveRepoRoot keeps a usable absolute session cwd" {
+    const allocator = testing.allocator;
+    const root = (try swt.resolveRepoRoot(allocator, "/abs/repo")).?;
+    defer allocator.free(root);
+    try testing.expectEqualStrings("/abs/repo", root);
+}
+
+test "resolveRepoRoot returns null for an empty session cwd (caller inherits)" {
+    // `sessions.cwd = ''` is the 2026-09-29 state. It must NOT reach
+    // std.process.spawn as a cwd — `null` makes the caller use
+    // `.cwd = .inherit`, i.e. the server process's own directory.
+    try testing.expect((try swt.resolveRepoRoot(testing.allocator, "")) == null);
+}
+
+test "resolveRepoRoot ignores a relative session cwd instead of guessing" {
+    // "proj" is not a repository — resolving it against the process cwd
+    // would silently add the worktree to the wrong repository.
+    try testing.expect((try swt.resolveRepoRoot(testing.allocator, "proj")) == null);
+}
+
+test "the orphaned-worktree advice preserves the directory instead of deleting it" {
+    const allocator = testing.allocator;
+    const source = try readSource(allocator, TOOL_PATH);
+    defer allocator.free(source);
+
+    // The safe recovery for a directory that git no longer tracks is to
+    // move it aside (nothing is lost) and pick a different path.
+    if (std.mem.indexOf(u8, source, "orphaned worktree") == null) {
+        std.debug.print("!! the orphaned-worktree branch is gone — did the wording change? keep the concept named !!\n", .{});
+        return error.OrphanBranchMissing;
+    }
+    const mentions_preserving = std.mem.indexOf(u8, source, "move it aside") != null or
+        std.mem.indexOf(u8, source, "move the directory aside") != null or
+        std.mem.indexOf(u8, source, "different path") != null;
+    if (!mentions_preserving) {
+        std.debug.print("!! the orphaned-worktree advice offers no non-destructive recovery !!\n", .{});
+        return error.OrphanAdviceHasNoSafeRecovery;
+    }
 }
