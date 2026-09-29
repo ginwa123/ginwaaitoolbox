@@ -410,25 +410,29 @@ fn newestSubdirWith(b: *std.Build, root: []const u8, required_files: []const []c
     var best_name: ?[]const u8 = null;
     var it = d.iterate();
     while (it.next(b.graph.io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
+        // `.sym_link` counts: the real SDK leaves ship as links (the image
+        // has `wdf0.26100.0` alongside a plain `wdf`), and a dangling one
+        // is rejected by the file probe below anyway.
+        if (entry.kind != .directory and entry.kind != .sym_link) continue;
         const candidate = b.fmt("{s}/{s}", .{ root, entry.name });
         var complete = true;
         for (required_files) |f| {
-            const probe = b.fmt("{s}/{s}", .{ candidate, f });
-            const ok = fileExists(probe);
-            std.debug.print("[sdk-probe] {s} exists={}\n", .{ probe, ok });
-            if (!ok) {
+            if (!fileExists(b.fmt("{s}/{s}", .{ candidate, f }))) {
                 complete = false;
                 break;
             }
         }
-        std.debug.print("[sdk-probe] -> {s} complete={} best_before={s}\n", .{ entry.name, complete, best_name orelse "null" });
         if (!complete) continue;
         if (best_name == null or versionGreater(entry.name, best_name.?)) {
-            best_name = entry.name;
+            // MUST dupe: `entry.name` points into the iterator's name buffer,
+            // which the next `it.next()` overwrites. Storing the slice made
+            // `best_name` a dangling view that later read as a FRANKENSTEIN
+            // name ("wdf0.26100.0" — the next entry's bytes over the tail of
+            // "10.0.26100.0"), so the resolver returned a path to a
+            // directory that does not exist.
+            best_name = b.dupe(entry.name);
         }
     }
-    std.debug.print("[sdk-choose] root={s} => {s}\n", .{ root, if (best_name) |n| n else "NULL" });
     return if (best_name) |n| b.fmt("{s}/{s}", .{ root, n }) else null;
 }
 
