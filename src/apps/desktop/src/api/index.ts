@@ -1562,6 +1562,7 @@ export function fetchChatHistoryEffect(
 
   return Effect.tryPromise({
     try: () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentional escape hatch; matches `toResponse` above, which re-narrows each field.
       apiFetch<any>(`/llm/session/${encodeURIComponent(sessionId)}/messages?${params}`, {
         silent: true,
         ...(timeoutMs === undefined ? {} : { timeoutMs }),
