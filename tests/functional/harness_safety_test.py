@@ -11,6 +11,7 @@ until they pass.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -257,3 +258,79 @@ def test_boot_signature_accepts_none_port() -> None:
         f"default, callers using the documented `boot(nalar_bin)` shape "
         f"would silently get the legacy sequential scan from that port."
     )
+
+
+# ─── XDG isolation must not be platform-gated ─────────────────────────────
+#
+# `getDefaultConfigDir` (Config.zig) resolves $XDG_CONFIG_HOME/nalar
+# BEFORE $HOME/.config/nalar on Linux, and the same XDG-first rule is
+# hand-duplicated for memories/, skills/ and hooks/. The harness used to
+# shadow the XDG vars into the child env only under `if os.name == "nt"`,
+# so on the GitHub Actions ubuntu runner (which exports
+# XDG_CONFIG_HOME=/home/runner/.config) the nalar child wrote config.json
+# into the runner's real home while every test read <temp_dir>/.config.
+# That surfaced as 31 failures in run 36582964531 — all on-disk
+# assertions reading a file the server had never written — and it made
+# results order-dependent, because all harness instances in the job
+# shared that one file.
+#
+# These guards fail if anyone re-gates the XDG shadowing behind a
+# platform check. The parent `os.environ` is deliberately NOT asserted
+# here: shadowing it on Linux/mac is explicitly out of scope.
+
+
+_XDG_ENV_ASSIGNMENT = re.compile(r'^\s*env\["XDG_[A-Z_]+"\]\s*=')
+
+# boot() is a method, so its body sits at 8 spaces. Anything deeper is
+# nested inside an `if` — which is exactly the bug.
+_CHILD_ENV_BODY_INDENT = " " * 8
+
+
+def _assert_xdg_shadowing_is_ungated(filename: str) -> None:
+    """Every `env["XDG_*"] = ...` must sit at method/function body level,
+    not nested inside `if os.name == "nt":`."""
+    path = Path(__file__).parent / filename
+    offenders: list[str] = []
+    found = 0
+    for lineno, line in enumerate(
+        path.read_text().splitlines(), start=1
+    ):
+        if not _XDG_ENV_ASSIGNMENT.match(line):
+            continue
+        found += 1
+        indent = line[: len(line) - len(line.lstrip())]
+        if indent != _CHILD_ENV_BODY_INDENT:
+            offenders.append(
+                f"{filename}:{lineno} is nested at indent {len(indent)} "
+                f"(inside a platform gate?)"
+            )
+    assert found > 0, (
+        f"{filename}: no `env[\"XDG_*\"] = ...` assignment found. If the "
+        f"XDG shadowing was renamed or moved, update this guard."
+    )
+    assert not offenders, (
+        "XDG shadowing must apply on every platform, not just Windows:\n  "
+        + "\n  ".join(offenders)
+        + "\n  On Linux getDefaultConfigDir prefers $XDG_CONFIG_HOME over "
+        "$HOME/.config, so a gated shadowing makes the child write into the "
+        "real home while tests read the tempdir (see run 36582964531)."
+    )
+
+
+def test_harness_xdg_shadowing_is_not_platform_gated() -> None:
+    """FunctionalHarness.boot must shadow XDG for the child on all platforms."""
+    _assert_xdg_shadowing_is_ungated("harness.py")
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["config_simplify_test.py", "config_tools_test.py"],
+)
+def test_private_preboot_fixtures_also_shadow_xdg(filename: str) -> None:
+    """These two files re-implement the spawn instead of calling boot().
+
+    They carry their own copy of the child-env block, so the harness fix
+    does not cover them — they regressed in lockstep and must be guarded
+    separately.
+    """
+    _assert_xdg_shadowing_is_ungated(filename)
