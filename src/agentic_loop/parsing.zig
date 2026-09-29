@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const LLMHistory = @import("llm_history_row.zig").LLMHistory;
+const args_repair = @import("tools_args_repair.zig");
 
 const agent = nalarcore.agent;
 const json = std.json;
@@ -57,12 +58,21 @@ pub fn transformLLMHistoryToAgentMessage(allocator: std.mem.Allocator, message: 
                                 if (a.string.len > 0) args_raw = a.string;
                             }
                         }
+                        // Repair before falling back to "{}". A model that
+                        // pastes a Windows path into `path` writes the
+                        // separators as raw `\`, which is invalid JSON —
+                        // and silently replacing that call with `{}` both
+                        // hides the real failure and feeds the model its own
+                        // call back as an empty object, so it retries the
+                        // same mistake.
                         const safe_args = blk: {
                             if (args_raw.len == 0) break :blk "{}";
-                            _ = std.json.parseFromSlice(std.json.Value, allocator, args_raw, .{}) catch {
-                                break :blk "{}";
-                            };
-                            break :blk args_raw;
+                            const repaired = args_repair.repairToolCallArguments(allocator, args_raw) catch break :blk "{}";
+                            if (repaired) |r| {
+                                defer r.deinit(allocator);
+                                break :blk try allocator.dupe(u8, r.slice());
+                            }
+                            break :blk "{}";
                         };
                         calls[i] = .{
                             .id = try allocator.dupe(u8, id_raw),

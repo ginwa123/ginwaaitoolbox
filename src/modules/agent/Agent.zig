@@ -13,6 +13,9 @@ pub const prompt = @import("prompts.zig");
 pub const LLMModels = @import("LLMModels.zig");
 const helpers = @import("helpers");
 const custom_http_client = @import("kabelweb").client;
+// Leaf module (std-only) shared with the agentic loop — same cross-directory
+// import `prompts.zig` already uses.
+const args_repair = @import("../../agentic_loop/tools_args_repair.zig");
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };
@@ -646,7 +649,6 @@ const AnthropicRequest = struct {
 /// Request shape for POST /v1/responses  (https://developers.openai.com/api/reference/resources/responses)
 /// Mirrors the chat completions feature set: model, input (messages), instructions (system),
 /// max_output_tokens, stream, temperature, reasoning.effort, tools, tool_choice, user.
-
 const ResponsesInputContent = struct {
     /// "input_text" | "input_image" | "input_video"
     content_type: []const u8,
@@ -1773,14 +1775,15 @@ pub const Agent = struct {
             if (msg.tool_calls) |tcs| {
                 const tc_slice = try arena_alloc.alloc(JsonToolCall, tcs.len);
                 for (tcs, 0..) |tc, j| {
+                    // Repair before falling back to "{}": a Windows path
+                    // written with raw backslashes is invalid JSON, and
+                    // substituting "{}" here would both hide that and echo
+                    // the model's own call back to it as an empty object.
                     const normalized_args = blk: {
                         const raw = tc.function.arguments;
                         if (raw.len == 0) break :blk "{}";
-                        const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, raw, .{}) catch {
-                            break :blk "{}";
-                        };
-                        parsed.deinit();
-                        break :blk raw;
+                        const repaired = args_repair.repairToolCallArguments(arena_alloc, raw) catch break :blk "{}";
+                        break :blk if (repaired) |r| r.slice() else "{}";
                     };
                     tc_slice[j] = .{
                         .id = tc.id,

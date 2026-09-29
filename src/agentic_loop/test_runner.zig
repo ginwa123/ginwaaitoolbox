@@ -75,6 +75,11 @@ test {
     _ = @import("tools_exec_read_file.zig");
     _ = @import("tools_exec_write_file.zig");
     _ = @import("tools_exec_text_replace.zig");
+    // Windows absolute paths in tool-call `arguments`: models emit the
+    // separators as raw `\`, which is invalid JSON. Registered here per
+    // this directory's discovery rule (see README.md §"Discovery is NOT
+    // automatic").
+    _ = @import("tools_args_repair.zig");
     _ = @import("tools_exec_remove_file.zig");
     _ = @import("tools_exec_glob.zig");
     _ = @import("tools_exec_search.zig");
