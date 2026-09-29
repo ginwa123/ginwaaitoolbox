@@ -62,7 +62,7 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
           </svg>
         </button>
         <h1
-          class="text-lg font-semibold"
+          class="text-title-sm font-semibold"
           style="color: var(--semantic-text);"
         >Settings</h1>
       </div>
@@ -71,34 +71,34 @@ const handleNotification = (message: string, type: 'success' | 'error') => {
       <nav class="flex-1 py-4 px-3 overflow-y-auto">
         <button
           @click="setSettingsTab('nalar')"
-          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 mb-1"
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-body font-medium transition-all duration-200 mb-1"
           :style="activeSettingsTab === 'nalar'
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
-          <span class="text-lg">🤖</span>
+          <span class="text-title-sm">🤖</span>
           <span>Nalar</span>
         </button>
 
         <button
           @click="setSettingsTab('skills')"
-          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200"
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-body font-medium transition-all duration-200"
           :style="activeSettingsTab === 'skills'
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
-          <span class="text-lg">🛠️</span>
+          <span class="text-title-sm">🛠️</span>
           <span>Skills</span>
         </button>
 
         <button
           @click="setSettingsTab('memories')"
-          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200"
+          class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-body font-medium transition-all duration-200"
           :style="activeSettingsTab === 'memories'
             ? `background-color: var(--semantic-active-bg); color: var(--semantic-active-text);`
             : `color: var(--semantic-text-muted);`"
         >
-          <span class="text-lg">🧠</span>
+          <span class="text-title-sm">🧠</span>
           <span>Memories</span>
         </button>
       </nav>

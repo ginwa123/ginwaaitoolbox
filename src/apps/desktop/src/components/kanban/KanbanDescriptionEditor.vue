@@ -681,11 +681,11 @@ defineExpose({ pendingFiles })
           class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
           style="border-color: var(--color-violet); border-top-color: transparent"
         />
-        <p class="text-sm" style="color: var(--semantic-text-dim)">Searching…</p>
+        <p class="text-body" style="color: var(--semantic-text-dim)">Searching…</p>
       </div>
       <div
         v-else-if="filteredFiles.length === 0"
-        class="p-2 text-sm"
+        class="p-2 text-body"
         style="color: var(--semantic-text-dim)"
       >
         No files found
@@ -695,7 +695,7 @@ defineExpose({ pendingFiles })
           v-for="(file, idx) in visibleFiles"
           :key="file.path"
           type="button"
-          class="w-full text-left px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors"
+          class="w-full text-left px-3 py-1.5 rounded text-body flex items-center gap-2 transition-colors"
           :class="idx === selectedFileIndex ? 'file-item-selected' : ''"
           :style="
             idx === selectedFileIndex
@@ -706,13 +706,13 @@ defineExpose({ pendingFiles })
           @mouseenter="selectedFileIndex = idx"
         >
           <span>{{ file.isDirectory ? '📁' : '📄' }}</span>
-          <span class="truncate font-mono text-xs">{{ file.path }}</span>
+          <span class="truncate font-mono text-dense">{{ file.path }}</span>
         </button>
       </div>
       <!-- Footer info (render cap vs server total) -->
       <div
         v-if="!isLoadingFiles && filteredFiles.length > 0"
-        class="px-3 py-1.5 text-xs rounded mt-1"
+        class="px-3 py-1.5 text-dense rounded mt-1"
         style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim)"
       >
         showing {{ visibleFiles.length }} of {{ serverTotal }} files
@@ -735,7 +735,7 @@ defineExpose({ pendingFiles })
         :maxlength="maxLength ?? undefined"
         :data-testid="testId"
         rows="6"
-        class="flex-1 px-3 py-2.5 rounded-lg text-sm outline-none transition-all duration-200 resize-y"
+        class="flex-1 px-3 py-2.5 rounded-lg text-body outline-none transition-all duration-200 resize-y"
         style="
           background-color: var(--semantic-sidebar-bg);
           border: 1px solid var(--color-border);
@@ -782,7 +782,7 @@ defineExpose({ pendingFiles })
 
     <!-- Char counter -->
     <div
-      class="text-[10px] mt-1 text-right"
+      class="text-micro mt-1 text-right"
       :data-testid="`${testId}-counter`"
       style="color: var(--semantic-text-dim)"
     >

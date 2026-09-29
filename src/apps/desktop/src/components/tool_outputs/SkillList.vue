@@ -55,10 +55,10 @@ defineExpose({
 
     <!-- Error State -->
     <div v-else-if="error" class="text-center py-8">
-      <p class="text-sm" style="color: var(--color-red);">{{ error }}</p>
+      <p class="text-body" style="color: var(--color-red);">{{ error }}</p>
       <button
         @click="loadSkills"
-        class="mt-3 px-4 py-2 rounded-lg text-sm transition-colors duration-200"
+        class="mt-3 px-4 py-2 rounded-lg text-body transition-colors duration-200"
         style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
       >
         Retry
@@ -67,14 +67,14 @@ defineExpose({
 
     <!-- Empty State -->
     <div v-else-if="globalSkills.length === 0 && localSkills.length === 0" class="text-center py-8">
-      <p class="text-sm" style="color: var(--semantic-text-muted);">No skills available</p>
+      <p class="text-body" style="color: var(--semantic-text-muted);">No skills available</p>
     </div>
 
     <!-- Skills List -->
     <div v-else class="space-y-2">
       <!-- Global Skills Section -->
       <div v-if="globalSkills.length > 0">
-        <h4 class="text-xs font-medium mb-2 px-1" style="color: var(--semantic-text-muted);">
+        <h4 class="text-dense font-medium mb-2 px-1" style="color: var(--semantic-text-muted);">
           Global Skills
         </h4>
         <div
@@ -88,12 +88,12 @@ defineExpose({
           @click="openSkillDetail(skill)"
         >
           <div class="flex items-start gap-3">
-            <span class="text-lg mt-0.5">🌐</span>
+            <span class="text-title-sm mt-0.5">🌐</span>
             <div class="flex-1 min-w-0">
-              <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+              <h3 class="text-body font-medium truncate" style="color: var(--semantic-text);">
                 {{ skill.name }}
               </h3>
-              <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
+              <p class="text-dense mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
                 {{ skill.description }}
               </p>
             </div>
@@ -103,7 +103,7 @@ defineExpose({
 
       <!-- Local Skills Section -->
       <div v-if="localSkills.length > 0">
-        <h4 class="text-xs font-medium mb-2 px-1 mt-4" style="color: var(--semantic-text-muted);">
+        <h4 class="text-dense font-medium mb-2 px-1 mt-4" style="color: var(--semantic-text-muted);">
           Local Skills
         </h4>
         <div
@@ -118,13 +118,13 @@ defineExpose({
         >
           <div class="flex items-start gap-3">
             <div class="flex-1 min-w-0">
-              <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+              <h3 class="text-body font-medium truncate" style="color: var(--semantic-text);">
                 {{ skill.name }}
               </h3>
-              <p class="text-xs mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
+              <p class="text-dense mt-1 line-clamp-2" style="color: var(--semantic-text-muted);">
                 {{ skill.description }}
               </p>
-              <p v-if="skill.path" class="text-xs mt-2 truncate" style="color: var(--semantic-text-dim);">
+              <p v-if="skill.path" class="text-dense mt-2 truncate" style="color: var(--semantic-text-dim);">
                 {{ skill.path }}
               </p>
             </div>

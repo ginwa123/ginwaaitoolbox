@@ -211,12 +211,12 @@ function openInNewTab() {
   <div class="preview-content-renderer">
     <div
       v-if="args.title"
-      class="text-sm font-semibold text-[var(--semantic-text)] mb-2 pb-2 border-b border-dashed border-[var(--color-border)]"
+      class="text-body font-semibold text-[var(--semantic-text)] mb-2 pb-2 border-b border-dashed border-[var(--color-border)]"
     >
       {{ args.title }}
       <span
         v-if="args.language && contentType === 'code'"
-        class="ml-2 text-xs text-[var(--semantic-text-muted)] font-normal"
+        class="ml-2 text-dense text-[var(--semantic-text-muted)] font-normal"
         >[{{ args.language }}]</span
       >
     </div>
@@ -233,7 +233,7 @@ function openInNewTab() {
           }
         "
       />
-      <div v-else class="text-xs text-red-500 italic">
+      <div v-else class="text-dense text-red-500 italic">
         Image source invalid (expected data: URL or http(s) URL)
       </div>
     </div>
@@ -267,7 +267,7 @@ function openInNewTab() {
       >
         <button
           type="button"
-          class="px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text)] text-xs cursor-pointer transition-colors"
+          class="px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text)] text-dense cursor-pointer transition-colors"
           data-testid="preview-open-new-tab-button"
           title="Open HTML preview in a new browser tab"
           @click.stop="openInNewTab"
@@ -283,13 +283,13 @@ function openInNewTab() {
     -->
     <div
       v-else
-      class="text-xs text-[var(--semantic-text)] markdown-content"
+      class="text-dense text-[var(--semantic-text)] markdown-content"
       v-html="renderedContent"
     />
 
     <div
       v-if="args.caption"
-      class="mt-2 pt-2 text-xs italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]"
+      class="mt-2 pt-2 text-dense italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]"
     >
       {{ args.caption }}
     </div>

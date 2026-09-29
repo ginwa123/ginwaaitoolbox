@@ -271,7 +271,7 @@ const openTaskMenuInBackground = () => {
       @contextmenu.prevent="onTaskContextMenu"
     >
       <div
-        class="text-[13px] leading-[1.35] truncate"
+        class="text-dense leading-[1.35] truncate"
         style="color: var(--semantic-text)"
         :title="props.task.name"
         data-testid="kanban-row-name"
@@ -292,7 +292,7 @@ const openTaskMenuInBackground = () => {
            rather than on a CSS class (no layout is reserved for it). -->
       <div
         v-if="props.density !== 'compact'"
-        class="flex items-center gap-2 mt-0.5 text-[11px] leading-[1.5] whitespace-nowrap overflow-hidden"
+        class="flex items-center gap-2 mt-0.5 text-meta leading-[1.5] whitespace-nowrap overflow-hidden"
         style="color: var(--semantic-text-muted)"
         data-testid="kanban-row-meta"
       >
@@ -310,7 +310,7 @@ const openTaskMenuInBackground = () => {
         <template v-for="(tag, idx) in visibleTags" :key="`${tag}-${idx}`">
           <span class="shrink-0" style="color: var(--color-nontext)">·</span>
           <span
-            class="shrink-0 text-[10px] px-1.5 rounded font-medium"
+            class="shrink-0 text-micro px-1.5 rounded font-medium"
             :style="tagChipStyle(tag)"
             :data-testid="`kanban-row-tag-${tag}`"
             >{{ tag }}</span
@@ -409,7 +409,7 @@ const openTaskMenuInBackground = () => {
         :data-testid="`kanban-row-${props.task.id}-details`"
         @click.stop="emit('viewTaskDetail', props.task.id)"
       >
-        <span class="text-base leading-none" aria-hidden="true">⋯</span>
+        <span class="text-lead leading-none" aria-hidden="true">⋯</span>
       </button>
 
       <button

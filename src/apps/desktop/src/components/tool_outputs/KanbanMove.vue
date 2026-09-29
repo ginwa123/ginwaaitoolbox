@@ -145,7 +145,7 @@ const copyTaskId = async (e: Event) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess && !isRunning }"
     data-testid="kanban-move"
   >
@@ -156,16 +156,16 @@ const copyTaskId = async (e: Event) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">kanban_move_task</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">kanban_move_task</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="headerTitle"
       >
         {{ headerLabel }}
       </span>
 
       <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
+      <span class="text-dense font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
 
@@ -173,7 +173,7 @@ const copyTaskId = async (e: Event) => {
       <span
         v-if="isRunning"
         data-testid="kanban-move-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+        class="text-micro text-yellow-500 animate-pulse shrink-0"
       >
         running…
       </span>
@@ -181,7 +181,7 @@ const copyTaskId = async (e: Event) => {
       <!-- Copy task_id button (only on success — there's something to copy) -->
       <button
         v-if="isSuccess && taskId"
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
         @click="copyTaskId"
         title="Copy task id"
       >
@@ -189,7 +189,7 @@ const copyTaskId = async (e: Event) => {
       </button>
 
       <!-- Toggle indicator -->
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -199,7 +199,7 @@ const copyTaskId = async (e: Event) => {
       <!-- Error message -->
       <div
         v-if="errorMessage"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
@@ -209,13 +209,13 @@ const copyTaskId = async (e: Event) => {
       <template v-if="isSuccess">
         <div
           v-if="taskName"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Task:</span>
           <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ taskName }}</span>
           <span
             v-if="taskId"
-            class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)] text-[0.65rem] truncate"
+            class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)] text-micro truncate"
             :title="taskId"
           >
             ({{ taskId }})
@@ -224,13 +224,13 @@ const copyTaskId = async (e: Event) => {
 
         <div
           v-if="columnName"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Column:</span>
           <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ columnName }}</span>
           <span
             v-if="columnId"
-            class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)] text-[0.65rem] truncate"
+            class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)] text-micro truncate"
             :title="columnId"
           >
             ({{ columnId }})
@@ -239,7 +239,7 @@ const copyTaskId = async (e: Event) => {
 
         <div
           v-if="position !== null"
-          class="flex gap-2 px-2 py-1.5 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-dense"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Position:</span>
           <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{ position }}</span>

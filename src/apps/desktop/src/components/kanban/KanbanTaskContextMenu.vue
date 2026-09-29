@@ -228,7 +228,7 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
       data-testid="kanban-task-context-menu"
       role="menu"
       :aria-label="`Actions for ${taskName || 'task'}`"
-      class="fixed z-[60] py-1 text-xs rounded-lg shadow-lg min-w-[210px] outline-none"
+      class="fixed z-[60] py-1 text-dense rounded-lg shadow-lg min-w-[210px] outline-none"
       :style="{
         left: `${x}px`,
         top: `${y}px`,
@@ -408,7 +408,7 @@ const onPick = (act: 'pin' | 'rename' | 'detail' | 'chat' | 'details' | 'stop' |
       data-testid="kanban-task-context-menu-sub"
       role="menu"
       aria-label="Move to column"
-      class="fixed z-[61] py-1 text-xs rounded-lg shadow-lg min-w-[190px] max-h-[320px] overflow-y-auto outline-none"
+      class="fixed z-[61] py-1 text-dense rounded-lg shadow-lg min-w-[190px] max-h-[320px] overflow-y-auto outline-none"
       :style="{
         left: `${subPos.left}px`,
         top: `${subPos.top}px`,

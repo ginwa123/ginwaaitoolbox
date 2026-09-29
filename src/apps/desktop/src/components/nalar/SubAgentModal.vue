@@ -39,7 +39,7 @@ function updateSystemPrompt(val: string) {
   >
     <template #extra>
       <div>
-        <label class="block text-xs font-medium mb-1.5" style="color: var(--semantic-text-muted);">
+        <label class="block text-dense font-medium mb-1.5" style="color: var(--semantic-text-muted);">
           System prompt
         </label>
         <textarea
@@ -47,7 +47,7 @@ function updateSystemPrompt(val: string) {
           @input="updateSystemPrompt(($event.target as HTMLTextAreaElement).value)"
           rows="8"
           placeholder="System prompt for this sub-agent…"
-          class="w-full px-3 py-2 rounded-md border text-sm font-sans resize-none"
+          class="w-full px-3 py-2 rounded-md border text-body font-sans resize-none"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>

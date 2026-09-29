@@ -235,7 +235,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !parsed.success }"
     data-testid="list-sub-agent"
   >
@@ -260,7 +260,7 @@ const handleToggle = (next: boolean) => {
       <!-- Error body — always visible when expanded AND error. -->
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="list-sub-agent-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -270,7 +270,7 @@ const handleToggle = (next: boolean) => {
       <!-- Empty result (valid response, no subagents on this profile). -->
       <div
         v-else-if="parsed.isEmpty"
-        class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-xs"
+        class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-dense"
         data-testid="list-sub-agent-empty"
       >
         No subagents on profile {{ parsed.profile }}.

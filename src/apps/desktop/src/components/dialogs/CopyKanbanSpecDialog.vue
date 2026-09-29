@@ -218,14 +218,14 @@ onBeforeUnmount(() => {
               <div class="flex-1 min-w-0">
                 <h3
                   id="copy-kanban-spec-title"
-                  class="text-lg font-semibold flex items-center gap-2"
+                  class="text-title-sm font-semibold flex items-center gap-2"
                   style="color: var(--semantic-text);"
                 >
-                  <span aria-hidden="true" class="text-xl">📋</span>
+                  <span aria-hidden="true" class="text-title">📋</span>
                   Copy spec from…
                 </h3>
                 <p
-                  class="text-xs mt-1.5 leading-relaxed"
+                  class="text-dense mt-1.5 leading-relaxed"
                   style="color: var(--semantic-text-dim);"
                 >
                   Bulk-copy the column layout from another kanban in this
@@ -254,7 +254,7 @@ onBeforeUnmount(() => {
             <!-- Source picker (custom dropdown) -->
             <div data-copy-kanban-spec-picker>
               <label
-                class="block text-xs font-semibold mb-2 uppercase tracking-wide"
+                class="block text-dense font-semibold mb-2 uppercase tracking-wide"
                 style="color: var(--semantic-text-dim);"
               >
                 Source kanban
@@ -263,7 +263,7 @@ onBeforeUnmount(() => {
                 type="button"
                 @click.stop="sourceDropdownOpen = !sourceDropdownOpen"
                 data-testid="copy-kanban-spec-source-trigger"
-                class="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-lg text-sm font-medium transition-colors hover:opacity-90 text-left"
+                class="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 rounded-lg text-body font-medium transition-colors hover:opacity-90 text-left"
                 :style="{
                   backgroundColor: 'var(--semantic-sidebar-bg)',
                   border: '1px solid var(--color-border)',
@@ -316,7 +316,7 @@ onBeforeUnmount(() => {
                       type="button"
                       @click.stop="selectSource(item.id)"
                       :data-testid="`copy-kanban-spec-source-option-${item.id}`"
-                      class="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-sm text-left transition-colors hover:opacity-90"
+                      class="w-full flex items-center justify-between gap-2 px-3.5 py-2.5 text-body text-left transition-colors hover:opacity-90"
                       :style="{
                         backgroundColor:
                           item.id === sourceItemId
@@ -342,7 +342,7 @@ onBeforeUnmount(() => {
                   <li
                     v-if="availableSources.length === 0"
                     data-testid="copy-kanban-spec-empty"
-                    class="px-3.5 py-3 text-xs italic"
+                    class="px-3.5 py-3 text-dense italic"
                     style="color: var(--semantic-text-dim);"
                   >
                     No other kanbans in this workspace. Create another kanban
@@ -361,7 +361,7 @@ onBeforeUnmount(() => {
                 "
               >
                 <div
-                  class="px-3 py-2 text-[11px] font-semibold uppercase tracking-wide"
+                  class="px-3 py-2 text-meta font-semibold uppercase tracking-wide"
                   style="
                     color: var(--semantic-text-dim);
                     border-bottom: 1px solid var(--color-border);
@@ -374,18 +374,18 @@ onBeforeUnmount(() => {
                   <li
                     v-for="(c, idx) in sourceColumns"
                     :key="c.id"
-                    class="flex items-start gap-2 text-xs"
+                    class="flex items-start gap-2 text-dense"
                     style="color: var(--semantic-text);"
                   >
                     <span
-                      class="shrink-0 mt-0.5 font-mono text-[10px]"
+                      class="shrink-0 mt-0.5 font-mono text-micro"
                       style="color: var(--semantic-text-dim);"
                     >{{ idx + 1 }}.</span>
                     <span class="flex-1 min-w-0">
                       <span class="font-medium">{{ c.name || '(unnamed)' }}</span>
                       <span
                         v-if="c.description"
-                        class="block text-[11px] mt-0.5 italic truncate"
+                        class="block text-meta mt-0.5 italic truncate"
                         style="color: var(--semantic-text-dim);"
                         :title="c.description"
                       >{{ c.description }}</span>
@@ -398,7 +398,7 @@ onBeforeUnmount(() => {
             <!-- Mode radio -->
             <fieldset class="mt-6">
               <legend
-                class="block text-xs font-semibold mb-3 uppercase tracking-wide"
+                class="block text-dense font-semibold mb-3 uppercase tracking-wide"
                 style="color: var(--semantic-text-dim);"
               >
                 What should happen to {{ targetName }}'s existing columns?
@@ -429,9 +429,9 @@ onBeforeUnmount(() => {
                   style="accent-color: var(--color-bg);"
                 />
                 <span class="flex-1 min-w-0">
-                  <span class="text-sm font-semibold block">Replace</span>
+                  <span class="text-body font-semibold block">Replace</span>
                   <span
-                    class="block text-xs mt-0.5 leading-relaxed"
+                    class="block text-dense mt-0.5 leading-relaxed"
                     :style="{
                       color:
                         mode === 'replace'
@@ -471,9 +471,9 @@ onBeforeUnmount(() => {
                   style="accent-color: var(--color-bg);"
                 />
                 <span class="flex-1 min-w-0">
-                  <span class="text-sm font-semibold block">Append</span>
+                  <span class="text-body font-semibold block">Append</span>
                   <span
-                    class="block text-xs mt-0.5 leading-relaxed"
+                    class="block text-dense mt-0.5 leading-relaxed"
                     :style="{
                       color:
                         mode === 'append'
@@ -502,7 +502,7 @@ onBeforeUnmount(() => {
               type="button"
               @click="handleClose"
               data-testid="copy-kanban-spec-cancel"
-              class="px-4 py-2 rounded-lg text-sm font-medium transition-opacity hover:opacity-80"
+              class="px-4 py-2 rounded-lg text-body font-medium transition-opacity hover:opacity-80"
               style="
                 background-color: transparent;
                 border: 1px solid var(--color-border);
@@ -516,7 +516,7 @@ onBeforeUnmount(() => {
               @click="handleCopy"
               :disabled="!sourceItemId || availableSources.length === 0"
               data-testid="copy-kanban-spec-confirm"
-              class="px-4 py-2 rounded-lg text-sm font-semibold transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-4 py-2 rounded-lg text-body font-semibold transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
                 background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
                 color: var(--color-bg);

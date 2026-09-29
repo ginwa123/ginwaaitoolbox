@@ -79,13 +79,13 @@ onMounted(() => {
         v-else-if="error"
         class="flex-1 flex flex-col items-center justify-center p-4 text-center"
       >
-        <span class="text-2xl mb-2">⚠️</span>
-        <p class="text-xs" style="color: var(--semantic-text-dim);">
+        <span class="text-title-lg mb-2">⚠️</span>
+        <p class="text-dense" style="color: var(--semantic-text-dim);">
           {{ error }}
         </p>
         <button
           @click="refreshSkills"
-          class="mt-3 px-3 py-1.5 rounded text-xs transition-colors"
+          class="mt-3 px-3 py-1.5 rounded text-dense transition-colors"
           style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
         >
           Retry
@@ -97,8 +97,8 @@ onMounted(() => {
         v-else-if="!hasSkills"
         class="flex-1 flex flex-col items-center justify-center p-4 text-center"
       >
-        <span class="text-3xl mb-3">🧠</span>
-        <p class="text-xs" style="color: var(--semantic-text-dim);">
+        <span class="text-display mb-3">🧠</span>
+        <p class="text-dense" style="color: var(--semantic-text-dim);">
           No skills available
         </p>
       </div>
@@ -109,7 +109,7 @@ onMounted(() => {
         <div v-if="globalSkills.length > 0">
           <button
             type="button"
-            class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors hover:opacity-80 text-left"
+            class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-dense font-semibold uppercase tracking-wide transition-colors hover:opacity-80 text-left"
             style="color: var(--semantic-text-muted);"
             @click="sidebarStore.toggleSkillsGlobalExpanded"
           >
@@ -126,13 +126,13 @@ onMounted(() => {
             <button
               v-for="skill in globalSkills"
               :key="'global-' + skill.name"
-              class="w-full flex flex-col items-start gap-1 px-3 py-2 text-sm transition-colors hover:opacity-80 text-left"
+              class="w-full flex flex-col items-start gap-1 px-3 py-2 text-body transition-colors hover:opacity-80 text-left"
               @click="handleSkillClick(skill)"
             >
               <span class="font-medium" style="color: var(--semantic-text);">
                 {{ skill.name }}
               </span>
-              <span class="text-xs line-clamp-2" style="color: var(--semantic-text-dim);">
+              <span class="text-dense line-clamp-2" style="color: var(--semantic-text-dim);">
                 {{ skill.description }}
               </span>
             </button>
@@ -143,7 +143,7 @@ onMounted(() => {
         <div v-if="localSkills.length > 0" class="mt-2">
           <button
             type="button"
-            class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-colors hover:opacity-80 text-left"
+            class="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-dense font-semibold uppercase tracking-wide transition-colors hover:opacity-80 text-left"
             style="color: var(--semantic-text-muted);"
             @click="sidebarStore.toggleSkillsLocalExpanded"
           >
@@ -160,16 +160,16 @@ onMounted(() => {
             <button
               v-for="skill in localSkills"
               :key="'local-' + skill.name"
-              class="w-full flex flex-col items-start gap-1 px-3 py-2 text-sm transition-colors hover:opacity-80 text-left"
+              class="w-full flex flex-col items-start gap-1 px-3 py-2 text-body transition-colors hover:opacity-80 text-left"
               @click="handleSkillClick(skill)"
             >
               <span class="font-medium" style="color: var(--semantic-text);">
                 {{ skill.name }}
               </span>
-              <span class="text-xs line-clamp-2" style="color: var(--semantic-text-dim);">
+              <span class="text-dense line-clamp-2" style="color: var(--semantic-text-dim);">
                 {{ skill.description }}
               </span>
-              <span v-if="skill.path" class="text-xs truncate" style="color: var(--semantic-text-muted);">
+              <span v-if="skill.path" class="text-dense truncate" style="color: var(--semantic-text-muted);">
                 {{ skill.path }}
               </span>
             </button>
@@ -180,7 +180,7 @@ onMounted(() => {
 
     <!-- Footer -->
     <div
-      class="h-8 flex items-center justify-between px-3 shrink-0 text-xs"
+      class="h-8 flex items-center justify-between px-3 shrink-0 text-dense"
       style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim);"
     >
       <span>{{ globalSkills.length + localSkills.length }} skills</span>

@@ -603,7 +603,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           @click="handleClick($event)"
           @auxclick="onItemRowAuxClick"
           @contextmenu.prevent="onItemRowContextMenu"
-          class="relative flex-1 flex items-center gap-0.5 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-[var(--sb-fs-row)] transition-colors duration-150"
+          class="relative flex-1 flex items-center gap-0.5 px-[var(--sb-gutter)] h-[var(--sb-row)] rounded-lg text-dense transition-colors duration-150"
           :style="
             isCurrentMainView
               ? `background-color: #262522; color: var(--semantic-text);`
@@ -615,7 +615,7 @@ const handlePinnedDrop = (event: DragEvent) => {
                self-positioning (absolute bottom-0). -->
           <!-- Chevron — 24px hit-area (v3), rotates when expanded. -->
           <span
-            class="w-[var(--sb-hit)] h-[var(--sb-hit)] shrink-0 flex items-center justify-center text-[var(--sb-fs-icon)] transition-transform duration-200 cursor-pointer rounded-md hover:bg-[#2e2d2a]"
+            class="w-[var(--sb-hit)] h-[var(--sb-hit)] shrink-0 flex items-center justify-center text-meta transition-transform duration-200 cursor-pointer rounded-md hover:bg-[#2e2d2a]"
             data-testid="item-row-chevron"
             :style="{
               transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
@@ -632,7 +632,7 @@ const handlePinnedDrop = (event: DragEvent) => {
                actions appear (actions live in their own fixed slot). -->
           <span
             v-if="!item.isLoading && (item.tasks?.length || 0) > 0"
-            class="ml-auto text-[var(--sb-fs-meta)] item-count shrink-0"
+            class="ml-auto text-micro item-count shrink-0"
             style="color: var(--semantic-text-dim); opacity: 0.7"
             data-testid="item-task-count"
           >
@@ -685,7 +685,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           <button
             v-if="item.item_type !== 'kanban' && item.item_type !== 'routine'"
             @click="handleAddTask"
-            class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-[var(--sb-fs-icon)] leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
+            class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-green-400"
             style="color: var(--semantic-text-dim)"
             title="Add Task"
             aria-label="Add Task"
@@ -696,7 +696,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           <!-- Delete Item Button (always visible). Unicode × glyph. -->
           <button
             @click="handleDelete"
-            class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-[var(--sb-fs-icon)] leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
+            class="item-action w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta leading-none flex items-center justify-center rounded-md opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity duration-150 hover:text-red-400"
             style="color: var(--semantic-text-dim)"
             title="Delete Item"
             aria-label="Delete Item"
@@ -790,7 +790,7 @@ const handlePinnedDrop = (event: DragEvent) => {
           data-testid="load-more-tasks"
           :disabled="isLoadingMoreTasksForSidebar"
           @click="handleLoadMoreTasks"
-          class="w-full flex items-center justify-center gap-1.5 px-[var(--sb-gutter)] py-1 rounded text-[var(--sb-fs-meta)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
+          class="w-full flex items-center justify-center gap-1.5 px-[var(--sb-gutter)] py-1 rounded text-micro transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
           style="color: var(--semantic-text-dim)"
         >
           <span v-if="isLoadingMoreTasksForSidebar" class="w-3 h-3">
@@ -861,7 +861,7 @@ const handlePinnedDrop = (event: DragEvent) => {
         <button
           type="button"
           @click="handleAddDesignPage"
-          class="w-full text-left px-[var(--sb-gutter)] py-1 rounded text-[var(--sb-fs-meta)] transition-colors hover:bg-[#2e2d2a]"
+          class="w-full text-left px-[var(--sb-gutter)] py-1 rounded text-micro transition-colors hover:bg-[#2e2d2a]"
           style="color: var(--semantic-text-dim); opacity: 0.7"
           data-testid="design-sidebar-add-page-button"
           :title="`Add a new page to ${item.name}`"

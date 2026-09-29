@@ -85,7 +85,7 @@ const copyThought = async (e: Event) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !isUpdated }"
   >
     <!-- Header -->
@@ -96,11 +96,11 @@ const copyThought = async (e: Event) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">update_activity</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">update_activity</span>
 
       <!-- Show compact view if we have parsed parts -->
       <template v-if="thoughtParts">
-        <span class="text-[var(--semantic-text-muted)] text-xs">{{ thoughtParts.timestamp }}</span>
+        <span class="text-[var(--semantic-text-muted)] text-dense">{{ thoughtParts.timestamp }}</span>
         <span class="text-[var(--semantic-text-dim)]">•</span>
         <span
           class="text-[var(--color-violet)] font-medium truncate max-w-[120px]"
@@ -124,17 +124,17 @@ const copyThought = async (e: Event) => {
         {{ thoughtContent }}
       </span>
 
-      <span class="text-xs font-semibold" :class="isUpdated ? 'text-green-500' : 'text-red-500'">
+      <span class="text-dense font-semibold" :class="isUpdated ? 'text-green-500' : 'text-red-500'">
         {{ statusIcon }}
       </span>
       <button
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
         @click="copyThought"
         title="Copy thought"
       >
         ⎘
       </button>
-      <span v-if="errorMessage" class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span v-if="errorMessage" class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -142,13 +142,13 @@ const copyThought = async (e: Event) => {
     <!-- Expanded content -->
     <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <!-- Error message -->
-      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-dense">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
 
       <!-- Parsed thought details -->
-      <div v-else-if="thoughtParts" class="p-2 space-y-1 text-xs">
+      <div v-else-if="thoughtParts" class="p-2 space-y-1 text-dense">
         <div class="flex items-center gap-2">
           <span class="text-[var(--semantic-text-muted)] w-16">Timestamp:</span>
           <span class="text-[var(--semantic-text)]">{{ thoughtParts.timestamp }}</span>
@@ -178,7 +178,7 @@ const copyThought = async (e: Event) => {
       <!-- Raw thought if parsing failed -->
       <div
         v-else-if="thoughtContent"
-        class="p-2 text-[var(--semantic-text)] text-xs whitespace-pre-wrap"
+        class="p-2 text-[var(--semantic-text)] text-dense whitespace-pre-wrap"
       >
         {{ thoughtContent }}
       </div>

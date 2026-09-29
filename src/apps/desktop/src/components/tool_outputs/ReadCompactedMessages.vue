@@ -189,7 +189,7 @@ const toggleContent = (id: string): void => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="isError ? 'border-red-500/50 opacity-90' : ''"
     data-testid="read-compacted-messages"
   >
@@ -200,11 +200,11 @@ const toggleContent = (id: string): void => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">
+      <span class="text-[var(--color-violet)] font-semibold text-dense">
         read_compacted_messages
       </span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="summaryText"
       >
         {{ summaryText }}
@@ -212,17 +212,17 @@ const toggleContent = (id: string): void => {
 
       <span
         v-if="isError"
-        class="text-red-500 text-[0.65rem] font-medium shrink-0"
+        class="text-red-500 text-micro font-medium shrink-0"
       >
         Error
       </span>
 
-      <span v-if="isRunning" data-testid="read-compacted-messages-running" class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0">running…</span>
+      <span v-if="isRunning" data-testid="read-compacted-messages-running" class="text-micro text-yellow-500 animate-pulse shrink-0">running…</span>
 
       <!-- Toggle indicator: hidden when there's nothing to expand -->
       <span
         v-if="hasEntries || isError"
-        class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
+        class="w-4 text-center text-[var(--semantic-text-muted)] text-body shrink-0"
       >
         {{ isExpanded ? '−' : '+' }}
       </span>
@@ -236,7 +236,7 @@ const toggleContent = (id: string): void => {
       <!-- Error body -->
       <div
         v-if="isError"
-        class="px-3 py-2 text-red-500 text-[0.72rem] break-words"
+        class="px-3 py-2 text-red-500 text-meta break-words"
         data-testid="rcm-error"
       >
         {{ errorMessage }}
@@ -245,7 +245,7 @@ const toggleContent = (id: string): void => {
       <!-- Empty result (valid response, 0 entries) -->
       <div
         v-else-if="!hasEntries"
-        class="px-3 py-4 text-center text-[var(--semantic-text-muted)] text-xs"
+        class="px-3 py-4 text-center text-[var(--semantic-text-muted)] text-dense"
         data-testid="rcm-empty"
       >
         No messages found
@@ -294,7 +294,7 @@ const toggleContent = (id: string): void => {
             <!-- Timestamp -->
             <span
               v-if="entry.created_at"
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
               :title="`Created at ${entry.created_at}`"
             >
               {{ entry.created_at }}
@@ -322,7 +322,7 @@ const toggleContent = (id: string): void => {
           <!-- Preview -->
           <p
             v-if="entry.preview"
-            class="mt-1 ml-0 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+            class="mt-1 ml-0 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
             :title="entry.preview"
           >
             {{ entry.preview }}

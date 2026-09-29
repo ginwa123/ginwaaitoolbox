@@ -312,14 +312,14 @@ const handleMoveDown = (elementId: string): void => {
     data-testid="layers-panel"
   >
     <div
-      class="px-3 py-2 text-xs font-semibold shrink-0"
+      class="px-3 py-2 text-dense font-semibold shrink-0"
       style="color: var(--semantic-text-dim); border-bottom: 1px solid var(--color-border);"
     >
       Layers ({{ elements.length }})
     </div>
     <div
       v-if="elements.length === 0"
-      class="flex-1 flex items-center justify-center p-4 text-xs"
+      class="flex-1 flex items-center justify-center p-4 text-dense"
       style="color: var(--semantic-text-dim);"
       data-testid="layers-panel-empty"
     >

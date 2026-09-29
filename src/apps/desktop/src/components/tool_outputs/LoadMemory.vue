@@ -278,7 +278,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': isError }"
     data-testid="load-memory"
   >
@@ -289,9 +289,9 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">load_memory</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">load_memory</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="summaryText"
       >
         {{ summaryText }}
@@ -300,7 +300,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       <!-- "showing N of M" badge when paginated -->
       <span
         v-if="isPaginated"
-        class="text-[0.65rem] font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
+        class="text-micro font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
         :title="`Page contains ${count} hits out of ${totalCount} total matches`"
         data-testid="load-memory-page-badge"
       >
@@ -310,27 +310,27 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       <!-- "with content" pill when with_content=true was passed -->
       <span
         v-if="withContent && hasEntries"
-        class="text-[0.65rem] font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
+        class="text-micro font-medium px-1.5 py-0.5 rounded bg-violet-500/10 text-[var(--color-violet)] shrink-0"
         title="Caller passed with_content=true — full bodies are available below"
         data-testid="load-memory-with-content-badge"
       >
         with content
       </span>
 
-      <span v-if="isError" class="text-red-500 text-[0.65rem] font-medium shrink-0"> Error </span>
+      <span v-if="isError" class="text-red-500 text-micro font-medium shrink-0"> Error </span>
 
       <!-- Live badge (tool call underway, envelope still empty) -->
       <span
         v-if="isRunning"
         data-testid="load-memory-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+        class="text-micro text-yellow-500 animate-pulse shrink-0"
       >
         running…
       </span>
 
       <span
         v-if="hasEntries || isError || hasArgs"
-        class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0"
+        class="w-4 text-center text-[var(--semantic-text-muted)] text-body shrink-0"
       >
         {{ isExpanded ? '−' : '+' }}
       </span>
@@ -340,7 +340,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
          user sees the failure without an extra click. -->
     <div
       v-if="isError"
-      class="border-t border-[var(--color-border)] px-3 py-2 text-red-500 text-[0.72rem] break-words"
+      class="border-t border-[var(--color-border)] px-3 py-2 text-red-500 text-meta break-words"
       data-testid="load-memory-error"
     >
       {{ errorMessage }}
@@ -352,7 +352,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
          discover "no results". -->
     <div
       v-else-if="!hasEntries && !isRunning"
-      class="border-t border-[var(--color-border)] px-3 py-4 text-center text-[var(--semantic-text-muted)] text-xs"
+      class="border-t border-[var(--color-border)] px-3 py-4 text-center text-[var(--semantic-text-muted)] text-dense"
       data-testid="load-memory-empty"
     >
       No memories match "{{ queryText }}"
@@ -401,7 +401,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           <!-- Created / Updated timestamps -->
           <span
             v-if="entry.created_at"
-            class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+            class="text-[var(--semantic-text-dim)] text-micro shrink-0"
             :title="`Created at ${entry.created_at}`"
             :data-testid="`load-memory-entry-created-at-${idx}`"
           >
@@ -409,7 +409,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
           </span>
           <span
             v-if="entry.updated_at"
-            class="text-[var(--semantic-text-dim)] text-[0.65rem] shrink-0"
+            class="text-[var(--semantic-text-dim)] text-micro shrink-0"
             :title="`Updated at ${entry.updated_at}`"
             :data-testid="`load-memory-entry-updated-at-${idx}`"
           >
@@ -420,7 +420,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         <!-- Snippet with [match] markers highlighted -->
         <p
           v-if="entry.snippet"
-          class="mt-1 text-[0.72rem] text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+          class="mt-1 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
           :data-testid="`load-memory-entry-snippet-${idx}`"
         >
           <template v-for="(seg, segIdx) in parseSnippet(entry.snippet)" :key="segIdx">

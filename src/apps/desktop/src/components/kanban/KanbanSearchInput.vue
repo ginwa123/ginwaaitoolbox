@@ -51,7 +51,7 @@ const onKeyDown = (e: KeyboardEvent) => {
       @keydown="onKeyDown"
       type="text"
       placeholder="🔍 Search tasks…"
-      class="w-48 px-2 py-1 pr-7 rounded text-xs outline-none focus:ring-1"
+      class="w-48 px-2 py-1 pr-7 rounded text-dense outline-none focus:ring-1"
       style="
         background-color: var(--semantic-card-bg);
         border: 1px solid var(--color-border);

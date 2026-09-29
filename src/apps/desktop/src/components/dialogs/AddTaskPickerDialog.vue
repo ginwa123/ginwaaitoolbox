@@ -72,12 +72,12 @@ const handleKeydown = (event: KeyboardEvent) => {
           <!-- Header -->
           <div class="px-5 pt-5 pb-4">
             <h3
-              class="text-base font-semibold"
+              class="text-lead font-semibold"
               style="color: var(--semantic-text);"
             >
               New Task
             </h3>
-            <p v-if="projectName" class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+            <p v-if="projectName" class="text-dense mt-1" style="color: var(--semantic-text-dim);">
               Add task to "{{ projectName }}"
             </p>
           </div>
@@ -92,9 +92,9 @@ const handleKeydown = (event: KeyboardEvent) => {
               class="flex flex-col items-start gap-2 p-4 rounded-lg text-left transition-all duration-200 hover:scale-[1.02]"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);"
             >
-              <span class="text-2xl" aria-hidden="true">💬</span>
-              <span class="text-sm font-semibold" style="color: var(--semantic-text);">Standard Chat</span>
-              <span class="text-xs" style="color: var(--semantic-text-dim);">
+              <span class="text-title-lg" aria-hidden="true">💬</span>
+              <span class="text-body font-semibold" style="color: var(--semantic-text);">Standard Chat</span>
+              <span class="text-dense" style="color: var(--semantic-text-dim);">
                 An interactive chat with the AI. You send messages, the AI responds.
               </span>
             </button>
@@ -110,9 +110,9 @@ const handleKeydown = (event: KeyboardEvent) => {
               class="flex flex-col items-start gap-2 p-4 rounded-lg text-left transition-all duration-200 hover:scale-[1.02]"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);"
             >
-              <span class="text-2xl" aria-hidden="true">📝</span>
-              <span class="text-sm font-semibold" style="color: var(--semantic-text);">Memory</span>
-              <span class="text-xs" style="color: var(--semantic-text-dim);">
+              <span class="text-title-lg" aria-hidden="true">📝</span>
+              <span class="text-body font-semibold" style="color: var(--semantic-text);">Memory</span>
+              <span class="text-dense" style="color: var(--semantic-text-dim);">
                 A local .md file. The AI sees its content on every chat in this project.
               </span>
             </button>
@@ -122,7 +122,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="px-5 pb-5 flex justify-end">
             <button
               @click="handleClose"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
             >
               Cancel

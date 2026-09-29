@@ -176,17 +176,17 @@ const handleClose = () => {
             />
           </svg>
         </button>
-        <span class="text-lg shrink-0">{{ getFileIcon(fileName) }}</span>
+        <span class="text-title-sm shrink-0">{{ getFileIcon(fileName) }}</span>
         <div class="flex items-center gap-2 min-w-0">
           <span
-            class="text-sm font-medium truncate"
+            class="text-body font-medium truncate"
             style="color: var(--semantic-text)"
             :title="filePath"
           >
             {{ fileName }}
           </span>
           <span
-            class="text-xs px-2 py-0.5 rounded shrink-0"
+            class="text-dense px-2 py-0.5 rounded shrink-0"
             style="background-color: var(--semantic-active-bg); color: var(--semantic-text-dim)"
             data-testid="code-editor-line-count"
           >
@@ -198,7 +198,7 @@ const handleClose = () => {
       <div class="flex items-center gap-2 shrink-0">
         <!-- Language indicator -->
         <span
-          class="text-xs px-2 py-1 rounded"
+          class="text-dense px-2 py-1 rounded"
           style="background-color: var(--semantic-active-bg); color: var(--semantic-text-muted)"
           data-testid="code-editor-language"
         >
@@ -220,7 +220,7 @@ const handleClose = () => {
     >
       <div
         v-if="!hasContent"
-        class="flex flex-col items-center justify-center h-full italic text-xs"
+        class="flex flex-col items-center justify-center h-full italic text-dense"
         style="color: var(--semantic-text-dim)"
         data-testid="code-editor-empty"
       >
@@ -261,7 +261,7 @@ const handleClose = () => {
     <!-- Footer with file path -->
     <div
       v-if="cwd || filePath"
-      class="h-6 flex items-center px-3 shrink-0 text-xs truncate"
+      class="h-6 flex items-center px-3 shrink-0 text-dense truncate"
       style="
         background-color: var(--color-bg-m2);
         border-top: 1px solid var(--color-border);

@@ -1,12 +1,19 @@
 /**
- * The sidebar's spacing and type contract.
+ * The sidebar's spacing contract.
  *
- * Nine font sizes, four left edges and three row heights accumulated in
- * this panel because nothing ever asserted a measurement — the one
- * "contract" comment in the tree pointed at a spec that did not exist.
- * These tests assert the values against the --sb-* tokens, so a row that
- * hand-rolls its own pixel count fails here rather than in a screenshot
- * review.
+ * Four left edges and three row heights accumulated in this panel because
+ * nothing ever asserted a measurement — the one "contract" comment in the
+ * tree pointed at a spec that did not exist. These tests assert the values
+ * against the --sb-* geometry tokens, so a row that hand-rolls its own
+ * pixel count fails here rather than in a screenshot review.
+ *
+ * Type used to live here too, as four --sb-fs-* tokens. It does not any
+ * more: the sidebar picks steps off the app-wide scale in style.css
+ * (see type-scale.spec.ts), so a sidebar label and the same label in a
+ * dialog are the same number by construction. The tests below still pin
+ * WHICH step each part of the panel uses, because "smallest" is not a
+ * contract — 10px for a section title and 10px for a timestamp is a
+ * decision, and it is the one the reviewer asked to shrink.
  *
  * Deliberately NOT a pixel-diff of a screenshot: that fails on a 1px
  * antialiasing change and passes on a 14px indent regression.
@@ -22,15 +29,15 @@ import { dirname, resolve } from 'node:path'
 
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
+/**
+ * Geometry only. There is deliberately no --sb-fs-* here: font size is
+ * not a sidebar concern, it is an app-wide one (type-scale.spec.ts).
+ */
 const TOKENS: Record<string, string> = {
   '--sb-gutter': '12px',
   '--sb-row': '32px',
   '--sb-indent': '12px',
   '--sb-hit': '24px',
-  '--sb-fs-section': '11px',
-  '--sb-fs-row': '13px',
-  '--sb-fs-meta': '11px',
-  '--sb-fs-icon': '12px',
 }
 
 /** The files that make up the three left-sidebar menus. */
@@ -140,13 +147,13 @@ describe('sidebar spacing + type scale', () => {
   })
 
   it('has no leftover arbitrary font sizes in the menu rows', () => {
-    // 11px meta/section, 12px glyph, 13px row. A 9/10/14/15/16/20 in a
-    // menu row is exactly the drift this file exists to catch.
+    // Handled app-wide by type-scale.spec.ts; repeated here because the
+    // sidebar is the panel most likely to grow its own private scale
+    // back. A 9/10/14/15/16/20 in a menu row is exactly the drift this
+    // file exists to catch.
     const found = collect((line) => {
       const px = /text-\[(\d+)px\]/.exec(line)?.[1]
-      return px !== undefined && !['11', '12', '13'].includes(px)
-        ? `text-[${px}px] — use var(--sb-fs-*)`
-        : null
+      return px !== undefined ? `text-[${px}px] — pick a step off the type scale` : null
     })
     expect(found).toEqual({})
   })
@@ -154,9 +161,29 @@ describe('sidebar spacing + type scale', () => {
   it('gives every row in all three menus the same label size', () => {
     // The complaint that started this: a chat name rendered at 14px in
     // Recent and 12px nested under a project, with the owning project
-    // at 13px in between.
-    const missing = ROW_FILES.filter((f) => !read(f).includes('text-[var(--sb-fs-row)]'))
+    // at 13px in between. 12px (`text-dense`) is the row step.
+    const missing = ROW_FILES.filter((f) => !read(f).includes('text-dense'))
     expect(missing).toEqual([])
+  })
+
+  it('never sizes a sidebar row above the step the rows use', () => {
+    // The popups are the part that goes wrong quietly: the switcher's
+    // "+ New workspace" footer and its own workspace options sit in ONE
+    // panel, and the options used to be 14px while the footer was 12px.
+    const found = collect((line) => {
+      const m =
+        /(?<![\w-])text-(body|lead|title-sm|title|title-lg|display|display-lg)(?![\w-])/.exec(line)
+      return m ? `${m[0]} — a sidebar row is text-dense (12px)` : null
+    })
+    expect(found).toEqual({})
+  })
+
+  it('keeps the sidebar on the one app-wide scale (no private copy)', () => {
+    // --sb-fs-* was the sidebar's private copy of the app scale. Two
+    // lists of font sizes drift; that is the bug this task reported.
+    const offenders = MENU_FILES.filter((f) => /--sb-fs-/.test(read(f)))
+    expect(offenders).toEqual([])
+    expect(read('style.css')).not.toContain('--sb-fs-')
   })
 
   it('does not claim a test contract that does not exist (D17)', () => {

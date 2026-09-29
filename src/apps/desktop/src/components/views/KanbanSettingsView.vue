@@ -570,7 +570,7 @@ function sortedColumns() {
       class="flex-1 flex items-center justify-center p-8"
       data-testid="kanban-settings-page-no-item"
     >
-      <p class="text-sm" style="color: var(--semantic-text-dim)">
+      <p class="text-body" style="color: var(--semantic-text-dim)">
         No kanban selected. Open this page from a kanban board's ⚙ Settings button.
       </p>
     </div>
@@ -579,7 +579,7 @@ function sortedColumns() {
       class="flex-1 flex items-center justify-center p-8"
       data-testid="kanban-settings-page-not-found"
     >
-      <p class="text-sm" style="color: var(--semantic-text-dim)">
+      <p class="text-body" style="color: var(--semantic-text-dim)">
         That kanban doesn't exist or has been deleted.
       </p>
     </div>
@@ -611,19 +611,19 @@ function sortedColumns() {
           </svg>
         </button>
         <h1
-          class="text-base font-semibold flex items-center gap-2"
+          class="text-lead font-semibold flex items-center gap-2"
           style="color: var(--semantic-text)"
           data-testid="kanban-settings-page-title"
         >
           <span aria-hidden="true">⚙️</span>
           <span>Kanban Settings</span>
-          <span style="color: var(--semantic-text-dim)" class="text-sm font-normal">·</span>
+          <span style="color: var(--semantic-text-dim)" class="text-body font-normal">·</span>
           <InlineEditableText
             :value="item.name"
             :placeholder="'unnamed kanban'"
             :ariaLabel="'kanban name'"
             :testId="`kanban-settings-page-rename`"
-            display-class="text-sm font-normal ml-1"
+            display-class="text-body font-normal ml-1"
             @save="(newName) => emit('renameItem', newName)"
           />
         </h1>
@@ -643,7 +643,7 @@ function sortedColumns() {
           type="button"
           @click="settingsMode = 'columns'"
           data-testid="kanban-settings-page-tab-columns"
-          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+          class="px-3 py-2 text-dense font-medium rounded-t-lg transition-colors"
           :style="
             settingsMode === 'columns'
               ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
@@ -656,7 +656,7 @@ function sortedColumns() {
           type="button"
           @click="settingsMode = 'agent'"
           data-testid="kanban-settings-page-tab-agent"
-          class="px-3 py-2 text-xs font-medium rounded-t-lg transition-colors"
+          class="px-3 py-2 text-dense font-medium rounded-t-lg transition-colors"
           :style="
             settingsMode === 'agent'
               ? 'background-color: var(--semantic-card-bg); color: var(--semantic-text); border: 1px solid var(--color-border); border-bottom-color: var(--semantic-card-bg); margin-bottom: -1px;'
@@ -678,7 +678,7 @@ function sortedColumns() {
           "
           data-testid="kanban-settings-page-add-form"
         >
-          <h4 class="text-xs font-semibold mb-2" style="color: var(--semantic-text-dim)">
+          <h4 class="text-dense font-semibold mb-2" style="color: var(--semantic-text-dim)">
             Add a new column
           </h4>
           <div class="flex gap-2 mb-2">
@@ -687,7 +687,7 @@ function sortedColumns() {
               type="text"
               placeholder="Column name"
               data-testid="kanban-settings-page-add-name"
-              class="flex-1 px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              class="flex-1 px-3 py-2 rounded-lg text-body outline-none transition-all duration-200"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -700,7 +700,7 @@ function sortedColumns() {
               @click="handleAddSubmit"
               :disabled="!newColumnName.trim()"
               data-testid="kanban-settings-page-add-submit"
-              class="px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              class="px-3 py-2 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
               style="
                 background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
                 color: var(--color-bg);
@@ -716,7 +716,7 @@ function sortedColumns() {
             rows="2"
             placeholder="Description (optional) — what does this column mean?"
             data-testid="kanban-settings-page-add-description"
-            class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 resize-y"
+            class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200 resize-y"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -749,7 +749,7 @@ function sortedColumns() {
             >
               <div class="flex-1 min-w-0">
                 <div
-                  class="text-sm font-medium truncate"
+                  class="text-body font-medium truncate"
                   style="color: var(--semantic-text)"
                   :data-testid="`kanban-settings-page-column-name-${col.id}`"
                 >
@@ -757,7 +757,7 @@ function sortedColumns() {
                 </div>
                 <div
                   v-if="col.description"
-                  class="text-xs mt-0.5 truncate"
+                  class="text-dense mt-0.5 truncate"
                   style="color: var(--semantic-text-dim)"
                   :title="col.description"
                   :data-testid="`kanban-settings-page-column-description-${col.id}`"
@@ -766,7 +766,7 @@ function sortedColumns() {
                 </div>
                 <div
                   v-else
-                  class="text-xs mt-0.5 italic"
+                  class="text-dense mt-0.5 italic"
                   style="color: var(--semantic-text-dim)"
                   :data-testid="`kanban-settings-page-column-description-${col.id}`"
                 >
@@ -778,7 +778,7 @@ function sortedColumns() {
                   type="button"
                   @click="handleEditColumn(col.id)"
                   :data-testid="`kanban-settings-page-edit-${col.id}`"
-                  class="px-2 py-1 rounded text-xs font-medium transition-opacity duration-200 hover:opacity-80"
+                  class="px-2 py-1 rounded text-dense font-medium transition-opacity duration-200 hover:opacity-80"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);
@@ -791,7 +791,7 @@ function sortedColumns() {
                   type="button"
                   @click="handleDeleteColumn(col.id)"
                   :data-testid="`kanban-settings-page-delete-${col.id}`"
-                  class="px-2 py-1 rounded text-xs font-medium transition-opacity duration-200 hover:opacity-80"
+                  class="px-2 py-1 rounded text-dense font-medium transition-opacity duration-200 hover:opacity-80"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);
@@ -817,7 +817,7 @@ function sortedColumns() {
             type="button"
             @click="emit('copySpec')"
             data-testid="kanban-settings-page-copy-spec"
-            class="px-3 py-1.5 rounded-lg text-sm font-medium transition-opacity duration-200 hover:opacity-80"
+            class="px-3 py-1.5 rounded-lg text-body font-medium transition-opacity duration-200 hover:opacity-80"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -827,7 +827,7 @@ function sortedColumns() {
             <span aria-hidden="true">📋</span>
             <span class="ml-1">Copy spec from…</span>
           </button>
-          <p class="text-[11px] mt-2 italic" style="color: var(--semantic-text-dim)">
+          <p class="text-meta mt-2 italic" style="color: var(--semantic-text-dim)">
             Bulk-copy column names + descriptions from another kanban in this workspace. Tasks are
             not copied.
           </p>
@@ -873,7 +873,7 @@ function sortedColumns() {
               </div>
               <div
                 v-else
-                class="text-xs text-center py-6 px-4 rounded-lg"
+                class="text-dense text-center py-6 px-4 rounded-lg"
                 style="
                   color: var(--semantic-text-dim);
                   background-color: var(--semantic-sidebar-bg);
@@ -881,7 +881,7 @@ function sortedColumns() {
                 "
                 data-testid="kanban-settings-page-agent-memories-no-path"
               >
-                <div class="text-lg mb-1" aria-hidden="true">📁</div>
+                <div class="text-title-sm mb-1" aria-hidden="true">📁</div>
                 <div>No directory is set on this kanban.</div>
                 <div class="mt-1">Pick one when creating the kanban to enable local memories.</div>
               </div>

@@ -661,7 +661,7 @@ defineExpose({
     >
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-80"
+        class="text-dense px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-files"
         role="tab"
         :aria-selected="activeTab === 'files'"
@@ -680,7 +680,7 @@ defineExpose({
       </button>
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-80"
+        class="text-dense px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-pr"
         role="tab"
         :aria-selected="activeTab === 'pr'"
@@ -699,7 +699,7 @@ defineExpose({
       </button>
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-80"
+        class="text-dense px-2 py-1 rounded hover:opacity-80"
         data-testid="sidebar-tab-commits"
         role="tab"
         :aria-selected="activeTab === 'commits'"
@@ -722,12 +722,12 @@ defineExpose({
       class="flex items-center gap-2 px-3 h-10 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
-      <span class="text-sm">🔀</span>
+      <span class="text-body">🔀</span>
       <a
         :href="prUrl"
         target="_blank"
         rel="noopener"
-        class="text-sm font-medium truncate flex-1 hover:underline"
+        class="text-body font-medium truncate flex-1 hover:underline"
         style="color: var(--semantic-text)"
         :title="prUrl"
         data-testid="sidebar-pr-link"
@@ -736,7 +736,7 @@ defineExpose({
       </a>
       <span
         v-if="prStatusLabel"
-        class="px-1.5 py-0.5 rounded text-xs font-medium shrink-0"
+        class="px-1.5 py-0.5 rounded text-dense font-medium shrink-0"
         :style="prStatusStyle"
         :title="prStatusTitle || prStatusLabel"
         data-testid="sidebar-pr-status"
@@ -745,7 +745,7 @@ defineExpose({
       </span>
       <span
         v-if="hasPrConflict"
-        class="px-1.5 py-0.5 rounded text-xs font-medium shrink-0"
+        class="px-1.5 py-0.5 rounded text-dense font-medium shrink-0"
         style="background-color: var(--semantic-error); color: var(--color-bg)"
         title="This pull request has merge conflicts that must be resolved"
         data-testid="sidebar-pr-conflict-badge"
@@ -754,7 +754,7 @@ defineExpose({
       </span>
       <span
         v-if="prBase || prHead"
-        class="text-xs truncate"
+        class="text-dense truncate"
         style="color: var(--semantic-text-dim)"
         :title="`${prBase}...${prHead}`"
       >
@@ -762,7 +762,7 @@ defineExpose({
       </span>
       <span
         v-if="prFiles.length > 0"
-        class="px-1.5 py-0.5 rounded text-xs font-medium"
+        class="px-1.5 py-0.5 rounded text-dense font-medium"
         style="background-color: var(--color-violet); color: var(--color-bg)"
         data-testid="sidebar-pr-count"
       >
@@ -770,7 +770,7 @@ defineExpose({
       </span>
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-70"
+        class="text-dense px-2 py-1 rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Refresh PR diff"
         data-testid="sidebar-diff-refresh"
@@ -784,9 +784,9 @@ defineExpose({
       class="flex items-center gap-2 px-3 h-10 shrink-0"
       style="border-bottom: 1px solid var(--color-border)"
     >
-      <span class="text-sm">🌿</span>
+      <span class="text-body">🌿</span>
       <span
-        class="text-sm font-medium truncate flex-1"
+        class="text-body font-medium truncate flex-1"
         style="color: var(--semantic-text)"
         data-testid="sidebar-diff-branch"
       >
@@ -794,7 +794,7 @@ defineExpose({
       </span>
       <span
         v-if="changeCount > 0"
-        class="px-1.5 py-0.5 rounded text-xs font-medium"
+        class="px-1.5 py-0.5 rounded text-dense font-medium"
         style="background-color: var(--color-orange); color: var(--color-bg)"
         data-testid="sidebar-diff-count"
       >
@@ -802,7 +802,7 @@ defineExpose({
       </span>
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-70"
+        class="text-dense px-2 py-1 rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         :title="showCommits ? 'Show changed files' : 'Show commit history'"
         data-testid="sidebar-diff-commits-toggle"
@@ -812,7 +812,7 @@ defineExpose({
       </button>
       <button
         type="button"
-        class="text-xs px-2 py-1 rounded hover:opacity-70"
+        class="text-dense px-2 py-1 rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Refresh git status"
         data-testid="sidebar-diff-refresh"
@@ -850,9 +850,9 @@ defineExpose({
           </svg>
         </div>
         <div v-else-if="prError" class="flex flex-col items-center justify-center p-4 text-center">
-          <span class="text-2xl mb-2">⚠️</span>
+          <span class="text-title-lg mb-2">⚠️</span>
           <p
-            class="text-xs break-words"
+            class="text-dense break-words"
             style="color: var(--semantic-error); white-space: pre-wrap"
             data-testid="sidebar-pr-error"
           >
@@ -860,7 +860,7 @@ defineExpose({
           </p>
           <button
             type="button"
-            class="mt-3 px-3 py-1.5 text-sm rounded"
+            class="mt-3 px-3 py-1.5 text-body rounded"
             style="background: var(--color-green); color: var(--color-bg)"
             data-testid="sidebar-pr-retry"
             @click="retryPr"
@@ -872,11 +872,11 @@ defineExpose({
           v-else-if="prFiles.length === 0"
           class="flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-3xl mb-3">🔀</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim)">No PR changes found</p>
+          <span class="text-display mb-3">🔀</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim)">No PR changes found</p>
           <p
             v-if="prStatusError"
-            class="text-xs break-words mt-2"
+            class="text-dense break-words mt-2"
             style="color: var(--semantic-error); white-space: pre-wrap"
             :title="prStatusError"
             data-testid="sidebar-pr-status-error"
@@ -887,7 +887,7 @@ defineExpose({
         <template v-else>
           <div
             v-if="hasPrConflict"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
@@ -907,7 +907,7 @@ defineExpose({
           </div>
           <div
             v-if="!prStatusLabel && prStatusError"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs break-words"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense break-words"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
@@ -920,7 +920,7 @@ defineExpose({
           </div>
           <div
             v-if="prStatus === 'merged'"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
             style="
               background-color: color-mix(in srgb, var(--color-violet) 15%, transparent);
               color: var(--semantic-text);
@@ -931,7 +931,7 @@ defineExpose({
           </div>
           <div
             v-else-if="prStatus === 'closed'"
-            class="mx-3 mt-2 px-2 py-1.5 rounded text-xs"
+            class="mx-3 mt-2 px-2 py-1.5 rounded text-dense"
             style="
               background-color: color-mix(in srgb, var(--semantic-error) 12%, transparent);
               color: var(--semantic-text);
@@ -940,11 +940,11 @@ defineExpose({
           >
             Closed — this PR was closed on GitHub without merging.
           </div>
-          <div v-if="prTruncated" class="px-3 py-1 text-xs" style="color: var(--semantic-text-dim)">
+          <div v-if="prTruncated" class="px-3 py-1 text-dense" style="color: var(--semantic-text-dim)">
             Diff truncated at 1MB — showing first files
           </div>
           <div class="py-1">
-            <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-violet)">
+            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-violet)">
               PR files ({{ prFiles.length }})
             </div>
             <div
@@ -960,9 +960,9 @@ defineExpose({
               @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
               @auxclick="onFileRowAuxClick($event, file.path)"
             >
-              <span class="text-xs">{{ prStatusIcon[file.status] ?? '📄' }}</span>
+              <span class="text-dense">{{ prStatusIcon[file.status] ?? '📄' }}</span>
               <span
-                class="text-xs truncate flex-1"
+                class="text-dense truncate flex-1"
                 style="color: var(--semantic-text)"
                 :title="file.path"
               >
@@ -997,11 +997,11 @@ defineExpose({
         </div>
 
         <div v-else-if="gitError" class="flex flex-col items-center justify-center p-4 text-center">
-          <span class="text-2xl mb-2">⚠️</span>
-          <p class="text-xs" style="color: var(--semantic-error)">{{ gitError }}</p>
+          <span class="text-title-lg mb-2">⚠️</span>
+          <p class="text-dense" style="color: var(--semantic-error)">{{ gitError }}</p>
           <button
             type="button"
-            class="mt-3 px-3 py-1.5 text-sm rounded"
+            class="mt-3 px-3 py-1.5 text-body rounded"
             style="background: var(--color-green); color: var(--color-bg)"
             data-testid="sidebar-diff-retry"
             @click="loadGitStatus"
@@ -1014,8 +1014,8 @@ defineExpose({
           v-else-if="!isGitRepo"
           class="flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-3xl mb-3">🌿</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim)">
+          <span class="text-display mb-3">🌿</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim)">
             {{ !cwd ? 'Select a workspace to view git status' : 'Not a git repository' }}
           </p>
         </div>
@@ -1024,13 +1024,13 @@ defineExpose({
           v-else-if="changeCount === 0"
           class="flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-3xl mb-3">✓</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim)">Working tree clean</p>
+          <span class="text-display mb-3">✓</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim)">Working tree clean</p>
         </div>
 
         <template v-else>
           <div v-if="stagedFiles.length > 0" class="py-1">
-            <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-green)">
+            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-green)">
               Staged Changes ({{ stagedFiles.length }})
             </div>
             <div
@@ -1048,9 +1048,9 @@ defineExpose({
               @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
               @auxclick="onFileRowAuxClick($event, file.path)"
             >
-              <span class="text-xs">{{ displayStatus(file).icon }}</span>
+              <span class="text-dense">{{ displayStatus(file).icon }}</span>
               <span
-                class="text-xs truncate flex-1"
+                class="text-dense truncate flex-1"
                 style="color: var(--semantic-text)"
                 :title="file.path"
               >
@@ -1058,7 +1058,7 @@ defineExpose({
               </span>
               <button
                 type="button"
-                class="text-xs px-1 rounded hover:opacity-70"
+                class="text-dense px-1 rounded hover:opacity-70"
                 style="color: var(--semantic-text-dim)"
                 title="Unstage file"
                 :disabled="isStaging"
@@ -1070,7 +1070,7 @@ defineExpose({
           </div>
 
           <div v-if="unstagedFiles.length > 0" class="py-1">
-            <div class="px-3 py-1 text-xs font-semibold" style="color: var(--color-orange)">
+            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-orange)">
               Changes ({{ unstagedFiles.length }})
             </div>
             <div
@@ -1088,9 +1088,9 @@ defineExpose({
               @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
               @auxclick="onFileRowAuxClick($event, file.path)"
             >
-              <span class="text-xs">{{ displayStatus(file).icon }}</span>
+              <span class="text-dense">{{ displayStatus(file).icon }}</span>
               <span
-                class="text-xs truncate flex-1"
+                class="text-dense truncate flex-1"
                 style="color: var(--semantic-text)"
                 :title="file.path"
               >
@@ -1098,7 +1098,7 @@ defineExpose({
               </span>
               <button
                 type="button"
-                class="text-xs px-1 rounded hover:opacity-70"
+                class="text-dense px-1 rounded hover:opacity-70"
                 style="color: var(--semantic-text-dim)"
                 title="Stage file"
                 :disabled="isStaging"
@@ -1110,7 +1110,7 @@ defineExpose({
           </div>
 
           <div v-if="untrackedFiles.length > 0" class="py-1">
-            <div class="px-3 py-1 text-xs font-semibold" style="color: var(--semantic-text-dim)">
+            <div class="px-3 py-1 text-dense font-semibold" style="color: var(--semantic-text-dim)">
               Untracked ({{ untrackedFiles.length }})
             </div>
             <div
@@ -1128,9 +1128,9 @@ defineExpose({
               @contextmenu.prevent="onFileRowContextMenu($event, file.path)"
               @auxclick="onFileRowAuxClick($event, file.path)"
             >
-              <span class="text-xs">❓</span>
+              <span class="text-dense">❓</span>
               <span
-                class="text-xs truncate flex-1"
+                class="text-dense truncate flex-1"
                 style="color: var(--semantic-text)"
                 :title="file.path"
               >
@@ -1138,7 +1138,7 @@ defineExpose({
               </span>
               <button
                 type="button"
-                class="text-xs px-1 rounded hover:opacity-70"
+                class="text-dense px-1 rounded hover:opacity-70"
                 style="color: var(--semantic-text-dim)"
                 title="Stage file"
                 :disabled="isStaging"

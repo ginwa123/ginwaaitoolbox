@@ -135,7 +135,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !parsed.success }"
     data-testid="write-file-card"
   >
@@ -154,7 +154,7 @@ const handleToggle = (next: boolean) => {
       v-if="isExpanded && (parsed.error || hasFilteredArgs || hasContent)"
       class="border-t border-[var(--color-border)] bg-black/[0.02]"
     >
-      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-dense">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
@@ -164,7 +164,7 @@ const handleToggle = (next: boolean) => {
         </div>
         <div
           v-if="contentLines.length > 0"
-          class="p-2 m-0 bg-black/[0.02] overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs"
+          class="p-2 m-0 bg-black/[0.02] overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-dense"
         >
           <div
             v-for="(tokens, idx) in highlightedLines"
@@ -184,7 +184,7 @@ const handleToggle = (next: boolean) => {
         </div>
         <pre
           v-else
-          class="p-2 m-0 bg-black/[0.02] whitespace-pre overflow-x-visible leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
+          class="p-2 m-0 bg-black/[0.02] whitespace-pre overflow-x-visible leading-relaxed text-[var(--semantic-text)] text-dense hover:bg-violet-500/5"
         >
 (empty)</pre>
       </div>

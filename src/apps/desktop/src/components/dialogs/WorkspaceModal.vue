@@ -64,7 +64,7 @@ const handleKeydown = (event: KeyboardEvent) => {
         >
           <!-- Header -->
           <h3
-            class="text-lg font-semibold mb-4"
+            class="text-title-sm font-semibold mb-4"
             style="color: var(--semantic-text);"
           >
             Create Workspace
@@ -73,7 +73,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <!-- Name Input -->
           <div class="mb-6">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Workspace Name
@@ -83,7 +83,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               v-model="name"
               type="text"
               placeholder="My Workspace"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -96,7 +96,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="flex justify-end gap-3">
             <button
               @click="handleClose"
-              class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200"
               style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
             >
               Cancel
@@ -104,7 +104,7 @@ const handleKeydown = (event: KeyboardEvent) => {
             <button
               @click="handleCreate"
               :disabled="!name.trim()"
-              class="px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-4 py-2 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
             >
               Create

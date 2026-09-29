@@ -940,7 +940,7 @@ onBeforeUnmount(() => {
           >
             <h2
               id="file-picker-title"
-              class="text-sm font-semibold flex items-center gap-2"
+              class="text-body font-semibold flex items-center gap-2"
               style="color: var(--semantic-text)"
             >
               <span aria-hidden="true">📂</span>
@@ -985,7 +985,7 @@ onBeforeUnmount(() => {
             currentPath/docs instead of being rejected as relative.
           -->
           <div
-            class="px-5 py-2 flex items-center gap-1 shrink-0 text-xs"
+            class="px-5 py-2 flex items-center gap-1 shrink-0 text-dense"
             style="
               border-bottom: 1px solid var(--color-border);
               color: var(--semantic-text-muted);
@@ -1029,7 +1029,7 @@ onBeforeUnmount(() => {
               autocapitalize="off"
               data-testid="file-picker-path-input"
               :aria-label="`Type a path to navigate. Currently at ${currentPath}.`"
-              class="flex-1 min-w-0 px-2 py-0.5 text-xs font-mono rounded outline-none transition-all"
+              class="flex-1 min-w-0 px-2 py-0.5 text-dense font-mono rounded outline-none transition-all"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-violet);
@@ -1046,7 +1046,7 @@ onBeforeUnmount(() => {
               v-if="!isPathEditing"
               @click="beginPathEdit"
               data-testid="file-picker-path-edit"
-              class="px-2 py-0.5 rounded text-xs transition-all hover:opacity-80"
+              class="px-2 py-0.5 rounded text-dense transition-all hover:opacity-80"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -1062,7 +1062,7 @@ onBeforeUnmount(() => {
               v-if="currentPath !== '/' && currentPath !== '' && !isPathEditing"
               @click="navigateTo(parentPath(currentPath))"
               data-testid="file-picker-up"
-              class="px-2 py-0.5 rounded text-xs transition-all hover:opacity-80"
+              class="px-2 py-0.5 rounded text-dense transition-all hover:opacity-80"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -1099,7 +1099,7 @@ onBeforeUnmount(() => {
               :aria-selected="activeTab === 'recent'"
               data-testid="file-picker-tab-recent"
               @click="activeTab = 'recent'"
-              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5 shrink-0"
+              class="relative px-3 h-9 text-dense font-medium transition-colors duration-150 inline-flex items-center gap-1.5 shrink-0"
               :style="{
                 color: activeTab === 'recent' ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
               }"
@@ -1108,7 +1108,7 @@ onBeforeUnmount(() => {
               <span
                 v-if="recentCount > 0"
                 data-testid="file-picker-tab-recent-count"
-                class="text-[10px] px-1.5 rounded font-mono"
+                class="text-micro px-1.5 rounded font-mono"
                 :style="{
                   backgroundColor: activeTab === 'recent' ? 'var(--color-violet)' : 'var(--semantic-text-muted)',
                   color: 'var(--color-bg)',
@@ -1127,7 +1127,7 @@ onBeforeUnmount(() => {
               :aria-selected="activeTab === 'browse'"
               data-testid="file-picker-tab-browse"
               @click="activeTab = 'browse'"
-              class="relative px-3 h-9 text-xs font-medium transition-colors duration-150 inline-flex items-center gap-1.5 shrink-0"
+              class="relative px-3 h-9 text-dense font-medium transition-colors duration-150 inline-flex items-center gap-1.5 shrink-0"
               :style="{
                 color: activeTab === 'browse' ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
               }"
@@ -1156,7 +1156,7 @@ onBeforeUnmount(() => {
                 type="text"
                 placeholder="Search... (press / to focus)"
                 data-testid="file-picker-search"
-                class="w-full pl-7 pr-2 py-1.5 text-xs rounded outline-none transition-all"
+                class="w-full pl-7 pr-2 py-1.5 text-dense rounded outline-none transition-all"
                 style="
                   background-color: var(--semantic-sidebar-bg);
                   border: 1px solid var(--color-border);
@@ -1164,7 +1164,7 @@ onBeforeUnmount(() => {
                 "
               />
               <span
-                class="absolute left-2 top-1/2 -translate-y-1/2 text-xs pointer-events-none"
+                class="absolute left-2 top-1/2 -translate-y-1/2 text-dense pointer-events-none"
                 style="color: var(--semantic-text-dim)"
                 aria-hidden="true"
                 >🔍</span
@@ -1174,7 +1174,7 @@ onBeforeUnmount(() => {
             <!-- Filter chips (only in 'both' mode) -->
             <div
               v-if="mode === 'both'"
-              class="flex items-center gap-1 text-xs"
+              class="flex items-center gap-1 text-dense"
               role="tablist"
               aria-label="Filter items"
             >
@@ -1208,7 +1208,7 @@ onBeforeUnmount(() => {
             <button
               @click="showHiddenLocal = !showHiddenLocal"
               data-testid="file-picker-hidden-toggle"
-              class="px-2 py-1 text-xs rounded transition-all"
+              class="px-2 py-1 text-dense rounded transition-all"
               :style="
                 showHiddenLocal
                   ? {
@@ -1227,7 +1227,7 @@ onBeforeUnmount(() => {
             <button
               @click="refreshCurrent"
               data-testid="file-picker-refresh"
-              class="px-2 py-1 text-xs rounded transition-all hover:opacity-80"
+              class="px-2 py-1 text-dense rounded transition-all hover:opacity-80"
               style="color: var(--semantic-text-dim)"
               title="Refresh"
             >
@@ -1270,9 +1270,9 @@ onBeforeUnmount(() => {
 
               <!-- Error -->
               <div v-else-if="loadError" class="px-3 py-4 text-center">
-                <div class="text-xl mb-1">⚠️</div>
+                <div class="text-title mb-1">⚠️</div>
                 <p
-                  class="text-xs mb-2"
+                  class="text-dense mb-2"
                   style="color: var(--semantic-text-dim)"
                 >
                   {{ loadError }}
@@ -1280,7 +1280,7 @@ onBeforeUnmount(() => {
                 <button
                   @click="refreshCurrent"
                   data-testid="file-picker-retry"
-                  class="px-2 py-1 text-xs rounded"
+                  class="px-2 py-1 text-dense rounded"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);
@@ -1296,8 +1296,8 @@ onBeforeUnmount(() => {
                 v-else-if="treeFlat.length === 0"
                 class="px-3 py-4 text-center"
               >
-                <div class="text-2xl mb-1">📂</div>
-                <p class="text-xs" style="color: var(--semantic-text-dim)">
+                <div class="text-title-lg mb-1">📂</div>
+                <p class="text-dense" style="color: var(--semantic-text-dim)">
                   No folders
                 </p>
               </div>
@@ -1310,7 +1310,7 @@ onBeforeUnmount(() => {
                   @click="navigateTo(row.path)"
                   @dblclick.stop="toggleTreeNode(row.path)"
                   :data-testid="`file-picker-tree-${row.path}`"
-                  class="w-full flex items-center gap-1.5 px-2 py-1 text-xs text-left transition-colors hover:opacity-80"
+                  class="w-full flex items-center gap-1.5 px-2 py-1 text-dense text-left transition-colors hover:opacity-80"
                   :style="{
                     paddingLeft: `${0.5 + row.depth * 0.875}rem`,
                     backgroundColor:
@@ -1322,7 +1322,7 @@ onBeforeUnmount(() => {
                   }"
                 >
                   <span
-                    class="text-[10px] inline-block w-2 transition-transform duration-150"
+                    class="text-micro inline-block w-2 transition-transform duration-150"
                     :style="
                       treeExpanded[row.path] ? 'transform: rotate(90deg)' : ''
                     "
@@ -1359,9 +1359,9 @@ onBeforeUnmount(() => {
                 v-else-if="loadError"
                 class="px-3 py-4 text-center"
               >
-                <div class="text-xl mb-1">⚠️</div>
+                <div class="text-title mb-1">⚠️</div>
                 <p
-                  class="text-xs mb-2"
+                  class="text-dense mb-2"
                   style="color: var(--semantic-text-dim)"
                 >
                   {{ loadError }}
@@ -1369,7 +1369,7 @@ onBeforeUnmount(() => {
                 <button
                   @click="refreshCurrent"
                   data-testid="file-picker-retry"
-                  class="px-2 py-1 text-xs rounded"
+                  class="px-2 py-1 text-dense rounded"
                   style="
                     background-color: var(--semantic-card-bg);
                     border: 1px solid var(--color-border);
@@ -1386,8 +1386,8 @@ onBeforeUnmount(() => {
                 class="px-3 py-8 text-center"
               >
                 <slot name="empty">
-                  <div class="text-2xl mb-1">📭</div>
-                  <p class="text-xs" style="color: var(--semantic-text-dim)">
+                  <div class="text-title-lg mb-1">📭</div>
+                  <p class="text-dense" style="color: var(--semantic-text-dim)">
                     {{
                       searchQuery
                         ? 'No matches'
@@ -1408,7 +1408,7 @@ onBeforeUnmount(() => {
                   :data-index="idx"
                   :aria-selected="selectedPath === entry.path"
                   @mouseenter="highlightedIndex = idx"
-                  class="w-full flex items-center gap-2 px-3 py-1.5 text-sm text-left transition-colors"
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-body text-left transition-colors"
                   :style="{
                     backgroundColor:
                       selectedPath === entry.path
@@ -1428,11 +1428,11 @@ onBeforeUnmount(() => {
                     :item="entry.item"
                     :selected="selectedPath === entry.path"
                   >
-                    <span class="text-base shrink-0">{{ entry.icon }}</span>
+                    <span class="text-lead shrink-0">{{ entry.icon }}</span>
                     <span class="flex-1 truncate">{{ entry.label }}</span>
                     <span
                       v-if="entry.subtitle"
-                      class="text-xs shrink-0"
+                      class="text-dense shrink-0"
                       style="color: var(--semantic-text-dim)"
                     >
                       {{ entry.subtitle }}
@@ -1461,18 +1461,18 @@ onBeforeUnmount(() => {
               class="flex-1 flex flex-col items-center justify-center gap-3 px-5 py-8 text-center"
               data-testid="file-picker-recent-empty"
             >
-              <div class="text-3xl" aria-hidden="true">📁</div>
-              <p class="text-sm" style="color: var(--semantic-text)">
+              <div class="text-display" aria-hidden="true">📁</div>
+              <p class="text-body" style="color: var(--semantic-text)">
                 No recent folders yet
               </p>
-              <p class="text-xs" style="color: var(--semantic-text-dim)">
+              <p class="text-dense" style="color: var(--semantic-text-dim)">
                 Pick one in Browse to save it here for next time.
               </p>
               <button
                 type="button"
                 @click="activeTab = 'browse'"
                 data-testid="file-picker-recent-open-browse"
-                class="px-3 py-1.5 text-xs rounded-lg font-medium transition-all duration-200 hover:opacity-80"
+                class="px-3 py-1.5 text-dense rounded-lg font-medium transition-all duration-200 hover:opacity-80"
                 style="
                   background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
                   color: var(--color-bg);
@@ -1495,24 +1495,24 @@ onBeforeUnmount(() => {
                 @click="handleRecentRowClick(entry.path)"
                 :data-testid="`file-picker-recent-row-${entry.path}`"
                 :title="entry.pinned ? `${entry.path} (pinned)` : entry.path"
-                class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-left transition-colors duration-150 hover:opacity-80"
+                class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-body text-left transition-colors duration-150 hover:opacity-80"
                 style="color: var(--semantic-text);"
               >
                 <!-- Folder icon -->
-                <span class="text-base shrink-0" aria-hidden="true">📁</span>
+                <span class="text-lead shrink-0" aria-hidden="true">📁</span>
                 <!-- Name + path stack -->
                 <span class="flex-1 min-w-0 flex flex-col gap-0.5">
                   <span class="font-medium truncate">
                     {{ basenameOf(entry.path) || entry.path }}
                     <span
                       v-if="entry.pinned"
-                      class="ml-1 text-[10px] px-1.5 py-0.5 rounded uppercase font-semibold"
+                      class="ml-1 text-micro px-1.5 py-0.5 rounded uppercase font-semibold"
                       style="background-color: var(--color-violet); color: var(--color-bg);"
                       data-testid="file-picker-recent-pinned-badge"
                     >⭐ PINNED</span>
                   </span>
                   <span
-                    class="text-xs font-mono truncate"
+                    class="text-dense font-mono truncate"
                     style="color: var(--semantic-text-muted)"
                   >
                     {{ entry.path }}
@@ -1522,7 +1522,7 @@ onBeforeUnmount(() => {
                 <span class="flex items-center gap-2 shrink-0">
                   <span
                     :data-testid="`file-picker-recent-time-${entry.path}`"
-                    class="text-xs font-mono"
+                    class="text-dense font-mono"
                     style="color: var(--semantic-text-dim)"
                   >
                     {{ formatRelativeTime(toSqliteUtc(entry.lastUsedAt)) }}
@@ -1576,12 +1576,12 @@ onBeforeUnmount(() => {
           >
             <div class="flex-1 min-w-0 flex items-center gap-2">
               <span
-                class="text-xs shrink-0"
+                class="text-dense shrink-0"
                 style="color: var(--semantic-text-dim)"
                 >Selected:</span
               >
               <span
-                class="text-xs font-mono truncate"
+                class="text-dense font-mono truncate"
                 style="
                   color: var(--semantic-text);
                   direction: rtl;
@@ -1601,7 +1601,7 @@ onBeforeUnmount(() => {
               -->
               <span
                 v-if="showCurrentFolderHint"
-                class="text-[10px] shrink-0"
+                class="text-micro shrink-0"
                 style="color: var(--semantic-text-dim)"
                 data-testid="file-picker-selected-hint"
                 >← current folder</span
@@ -1613,7 +1613,7 @@ onBeforeUnmount(() => {
             <button
               @click="handleCancel"
               data-testid="file-picker-cancel"
-              class="px-3 py-1.5 text-xs rounded-lg font-medium transition-all duration-200"
+              class="px-3 py-1.5 text-dense rounded-lg font-medium transition-all duration-200"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -1626,7 +1626,7 @@ onBeforeUnmount(() => {
               @click="handleSelect"
               :disabled="!canSelect"
               data-testid="file-picker-select"
-              class="px-3 py-1.5 text-xs rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-3 py-1.5 text-dense rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
                 background: linear-gradient(
                   135deg,

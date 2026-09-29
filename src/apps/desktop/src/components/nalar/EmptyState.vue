@@ -15,23 +15,23 @@ defineProps<{
     data-testid="empty-state"
   >
     <div
-      class="font-mono text-2xl mb-3"
+      class="font-mono text-title-lg mb-3"
       style="color: var(--semantic-text-dim);"
       aria-hidden="true"
     >{{ glyph }}</div>
     <h3
-      class="text-sm font-semibold mb-1.5"
+      class="text-body font-semibold mb-1.5"
       style="color: var(--semantic-text);"
     >{{ title }}</h3>
     <p
-      class="text-xs max-w-sm leading-relaxed"
+      class="text-dense max-w-sm leading-relaxed"
       style="color: var(--semantic-text-muted);"
     >{{ description }}</p>
     <button
       v-if="ctaLabel"
       type="button"
       @click="ctaAction"
-      class="mt-5 px-4 h-8 rounded-md text-sm font-medium border transition-colors duration-150"
+      class="mt-5 px-4 h-8 rounded-md text-body font-medium border transition-colors duration-150"
       style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
     >{{ ctaLabel }}</button>
   </div>

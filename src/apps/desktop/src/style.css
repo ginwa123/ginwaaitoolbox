@@ -81,13 +81,10 @@
   --sb-indent: 12px;   /* one step per nesting level                     */
   --sb-hit: 24px;      /* every row action's click/touch box            */
 
-  /* Sidebar type. Two text sizes plus a glyph size: 11px carries both
-     the section title (600, uppercase, tracked) and plain meta, which
-     differ by treatment rather than size. 13px is every row label. */
-  --sb-fs-section: 11px;
-  --sb-fs-row: 13px;
-  --sb-fs-meta: 11px;
-  --sb-fs-icon: 12px;
+  /* Sidebar TYPE is not here on purpose: the left panel picks steps off
+     the app-wide scale in the @theme block below, so a sidebar label
+     and the same label in a dialog are the same number by construction
+     and retuning one retunes both. Only geometry is a sidebar concern. */
 
   /* Tailwind integration - extend theme */
   --color-primary: var(--color-violet);
@@ -100,6 +97,39 @@
   /* Font families */
   --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* ── Type scale ────────────────────────────────────────────────────
+     THE list of font sizes in this app. A component asks for a step by
+     role, never by pixel count — `text-dense` means "a cell in a tool
+     output table" the same way `text-title` means "a panel heading".
+     The role is what survives a retune; the pixel value is not, which
+     is why the steps are named micro/meta/dense/body/lead rather than
+     xs/sm/base. The old numeric ladder is what made the UI feel ad-hoc:
+     9px, 10px, 0.6rem and 0.65rem were four spellings of one size.
+
+     Below 20px the ramp is a flat 1-2px ladder, because that is the
+     range the app actually lives in (a sidebar row is 12px of text in a
+     32px row). Above it the steps open up to match the display sizes. */
+  --text-micro: 10px; /* counts, badges, timestamps, section titles  */
+  --text-meta: 11px; /* secondary metadata and glyph/icon size      */
+  --text-dense: 12px; /* the default UI text: tool output, tables   */
+  --text-body: 14px; /* dialog copy, prose, form fields            */
+  --text-lead: 16px; /* one step up from body: emphasis, quotes    */
+  --text-title-sm: 18px;
+  --text-title: 20px; /* card and panel headings                    */
+  --text-title-lg: 24px; /* page headings, empty-state headlines     */
+  --text-display: 30px; /* hero, big numerals                        */
+  --text-display-lg: 36px;
+
+  /* Weight ladder. `medium` is the app's default for anything
+     interactive; `semibold` marks a label that has to win against its
+     neighbours; `bold` is reserved for a number read at a glance.
+     Restating Tailwind's own four so the whole type system — size and
+     weight — is readable in one place. */
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
 }
 
 /* Base layer styles */
@@ -184,7 +214,7 @@
 }
 
 .markdown-content h1 {
-  font-size: 1.5rem;
+  font-size: var(--text-title-lg);
   font-weight: 700;
   margin-top: 0.75rem;
   margin-bottom: 0.5rem;
@@ -194,7 +224,7 @@
 }
 
 .markdown-content h2 {
-  font-size: 1.25rem;
+  font-size: var(--text-title);
   font-weight: 600;
   margin-top: 0.75rem;
   margin-bottom: 0.5rem;
@@ -204,7 +234,7 @@
 }
 
 .markdown-content h3 {
-  font-size: 1.1rem;
+  font-size: var(--text-title-sm);
   font-weight: 600;
   margin-top: 0.5rem;
   margin-bottom: 0.375rem;
@@ -212,7 +242,7 @@
 }
 
 .markdown-content h4, .markdown-content h5, .markdown-content h6 {
-  font-size: 1rem;
+  font-size: var(--text-lead);
   font-weight: 600;
   margin-top: 0.5rem;
   margin-bottom: 0.375rem;
@@ -306,7 +336,7 @@
   width: 100%;
   border-collapse: collapse;
   margin-bottom: 0.75rem;
-  font-size: 0.875rem;
+  font-size: var(--text-body);
 }
 
 .markdown-content th, .markdown-content td {

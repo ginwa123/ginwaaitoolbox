@@ -1226,7 +1226,7 @@ const isMediaLoading = computed<boolean>(() => {
             type="button"
             @click="handleClose"
             data-testid="kanban-task-detail-back"
-            class="shrink-0 h-8 px-2 rounded-lg flex items-center gap-1 text-sm font-medium transition-colors duration-200 hover:opacity-80"
+            class="shrink-0 h-8 px-2 rounded-lg flex items-center gap-1 text-body font-medium transition-colors duration-200 hover:opacity-80"
             style="color: var(--semantic-text-muted)"
             title="Back to board"
           >
@@ -1242,7 +1242,7 @@ const isMediaLoading = computed<boolean>(() => {
           </button>
           <h3
             :id="isCreateMode ? 'kanban-task-detail-create-title' : 'kanban-task-detail-title'"
-            class="text-base font-semibold flex items-center gap-2 truncate"
+            class="text-lead font-semibold flex items-center gap-2 truncate"
             style="color: var(--semantic-text)"
           >
             <span aria-hidden="true">{{ isCreateMode ? '➕' : '✏️' }}</span>
@@ -1267,7 +1267,7 @@ const isMediaLoading = computed<boolean>(() => {
           </svg>
         </button>
       </div>
-      <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+      <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">
         {{
           isCreateMode
             ? 'Create a new task, or start an agent on it right away.'
@@ -1294,7 +1294,7 @@ const isMediaLoading = computed<boolean>(() => {
                submit, via the broader watch's `show` change). -->
     <div
       v-if="errorMessage"
-      class="shrink-0 px-5 py-3 text-sm"
+      class="shrink-0 px-5 py-3 text-body"
       style="
         background-color: rgba(239, 68, 68, 0.12);
         border-bottom: 1px solid var(--color-border);
@@ -1320,7 +1320,7 @@ const isMediaLoading = computed<boolean>(() => {
       <div class="mb-4">
         <label
           for="kanban-task-detail-name"
-          class="block text-xs font-medium mb-2"
+          class="block text-dense font-medium mb-2"
           style="color: var(--semantic-text-dim)"
         >
           Task name
@@ -1332,7 +1332,7 @@ const isMediaLoading = computed<boolean>(() => {
           type="text"
           placeholder="Enter task name…"
           :data-testid="isCreateMode ? 'kanban-task-detail-create-name' : 'kanban-task-detail-name'"
-          class="w-full px-3 py-2.5 rounded-lg text-base font-medium outline-none transition-all duration-200"
+          class="w-full px-3 py-2.5 rounded-lg text-lead font-medium outline-none transition-all duration-200"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1372,7 +1372,7 @@ const isMediaLoading = computed<boolean>(() => {
           <button
             type="button"
             @click.stop="toggleColumnPicker"
-            class="min-w-[180px] px-2.5 py-1 rounded-md text-xs hover:opacity-80 inline-flex items-center justify-between gap-1.5"
+            class="min-w-[180px] px-2.5 py-1 rounded-md text-dense hover:opacity-80 inline-flex items-center justify-between gap-1.5"
             style="
               background-color: var(--semantic-sidebar-bg);
               border: 1px solid var(--color-border);
@@ -1384,7 +1384,7 @@ const isMediaLoading = computed<boolean>(() => {
               <span aria-hidden="true">📋</span>
               <span class="font-medium">{{ columnLabel }}</span>
             </span>
-            <span class="text-[10px]" style="color: var(--semantic-text-dim)">▾</span>
+            <span class="text-micro" style="color: var(--semantic-text-dim)">▾</span>
           </button>
           <div
             v-if="isColumnPickerOpen"
@@ -1398,7 +1398,7 @@ const isMediaLoading = computed<boolean>(() => {
               :key="col.id"
               type="button"
               @click="selectColumn(col.id)"
-              class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+              class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center justify-between"
               style="color: var(--semantic-text)"
               :data-testid="`kanban-task-detail-column-picker-item-${col.id}`"
             >
@@ -1414,7 +1414,7 @@ const isMediaLoading = computed<boolean>(() => {
         <span
           v-else-if="columnLabel"
           data-testid="kanban-task-detail-column"
-          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium"
+          class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-dense font-medium"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1427,7 +1427,7 @@ const isMediaLoading = computed<boolean>(() => {
         <span
           v-if="!isCreateMode && taskTypeLabel"
           data-testid="kanban-task-detail-type"
-          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium"
+          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-dense font-medium"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1439,7 +1439,7 @@ const isMediaLoading = computed<boolean>(() => {
         <span
           v-if="!isCreateMode && task?.is_pinned"
           data-testid="kanban-task-detail-pinned"
-          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium"
+          class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-dense font-medium"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1470,13 +1470,13 @@ const isMediaLoading = computed<boolean>(() => {
         <div class="mb-1">
           <label
             for="kanban-task-detail-description"
-            class="block text-xs font-medium"
+            class="block text-dense font-medium"
             style="color: var(--semantic-text-dim)"
           >
             Description
           </label>
         </div>
-        <p class="text-[11px] mb-2" style="color: var(--semantic-text-dim)">
+        <p class="text-meta mb-2" style="color: var(--semantic-text-dim)">
           Markdown supported. Type <span class="font-mono">@</span> to link a file. Paste or attach
           images.
         </p>
@@ -1510,7 +1510,7 @@ const isMediaLoading = computed<boolean>(() => {
         </div>
         <div
           v-else-if="isMediaLoading"
-          class="mb-3 text-[11px]"
+          class="mb-3 text-meta"
           style="color: var(--semantic-text-dim)"
           data-testid="kanban-task-detail-media-loading"
         >
@@ -1544,12 +1544,12 @@ const isMediaLoading = computed<boolean>(() => {
       <div class="mt-4">
         <label
           for="kanban-task-detail-tags"
-          class="block text-xs font-medium mb-1"
+          class="block text-dense font-medium mb-1"
           style="color: var(--semantic-text-dim)"
         >
           Tags
         </label>
-        <p class="text-[11px] mb-2" style="color: var(--semantic-text-dim)">
+        <p class="text-meta mb-2" style="color: var(--semantic-text-dim)">
           Optional. Press Enter or comma to add. Letters, digits, underscores, hyphens.
         </p>
         <KanbanTagsInput
@@ -1578,7 +1578,7 @@ const isMediaLoading = computed<boolean>(() => {
         style="border-top: 1px solid var(--color-border)"
         data-testid="kanban-task-detail-settings-section"
       >
-        <h4 class="text-xs font-semibold mb-3" style="color: var(--semantic-text-dim)">Settings</h4>
+        <h4 class="text-dense font-semibold mb-3" style="color: var(--semantic-text-dim)">Settings</h4>
 
         <!-- Row 1: per-task cwd picker (always shown) +
                 profile picker (create mode only). Both use the same
@@ -1598,7 +1598,7 @@ const isMediaLoading = computed<boolean>(() => {
             <button
               type="button"
               @click.stop="toggleCwdPicker"
-              class="px-2.5 py-1 rounded-md text-xs hover:opacity-80 inline-flex items-center gap-1.5 transition-opacity duration-200"
+              class="px-2.5 py-1 rounded-md text-dense hover:opacity-80 inline-flex items-center gap-1.5 transition-opacity duration-200"
               :style="cwdPickerStyle"
               :title="
                 cwdSession
@@ -1628,7 +1628,7 @@ const isMediaLoading = computed<boolean>(() => {
               >
                 {{ cwdSession ? cwdSession : '(none)' }}
               </span>
-              <span class="text-[10px] shrink-0" style="color: var(--semantic-text-dim)">▾</span>
+              <span class="text-micro shrink-0" style="color: var(--semantic-text-dim)">▾</span>
             </button>
             <div
               v-if="isCwdPickerOpen"
@@ -1659,7 +1659,7 @@ const isMediaLoading = computed<boolean>(() => {
             <button
               type="button"
               @click.stop="toggleProfilePicker"
-              class="px-2.5 py-1 rounded-md text-xs hover:opacity-80 inline-flex items-center gap-1.5 transition-opacity duration-200"
+              class="px-2.5 py-1 rounded-md text-dense hover:opacity-80 inline-flex items-center gap-1.5 transition-opacity duration-200"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -1677,7 +1677,7 @@ const isMediaLoading = computed<boolean>(() => {
               <span style="color: var(--semantic-text-muted)">{{
                 selectedProfile || 'Default'
               }}</span>
-              <span class="text-[10px] shrink-0" style="color: var(--semantic-text-dim)">▾</span>
+              <span class="text-micro shrink-0" style="color: var(--semantic-text-dim)">▾</span>
             </button>
             <div
               v-if="isProfilePickerOpen"
@@ -1692,7 +1692,7 @@ const isMediaLoading = computed<boolean>(() => {
               <button
                 type="button"
                 @click="selectProfile('')"
-                class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center justify-between"
                 style="color: var(--semantic-text)"
                 data-testid="kanban-task-detail-profile-picker-item"
               >
@@ -1704,7 +1704,7 @@ const isMediaLoading = computed<boolean>(() => {
                 :key="p.name"
                 type="button"
                 @click="selectProfile(p.name)"
-                class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                class="w-full text-left px-3 py-2 text-dense hover:opacity-80"
                 style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
                 data-testid="kanban-task-detail-profile-picker-item"
               >
@@ -1712,13 +1712,13 @@ const isMediaLoading = computed<boolean>(() => {
                   <span class="font-medium">{{ p.name }}</span>
                   <span v-if="selectedProfile === p.name">✓</span>
                 </div>
-                <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
+                <div class="text-micro mt-0.5" style="color: var(--semantic-text-muted)">
                   {{ p.model }} · {{ p.base_url }}
                 </div>
               </button>
               <div
                 v-if="!profilesLoading && availableProfiles.length === 0"
-                class="px-3 py-2 text-xs"
+                class="px-3 py-2 text-dense"
                 style="color: var(--semantic-text-muted)"
                 data-testid="kanban-task-detail-profile-picker-empty"
               >
@@ -1738,10 +1738,10 @@ const isMediaLoading = computed<boolean>(() => {
           data-testid="kanban-task-detail-unattended"
         >
           <div class="flex-1 min-w-0">
-            <div class="text-xs font-medium" style="color: var(--semantic-text-dim)">
+            <div class="text-dense font-medium" style="color: var(--semantic-text-dim)">
               Unattended mode
             </div>
-            <div class="text-[11px] mt-0.5" style="color: var(--semantic-text-dim)">
+            <div class="text-meta mt-0.5" style="color: var(--semantic-text-dim)">
               Keep retrying past the 10-error limit for overnight runs. Off = stop on
               too-many-retries.
             </div>
@@ -1778,10 +1778,10 @@ const isMediaLoading = computed<boolean>(() => {
           data-testid="kanban-task-detail-use-git-worktree"
         >
           <div class="flex-1 min-w-0">
-            <div class="text-xs font-medium" style="color: var(--semantic-text-dim)">
+            <div class="text-dense font-medium" style="color: var(--semantic-text-dim)">
               Use git worktree
             </div>
-            <div class="text-[11px] mt-0.5" style="color: var(--semantic-text-dim)">
+            <div class="text-meta mt-0.5" style="color: var(--semantic-text-dim)">
               Run the agent in a fresh git worktree so its changes stay isolated from your working
               tree.
             </div>
@@ -1818,7 +1818,7 @@ const isMediaLoading = computed<boolean>(() => {
           data-testid="kanban-task-detail-use-git-worktree-path-wrap"
         >
           <label
-            class="text-xs font-medium"
+            class="text-dense font-medium"
             style="color: var(--semantic-text-dim)"
             for="kanban-worktree-path-input"
           >
@@ -1829,7 +1829,7 @@ const isMediaLoading = computed<boolean>(() => {
             type="text"
             v-model="worktreePath"
             placeholder="/home/you/.config/nalar/.worktrees/my-task-1757792000000"
-            class="w-full px-2 py-1.5 rounded-lg text-xs"
+            class="w-full px-2 py-1.5 rounded-lg text-dense"
             style="
               background-color: var(--semantic-sidebar-bg);
               border: 1px solid var(--color-border);
@@ -1837,7 +1837,7 @@ const isMediaLoading = computed<boolean>(() => {
             "
             data-testid="kanban-task-detail-use-git-worktree-path"
           />
-          <div class="text-[11px]" style="color: var(--semantic-text-dim)">
+          <div class="text-meta" style="color: var(--semantic-text-dim)">
             Default: $HOME/.config/nalar/.worktrees/&lt;task-name&gt;-&lt;timestamp&gt;. Must be
             absolute; the parent folder must exist.
           </div>
@@ -1857,7 +1857,7 @@ const isMediaLoading = computed<boolean>(() => {
             :repo-path="cwdSession || cwd"
             data-testid="kanban-task-detail-use-git-worktree-base"
           />
-          <div class="text-[11px]" style="color: var(--semantic-text-dim)">
+          <div class="text-meta" style="color: var(--semantic-text-dim)">
             Optional but recommended. The new worktree's branch is created from this ref (e.g.
             origin/main). "HEAD (default)" branches from whatever the repo currently has checked
             out.
@@ -1887,7 +1887,7 @@ const isMediaLoading = computed<boolean>(() => {
         type="button"
         @click="handleClose"
         data-testid="kanban-task-detail-cancel"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+        class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
         style="color: var(--semantic-text-dim)"
         title="Discard and close"
       >
@@ -1904,7 +1904,7 @@ const isMediaLoading = computed<boolean>(() => {
           @click="handleRunAgent"
           :disabled="!canCommitCreate"
           data-testid="kanban-task-detail-create-and-run"
-          class="px-3 py-1.5 rounded-l-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+          class="px-3 py-1.5 rounded-l-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
           style="
             background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
             color: var(--color-bg);
@@ -1934,7 +1934,7 @@ const isMediaLoading = computed<boolean>(() => {
           @click="handleSave"
           :disabled="!canSave"
           data-testid="kanban-task-detail-save"
-          class="px-3 py-1.5 rounded-l-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+          class="px-3 py-1.5 rounded-l-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
           style="
             background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
             color: var(--color-bg);
@@ -1947,7 +1947,7 @@ const isMediaLoading = computed<boolean>(() => {
           @click.stop="toggleCommitMenu"
           :disabled="isCreateMode ? !canCommitCreate : !canSave"
           data-testid="kanban-task-detail-commit-caret"
-          class="px-2 py-1.5 rounded-r-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
+          class="px-2 py-1.5 rounded-r-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[--color-blue]"
           style="
             background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
             color: var(--color-bg);
@@ -1958,7 +1958,7 @@ const isMediaLoading = computed<boolean>(() => {
           aria-label="More commit options"
           title="More commit options"
         >
-          <span aria-hidden="true" class="text-[10px] leading-none">{{
+          <span aria-hidden="true" class="text-micro leading-none">{{
             commitMenuOpen ? '▲' : '▼'
           }}</span>
         </button>
@@ -1981,11 +1981,11 @@ const isMediaLoading = computed<boolean>(() => {
             @click="runMenuAction(handleSave)"
             :disabled="!canCommitCreate"
             data-testid="kanban-task-detail-save"
-            class="w-full px-3 py-2 text-left text-sm transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[--color-blue]"
+            class="w-full px-3 py-2 text-left text-body transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[--color-blue]"
             style="color: var(--semantic-text)"
           >
             <span>Create task only</span>
-            <span class="block text-[11px] mt-0.5" style="color: var(--semantic-text-dim)">
+            <span class="block text-meta mt-0.5" style="color: var(--semantic-text-dim)">
               Add it to the board without starting a worker.
             </span>
           </button>
@@ -2001,12 +2001,12 @@ const isMediaLoading = computed<boolean>(() => {
                 : 'Trigger the agent on the existing chat context. No new message is queued — the agent resumes whatever context is already in the session.'
             "
             data-testid="kanban-task-detail-start-agent"
-            class="w-full px-3 py-2 text-left text-sm transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[--color-blue]"
+            class="w-full px-3 py-2 text-left text-body transition-opacity duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80 focus:outline-none focus-visible:ring-2 focus-visible:ring-[--color-blue]"
             style="color: var(--semantic-text)"
           >
             <span aria-hidden="true">▶</span>
             <span class="ml-1">Start agent</span>
-            <span class="block text-[11px] mt-0.5" style="color: var(--semantic-text-dim)">
+            <span class="block text-meta mt-0.5" style="color: var(--semantic-text-dim)">
               Resume the agent on this task's existing chat context.
             </span>
           </button>

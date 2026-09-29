@@ -52,7 +52,7 @@ const serverDetail = computed((): string | null => {
 
 <template>
   <div
-    class="agent-error-card rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2 text-sm"
+    class="agent-error-card rounded-xl border border-red-500/30 bg-red-500/5 px-3 py-2 text-body"
     data-testid="agent-error-card"
     role="alert"
   >
@@ -61,23 +61,23 @@ const serverDetail = computed((): string | null => {
       <span class="font-medium text-red-500">Agent error</span>
       <span
         v-if="retryLabel"
-        class="rounded-full bg-red-500/15 px-2 py-0.5 text-xs text-red-400"
+        class="rounded-full bg-red-500/15 px-2 py-0.5 text-dense text-red-400"
         data-testid="agent-error-retry"
       >retry {{ retryLabel }}</span>
       <span
         v-if="delayMs"
-        class="text-xs text-[var(--semantic-text-muted)]"
+        class="text-dense text-[var(--semantic-text-muted)]"
         data-testid="agent-error-delay"
       >{{ delayMs }}</span>
     </header>
 
-    <div class="mt-1 text-xs text-[var(--semantic-text-muted)]" data-testid="agent-error-headline">
+    <div class="mt-1 text-dense text-[var(--semantic-text-muted)]" data-testid="agent-error-headline">
       {{ headline }}
     </div>
 
     <div
       v-if="serverDetail"
-      class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/20 px-2 py-1.5 font-mono text-xs text-red-300"
+      class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/20 px-2 py-1.5 font-mono text-dense text-red-300"
       data-testid="agent-error-detail"
     >{{ serverDetail }}</div>
   </div>

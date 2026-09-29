@@ -47,7 +47,7 @@ const copySkillName = async (e: Event, name: string) => {
 
 <template>
   <div 
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
   >
     <!-- Header -->
     <div 
@@ -56,13 +56,13 @@ const copySkillName = async (e: Event, name: string) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">list_skills</span>
-      <span class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs">
+      <span class="text-[var(--color-violet)] font-semibold text-dense">list_skills</span>
+      <span class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense">
         {{ totalCount }} skill{{ totalCount !== 1 ? 's' : '' }} found
       </span>
       
       <!-- Toggle indicator -->
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -70,13 +70,13 @@ const copySkillName = async (e: Event, name: string) => {
     <!-- Expanded content -->
     <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <!-- Empty state -->
-      <div v-if="!hasSkills" class="px-3 py-4 text-center text-[var(--semantic-text-muted)] text-xs">
+      <div v-if="!hasSkills" class="px-3 py-4 text-center text-[var(--semantic-text-muted)] text-dense">
         No skills available
       </div>
 
       <!-- Global Skills Section -->
       <div v-if="globalSkills.length > 0" class="py-1">
-        <div class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]">
+        <div class="px-3 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]">
           Global Skills ({{ globalSkills.length }})
         </div>
         <div class="px-2 py-1 space-y-1">
@@ -90,14 +90,14 @@ const copySkillName = async (e: Event, name: string) => {
               <div class="flex items-center gap-1">
                 <span class="text-[var(--semantic-text)] font-medium truncate">{{ skill.name }}</span>
                 <button 
-                  class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-xs transition-opacity shrink-0"
+                  class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-dense transition-opacity shrink-0"
                   @click.stop="copySkillName($event, skill.name)"
                   title="Copy skill name"
                 >
                   ⎘
                 </button>
               </div>
-              <p class="text-[0.65rem] text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5">
+              <p class="text-micro text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5">
                 {{ skill.description }}
               </p>
             </div>
@@ -107,7 +107,7 @@ const copySkillName = async (e: Event, name: string) => {
 
       <!-- Local Skills Section -->
       <div v-if="localSkills.length > 0" class="py-1 border-t border-dashed border-[var(--color-border)]">
-        <div class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]">
+        <div class="px-3 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]">
           Local Skills ({{ localSkills.length }})
         </div>
         <div class="px-2 py-1 space-y-1">
@@ -121,17 +121,17 @@ const copySkillName = async (e: Event, name: string) => {
               <div class="flex items-center gap-1">
                 <span class="text-[var(--semantic-text)] font-medium truncate">{{ skill.name }}</span>
                 <button 
-                  class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-xs transition-opacity shrink-0"
+                  class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-dense transition-opacity shrink-0"
                   @click.stop="copySkillName($event, skill.name)"
                   title="Copy skill name"
                 >
                   ⎘
                 </button>
               </div>
-              <p class="text-[0.65rem] text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5">
+              <p class="text-micro text-[var(--semantic-text-muted)] line-clamp-2 mt-0.5">
                 {{ skill.description }}
               </p>
-              <p v-if="skill.path" class="text-[0.6rem] text-[var(--semantic-text-dim)] mt-0.5 truncate">
+              <p v-if="skill.path" class="text-micro text-[var(--semantic-text-dim)] mt-0.5 truncate">
                 {{ skill.path }}
               </p>
             </div>

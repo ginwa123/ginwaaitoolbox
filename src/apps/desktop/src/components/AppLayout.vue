@@ -2895,7 +2895,7 @@ defineExpose({
                 />
               </svg>
             </button>
-            <h2 class="text-base font-semibold" style="color: var(--semantic-text)">
+            <h2 class="text-lead font-semibold" style="color: var(--semantic-text)">
               🧠 {{ skillViewerSkill?.name }}
             </h2>
           </div>

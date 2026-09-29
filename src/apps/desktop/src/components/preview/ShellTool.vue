@@ -144,7 +144,7 @@ const copyError = async (e: Event) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-orange-500/50 opacity-85': hasWarning && !hasError, 'border-red-500/50 opacity-85': hasError }"
   >
     <!-- Header -->
@@ -160,49 +160,49 @@ const copyError = async (e: Event) => {
            is pwsh" — same component, different label. -->
       <span
         :data-testid="'shell-tool-pill'"
-        class="text-[var(--color-violet)] font-semibold text-xs"
+        class="text-[var(--color-violet)] font-semibold text-dense"
         >{{ toolName }}</span
       >
       <span class="flex-1 truncate text-left text-[var(--semantic-text-dim)]" :title="displayCommand || ''">
         $ {{ displayCommand || 'unknown' }}
       </span>
-      <span v-if="isRunning" data-testid="shell-tool-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
+      <span v-if="isRunning" data-testid="shell-tool-running" class="text-micro text-yellow-500 animate-pulse">running…</span>
 
       <!-- Exit code badge -->
       <span
         v-if="exitCode !== null"
         :data-testid="'shell-tool-exit-code'"
-        class="text-[0.65rem] font-medium"
+        class="text-micro font-medium"
         :class="exitCode === 0 ? 'text-green-500' : 'text-red-500'"
       >
         {{ exitCode }}
       </span>
 
       <!-- Truncated badge -->
-      <span v-if="isTruncated" class="text-yellow-500 text-[0.65rem]">
+      <span v-if="isTruncated" class="text-yellow-500 text-micro">
         truncated
       </span>
 
       <!-- Timeout badge -->
-      <span v-if="isTimeout" class="text-orange-500 text-[0.65rem]">
+      <span v-if="isTimeout" class="text-orange-500 text-micro">
         timeout
       </span>
 
       <!-- Failed badge - a success:false envelope with no exit code to show.
            Without it the card carried no failure signal at all in the header. -->
-      <span v-if="hasEnvelopeError" data-testid="shell-tool-failed" class="text-red-500 text-[0.65rem]">
+      <span v-if="hasEnvelopeError" data-testid="shell-tool-failed" class="text-red-500 text-micro">
         failed
       </span>
 
       <!-- Toggle indicator -->
       <button
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
         @click="copyCommand"
         title="Copy command"
       >
         ⎘
       </button>
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -214,48 +214,48 @@ const copyError = async (e: Event) => {
         <!-- Envelope error - shown for ANY success:false result, including a
              tool that never ran at all. -->
         <div v-if="hasEnvelopeError" data-testid="shell-tool-error" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
-          <div class="px-2 py-0.5 text-[0.65rem] text-red-600 font-medium bg-black/[0.02] flex items-center gap-2">
+          <div class="px-2 py-0.5 text-micro text-red-600 font-medium bg-black/[0.02] flex items-center gap-2">
             <span>error</span>
             <button
-              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-red-500 cursor-pointer text-xs"
+              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-red-500 cursor-pointer text-dense"
               @click="copyError"
               title="Copy error"
             >
               ⎘
             </button>
           </div>
-          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ envelopeError }}</pre>
+          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-dense hover:bg-violet-500/5">{{ envelopeError }}</pre>
         </div>
         <!-- stdout section -->
         <div v-if="stdout" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
-          <div class="px-2 py-0.5 text-[0.65rem] text-blue-600 font-medium bg-black/[0.02] flex items-center gap-2">
+          <div class="px-2 py-0.5 text-micro text-blue-600 font-medium bg-black/[0.02] flex items-center gap-2">
             <span>stdout</span>
             <span class="text-[var(--semantic-text-muted)]">{{ stdoutLines }}L</span>
             <button
-              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-blue-500 cursor-pointer text-xs"
+              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-blue-500 cursor-pointer text-dense"
               @click="copyStdout"
               title="Copy stdout"
             >
               ⎘
             </button>
           </div>
-          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stdout || '(empty)' }}</pre>
+          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-dense hover:bg-violet-500/5">{{ stdout || '(empty)' }}</pre>
         </div>
 
         <!-- stderr section -->
         <div v-if="hasStderr" class="group relative border-b border-dashed border-[var(--color-border)] last:border-b-0">
-          <div class="px-2 py-0.5 text-[0.65rem] text-red-600 font-medium bg-black/[0.02] flex items-center gap-2">
+          <div class="px-2 py-0.5 text-micro text-red-600 font-medium bg-black/[0.02] flex items-center gap-2">
             <span>stderr</span>
             <span class="text-[var(--semantic-text-muted)]">{{ stderrLines }}L</span>
             <button
-              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-red-500 cursor-pointer text-xs"
+              class="ml-auto opacity-0 group-hover:opacity-100 text-[var(--semantic-text-muted)] hover:!text-red-500 cursor-pointer text-dense"
               @click="copyStderr"
               title="Copy stderr"
             >
               ⎘
             </button>
           </div>
-          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5">{{ stderr }}</pre>
+          <pre class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-dense hover:bg-violet-500/5">{{ stderr }}</pre>
         </div>
         <ToolParameters :parameters="parameters" />
       </div>

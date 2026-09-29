@@ -138,7 +138,7 @@ const copyId = async (e: Event) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
     data-testid="save-memory"
   >
@@ -149,16 +149,16 @@ const copyId = async (e: Event) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">save_memory</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">save_memory</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="headerTitle"
       >
         {{ headerLabel }}
       </span>
 
       <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
+      <span class="text-dense font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
 
@@ -166,7 +166,7 @@ const copyId = async (e: Event) => {
       <span
         v-if="isRunning"
         data-testid="save-memory-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+        class="text-micro text-yellow-500 animate-pulse shrink-0"
       >
         running…
       </span>
@@ -174,7 +174,7 @@ const copyId = async (e: Event) => {
       <!-- Copy id button (only on success — there's something to copy) -->
       <button
         v-if="isSuccess && memoryId"
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
         @click="copyId"
         title="Copy memory id"
         data-testid="save-memory-copy-id"
@@ -183,7 +183,7 @@ const copyId = async (e: Event) => {
       </button>
 
       <!-- Toggle indicator -->
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -193,7 +193,7 @@ const copyId = async (e: Event) => {
       <!-- Error message -->
       <div
         v-if="errorMessage"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="save-memory-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -204,7 +204,7 @@ const copyId = async (e: Event) => {
       <template v-if="isSuccess">
         <div
           v-if="memoryId"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
           data-testid="save-memory-id-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Id:</span>
@@ -215,7 +215,7 @@ const copyId = async (e: Event) => {
 
         <div
           v-if="createdAt"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
           data-testid="save-memory-created-at-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Created:</span>
@@ -226,7 +226,7 @@ const copyId = async (e: Event) => {
 
         <div
           v-if="updatedAt"
-          class="flex gap-2 px-2 py-1.5 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-dense"
           data-testid="save-memory-updated-at-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Updated:</span>
@@ -239,7 +239,7 @@ const copyId = async (e: Event) => {
              muted hint so the user knows the card is empty, not stuck. -->
         <div
           v-if="!memoryId && !createdAt && !updatedAt"
-          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
           data-testid="save-memory-empty"
         >
           (no fields in envelope)

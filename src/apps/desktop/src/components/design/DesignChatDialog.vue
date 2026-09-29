@@ -206,7 +206,7 @@ const headerTitle = (): string => {
             </svg>
           </div>
           <h3
-            class="text-base font-semibold truncate flex-1"
+            class="text-lead font-semibold truncate flex-1"
             style="color: var(--semantic-text);"
             data-testid="design-chat-dialog-title"
           >
@@ -214,7 +214,7 @@ const headerTitle = (): string => {
           </h3>
           <button
             type="button"
-            class="shrink-0 w-10 h-10 rounded-md flex items-center justify-center text-lg transition-all"
+            class="shrink-0 w-10 h-10 rounded-md flex items-center justify-center text-title-sm transition-all"
             style="
               color: var(--semantic-text-muted);
               background: transparent;

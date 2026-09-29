@@ -96,7 +96,7 @@ const onClose = () => {
         class="px-4 py-3 flex items-center justify-between"
         style="border-bottom: 1px solid var(--color-border)"
       >
-        <h2 class="text-sm font-semibold" style="color: var(--semantic-text)">
+        <h2 class="text-body font-semibold" style="color: var(--semantic-text)">
           🔀 Create a pull request
         </h2>
         <div class="flex items-center gap-2">
@@ -109,7 +109,7 @@ const onClose = () => {
             :disabled="isRegenerating || isSubmitting || isLoading"
             data-testid="create-pr-regenerate"
             title="Re-fill title and body from the latest commit and diff against the current base branch"
-            class="px-2 py-1 text-xs rounded flex items-center gap-1.5"
+            class="px-2 py-1 text-dense rounded flex items-center gap-1.5"
             :class="
               isRegenerating || isSubmitting || isLoading
                 ? 'opacity-50 cursor-not-allowed'
@@ -140,20 +140,20 @@ const onClose = () => {
         </div>
       </div>
 
-      <div v-if="isLoading" class="px-4 py-8 text-center text-xs" style="color: var(--semantic-text-dim)">
+      <div v-if="isLoading" class="px-4 py-8 text-center text-dense" style="color: var(--semantic-text-dim)">
         Loading worktree info...
       </div>
 
       <div v-else class="px-4 py-4 space-y-3">
         <div>
-          <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text-dim)">
+          <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text-dim)">
             Base branch
           </label>
           <input
             v-model="base"
             data-testid="create-pr-base"
             type="text"
-            class="w-full px-2 py-1.5 text-xs rounded font-mono"
+            class="w-full px-2 py-1.5 text-dense rounded font-mono"
             style="
               background-color: var(--semantic-input-bg, var(--semantic-card-bg));
               border: 1px solid var(--color-border);
@@ -164,14 +164,14 @@ const onClose = () => {
           />
         </div>
         <div>
-          <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text-dim)">
+          <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text-dim)">
             Title
           </label>
           <input
             v-model="title"
             data-testid="create-pr-title"
             type="text"
-            class="w-full px-2 py-1.5 text-xs rounded"
+            class="w-full px-2 py-1.5 text-dense rounded"
             style="
               background-color: var(--semantic-input-bg, var(--semantic-card-bg));
               border: 1px solid var(--color-border);
@@ -182,14 +182,14 @@ const onClose = () => {
           />
         </div>
         <div>
-          <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text-dim)">
+          <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text-dim)">
             Body
           </label>
           <textarea
             v-model="body"
             data-testid="create-pr-body"
             rows="8"
-            class="w-full px-2 py-1.5 text-xs rounded font-mono"
+            class="w-full px-2 py-1.5 text-dense rounded font-mono"
             style="
               background-color: var(--semantic-input-bg, var(--semantic-card-bg));
               border: 1px solid var(--color-border);
@@ -208,7 +208,7 @@ const onClose = () => {
         <button
           @click="onClose"
           :disabled="isSubmitting"
-          class="px-3 py-1.5 text-xs rounded"
+          class="px-3 py-1.5 text-dense rounded"
           style="
             background-color: var(--semantic-card-bg);
             border: 1px solid var(--color-border);
@@ -221,7 +221,7 @@ const onClose = () => {
           @click="onSubmit"
           :disabled="isSubmitting || isLoading || title.trim() === ''"
           data-testid="create-pr-submit"
-          class="px-3 py-1.5 text-xs font-medium rounded flex items-center gap-1.5"
+          class="px-3 py-1.5 text-dense font-medium rounded flex items-center gap-1.5"
           :class="
             isSubmitting || isLoading || title.trim() === ''
               ? 'opacity-50 cursor-not-allowed'

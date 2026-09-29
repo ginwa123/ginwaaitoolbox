@@ -57,7 +57,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !parsed.deleted }"
   >
     <ToolCardHeader
@@ -76,7 +76,7 @@ const handleToggle = (next: boolean) => {
       v-if="isExpanded && (parsed.error || hasArgs)"
       class="border-t border-[var(--color-border)] bg-black/[0.02]"
     >
-      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-dense">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>

@@ -229,7 +229,7 @@ const handleApplyRecommended = async () => {
     <!-- Top hard-load error (DB unreachable, registry absent, etc.) -->
     <div
       v-if="loadError && !config && enabledCount === 0 && !searchQuery"
-      class="px-3 py-2 rounded-lg text-xs text-center"
+      class="px-3 py-2 rounded-lg text-dense text-center"
       style="color: rgb(239, 68, 68); background-color: rgba(239, 68, 68, 0.08)"
       data-testid="kanban-tools-error"
     >
@@ -239,13 +239,13 @@ const handleApplyRecommended = async () => {
     <!-- Header row: title + summary chip + search input -->
     <div class="flex flex-col gap-2">
       <div class="flex items-center justify-between gap-2 flex-wrap">
-        <h3 class="text-sm font-semibold flex items-center gap-2" style="color: var(--semantic-text)">
+        <h3 class="text-body font-semibold flex items-center gap-2" style="color: var(--semantic-text)">
           <span aria-hidden="true">🛠</span>
           <span>Available tools</span>
         </h3>
         <span
           v-if="!loading && totalCount > 0"
-          class="text-xs px-2.5 py-1 rounded-full font-medium shrink-0"
+          class="text-dense px-2.5 py-1 rounded-full font-medium shrink-0"
           :style="
             enabledCount > 0
               ? 'background: linear-gradient(135deg, rgba(137,146,167,0.18), rgba(139,164,176,0.18)); color: var(--semantic-text); border: 1px solid rgba(137,146,167,0.4);'
@@ -257,7 +257,7 @@ const handleApplyRecommended = async () => {
           <span data-testid="kanban-tools-summary-enabled">{{ enabledCount }}</span>
           <span style="color: var(--semantic-text-dim)"> / </span>
           <span data-testid="kanban-tools-summary-total">{{ totalCount }}</span>
-          <span class="ml-1 text-[10px]" style="color: var(--semantic-text-dim)">enabled</span>
+          <span class="ml-1 text-micro" style="color: var(--semantic-text-dim)">enabled</span>
         </span>
       </div>
 
@@ -266,7 +266,7 @@ const handleApplyRecommended = async () => {
         type="search"
         placeholder="Search tools by name or description…"
         data-testid="kanban-tools-search"
-        class="w-full px-3 py-1.5 rounded-lg text-xs outline-none transition-all duration-200"
+        class="w-full px-3 py-1.5 rounded-lg text-dense outline-none transition-all duration-200"
         style="
           background-color: var(--semantic-card-bg);
           border: 1px solid var(--color-border);
@@ -284,7 +284,7 @@ const handleApplyRecommended = async () => {
            on the backend, see handleToggleTool). -->
       <div
         v-if="!config && !loading"
-        class="px-3 py-2 rounded-lg text-xs flex items-start gap-2"
+        class="px-3 py-2 rounded-lg text-dense flex items-start gap-2"
         style="
           color: var(--semantic-text-muted);
           background-color: rgba(137, 146, 167, 0.08);
@@ -303,7 +303,7 @@ const handleApplyRecommended = async () => {
            getAgentKanban + getAgentToolsRegistry land). -->
       <div
         v-if="loading && toolRegistry.length === 0"
-        class="px-5 py-8 text-center text-xs"
+        class="px-5 py-8 text-center text-dense"
         style="color: var(--semantic-text-dim)"
         data-testid="kanban-tools-loading"
       >
@@ -313,7 +313,7 @@ const handleApplyRecommended = async () => {
       <!-- Empty registry — registry endpoint failed silently + no cached list. -->
       <p
         v-else-if="!loading && toolRegistry.length === 0"
-        class="text-xs px-3 py-2 italic"
+        class="text-dense px-3 py-2 italic"
         style="color: var(--semantic-text-dim)"
         data-testid="kanban-agent-tools-empty"
       >
@@ -323,7 +323,7 @@ const handleApplyRecommended = async () => {
       <!-- Filter-empty (user typed something that matched nothing). -->
       <p
         v-else-if="filteredTools.length === 0"
-        class="text-xs px-3 py-2 italic text-center"
+        class="text-dense px-3 py-2 italic text-center"
         style="color: var(--semantic-text-dim)"
         data-testid="kanban-tools-empty"
       >
@@ -398,13 +398,13 @@ const handleApplyRecommended = async () => {
                native `title` attribute above. -->
           <div class="flex-1 min-w-0">
             <div
-              class="text-xs font-medium truncate"
+              class="text-dense font-medium truncate"
               :style="isEnabled(t.name) ? 'color: var(--semantic-text)' : 'color: var(--semantic-text-muted)'"
             >
               {{ t.name }}
             </div>
             <div
-              class="text-[11px] mt-0.5 line-clamp-2 leading-snug"
+              class="text-meta mt-0.5 line-clamp-2 leading-snug"
               style="color: var(--semantic-text-dim)"
             >
               {{ t.description }}
@@ -425,13 +425,13 @@ const handleApplyRecommended = async () => {
       data-testid="kanban-tools-preset-row"
     >
       <div class="flex items-center justify-between gap-2">
-        <div class="text-xs" style="color: var(--semantic-text-dim)">
+        <div class="text-dense" style="color: var(--semantic-text-dim)">
           <strong style="color: var(--semantic-text-muted)">Quick start:</strong>
           enable a safe starter set (command, read_file, write_file) — add more any time.
         </div>
         <button
           type="button"
-          class="px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
+          class="px-3 py-1.5 rounded-lg text-dense font-medium transition-all duration-200 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90"
           style="
             background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
             color: var(--color-bg, #1D1C19);
@@ -449,7 +449,7 @@ const handleApplyRecommended = async () => {
          load but during toggles). -->
     <p
       v-if="loadError && (config || enabledCount > 0 || searchQuery)"
-      class="text-xs px-3 py-2 rounded-lg"
+      class="text-dense px-3 py-2 rounded-lg"
       style="color: rgb(239, 68, 68); background-color: rgba(239, 68, 68, 0.08)"
       data-testid="kanban-tools-mutation-error"
     >

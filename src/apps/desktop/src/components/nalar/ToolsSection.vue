@@ -231,7 +231,7 @@ function selectNone() {
 <template>
   <div class="space-y-4" data-testid="tools-section">
     <!-- Description (wireframe copy) -->
-    <p class="text-xs leading-relaxed max-w-2xl" style="color: var(--semantic-text-muted)">
+    <p class="text-dense leading-relaxed max-w-2xl" style="color: var(--semantic-text-muted)">
       Built-in tools the agent may use by default. Checked tools become the starting checklist for
       every <strong style="color: var(--semantic-text)">new agent and kanban</strong>, and the
       default set for <strong style="color: var(--semantic-text)">design</strong> and
@@ -242,16 +242,16 @@ function selectNone() {
 
     <!-- "Applies to:" mode chips (wireframe copy) -->
     <div class="flex flex-wrap items-center gap-1.5">
-      <span class="text-[11px] mr-1" style="color: var(--semantic-text-dim)">Applies to:</span>
+      <span class="text-meta mr-1" style="color: var(--semantic-text-dim)">Applies to:</span>
       <span
         v-for="chip in APPLY_CHIPS"
         :key="chip"
-        class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border"
+        class="text-micro uppercase tracking-wide px-2 py-0.5 rounded-full border"
         style="border-color: var(--color-border); color: var(--color-violet)"
         >{{ chip }}</span
       >
       <span
-        class="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded-full border"
+        class="text-micro uppercase tracking-wide px-2 py-0.5 rounded-full border"
         style="border-color: var(--color-border); color: var(--semantic-text-dim)"
         >MCP tools stay on the MCP Servers tab</span
       >
@@ -260,7 +260,7 @@ function selectNone() {
     <!-- Dim note while config.json has no `tools` key -->
     <p
       v-if="isDefaults"
-      class="text-xs"
+      class="text-dense"
       style="color: var(--semantic-text-dim)"
       data-testid="defaults-note"
     >
@@ -269,7 +269,7 @@ function selectNone() {
 
     <!-- Toolbar: summary + None / All -->
     <div class="flex items-center justify-between gap-4">
-      <div class="text-xs" style="color: var(--semantic-text-muted)">
+      <div class="text-dense" style="color: var(--semantic-text-muted)">
         <strong style="color: var(--semantic-text)">{{ selectedCount }}</strong>
         of {{ registry.length }} tools selected
       </div>
@@ -278,7 +278,7 @@ function selectNone() {
           type="button"
           data-testid="none-btn"
           @click="selectNone"
-          class="px-3 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+          class="px-3 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
           style="
             border-color: var(--color-border);
             color: var(--semantic-text-muted);
@@ -291,7 +291,7 @@ function selectNone() {
           type="button"
           data-testid="all-btn"
           @click="selectAll"
-          class="px-3 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+          class="px-3 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
           style="
             border-color: var(--color-violet);
             color: var(--color-violet);
@@ -306,7 +306,7 @@ function selectNone() {
     <!-- Registry states: the catalog is static, so loading/error are plain rows -->
     <div
       v-if="store.loading"
-      class="text-xs py-3"
+      class="text-dense py-3"
       style="color: var(--semantic-text-dim)"
       data-testid="registry-loading"
     >
@@ -314,7 +314,7 @@ function selectNone() {
     </div>
     <div
       v-else-if="store.error"
-      class="text-xs py-3"
+      class="text-dense py-3"
       style="color: var(--color-red)"
       data-testid="registry-error"
     >
@@ -337,12 +337,12 @@ function selectNone() {
           @click="toggleGroup(group)"
         >
           <span
-            class="text-[11px] font-semibold uppercase tracking-wider"
+            class="text-meta font-semibold uppercase tracking-wider"
             style="color: var(--semantic-text-muted)"
             >{{ group.name }}</span
           >
           <span
-            class="text-[11px] font-mono"
+            class="text-meta font-mono"
             :style="{
               color:
                 group.selectedCount === group.tools.length
@@ -368,16 +368,16 @@ function selectNone() {
             @change="toggleTool(tool.name)"
           />
           <div class="flex-1 min-w-0">
-            <div class="text-xs font-mono" style="color: var(--semantic-text)">
+            <div class="text-dense font-mono" style="color: var(--semantic-text)">
               {{ tool.name
               }}<span
                 v-if="tool.pill"
-                class="ml-2 text-[9px] font-semibold uppercase tracking-wide px-1.5 h-4 inline-flex items-center rounded border align-middle"
+                class="ml-2 text-micro font-semibold uppercase tracking-wide px-1.5 h-4 inline-flex items-center rounded border align-middle"
                 :style="{ color: tool.pill.color, borderColor: tool.pill.color }"
                 >{{ tool.pill.label }}</span
               >
             </div>
-            <div class="text-[11px] mt-0.5 leading-snug" style="color: var(--semantic-text-muted)">
+            <div class="text-meta mt-0.5 leading-snug" style="color: var(--semantic-text-muted)">
               {{ tool.description }}
             </div>
           </div>
@@ -386,7 +386,7 @@ function selectNone() {
     </template>
 
     <!-- Why the checklist is trustworthy (wireframe footnote) -->
-    <p class="text-[11px] leading-relaxed max-w-2xl" style="color: var(--semantic-text-dim)">
+    <p class="text-meta leading-relaxed max-w-2xl" style="color: var(--semantic-text-dim)">
       Tool names and descriptions come from the existing
       <code style="font-family: var(--font-mono)">GET /api/agent-tools/registry</code>
       endpoint — the checklist cannot contain names the backend does not know. Pills:

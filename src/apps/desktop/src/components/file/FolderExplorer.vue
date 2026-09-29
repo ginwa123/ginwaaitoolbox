@@ -147,7 +147,7 @@ const handleClick = (entry: FolderEntry) => {
   >
     <!-- Header -->
     <div
-      class="h-10 flex items-center px-3 shrink-0 text-sm font-medium"
+      class="h-10 flex items-center px-3 shrink-0 text-body font-medium"
       style="border-bottom: 1px solid var(--color-border); color: var(--semantic-text)"
     >
       <span v-if="headerName">{{ headerName }}</span>
@@ -176,8 +176,8 @@ const handleClick = (entry: FolderEntry) => {
       v-else-if="loadError"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-2xl mb-2">⚠️</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">
+      <span class="text-title-lg mb-2">⚠️</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">
         {{ loadError }}
       </p>
     </div>
@@ -187,8 +187,8 @@ const handleClick = (entry: FolderEntry) => {
       v-else-if="!hasInput"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-3xl mb-3">📂</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">Pass a cwd to browse files</p>
+      <span class="text-display mb-3">📂</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">Pass a cwd to browse files</p>
     </div>
 
     <!-- Empty folder -->
@@ -196,8 +196,8 @@ const handleClick = (entry: FolderEntry) => {
       v-else-if="flattenedEntries.length === 0 && !isLoading"
       class="flex-1 flex flex-col items-center justify-center p-4 text-center"
     >
-      <span class="text-2xl mb-2">📭</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">Empty folder</p>
+      <span class="text-title-lg mb-2">📭</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">Empty folder</p>
     </div>
 
     <!-- File/Folder List -->
@@ -206,7 +206,7 @@ const handleClick = (entry: FolderEntry) => {
         v-for="{ entry, depth, path } in flattenedEntries"
         :key="path"
         @click="handleClick(entry)"
-        class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:opacity-80"
+        class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:opacity-80"
         :style="{
           paddingLeft: `${0.75 + depth * 1.25}rem`,
           color: entry.is_directory ? 'var(--semantic-text)' : 'var(--semantic-text-muted)',
@@ -215,7 +215,7 @@ const handleClick = (entry: FolderEntry) => {
         <!-- Expand icon for folders -->
         <span
           v-if="entry.is_directory"
-          class="w-3 text-xs flex justify-center transition-transform duration-150"
+          class="w-3 text-dense flex justify-center transition-transform duration-150"
           :style="{ transform: isExpanded(path) ? 'rotate(90deg)' : 'rotate(0deg)' }"
           >▶</span
         >
@@ -229,7 +229,7 @@ const handleClick = (entry: FolderEntry) => {
     <!-- Footer with path -->
     <div
       v-if="cwd"
-      class="h-8 flex items-center px-3 shrink-0 text-xs truncate"
+      class="h-8 flex items-center px-3 shrink-0 text-dense truncate"
       style="border-top: 1px solid var(--color-border); color: var(--semantic-text-dim)"
       :title="cwd"
     >

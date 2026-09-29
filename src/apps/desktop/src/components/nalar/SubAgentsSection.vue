@@ -21,7 +21,7 @@ function toggle(name: string) {
 
 <template>
   <div class="space-y-4">
-    <p class="text-xs leading-relaxed max-w-2xl" style="color: var(--semantic-text-muted);">
+    <p class="text-dense leading-relaxed max-w-2xl" style="color: var(--semantic-text-muted);">
       Sub-agents are named LLM configurations the agent can spawn via the
       <code style="font-family: var(--font-mono);">spawn_sub_agent</code>
       tool. Top-level sub-agents apply to every profile unless a profile overrides them.
@@ -32,7 +32,7 @@ function toggle(name: string) {
         type="button"
         data-testid="add-btn"
         @click="emit('add')"
-        class="px-3 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+        class="px-3 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
         style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
       >+ Add sub-agent</button>
     </div>
@@ -56,8 +56,8 @@ function toggle(name: string) {
       >
         <div class="flex items-center justify-between gap-3">
           <div class="flex-1 min-w-0">
-            <div class="text-sm font-medium" style="color: var(--semantic-text);">{{ sa.name }}</div>
-            <div class="text-xs font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
+            <div class="text-body font-medium" style="color: var(--semantic-text);">{{ sa.name }}</div>
+            <div class="text-dense font-mono mt-0.5 truncate" style="color: var(--semantic-text-dim);">
               {{ sa.model }} · {{ sa.base_url || '—' }}
             </div>
           </div>
@@ -66,14 +66,14 @@ function toggle(name: string) {
               type="button"
               data-testid="edit-btn"
               @click="emit('edit', sa)"
-              class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense border transition-colors duration-150"
               style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
             >Edit</button>
             <button
               type="button"
               data-testid="delete-btn"
               @click="emit('delete', sa.name)"
-              class="px-2.5 h-7 rounded-md text-xs transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense transition-colors duration-150"
               style="color: var(--color-red);"
               aria-label="Delete sub-agent"
             >⌫</button>
@@ -83,7 +83,7 @@ function toggle(name: string) {
         <p
           v-if="sa.system_prompt"
           data-testid="prompt-preview"
-          class="text-xs mt-2"
+          class="text-dense mt-2"
           :class="expanded[sa.name] ? '' : 'line-clamp-2'"
           style="color: var(--semantic-text-muted); white-space: pre-wrap;"
         >{{ sa.system_prompt }}</p>
@@ -92,7 +92,7 @@ function toggle(name: string) {
           type="button"
           data-testid="expand-prompt"
           @click="toggle(sa.name)"
-          class="text-[11px] mt-1 font-mono"
+          class="text-meta mt-1 font-mono"
           style="color: var(--semantic-text-dim);"
         >{{ expanded[sa.name] ? 'Show less' : 'Show more' }}</button>
       </li>

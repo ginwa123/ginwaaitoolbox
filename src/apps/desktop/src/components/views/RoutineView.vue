@@ -439,8 +439,8 @@ watch(
 <template>
   <div class="flex flex-col gap-4 p-5 max-w-2xl" data-testid="routine-view">
     <div class="flex items-center gap-2">
-      <span aria-hidden="true" class="text-lg">⏰</span>
-      <h2 class="text-base font-semibold" style="color: var(--semantic-text)">
+      <span aria-hidden="true" class="text-title-sm">⏰</span>
+      <h2 class="text-lead font-semibold" style="color: var(--semantic-text)">
         {{ item.name ?? 'Routine' }}
       </h2>
     </div>
@@ -449,7 +449,7 @@ watch(
       <button
         type="button"
         data-testid="routine-tab-routine"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium"
+        class="px-3 py-1.5 rounded-lg text-body font-medium"
         :style="
           activeTab === 'routine'
             ? 'background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);'
@@ -462,7 +462,7 @@ watch(
       <button
         type="button"
         data-testid="routine-tab-agent"
-        class="px-3 py-1.5 rounded-lg text-sm font-medium"
+        class="px-3 py-1.5 rounded-lg text-body font-medium"
         :style="
           activeTab === 'agent'
             ? 'background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text);'
@@ -475,13 +475,13 @@ watch(
     </div>
 
     <template v-if="activeTab === 'routine'">
-      <div v-if="loading" class="text-sm" style="color: var(--semantic-text-dim)">
+      <div v-if="loading" class="text-body" style="color: var(--semantic-text-dim)">
         Loading routine…
       </div>
 
       <div
         v-else-if="loadError"
-        class="text-sm"
+        class="text-body"
         style="color: var(--color-red)"
         data-testid="routine-error"
       >
@@ -489,12 +489,12 @@ watch(
       </div>
 
       <template v-else>
-        <p class="text-xs" style="color: var(--semantic-text-dim)" data-testid="routine-status">
+        <p class="text-dense" style="color: var(--semantic-text-dim)" data-testid="routine-status">
           {{ statusLine }}
         </p>
 
         <div>
-          <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text-dim)"
+          <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text-dim)"
             >Description</label
           >
           <input
@@ -502,7 +502,7 @@ watch(
             type="text"
             placeholder="What is this routine for?"
             data-testid="routine-description"
-            class="w-full px-3 py-2 rounded-lg text-sm outline-none"
+            class="w-full px-3 py-2 rounded-lg text-body outline-none"
             :style="{
               backgroundColor: 'var(--semantic-sidebar-bg)',
               border: '1px solid var(--color-border)',
@@ -512,7 +512,7 @@ watch(
         </div>
 
         <div>
-          <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text-dim)"
+          <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text-dim)"
             >Instruction (fired on each run)</label
           >
           <textarea
@@ -520,7 +520,7 @@ watch(
             rows="4"
             placeholder="Tell the agent what to do on every fire…"
             data-testid="routine-instruction"
-            class="w-full px-3 py-2 rounded-lg text-sm outline-none font-mono"
+            class="w-full px-3 py-2 rounded-lg text-body outline-none font-mono"
             :style="{
               backgroundColor: 'var(--semantic-sidebar-bg)',
               border: '1px solid var(--color-border)',
@@ -530,7 +530,7 @@ watch(
         </div>
 
         <div>
-          <label class="block text-xs font-medium mb-1" style="color: var(--semantic-text-dim)"
+          <label class="block text-dense font-medium mb-1" style="color: var(--semantic-text-dim)"
             >Schedule (cron — empty = manual-only)</label
           >
           <input
@@ -539,36 +539,36 @@ watch(
             placeholder="0 9 * * *"
             data-testid="routine-schedule"
             :aria-invalid="scheduleError !== null"
-            class="w-full px-3 py-2 rounded-lg text-sm outline-none font-mono"
+            class="w-full px-3 py-2 rounded-lg text-body outline-none font-mono"
             :style="{
               backgroundColor: 'var(--semantic-sidebar-bg)',
               border: `1px solid ${scheduleError ? 'var(--color-red)' : 'var(--color-border)'}`,
               color: 'var(--semantic-text)',
             }"
           />
-          <p v-if="scheduleError" class="text-xs mt-1" style="color: var(--color-red)">
+          <p v-if="scheduleError" class="text-dense mt-1" style="color: var(--color-red)">
             {{ scheduleError }}
           </p>
-          <p v-else class="text-xs mt-1" style="color: var(--semantic-text-dim)">
+          <p v-else class="text-dense mt-1" style="color: var(--semantic-text-dim)">
             5 fields: minute hour day-of-month month day-of-week — e.g.
             <span class="font-mono">*/5 * * * *</span>, <span class="font-mono">0 9 * * 1-5</span>
           </p>
         </div>
 
-        <label class="flex items-center gap-2 text-sm" style="color: var(--semantic-text)">
+        <label class="flex items-center gap-2 text-body" style="color: var(--semantic-text)">
           <input v-model="enabled" type="checkbox" data-testid="routine-enabled" />
           Enabled
         </label>
 
-        <p v-if="saveError" class="text-xs" style="color: var(--color-red)">{{ saveError }}</p>
-        <p v-if="runError" class="text-xs" style="color: var(--color-red)">{{ runError }}</p>
+        <p v-if="saveError" class="text-dense" style="color: var(--color-red)">{{ saveError }}</p>
+        <p v-if="runError" class="text-dense" style="color: var(--color-red)">{{ runError }}</p>
 
         <div class="flex gap-2">
           <button
             type="button"
             :disabled="!canSave"
             data-testid="routine-save"
-            class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50"
+            class="px-3 py-1.5 rounded-lg text-body font-medium disabled:opacity-50"
             style="
               background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
               color: var(--color-bg);
@@ -581,7 +581,7 @@ watch(
             type="button"
             :disabled="running || !enabled"
             data-testid="routine-run"
-            class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50"
+            class="px-3 py-1.5 rounded-lg text-body font-medium disabled:opacity-50"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -627,7 +627,7 @@ watch(
             </div>
             <div
               v-else
-              class="text-xs text-center py-6 px-4 rounded-lg"
+              class="text-dense text-center py-6 px-4 rounded-lg"
               style="
                 color: var(--semantic-text-dim);
                 background-color: var(--semantic-sidebar-bg);
@@ -635,7 +635,7 @@ watch(
               "
               data-testid="routine-agent-memories-no-path"
             >
-              <div class="text-lg mb-1" aria-hidden="true">📁</div>
+              <div class="text-title-sm mb-1" aria-hidden="true">📁</div>
               <div>No directory is set on this routine.</div>
               <div class="mt-1">Pick one when creating the routine to enable local memories.</div>
             </div>

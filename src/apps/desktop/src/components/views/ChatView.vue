@@ -4425,7 +4425,7 @@ const compactSession = async () => {
         <button
           v-if="!showHeader && !embedded && !chatSidebar.isOpen.value"
           type="button"
-          class="absolute top-2 right-2 z-10 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
+          class="absolute top-2 right-2 z-10 w-7 h-7 rounded flex items-center justify-center text-body hover:opacity-70 transition-opacity"
           style="
             color: var(--semantic-text-dim);
             background-color: var(--semantic-card-bg);
@@ -4452,7 +4452,7 @@ const compactSession = async () => {
         <!--       class="w-4 h-4 border-2 rounded-full animate-spin" -->
         <!--       style="border-color: var(--color-violet); border-top-color: transparent" -->
         <!--     ></div> -->
-        <!--     <span class="text-sm" style="color: var(--semantic-text-dim)">Loading more...</span> -->
+        <!--     <span class="text-body" style="color: var(--semantic-text-dim)">Loading more...</span> -->
         <!--   </div> -->
         <!-- </div> -->
 
@@ -4484,10 +4484,10 @@ const compactSession = async () => {
           data-testid="chat-load-error"
           class="flex flex-col items-center justify-center h-full px-4"
         >
-          <p class="text-sm mb-3" style="color: var(--semantic-text-dim)">{{ error }}</p>
+          <p class="text-body mb-3" style="color: var(--semantic-text-dim)">{{ error }}</p>
           <button
             @click="loadChatHistory()"
-            class="px-4 py-1.5 rounded-full text-xs"
+            class="px-4 py-1.5 rounded-full text-dense"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -4516,15 +4516,15 @@ const compactSession = async () => {
           class="flex flex-col items-center justify-center h-full px-4"
         >
           <div
-            class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-3xl"
+            class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-display"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
           >
             💬
           </div>
-          <h3 class="text-lg font-medium mb-2" style="color: var(--semantic-text)">
+          <h3 class="text-title-sm font-medium mb-2" style="color: var(--semantic-text)">
             How can I help you?
           </h3>
-          <p class="text-sm text-center" style="color: var(--semantic-text-dim)">
+          <p class="text-body text-center" style="color: var(--semantic-text-dim)">
             Start a conversation by typing a message below
           </p>
         </div>
@@ -4568,7 +4568,7 @@ const compactSession = async () => {
         >
           <button
             @click="maybeLoadOlder('manual')"
-            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs transition-all duration-200 hover:scale-105"
+            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-dense transition-all duration-200 hover:scale-105"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -4651,7 +4651,7 @@ const compactSession = async () => {
                 >
                   <div
                     v-if="hasBubbleContent(group, groupIndex)"
-                    class="text-sm leading-relaxed"
+                    class="text-body leading-relaxed"
                     role="button"
                     tabindex="0"
                     :class="
@@ -5095,13 +5095,13 @@ const compactSession = async () => {
                       >
                         <details class="assistant-reasoning">
                           <summary
-                            class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
+                            class="cursor-pointer select-none text-dense font-medium opacity-70 hover:opacity-100"
                             :style="{ color: 'var(--semantic-text-dim)' }"
                           >
                             Thought
                           </summary>
                           <div
-                            class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"
+                            class="mt-1 whitespace-pre-wrap text-dense leading-relaxed opacity-80 border-l-2 pl-3"
                             :style="{
                               color: 'var(--semantic-text-dim)',
                               'border-color': 'var(--color-border)',
@@ -5167,7 +5167,7 @@ const compactSession = async () => {
                        bubble" visual artifact between tool calls). -->
                   <!-- <div -->
                   <!--   v-if="hasBubbleContent(group, groupIndex)" -->
-                  <!--   class="text-xs mt-1 px-1" -->
+                  <!--   class="text-dense mt-1 px-1" -->
                   <!--   :class="group.role === 'user' ? 'text-right' : 'text-left'" -->
                   <!--   style="color: var(--semantic-text-dim)" -->
                   <!-- > -->
@@ -5343,7 +5343,7 @@ const compactSession = async () => {
                       :title="profileChipTooltip"
                     >
                       <span>{{ effectiveProfile ?? 'Default' }}</span>
-                      <span class="text-[10px]">▾</span>
+                      <span class="text-micro">▾</span>
                     </button>
                     <div
                       v-if="showProfilePicker"
@@ -5355,7 +5355,7 @@ const compactSession = async () => {
                     >
                       <button
                         @click="selectProfile(null)"
-                        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                        class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center justify-between"
                         style="color: var(--semantic-text)"
                         data-testid="profile-picker-default"
                       >
@@ -5366,7 +5366,7 @@ const compactSession = async () => {
                         v-for="p in availableProfiles"
                         :key="p.name"
                         @click="selectProfile(p.name)"
-                        class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                        class="w-full text-left px-3 py-2 text-dense hover:opacity-80"
                         style="
                           color: var(--semantic-text);
                           border-top: 1px solid var(--color-border);
@@ -5378,7 +5378,7 @@ const compactSession = async () => {
                             {{ p.name }}
                             <span
                               v-if="activeProfile === p.name"
-                              class="text-[10px] ml-1 px-1 py-0.5 rounded"
+                              class="text-micro ml-1 px-1 py-0.5 rounded"
                               :style="{ backgroundColor: 'var(--color-violet)', color: '#181616' }"
                               data-testid="profile-picker-active-badge"
                               >(active)</span
@@ -5386,13 +5386,13 @@ const compactSession = async () => {
                           </span>
                           <span v-if="effectiveProfile === p.name">✓</span>
                         </div>
-                        <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
+                        <div class="text-micro mt-0.5" style="color: var(--semantic-text-muted)">
                           {{ p.model }} · {{ p.base_url }}
                         </div>
                       </button>
                       <div
                         v-if="availableProfiles.length === 0"
-                        class="px-3 py-2 text-xs"
+                        class="px-3 py-2 text-dense"
                         style="color: var(--semantic-text-muted)"
                       >
                         No profiles configured. Add one in Settings.
@@ -5455,7 +5455,7 @@ const compactSession = async () => {
                       }}</span>
                       <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
                       <span v-else style="color: var(--color-green)">✓</span>
-                      <span class="text-[10px]">▾</span>
+                      <span class="text-micro">▾</span>
                     </button>
                     <WorktreeMenu
                       v-if="showWorktreeMenu"
@@ -5505,7 +5505,7 @@ const compactSession = async () => {
         >
           <button
             type="button"
-            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            class="text-dense px-2 py-1 rounded hover:opacity-70"
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-back"
             @click="onCenterDiffBack"
@@ -5513,7 +5513,7 @@ const compactSession = async () => {
             ← Back to chat
           </button>
           <span
-            class="text-xs truncate flex-1"
+            class="text-dense truncate flex-1"
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-count"
           >
@@ -5522,7 +5522,7 @@ const compactSession = async () => {
           <button
             v-if="reviewCommentsForDiff.length > 0"
             type="button"
-            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            class="text-dense px-2 py-1 rounded hover:opacity-70"
             style="color: var(--color-blue)"
             data-testid="chat-center-diff-copy-all"
             @click="copyAllReviewComments"
@@ -5531,7 +5531,7 @@ const compactSession = async () => {
           </button>
           <span
             v-if="copiedAllReviews"
-            class="text-xs"
+            class="text-dense"
             style="color: var(--color-green)"
             data-testid="chat-center-diff-copied-all"
           >

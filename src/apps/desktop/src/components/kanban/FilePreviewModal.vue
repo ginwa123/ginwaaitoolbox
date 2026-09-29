@@ -136,14 +136,14 @@ const handleKeydown = (event: KeyboardEvent) => {
             <div class="min-w-0 flex-1">
               <h3
                 id="file-preview-modal-title"
-                class="text-base font-semibold truncate"
+                class="text-lead font-semibold truncate"
                 style="color: var(--semantic-text)"
                 data-testid="file-preview-modal-title"
               >
                 📄 {{ filePath }}
               </h3>
               <div
-                class="text-[11px] truncate"
+                class="text-meta truncate"
                 style="color: var(--semantic-text-dim)"
                 :title="cwd"
                 data-testid="file-preview-modal-cwd"
@@ -174,7 +174,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="flex-1 overflow-y-auto min-h-0 px-5 py-4">
             <div
               v-if="isLoading"
-              class="text-sm text-center py-8"
+              class="text-body text-center py-8"
               style="color: var(--semantic-text-dim)"
               data-testid="file-preview-modal-loading"
             >
@@ -186,7 +186,7 @@ const handleKeydown = (event: KeyboardEvent) => {
             </div>
             <div
               v-else-if="errorMessage"
-              class="px-3 py-2 rounded-lg text-sm"
+              class="px-3 py-2 rounded-lg text-body"
               style="
                 background-color: rgba(239, 68, 68, 0.12);
                 border: 1px solid rgba(239, 68, 68, 0.4);
@@ -199,7 +199,7 @@ const handleKeydown = (event: KeyboardEvent) => {
             </div>
             <pre
               v-else
-              class="text-xs whitespace-pre-wrap break-all"
+              class="text-dense whitespace-pre-wrap break-all"
               style="color: var(--semantic-text); font-family: var(--font-mono); line-height: 1.6"
               data-testid="file-preview-modal-content"
               >{{ content }}</pre>
@@ -214,7 +214,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               type="button"
               @click="handleClose"
               data-testid="file-preview-modal-close-button"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);

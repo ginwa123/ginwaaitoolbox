@@ -1415,7 +1415,7 @@ const handleCreateTaskSave = async (payload: {
         style="border-bottom: 1px solid var(--color-border)"
       >
         <h3
-          class="text-sm font-semibold truncate flex-1"
+          class="text-body font-semibold truncate flex-1"
           style="color: var(--semantic-text)"
           :data-testid="`kanban-view-${item.id}-title`"
         >
@@ -1424,7 +1424,7 @@ const handleCreateTaskSave = async (payload: {
             :placeholder="'unnamed kanban'"
             :ariaLabel="'kanban name'"
             :testId="`kanban-view-${item.id}-rename`"
-            display-class="text-sm font-semibold"
+            display-class="text-body font-semibold"
             @save="(newName) => emit('renameItem', newName)"
           />
         </h3>
@@ -1447,7 +1447,7 @@ const handleCreateTaskSave = async (payload: {
           type="button"
           @click="showPathPicker = true"
           :disabled="pathPickerBusy"
-          class="shrink-0 px-2 py-1 rounded text-xs font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+          class="shrink-0 px-2 py-1 rounded text-dense font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           style="
             background-color: rgba(234, 179, 8, 0.18);
             color: rgb(202, 138, 4);
@@ -1474,7 +1474,7 @@ const handleCreateTaskSave = async (payload: {
             type="button"
             role="tab"
             :aria-selected="layout === 'columns'"
-            class="px-2 py-1 text-xs border-none cursor-pointer transition-colors"
+            class="px-2 py-1 text-dense border-none cursor-pointer transition-colors"
             :style="
               layout === 'columns'
                 ? 'background: var(--color-violet); color: var(--color-bg);'
@@ -1490,7 +1490,7 @@ const handleCreateTaskSave = async (payload: {
             type="button"
             role="tab"
             :aria-selected="layout === 'rows'"
-            class="px-2 py-1 text-xs border-none cursor-pointer transition-colors"
+            class="px-2 py-1 text-dense border-none cursor-pointer transition-colors"
             :style="
               layout === 'rows'
                 ? 'background: var(--color-violet); color: var(--color-bg);'
@@ -1514,7 +1514,7 @@ const handleCreateTaskSave = async (payload: {
         <button
           v-if="layout === 'rows'"
           type="button"
-          class="px-2 py-1 text-xs rounded shrink-0 cursor-pointer transition-colors"
+          class="px-2 py-1 text-dense rounded shrink-0 cursor-pointer transition-colors"
           style="border: 1px solid var(--color-border); color: var(--semantic-text-muted)"
           :data-testid="`kanban-view-${item.id}-density-toggle`"
           :title="
@@ -1541,7 +1541,7 @@ const handleCreateTaskSave = async (payload: {
            attribute explains the disabled state. -->
         <button
           type="button"
-          class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          class="px-2 py-1 rounded text-dense font-medium hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1560,7 +1560,7 @@ const handleCreateTaskSave = async (payload: {
 
         <button
           type="button"
-          class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+          class="px-2 py-1 rounded text-dense font-medium hover:opacity-80 transition-opacity"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1582,7 +1582,7 @@ const handleCreateTaskSave = async (payload: {
            Prompt persona-content panel (KanbanKnowledgePanel). -->
         <button
           type="button"
-          class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+          class="px-2 py-1 rounded text-dense font-medium hover:opacity-80 transition-opacity"
           style="
             background-color: var(--semantic-sidebar-bg);
             border: 1px solid var(--color-border);
@@ -1607,7 +1607,7 @@ const handleCreateTaskSave = async (payload: {
     -->
       <div
         v-if="tasks.length === 0 && searchQuery.trim() !== ''"
-        class="px-3 py-2 text-xs shrink-0"
+        class="px-3 py-2 text-dense shrink-0"
         style="color: var(--semantic-text-dim)"
         :data-testid="`kanban-view-${item.id}-no-search-matches`"
       >
@@ -1623,7 +1623,7 @@ const handleCreateTaskSave = async (payload: {
     -->
       <div
         v-if="runAllSummary"
-        class="px-3 py-2 text-xs shrink-0"
+        class="px-3 py-2 text-dense shrink-0"
         style="color: var(--semantic-text)"
         :data-testid="`kanban-view-${item.id}-run-all-summary`"
         role="status"

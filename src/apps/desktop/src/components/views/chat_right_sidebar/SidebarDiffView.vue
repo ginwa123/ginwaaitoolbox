@@ -195,7 +195,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       <button
         v-if="showBack"
         type="button"
-        class="shrink-0 px-2 h-7 rounded flex items-center gap-1 text-xs hover:opacity-70 transition-opacity"
+        class="shrink-0 px-2 h-7 rounded flex items-center gap-1 text-dense hover:opacity-70 transition-opacity"
         style="color: var(--semantic-text-dim)"
         title="Back to chat"
         aria-label="Back to chat"
@@ -205,7 +205,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
         ‹ {{ backLabel ?? 'Back' }}
       </button>
       <span
-        class="text-xs font-medium truncate flex-1"
+        class="text-dense font-medium truncate flex-1"
         style="color: var(--semantic-text)"
         :title="path"
         data-testid="sidebar-diff-selected"
@@ -214,16 +214,16 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
       </span>
       <span
         v-if="staged"
-        class="text-xs px-1.5 py-0.5 rounded"
+        class="text-dense px-1.5 py-0.5 rounded"
         style="background: rgba(135, 169, 135, 0.15); color: var(--color-green)"
       >
         Staged
       </span>
-      <span class="text-xs font-mono" style="color: var(--color-green)"> +{{ added }} </span>
-      <span class="text-xs font-mono" style="color: var(--color-red)"> -{{ removed }} </span>
+      <span class="text-dense font-mono" style="color: var(--color-green)"> +{{ added }} </span>
+      <span class="text-dense font-mono" style="color: var(--color-red)"> -{{ removed }} </span>
       <button
         type="button"
-        class="px-2 py-1 text-xs rounded hover:opacity-70"
+        class="px-2 py-1 text-dense rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
         title="Open file in code browser"
         aria-label="Open file in code browser"
@@ -251,11 +251,11 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
     </div>
 
     <div v-else-if="error" class="flex flex-col items-center justify-center p-4">
-      <span class="text-2xl mb-2">⚠️</span>
-      <p class="text-xs" style="color: var(--semantic-error)">{{ error }}</p>
+      <span class="text-title-lg mb-2">⚠️</span>
+      <p class="text-dense" style="color: var(--semantic-error)">{{ error }}</p>
       <button
         type="button"
-        class="mt-3 px-3 py-1.5 text-sm rounded"
+        class="mt-3 px-3 py-1.5 text-body rounded"
         style="background: var(--color-green); color: var(--color-bg)"
         data-testid="sidebar-diff-retry"
         @click="emit('retry')"
@@ -265,8 +265,8 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
     </div>
 
     <div v-else-if="lines.length === 0" class="flex flex-col items-center justify-center p-4">
-      <span class="text-2xl mb-2">📄</span>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">No changes detected</p>
+      <span class="text-title-lg mb-2">📄</span>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">No changes detected</p>
     </div>
 
     <div
@@ -372,7 +372,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                   style="border: 1px solid var(--color-border)"
                 >
                   <div
-                    class="text-xs font-medium mb-1"
+                    class="text-dense font-medium mb-1"
                     style="color: var(--semantic-text)"
                   >
                     Comment on lines {{ thread.start }}–{{ thread.end }}
@@ -395,7 +395,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                     />
                     <button
                       type="button"
-                      class="text-xs hover:opacity-70 mt-1"
+                      class="text-dense hover:opacity-70 mt-1"
                       style="color: var(--color-blue)"
                         data-testid="diff-comment-cancel"
                       @click="cancelEdit"
@@ -405,7 +405,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                   </div>
                   <div v-else>
                     <div
-                      class="text-xs whitespace-pre-wrap mb-1"
+                      class="text-dense whitespace-pre-wrap mb-1"
                       style="color: var(--semantic-text)"
                       data-testid="diff-comment-message"
                     >
@@ -414,7 +414,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                     <div class="flex gap-3">
                       <button
                         type="button"
-                        class="text-xs hover:opacity-70"
+                        class="text-dense hover:opacity-70"
                         style="color: var(--color-blue)"
                         data-testid="diff-comment-edit"
                         @click="editThread(thread)"
@@ -423,7 +423,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       </button>
                       <button
                         type="button"
-                        class="text-xs hover:opacity-70"
+                        class="text-dense hover:opacity-70"
                         style="color: var(--color-blue)"
                         data-testid="diff-comment-delete"
                         @click="deleteThread(thread)"
@@ -432,7 +432,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       </button>
                       <button
                         type="button"
-                        class="text-xs hover:opacity-70"
+                        class="text-dense hover:opacity-70"
                         style="color: var(--color-blue)"
                         data-testid="diff-comment-copy"
                         @click="copyThread(thread)"
@@ -441,7 +441,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
                       </button>
                       <span
                         v-if="copiedKey === threadKey(thread)"
-                        class="text-xs"
+                        class="text-dense"
                         style="color: var(--color-green)"
                         data-testid="diff-comment-copied"
                       >
@@ -463,7 +463,7 @@ const openFile = () => emit('open', { path: props.path, line: firstAddLine.value
         class="mini-chat-popup fixed z-50 rounded-lg shadow-lg p-3"
         :style="miniChatStyle"
       >
-        <div class="text-xs mb-2 flex items-center gap-2" style="color: var(--semantic-text-dim)">
+        <div class="text-dense mb-2 flex items-center gap-2" style="color: var(--semantic-text-dim)">
           <span class="flex-1"
             >Review {{ miniChatFilePath }} ({{ miniChatStartLine }}–{{ miniChatEndLine }})</span
           >

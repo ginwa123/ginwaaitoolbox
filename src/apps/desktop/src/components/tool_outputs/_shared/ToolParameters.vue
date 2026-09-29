@@ -62,7 +62,7 @@ const pretty = computed(() => {
       Arguments
     </summary>
     <pre
-      class="mt-1 p-2 m-0 whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto text-[var(--semantic-text-dim)] text-xs"
+      class="mt-1 p-2 m-0 whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto text-[var(--semantic-text-dim)] text-dense"
       >{{ pretty }}</pre>
   </details>
 </template>

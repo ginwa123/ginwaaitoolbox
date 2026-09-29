@@ -156,7 +156,7 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
     data-testid="list-directory"
   >
@@ -169,22 +169,22 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
       @keydown.enter.prevent="toggle"
       @keydown.space.prevent="toggle"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs shrink-0">list_directory</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense shrink-0">list_directory</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text)] text-dense"
         :title="headerTitle"
       >
         {{ headerLabel }}
       </span>
-      <span class="text-[var(--semantic-text-muted)] text-[0.65rem] shrink-0">{{ countLabel }}</span>
-      <span v-if="isRunning" data-testid="list-directory-running" class="text-[0.65rem] text-yellow-500 animate-pulse">running…</span>
+      <span class="text-[var(--semantic-text-muted)] text-micro shrink-0">{{ countLabel }}</span>
+      <span v-if="isRunning" data-testid="list-directory-running" class="text-micro text-yellow-500 animate-pulse">running…</span>
       <span
-        class="text-xs font-semibold shrink-0"
+        class="text-dense font-semibold shrink-0"
         :class="isSuccess ? 'text-green-500' : 'text-red-500'"
       >
         {{ statusIndicator }}
       </span>
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm shrink-0">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body shrink-0">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -194,7 +194,7 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
       <!-- Error message -->
       <div
         v-if="!isSuccess && errorMessage"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="list-directory-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -203,7 +203,7 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
 
       <!-- Success path: one row per entry -->
       <template v-if="isSuccess">
-        <div v-if="entries.length === 0" class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic" data-testid="list-directory-empty">
+        <div v-if="entries.length === 0" class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic" data-testid="list-directory-empty">
           (empty directory)
         </div>
 
@@ -215,19 +215,19 @@ const canOpenInEditor = computed(() => !!props.cwd && !!openInEditor)
           :data-kind="rowKind(entry)"
           :data-is-symlink="entry.isSymlink ? 'true' : 'false'"
         >
-          <span class="w-4 text-center text-[var(--semantic-text-muted)] text-[0.7rem] shrink-0" aria-hidden="true">
+          <span class="w-4 text-center text-[var(--semantic-text-muted)] text-meta shrink-0" aria-hidden="true">
             {{ rowGlyph(entry) }}
           </span>
           <span
-            class="flex-1 truncate text-[var(--semantic-text)] text-[0.72rem]"
+            class="flex-1 truncate text-[var(--semantic-text)] text-meta"
             :title="entry.path"
           >{{ entry.name }}</span>
           <span
-            class="text-[var(--semantic-text-dim)] text-[0.6rem] truncate max-w-[40%] hidden group-hover/row:inline"
+            class="text-[var(--semantic-text-dim)] text-micro truncate max-w-[40%] hidden group-hover/row:inline"
             :title="entry.path"
           >{{ entry.path }}</span>
           <button
-            class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-base transition-opacity shrink-0"
+            class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-lead transition-opacity shrink-0"
             @click="(e) => copyPath(e, entry.path)"
             :title="`Copy ${entry.path}`"
             data-testid="list-directory-copy-path"

@@ -36,7 +36,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !parsed.removed }"
   >
     <ToolCardHeader
@@ -55,14 +55,14 @@ const handleToggle = (next: boolean) => {
     >
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
       <div
         v-if="parsed.removed && parsed.path"
-        class="flex gap-2 px-2 py-1.5 text-green-500 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-green-500 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Path:</span>
         <span class="whitespace-pre-wrap break-all text-[var(--semantic-text-dim)]">{{ parsed.path }}</span>

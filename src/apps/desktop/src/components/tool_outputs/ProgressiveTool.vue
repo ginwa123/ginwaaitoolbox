@@ -106,7 +106,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !success }"
     data-testid="progressive-tool"
   >
@@ -128,7 +128,7 @@ const handleToggle = (next: boolean) => {
       <template v-if="isSearch">
         <div
           v-if="!search.success"
-          class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         >
           <span class="font-semibold shrink-0">Error:</span>
           <span class="whitespace-pre-wrap break-all">{{ search.error || 'unknown error' }}</span>
@@ -147,15 +147,15 @@ const handleToggle = (next: boolean) => {
               <span class="font-semibold text-[var(--semantic-text)]">{{ tool.name }}</span>
               <span
                 v-if="tool.kind"
-                class="text-[0.65rem] px-1 rounded bg-violet-500/10 text-violet-500"
+                class="text-micro px-1 rounded bg-violet-500/10 text-violet-500"
               >{{ tool.kind }}</span>
               <span
                 v-if="tool.server"
-                class="text-[0.65rem] px-1 rounded bg-black/[0.04] text-[var(--semantic-text-muted)]"
+                class="text-micro px-1 rounded bg-black/[0.04] text-[var(--semantic-text-muted)]"
               >{{ tool.server }}</span>
               <span
                 v-if="tool.equipped === 'session'"
-                class="text-[0.65rem] px-1 rounded bg-green-500/10 text-green-500"
+                class="text-micro px-1 rounded bg-green-500/10 text-green-500"
               >session</span>
             </div>
             <div
@@ -174,7 +174,7 @@ const handleToggle = (next: boolean) => {
       <template v-else-if="isView">
         <div
           v-if="!view.success"
-          class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         >
           <span class="font-semibold shrink-0">Error:</span>
           <span class="whitespace-pre-wrap break-all">{{ view.error || 'unknown error' }}</span>
@@ -185,13 +185,13 @@ const handleToggle = (next: boolean) => {
             class="whitespace-pre-wrap break-words text-[var(--semantic-text)]"
           >{{ view.description }}</div>
           <div class="flex items-center gap-1.5 flex-wrap text-[var(--semantic-text-muted)]">
-            <span v-if="view.kind" class="text-[0.65rem] px-1 rounded bg-violet-500/10 text-violet-500">{{ view.kind }}</span>
-            <span v-if="view.server" class="text-[0.65rem] px-1 rounded bg-black/[0.04]">{{ view.server }}</span>
-            <span v-if="view.equipped" class="text-[0.65rem] px-1 rounded bg-black/[0.04]">equipped: {{ view.equipped }}</span>
+            <span v-if="view.kind" class="text-micro px-1 rounded bg-violet-500/10 text-violet-500">{{ view.kind }}</span>
+            <span v-if="view.server" class="text-micro px-1 rounded bg-black/[0.04]">{{ view.server }}</span>
+            <span v-if="view.equipped" class="text-micro px-1 rounded bg-black/[0.04]">equipped: {{ view.equipped }}</span>
           </div>
           <pre
             v-if="view.prettyParameters"
-            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-xs hover:bg-violet-500/5"
+            class="p-2 m-0 bg-black/[0.02] whitespace-pre-wrap break-words max-w-full min-w-0 overflow-x-auto leading-relaxed text-[var(--semantic-text)] text-dense hover:bg-violet-500/5"
             data-testid="progressive-tool-parameters"
           >{{ view.prettyParameters }}</pre>
           <div v-if="view.note" class="text-[var(--semantic-text-muted)]">{{ view.note }}</div>
@@ -211,18 +211,18 @@ const handleToggle = (next: boolean) => {
       <template v-else-if="isUse">
         <div
           v-if="!use.success"
-          class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+          class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         >
           <span class="font-semibold shrink-0">Error:</span>
           <span class="whitespace-pre-wrap break-all">{{ use.error || 'unknown error' }}</span>
         </div>
         <div v-else class="px-2 py-1.5 flex flex-col gap-1.5">
           <div class="flex items-center gap-1.5 flex-wrap text-[var(--semantic-text-muted)]">
-            <span v-if="use.kind" class="text-[0.65rem] px-1 rounded bg-violet-500/10 text-violet-500">{{ use.kind }}</span>
-            <span class="text-[0.65rem] px-1 rounded bg-green-500/10 text-green-500">
+            <span v-if="use.kind" class="text-micro px-1 rounded bg-violet-500/10 text-violet-500">{{ use.kind }}</span>
+            <span class="text-micro px-1 rounded bg-green-500/10 text-green-500">
               {{ use.inserted ? 'enabled this session' : 'already enabled' }}
             </span>
-            <span v-if="use.waitNextTurn" class="text-[0.65rem] px-1 rounded bg-black/[0.04]">takes effect next turn</span>
+            <span v-if="use.waitNextTurn" class="text-micro px-1 rounded bg-black/[0.04]">takes effect next turn</span>
           </div>
           <div v-if="use.note" class="text-[var(--semantic-text-muted)]">{{ use.note }}</div>
         </div>

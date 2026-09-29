@@ -374,7 +374,7 @@ const handleItemDragEnd = () => {
         @click="toggleProjectsSection"
       >
         <span
-          class="text-[var(--sb-fs-icon)] transition-transform duration-200"
+          class="text-meta transition-transform duration-200"
           :style="{
             transform: sidebarStore.projectsExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
           }"
@@ -382,13 +382,13 @@ const handleItemDragEnd = () => {
           >▶</span
         >
         <span
-          class="text-[var(--sb-fs-section)] font-semibold uppercase tracking-[0.08em]"
+          class="text-micro font-semibold uppercase tracking-[0.08em]"
           style="color: var(--semantic-text-dim)"
           >Projects</span
         >
         <span
           v-if="workspace"
-          class="text-[var(--sb-fs-meta)]"
+          class="text-micro"
           style="color: var(--semantic-text-dim); opacity: 0.7"
           data-testid="projects-count"
           >{{ workspace.items.length }}</span
@@ -400,7 +400,7 @@ const handleItemDragEnd = () => {
         />
         <button
           v-if="sidebarStore.projectsExpanded && workspace"
-          class="ml-auto w-[var(--sb-hit)] h-[var(--sb-hit)] text-[var(--sb-fs-icon)] font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
+          class="ml-auto w-[var(--sb-hit)] h-[var(--sb-hit)] text-meta font-medium transition-opacity duration-150 hover:opacity-100 flex items-center justify-center"
           style="color: var(--semantic-text-dim); opacity: 0.7"
           title="Add Item"
           aria-label="Add Item"
@@ -421,7 +421,7 @@ const handleItemDragEnd = () => {
         <li>
           <button
             disabled
-            class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
+            class="w-full px-3 py-2 text-left text-dense opacity-40 cursor-not-allowed"
             style="color: var(--semantic-text)"
             title="Coming soon"
             aria-disabled="true"
@@ -433,7 +433,7 @@ const handleItemDragEnd = () => {
         <li>
           <button
             @click="handleAddItem(workspace.id, 'kanban')"
-            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            class="w-full px-3 py-2 text-left text-dense hover:opacity-80 transition-opacity"
             style="color: var(--semantic-text)"
           >
             Add Kanban
@@ -447,7 +447,7 @@ const handleItemDragEnd = () => {
         <li>
           <button
             disabled
-            class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
+            class="w-full px-3 py-2 text-left text-dense opacity-40 cursor-not-allowed"
             style="color: var(--semantic-text)"
             title="Design mode is temporarily disabled"
             aria-disabled="true"
@@ -463,7 +463,7 @@ const handleItemDragEnd = () => {
         <li>
           <button
             @click="handleAddItem(workspace.id, 'agent')"
-            class="w-full px-3 py-2 text-left text-sm hover:opacity-80 transition-opacity"
+            class="w-full px-3 py-2 text-left text-dense hover:opacity-80 transition-opacity"
             style="color: var(--semantic-text)"
             data-testid="workspace-add-agent-option"
           >
@@ -478,7 +478,7 @@ const handleItemDragEnd = () => {
         <li>
           <button
             disabled
-            class="w-full px-3 py-2 text-left text-sm opacity-40 cursor-not-allowed"
+            class="w-full px-3 py-2 text-left text-dense opacity-40 cursor-not-allowed"
             style="color: var(--semantic-text)"
             title="Routines are temporarily disabled"
             aria-disabled="true"
@@ -546,7 +546,7 @@ const handleItemDragEnd = () => {
             />
             <li
               v-if="workspace.items.length === 0"
-              class="px-[var(--sb-gutter)] py-2 text-[var(--sb-fs-meta)]"
+              class="px-[var(--sb-gutter)] py-2 text-micro"
               style="color: var(--semantic-text-dim)"
               data-testid="projects-empty"
             >
@@ -555,7 +555,7 @@ const handleItemDragEnd = () => {
           </ul>
           <div
             v-else
-            class="px-[var(--sb-gutter)] py-2 text-[var(--sb-fs-meta)]"
+            class="px-[var(--sb-gutter)] py-2 text-micro"
             style="color: var(--semantic-text-dim)"
             data-testid="projects-no-workspace"
           >
