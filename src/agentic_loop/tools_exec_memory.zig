@@ -1,12 +1,23 @@
 // Exec wrappers for the `save_memory` / `load_memory` agent tools
 // (append-only since 2026-09-12: `delete_memory` was removed per user
 // decision — "memory is always add, no need edit or delete").
+//
+// Per-workspace scope (Migration 095)
+// ─────────────────────────────────
+// This file is the ONLY place that decides which workspace a memory
+// operation runs against, and it decides it from `ctx.session_id` —
+// never from the tool-call arguments. The `SaveMemoryInput` /
+// `LoadMemoryInput` structs parsed below have no `workspace_id` field, so
+// there is no JSON payload, however crafted, that can move a read or a
+// write into another workspace. This mirrors how `read_workspace_session`
+// scopes itself server-side.
 
 const std = @import("std");
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const tools = @import("tools.zig");
 const migration = @import("../migrations/migration.zig");
+const workspace_scope = @import("workspace_scope.zig");
 
 const sqlite = nalarcore.sqlite;
 const agent_memories = nalarcore.agent_memories;
@@ -26,6 +37,19 @@ const InnerErrorProbe = struct {
 
 // ─── save_memory ───
 
+/// Resolve the workspace this session's memory operations are scoped to.
+/// Returns an owned slice (caller frees) or null; the caller normalises
+/// null to the `''` "no workspace" bucket, which the storage layer stores
+/// through the column DEFAULT.
+///
+/// A resolution failure is NOT an error: a bare CLI chat with no matching
+/// `workspace_items.path` still gets a working (if private to other
+/// workspace-less sessions) memory store. Failing the tool instead would
+/// be a worse product than a scoped-narrow bucket.
+fn resolveScope(ctx: ToolExecContext) !?[]u8 {
+    return workspace_scope.resolveWorkspaceId(ctx.allocator, ctx.db, ctx.session_id);
+}
+
 pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult {
     const parsed = std.json.parseFromSlice(
         memory_mod.SaveMemoryInput,
@@ -39,10 +63,15 @@ pub fn execSaveMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer parsed.deinit();
 
+    const resolved = try resolveScope(ctx);
+    defer if (resolved) |w| ctx.allocator.free(w);
+    const workspace_id = resolved orelse "";
+
     const inner = memory_mod.executeSaveMemory(
         ctx.allocator,
         ctx.db,
         parsed.value,
+        workspace_id,
     ) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "save_memory failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "save_memory", tc.function.arguments, false, err_msg, "");
@@ -80,10 +109,15 @@ pub fn execLoadMemory(ctx: ToolExecContext, tc: agent.ToolCall) !ToolExecResult 
     };
     defer parsed.deinit();
 
+    const resolved = try resolveScope(ctx);
+    defer if (resolved) |w| ctx.allocator.free(w);
+    const workspace_id = resolved orelse "";
+
     const inner = memory_mod.executeLoadMemory(
         ctx.allocator,
         ctx.db,
         parsed.value,
+        workspace_id,
     ) catch |err| {
         const err_msg = try std.fmt.allocPrint(ctx.allocator, "load_memory failed: {s}", .{@errorName(err)});
         const output = try wrapToolOutput(ctx.allocator, "load_memory", tc.function.arguments, false, err_msg, "");
@@ -211,4 +245,115 @@ test "execSaveMemory: empty content surfaces inner error as success=false" {
     defer env.deinit();
     try testing.expect(!env.value.object.get("success").?.bool);
     try testing.expect(env.value.object.get("error").?.string.len > 0);
+}
+
+// ─── workspace scope (Migration 095) ──────────────────────────────────
+
+/// Link a session id to a workspace the deterministic way:
+/// `workspace_item_tasks.id` IS the session id, so the exact-task branch
+/// of `resolveWorkspaceId` resolves without touching the cwd heuristic.
+fn linkSessionToWorkspace(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8, workspace_id: []const u8, item_id: []const u8) !void {
+    try db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type, name, path) " ++
+            "VALUES (?, ?, 'kanban', 'test', ?)",
+        &.{ item_id, workspace_id, "/tmp/does-not-match-any-workspace" },
+    );
+    try db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES (?, 't', ?)",
+        &.{ session_id, item_id },
+    );
+}
+
+fn ctxForSession(allocator: std.mem.Allocator, db: *sqlite.SqliteBackend, session_id: []const u8) ToolExecContext {
+    var base = makeTestCtx(allocator, db);
+    base.session_id = session_id;
+    return base;
+}
+
+test "execSaveMemory / execLoadMemory: a session only sees its OWN workspace's memories" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try linkSessionToWorkspace(alloc, &ctx.db, "sess_alpha", "ws_alpha", "item_alpha");
+    try linkSessionToWorkspace(alloc, &ctx.db, "sess_beta", "ws_beta", "item_beta");
+
+    const alpha_ctx = ctxForSession(alloc, &ctx.db, "sess_alpha");
+    const beta_ctx = ctxForSession(alloc, &ctx.db, "sess_beta");
+
+    // Workspace A saves a note about a term B also searches for.
+    const save = fakeToolCall("save_memory", "{\"content\":\"alpha workspace: the deploy token rotates weekly\"}");
+    const saved = try execSaveMemory(alpha_ctx, save);
+    defer if (saved.output_allocated) alloc.free(saved.output);
+    const saved_env = try std.json.parseFromSlice(std.json.Value, alloc, saved.output, .{});
+    defer saved_env.deinit();
+    const saved_id = try alloc.dupe(u8, saved_env.value.object.get("data").?.object.get("id").?.string);
+    defer alloc.free(saved_id);
+    // The payload tells the agent which workspace filed the note.
+    try testing.expectEqualStrings("ws_alpha", saved_env.value.object.get("data").?.object.get("workspace_id").?.string);
+
+    // Workspace B runs the same search and gets nothing.
+    const search = fakeToolCall("load_memory", "{\"query\":\"deploy token\"}");
+    const beta_out = try execLoadMemory(beta_ctx, search);
+    defer if (beta_out.output_allocated) alloc.free(beta_out.output);
+    const beta_env = try std.json.parseFromSlice(std.json.Value, alloc, beta_out.output, .{});
+    defer beta_env.deinit();
+    const beta_data = beta_env.value.object.get("data").?.object;
+    try testing.expectEqual(@as(i64, 0), beta_data.get("count").?.integer);
+    try testing.expectEqual(@as(i64, 0), beta_data.get("total_count").?.integer);
+    try testing.expectEqualStrings("ws_beta", beta_data.get("workspace_id").?.string);
+
+    // Workspace B cannot reach A's note by id either.
+    const by_id_args = try std.fmt.allocPrint(alloc, "{{\"id\":\"{s}\"}}", .{saved_id});
+    defer alloc.free(by_id_args);
+    const stolen = try execLoadMemory(beta_ctx, fakeToolCall("load_memory", by_id_args));
+    defer if (stolen.output_allocated) alloc.free(stolen.output);
+    const stolen_env = try std.json.parseFromSlice(std.json.Value, alloc, stolen.output, .{});
+    defer stolen_env.deinit();
+    // Reported as a plain "not found" — never as a denial, which would
+    // confirm the id exists somewhere.
+    try testing.expect(!stolen_env.value.object.get("success").?.bool);
+    const stolen_err = stolen_env.value.object.get("error").?.string;
+    try testing.expect(std.mem.indexOf(u8, stolen_err, "not found") != null);
+
+    // Workspace A still reads its own note by id, and by search.
+    const own = try execLoadMemory(alpha_ctx, fakeToolCall("load_memory", by_id_args));
+    defer if (own.output_allocated) alloc.free(own.output);
+    const own_env = try std.json.parseFromSlice(std.json.Value, alloc, own.output, .{});
+    defer own_env.deinit();
+    try testing.expect(own_env.value.object.get("success").?.bool);
+    try testing.expectEqual(@as(i64, 1), own_env.value.object.get("data").?.object.get("count").?.integer);
+
+    const alpha_search = try execLoadMemory(alpha_ctx, search);
+    defer if (alpha_search.output_allocated) alloc.free(alpha_search.output);
+    const alpha_env = try std.json.parseFromSlice(std.json.Value, alloc, alpha_search.output, .{});
+    defer alpha_env.deinit();
+    try testing.expectEqual(@as(i64, 1), alpha_env.value.object.get("data").?.object.get("count").?.integer);
+}
+
+test "execSaveMemory: a session with no resolvable workspace writes to the '' bucket" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // "sess_exec" has no workspace link and its cwd (/tmp) matches no
+    // workspace_items.path → resolveWorkspaceId returns null.
+    const tcx = makeTestCtx(alloc, &ctx.db);
+    const result = try execSaveMemory(tcx, fakeToolCall("save_memory", "{\"content\":\"no workspace here\"}"));
+    defer if (result.output_allocated) alloc.free(result.output);
+
+    const env = try std.json.parseFromSlice(std.json.Value, alloc, result.output, .{});
+    defer env.deinit();
+    try testing.expect(env.value.object.get("success").?.bool);
+    try testing.expectEqualStrings("", env.value.object.get("data").?.object.get("workspace_id").?.string);
+
+    // Stored as '' — NOT NULL satisfied via the column DEFAULT, not a
+    // NULL bind.
+    var q = try ctx.db.query(alloc, "SELECT workspace_id FROM agent_memories", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
 }
