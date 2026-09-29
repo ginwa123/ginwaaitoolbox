@@ -1730,3 +1730,55 @@ test "ReadWorkspaceSessionToolRule names the tool and the four behaviors" {
     try std.testing.expect(contains(prompt, "compacted_only"));
     try std.testing.expect(!contains(prompt, "compacted_messages"));
 }
+
+test "SkillEvalToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+    try std.testing.expect(contains(src, "prompts_const.SkillEvalToolRule"));
+
+    // The live append and the documented PROMPT_SECTIONS mirror must name the
+    // same tool, or the rule points at something nobody declares.
+    //
+    // NOTE: this deliberately does NOT yet assert that `run_skill_eval` appears
+    // in `tools_equipped.zig`, because the tool is not registered yet — the
+    // prompt rule has landed first. Until it is, the rule is INERT by its own
+    // wording ("Skip it ... when `run_skill_eval` is not in your tool list"),
+    // which is exactly why landing the rule first is safe. The
+    // `contains(equipped, "run_skill_eval")` assertion belongs in the test that
+    // ships with the tool.
+    try std.testing.expect(contains(src, ".requires_tool = \"run_skill_eval\""));
+}
+
+test "SkillEvalToolRule is appended unconditionally, beside the other mandates" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+
+    // Gating this rule on `hasTool` would make the cacheable prefix differ per
+    // agent, which is the one thing that block must not do. This asserts the
+    // append sits in the same run of unconditional appends as the four
+    // mandates above it: between the previous rule and this one there is no
+    // `hasTool` and no `if (`.
+    const i_prev = std.mem.indexOf(u8, src, "prompts_const.ReadWorkspaceSessionToolRule);").?;
+    const i_this = std.mem.indexOf(u8, src, "prompts_const.SkillEvalToolRule);").?;
+    try std.testing.expect(i_prev < i_this);
+
+    const between = src[i_prev..i_this];
+    try std.testing.expect(std.mem.indexOf(u8, between, "hasTool") == null);
+    try std.testing.expect(std.mem.indexOf(u8, between, "if (") == null);
+}
+
+test "SkillEvalToolRule names the tool and its non-negotiable behaviors" {
+    const prompt: []const u8 = prompts.SkillEvalToolRule;
+
+    try std.testing.expect(contains(prompt, "run_skill_eval"));
+    // The common case: nothing was loaded, so a skip is correct.
+    try std.testing.expect(contains(prompt, "Skip it"));
+    // A second call must read as a cheap no-op, not a second eval.
+    try std.testing.expect(contains(prompt, "Once per task"));
+    // The agent chooses WHEN, not the verdict — that is the whole design.
+    try std.testing.expect(contains(prompt, "You are not the judge"));
+    // It must NOT be told to pass the skill list: the tool reads the ledger,
+    // which is what stops an agent omitting the skill it worked around.
+    try std.testing.expect(contains(prompt, "you cannot"));
+    try std.testing.expect(contains(prompt, "Self-check"));
+    // It must be honest about the needs_human outcome rather than hiding it.
+    try std.testing.expect(contains(prompt, "needs_human"));
+}

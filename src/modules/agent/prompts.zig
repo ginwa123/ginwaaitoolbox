@@ -43,6 +43,12 @@ pub const MemoryToolRule = prompts.MemoryToolRule;
 // prefix keeps hitting.
 pub const ProgressiveToolRule = prompts.ProgressiveToolRule;
 pub const SkillsToolRule = prompts.SkillsToolRule;
+// Skill Evals — evaluate the skills this session actually used. Appended
+// unconditionally for the same cache reason as the two above; it gates itself
+// on `run_skill_eval` being present in the tool list, and that tool is only
+// injected when config.json's `skill_evals.enabled` is true. So the switch
+// controls the tool, never the prompt bytes.
+pub const SkillEvalToolRule = prompts.SkillEvalToolRule;
 
 // ---------------------------------------------------------------------------
 // Thin delegating re-exports for the two pure helpers that

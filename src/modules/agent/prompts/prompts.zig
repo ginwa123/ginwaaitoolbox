@@ -29,6 +29,7 @@ pub const SearchToolRule = core.SearchToolRule;
 // mandate to load the skill a task needs. Gated on use_skill being present.
 pub const ProgressiveToolRule = core.ProgressiveToolRule;
 pub const SkillsToolRule = core.SkillsToolRule;
+pub const SkillEvalToolRule = core.SkillEvalToolRule;
 pub const ReadWorkspaceSessionToolRule = core.ReadWorkspaceSessionToolRule;
 pub const MemoryToolRule = core.MemoryToolRule;
 pub const CrossProjectCwdRule = core.CrossProjectCwdRule;
