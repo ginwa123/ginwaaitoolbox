@@ -1,6 +1,7 @@
 package com.nalar.mobile.auth
 
 import com.nalar.mobile.BuildConfig
+import com.nalar.mobile.server.ServerUrl
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -37,10 +38,31 @@ class AuthConfigContractTest {
         // honouring `-PnalarBaseUrl` and every instrumented test would talk to
         // production — which would look like a network failure, not a wiring
         // failure.
-        assertEquals(BuildConfig.API_BASE_URL, AuthConfig.BASE_URL)
         assertTrue(
             "AuthConfig.kt still hardcodes a host: ${authConfigSource().take(200)}",
             !authConfigSource().contains("agent.ginwa.site"),
+        )
+    }
+
+    @Test
+    fun `BASE_URL is the build default only while nothing has been chosen`() {
+        // `BASE_URL` stopped being a `val` holding `BuildConfig.API_BASE_URL`
+        // and became a getter over `ServerUrl`, which is what lets a person point
+        // the app at their own deployment. The build-time seam it used to be has
+        // not gone with it: an *unbound* holder still answers with the build's
+        // host, which is the value `-PnalarBaseUrl` drives and the one the
+        // functional UI suite depends on.
+        //
+        // `ServerUrl.reset()` rather than a fresh process, because the holder is
+        // a module-level singleton and this suite shares one JVM with the store
+        // tests that install into it.
+        ServerUrl.reset()
+
+        assertEquals(BuildConfig.API_BASE_URL, AuthConfig.BASE_URL)
+        assertEquals(
+            "BUILD_DEFAULT_BASE_URL is what `reset` returns to, so the two must agree",
+            BuildConfig.API_BASE_URL,
+            AuthConfig.BUILD_DEFAULT_BASE_URL,
         )
     }
 

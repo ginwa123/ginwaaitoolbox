@@ -42,7 +42,11 @@ class FileClientTest {
     private fun client(
         store: SessionStore,
         exchange: BinaryHttpExchange,
-    ) = FileClient(sessionStore = store, baseUrl = "https://host", binaryTransport = exchange)
+    ) = FileClient(
+        sessionStore = store,
+        baseUrlProvider = { "https://host" },
+        binaryTransport = exchange,
+    )
 
     @Test
     fun `a 200 returns the bytes and the server content type`() {

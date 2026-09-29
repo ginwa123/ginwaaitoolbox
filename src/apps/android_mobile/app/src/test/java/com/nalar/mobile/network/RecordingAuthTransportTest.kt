@@ -53,7 +53,7 @@ class RecordingAuthTransportTest {
     ) = RecordingAuthTransport(
         delegate = stub,
         store = store,
-        baseUrl = "https://agent.ginwa.site",
+        baseUrlProvider = { "https://agent.ginwa.site" },
     )
 
     @Test

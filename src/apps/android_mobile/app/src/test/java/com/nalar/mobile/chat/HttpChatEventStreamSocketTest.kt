@@ -130,7 +130,10 @@ class HttpChatEventStreamSocketTest {
     private fun stream(reconnectDelayMillis: Long = 50L) =
         HttpChatEventStream(
             sessionStore = store,
-            baseUrl = baseUrl(),
+            // A provider, not a captured host: this stream reconnects against
+            // whatever it names at connect time, which is the same rule
+            // production relies on for a mid-session server change.
+            baseUrlProvider = { baseUrl() },
             reconnectDelayMillis = reconnectDelayMillis,
         )
 

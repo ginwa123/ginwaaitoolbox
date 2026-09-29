@@ -2,6 +2,7 @@ package com.nalar.mobile.chat
 
 import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.server.requireUsableBaseUrl
 import com.nalar.mobile.http.BinaryHttpExchange
 import com.nalar.mobile.http.HttpsBinaryExchange
 import com.nalar.mobile.http.HttpHeader
@@ -51,10 +52,9 @@ sealed interface FileFetchResult {
  */
 class FileClient(
     private val sessionStore: SessionStore,
-    baseUrl: String = AuthConfig.BASE_URL,
+    private val baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     binaryTransport: BinaryHttpExchange? = null,
 ) {
-    private val baseUrl: String = baseUrl.trimEnd('/')
     private val transport: BinaryHttpExchange =
         binaryTransport ?: HttpsBinaryExchange()
 
@@ -77,6 +77,11 @@ class FileClient(
         )
 
         val response = try {
+            // Same per-call resolution as every other transport in the app: a
+            // file card is a long-lived composable, and a host captured when it
+            // was first composed would download from the server that card was
+            // opened against.
+            val baseUrl = requireUsableBaseUrl(baseUrlProvider())
             transport.execute(
                 HttpRequestSpec(
                     method = "GET",

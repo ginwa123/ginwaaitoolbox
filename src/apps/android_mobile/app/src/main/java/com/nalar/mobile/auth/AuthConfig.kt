@@ -1,20 +1,36 @@
 package com.nalar.mobile.auth
 
 import com.nalar.mobile.BuildConfig
+import com.nalar.mobile.server.ServerUrl
 
 /**
  * Endpoints and the one value that is not a constant of the API: the host.
  *
- * [BASE_URL] comes from the build rather than from a literal here, because the
- * host is the only part of the client that differs between a shipped app and a
- * test run — and it has to be decided at *build* time, not at runtime. The app
- * resolves every ViewModel during `MainActivity`'s first composition, and an
- * instrumented test rule launches that Activity before any `@Before` runs, so
- * there is no point at which a test could assign a host and have it observed.
- * See `app/build.gradle.kts` for the per-variant values.
+ * [BASE_URL] is a **getter**, and that is the whole reason the app can be
+ * pointed at another server. It is a getter rather than a `val` holding
+ * [BuildConfig.API_BASE_URL] because every transport in this app takes the host
+ * as a `() -> String` and calls it per request — a `val` evaluated once at
+ * construction would still be a snapshot, just a later one.
+ *
+ * Where it comes from has two layers, and the order matters:
+ *
+ *  1. [ServerUrl.value] — what the reader chose, persisted, surviving process
+ *     death. The self-hoster's own deployment.
+ *  2. [BuildConfig.API_BASE_URL] — the host the build shipped with, which is
+ *     also the answer before `MainActivity` has installed the store and before
+ *     anyone has typed anything. It remains the build-time seam the functional
+ *     UI suite drives with `-PnalarBaseUrl`.
+ *
+ * The reader only gets offered layer 1; layer 2 is what "Use the default server"
+ * goes back to, which is why it is kept as its own name and not folded into the
+ * getter.
  */
 object AuthConfig {
-    val BASE_URL: String = BuildConfig.API_BASE_URL
+    /** The host every request is sent to, right now. */
+    val BASE_URL: String get() = ServerUrl.value
+
+    /** The host this build shipped with, and what "reset" returns to. */
+    val BUILD_DEFAULT_BASE_URL: String = BuildConfig.API_BASE_URL
 
     const val LOGIN_PATH = "/api/auth/login"
     const val LOGOUT_PATH = "/api/auth/logout"

@@ -23,10 +23,11 @@ sealed interface RecentsResult<out T> {
 
 class RecentsClient(
     private val sessionStore: SessionStore,
-    baseUrl: String = AuthConfig.BASE_URL,
+    baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     httpTransport: AuthTransport? = null,
 ) {
-    private val transport: AuthTransport = httpTransport ?: HttpsAuthTransport(baseUrl)
+    private val transport: AuthTransport =
+        httpTransport ?: HttpsAuthTransport(baseUrlProvider)
 
     fun loadWorkspaces(): RecentsResult<List<WorkspaceOption>> = get(
         path = RecentsApi.WORKSPACES_PATH,

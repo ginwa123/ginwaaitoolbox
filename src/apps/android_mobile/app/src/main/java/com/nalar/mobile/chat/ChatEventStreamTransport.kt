@@ -2,6 +2,7 @@ package com.nalar.mobile.chat
 
 import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.server.requireUsableBaseUrl
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -53,7 +54,7 @@ interface ChatEventStream {
  */
 class HttpChatEventStream(
     private val sessionStore: SessionStore,
-    baseUrl: String = AuthConfig.BASE_URL,
+    private val baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     private val reconnectDelayMillis: Long = DEFAULT_RECONNECT_DELAY_MILLIS,
     /**
      * Which `channels=` set to subscribe to.
@@ -66,7 +67,6 @@ class HttpChatEventStream(
      */
     private val path: String = SseChannels.eventsPath(),
 ) : ChatEventStream {
-    private val normalizedBaseUrl = baseUrl.trimEnd('/')
     private val lock = Any()
 
     private var worker: Thread? = null
@@ -247,7 +247,13 @@ class HttpChatEventStream(
      * opens sockets the only layer no test could reach.
      */
     private fun open(): HttpURLConnection {
-        val connection = URL(normalizedBaseUrl + path).openConnection() as HttpURLConnection
+        // Resolved here, at connect time, not captured at construction. The bus
+        // is a process singleton built on the first `SseBusHolder.get(...)`, so
+        // a captured host would outlive every change of server the reader makes
+        // for the rest of the process — and the reconnect after a switch would
+        // go to the deployment they just left.
+        val baseUrl = requireUsableBaseUrl(baseUrlProvider())
+        val connection = URL(baseUrl + path).openConnection() as HttpURLConnection
         connection.requestMethod = "GET"
         connection.connectTimeout = CONNECT_TIMEOUT_MILLIS
         // The stream is idle between turns, so a short read timeout would
