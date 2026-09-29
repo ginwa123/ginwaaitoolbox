@@ -1467,10 +1467,16 @@ test "writeFile: create_with_dir succeeds for a file in the drive root on Window
     // `std.fs.path.dirname` rather than re-deriving a parent by scanning.
     const probe = "C:\\nalar_wf_probe.txt";
     std.Io.Dir.cwd().deleteFile(std.testing.io, probe) catch {};
-    std.Io.Dir.cwd().createFile(std.testing.io, probe, .{}) catch |err| {
+    if (std.Io.Dir.cwd().createFile(std.testing.io, probe, .{})) |probe_file| {
+        // `std.Io.File.close(value, io)` — the exact form the helpers above
+        // already use, rather than a method call, so this compiles on the one
+        // platform that ever sees it without me having a Windows compiler to
+        // check the signature against.
+        std.Io.File.close(probe_file, std.testing.io);
+    } else |err| {
         std.debug.print("skipping: drive root is not writable ({s})\n", .{@errorName(err)});
         return error.SkipZigTest;
-    };
+    }
     std.Io.Dir.cwd().deleteFile(std.testing.io, probe) catch {};
 
     // `std.Io.Timestamp.nanoseconds` is `i96`, and `@truncate` refuses a
