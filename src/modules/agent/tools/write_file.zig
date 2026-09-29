@@ -157,6 +157,7 @@ pub const write_file_tool = AgentTool{
 
 const write_file = @import("write_file.zig");
 const testing = std.testing;
+const absPath = @import("helpers").test_path.absPath;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -177,12 +178,14 @@ fn deleteDir(path: []const u8) void {
 // Why no `openDir().iterate()` walk: the Zig 0.16 Io runtime is flaky
 // when iterating from the cwd Dir handle after a createDir/createDirPath
 // syscall (it can return BADF). Since the test is the SOLE creator of
-// the tree, we can hardcode the parent list at comptime and avoid the
-// iteration. All errors are swallowed — the goal is "leave no residue",
-// not "assert cleanup succeeded".
-fn deleteTestTree(comptime parents_deep_first: []const []const u8, leaf_file: []const u8) void {
+// the tree, the caller spells the parent list out and we avoid the
+// iteration. The list is a runtime slice, not a comptime literal,
+// because each entry is now a slice of its own `absPath` buffer.
+// All errors are swallowed — the goal is "leave no residue", not
+// "assert cleanup succeeded".
+fn deleteTestTree(parents_deep_first: []const []const u8, leaf_file: []const u8) void {
     deleteFile(leaf_file);
-    inline for (parents_deep_first) |dir| {
+    for (parents_deep_first) |dir| {
         deleteDir(dir);
     }
 }
@@ -206,7 +209,8 @@ fn fileSize(path: []const u8) u64 {
 // ===========================================================================
 
 test "writeFile - writes ASCII content to a new file in cwd" {
-    const path = "test_wf_basic.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_basic.txt");
     defer deleteFile(path);
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -223,7 +227,8 @@ test "writeFile - writes ASCII content to a new file in cwd" {
 }
 
 test "writeFile - file on disk has exact size equal to content length" {
-    const path = "test_wf_size.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_size.txt");
     defer deleteFile(path);
 
     const content = "0123456789";
@@ -237,7 +242,8 @@ test "writeFile - file on disk has exact size equal to content length" {
 }
 
 test "writeFile - overwrites existing file (truncates)" {
-    const path = "test_wf_overwrite.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_overwrite.txt");
     defer deleteFile(path);
 
     // First write: 50 bytes of 'A'
@@ -264,7 +270,8 @@ test "writeFile - overwrites existing file (truncates)" {
 }
 
 test "writeFile - overwrites with larger content (extends)" {
-    const path = "test_wf_extend.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_extend.txt");
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -288,7 +295,8 @@ test "writeFile - overwrites with larger content (extends)" {
 }
 
 test "writeFile - writing same path twice leaves only the second contents" {
-    const path = "test_wf_idempotent.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_idempotent.txt");
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -312,11 +320,13 @@ test "writeFile - writing same path twice leaves only the second contents" {
 // ===========================================================================
 
 test "writeFile - create_with_dir=true creates missing parent directory" {
-    const dir = "test_wf_create_dir_parent";
-    const path = "test_wf_create_dir_parent/inner.txt";
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try absPath(&dir_buf, "test_wf_create_dir_parent");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_create_dir_parent/inner.txt");
     defer {
         deleteFile(path);
-        std.Io.Dir.cwd().deleteDir(testing.io, dir) catch {};
+        deleteDir(dir);
     }
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -334,13 +344,17 @@ test "writeFile - create_with_dir=true creates missing parent directory" {
 }
 
 test "writeFile - create_with_dir=true creates deeply nested parent dirs" {
-    const path = "test_wf_deeply_nested/a/b/c/deep.txt";
-    defer deleteTestTree(&.{
-        "test_wf_deeply_nested/a/b/c",
-        "test_wf_deeply_nested/a/b",
-        "test_wf_deeply_nested/a",
-        "test_wf_deeply_nested",
-    }, path);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try absPath(&root_buf, "test_wf_deeply_nested");
+    var a_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const a = try absPath(&a_buf, "test_wf_deeply_nested/a");
+    var b_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const b = try absPath(&b_buf, "test_wf_deeply_nested/a/b");
+    var c_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const c = try absPath(&c_buf, "test_wf_deeply_nested/a/b/c");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_deeply_nested/a/b/c/deep.txt");
+    defer deleteTestTree(&.{ c, b, a, root }, path);
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -355,14 +369,17 @@ test "writeFile - create_with_dir=true creates deeply nested parent dirs" {
 }
 
 test "writeFile - create_with_dir=true on existing parent dir is a no-op (idempotent)" {
-    const path = "test_wf_existing_parent/file.txt";
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try absPath(&dir_buf, "test_wf_existing_parent");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_existing_parent/file.txt");
     defer {
         deleteFile(path);
-        std.Io.Dir.cwd().deleteDir(testing.io, "test_wf_existing_parent") catch {};
+        deleteDir(dir);
     }
 
     // Create the parent dir first
-    try std.Io.Dir.cwd().createDir(testing.io, "test_wf_existing_parent", .default_dir);
+    try std.Io.Dir.cwd().createDir(testing.io, dir, .default_dir);
 
     // Now write — create_with_dir=true must succeed without erroring on the
     // already-existing parent (createDirPath is idempotent on POSIX).
@@ -383,10 +400,13 @@ test "writeFile - create_with_dir=true on existing parent dir is a no-op (idempo
 // ===========================================================================
 
 test "writeFile - create_with_dir=false auto-creates parent on FileNotFound fallback" {
-    const path = "test_wf_fallback/inner.txt";
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try absPath(&dir_buf, "test_wf_fallback");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_fallback/inner.txt");
     defer {
         deleteFile(path);
-        std.Io.Dir.cwd().deleteDir(testing.io, "test_wf_fallback") catch {};
+        deleteDir(dir);
     }
 
     // create_with_dir defaults to false → the function should still
@@ -404,13 +424,17 @@ test "writeFile - create_with_dir=false auto-creates parent on FileNotFound fall
 }
 
 test "writeFile - create_with_dir=false auto-creates deeply nested missing parents" {
-    const path = "test_wf_fallback_deep/x/y/z/deep.txt";
-    defer deleteTestTree(&.{
-        "test_wf_fallback_deep/x/y/z",
-        "test_wf_fallback_deep/x/y",
-        "test_wf_fallback_deep/x",
-        "test_wf_fallback_deep",
-    }, path);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = try absPath(&root_buf, "test_wf_fallback_deep");
+    var x_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const x = try absPath(&x_buf, "test_wf_fallback_deep/x");
+    var y_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const y = try absPath(&y_buf, "test_wf_fallback_deep/x/y");
+    var z_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const z = try absPath(&z_buf, "test_wf_fallback_deep/x/y/z");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_fallback_deep/x/y/z/deep.txt");
+    defer deleteTestTree(&.{ z, y, x, root }, path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -428,7 +452,8 @@ test "writeFile - create_with_dir=false auto-creates deeply nested missing paren
 // ===========================================================================
 
 test "writeFile - empty content produces a zero-byte file" {
-    const path = "test_wf_empty.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_empty.txt");
     defer deleteFile(path);
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -442,7 +467,8 @@ test "writeFile - empty content produces a zero-byte file" {
 }
 
 test "writeFile - overwriting with empty content truncates to zero bytes" {
-    const path = "test_wf_empties_old.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_empties_old.txt");
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -465,7 +491,8 @@ test "writeFile - overwriting with empty content truncates to zero bytes" {
 // ===========================================================================
 
 test "writeFile - multibyte UTF-8 content preserved byte-for-byte" {
-    const path = "test_wf_unicode.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_unicode.txt");
     defer deleteFile(path);
 
     // 2-byte (é), 3-byte (中), 4-byte (🚀) UTF-8 sequences
@@ -483,7 +510,8 @@ test "writeFile - multibyte UTF-8 content preserved byte-for-byte" {
 }
 
 test "writeFile - binary content with NUL bytes preserved" {
-    const path = "test_wf_binary.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_binary.bin");
     defer deleteFile(path);
 
     // Content with NUL bytes, control chars, and other binary noise
@@ -502,7 +530,8 @@ test "writeFile - binary content with NUL bytes preserved" {
 }
 
 test "writeFile - content with all printable ASCII whitespace preserved" {
-    const path = "test_wf_whitespace.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_whitespace.txt");
     defer deleteFile(path);
 
     const content = "tab\there\nnewline\r\ncrlf\ttab2   spaces";
@@ -518,7 +547,8 @@ test "writeFile - content with all printable ASCII whitespace preserved" {
 }
 
 test "writeFile - content containing XML special chars preserved in file" {
-    const path = "test_wf_xml_chars.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_xml_chars.txt");
     defer deleteFile(path);
 
     // The file on disk stores RAW bytes — escaping is handled by std.json in toJSONSuccess.
@@ -535,7 +565,8 @@ test "writeFile - content containing XML special chars preserved in file" {
 }
 
 test "writeFile - single-byte content" {
-    const path = "test_wf_single_byte.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_single_byte.txt");
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -551,7 +582,8 @@ test "writeFile - single-byte content" {
 }
 
 test "writeFile - large content (1 MiB) written completely" {
-    const path = "test_wf_large.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large.bin");
     defer deleteFile(path);
 
     // Allocate a 1 MiB buffer of 'A' bytes
@@ -602,7 +634,8 @@ fn fillPattern(buf: []u8, seed: u8) void {
 }
 
 test "writeFile - large content (10 MiB) with random pattern preserved byte-for-byte" {
-    const path = "test_wf_large_10mb.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_10mb.bin");
     defer deleteFile(path);
 
     // 10 MiB = 10x the previous 1 MiB test, exercises multiple
@@ -647,7 +680,8 @@ test "writeFile - large content OVERWRITES smaller existing file (truncate)" {
     // unlikely to appear in random LCG output (~2^-64 chance per
     // 8-byte window), so detecting it in the final file proves
     // append-mode corruption.
-    const path = "test_wf_large_overwrite.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_overwrite.bin");
     defer deleteFile(path);
 
     const sentinel = "\xDE\xAD\xBE\xEF\xCA\xFE\xBA\xBE\xF0\x0D\xFA\xCE\x12\x34\x56\x78";
@@ -692,7 +726,8 @@ test "writeFile - large content OVERWRITES smaller existing file (truncate)" {
 test "writeFile - large content overwritten by much SMALLER content (truncate)" {
     // Pre-seed with 8 MiB of pattern data, then overwrite with just 1 KiB.
     // Verifies the file shrinks to EXACTLY 1 KiB, not "8 MiB minus 1 KiB".
-    const path = "test_wf_large_truncate.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_truncate.bin");
     defer deleteFile(path);
 
     const big_size: usize = 8 * (1 << 20);
@@ -726,7 +761,8 @@ test "writeFile - large content with multi-byte UTF-8 (byte count preserved)" {
     // 1 MiB of 4-byte UTF-8 emojis (🚀 = F0 9F 9A 80). Each "char" is 4
     // bytes, so 1 MiB = 262_144 emojis. This stresses the
     // writeStreamingAll path on byte-aligned UTF-8 boundaries.
-    const path = "test_wf_large_utf8.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_utf8.bin");
     defer deleteFile(path);
 
     const size: usize = 1 << 20;
@@ -775,7 +811,8 @@ test "writeFile - large content with embedded NUL bytes (binary stream preserved
     // with explicit length, so this should "just work", but pinning
     // the contract catches a future refactor that switches to
     // null-terminated string APIs (writeC, file.write(... \0), etc.).
-    const path = "test_wf_large_nul.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_nul.bin");
     defer deleteFile(path);
 
     const size: usize = 2 * (1 << 20);
@@ -810,7 +847,8 @@ test "writeFile - large content with mixed line endings (\\n + \\r\\n + \\r)" {
     // 256 KiB cycling through \n, \r\n, \r — verifies the write path
     // doesn't rewrite line endings (would silently break Windows files
     // written from a Unix agent).
-    const path = "test_wf_large_line_endings.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_line_endings.bin");
     defer deleteFile(path);
 
     const size: usize = 256 * 1024;
@@ -854,7 +892,8 @@ test "writeFile - large content overwrite preserves file size exactly (no paddin
     // hypothetical regression where the truncate happens but then the
     // write extends past the original size due to an off-by-one in the
     // truncate+write path.
-    const path = "test_wf_large_same_size.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_large_same_size.bin");
     defer deleteFile(path);
 
     const size: usize = 2 * (1 << 20);
@@ -896,8 +935,9 @@ test "writeFile - large content overwrite preserves file size exactly (no paddin
 // Section 6: Path shape edge cases
 // ===========================================================================
 
-test "writeFile - path with no slash (file in cwd) works" {
-    const path = "test_wf_no_slash.txt";
+test "writeFile - a single-component filename under an absolute path works" {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_no_slash.txt");
     defer deleteFile(path);
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -913,7 +953,8 @@ test "writeFile - path with no slash (file in cwd) works" {
 }
 
 test "writeFile - single-character filename works" {
-    const path = "x";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "x");
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -929,7 +970,8 @@ test "writeFile - single-character filename works" {
 }
 
 test "writeFile - dotfile (hidden file) works" {
-    const path = ".test_wf_hidden";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, ".test_wf_hidden");
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -944,10 +986,13 @@ test "writeFile - dotfile (hidden file) works" {
 }
 
 test "writeFile - path with directory containing spaces" {
-    const path = "test_wf dir with spaces/file.txt";
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try absPath(&dir_buf, "test_wf dir with spaces");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf dir with spaces/file.txt");
     defer {
         deleteFile(path);
-        deleteDir("test_wf dir with spaces");
+        deleteDir(dir);
     }
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -962,18 +1007,33 @@ test "writeFile - path with directory containing spaces" {
     try testing.expectEqualStrings("spaces work too", read);
 }
 
-test "writeFile - path with .. segments resolves relative to cwd" {
-    // Writing through `..` should work — the OS resolves the path normally.
-    // The cwd at test time is the project root, so this writes into a
-    // sibling test dir we control and cleans up.
-    const dir = "test_wf_dotdot_target";
-    const path = "test_wf_dotdot_target/../test_wf_dotdot_target/inside.txt";
+test "writeFile - a .. segment is refused on Windows and resolved by the OS on POSIX" {
+    // POSIX resolves `a/../a/inside.txt` like any other path. Windows does
+    // NOT get that far: `invalidPathReason` rejects every path containing a
+    // `..` segment, because it is a root escape that the NT layer would
+    // resolve against a different volume than the caller meant. So the two
+    // platforms are asserting two different contracts, and both are correct.
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try absPath(&dir_buf, "test_wf_dotdot_target");
+    var inside_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const inside = try absPath(&inside_buf, "test_wf_dotdot_target/inside.txt");
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_dotdot_target/../test_wf_dotdot_target/inside.txt");
     defer {
-        deleteFile("test_wf_dotdot_target/inside.txt");
-        deleteDir("test_wf_dotdot_target");
+        deleteFile(inside);
+        deleteDir(dir);
     }
 
     std.Io.Dir.cwd().createDir(testing.io, dir, .default_dir) catch {}; // idempotent
+
+    if (@import("builtin").os.tag == .windows) {
+        try testing.expectError(error.InvalidPathReason, write_file.writeFile(
+            testing.allocator,
+            testing.io,
+            .{ .path = path, .content = "via dotdot" },
+        ));
+        return;
+    }
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
         .path = path,
@@ -981,16 +1041,17 @@ test "writeFile - path with .. segments resolves relative to cwd" {
     });
     defer _wf_r.deinit(testing.allocator);
 
-    const read = try readFileContents(testing.allocator, "test_wf_dotdot_target/inside.txt");
+    const read = try readFileContents(testing.allocator, inside);
     defer testing.allocator.free(read);
     try testing.expectEqualStrings("via dotdot", read);
 }
 
-test "writeFile - filename at POSIX max length (255 chars) succeeds" {
+test "writeFile - a 255-char filename (POSIX max length) succeeds" {
     // Build a 255-char filename
     var name_buf: [255]u8 = undefined;
     for (&name_buf, 0..) |*b, i| b.* = if (i < 250) 'a' else if (i == 250) '.' else 'x';
-    const path = &name_buf;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, name_buf[0..]);
     defer deleteFile(path);
 
     var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -1007,7 +1068,8 @@ test "writeFile - filename at POSIX max length (255 chars) succeeds" {
 // ===========================================================================
 
 test "writeFileResult.deinit frees the path (no leak)" {
-    const path = "test_wf_deinit.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_deinit.txt");
     defer deleteFile(path);
 
     var result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -1025,7 +1087,8 @@ test "writeFileResult.deinit frees the path (no leak)" {
 test "writeFileResult.path is heap-allocated (independent of input.slice)" {
     // The returned path must be a fresh allocation (not aliased to the
     // caller's input slice) — otherwise freeing one would corrupt the other.
-    const path = "test_wf_path_alloc.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_path_alloc.txt");
     defer deleteFile(path);
 
     const result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -1041,7 +1104,8 @@ test "writeFileResult.path is heap-allocated (independent of input.slice)" {
 }
 
 test "writeFileResult.path has same bytes as input path" {
-    const path = "test_wf_path_bytes.txt";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_path_bytes.txt");
     defer deleteFile(path);
 
     const result = try write_file.writeFile(testing.allocator, testing.io, .{
@@ -1233,24 +1297,26 @@ test "WriteFileInput.create_with_dir defaults to false" {
 // ===========================================================================
 
 test "writeFile - 5 sequential writes to files in same dir all succeed" {
-    const dir = "test_wf_many_files";
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir = try absPath(&dir_buf, "test_wf_many_files");
+    const names_buf: [5][]const u8 = .{ "f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt" };
+    // One buffer per joined path: each slice must borrow its own buffer,
+    // so they cannot share a single scratch buffer across the loop.
+    var path_bufs: [5][std.fs.max_path_bytes]u8 = undefined;
+    var paths: [5][]const u8 = undefined;
+    for (names_buf, &path_bufs, &paths) |name, *pb, *p| {
+        p.* = std.fmt.bufPrint(pb, "{f}", .{std.fs.path.fmtJoin(&.{ dir, name })}) catch unreachable;
+    }
     defer {
-        for ([_][]const u8{ "f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt" }) |name| {
-            const full = std.fs.path.join(testing.allocator, &.{ dir, name }) catch continue;
-            defer testing.allocator.free(full);
-            deleteFile(full);
-        }
+        for (paths) |p| deleteFile(p);
         deleteDir(dir);
     }
 
-    const names_buf: [5][]const u8 = .{ "f1.txt", "f2.txt", "f3.txt", "f4.txt", "f5.txt" };
-    for (names_buf, 0..) |name, i| {
-        const path_owned = try std.fs.path.join(testing.allocator, &.{ dir, name });
-        defer testing.allocator.free(path_owned);
+    for (paths, 0..) |p, i| {
         const content_owned = try std.fmt.allocPrint(testing.allocator, "file {d}", .{i});
         defer testing.allocator.free(content_owned);
         var _wf_r = try write_file.writeFile(testing.allocator, testing.io, .{
-            .path = path_owned,
+            .path = p,
             .content = content_owned,
             .create_with_dir = true,
         });
@@ -1258,9 +1324,7 @@ test "writeFile - 5 sequential writes to files in same dir all succeed" {
     }
 
     // Verify each file exists with the right contents
-    for (names_buf, 0..) |name, i| {
-        const full = try std.fs.path.join(testing.allocator, &.{ dir, name });
-        defer testing.allocator.free(full);
+    for (paths, 0..) |full, i| {
         const read = try readFileContents(testing.allocator, full);
         defer testing.allocator.free(read);
         var expected_buf: [16]u8 = undefined;
@@ -1274,7 +1338,8 @@ test "writeFile - 5 sequential writes to files in same dir all succeed" {
 // ===========================================================================
 
 test "writeFile - 20 alternating-size overwrites all leave correct final state" {
-    const path = "test_wf_stress.bin";
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try absPath(&path_buf, "test_wf_stress.bin");
     defer deleteFile(path);
 
     // Pattern: write 100-byte block, then 1000-byte block, alternating.
@@ -1308,8 +1373,10 @@ test "writeFile - 20 alternating-size overwrites all leave correct final state" 
 // ===========================================================================
 
 test "writeFile - two consecutive calls return independent path allocations" {
-    const path_a = "test_wf_indep_a.txt";
-    const path_b = "test_wf_indep_b.txt";
+    var path_a_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_a = try absPath(&path_a_buf, "test_wf_indep_a.txt");
+    var path_b_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path_b = try absPath(&path_b_buf, "test_wf_indep_b.txt");
     defer {
         deleteFile(path_a);
         deleteFile(path_b);
