@@ -116,14 +116,7 @@ fn insertResult(
     intrinsic_fact_id: []const u8,
     base_content_hash: []const u8,
     rationale: []const u8,
-    reasoning_loop: ?u32,
 ) !void {
-    const loop_str = if (reasoning_loop) |l|
-        try std.fmt.allocPrint(allocator, "{d}", .{l})
-    else
-        try allocator.dupe(u8, "");
-    defer allocator.free(loop_str);
-
     // Every free-text column is COALESCE-wrapped: `exec` binds an empty slice
     // as SQL NULL, and these columns are NOT NULL (Migration 079's class).
     try db.exec(allocator,
@@ -147,7 +140,12 @@ fn insertResult(
         intrinsic_fact_id,
         base_content_hash,
         rationale,
-        loop_str,
+        // `sub_session_id` belongs to the LLM judge tier (it will name the
+        // sub-agent that produced the session-relative half). The transcript
+        // anchor for Tier 0 is the LEDGER's loop_index / llm_history_id, which
+        // is where it belongs — so this stays empty rather than holding a
+        // value the column does not mean.
+        "",
     });
 }
 
@@ -237,7 +235,7 @@ pub fn runEval(
         if (body_opt == null) {
             // The skill is gone from disk, or unreadable. That is a finding in
             // itself, and it is honest to say so rather than to invent a body.
-            try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "needs_human", .needs_human, "", "", "the skill body could not be read", use.first_loop_index);
+            try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "needs_human", .needs_human, "", "", "the skill body could not be read");
             outcome.needs_human += 1;
             outcome.evaluated += 1;
             continue;
@@ -300,7 +298,7 @@ pub fn runEval(
             try allocator.dupe(u8, "Tier 0 found no problem; the session-relative half is not yet evaluated");
         defer allocator.free(rationale);
 
-        try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "done", verdict, intrinsic_fact_id, body_hash, rationale, use.first_loop_index);
+        try insertResult(allocator, db, result_id, run_id, skill_key, use.skill_name, args.session_id, "done", verdict, intrinsic_fact_id, body_hash, rationale);
 
         outcome.evaluated += 1;
         switch (verdict) {

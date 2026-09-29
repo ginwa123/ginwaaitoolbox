@@ -1544,3 +1544,330 @@ test "sessionSkillSet is empty for a session with no ledger rows" {
     defer freeSessionSkillSet(alloc, empty);
     try testing.expectEqual(@as(usize, 0), empty.len);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reading the eval tables (the HTTP layer's data source)
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const RunRow = struct {
+    id: []u8,
+    session_id: []u8,
+    status: []u8,
+    trigger: []u8,
+    scope: []u8,
+    skill_name: []u8,
+    err: []u8,
+    total_tokens: i64,
+    created_at: []u8,
+
+    pub fn deinit(self: RunRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.session_id);
+        allocator.free(self.status);
+        allocator.free(self.trigger);
+        allocator.free(self.scope);
+        allocator.free(self.skill_name);
+        allocator.free(self.err);
+        allocator.free(self.created_at);
+    }
+};
+
+pub const RunFilter = struct {
+    run_id: []const u8 = "",
+    session_id: []const u8 = "",
+    limit: u32 = 25,
+};
+
+/// Optional filters are expressed as `(? = '' OR col = ?)` rather than by
+/// building SQL text. That works because the empty-slice→NULL quirk is an
+/// `exec`-only behaviour: `query` always binds text, so `''` really is `''` in
+/// a SELECT and the sentinel compares correctly. It also keeps the query a
+/// compile-time constant, which is the point.
+pub fn listRuns(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    filter: RunFilter,
+) ![]RunRow {
+    const limit_str = try std.fmt.allocPrint(allocator, "{d}", .{filter.limit});
+    defer allocator.free(limit_str);
+
+    var q = try db.query(allocator,
+        \\SELECT id, session_id, status, trigger, scope, skill_name,
+        \\       COALESCE(error, ''), COALESCE(total_tokens, 0), COALESCE(created_at, '')
+        \\  FROM skill_eval_runs
+        \\ WHERE (? = '' OR id = ?)
+        \\   AND (? = '' OR session_id = ?)
+        \\ ORDER BY created_at DESC, id DESC
+        \\ LIMIT ?
+    , &.{ filter.run_id, filter.run_id, filter.session_id, filter.session_id, limit_str });
+    defer q.deinit();
+
+    var out: std.ArrayList(RunRow) = .empty;
+    errdefer {
+        for (out.items) |r| r.deinit(allocator);
+        out.deinit(allocator);
+    }
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        try out.append(allocator, .{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .session_id = try allocator.dupe(u8, row.values[1]),
+            .status = try allocator.dupe(u8, row.values[2]),
+            .trigger = try allocator.dupe(u8, row.values[3]),
+            .scope = try allocator.dupe(u8, row.values[4]),
+            .skill_name = try allocator.dupe(u8, row.values[5]),
+            .err = try allocator.dupe(u8, row.values[6]),
+            .total_tokens = std.fmt.parseInt(i64, row.values[7], 10) catch 0,
+            .created_at = try allocator.dupe(u8, row.values[8]),
+        });
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+pub fn freeRunRows(allocator: std.mem.Allocator, rows: []RunRow) void {
+    for (rows) |r| r.deinit(allocator);
+    allocator.free(rows);
+}
+
+/// A result row plus the intrinsic half resolved from its fact.
+///
+/// `freshness` / `accuracy` / `duplication` and the missing paths are NOT
+/// columns of `skill_eval_results` and must never become ones: they depend only
+/// on the skill body and the code state, so they live once on
+/// `skill_eval_facts` and every session's result references that row. Copying
+/// them per result would reintroduce the duplication the fact cache exists to
+/// remove. They are read here through a LEFT JOIN.
+pub const ResultRow = struct {
+    id: []u8,
+    run_id: []u8,
+    skill_key: []u8,
+    skill_name: []u8,
+    status: []u8,
+    verdict: []u8,
+    freshness: u8,
+    accuracy: u8,
+    duplication: u8,
+    rationale: []u8,
+    missing_paths_json: []u8,
+    intrinsic_fact_id: []u8,
+    applied: bool,
+    apply_action: []u8,
+
+    pub fn deinit(self: ResultRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.run_id);
+        allocator.free(self.skill_key);
+        allocator.free(self.skill_name);
+        allocator.free(self.status);
+        allocator.free(self.verdict);
+        allocator.free(self.rationale);
+        allocator.free(self.missing_paths_json);
+        allocator.free(self.intrinsic_fact_id);
+        allocator.free(self.apply_action);
+    }
+};
+
+pub fn listResults(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    run_id: []const u8,
+) ![]ResultRow {
+    var q = try db.query(allocator,
+        \\SELECT r.id, r.run_id, r.skill_key, r.skill_name, r.status, r.verdict,
+        \\       COALESCE(f.freshness, 0), COALESCE(f.accuracy, 0), COALESCE(f.duplication, 0),
+        \\       COALESCE(r.rationale, ''),
+        \\       COALESCE(f.missing_paths_json, ''), COALESCE(r.intrinsic_fact_id, ''),
+        \\       r.applied_at IS NOT NULL, COALESCE(r.apply_action, '')
+        \\  FROM skill_eval_results r
+        \\  LEFT JOIN skill_eval_facts f ON f.id = r.intrinsic_fact_id
+        \\ WHERE r.run_id = ?
+        \\ ORDER BY r.skill_name ASC, r.id ASC
+    , &.{run_id});
+    defer q.deinit();
+
+    var out: std.ArrayList(ResultRow) = .empty;
+    errdefer {
+        for (out.items) |r| r.deinit(allocator);
+        out.deinit(allocator);
+    }
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        try out.append(allocator, .{
+            .id = try allocator.dupe(u8, row.values[0]),
+            .run_id = try allocator.dupe(u8, row.values[1]),
+            .skill_key = try allocator.dupe(u8, row.values[2]),
+            .skill_name = try allocator.dupe(u8, row.values[3]),
+            .status = try allocator.dupe(u8, row.values[4]),
+            .verdict = try allocator.dupe(u8, row.values[5]),
+            .freshness = parseScore(row.values[6]),
+            .accuracy = parseScore(row.values[7]),
+            .duplication = parseScore(row.values[8]),
+            .rationale = try allocator.dupe(u8, row.values[9]),
+            .missing_paths_json = try allocator.dupe(u8, row.values[10]),
+            .intrinsic_fact_id = try allocator.dupe(u8, row.values[11]),
+            .applied = std.mem.eql(u8, row.values[12], "1"),
+            .apply_action = try allocator.dupe(u8, row.values[13]),
+        });
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+pub fn freeResultRows(allocator: std.mem.Allocator, rows: []ResultRow) void {
+    for (rows) |r| r.deinit(allocator);
+    allocator.free(rows);
+}
+
+pub const VerdictCount = struct {
+    verdict: []u8,
+    n: i64,
+
+    pub fn deinit(self: VerdictCount, allocator: std.mem.Allocator) void {
+        allocator.free(self.verdict);
+    }
+};
+
+/// Verdict tally, for the UI's "needs attention" badge.
+pub fn verdictCounts(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]VerdictCount {
+    var q = try db.query(allocator,
+        \\SELECT verdict, COUNT(*) FROM skill_eval_results
+        \\ WHERE (? = '' OR session_id = ?)
+        \\ GROUP BY verdict
+        \\ ORDER BY verdict ASC
+    , &.{ session_id, session_id });
+    defer q.deinit();
+
+    var out: std.ArrayList(VerdictCount) = .empty;
+    errdefer {
+        for (out.items) |c| c.deinit(allocator);
+        out.deinit(allocator);
+    }
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        try out.append(allocator, .{
+            .verdict = try allocator.dupe(u8, row.values[0]),
+            .n = std.fmt.parseInt(i64, row.values[1], 10) catch 0,
+        });
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+pub fn freeVerdictCounts(allocator: std.mem.Allocator, counts: []VerdictCount) void {
+    for (counts) |c| c.deinit(allocator);
+    allocator.free(counts);
+}
+
+test "listRuns and listResults read back what a run wrote" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Columns are OMITTED rather than bound to '' — `exec` binds an empty
+    // slice as SQL NULL, and these columns are NOT NULL, so writing '' here
+    // would fail the constraint. (Caught by this very test the first time.)
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_runs (id, session_id, scope, trigger, status, total_tokens)
+        \\VALUES ('run_1', 'sess_1', 'session', 'self_prompt', 'done', 0)
+    , &.{});
+    // The intrinsic paths live on the FACT, not on the result — the result
+    // references it. So seed a fact and link it; the assertion below proves the
+    // join resolves it.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_facts (id, skill_key, content_hash, context_key, verdict_intrinsic, freshness, missing_paths_json)
+        \\VALUES ('f1', 'global:foo', 'hashA', '/cwd@abc', 'update', 1, '["src/gone.zig"]')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_results (id, run_id, skill_key, skill_name, session_id, status, verdict, rationale, intrinsic_fact_id)
+        \\VALUES ('res_1', 'run_1', 'global:foo', 'foo', 'sess_1', 'done', 'update', '2 referenced path(s) no longer exist', 'f1')
+    , &.{});
+
+    const runs = try listRuns(alloc, &ctx.db, .{ .session_id = "sess_1" });
+    defer freeRunRows(alloc, runs);
+    try testing.expectEqual(@as(usize, 1), runs.len);
+    try testing.expectEqualStrings("run_1", runs[0].id);
+    try testing.expectEqualStrings("done", runs[0].status);
+    try testing.expectEqualStrings("self_prompt", runs[0].trigger);
+
+    const results = try listResults(alloc, &ctx.db, "run_1");
+    defer freeResultRows(alloc, results);
+    try testing.expectEqual(@as(usize, 1), results.len);
+    try testing.expectEqualStrings("foo", results[0].skill_name);
+    try testing.expectEqualStrings("update", results[0].verdict);
+    try testing.expectEqual(@as(u8, 1), results[0].freshness);
+    // Resolved through the LEFT JOIN on intrinsic_fact_id, not stored twice.
+    try testing.expectEqualStrings("[\"src/gone.zig\"]", results[0].missing_paths_json);
+    try testing.expectEqualStrings("f1", results[0].intrinsic_fact_id);
+    // Not applied yet — the UI shows Apply, not "applied".
+    try testing.expect(!results[0].applied);
+}
+
+test "listRuns' filters are optional and independent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_runs (id, session_id, trigger, status) VALUES ('run_a', 'sess_1', 'self_prompt', 'done')
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO skill_eval_runs (id, session_id, trigger, status) VALUES ('run_b', 'sess_2', 'self_prompt', 'done')
+    , &.{});
+
+    // No filter: both.
+    const all = try listRuns(alloc, &ctx.db, .{});
+    defer freeRunRows(alloc, all);
+    try testing.expectEqual(@as(usize, 2), all.len);
+
+    // By session: one.
+    const one = try listRuns(alloc, &ctx.db, .{ .session_id = "sess_2" });
+    defer freeRunRows(alloc, one);
+    try testing.expectEqual(@as(usize, 1), one.len);
+    try testing.expectEqualStrings("run_b", one[0].id);
+
+    // By id, with the session filter left empty.
+    const by_id = try listRuns(alloc, &ctx.db, .{ .run_id = "run_a" });
+    defer freeRunRows(alloc, by_id);
+    try testing.expectEqual(@as(usize, 1), by_id.len);
+    try testing.expectEqualStrings("sess_1", by_id[0].session_id);
+
+    // limit is honoured.
+    const capped = try listRuns(alloc, &ctx.db, .{ .limit = 1 });
+    defer freeRunRows(alloc, capped);
+    try testing.expectEqual(@as(usize, 1), capped.len);
+}
+
+test "verdictCounts tallies per verdict and totals the whole table when unfiltered" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const insert =
+        \\INSERT INTO skill_eval_results (id, run_id, skill_key, skill_name, session_id, status, verdict)
+        \\VALUES (?, 'run_1', 'global:foo', 'foo', ?, 'done', ?)
+    ;
+    try ctx.db.exec(alloc, insert, &.{ "r1", "sess_1", "keep" });
+    try ctx.db.exec(alloc, insert, &.{ "r2", "sess_1", "update" });
+    try ctx.db.exec(alloc, insert, &.{ "r3", "sess_1", "update" });
+    try ctx.db.exec(alloc, insert, &.{ "r4", "sess_2", "keep" });
+
+    const scoped = try verdictCounts(alloc, &ctx.db, "sess_1");
+    defer freeVerdictCounts(alloc, scoped);
+    try testing.expectEqual(@as(usize, 2), scoped.len);
+    // Ordered by verdict, so `keep` precedes `update`.
+    try testing.expectEqualStrings("keep", scoped[0].verdict);
+    try testing.expectEqual(@as(i64, 1), scoped[0].n);
+    try testing.expectEqualStrings("update", scoped[1].verdict);
+    try testing.expectEqual(@as(i64, 2), scoped[1].n);
+
+    const all = try verdictCounts(alloc, &ctx.db, "");
+    defer freeVerdictCounts(alloc, all);
+    var total: i64 = 0;
+    for (all) |c| total += c.n;
+    try testing.expectEqual(@as(i64, 4), total);
+}

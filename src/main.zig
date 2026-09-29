@@ -602,6 +602,15 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/skills/:name", ai_mod.http_handlers.skillDetailHandler);
     try authed.delete("/api/skills", ai_mod.http_handlers.skillDeleteHandler);
 
+    // Skill Evals — the READ surface for the eval the agent runs on itself.
+    // A SIBLING prefix, not `/api/skills/evals`: `matchRoute` walks routes in
+    // registration order and returns on first hit, so a literal registered
+    // after `/api/skills/:name` above would be captured as name="evals". Both
+    // routes here are literals with query parameters, so there is no ordering
+    // hazard to remember. Plan: docs/plans/2026-09-27-skill-evals.md §4.10.
+    try authed.get("/api/skill-evals/runs", ai_mod.http_handlers.skillEvalsRunsHandler);
+    try authed.get("/api/skill-evals/summary", ai_mod.http_handlers.skillEvalsSummaryHandler);
+
     // Memories routes
     try authed.get("/api/memories", ai_mod.http_handlers.memoriesListHandler);
     try authed.get("/api/memories/:name", ai_mod.http_handlers.memoryDetailHandler);
