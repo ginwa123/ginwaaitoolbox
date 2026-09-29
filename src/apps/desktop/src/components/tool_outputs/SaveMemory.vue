@@ -32,9 +32,10 @@
   Hover shows the full body (capped) so the note can be read without
   expanding, plus the saved timestamp.
 
-  Expanded body (click header to toggle) — three rows, nothing else:
-    Id · Tags (chips) · the stored body in a scrollable `pre` with a
-    size badge and a copy button.
+  Expanded body (click header to toggle) — one meta line, then the body:
+    `Id: mem_… · Tags: convention tooling` on a single flex-wrap row
+    (the chips spill to a second visual line on a narrow card), then the
+    stored body in a scrollable `pre` with a size badge and a copy button.
     The `created_at` / `updated_at` timestamps are NOT rows: they are both
     `CURRENT_TIMESTAMP` at INSERT time, so they carry one fact, not two.
     They live in the header's hover title instead.
@@ -371,36 +372,54 @@ function formatBytes(n: number): string {
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
 
-      <!-- Success path: id + tags + the stored body. Timestamps live in
-           the header tooltip instead of taking up two rows here. -->
+      <!-- Success path: one meta line (id · tags) + the stored body.
+           Timestamps live in the header tooltip instead of taking up
+           rows here. -->
       <template v-if="isSuccess">
+        <!-- Id and tags share a single line — they are both short
+             attributes of the same row, and stacking them cost two rows
+             to say "mem_xxx / a couple of chips". `flex-wrap` lets the
+             chips spill to a second visual line on a narrow card. -->
         <div
-          v-if="memoryId"
-          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
-          data-testid="save-memory-id-row"
+          v-if="memoryId || savedTags.length > 0"
+          class="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
+          data-testid="save-memory-meta-row"
         >
-          <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Id:</span>
-          <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)]">{{
-            memoryId
-          }}</span>
-        </div>
+          <span
+            v-if="memoryId"
+            class="flex items-baseline gap-2 shrink-0 min-w-0"
+            data-testid="save-memory-id-row"
+          >
+            <span class="font-semibold text-[var(--semantic-text-muted)]">Id:</span>
+            <span class="text-[var(--semantic-text)]">{{ memoryId }}</span>
+          </span>
 
-        <!-- Tags chips (mirrors LoadMemory's per-entry chips). -->
-        <div
-          v-if="savedTags.length > 0"
-          class="flex gap-1 items-start px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
-          data-testid="save-memory-tags-row"
-        >
-          <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Tags:</span>
-          <span class="flex flex-wrap gap-1 min-w-0">
-            <span
-              v-for="(tag, i) in savedTags"
-              :key="`${tag}-${i}`"
-              class="tag-chip"
-              :title="`tag: ${tag}`"
-              :data-testid="`save-memory-tag-${i}`"
-            >
-              {{ tag }}
+          <!-- Muted separator — same ` · ` idiom as LoadMemory's summary. -->
+          <span
+            v-if="memoryId && savedTags.length > 0"
+            class="text-[var(--semantic-text-dim)] shrink-0"
+            aria-hidden="true"
+          >
+            ·
+          </span>
+
+          <!-- Tags chips (mirrors LoadMemory's per-entry chips). -->
+          <span
+            v-if="savedTags.length > 0"
+            class="flex flex-wrap items-baseline gap-2 min-w-0"
+            data-testid="save-memory-tags-row"
+          >
+            <span class="font-semibold text-[var(--semantic-text-muted)] shrink-0">Tags:</span>
+            <span class="flex flex-wrap gap-1 min-w-0">
+              <span
+                v-for="(tag, i) in savedTags"
+                :key="`${tag}-${i}`"
+                class="tag-chip"
+                :title="`tag: ${tag}`"
+                :data-testid="`save-memory-tag-${i}`"
+              >
+                {{ tag }}
+              </span>
             </span>
           </span>
         </div>
@@ -436,10 +455,10 @@ function formatBytes(n: number): string {
           </p>
         </div>
 
-        <!-- Edge case: empty envelope (no id, no body). Show a muted hint
-             so the user knows the card is empty, not stuck. -->
+        <!-- Edge case: nothing to show at all (no id, no tags, no body).
+             A muted hint so the user knows the card is empty, not stuck. -->
         <div
-          v-if="!memoryId && !hasBody"
+          v-if="!memoryId && savedTags.length === 0 && !hasBody"
           class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
           data-testid="save-memory-empty"
         >

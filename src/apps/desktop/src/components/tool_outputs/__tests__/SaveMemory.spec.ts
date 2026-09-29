@@ -317,6 +317,40 @@ describe('SaveMemory.vue — saved body', () => {
       },
     })
     expect(wrapper.find('[data-testid="save-memory-tags-row"]').exists()).toBe(false)
+    // The meta row still renders for the id alone.
+    expect(wrapper.find('[data-testid="save-memory-meta-row"]').exists()).toBe(true)
+  })
+
+  it('puts the id and the tags on ONE row, not two', () => {
+    const wrapper = mount(SaveMemory, {
+      props: { content: makeSuccessContent(), parameters: makeParams(BODY), expanded: true },
+    })
+    const meta = wrapper.find('[data-testid="save-memory-meta-row"]')
+    expect(meta.exists()).toBe(true)
+    // Both halves are children of the same element → one visual line.
+    expect(meta.find('[data-testid="save-memory-id-row"]').exists()).toBe(true)
+    expect(meta.find('[data-testid="save-memory-tags-row"]').exists()).toBe(true)
+    // …and it wraps rather than overflowing.
+    expect(meta.classes()).toContain('flex-wrap')
+    // One line, so both labels appear in the row's own text.
+    expect(meta.text()).toContain('Id:')
+    expect(meta.text()).toContain('Tags:')
+  })
+
+  it('renders the meta row for tags alone when the result has no id', () => {
+    const wrapper = mount(SaveMemory, {
+      props: {
+        content: {},
+        parameters: makeParams(BODY),
+        expanded: true,
+      },
+    })
+    const meta = wrapper.find('[data-testid="save-memory-meta-row"]')
+    expect(meta.exists()).toBe(true)
+    expect(meta.find('[data-testid="save-memory-id-row"]').exists()).toBe(false)
+    expect(meta.find('[data-testid="save-memory-tags-row"]').exists()).toBe(true)
+    // Tags are a field — the "no fields" hint must not fire.
+    expect(wrapper.find('[data-testid="save-memory-empty"]').exists()).toBe(false)
   })
 
   it('shows a size + line-count badge for the body', () => {

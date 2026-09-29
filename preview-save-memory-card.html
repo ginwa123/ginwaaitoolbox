@@ -69,6 +69,8 @@
     }
     .row .k { font-weight: 600; color: var(--semantic-text-muted); flex-shrink: 0; }
     .row .v { color: var(--semantic-text); overflow-wrap: anywhere; }
+    .meta-row { flex-wrap: wrap; align-items: baseline; row-gap: 4px; }
+    .meta-row .sep { color: var(--semantic-text-dim); }
     .tag-chip {
       font-size: var(--text-micro);
       background: rgba(99,102,241,0.12);
@@ -136,10 +138,9 @@
         <span class="toggle">−</span>
       </div>
       <div class="body">
-        <div class="row">
+        <div class="row meta-row">
           <span class="k">Id:</span><span class="v">mem_e07c2ffad513bacb</span>
-        </div>
-        <div class="row">
+          <span class="sep">·</span>
           <span class="k">Tags:</span>
           <span style="display:flex;flex-wrap:wrap;gap:4px">
             <span class="tag-chip">convention</span>
