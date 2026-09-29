@@ -477,7 +477,11 @@ pub const TextReplaceErrorJSON = struct {
     @"error": ?[]const u8 = null,
 };
 
-fn errorMessageFor(allocator: std.mem.Allocator, err: anyerror, path: []const u8) ![]u8 {
+/// The actionable message for an execution failure (not an arguments
+/// failure — the exec wrapper builds that one itself). `pub` because the
+/// exec wrapper is what puts it in the envelope: the model reads it, so it
+/// must not be a bare Zig error name.
+pub fn errorMessageFor(allocator: std.mem.Allocator, err: anyerror, path: []const u8) ![]u8 {
     return switch (err) {
         error.OldStrNotFound => try allocator.dupe(u8, "Make sure the text exists exactly once in the file."),
         error.OldStrNotUnique => try allocator.dupe(u8, "There are multiple occurrences of the text in the file. Expand old_str to include more context to make it unique."),
