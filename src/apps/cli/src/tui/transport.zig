@@ -162,3 +162,76 @@ test "buildSendBody: non-empty cwd is sent as cwd_session (regression: tui alway
     defer parsed.deinit();
     try testing.expectEqualStrings("/home/ginwa/my-project", parsed.value.object.get("cwd_session").?.string);
 }
+
+// ===== Tests merged from tdd_round2_test.zig (2026-09-29 flatten) =====
+// TDD round 2 — regression tests written BEFORE the fixes.
+//
+// Each `test` in this file documents a real bug found by inspection
+// after PR #342's initial pass:
+//
+//   1. `transport.buildSendBody` — messages containing quotes,
+//      backslashes, or newlines produced INVALID JSON (raw fmt
+//      interpolation, no escaping). Server would reject with 400.
+//   2. `sse.parse` — CRLF-terminated frames (`\r\n\r\n`) were not
+//      recognized as frame separators, so a real backend that emits
+//      CRLF never yielded any events.
+//   3. `app.onMessages` — a JSON body with escaped quotes
+//      (`"content":"say \"hi\""`) crashed the cheap stringField scan
+//      path? No — onMessages uses std.json (safe). But `role`
+//      detection for the streaming-done heuristic must be
+//      case-insensitive to match the server ("Assistant" variants).
+//
+// RED phase: these tests fail against the unfixed code. GREEN phase:
+// minimal fixes land in transport.zig / sse.zig / app.zig.
+
+// ============================================================================
+// 1. transport.buildSendBody — JSON injection safety
+// ============================================================================
+
+test "buildSendBody: plain message round-trips" {
+    const body = try buildSendBody(testing.allocator, "session-1", "hi", "");
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings(
+        "{\"session_id\":\"session-1\",\"queue_message\":\"hi\",\"allowed_tools\":\"all\",\"cwd_session\":\"\",\"image_urls\":\"\",\"selected_profile_model\":\"\",\"is_auto_retry_until_stop\":\"\"}",
+        body,
+    );
+}
+
+test "buildSendBody: embedded double quote is escaped (was raw -> invalid JSON)" {
+    const body = try buildSendBody(testing.allocator, "s", "say \"hi\"", "");
+    defer testing.allocator.free(body);
+    // The body must PARSE as JSON and carry the quote through.
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    const qm = parsed.value.object.get("queue_message").?;
+    try testing.expectEqualStrings("say \"hi\"", qm.string);
+}
+
+test "buildSendBody: backslash is escaped" {
+    const body = try buildSendBody(testing.allocator, "s", "path C:\\tmp", "");
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    const qm = parsed.value.object.get("queue_message").?;
+    try testing.expectEqualStrings("path C:\\tmp", qm.string);
+}
+
+test "buildSendBody: newline is escaped (multi-line message)" {
+    const body = try buildSendBody(testing.allocator, "s", "line1\nline2", "");
+    defer testing.allocator.free(body);
+    // Body must remain a SINGLE line of JSON (no raw control byte).
+    try testing.expect(std.mem.indexOfScalar(u8, body, '\n') == null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    const qm = parsed.value.object.get("queue_message").?;
+    try testing.expectEqualStrings("line1\nline2", qm.string);
+}
+
+test "buildSendBody: session id with quote cannot break out of the field" {
+    const body = try buildSendBody(testing.allocator, "evil\"}", "x", "");
+    defer testing.allocator.free(body);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, body, .{});
+    defer parsed.deinit();
+    const sid = parsed.value.object.get("session_id").?;
+    try testing.expectEqualStrings("evil\"}", sid.string);
+}

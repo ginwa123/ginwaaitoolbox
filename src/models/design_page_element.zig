@@ -152,3 +152,37 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .parent_id = if (self.parent_id) |p| p else null,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "design_page_element: init + deinit with rotation" {
+    var e = try init(testing.allocator, .{
+        .id = "elem_1",
+        .page_id = "page_1",
+        .name = "Hero Card",
+        .elem_type = "rectangle",
+        .fill = "#181616",
+        .stroke = "#ffffff",
+        .corner_radius = 12,
+        .opacity = 0.85,
+        .rotation = 45.0,
+    });
+    defer deinit(&e, testing.allocator);
+
+    try testing.expectEqualStrings("elem_1", e.id);
+    try testing.expectEqualStrings("rectangle", e.elem_type);
+    try testing.expectEqualStrings("#181616", e.fill);
+    try testing.expectEqualStrings("#ffffff", e.stroke);
+    try testing.expectEqual(@as(i64, 12), e.corner_radius);
+    try testing.expectApproxEqAbs(@as(f64, 0.85), e.opacity, 0.0001);
+    try testing.expectApproxEqAbs(@as(f64, 45.0), e.rotation, 0.0001);
+}

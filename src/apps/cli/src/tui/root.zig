@@ -60,6 +60,8 @@ test {
     _ = @import("think.zig");
     _ = @import("tool_envelope.zig");
     _ = @import("render_msg.zig");
-    // TDD regression rounds (written before the fixes they pin).
-    _ = @import("tdd_round2_test.zig");
+    // TDD regression rounds (written before the fixes they pin) are
+    // merged into the files they exercise: the round-2 cases are now
+    // inline at the bottom of transport.zig, sse.zig and app.zig —
+    // all three of which are already referenced above.
 }

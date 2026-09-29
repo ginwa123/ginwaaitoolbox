@@ -109,3 +109,35 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .cwd = self.cwd,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "workspace_item_task: init + deinit with all fields" {
+    var t = try init(testing.allocator, .{
+        .id = "task_1",
+        .name = "Build feature",
+        .workspace_item_id = "item_1",
+        .description = "A task description",
+        .tags = "[\"bug\",\"urgent\"]",
+        .image_urls = "data:image/png;base64,abc",
+        .cwd = "/home/me",
+        .is_pinned = true,
+        .pinned_position = 2,
+    });
+    defer deinit(&t, testing.allocator);
+
+    try testing.expectEqualStrings("task_1", t.id);
+    try testing.expect(t.is_pinned);
+    try testing.expectEqual(@as(i64, 2), t.pinned_position);
+    try testing.expectEqualStrings("A task description", t.description);
+    try testing.expectEqualStrings("[\"bug\",\"urgent\"]", t.tags);
+}
