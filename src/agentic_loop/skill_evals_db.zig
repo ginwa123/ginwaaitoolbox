@@ -1390,3 +1390,157 @@ test "markResultStale records the refusal instead of deleting the verdict" {
     try testing.expectEqualStrings("stale", row.values[0]);
     try testing.expectEqualStrings("[\"src/gone.zig\"]", row.values[1]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reading the ledger
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One skill as the ledger remembers it for a session.
+pub const SessionSkillUse = struct {
+    skill_name: []u8,
+    /// The skill was offered by `list_skills` at some point.
+    listed: bool,
+    /// The skill was actually read by `use_skill`.
+    loaded: bool,
+    /// `content_hash` of the last successful read, or "" when never loaded.
+    content_hash: []u8,
+    /// The turn of the FIRST read, or null when never loaded.
+    first_loop_index: ?u32,
+
+    pub fn deinit(self: SessionSkillUse, allocator: std.mem.Allocator) void {
+        allocator.free(self.skill_name);
+        allocator.free(self.content_hash);
+    }
+};
+
+/// The skills one session was OFFERED and the ones it actually READ.
+///
+/// Aggregated in Zig from a single unordered query rather than in SQL: a
+/// session's ledger is tiny (deduped `listed` rows mean at most one per skill),
+/// so a correlated subquery per row would be harder to read for no measurable
+/// gain.
+///
+/// This is the set an eval runs over — derived from the ledger, never from an
+/// argument, which is what stops an agent quietly omitting the skill it had to
+/// work around.
+pub fn sessionSkillSet(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    session_id: []const u8,
+) ![]SessionSkillUse {
+    var out: std.ArrayList(SessionSkillUse) = .empty;
+    errdefer {
+        for (out.items) |it| it.deinit(allocator);
+        out.deinit(allocator);
+    }
+    if (session_id.len == 0) return try out.toOwnedSlice(allocator);
+
+    var q = try db.query(allocator,
+        "SELECT skill_name, event, content_hash, loop_index FROM session_skill_events WHERE session_id = ? ORDER BY created_at ASC",
+        &.{session_id});
+    defer q.deinit();
+
+    while (try q.next()) |row| {
+        defer row.deinit(allocator);
+        const name = row.values[0];
+        if (name.len == 0) continue;
+        const event = row.values[1];
+        const hash = row.values[2];
+        const loop_raw = row.values[3];
+
+        var slot: ?*SessionSkillUse = null;
+        for (out.items) |*it| {
+            if (std.mem.eql(u8, it.skill_name, name)) {
+                slot = it;
+                break;
+            }
+        }
+        if (slot == null) {
+            try out.append(allocator, .{
+                .skill_name = try allocator.dupe(u8, name),
+                .content_hash = try allocator.dupe(u8, ""),
+                .listed = false,
+                .loaded = false,
+                .first_loop_index = null,
+            });
+            slot = &out.items[out.items.len - 1];
+        }
+        const it = slot.?;
+
+        if (std.mem.eql(u8, event, "listed")) {
+            it.listed = true;
+        } else if (std.mem.eql(u8, event, "loaded")) {
+            it.loaded = true;
+            // The LAST read wins for the hash — a reload after an edit is the
+            // body the agent ended up using. The FIRST read wins for the turn,
+            // because that is when the skill entered the session.
+            if (hash.len > 0) {
+                allocator.free(it.content_hash);
+                it.content_hash = try allocator.dupe(u8, hash);
+            }
+            if (it.first_loop_index == null) {
+                it.first_loop_index = std.fmt.parseInt(u32, loop_raw, 10) catch null;
+            }
+        }
+    }
+
+    return try out.toOwnedSlice(allocator);
+}
+
+pub fn freeSessionSkillSet(allocator: std.mem.Allocator, set: []SessionSkillUse) void {
+    for (set) |it| it.deinit(allocator);
+    allocator.free(set);
+}
+
+test "sessionSkillSet separates OFFERED skills from READ skills" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const listed =
+        \\{"tool":"list_skills","success":true,"data":{"global_skills":[{"name":"used-one","description":"d","path":"/p"},{"name":"ignored-one","description":"d","path":"/p"}],"local_skills":[],"cwd":"/cwd"},"error":null,"v":1}
+    ;
+    const loaded =
+        \\{"tool":"use_skill","success":true,"data":{"skill_name":"used-one","content":"body","loaded":true},"error":null,"v":1}
+    ;
+    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "list_skills", listed));
+    recordSkillToolEvents(alloc, &ctx.db, null, testArgs(ctx.threaded.io(), "sess_1", "use_skill", loaded));
+
+    const set = try sessionSkillSet(alloc, &ctx.db, "sess_1");
+    defer freeSessionSkillSet(alloc, set);
+
+    try testing.expectEqual(@as(usize, 2), set.len);
+    // `used-one` is both offered and read...
+    try testing.expect(std.mem.eql(u8, set[0].skill_name, "used-one") or std.mem.eql(u8, set[1].skill_name, "used-one"));
+    for (set) |it| {
+        if (std.mem.eql(u8, it.skill_name, "used-one")) {
+            try testing.expect(it.listed);
+            try testing.expect(it.loaded);
+            try testing.expect(it.content_hash.len > 0);
+            try testing.expect(it.first_loop_index != null);
+        } else {
+            // ...and `ignored-one` was offered and never read. That pair is the
+            // finding `session_skills` could never produce.
+            try testing.expect(it.listed);
+            try testing.expect(!it.loaded);
+            try testing.expectEqualStrings("", it.content_hash);
+            try testing.expect(it.first_loop_index == null);
+        }
+    }
+}
+
+test "sessionSkillSet is empty for a session with no ledger rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const set = try sessionSkillSet(alloc, &ctx.db, "never_seen");
+    defer freeSessionSkillSet(alloc, set);
+    try testing.expectEqual(@as(usize, 0), set.len);
+
+    const empty = try sessionSkillSet(alloc, &ctx.db, "");
+    defer freeSessionSkillSet(alloc, empty);
+    try testing.expectEqual(@as(usize, 0), empty.len);
+}

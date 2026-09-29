@@ -45,6 +45,7 @@ const update_plan_mod = nalarcore.update_plan;
 const get_plan_mod = nalarcore.get_plan;
 const list_sub_agent_mod = nalarcore.list_sub_agent;
 const used_tools_mod = nalarcore.used_tools;
+const run_skill_eval_mod = @import("run_skill_eval.zig");
 // 2026-08-28 — add_mcp_server agent tool (Step 5 of 2026-08-28-add-mcp-server-agent-tool.md).
 // LLM-callable tool that registers a new MCP server in the live config +
 // persists to disk + hot-reloads `di.llm_config`. The new server's tools are
@@ -205,6 +206,16 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
 
         .{ .name = "add_skill", .exec = tools.execAddSkill, .tool_def = add_skill_mod.add_skill_tool, .auto_save_skill = true },
         .{ .name = "edit_skill", .exec = tools.execEditSkill, .tool_def = edit_skill_mod.edit_skill_tool },
+
+        // === SKILL EVALS ===
+        // run_skill_eval: the agent evaluates the skills this session actually
+        // used. TAKES NO ARGUMENTS on purpose — it reads the usage ledger, so
+        // the agent cannot cherry-pick around the skill it had to work around.
+        // MAIN-AGENT ONLY (see MAIN_AGENT_ONLY_NAMES): a sub-agent must not be
+        // able to trigger an eval, or a fan-out of fan-outs has no bound.
+        // Injected into the tool list only when config.json's
+        // `skill_evals.enabled` is true — see filterAndMergeTools in workflow.zig.
+        .{ .name = "run_skill_eval", .exec = run_skill_eval_mod.execRunSkillEval, .tool_def = run_skill_eval_mod.run_skill_eval_tool },
 
         // === MEMORY TOOLS ===
         // .{ .name = "list_memory", .exec = tools.execListMemory, .tool_def = list_memory_mod.list_memory_tool },

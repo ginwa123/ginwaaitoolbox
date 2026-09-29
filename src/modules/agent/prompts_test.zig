@@ -1737,15 +1737,13 @@ test "SkillEvalToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
 
     // The live append and the documented PROMPT_SECTIONS mirror must name the
     // same tool, or the rule points at something nobody declares.
-    //
-    // NOTE: this deliberately does NOT yet assert that `run_skill_eval` appears
-    // in `tools_equipped.zig`, because the tool is not registered yet — the
-    // prompt rule has landed first. Until it is, the rule is INERT by its own
-    // wording ("Skip it ... when `run_skill_eval` is not in your tool list"),
-    // which is exactly why landing the rule first is safe. The
-    // `contains(equipped, "run_skill_eval")` assertion belongs in the test that
-    // ships with the tool.
     try std.testing.expect(contains(src, ".requires_tool = \"run_skill_eval\""));
+
+    // And the tool it mandates must actually be equipped, or the rule is a
+    // lie. This assertion shipped WITH the tool, deliberately: asserting it
+    // earlier would have been asserting something untrue.
+    const equipped = @embedFile("../../agentic_loop/tools_equipped.zig");
+    try std.testing.expect(contains(equipped, "run_skill_eval"));
 }
 
 test "SkillEvalToolRule is appended unconditionally, beside the other mandates" {

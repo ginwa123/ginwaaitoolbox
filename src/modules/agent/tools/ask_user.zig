@@ -260,6 +260,13 @@ pub fn validationErrorMessage(err: anyerror) []const u8 {
 pub const MAIN_AGENT_ONLY_NAMES = [_][]const u8{
     "spawn_sub_agent",
     ASK_USER_TOOL_NAME,
+    // run_skill_eval drives an eval, and an eval reads the skill ledger and can
+    // spawn the judging sub-agents. A sub-agent must never be able to trigger
+    // one: eval-of-eval recursion has no bound, and this single list is the
+    // membership source used by spawn_sub_agent's parse-time validation, the
+    // tool_eligibility strip, AND the progressive-equip bypass — so the three
+    // can never disagree.
+    "run_skill_eval",
 };
 
 /// True when `name` is in `MAIN_AGENT_ONLY_NAMES`.
