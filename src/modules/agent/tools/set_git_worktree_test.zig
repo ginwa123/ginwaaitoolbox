@@ -812,3 +812,101 @@ test "jsonClear sets cleared flag" {
     defer parsed.deinit();
     try testing.expect(parsed.value.object.get("cleared").?.bool);
 }
+
+// ─── Cross-separator worktree matching (Windows) ──────────────────────────
+// The bug: `parseAndMatchBlock` compared git's worktree path against the
+// model's with `std.mem.eql`. git for Windows prints FORWARD slashes
+// (`worktree C:/Users/me/wt`); the model sends BACKSLASHES. The compare
+// never matched, so a live registered worktree was classified
+// `.orphaned_worktree`, and that arm's error text instructs the model to
+// run `git worktree prune && rm -rf <path>` — on the directory holding the
+// work in flight.
+//
+// These tests run on EVERY platform: `pathsDenoteSameDir` is a pure string
+// comparison parameterised by host case-sensitivity, so the Windows-shaped
+// input can be exercised from Linux.
+test "pathsDenoteSameDir: git forward slashes match the model's backslashes" {
+    try testing.expect(swt.pathsDenoteSameDir(
+        "C:/Users/ginwa/.config/nalar/.worktrees/fix-login",
+        "C:\\Users\\ginwa\\.config\\nalar\\.worktrees\\fix-login",
+    ));
+}
+
+test "pathsDenoteSameDir: trailing and duplicate separators are ignored" {
+    try testing.expect(swt.pathsDenoteSameDir("C:/a/b/", "C:\\a\\b"));
+    try testing.expect(swt.pathsDenoteSameDir("C:/a//b", "C:\\a\\b"));
+    try testing.expect(swt.pathsDenoteSameDir("/home/ginwa/wt/", "/home/ginwa/wt"));
+    try testing.expect(swt.pathsDenoteSameDir("", ""));
+}
+
+test "pathsDenoteSameDir: different directories still do not match" {
+    try testing.expect(!swt.pathsDenoteSameDir("C:/a/wt", "C:\\a\\wt2"));
+    try testing.expect(!swt.pathsDenoteSameDir("C:/a/wt", "C:\\b\\wt"));
+    // A prefix must not match a longer path.
+    try testing.expect(!swt.pathsDenoteSameDir("C:/a/wt", "C:\\a\\wt\\sub"));
+    try testing.expect(!swt.pathsDenoteSameDir("/home/ginwa/wt", "/home/other/wt"));
+    try testing.expect(!swt.pathsDenoteSameDir("C:/a/wt", ""));
+}
+
+// Case sensitivity is host-dependent on purpose: Windows filesystems ignore
+// case, Linux ones do not. Asserting the POSIX behaviour everywhere and the
+// Windows behaviour in a gated leg keeps the function honest on both.
+test "pathsDenoteSameDir: case is ignored only on Windows" {
+    if (@import("builtin").os.tag == .windows) {
+        try testing.expect(swt.pathsDenoteSameDir("C:/Users/Ginwa/wt", "C:\\users\\ginwa\\WT"));
+    } else {
+        try testing.expect(!swt.pathsDenoteSameDir("C:/Users/Ginwa/wt", "C:\\users\\ginwa\\WT"));
+    }
+}
+
+// The end-to-end leg: a real `git worktree list --porcelain` block, exactly
+// as Windows git prints it, matched against the path the model would send.
+test "parseAndMatchBlock: a Windows worktree listing matches the model's backslash path" {
+    const block =
+        \\worktree C:/Users/ginwa/.config/nalar/.worktrees/fix-login
+        \\HEAD 0123456789abcdef0123456789abcdef01234567
+        \\branch refs/heads/worktree/fix-login
+        \\
+        \\
+    ;
+    const matched = try swt.parseAndMatchBlock(
+        testing.allocator,
+        block,
+        "C:\\Users\\ginwa\\.config\\nalar\\.worktrees\\fix-login",
+    );
+    try testing.expect(matched != null);
+    defer if (matched) |m| {
+        testing.allocator.free(m.branch_ref);
+        testing.allocator.free(m.branch);
+        testing.allocator.free(m.commit);
+        testing.allocator.free(m.path);
+    };
+    try testing.expectEqualStrings("0123456789abcdef0123456789abcdef01234567", matched.?.commit);
+    try testing.expectEqualStrings("worktree/fix-login", matched.?.branch);
+}
+
+test "parseAndMatchBlock: a genuinely different worktree is not matched" {
+    const block =
+        \\worktree C:/Users/ginwa/.config/nalar/.worktrees/other
+        \\HEAD 0123456789abcdef0123456789abcdef01234567
+        \\branch refs/heads/worktree/other
+        \\
+    ;
+    const matched = try swt.parseAndMatchBlock(
+        testing.allocator,
+        block,
+        "C:\\Users\\ginwa\\.config\\nalar\\.worktrees\\fix-login",
+    );
+    try testing.expect(matched == null);
+}
+
+// Pin the CAUSE as well as the behaviour, so a future "simplification" back
+// to raw equality is caught even on a host where it happens to work.
+test "static contract: parseAndMatchBlock does not compare worktree paths with std.mem.eql" {
+    const source = try readSource(testing.allocator, TOOL_PATH);
+    defer testing.allocator.free(source);
+
+    try testing.expect(std.mem.indexOf(u8, source, "fn parseAndMatchBlock(") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pathsDenoteSameDir(wt_path, target)") != null);
+    try testing.expect(std.mem.indexOf(u8, source, "pub fn pathsDenoteSameDir(") != null);
+}

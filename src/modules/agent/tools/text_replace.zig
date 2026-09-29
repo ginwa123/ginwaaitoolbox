@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
@@ -12,6 +14,7 @@ pub const TextReplaceInput = struct {
 };
 
 pub const TextReplaceError = error{
+    InvalidPath,
     OldStrNotFound,
     OldStrNotUnique,
     PathNotFound,
@@ -341,6 +344,13 @@ pub fn executeTextReplace(
 ) !TextReplaceResult {
     if (std.mem.eql(u8, path, "")) {
         return TextReplaceError.PathNotFound;
+    }
+    // The LLM chooses this path. On Windows a malformed NT name makes std's
+    // Io backend `ntstatusBug()` — a panic that kills the process, not just
+    // this call. See helpers/path_validate.zig.
+    if (invalidPathReason(path)) |reason| {
+        std.log.debug("text_replace rejected path: {s}", .{reason});
+        return TextReplaceError.InvalidPath;
     }
 
     // Read existing file

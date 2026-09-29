@@ -193,10 +193,24 @@ pub fn diffLines(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Split on line boundaries, dropping the `CR` of a CRLF pair.
+///
+/// A Windows-authored file arrives here as `one\r\ntwo\r\n`, and splitting
+/// on `\n` alone leaves every line ending in a stray `\r`. That byte then
+/// rides into the rendered diff, where it blanks the line in a terminal
+/// and makes a CRLF file diff as though every line had changed.
+///
+/// The returned lines stay BORROWED slices into `text` — narrowing the
+/// range by one byte is all that is needed, and copying would silently
+/// change the ownership contract for every existing caller. The original
+/// bytes are still reachable from `text`, so nothing is lost.
 pub fn splitLines(allocator: Allocator, text: []const u8) ![][]const u8 {
     var list = std.ArrayList([]const u8).empty;
     var it = std.mem.splitScalar(u8, text, '\n');
-    while (it.next()) |line| try list.append(allocator, line);
+    while (it.next()) |line| {
+        const without_cr = if (line.len > 0 and line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+        try list.append(allocator, without_cr);
+    }
     if (list.items.len > 0 and list.getLast().len == 0) _ = list.pop();
     return try list.toOwnedSlice(allocator);
 }
@@ -516,4 +530,73 @@ test "line diff - multiline change" {
     // First chunk should be delete, second should be insert
     try std.testing.expect(r.chunks[0].kind == .delete);
     try std.testing.expect(r.chunks[1].kind == .insert);
+}
+
+// ── CRLF contract ─────────────────────────────────────────────────────────
+// Windows-authored files are CRLF, and every consumer of these lines (the
+// ANSI renderer, the hunk headers, the frontend's diff card) treats a
+// trailing `\r` as part of the line's text. Before the fix, `one\r\n` came
+// back as `"one\r"`, which renders as a blank line in a terminal and makes
+// a no-op change look like a change.
+test "splitLines - drops the CR of a CRLF pair" {
+    const lines = try splitLines(std.testing.allocator, "one\r\ntwo\r\nthree\r\n");
+    defer std.testing.allocator.free(lines);
+    try std.testing.expectEqual(@as(usize, 3), lines.len);
+    try std.testing.expectEqualStrings("one", lines[0]);
+    try std.testing.expectEqualStrings("two", lines[1]);
+    try std.testing.expectEqualStrings("three", lines[2]);
+}
+
+test "splitLines - CRLF with no trailing newline" {
+    const lines = try splitLines(std.testing.allocator, "one\r\ntwo");
+    defer std.testing.allocator.free(lines);
+    try std.testing.expectEqual(@as(usize, 2), lines.len);
+    try std.testing.expectEqualStrings("one", lines[0]);
+    try std.testing.expectEqualStrings("two", lines[1]);
+}
+
+// The property that actually matters: line-splitting is the ONLY
+// difference between the two, so once `\r` is gone a CRLF file must diff
+// exactly like its LF twin. Before the fix every line compared unequal
+// (the LF twin had no `\r`), so the diff reported every line as changed.
+test "splitLines - a CRLF file produces a byte-identical diff to its LF twin" {
+    const Alloc = std.testing.allocator;
+    const lf_before = try splitLines(Alloc, "a\nb\nc\n");
+    defer Alloc.free(lf_before);
+    const lf_after = try splitLines(Alloc, "a\nB\nc\n");
+    defer Alloc.free(lf_after);
+    const crlf_before = try splitLines(Alloc, "a\r\nb\r\nc\r\n");
+    defer Alloc.free(crlf_before);
+    const crlf_after = try splitLines(Alloc, "a\r\nB\r\nc\r\n");
+    defer Alloc.free(crlf_after);
+
+    const lf = try diffLines(Alloc, lf_before, lf_after);
+    defer lf.deinit(Alloc);
+    const crlf = try diffLines(Alloc, crlf_before, crlf_after);
+    defer crlf.deinit(Alloc);
+
+    // Same shape, and the context lines actually MATCH. Before the fix each
+    // CRLF line carried a trailing `\r`, so nothing compared equal and the
+    // whole file came back as delete+insert.
+    try std.testing.expectEqual(lf.chunks.len, crlf.chunks.len);
+    var eq_lines: usize = 0;
+    for (lf.chunks, crlf.chunks) |a, b| {
+        try std.testing.expectEqual(a.kind, b.kind);
+        try std.testing.expectEqual(a.lines.len, b.lines.len);
+        for (a.lines, b.lines) |la, lb| try std.testing.expectEqualStrings(la, lb);
+        if (a.kind == .eq) eq_lines += a.lines.len;
+    }
+    try std.testing.expectEqual(@as(usize, 2), eq_lines);
+}
+
+test "splitLines - LF input is unchanged and a bare CR survives" {
+    const lf = try splitLines(std.testing.allocator, "one\ntwo\n");
+    defer std.testing.allocator.free(lf);
+    try std.testing.expectEqualStrings("one", lf[0]);
+    try std.testing.expectEqualStrings("two", lf[1]);
+
+    // A bare CR is a Mac Classic line ending, not a CRLF artefact.
+    const bare = try splitLines(std.testing.allocator, "one\rtwo\n");
+    defer std.testing.allocator.free(bare);
+    try std.testing.expectEqualStrings("one\rtwo", bare[0]);
 }

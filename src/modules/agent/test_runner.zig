@@ -88,6 +88,21 @@ test {
     _ = @import("tools/shell.zig");
     _ = @import("tools/text_replace.zig");
     _ = @import("tools/diff.zig");
+    // These three carry real inline tests that were never discovered: a
+    // `pub const` re-export (or nothing at all) does not pull a file's test
+    // blocks into the test binary. That left read_file's raw-content
+    // contract, present_files' absolute-path enforcement, and — worst —
+    // remove_file's Windows NTSTATUS panic guard unexecuted on EVERY
+    // platform. Registered here per modules/agent/test_runner's discovery
+    // rule, the same fix agentic_loop/test_runner.zig documents.
+    _ = @import("tools/read_file.zig");
+    _ = @import("tools/remove_file.zig");
+    _ = @import("tools/present_files.zig");
+    // Source-scanning contract that every path-taking tool validates its
+    // model-supplied path before touching std.fs. The failure it guards is
+    // a MISSING CALL SITE, which no behavioural test can observe on a
+    // non-Windows host.
+    _ = @import("tools/path_validate_contract_test.zig");
     _ = @import("tools/list_memory.zig");
     _ = @import("tools/add_design_element.zig");
     _ = @import("tools/memory.zig");

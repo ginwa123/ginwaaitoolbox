@@ -692,6 +692,109 @@ pub fn run_shell_command(
 ///
 /// TODO (D8): PowerShell has no `nohup`. The follow-up PR replaces this
 /// with `Start-Process -NoNewWindow -RedirectStandardOutput` for pwsh.
+/// Platform-correct way to detach a command and capture its PID.
+///
+/// `nohup <cmd> > <log> 2>&1 & echo $!` is a POSIX shell idiom with no
+/// PowerShell equivalent: handed to `pwsh -Command` it is a syntax error,
+/// and its redirect target `/tmp/bg_*.log` does not exist on Windows
+/// either. The old code sent it unconditionally, so every
+/// `background: true` call on Windows failed.
+///
+/// `os_tag` is a parameter rather than a direct `builtin.os.tag` read, and
+/// `tmp_dir` is passed in, so BOTH shapes are testable from any host — the
+/// Windows command is otherwise the one that can never be exercised on a
+/// Linux runner.
+pub const OsTag = @TypeOf(@import("builtin").os.tag);
+
+pub fn backgroundSpec(
+    allocator: std.mem.Allocator,
+    os_tag: OsTag,
+    tmp_dir: []const u8,
+    command: []const u8,
+    unique: i64,
+) !BackgroundSpec {
+    const sep: u8 = if (os_tag == .windows) '\\' else '/';
+    const log_path = try std.fmt.allocPrint(allocator, "{s}{c}bg_{d}.log", .{ tmp_dir, sep, unique });
+
+    const bg_command = switch (os_tag) {
+        .windows => blk: {
+            const q_cmd = try quotePwsh(allocator, command);
+            defer allocator.free(q_cmd);
+            const q_log = try quotePwsh(allocator, log_path);
+            defer allocator.free(q_log);
+            break :blk try std.fmt.allocPrint(
+                allocator,
+                "Start-Process -NoNewWindow -FilePath pwsh " ++
+                    "-ArgumentList '-NoProfile','-Command',{s} " ++
+                    "-RedirectStandardOutput {s} -RedirectStandardError {s} " ++
+                    "-PassThru | Select-Object -ExpandProperty Id",
+                .{ q_cmd, q_log, q_log },
+            );
+        },
+        else => try std.fmt.allocPrint(
+            allocator,
+            "nohup {s} > {s} 2>&1 & echo $!",
+            .{ command, log_path },
+        ),
+    };
+
+    return .{ .log_path = log_path, .command = bg_command };
+}
+
+pub const BackgroundSpec = struct {
+    log_path: []u8,
+    command: []u8,
+
+    pub fn deinit(self: BackgroundSpec, allocator: std.mem.Allocator) void {
+        allocator.free(self.log_path);
+        allocator.free(self.command);
+    }
+};
+
+/// Single-quote a string for PowerShell, doubling any embedded `'`.
+/// PowerShell's escape for a single quote inside a single-quoted string is
+/// a doubled one, and nothing else may appear raw.
+pub fn quotePwsh(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '\'');
+    for (s) |c| {
+        if (c == '\'') try out.append(allocator, '\'');
+        try out.append(allocator, c);
+    }
+    try out.append(allocator, '\'');
+    return out.toOwnedSlice(allocator);
+}
+
+/// The platform's own temp directory.
+///
+/// The old code interpolated a literal `/tmp` into a path that was then
+/// handed to a Windows shell. Reading the OS variable keeps the fallback
+/// inside the POSIX arm, where it is actually correct.
+pub fn tempDirFor(allocator: std.mem.Allocator, os_tag: OsTag) ![]u8 {
+    // `std.c.getenv` is the same accessor the rest of the codebase uses for
+    // this (service/state_file.zig reads LOCALAPPDATA through it), and it
+    // works on both platforms because the agent process always links libc.
+    // `std.c.getenv` takes a C string pointer, so the candidates are typed
+    // `[*:0]const u8` rather than slices.
+    const names: []const [*:0]const u8 = if (os_tag == .windows) &.{ "TEMP", "TMP" } else &.{"TMPDIR"};
+    for (names) |n| {
+        if (std.c.getenv(n)) |value| {
+            // `[*:0]u8` has no length; span it before measuring/copying.
+            const slice = std.mem.span(value);
+            if (slice.len > 0) return allocator.dupe(u8, slice);
+        }
+    }
+    return allocator.dupe(u8, defaultTempDir(os_tag));
+}
+
+/// Last-resort temp directory when the environment is unreadable. The POSIX
+/// literal lives ONLY in the POSIX arm — the original bug was interpolating
+/// `/tmp` into a path that was then handed to a Windows shell.
+pub fn defaultTempDir(os_tag: OsTag) []const u8 {
+    return if (os_tag == .windows) "C:\\Windows\\Temp" else "/tmp";
+}
+
 fn spawn_background(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -699,19 +802,12 @@ fn spawn_background(
     command: []const u8,
 ) !ShellOutput {
     const ts: i64 = @intCast(@divTrunc(std.Io.Timestamp.now(io, .real).nanoseconds, 1_000_000));
-    const log_path = try std.fmt.allocPrint(
-        allocator,
-        "/tmp/bg_{d}.log",
-        .{ts},
-    );
-    defer allocator.free(log_path);
-
-    const bg_command = try std.fmt.allocPrint(
-        allocator,
-        "nohup {s} > {s} 2>&1 & echo $!",
-        .{ command, log_path },
-    );
-    defer allocator.free(bg_command);
+    const tmp_dir = try tempDirFor(allocator, builtin.os.tag);
+    defer allocator.free(tmp_dir);
+    const spec = try backgroundSpec(allocator, builtin.os.tag, tmp_dir, command, ts);
+    defer spec.deinit(allocator);
+    const log_path = spec.log_path;
+    const bg_command = spec.command;
 
     var argv_buf: [16][]const u8 = undefined;
     if (argv_prefix.len + 1 > argv_buf.len) return error.TooManyArgvPrefix;
@@ -879,7 +975,10 @@ test "shell.ShellInput JSON schema: same field set as BashInput (alias carries t
     ;
 
     const a = try std.json.parseFromSlice(
-        shell.ShellInput, testing.allocator, json_str, .{},
+        shell.ShellInput,
+        testing.allocator,
+        json_str,
+        .{},
     );
     defer a.deinit();
     try testing.expectEqualStrings("echo hi", a.value.command);
@@ -1033,4 +1132,94 @@ test "xmlEscape replaces NUL and C0 controls with U+FFFD" {
     defer testing.allocator.free(xml);
     // \n (0x0A) and \r (0x0D) are legal XML — preserved.
     try testing.expectEqualStrings("a�b�c�d\x0Ae\x0Df", xml);
+}
+
+// ─── Background detach (Windows) ──────────────────────────────────────────
+// The bug: `spawn_background` built `"nohup {cmd} > /tmp/bg_{n}.log 2>&1 &
+// echo $!"` and handed it to whatever shell was configured. On Windows that
+// is `pwsh -Command`, where the string is a syntax error — and its redirect
+// target does not exist either. Every `background: true` call failed there.
+//
+// `backgroundSpec` takes the OS tag as a parameter precisely so the Windows
+// shape is assertable from a Linux runner; these tests would otherwise only
+// ever run on the platform whose CI cell is currently broken.
+test "backgroundSpec: Windows uses Start-Process, never nohup, and no /tmp" {
+    const spec = try backgroundSpec(
+        testing.allocator,
+        .windows,
+        "C:\\Users\\ginwa\\AppData\\Local\\Temp",
+        "sleep 60",
+        1234,
+    );
+    defer spec.deinit(testing.allocator);
+
+    try testing.expect(std.mem.indexOf(u8, spec.command, "Start-Process") != null);
+    try testing.expect(std.mem.indexOf(u8, spec.command, "nohup") == null);
+    try testing.expect(std.mem.indexOf(u8, spec.command, "echo $!") == null);
+    try testing.expect(std.mem.indexOf(u8, spec.log_path, "/tmp") == null);
+    try testing.expectEqualStrings(
+        "C:\\Users\\ginwa\\AppData\\Local\\Temp\\bg_1234.log",
+        spec.log_path,
+    );
+    // The PID is what the old `echo $!` produced. Start-Process must yield
+    // it too, or the caller can neither report nor kill the process.
+    try testing.expect(std.mem.indexOf(u8, spec.command, "Id") != null);
+}
+
+test "backgroundSpec: POSIX keeps the nohup form and its /tmp log" {
+    const spec = try backgroundSpec(testing.allocator, .linux, "/tmp", "sleep 60", 1234);
+    defer spec.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("/tmp/bg_1234.log", spec.log_path);
+    try testing.expectEqualStrings("nohup sleep 60 > /tmp/bg_1234.log 2>&1 & echo $!", spec.command);
+}
+
+test "backgroundSpec: the command is single-quoted for PowerShell" {
+    const spec = try backgroundSpec(testing.allocator, .windows, "C:\\Temp", "Write-Host 'hi'", 7);
+    defer spec.deinit(testing.allocator);
+
+    // The inner `'` must be doubled or it terminates the quoted argument
+    // and the rest of the line is parsed as PowerShell source.
+    try testing.expect(std.mem.indexOf(u8, spec.command, "'Write-Host ''hi'''") != null);
+}
+
+test "quotePwsh: doubles embedded single quotes and wraps the value" {
+    const q = try quotePwsh(testing.allocator, "a'b");
+    defer testing.allocator.free(q);
+    try testing.expectEqualStrings("'a''b'", q);
+
+    const plain = try quotePwsh(testing.allocator, "plain");
+    defer testing.allocator.free(plain);
+    try testing.expectEqualStrings("'plain'", plain);
+}
+
+test "tempDirFor: the Windows fallback is never the POSIX literal" {
+    // Shape, not this machine's environment: the point is that the Windows
+    // arm cannot reach `/tmp`.
+    try testing.expect(!std.mem.eql(u8, defaultTempDir(.windows), "/tmp"));
+    try testing.expect(std.mem.indexOf(u8, defaultTempDir(.windows), "\\") != null);
+    try testing.expectEqualStrings("/tmp", defaultTempDir(.linux));
+
+    const t = try tempDirFor(testing.allocator, .windows);
+    defer testing.allocator.free(t);
+    try testing.expect(t.len > 0);
+    try testing.expect(!std.mem.eql(u8, t, "/tmp"));
+}
+
+// Pin the cause as well as the behaviour, so a future "simplification" back
+// to a hard-coded POSIX string is caught even where the current code is a
+// no-op. Scoped to the implementation: the forbidden literal appears
+// verbatim inside this test.
+test "static contract: spawn_background builds its command via backgroundSpec" {
+    const full = @embedFile("shell.zig");
+    const impl_end = std.mem.indexOf(u8, full, "// ─── Background detach (Windows)") orelse full.len;
+    const src = full[0..impl_end];
+
+    try testing.expect(std.mem.indexOf(u8, src, "pub fn backgroundSpec(") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "try backgroundSpec(") != null);
+    try testing.expect(std.mem.indexOf(u8, src, "try tempDirFor(") != null);
+    // The literal must not be interpolated into a format string any more.
+    // It survives only inside the POSIX arm of defaultTempDir.
+    const hardcoded = "\"/tmp/bg_{d}.log\"";
+    try testing.expect(std.mem.indexOf(u8, src, hardcoded) == null);
 }

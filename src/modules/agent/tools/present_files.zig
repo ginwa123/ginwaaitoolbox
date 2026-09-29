@@ -32,6 +32,8 @@
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const AgentTool = schemas.AgentTool;
 // The one containment rule shared with GET /api/files/download. Imported,
 // never re-implemented here: the two disagreed once and every presented file
@@ -239,6 +241,20 @@ pub fn executePresentFilesToString(
 ) ![]u8 {
     if (input.files.len == 0) {
         return jsonErrorEnvelope(allocator, "present_files requires at least 1 file in `files`.");
+    }
+    // Every path here is model-supplied. On Windows a malformed NT name
+    // panics the process inside std's Io backend instead of failing the
+    // call, so validate before touching any of them.
+    for (input.files) |f| {
+        if (invalidPathReason(f.path)) |reason| {
+            const msg = try std.fmt.allocPrint(
+                allocator,
+                "present_files: path \"{s}\" is not a valid path on this platform: {s}",
+                .{ f.path, reason },
+            );
+            defer allocator.free(msg);
+            return jsonErrorEnvelope(allocator, msg);
+        }
     }
     if (input.files.len > MAX_FILES) {
         const msg = try std.fmt.allocPrint(
