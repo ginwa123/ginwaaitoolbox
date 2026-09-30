@@ -2338,7 +2338,38 @@ test "static contract: parseAndMatchBlock does not compare worktree paths with s
 // itself reads, so it — not a possibly-failed listing — is what proves
 // registration or orphanhood.
 
-const run_captured = @import("helpers").run_captured;
+/// Spawn a git child with NO pipes and return its exit code. `null`
+/// when git could not be spawned or was killed.
+///
+/// This deliberately does not go through `helpers.run_captured`. That
+/// helper drains the child's stdout on a background thread via
+/// `std.Io.File.readStreaming`, and on Windows that path lands in
+/// stdlib's
+///     `.PENDING => unreachable, // unrecoverable: wrong File nonblocking flag`
+/// and takes the whole test binary down with it (it did, in CI run
+/// 36621808471: 6 crashes in this file, "wrong File nonblocking flag",
+/// run_captured.zig:235). Every other test here that shells out to git
+/// guards itself with `skipOnWindows()` for that reason; this fixture
+/// instead avoids the broken path, so the classification suite keeps
+/// running on Windows — which is where the separator handling it
+/// covers is most worth exercising at all.
+fn spawnGit(
+    io: std.Io,
+    argv: []const []const u8,
+    inherit_output: bool,
+) !?u8 {
+    var child = std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = if (inherit_output) .inherit else .ignore,
+        .stderr = if (inherit_output) .inherit else .ignore,
+    }) catch return null;
+    const term = child.wait(io) catch return null;
+    return switch (term) {
+        .exited => |code| code,
+        else => null,
+    };
+}
 
 /// Skip the calling test when the host has no usable `git` on PATH.
 fn requireGit() !void {
@@ -2367,7 +2398,7 @@ const GitFixture = struct {
         const real = try tmp.dir.realPath(std.testing.io, &buf);
         const root = try allocator.dupe(u8, buf[0..real]);
         errdefer allocator.free(root);
-        const repo = try std.fmt.allocPrint(allocator, "{s}/repo", .{root});
+        const repo = try std.fs.path.join(allocator, &.{ root, "repo" });
         errdefer allocator.free(repo);
 
         var fx = GitFixture{ .tmp = tmp, .root = root, .repo = repo, .allocator = allocator };
@@ -2392,20 +2423,30 @@ const GitFixture = struct {
         defer full.deinit(self.allocator);
         try full.append(self.allocator, "git");
         try full.appendSlice(self.allocator, argv);
-        var r = run_captured.run(self.allocator, std.testing.io, full.items, .{
-            .timeout_ms = 60_000,
-        }) catch return error.SkipZigTest;
-        defer r.deinit(self.allocator);
-        if (r.term.exited != 0) {
-            std.debug.print("!! git {any} exited {any}: {s}\n", .{ argv, r.term, r.stderr });
-            return error.GitCommandFailed;
-        }
+
+        const code = try spawnGit(std.testing.io, full.items, false) orelse
+            return error.SkipZigTest;
+        if (code == 0) return;
+
+        // Re-run with the child's output inherited so git's own
+        // explanation reaches the CI log — the first pass discarded it
+        // to stay pipe-free. Same command, so this is side-effect free.
+        _ = try spawnGit(std.testing.io, full.items, true);
+        std.debug.print("!! git {any} exited {d} !!\n", .{ argv, code });
+        return error.GitCommandFailed;
+    }
+
+    /// Join `parts` with the platform's separator. The fixture root on
+    /// Windows is a backslash path (`D:\a\...\.zig-cache\tmp\XXXX`), so
+    /// hard-coding "/" would hand git a mixed-separator argument.
+    fn join(self: *GitFixture, parts: []const []const u8) ![]u8 {
+        return std.fs.path.join(self.allocator, parts);
     }
 
     /// `git worktree add -b worktree/<name> <root>/<name>` — the exact
     /// shape `executeSetGitWorktreeToString` creates.
     fn addWorktree(self: *GitFixture, name: []const u8) ![]u8 {
-        const path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.root, name });
+        const path = try self.join(&.{ self.root, name });
         errdefer self.allocator.free(path);
         const branch = try std.fmt.allocPrint(self.allocator, "worktree/{s}", .{name});
         defer self.allocator.free(branch);
@@ -2417,7 +2458,41 @@ const GitFixture = struct {
     /// registration record. Deleting it is what makes a worktree a
     /// genuine orphan.
     fn adminDir(self: *GitFixture, name: []const u8) ![]u8 {
-        return std.fmt.allocPrint(self.allocator, "{s}/.git/worktrees/{s}", .{ self.repo, name });
+        return self.join(&.{ self.repo, ".git", "worktrees", name });
+    }
+
+    /// A directory that carries a worktree-shaped `.git` file pointing
+    /// at an admin directory that does not exist — the exact state
+    /// `git worktree prune` leaves behind, produced without having to
+    /// delete anything.
+    ///
+    /// This is the portable way to reach the orphaned branch: deleting a
+    /// real admin directory instead would have to fight git's read-only
+    /// files on Windows.
+    fn makeOrphanDirectory(self: *GitFixture, name: []const u8) ![]u8 {
+        // `dir` is the value handed back, so it is owned by the CALLER:
+        // errdefer (not defer) frees it on the failure paths only.
+        const dir = try self.join(&.{ self.root, name });
+        errdefer self.allocator.free(dir);
+        std.Io.Dir.cwd().createDirPath(std.testing.io, dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        const missing_admin = try self.join(&.{ self.repo, ".git", "worktrees", "pruned-away" });
+        defer self.allocator.free(missing_admin);
+        const contents = try std.fmt.allocPrint(
+            self.allocator,
+            "gitdir: {s}\n",
+            .{missing_admin},
+        );
+        defer self.allocator.free(contents);
+        const dot_git = try self.join(&.{ dir, ".git" });
+        defer self.allocator.free(dot_git);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+            .sub_path = dot_git,
+            .data = contents,
+        });
+        return dir;
     }
 };
 
@@ -2468,13 +2543,42 @@ test "classifyPath: a worktree whose admin dir is gone IS an orphan (proven, not
     try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
-    const wt = try fx.addWorktree("wt");
-    defer allocator.free(wt);
 
     // Stand in for `git worktree prune` (or an admin dir deleted out
-    // from under a live directory). The `.git` FILE in the worktree
-    // still points at it — that is exactly the state the old code
-    // called "orphaned", and here it genuinely is one.
+    // from under a live directory): the `.git` FILE still points at an
+    // admin directory that is not there. That is exactly the state the
+    // old code called "orphaned", and here it genuinely is one.
+    const wt = try fx.makeOrphanDirectory("pruned");
+    defer allocator.free(wt);
+
+    const state = try classifyPath(allocator, std.testing.io, "", wt);
+    defer freePathState(allocator, state);
+    switch (state) {
+        .orphaned_worktree => |gitdir| {
+            // Trimmed, and the admin dir named in the message is the
+            // one that is missing — that is the evidence for the verdict.
+            try testing.expect(std.mem.endsWith(u8, gitdir, "pruned-away"));
+            try testing.expect(std.mem.indexOfScalar(u8, gitdir, '\n') == null);
+        },
+        else => {
+            std.debug.print("!! a worktree with no admin dir classified as '{s}', expected 'orphaned_worktree' !!\n", .{@tagName(state)});
+            return error.OrphanNotDetected;
+        },
+    }
+}
+
+test "classifyPath: a real worktree becomes an orphan when its admin dir is deleted" {
+    // The portable `makeOrphanDirectory` case above proves the branch;
+    // this one proves git really does keep the registration in the place
+    // `worktreeAdminDir` looks. Deleting it is the part Windows refuses
+    // (git marks those files read-only), so this one is POSIX-only.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    try requireGit();
+    var fx = try GitFixture.init(allocator);
+    defer fx.deinit();
+    const wt = try fx.addWorktree("wt");
+    defer allocator.free(wt);
     const admin = try fx.adminDir("wt");
     defer allocator.free(admin);
     std.Io.Dir.cwd().deleteTree(std.testing.io, admin) catch |err| {
@@ -2485,9 +2589,9 @@ test "classifyPath: a worktree whose admin dir is gone IS an orphan (proven, not
     const state = try classifyPath(allocator, std.testing.io, "", wt);
     defer freePathState(allocator, state);
     switch (state) {
-        .orphaned_worktree => |gitdir| try testing.expectEqualStrings(admin, std.mem.trim(u8, gitdir, " \t\r\n")),
+        .orphaned_worktree => |gitdir| try testing.expectEqualStrings(admin, gitdir),
         else => {
-            std.debug.print("!! a worktree with no admin dir classified as '{s}', expected 'orphaned_worktree' !!\n", .{@tagName(state)});
+            std.debug.print("!! deleting the admin dir did not orphan the worktree (got '{s}') !!\n", .{@tagName(state)});
             return error.OrphanNotDetected;
         },
     }
@@ -2498,11 +2602,8 @@ test "classifyPath: the orphan gitdir carries no trailing newline from the .git 
     try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
-    const wt = try fx.addWorktree("wt");
+    const wt = try fx.makeOrphanDirectory("pruned");
     defer allocator.free(wt);
-    const admin = try fx.adminDir("wt");
-    defer allocator.free(admin);
-    std.Io.Dir.cwd().deleteTree(std.testing.io, admin) catch return error.AdminDirDeleteFailed;
 
     const state = try classifyPath(allocator, std.testing.io, "", wt);
     defer freePathState(allocator, state);
