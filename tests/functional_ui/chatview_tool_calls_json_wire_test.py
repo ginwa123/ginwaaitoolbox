@@ -32,20 +32,17 @@ from __future__ import annotations
 
 import json
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
 
 def _seed_db_path(h: UIHarness):
     return h.temp_dir / ".config" / "nalar" / "agent.db"
-
-
-def _open_chatview(page, h: UIHarness, session_id: str, timeout_ms: int = 30000) -> None:
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=timeout_ms,
-    )
 
 
 def _wait_for_text(page, text: str, timeout_ms: int = 10000) -> None:
@@ -79,9 +76,11 @@ def test_pill_suppressed_when_tool_rows_match_tool_call_ids(
     """
     h = ui_harness
     session_id = "sess_pill_suppression_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Pill suppression test")
+        bind_session_workspace(conn, workspace_id, session_id)
 
         ts = DbSeed.baseline_timestamps(count=5, interval_seconds=10)
         # User prompt
@@ -137,7 +136,7 @@ def test_pill_suppressed_when_tool_rows_match_tool_call_ids(
             created_at=ts[4],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # Wait for any one of the tool cards to mount as the
     # "render-stable" signal. The bash/read/search cards all share
     # .chat-tool-card so any of them works.
@@ -176,9 +175,11 @@ def test_rest_endpoint_includes_tool_calls_json(
     """
     h = ui_harness
     session_id = "sess_rest_tcjson_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "REST shape test")
+        bind_session_workspace(conn, workspace_id, session_id)
         tc_payload = [
             {
                 "id": "tc_rest_1",

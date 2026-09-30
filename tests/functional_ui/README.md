@@ -157,16 +157,22 @@ When the test ends:
 
 Per project memory "Don't ever kill the process port 8081":
 
-| Service  | Strategy         | Range / constraints    |
-|----------|------------------|-----------------------|
-| Backend  | random pick      | `[40000, 60000]`, reserved `(8081,)`         |
-| Vite     | random pick      | `[40000, 60000]`, reserved `(5173, 8081)`    |
+| Service  | Strategy         | Range / constraints (from `harness.RANDOM_PORT_*`) |
+|----------|------------------|--------------------------------------------------|
+| Backend  | random pick      | `[20000, 32000]`, reserved `(8081,)`               |
+| Vite     | random pick      | `[20000, 32000]`, reserved `(5173, 8081)`          |
 
 The harness picks a **random** port from a wide shared range (see
 `find_free_port_random` + `RANDOM_PORT_START` / `RANDOM_PORT_END` in
-`harness.py`). With 20,000 ports of headroom and 50 attempts per
+`harness.py`). The range sits *below* Linux's default
+`net.ipv4.ip_local_port_range` (32768-60999) on purpose: 40k-60k was
+inside the pool the kernel hands out for outgoing connections, so a
+probe bind could be stolen between the pick and the real listener
+(commit f131e6c4). With 12,000 ports of headroom and 50 attempts per
 boot, the probability of collision is effectively zero for any
-realistic host occupancy.
+realistic host occupancy. `ui_harness.VITE_PORT_START` /
+`VITE_PORT_END` re-export the same two numbers, so the port-contract
+tests in `harness_safety_test.py` cannot drift away from the picker.
 
 This replaced the previous sequential scans (`8080, 8082..8199` for
 the backend, `5180..5299` for vite) that caused two recurring CI

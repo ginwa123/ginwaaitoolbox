@@ -518,8 +518,10 @@ def test_dialog_picked_profile_surfaces_in_chatview_chip(
 
     # Navigate to the new task's chatview. The chatview is rendered
     # via AppLayout.vue when the URL is `/app?view=chat&session=<id>`
-    # (sets `activeChatId = "chat-<id>"` — see chatview_ui_test.py:
-    # `_open_chatview` for the full routing rationale).
+    # (sets `activeChatId = "chat-<id>"`); the boot rewrite resolves the
+    # owning workspace through the task link. A task chat always has one,
+    # so the legacy URL is safe here — bare chats go through
+    # `chatview_boot.open_chatview` instead.
     # The kanban-context URL (`...&itemId=Y/chat/task_X`) opens a
     # modal ChatDialog inside the kanban — different mount path that
     # Playwright's click intercepts. Use the standalone route.

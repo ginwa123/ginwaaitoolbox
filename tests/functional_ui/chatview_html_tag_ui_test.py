@@ -12,7 +12,7 @@ Each test:
    carries the raw tagged string — the exact wire shape production
    stores (tags included).
 3. Drives headless Chromium at
-   ``<vite_url>/app?view=chat&session=<id>`` and asserts the rendered
+   ``<vite_url>/app/<workspace_id>/chat/<id>`` and asserts the rendered
    DOM.
 
 Real Chromium (unlike jsdom vitest) EXECUTES iframe srcdoc content —
@@ -26,6 +26,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
@@ -36,20 +41,6 @@ from ui_harness import UIHarness
 def _seed_db_path(h: UIHarness) -> Path:
     """Path to the harness's isolated agent.db (DbSeed re-validates)."""
     return h.temp_dir / ".config" / "nalar" / "agent.db"
-
-
-def _open_chatview(page, h: UIHarness, session_id: str, timeout_ms: int = 30000) -> None:
-    """Navigate to the chatview for ``session_id``.
-
-    Canonical URL shape (see chatview_ui_test.py): the query-param form
-    ``/app?view=chat&session=<id>`` — the router path alone does not set
-    AppLayout's activeChatId.
-    """
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=timeout_ms,
-    )
 
 
 def _wait_for_text(page, text: str, timeout_ms: int = 10000) -> None:
@@ -68,9 +59,11 @@ def test_html_only_message_renders_sandboxed_iframe(
     with sandbox="allow-scripts" and NO markdown wrapper around it."""
     h = ui_harness
     session_id = "sess_html_tag_iframe_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "HTML tag")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(
             conn, session_id, "show me a button", created_at=ts[0],
@@ -81,7 +74,7 @@ def test_html_only_message_renders_sandboxed_iframe(
             created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
 
     # The iframe appears with the security contract intact.
     page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
@@ -117,9 +110,11 @@ def test_html_block_scripts_execute_inside_sandbox(
     """
     h = ui_harness
     session_id = "sess_html_tag_exec_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "HTML exec")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "make it interactive", created_at=ts[0])
         seed.seed_assistant_message(
@@ -130,7 +125,7 @@ def test_html_block_scripts_execute_inside_sandbox(
             created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
 
     # Reach INTO the frame (frame_locator works on sandboxed frames for
@@ -170,9 +165,11 @@ def test_mixed_markdown_and_html_block_render_together(
     renders as an iframe whose srcdoc carries the inner HTML."""
     h = ui_harness
     session_id = "sess_html_tag_mixed_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Mixed")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "widget please", created_at=ts[0])
         seed.seed_assistant_message(
@@ -181,7 +178,7 @@ def test_mixed_markdown_and_html_block_render_together(
             created_at=ts[1],
         )
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
 
     # Surrounding markdown still renders (bold from ** **).
     _wait_for_text(page, "Here is your widget:")
@@ -207,15 +204,17 @@ def test_legacy_markdown_messages_render_without_iframe(
     zero chat-html-frame iframes on the page."""
     h = ui_harness
     session_id = "sess_html_tag_legacy_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     md_text = "# Heading\n\nSome **bold** text.\n"
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Legacy")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "tell me things", created_at=ts[0])
         seed.seed_assistant_message(conn, session_id, md_text, created_at=ts[1])
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector(".markdown-content h1", timeout=15000)
     assert page.locator(".markdown-content h1").inner_text() == "Heading"
     assert page.locator("iframe.chat-html-frame").count() == 0, (
@@ -232,9 +231,11 @@ def test_unclosed_html_tag_degrades_safely(ui_harness: UIHarness, page) -> None:
     iframe, no crash, no console error blowing up the page."""
     h = ui_harness
     session_id = "sess_html_tag_unclosed_001"
+    workspace_id = create_workspace(h)
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "Unclosed")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "go", created_at=ts[0])
         seed.seed_assistant_message(
@@ -246,7 +247,7 @@ def test_unclosed_html_tag_degrades_safely(ui_harness: UIHarness, page) -> None:
     errors: list[str] = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     # The raw text shows through the legacy path (escaped by marked).
     _wait_for_text(page, "never closed", timeout_ms=15000)
     assert page.locator("iframe.chat-html-frame").count() == 0, (

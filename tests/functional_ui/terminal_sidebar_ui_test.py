@@ -28,6 +28,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
+from db_seed import DbSeed
 from ui_harness import UIHarness
 
 #: JS predicate for page.wait_for_function: true once the xterm buffer
@@ -46,14 +52,25 @@ BUFFER_HAS_MARKER_JS = """(marker) => {
 }"""
 
 
-def _create_session(h: UIHarness, name: str, cwd: str) -> str:
+def _create_session(h: UIHarness, name: str, cwd: str) -> tuple[str, str]:
+    """Mint a chat session and the workspace that owns it.
+
+    The chat deep link names a workspace, and the session-detail endpoint
+    reads ``sessions.workspace_id`` — the two have to agree or the boot
+    rewrite fails closed to ``/app``. Returns ``(session_id, workspace_id)``.
+    """
+    workspace_id = create_workspace(h, name=f"{name}-ws")
     r = h.http(
         "POST",
         "/api/llm/session",
         json_body={"name": name, "cwd_session": cwd},
         expect=201,
     )
-    return r.json()["id"]
+    session_id = r.json()["id"]
+    seed = DbSeed(h.temp_dir / ".config" / "nalar" / "agent.db")
+    with seed.connect() as conn:
+        bind_session_workspace(conn, workspace_id, session_id)
+    return session_id, workspace_id
 
 
 def _collect_errors(page) -> list[str]:
@@ -70,17 +87,15 @@ def _print_errors(errors: list[str]) -> None:
             print(f"  - {e[:300]}")
 
 
-def _open_chat_and_terminal(page, h: UIHarness, session_id: str) -> list[str]:
+def _open_chat_and_terminal(
+    page, h: UIHarness, workspace_id: str, session_id: str
+) -> list[str]:
     """Navigate to a standalone ChatView and open the Terminal tab.
 
     Returns the console-error collector (printed by the caller).
     """
     errors = _collect_errors(page)
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=30000,
-    )
+    open_chatview(page, h, workspace_id, session_id)
     # Standalone ChatView mount signal (empty session, no header).
     page.locator("text=How can I help you?").first.wait_for(timeout=20000, state="visible")
 
@@ -109,9 +124,9 @@ def test_sidebar_terminal_runs_command(ui_harness: UIHarness, page) -> None:
     h = ui_harness
     cwd = Path(h.temp_dir) / "term-cwd"
     cwd.mkdir(exist_ok=True)
-    session_id = _create_session(h, "ui-terminal", str(cwd))
+    session_id, workspace_id = _create_session(h, "ui-terminal", str(cwd))
 
-    errors = _open_chat_and_terminal(page, h, session_id)
+    errors = _open_chat_and_terminal(page, h, workspace_id, session_id)
     marker = "UI-MARK-7d2b91"
     try:
         _type_command(page, f"echo {marker}")
@@ -125,9 +140,9 @@ def test_sidebar_terminal_multi_session(ui_harness: UIHarness, page) -> None:
     h = ui_harness
     cwd = Path(h.temp_dir) / "term-cwd-multi"
     cwd.mkdir(exist_ok=True)
-    session_id = _create_session(h, "ui-terminal-multi", str(cwd))
+    session_id, workspace_id = _create_session(h, "ui-terminal-multi", str(cwd))
 
-    errors = _open_chat_and_terminal(page, h, session_id)
+    errors = _open_chat_and_terminal(page, h, workspace_id, session_id)
     try:
         marker_a = "UI-MULTI-A-3f8c"
         _type_command(page, f"echo {marker_a}")
@@ -163,10 +178,10 @@ def test_sidebar_terminal_persists_across_chat_switch(ui_harness: UIHarness, pag
     h = ui_harness
     cwd = Path(h.temp_dir) / "term-cwd-persist"
     cwd.mkdir(exist_ok=True)
-    session_id = _create_session(h, "ui-terminal-persist", str(cwd))
-    chat_url = f"/app?view=chat&session={session_id}"
+    session_id, workspace_id = _create_session(h, "ui-terminal-persist", str(cwd))
+    chat_url = f"/app/{workspace_id}/chat/{session_id}"
 
-    errors = _open_chat_and_terminal(page, h, session_id)
+    errors = _open_chat_and_terminal(page, h, workspace_id, session_id)
     try:
         marker = "UI-PERSIST-5a7e"
         _type_command(page, f"echo {marker}")

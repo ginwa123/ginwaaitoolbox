@@ -34,6 +34,11 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
@@ -136,22 +141,17 @@ def _seed_db_path(h: UIHarness) -> Path:
     return h.temp_dir / ".config" / "nalar" / "agent.db"
 
 
-def _open_chatview(page, h: UIHarness, session_id: str) -> None:
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=30000,
-    )
+def _seed_report_session(h: UIHarness, workspace_id: str, session_id: str) -> None:
+    _seed_html_session(h, workspace_id, session_id, _REAL_HTML_REPORT)
 
 
-def _seed_report_session(h: UIHarness, session_id: str) -> None:
-    _seed_html_session(h, session_id, _REAL_HTML_REPORT)
-
-
-def _seed_html_session(h: UIHarness, session_id: str, content: str) -> None:
+def _seed_html_session(
+    h: UIHarness, workspace_id: str, session_id: str, content: str
+) -> None:
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, "HTML frame layout")
+        bind_session_workspace(conn, workspace_id, session_id)
         ts = DbSeed.baseline_timestamps(count=2, interval_seconds=30)
         seed.seed_user_message(conn, session_id, "run the audit", created_at=ts[0])
         seed.seed_assistant_message(conn, session_id, content, created_at=ts[1])
@@ -258,9 +258,10 @@ def test_html_frame_uses_dark_surface_not_white(
     """
     h = ui_harness
     session_id = "sess_html_frame_layout_001"
-    _seed_report_session(h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_report_session(h, workspace_id, session_id)
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
     frame_el = page.locator("iframe.chat-html-frame").first
     # Visual evidence for the issue/PR (survives the run).
@@ -313,9 +314,10 @@ def test_html_frame_height_matches_its_content(
     """
     h = ui_harness
     session_id = "sess_html_frame_layout_002"
-    _seed_report_session(h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_report_session(h, workspace_id, session_id)
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
     frame_el = page.locator("iframe.chat-html-frame").first
 
@@ -367,9 +369,10 @@ def test_srcdoc_shell_carries_theme_and_resize_script(
     """
     h = ui_harness
     session_id = "sess_html_frame_layout_003"
-    _seed_report_session(h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_report_session(h, workspace_id, session_id)
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
     srcdoc = page.locator("iframe.chat-html-frame").first.get_attribute("srcdoc") or ""
 
@@ -404,9 +407,10 @@ def test_light_authored_payload_surfaces_are_neutralised(
     """
     h = ui_harness
     session_id = "sess_html_frame_layout_004"
-    _seed_html_session(h, session_id, _LIGHT_AUTHORED_HTML_REPORT)
+    workspace_id = create_workspace(h)
+    _seed_html_session(h, workspace_id, session_id, _LIGHT_AUTHORED_HTML_REPORT)
 
-    _open_chatview(page, h, session_id)
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_selector("iframe.chat-html-frame", timeout=15000)
     frame_el = page.locator("iframe.chat-html-frame").first
     frame_el.scroll_into_view_if_needed()
