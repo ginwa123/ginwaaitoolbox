@@ -216,3 +216,39 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .cache_read_input_tokens = self.cache_read_input_tokens,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "llm_history: init + deinit with cache tokens" {
+    var h = try init(testing.allocator, .{
+        .id = "msg_1",
+        .session_id = "session_1",
+        .model = "claude-sonnet-4-5",
+        .role = "assistant",
+        .prompt_tokens = 100,
+        .completion_tokens = 50,
+        .total_tokens = 150,
+        .cache_creation_input_tokens = 200,
+        .cache_read_input_tokens = 1000,
+        .is_thinking = true,
+        .temperature = 0.7,
+    });
+    defer deinit(&h, testing.allocator);
+
+    try testing.expectEqualStrings("claude-sonnet-4-5", h.model);
+    try testing.expectEqualStrings("assistant", h.role);
+    try testing.expect(h.is_thinking);
+    try testing.expectEqual(@as(i64, 100), h.prompt_tokens);
+    try testing.expectEqual(@as(i64, 200), h.cache_creation_input_tokens);
+    try testing.expectEqual(@as(i64, 1000), h.cache_read_input_tokens);
+    try testing.expectApproxEqAbs(@as(f64, 0.7), h.temperature, 0.0001);
+}

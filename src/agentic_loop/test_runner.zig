@@ -52,11 +52,13 @@ test {
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
     _ = @import("workflow_compact_message.zig"); // merged 2026-09-10 (ex-workflow_commpact_message.zig typo): url_style regression + envelope + prompt/envelope helpers
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
-    _ = @import("tool_calls_json_wire_shape_test.zig"); // task_1787590621966_10 — SSE tool_calls_json must be a JSON STRING (frontend .trim() crash regression lock)
-    _ = @import("mcp_fetch_once_test.zig"); // mcp-fetch-once-cache — tools/list fetched once, cached on singleton, run reads snapshot
-    _ = @import("windows_posix_tmp_path_test.zig"); // run 36496521345 — no test may open/create a file at a literal `/tmp/...` path (8 Windows-only failures)
-    _ = @import("tools_wrap_output.zig");
-    _ = @import("tool_output_json_contract_test.zig"); // Phase 0 RED: JSON envelope contract (fails until Phase 1)
+    // (on_event_sent.zig, workflow.zig and tools_wrap_output.zig are
+    // already registered above; their tool_calls_json wire-shape lock,
+    // fetch-once MCP cache contracts and JSON tool-output envelope
+    // contract now live inline in those files. The project-wide
+    // "no literal /tmp file op" gate — run 36496521345 — moved into
+    // src/root.zig, which is the mod test root and so already discovers
+    // its own `test` blocks.)
     _ = @import("workflow_compact_message.zig"); // merged single file — helpers + orchestration + all inline tests
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
     _ = @import("prompts_make_cross_project_context.zig"); // sibling-cwd loop from workspace_items only (inline in-memory DB tests)

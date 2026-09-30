@@ -119,3 +119,34 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .last_finish_reason = self.last_finish_reason,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "session: init + deinit with nullable fields" {
+    var s = try init(testing.allocator, .{
+        .id = "session_1",
+        .name = "Chat Session",
+        .cwd = "/home/me",
+        .workspace_id = "ws_1",
+        .selected_profile_model = "openai-default",
+        .git_worktree_cwd = "/tmp/worktree",
+        .is_auto_retry_until_stop = true,
+        .last_finish_reason = "stop",
+    });
+    defer deinit(&s, testing.allocator);
+
+    try testing.expectEqualStrings("session_1", s.id);
+    try testing.expectEqualStrings("active", s.status);
+    try testing.expect(s.is_auto_retry_until_stop);
+    try testing.expectEqualStrings("stop", s.last_finish_reason);
+    try testing.expectEqualStrings("/home/me", s.cwd.?);
+}

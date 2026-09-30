@@ -73,3 +73,15 @@ pub fn run(args: Args, cfg: config.Config, io: std.Io) @import("root.zig").Dispa
 // the caller to spell out `custom_http_client.Client`.
 const custom_http_client = @import("kabelweb").client;
 const client_typedef = custom_http_client;
+
+// ===== Tests merged from send_test.zig (2026-09-29 flatten) =====
+// Tests for src/commands/send.zig (POST /api/llm/session).
+//
+// Real tests land when the command itself lands. This stub keeps
+// the test discovery in root.zig happy so the build doesn't break.
+
+const testing = std.testing;
+
+test "send: placeholder (command not yet implemented)" {
+    try testing.expect(true);
+}

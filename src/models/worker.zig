@@ -77,3 +77,32 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .cancelled = self.cancelled,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "worker: init + deinit" {
+    var w = try init(testing.allocator, .{
+        .id = "worker_1",
+        .session_id = "session_1",
+        .working_directory = "/tmp/work",
+        .last_activity = 1786000000,
+        .last_activity_description = "Tool call: bash",
+    });
+    defer deinit(&w, testing.allocator);
+
+    try testing.expectEqualStrings("worker_1", w.id);
+    try testing.expectEqualStrings("session_1", w.session_id);
+    try testing.expectEqualStrings("/tmp/work", w.working_directory.?);
+    try testing.expectEqualStrings("Tool call: bash", w.last_activity_description.?);
+    try testing.expectEqual(@as(i64, 1786000000), w.last_activity);
+    try testing.expect(!w.cancelled);
+}

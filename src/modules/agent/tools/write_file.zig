@@ -1527,7 +1527,8 @@ test "writeFile: create_with_dir succeeds for a file in the drive root on Window
 // the old hand-rolled scan return the same thing for every POSIX input. So
 // pin the CAUSE here instead: the tool must delegate to `dirname` rather
 // than re-deriving a parent by scanning for the last separator. This is
-// the repo's existing idiom (cf. tool_calls_json_wire_shape_test.zig) and
+// the repo's existing idiom (cf. the wire-shape lock inline in
+// agentic_loop/on_event_sent.zig) and
 // it is the only assertion that can fail on a Linux runner.
 test "static contract: write_file delegates parent-dir resolution to std.fs.path.dirname" {
     // Scan only the IMPLEMENTATION. `@embedFile` returns this whole file,
