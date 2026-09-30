@@ -365,46 +365,66 @@ function truncateMiddle(s: string, max: number): string {
   return `${s.slice(0, half)}…${s.slice(s.length - half)}`
 }
 
-/** Parse a snippet that uses `[match]…[/match]` markers into a list
- *  of (text, isMatch) segments for Vue rendering. We strip the
- *  closing tags by checking whether the next char is '['. */
+/**
+ * Split an FTS5 snippet into (text, isMatch) segments for `<mark>` rendering.
+ *
+ * The backend calls `snippet(messages_fts, 0, '[', ']', '...', 10)`, so a real
+ * snippet wraps matches in BARE brackets — `...a [portal] that refuses...` —
+ * and contains no tags at all. `[match]` / `[/match]` is still accepted
+ * because tool results persisted before this card learned the bare format
+ * may carry it.
+ *
+ * A bracket span whose text contains a literal `[` (e.g. `[xdg-[portal]`) is
+ * split at the LAST inner `[`, so the surrounding text stays visible instead
+ * of being highlighted wholesale.
+ */
 function parseSnippet(snippet: string): { text: string; match: boolean }[] {
   const out: { text: string; match: boolean }[] = []
+  let inMatch = false
+
+  const emit = (text: string, match: boolean): void => {
+    if (!text) return
+    const last = out[out.length - 1]
+    if (last && last.match === match) last.text += text
+    else out.push({ text, match })
+  }
+
   let i = 0
   while (i < snippet.length) {
-    if (snippet[i] === '[') {
-      const end = snippet.indexOf(']', i + 1)
-      if (end !== -1 && snippet[end + 1] === '[') {
-        // `[…][…]` — two consecutive tags with no content between,
-        // skip and let the next iter handle the opening bracket.
-        // (Doesn't happen in practice; defensive.)
-        i = end + 1
-        continue
-      }
-      if (end !== -1 && snippet.slice(i + 1, end) === '/match') {
-        // closing marker — end current matched segment
-        i = end + 1
-        continue
-      }
-      if (end !== -1 && snippet.slice(i + 1, end) === 'match') {
-        // opening marker — start matched segment
-        out.push({ text: '', match: true })
-        i = end + 1
-        continue
-      }
+    const open = snippet.indexOf('[', i)
+    if (open === -1) {
+      emit(snippet.slice(i), inMatch)
+      break
     }
-    // Find next '[' or end of string.
-    const nextBracket = snippet.indexOf('[', i + 1)
-    const chunk = nextBracket === -1 ? snippet.slice(i) : snippet.slice(i, nextBracket)
-    if (chunk.length > 0) {
-      const last = out[out.length - 1]
-      if (last && last.match) {
-        last.text += chunk
-      } else {
-        out.push({ text: chunk, match: false })
-      }
+    emit(snippet.slice(i, open), inMatch)
+
+    const close = snippet.indexOf(']', open + 1)
+    if (close === -1) {
+      // Unterminated bracket — the rest is plain text.
+      emit(snippet.slice(open), inMatch)
+      break
     }
-    i = nextBracket === -1 ? snippet.length : nextBracket
+
+    const inner = snippet.slice(open + 1, close)
+    if (inner === '/match') {
+      inMatch = false
+      i = close + 1
+      continue
+    }
+    if (inner === 'match') {
+      inMatch = true
+      i = close + 1
+      continue
+    }
+
+    const nested = inner.lastIndexOf('[')
+    if (nested !== -1) {
+      emit(inner.slice(0, nested + 1), false)
+      emit(inner.slice(nested + 1), true)
+    } else {
+      emit(inner, true)
+    }
+    i = close + 1
   }
   return out
 }
@@ -423,7 +443,9 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-dense">read_workspace_session</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense"
+        >read_workspace_session</span
+      >
       <span
         class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="summaryText"
@@ -443,9 +465,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
 
       <span v-if="isError" class="text-red-500 text-micro font-medium shrink-0"> Error </span>
 
-      <span v-if="isDenied" class="text-yellow-500 text-micro font-medium shrink-0">
-        Denied
-      </span>
+      <span v-if="isDenied" class="text-yellow-500 text-micro font-medium shrink-0"> Denied </span>
 
       <span
         v-if="isRunning"
@@ -541,10 +561,7 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
             </div>
 
             <!-- Status -->
-            <span
-              v-if="session.status"
-              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
-            >
+            <span v-if="session.status" class="text-[var(--semantic-text-dim)] text-micro shrink-0">
               {{ session.status }}
             </span>
 

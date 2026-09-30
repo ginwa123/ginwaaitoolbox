@@ -56,7 +56,10 @@ const makeSearchContent = (
     session_name: e.session_name ?? 'Default chat',
     role: e.role ?? 'user',
     created_at: e.created_at ?? '2026-01-01 10:00:00',
-    snippet: e.snippet ?? '...the login [match]bug[/match] needs fixing...',
+    // Mirrors what the backend ACTUALLY emits: llm_history.zig calls
+    // snippet(messages_fts, 0, '[', ']', '...', 10), which wraps matches in
+    // bare brackets. It never emits [match]/[/match].
+    snippet: e.snippet ?? '...the login [bug] needs fixing...',
   }))
   return {
     behavior,
@@ -313,7 +316,35 @@ describe('ReadWorkspaceSession.vue — search entries', () => {
     expect(entries[0]!.text()).toContain('login bug')
   })
 
-  it('highlights [match]...[/match] spans inside the snippet with <mark>', () => {
+  it('highlights bare-bracket spans (the format the backend actually emits)', () => {
+    // llm_history.zig calls snippet(messages_fts, 0, '[', ']', '...', 10),
+    // so a real snippet looks like `...a [portal] that refuses...` — there
+    // are no `[match]`/`[/match]` tags in it. This is a verbatim capture
+    // from the live database.
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [
+            {
+              id: 'h1',
+              snippet: "...error: 'linux.file [dialog].test.a [portal] that refuses the...",
+            },
+          ],
+        }),
+      },
+    })
+    const snippetEl = wrapper.find('[data-testid="search-entry-snippet-0"]')
+    expect(snippetEl.exists()).toBe(true)
+
+    const marks = snippetEl.findAll('mark')
+    expect(marks.map((m) => m.text())).toEqual(['dialog', 'portal'])
+    // The brackets themselves must not survive into the rendered text.
+    expect(snippetEl.text()).not.toContain('[dialog]')
+    expect(snippetEl.text()).not.toContain('[portal]')
+  })
+
+  it('still highlights legacy [match]...[/match] snippets from older transcripts', () => {
     const wrapper = mount(ReadWorkspaceSession, {
       props: {
         expanded: true,
@@ -323,11 +354,24 @@ describe('ReadWorkspaceSession.vue — search entries', () => {
       },
     })
     const snippetEl = wrapper.find('[data-testid="search-entry-snippet-0"]')
-    expect(snippetEl.exists()).toBe(true)
     expect(snippetEl.html()).toContain('<mark')
     expect(snippetEl.html()).toContain('login bug')
-    expect(snippetEl.html()).toContain('pre')
-    expect(snippetEl.html()).toContain('post')
+    expect(snippetEl.text()).not.toContain('[match]')
+  })
+
+  it('does not swallow content when a match contains a nested bracket', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [{ id: 'h1', snippet: 'x [xdg-[portal] y [dialog] z' }],
+        }),
+      },
+    })
+    const snippetEl = wrapper.find('[data-testid="search-entry-snippet-0"]')
+    // The text after the nested-bracket term must still be visible.
+    expect(snippetEl.text()).toContain('z')
+    expect(snippetEl.text()).toContain('dialog')
   })
 
   it('renders the empty-results hint when search matches nothing', () => {
