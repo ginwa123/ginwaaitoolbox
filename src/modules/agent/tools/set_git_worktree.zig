@@ -2461,6 +2461,61 @@ const GitFixture = struct {
         return self.join(&.{ self.repo, ".git", "worktrees", name });
     }
 
+    /// A directory that carries a worktree-shaped `.git` file pointing at
+    /// an admin directory that EXISTS, with a `HEAD` inside it — the exact
+    /// pair of files `git worktree add` leaves behind.
+    ///
+    /// Synthesised rather than shelled out for, because the whole point of
+    /// the check is `classifyPath`'s reading of that pair. One real-git
+    /// test further down proves git really does lay them out this way;
+    /// every test here that only needs the shape uses this instead of
+    /// paying for three process spawns each — which on Windows starved
+    /// the parallel `helpers` test roots until they timed out waiting for
+    /// their `--listen=-` handshake (CI run 36670946078,
+    /// "test runner failed to respond for 1m6s").
+    fn makeRegisteredDirectory(self: *GitFixture, name: []const u8) ![]u8 {
+        const dir = try self.join(&.{ self.root, name });
+        errdefer self.allocator.free(dir);
+        std.Io.Dir.cwd().createDirPath(std.testing.io, dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        const admin = try self.join(&.{ self.repo, ".git", "worktrees", name });
+        // `admin` is NOT returned — it is an intermediate — so plain
+        // `defer`, not `errdefer`.
+        defer self.allocator.free(admin);
+        std.Io.Dir.cwd().createDirPath(std.testing.io, admin) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => return err,
+        };
+        const head = try self.join(&.{ admin, "HEAD" });
+        defer self.allocator.free(head);
+        const head_contents = try std.fmt.allocPrint(
+            self.allocator,
+            "ref: refs/heads/worktree/{s}\n",
+            .{name},
+        );
+        defer self.allocator.free(head_contents);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+            .sub_path = head,
+            .data = head_contents,
+        });
+        try self.writeGitdirPointer(dir, admin);
+        return dir;
+    }
+
+    /// Write `<dir>/.git` as git does: `gitdir: <admin>\n`.
+    fn writeGitdirPointer(self: *GitFixture, dir: []const u8, admin: []const u8) !void {
+        const contents = try std.fmt.allocPrint(self.allocator, "gitdir: {s}\n", .{admin});
+        defer self.allocator.free(contents);
+        const dot_git = try self.join(&.{ dir, ".git" });
+        defer self.allocator.free(dot_git);
+        try std.Io.Dir.cwd().writeFile(std.testing.io, .{
+            .sub_path = dot_git,
+            .data = contents,
+        });
+    }
+
     /// A directory that carries a worktree-shaped `.git` file pointing
     /// at an admin directory that does not exist — the exact state
     /// `git worktree prune` leaves behind, produced without having to
@@ -2480,28 +2535,16 @@ const GitFixture = struct {
         };
         const missing_admin = try self.join(&.{ self.repo, ".git", "worktrees", "pruned-away" });
         defer self.allocator.free(missing_admin);
-        const contents = try std.fmt.allocPrint(
-            self.allocator,
-            "gitdir: {s}\n",
-            .{missing_admin},
-        );
-        defer self.allocator.free(contents);
-        const dot_git = try self.join(&.{ dir, ".git" });
-        defer self.allocator.free(dot_git);
-        try std.Io.Dir.cwd().writeFile(std.testing.io, .{
-            .sub_path = dot_git,
-            .data = contents,
-        });
+        try self.writeGitdirPointer(dir, missing_admin);
         return dir;
     }
 };
 
 test "classifyPath: an empty session cwd still recognises a REGISTERED worktree (2026-09-29 regression)" {
     const allocator = testing.allocator;
-    try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
-    const wt = try fx.addWorktree("wt");
+    const wt = try fx.makeRegisteredDirectory("wt");
     defer allocator.free(wt);
 
     // `repo_root` is what `executeSetGitWorktreeToString` forwards as
@@ -2523,10 +2566,9 @@ test "classifyPath: an empty session cwd still recognises a REGISTERED worktree 
 
 test "classifyPath: a registered worktree classifies the same with an empty repo_root as with the real one" {
     const allocator = testing.allocator;
-    try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
-    const wt = try fx.addWorktree("wt");
+    const wt = try fx.makeRegisteredDirectory("wt");
     defer allocator.free(wt);
 
     const with_root = try classifyPath(allocator, std.testing.io, fx.repo, wt);
@@ -2540,7 +2582,6 @@ test "classifyPath: a registered worktree classifies the same with an empty repo
 
 test "classifyPath: a worktree whose admin dir is gone IS an orphan (proven, not inferred)" {
     const allocator = testing.allocator;
-    try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
 
@@ -2567,18 +2608,45 @@ test "classifyPath: a worktree whose admin dir is gone IS an orphan (proven, not
     }
 }
 
-test "classifyPath: a real worktree becomes an orphan when its admin dir is deleted" {
-    // The portable `makeOrphanDirectory` case above proves the branch;
-    // this one proves git really does keep the registration in the place
-    // `worktreeAdminDir` looks. Deleting it is the part Windows refuses
-    // (git marks those files read-only), so this one is POSIX-only.
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+test "classifyPath: a REAL git worktree registers, and deleting its admin dir orphans it" {
+    // The synthetic `makeRegisteredDirectory` / `makeOrphanDirectory`
+    // cases above are what the fast tests use. This is the one that keeps
+    // them honest: it runs the real `git init` + `git worktree add`, so
+    // git itself is the oracle for the layout `worktreeAdminDir` assumes.
+    //
+    // Both halves live in one test on purpose — this is the only place in
+    // the file that spawns git, and it costs exactly three processes.
+    // Split across two tests it was six, which on Windows starved the
+    // parallel `helpers` test roots until they timed out (CI run
+    // 36670946078, "test runner failed to respond for 1m6s").
+    //
+    // Deleting the admin directory is the half Windows refuses (git marks
+    // those files read-only), so the orphan half is POSIX-only. The
+    // registered half runs everywhere.
     const allocator = testing.allocator;
     try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
     const wt = try fx.addWorktree("wt");
     defer allocator.free(wt);
+
+    // Freed exactly once, here. An earlier version freed inside a `defer`
+    // in the switch arm AND again after the switch — a double free, which
+    // segfaults (exit 139) rather than failing cleanly.
+    const registered = try classifyPath(allocator, std.testing.io, "", wt);
+    if (registered == .registered_worktree) {
+        switch (registered) {
+            .registered_worktree => |rwt| try testing.expectEqualStrings("worktree/wt", rwt.branch),
+            else => unreachable,
+        }
+    } else {
+        std.debug.print("!! a real git worktree classified as '{s}' !!\n", .{@tagName(registered)});
+    }
+    freePathState(allocator, registered);
+    if (registered != .registered_worktree) return error.RealWorktreeNotRegistered;
+
+    if (builtin.os.tag == .windows) return;
+
     const admin = try fx.adminDir("wt");
     defer allocator.free(admin);
     std.Io.Dir.cwd().deleteTree(std.testing.io, admin) catch |err| {
@@ -2599,7 +2667,6 @@ test "classifyPath: a real worktree becomes an orphan when its admin dir is dele
 
 test "classifyPath: the orphan gitdir carries no trailing newline from the .git file" {
     const allocator = testing.allocator;
-    try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
     const wt = try fx.makeOrphanDirectory("pruned");
@@ -2620,7 +2687,6 @@ test "classifyPath: the orphan gitdir carries no trailing newline from the .git 
 
 test "classifyPath: a plain directory is still a plain directory with an empty repo_root" {
     const allocator = testing.allocator;
-    try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
 
@@ -2638,7 +2704,6 @@ test "classifyPath: a plain directory is still a plain directory with an empty r
 
 test "classifyPath: a path that does not exist is not_found regardless of repo_root" {
     const allocator = testing.allocator;
-    try requireGit();
     var fx = try GitFixture.init(allocator);
     defer fx.deinit();
 
