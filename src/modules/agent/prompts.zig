@@ -43,6 +43,12 @@ pub const MemoryToolRule = prompts.MemoryToolRule;
 // prefix keeps hitting.
 pub const ProgressiveToolRule = prompts.ProgressiveToolRule;
 pub const SkillsToolRule = prompts.SkillsToolRule;
+// Skill Evals — evaluate the skills this session actually used. Appended
+// unconditionally for the same cache reason as the two above; it gates itself
+// on `run_skill_eval` being present in the tool list, and that tool is only
+// injected when config.json's `skill_evals.enabled` is true. So the switch
+// controls the tool, never the prompt bytes.
+pub const SkillEvalToolRule = prompts.SkillEvalToolRule;
 
 // ---------------------------------------------------------------------------
 // Thin delegating re-exports for the two pure helpers that
@@ -1786,4 +1792,64 @@ test "ReadWorkspaceSessionToolRule names the tool and the four behaviors" {
     try std.testing.expect(contains(prompt, "live_only"));
     try std.testing.expect(contains(prompt, "compacted_only"));
     try std.testing.expect(!contains(prompt, "compacted_messages"));
+}
+
+
+test "SkillEvalToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+    try std.testing.expect(contains(src, "prompts_const.SkillEvalToolRule"));
+
+    // The live append and the documented PROMPT_SECTIONS mirror must name the
+    // same tool, or the rule points at something nobody declares.
+    try std.testing.expect(contains(src, ".requires_tool = \"run_skill_eval\""));
+
+    // And the tool it mandates must actually be equipped, or the rule is a
+    // lie. This asserts MEMBERSHIP of the table `filterAndMergeTools` actually
+    // iterates — a source grep for the string would pass on an entry in
+    // UNIFIED_TOOL_REGISTRY, which is the dispatcher's table and is never
+    // consulted when the tool list is built. That is exactly how the tool
+    // shipped unreachable once already.
+    const tools_equipped = @import("../../agentic_loop/tools_equipped.zig");
+    const equipped = tools_equipped.equips(std.testing.allocator);
+    defer std.testing.allocator.free(equipped);
+    var found = false;
+    for (equipped) |t| {
+        if (std.mem.eql(u8, t.function.name, "run_skill_eval")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "SkillEvalToolRule is appended unconditionally, beside the other mandates" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+
+    // Gating this rule on `hasTool` would make the cacheable prefix differ per
+    // agent, which is the one thing that block must not do. This asserts the
+    // append sits in the same run of unconditional appends as the four
+    // mandates above it: between the previous rule and this one there is no
+    // `hasTool` and no `if (`.
+    const i_prev = std.mem.indexOf(u8, src, "prompts_const.ReadWorkspaceSessionToolRule);").?;
+    const i_this = std.mem.indexOf(u8, src, "prompts_const.SkillEvalToolRule);").?;
+    try std.testing.expect(i_prev < i_this);
+
+    const between = src[i_prev..i_this];
+    try std.testing.expect(std.mem.indexOf(u8, between, "hasTool") == null);
+    try std.testing.expect(std.mem.indexOf(u8, between, "if (") == null);
+}
+
+test "SkillEvalToolRule names the tool and its non-negotiable behaviors" {
+    const prompt: []const u8 = SkillEvalToolRule;
+
+    try std.testing.expect(contains(prompt, "run_skill_eval"));
+    // The common case: nothing was loaded, so a skip is correct.
+    try std.testing.expect(contains(prompt, "Skip it"));
+    // A second call must read as a cheap no-op, not a second eval.
+    try std.testing.expect(contains(prompt, "Once per task"));
+    // The agent chooses WHEN, not the verdict — that is the whole design.
+    try std.testing.expect(contains(prompt, "You are not the judge"));
+    // It must NOT be told to pass the skill list: the tool reads the ledger,
+    // which is what stops an agent omitting the skill it worked around.
+    try std.testing.expect(contains(prompt, "you cannot"));
+    try std.testing.expect(contains(prompt, "Self-check"));
+    // It must be honest about the needs_human outcome rather than hiding it.
+    try std.testing.expect(contains(prompt, "needs_human"));
 }

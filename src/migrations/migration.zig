@@ -2018,6 +2018,21 @@ pub const allMigrations: []const Migration = &.{
     // explicit UPDATE if you want to keep one).
     // Plan: docs/plans/2026-09-29-memory-workspace-isolation.md
     .{ .version = Migration095AddWorkspaceIdToAgentMemories.version, .name = Migration095AddWorkspaceIdToAgentMemories.name, .up = Migration095AddWorkspaceIdToAgentMemories.up },
+    // Migration 096 — `session_skill_events`, the append-only skill usage
+    // ledger. Answers "which turn loaded this skill", "was it only listed and
+    // then ignored" and "has the body changed since it was read" — none of
+    // which `session_skills` can answer, because it keeps only the latest body
+    // per (session, skill) and only `use_skill` writes it.
+    // Plan: docs/plans/2026-09-27-skill-evals.md (W1)
+    .{ .version = Migration096CreateSessionSkillEvents.version, .name = Migration096CreateSessionSkillEvents.name, .up = Migration096CreateSessionSkillEvents.up },
+    // Migration 097 — the skill-eval tables. `skill_eval_facts` caches the
+    // INTRINSIC half of a verdict against (skill_key, content_hash,
+    // context_key) so two sessions evaluating the same body at the same commit
+    // share one computation; `skill_eval_runs` makes "once per self-prompted
+    // session" a DB invariant; `skill_eval_results` holds the session-relative
+    // half plus the `base_content_hash` staleness guard used on apply.
+    // Plan: docs/plans/2026-09-27-skill-evals.md (§4.6, W0)
+    .{ .version = Migration097CreateSkillEvalTables.version, .name = Migration097CreateSkillEvalTables.name, .up = Migration097CreateSkillEvalTables.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -5052,6 +5067,219 @@ pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
             \\CREATE INDEX IF NOT EXISTS idx_workspace_items_default_lookup
             \\ON workspace_items(workspace_id, is_default)
         , &[_][]const u8{});
+    }
+};
+
+// Migration 096 — `session_skill_events`, the skill usage ledger.
+// ============================================================================
+//
+// `session_skills` (Migration 008) keeps only the LATEST body of each skill a
+// session loaded — `INSERT OR REPLACE` keyed on (session_id, skill_name). It
+// cannot answer "which turn loaded this", "was this skill only *listed* and
+// then ignored", or "has the body changed since it was read", and it is
+// written by `use_skill` alone, so `add_skill` / `edit_skill` / `remove_skill`
+// leave no trace at all.
+//
+// This ledger is append-only (a fresh nanosecond id per row), so it answers
+// all of those without touching `session_skills` — which deliberately stays as
+// it is, because its `content` snapshot is the compaction drift detector.
+//
+// `content_hash` is what makes drift cheap to detect: an eval compares the
+// hash of the body a session actually read against the hash of the body on
+// disk now, instead of diffing two full bodies.
+//
+// Plan: docs/plans/2026-09-27-skill-evals.md (W1)
+pub const Migration096CreateSessionSkillEvents = struct {
+    pub const version: u32 = 96;
+    pub const name = "create_session_skill_events";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // `event` is 'loaded' | 'listed' | 'created' | 'edited' | 'removed';
+        // `source` is the tool name that produced the row. Both are free text,
+        // so every write site wraps them in COALESCE(?, '') — a bare empty
+        // bind lands as SQL NULL and would violate NOT NULL (the Migration 079
+        // `content` failure mode).
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS session_skill_events (
+            \\    id TEXT PRIMARY KEY,
+            \\    session_id TEXT NOT NULL,
+            \\    skill_name TEXT NOT NULL,
+            \\    event TEXT NOT NULL DEFAULT 'loaded',
+            \\    source TEXT NOT NULL DEFAULT '',
+            \\    content_hash TEXT NOT NULL DEFAULT '',
+            \\    loop_index INTEGER NOT NULL DEFAULT 0,
+            \\    llm_history_id TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+
+        // The eval reads one session's events; the per-skill timeline reads by
+        // name across sessions.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_session_skill_events_session ON session_skill_events(session_id, created_at)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_session_skill_events_skill ON session_skill_events(skill_name, created_at)",
+            &[_][]const u8{});
+    }
+};
+
+// ============================================================================
+// Migration 097 — the skill-eval tables: shared facts, runs, results.
+// ============================================================================
+//
+// Three tables, one feature (docs/plans/2026-09-27-skill-evals.md §4.6-4.7):
+//
+//   skill_eval_facts   the INTRINSIC half of a verdict (freshness, accuracy,
+//                      duplication) — depends only on the skill body and the
+//                      code state, so it is keyed on the identity of THAT
+//                      question: (skill_key, content_hash, context_key). Two
+//                      sessions evaluating the same body at the same commit
+//                      are answering the same question, so one computation is
+//                      shared instead of two. `verdict_intrinsic =
+//                      'computing'` is a LEASE, not a value: the claiming
+//                      statement is a single `INSERT OR IGNORE`, and a stale
+//                      lease is reclaimable, so a crashed owner cannot poison
+//                      the cache. Every read must require
+//                      `verdict_intrinsic != 'computing'`.
+//
+//                      No `user_id` on purpose: these are facts about code,
+//                      and global skills are already shared across users.
+//                      The runs and results below ARE user records and carry
+//                      the Migration 093 owner column.
+//
+//   skill_eval_runs    one row per eval invocation (self-prompted by the agent
+//                      or on demand). The partial unique index makes "once per
+//                      session" a DATABASE invariant, which is what lets the
+//                      write path be `INSERT OR IGNORE` + `db.changes()` — the
+//                      only correct shape here, because `SqliteBackend` has no
+//                      usable multi-statement transaction (`exec` releases its
+//                      mutex per call, see workspaces_reorder.zig).
+//
+//   skill_eval_results one row per (run, skill): the SESSION-RELATIVE half
+//                      (relevance, used, helpfulness) plus a reference to the
+//                      shared fact, so the same intrinsic verdict is not
+//                      duplicated per session. `base_content_hash` is the
+//                      correctness guard on apply: a proposal computed against
+//                      an older body must never be written over a newer one, so
+//                      apply re-hashes the skill and refuses with 409 on a
+//                      mismatch.
+//
+// Idempotency: CREATE TABLE/INDEX IF NOT EXISTS.
+// One statement per db.exec (sqlite3_prepare_v2 compiles only the first).
+pub const Migration097CreateSkillEvalTables = struct {
+    pub const version: u32 = 97;
+    pub const name = "create_skill_eval_tables";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        // ── the shared intrinsic-facts cache ──────────────────────────────
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skill_eval_facts (
+            \\    id TEXT PRIMARY KEY,
+            \\    skill_key TEXT NOT NULL,
+            \\    content_hash TEXT NOT NULL,
+            \\    context_key TEXT NOT NULL,
+            \\    verdict_intrinsic TEXT NOT NULL DEFAULT 'computing',
+            \\    freshness INTEGER NOT NULL DEFAULT 0,
+            \\    accuracy INTEGER NOT NULL DEFAULT 0,
+            \\    duplication INTEGER NOT NULL DEFAULT 0,
+            \\    findings_json TEXT NOT NULL DEFAULT '',
+            \\    evidence_json TEXT NOT NULL DEFAULT '',
+            \\    proposed_content TEXT NOT NULL DEFAULT '',
+            \\    missing_paths_json TEXT NOT NULL DEFAULT '',
+            \\    drift_commits_json TEXT NOT NULL DEFAULT '',
+            \\    computed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\)
+        , &[_][]const u8{});
+
+        // The unique key IS the claim mechanism: a second writer for the same
+        // (skill, content, context) cannot insert, so it reuses instead.
+        try db.exec(allocator,
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_facts ON skill_eval_facts(skill_key, content_hash, context_key)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skill_eval_facts_skill ON skill_eval_facts(skill_key, computed_at DESC)",
+            &[_][]const u8{});
+
+        // ── one row per eval invocation ───────────────────────────────────
+        // `sub_session_ids_json` exists so the run's token cost can be summed
+        // exactly over the sub-agent session ids the spawn envelope returns,
+        // rather than approximated.
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skill_eval_runs (
+            \\    id TEXT PRIMARY KEY,
+            \\    session_id TEXT NOT NULL DEFAULT '',
+            \\    skill_name TEXT NOT NULL DEFAULT '',
+            \\    scope TEXT NOT NULL DEFAULT 'session',
+            \\    trigger TEXT NOT NULL DEFAULT 'self_prompt',
+            \\    status TEXT NOT NULL DEFAULT 'running',
+            \\    profile TEXT NOT NULL DEFAULT '',
+            \\    model TEXT NOT NULL DEFAULT '',
+            \\    cwd TEXT NOT NULL DEFAULT '',
+            \\    context_key TEXT NOT NULL DEFAULT '',
+            \\    evidence_json TEXT NOT NULL DEFAULT '',
+            \\    sub_session_ids_json TEXT NOT NULL DEFAULT '',
+            \\    report_json TEXT NOT NULL DEFAULT '',
+            \\    total_tokens INTEGER NOT NULL DEFAULT 0,
+            \\    error TEXT NOT NULL DEFAULT '',
+            \\    started_at DATETIME,
+            \\    finished_at DATETIME,
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    user_id TEXT
+            \\)
+        , &[_][]const u8{});
+
+        // "At most one self-prompted run per session" is enforced by the
+        // DATABASE, not by a convention, because the agent can emit two
+        // `run_skill_eval` tool calls in a single turn and both would
+        // otherwise see "no run yet".
+        try db.exec(allocator,
+            \\CREATE UNIQUE INDEX IF NOT EXISTS uq_skill_eval_runs_self_prompt
+            \\ON skill_eval_runs(session_id, trigger) WHERE trigger = 'self_prompt'
+        , &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skill_eval_runs_session ON skill_eval_runs(session_id, created_at DESC)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skill_eval_runs_status ON skill_eval_runs(status, created_at DESC)",
+            &[_][]const u8{});
+
+        // ── per-(run, skill) session-relative half ────────────────────────
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS skill_eval_results (
+            \\    id TEXT PRIMARY KEY,
+            \\    run_id TEXT NOT NULL,
+            \\    skill_key TEXT NOT NULL,
+            \\    skill_name TEXT NOT NULL,
+            \\    session_id TEXT NOT NULL DEFAULT '',
+            \\    status TEXT NOT NULL DEFAULT 'pending',
+            \\    verdict TEXT NOT NULL DEFAULT 'needs_human',
+            \\    relevance INTEGER NOT NULL DEFAULT 0,
+            \\    used INTEGER NOT NULL DEFAULT 0,
+            \\    helpfulness INTEGER NOT NULL DEFAULT 0,
+            \\    confidence REAL NOT NULL DEFAULT 0,
+            \\    intrinsic_fact_id TEXT NOT NULL DEFAULT '',
+            \\    base_content_hash TEXT NOT NULL DEFAULT '',
+            \\    content_at_use TEXT NOT NULL DEFAULT '',
+            \\    proposed_diff TEXT NOT NULL DEFAULT '',
+            \\    rationale TEXT NOT NULL DEFAULT '',
+            \\    sub_session_id TEXT NOT NULL DEFAULT '',
+            \\    applied_at DATETIME,
+            \\    apply_action TEXT NOT NULL DEFAULT '',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    user_id TEXT
+            \\)
+        , &[_][]const u8{});
+
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_run ON skill_eval_results(run_id)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_skill ON skill_eval_results(skill_key, created_at DESC)",
+            &[_][]const u8{});
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_session ON skill_eval_results(session_id, created_at DESC)",
+            &[_][]const u8{});
     }
 };
 
@@ -13852,4 +14080,251 @@ test "Migration082 is registered in allMigrations" {
         if (m.version == Migration082AddSessionHumanTouchedAt.version) return;
     }
     return error.Migration082NotRegistered082;
+}
+
+// ─── Migration 096 — session_skill_events ────────────────────────────────
+
+test "Migration096 creates the ledger table and both indexes" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "session_skill_events");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id",         "session_id",   "skill_name", "event",
+        "source",     "content_hash", "loop_index", "llm_history_id",
+        "created_at",
+    });
+
+    var qi = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('idx_session_skill_events_session', 'idx_session_skill_events_skill')",
+        &.{});
+    defer qi.deinit();
+    const irow = (try qi.next()) orelse return error.RowMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("2", irow.values[0]);
+}
+
+test "Migration096 accepts the production write shape with empty free-text binds" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
+
+    // First, prove the trap is real: a bare `?` bound to "" for a NOT NULL
+    // column lands as SQL NULL and fails. This is the Migration 079 `content`
+    // failure mode, and it is why every free-text column needs a wrapper.
+    try testing.expectError(
+        error.ExecuteFailed,
+        ctx.db.exec(alloc,
+            "INSERT INTO session_skill_events (id, session_id, skill_name, source) VALUES (?, ?, ?, ?)",
+            &.{ "evt_bad", "sess_1", "my-skill", "" },
+        ),
+    );
+
+    // Now the shape every call site must use: `event`, `source`,
+    // `content_hash` and `llm_history_id` are NOT NULL free text, so each one
+    // is wrapped. This test is what fails if a future writer forgets one.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO session_skill_events
+        \\    (id, session_id, skill_name, event, source, content_hash, loop_index, llm_history_id)
+        \\VALUES
+        \\    (?, ?, ?, COALESCE(NULLIF(?, ''), ''), COALESCE(NULLIF(?, ''), ''), COALESCE(?, ''), ?, COALESCE(?, ''))
+    , &.{ "evt_1", "sess_1", "my-skill", "", "", "", "7", "" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT event, source, content_hash, loop_index FROM session_skill_events WHERE id = ?",
+        &.{"evt_1"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+    try testing.expectEqualStrings("", row.values[1]);
+    try testing.expectEqualStrings("", row.values[2]);
+    try testing.expectEqualStrings("7", row.values[3]);
+}
+
+test "Migration096 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_skill_events'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration096 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration096CreateSessionSkillEvents.version) return;
+    }
+    return error.Migration095NotRegistered;
+}
+
+// ─── Migration 096 — skill_eval_facts / _runs / _results ─────────────────
+
+test "Migration097 creates all three tables and their indexes" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+
+    const expected = [_][]const u8{ "skill_eval_facts", "skill_eval_runs", "skill_eval_results" };
+    for (expected) |table| {
+        var q = try ctx.db.query(alloc,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            &.{table});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1", row.values[0]);
+    }
+
+    var qi = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('uq_skill_eval_facts','idx_skill_eval_facts_skill','uq_skill_eval_runs_self_prompt','idx_skill_eval_runs_session','idx_skill_eval_runs_status','idx_skill_eval_results_run','idx_skill_eval_results_skill','idx_skill_eval_results_session')",
+        &.{});
+    defer qi.deinit();
+    const irow = (try qi.next()) orelse return error.RowMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("8", irow.values[0]);
+}
+
+test "Migration097's fact key admits exactly one row per (skill, content, context)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+
+    const insert =
+        \\INSERT OR IGNORE INTO skill_eval_facts (id, skill_key, content_hash, context_key, verdict_intrinsic)
+        \\VALUES (?, ?, ?, ?, ?)
+    ;
+    try ctx.db.exec(alloc, insert, &.{ "f1", "global:foo", "hashA", "/repo@abc", "computing" });
+    try testing.expect(ctx.db.changes() > 0);
+
+    // A second writer for the SAME question cannot insert. This is the whole
+    // race guard: the loser goes on to read the winner's row instead of
+    // recomputing, and `db.changes() == 0` is how it knows it lost.
+    try ctx.db.exec(alloc, insert, &.{ "f2", "global:foo", "hashA", "/repo@abc", "computing" });
+    try testing.expectEqual(@as(i64, 0), ctx.db.changes());
+
+    // Same skill, DIFFERENT body → a genuinely different question, so allowed.
+    try ctx.db.exec(alloc, insert, &.{ "f3", "global:foo", "hashB", "/repo@abc", "computing" });
+    try testing.expect(ctx.db.changes() > 0);
+
+    // Same skill and body in a DIFFERENT repo/commit → also a different
+    // question (freshness is repo-relative), so also allowed.
+    try ctx.db.exec(alloc, insert, &.{ "f4", "global:foo", "hashA", "/other@abc", "computing" });
+    try testing.expect(ctx.db.changes() > 0);
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skill_eval_facts", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("3", row.values[0]);
+}
+
+test "Migration097's partial unique index makes one self-prompted run per session" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+
+    const insert =
+        \\INSERT INTO skill_eval_runs (id, session_id, trigger, status)
+        \\VALUES (?, ?, ?, 'running')
+    ;
+    try ctx.db.exec(alloc, insert, &.{ "r1", "sess_a", "self_prompt" });
+
+    // The agent can emit two `run_skill_eval` tool calls in one turn; both
+    // would see "no run yet". The index is the arbiter, not a pre-check.
+    try testing.expectError(
+        error.ExecuteFailed,
+        ctx.db.exec(alloc, insert, &.{ "r2", "sess_a", "self_prompt" }),
+    );
+
+    // A different session may run its own.
+    try ctx.db.exec(alloc, insert, &.{ "r3", "sess_b", "self_prompt" });
+
+    // And `on_demand` is outside the partial index, so one session can have
+    // both a self-prompted and an on-demand run.
+    try ctx.db.exec(alloc, insert, &.{ "r4", "sess_a", "on_demand" });
+
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM skill_eval_runs", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("3", row.values[0]);
+}
+
+test "Migration097's user_id stays nullable so an empty bind is legal" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+
+    // `user_id` is nullable on purpose: `exec` binds "" as SQL NULL, so a
+    // plain `?` bind is the correct way to write "no owner" — a NOT NULL
+    // column here would break every auth-off writer.
+    try ctx.db.exec(alloc,
+        "INSERT INTO skill_eval_runs (id, session_id, trigger, user_id) VALUES (?, ?, 'self_prompt', ?)",
+        &.{ "r_null", "sess_c", "" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT IFNULL(user_id, '<null>') FROM skill_eval_runs WHERE id = ?",
+        &.{"r_null"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("<null>", row.values[0]);
+}
+
+test "Migration097 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'skill_eval_%'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("3", row.values[0]);
+}
+
+test "Migration097 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration097CreateSkillEvalTables.version) return;
+    }
+    return error.Migration097NotRegistered;
 }

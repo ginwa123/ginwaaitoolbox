@@ -122,6 +122,13 @@ pub fn buildMessages(
     try final_system.appendSlice(allocator, prompts_const.SkillsToolRule);
     try final_system.appendSlice(allocator, prompts_const.MemoryToolRule);
     try final_system.appendSlice(allocator, prompts_const.ReadWorkspaceSessionToolRule);
+    // Skill Evals. Self-gating: it tells the agent to call `run_skill_eval` if
+    // that tool is in its list, and the tool is only injected when
+    // `config.json`'s `skill_evals.enabled` is true (see `filterAndMergeTools`).
+    // So the switch never changes these bytes — it changes what the agent can
+    // do, which is what keeps the cacheable prefix one hit instead of N
+    // fragments. Same reasoning as the four rules above.
+    try final_system.appendSlice(allocator, prompts_const.SkillEvalToolRule);
     _ = activeAgentContent;
 
     // 2. WorkingDirectoryContext — NALAR.md / CLAUDE.md / AGENTS.md (right after static sections)
@@ -1236,6 +1243,11 @@ const PROMPT_SECTIONS: []const PromptSection = &.{
     .{ .name = "search_tool_rule", .content = prompts_const.SearchToolRule },
     .{ .name = "memory_tool_rule", .content = prompts_const.MemoryToolRule, .requires_tool = "load_memory" },
     .{ .name = "read_workspace_session_rule", .content = prompts_const.ReadWorkspaceSessionToolRule, .requires_tool = "read_workspace_session" },
+    // Documented here for discoverability. The live path appends this rule
+    // unconditionally (see the append block in `buildMessages`); the
+    // `requires_tool` here mirrors `read_workspace_session_rule` and is not
+    // what gates it.
+    .{ .name = "skill_eval_tool_rule", .content = prompts_const.SkillEvalToolRule, .requires_tool = "run_skill_eval" },
     .{ .name = "agent_directive", .content = prompts_const.Agent },
     .{ .name = "git_prompt", .content = prompts_const.GitPrompt },
     .{ .name = "response_formatting", .content = prompts_const.ResponseFormatting },

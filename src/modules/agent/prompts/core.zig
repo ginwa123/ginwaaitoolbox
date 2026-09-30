@@ -198,6 +198,29 @@ pub const SkillsToolRule =
     \\call is cheap — never guess at what a skill contains.
 ;
 
+pub const SkillEvalToolRule =
+    \\## Skill Evals — evaluate the skill you used, before you answer
+    \\
+    \\**A skill is only worth what it is worth today.** After a task in which you
+    \\loaded at least one skill with `use_skill`, call `run_skill_eval` ONCE
+    \\before your final message. It reads the record of what this session
+    \\actually loaded — you do not pass the skill list, so you cannot
+    \\cherry-pick — checks whether the paths, commands and facts each skill
+    \\names are still true, and records a verdict for a human to review.
+    \\
+    \\- **Skip it** when you loaded no skill, or when `run_skill_eval` is not in
+    \\  your tool list.
+    \\- **Once per task.** A second call is a cheap no-op, not a second eval.
+    \\- **You are not the judge.** `run_skill_eval` decides the verdict; do not
+    \\  pre-judge it, and do not argue with it.
+    \\- **Report it in one line** in your final message, e.g. "Evaluated 3
+    \\  skills — 1 needs updating (`foo`)". Say so if a skill came back
+    \\  `needs_human`.
+    \\
+    \\**Self-check:** "did I load a skill and forget to evaluate it?" If yes,
+    \\call `run_skill_eval` now.
+;
+
 pub const CrossProjectCwdRule =
     \\## Cross-Project Context — read sibling projects for context
     \\

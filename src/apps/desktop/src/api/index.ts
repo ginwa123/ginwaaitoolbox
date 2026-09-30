@@ -3616,6 +3616,98 @@ export interface BackgroundProcessEvent {
   command: string
 }
 
+// Skill-eval lifecycle SSE event (see
+// src/agentic_loop/skill_eval_events.zig). All three granular wire names
+// (`skill_evals_run_started` / `_run_finished` / `_result_applied`) share
+// this payload; the consumer filters by `session_id` and re-fetches the
+// eval list for the Evals tab.
+export interface SkillEvalEvent {
+  action: 'run_started' | 'run_finished' | 'result_applied'
+  run_id: string
+  session_id: string
+  evaluated: number
+  result_id: string
+}
+
+// ─── Skill Evals read surface (GET /api/skill-evals/*) ──────────────────
+
+export interface SkillEvalRun {
+  id: string
+  session_id: string
+  status: string
+  trigger: string
+  scope: string
+  skill_name: string
+  error: string
+  total_tokens: number
+  created_at: string
+}
+
+export interface SkillEvalResult {
+  id: string
+  skill_name: string
+  skill_key: string
+  status: string
+  verdict: string
+  freshness: number
+  accuracy: number
+  duplication: number
+  rationale: string
+  /** A JSON *string* (the stored array) — parse it before use. */
+  missing_paths: string
+  /** Whether the intrinsic half came from the shared fact cache. */
+  shared_fact: boolean
+  applied: boolean
+  apply_action: string
+}
+
+export interface SkillEvalsRunsResponse {
+  runs: SkillEvalRun[]
+  results: SkillEvalResult[]
+}
+
+export interface SkillEvalsSummaryResponse {
+  counts: { verdict: string; n: number }[]
+  total: number
+}
+
+export async function getSkillEvalsRuns(params: {
+  run_id?: string
+  session_id?: string
+  limit?: number
+} = {}): Promise<SkillEvalsRunsResponse> {
+  const q = new URLSearchParams()
+  if (params.run_id) q.set('run_id', params.run_id)
+  if (params.session_id) q.set('session_id', params.session_id)
+  if (params.limit !== undefined) q.set('limit', String(params.limit))
+  const suffix = q.toString() ? `?${q.toString()}` : ''
+  return await apiFetch<SkillEvalsRunsResponse>(`/skill-evals/runs${suffix}`)
+}
+
+export async function getSkillEvalsSummary(
+  sessionId = '',
+): Promise<SkillEvalsSummaryResponse> {
+  const suffix = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+  return await apiFetch<SkillEvalsSummaryResponse>(`/skill-evals/summary${suffix}`)
+}
+
+/**
+ * Record that a human accepted a verdict.
+ *
+ * `result_id` is a QUERY parameter, not a path segment — the backend keeps
+ * every route under this prefix a literal so no `:param` route can shadow a
+ * later one. A 409 means either "already applied" or "the body changed since
+ * this verdict was computed"; both are surfaced to the caller rather than
+ * swallowed, because the UI must offer a re-evaluate in the second case.
+ */
+export async function applySkillEvalResult(
+  resultId: string,
+  action = 'apply',
+): Promise<{ result_id: string; skill_name: string; action: string; applied: boolean; message: string }> {
+  const q = new URLSearchParams({ result_id: resultId, action })
+  return await apiFetch(`/skill-evals/results/apply?${q.toString()}`, { method: 'POST' })
+}
+
 // GET queued messages
 export interface QueuedMessage {
   id: string
@@ -3748,6 +3840,15 @@ export interface UnifiedChannels {
    */
   backgroundProcess?: (event: BackgroundProcessEvent) => void
   /**
+   * Subscribe to skill-eval lifecycle events. The backend emits three
+   * granular names (`skill_evals_run_started`, `skill_evals_run_finished`,
+   * `skill_evals_result_applied`) that share the same `SkillEvalEvent`
+   * payload. All three route on the central `skill_evals` key — the
+   * consumer filters by `event.session_id` JS-side and re-fetches the
+   * eval list for the Evals tab.
+   */
+  skillEvals?: (event: SkillEvalEvent) => void
+  /**
    * Subscribe to design-mode element mutations. The backend emits
    * three granular event names (`design_element_created`,
    * `design_element_updated`, `design_element_deleted`) that share
@@ -3812,6 +3913,7 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
     tokens.push(opts.channels.queue.sessionId ? `queue:${opts.channels.queue.sessionId}` : 'queue')
   }
   if (opts.channels.backgroundProcess) tokens.push('background_process')
+  if (opts.channels.skillEvals) tokens.push('skill_evals')
 
   // Empty subscriptions are meaningless; the backend would 400 anyway.
   // Throw early with a developer-friendly message. The console.error
@@ -3912,6 +4014,14 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
       // 'connecting' until the stream closes — indistinguishable
       // from a dead backend.
       'auth_error',
+      // Skill-eval lifecycle (see src/agentic_loop/skill_eval_events.zig).
+      // Three granular names share one payload; all route on the central
+      // `skill_evals` key. Without pre-registration the browser drops them
+      // before onEvent ever fires, so the Evals tab would never refresh
+      // after an eval finished — indistinguishable from a dead stream.
+      'skill_evals_run_started',
+      'skill_evals_run_finished',
+      'skill_evals_result_applied',
     ],
     // Default heartbeat filter (matches backend sse_manager.sendHeartbeat).
     heartbeatData: 'ping',
@@ -3987,6 +4097,24 @@ export function createUnifiedSseConnection(opts: UnifiedSseOptions): SseClient {
           opts.channels.backgroundProcess(data as BackgroundProcessEvent)
         } catch (err) {
           console.error('[unifiedSSE] background_process event parse failed:', err, raw)
+        }
+        return
+      }
+
+      // Skill-eval lifecycle. All three granular names share the
+      // `SkillEvalEvent` payload — the consumer filters by `session_id`
+      // and re-fetches the eval list for the Evals tab.
+      if (
+        eventType === 'skill_evals_run_started' ||
+        eventType === 'skill_evals_run_finished' ||
+        eventType === 'skill_evals_result_applied'
+      ) {
+        if (!opts.channels.skillEvals) return
+        try {
+          const data = JSON.parse(raw)
+          opts.channels.skillEvals(data as SkillEvalEvent)
+        } catch (err) {
+          console.error('[unifiedSSE] skill_evals event parse failed:', err, raw)
         }
         return
       }

@@ -22,6 +22,7 @@ const on_event_sent = @import("on_event_sent.zig");
 const hooks = @import("hooks.zig");
 const onEventSendLLMHistory = on_event_sent.onEventSendLLMHistory;
 const insertLLMHistories = @import("insert_llm_histories.zig").inserLLMHistories;
+const skill_evals_db = @import("skill_evals_db.zig");
 
 // ============================================================================
 // TOOL REGISTRY - Single source of truth: tools_equipped.zig
@@ -811,6 +812,22 @@ pub fn handle_tool(
                     logger.errFmt("Failed to save skill '{s}': {s}", .{ skill_info.name, @errorName(err) });
                 };
             }
+
+            // Skill Evals usage ledger (Migration 095). Records what this
+            // session was OFFERED (`list_skills`) and what it actually READ
+            // (`use_skill`), with the hash of the body it read. `session_skills`
+            // cannot answer either of those: it keeps only the latest body per
+            // (session, skill), has no loop index, and is written by `use_skill`
+            // alone. Swallows its own errors — a tool turn must not fail because
+            // bookkeeping did (same posture as the two blocks above).
+            skill_evals_db.recordSkillToolEvents(allocator, db, logger, .{
+                .io = io,
+                .session_id = session_id,
+                .tool_name = tool_call.function.name,
+                .tool_result_json = tool_result,
+                .loop_index = loop_counter,
+                .llm_history_id = id_llm_history,
+            });
 
             // Auto-save agent if loaded
             if (exec_result.agent_saved) |agent_info| {
