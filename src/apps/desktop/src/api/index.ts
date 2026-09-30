@@ -845,10 +845,12 @@ export async function getTasksMedia(
   taskIds: string[],
 ): Promise<Map<string, TaskMedia | null>> {
   const settled = await Promise.allSettled(
-    taskIds.map(async (taskId): Promise<[string, TaskMedia | null]> => [
-      taskId,
-      await getTaskMedia(workspaceId, itemId, taskId),
-    ]),
+    taskIds.map(
+      async (taskId): Promise<[string, TaskMedia | null]> => [
+        taskId,
+        await getTaskMedia(workspaceId, itemId, taskId),
+      ],
+    ),
   )
   const out = new Map<string, TaskMedia | null>()
   settled.forEach((entry, i) => {
@@ -3341,8 +3343,8 @@ export async function getGitWorktreeInfo(
   }
 }
 
-// Create a PR via `gh pr create` in the worktree path. The backend
-// runs the command and returns the PR URL on stdout.
+// Open a PR/MR in the worktree path via the forge CLI (`gh pr create` or
+// `glab mr create`). The backend runs the command and returns the URL.
 export interface GitPrCreateResponse {
   success: boolean
   pr_url: string
@@ -3351,13 +3353,24 @@ export interface GitPrCreateResponse {
   // and serializes to JSON `"error"`. This frontend field name matches
   // the JSON wire format.
   error: string
+  // Which forge the PR/MR was opened on. Absent on older servers.
+  provider?: string
 }
 
+/**
+ * Open a PR/MR on `worktreePath`.
+ *
+ * `provider` is optional and forwarded verbatim: omitting it lets the
+ * backend detect the forge from the worktree's `origin` remote, which is
+ * the right answer whenever the caller never learned a provider (a board
+ * badge, a worktree opened without an attached PR).
+ */
 export async function createGitPr(
   worktreePath: string,
   base: string,
   title: string,
   body: string,
+  opts?: { provider?: string },
 ): Promise<GitPrCreateResponse> {
   return await apiFetch<GitPrCreateResponse>('/git/pr', {
     method: 'POST',
@@ -3366,6 +3379,7 @@ export async function createGitPr(
       base,
       title,
       body,
+      provider: opts?.provider || '',
     },
   })
 }
@@ -4669,6 +4683,8 @@ export async function getPrDiff(
 // (GET /api/git/pr/status via `gh pr view`). The PR tab polls this
 // so a merge on GitHub flips the badge without a manual refresh.
 export interface GitPrStatus {
+  // Which forge answered: `github` | `gitlab`. Absent on older servers.
+  provider?: string
   pr_url: string
   number: number
   title: string

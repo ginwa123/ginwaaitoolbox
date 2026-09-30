@@ -47,6 +47,11 @@ interface CacheEntry {
 export function isPrConflictValue(mergeable: string, merge_state: string): boolean {
   if ((mergeable || '').toUpperCase() === 'CONFLICTING') return true
   if ((merge_state || '').toUpperCase() === 'DIRTY') return true
+  // GitLab's `detailed_merge_status` uses its own vocabulary rather than
+  // GitHub's; without these two rows a conflicted MR renders as
+  // mergeable, which is the worst possible direction to be wrong in.
+  if ((mergeable || '').toUpperCase() === 'CONFLICTED') return true
+  if ((mergeable || '').toUpperCase() === 'NOT_MERGEABLE') return true
   return false
 }
 
@@ -59,8 +64,14 @@ export function clearPrStatusCache(): void {
   inflight.clear()
 }
 
-function cacheKey(cwd: string, branch: string): string {
-  return `${cwd}::${branch}`
+/**
+ * Provider is part of the key because one repo directory can hold
+ * branches pointing at different forges, and a GitLab answer must never
+ * be served to a caller that asked for GitHub (the status vocabulary
+ * differs too — GitHub reports CONFLICTING, GitLab `conflicted`).
+ */
+function cacheKey(cwd: string, branch: string, provider: string): string {
+  return `${cwd}::${branch}::${provider}`
 }
 
 /** 404 means "no PR for this branch" — retrying can never help. */
@@ -76,12 +87,16 @@ function sleep(ms: number): Promise<void> {
 
 const EMPTY_INFO: PrInfo = { status: '', prUrl: '', mergeable: '', merge_state: '' }
 
-async function fetchWithRetry(cwd: string, branch: string): Promise<PrInfo> {
+async function fetchWithRetry(cwd: string, branch: string, provider: string): Promise<PrInfo> {
   let lastErr: unknown = null
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 1000)
     try {
-      const data = await getPrStatus(cwd, branch)
+      // Passing the provider lets the backend pick `glab` for a GitLab
+      // repo. Omitted when empty so the backend can auto-detect from the
+      // repo's `origin` remote, which is the accurate answer when the
+      // board badge has no stored provider to hand.
+      const data = await getPrStatus(cwd, branch, { provider: provider || undefined })
       return {
         status: (data.status || data.state || '').toLowerCase(),
         prUrl: data.pr_url || '',
@@ -102,9 +117,9 @@ async function fetchWithRetry(cwd: string, branch: string): Promise<PrInfo> {
  * (no cwd/branch, no PR, `gh` missing, fetch failing) resolves to
  * `{ status: '', prUrl: '' }`.
  */
-export function fetchPrInfoCached(cwd: string, branch: string): Promise<PrInfo> {
+export function fetchPrInfoCached(cwd: string, branch: string, provider = ''): Promise<PrInfo> {
   if (!cwd || !branch) return Promise.resolve({ ...EMPTY_INFO })
-  const k = cacheKey(cwd, branch)
+  const k = cacheKey(cwd, branch, provider)
   const hit = cache.get(k)
   if (hit && Date.now() - hit.at < TTL_MS)
     return Promise.resolve({
@@ -115,7 +130,7 @@ export function fetchPrInfoCached(cwd: string, branch: string): Promise<PrInfo> 
     })
   const ongoing = inflight.get(k)
   if (ongoing) return ongoing
-  const p = fetchWithRetry(cwd, branch).then(
+  const p = fetchWithRetry(cwd, branch, provider).then(
     (info) => {
       cache.set(k, {
         status: info.status,
@@ -143,16 +158,20 @@ export function fetchPrInfoCached(cwd: string, branch: string): Promise<PrInfo> 
  * or `''` when unknown (no cwd/branch, no PR, `gh` missing, or the fetch
  * kept failing). Never rejects.
  */
-export function fetchPrStatusCached(cwd: string, branch: string): Promise<string> {
-  return fetchPrInfoCached(cwd, branch).then((info) => info.status)
+export function fetchPrStatusCached(cwd: string, branch: string, provider = ''): Promise<string> {
+  return fetchPrInfoCached(cwd, branch, provider).then((info) => info.status)
 }
 
 /**
  * Full cached PR status including the mergeable flag, so card/row badges
  * can surface a conflict hint without an extra `gh` call. Never rejects.
  */
-export function fetchPrStatusFullCached(cwd: string, branch: string): Promise<PrInfo> {
-  return fetchPrInfoCached(cwd, branch)
+export function fetchPrStatusFullCached(
+  cwd: string,
+  branch: string,
+  provider = '',
+): Promise<PrInfo> {
+  return fetchPrInfoCached(cwd, branch, provider)
 }
 
 /**
@@ -160,30 +179,72 @@ export function fetchPrStatusFullCached(cwd: string, branch: string): Promise<Pr
  * CONFLICTING (or DIRTY) — quiet (false) for mergeable, unknown, or failed
  * fetches. Never rejects.
  */
-export function fetchPrConflictCached(cwd: string, branch: string): Promise<boolean> {
-  return fetchPrInfoCached(cwd, branch).then((info) =>
+export function fetchPrConflictCached(
+  cwd: string,
+  branch: string,
+  provider = '',
+): Promise<boolean> {
+  return fetchPrInfoCached(cwd, branch, provider).then((info) =>
     isPrConflictValue(info.mergeable, info.merge_state),
   )
 }
 
 /**
- * Repo base (https://github.com/owner/repo) derived from a PR URL
- * (https://github.com/owner/repo/pull/123). Empty string when the
- * URL is not a pull-request URL.
+ * The two URL shapes that identify a change-request, longest first so a
+ * GitLab `/-/merge_requests/` URL is not mistaken for something else.
+ */
+const PR_URL_MARKERS = ['/-/merge_requests/', '/pull/'] as const
+
+/** The path segment GitLab uses between the repo and the branch (GitHub has none). */
+const GITLAB_TREE_SEGMENT = '/-/tree/'
+
+/** Which forge a PR/MR URL belongs to: `github`, `gitlab`, or `''` when unrecognised. */
+export function providerFromPrUrl(prUrl: string): string {
+  if (!prUrl) return ''
+  const idx = earliestMarkerIndex(prUrl)
+  if (idx < 0) return ''
+  return prUrl.slice(idx).startsWith('/-/merge_requests/') ? 'gitlab' : 'github'
+}
+
+/** Index of the earliest PR marker in `prUrl`, or -1 when there is none. */
+function earliestMarkerIndex(prUrl: string): number {
+  let best = -1
+  for (const m of PR_URL_MARKERS) {
+    const at = prUrl.indexOf(m)
+    if (at >= 0 && (best < 0 || at < best)) best = at
+  }
+  return best
+}
+
+/**
+ * Repo base derived from a PR/MR URL — the part before the change-request
+ * segment: `https://github.com/owner/repo` from
+ * `…/owner/repo/pull/123`, and `https://gitlab.com/group/sub/repo` from
+ * `…/group/sub/repo/-/merge_requests/7`.
+ *
+ * Previously this only understood `/pull/`, so it returned `''` for every
+ * GitLab MR URL — which silently disabled the "open branch in new tab"
+ * menu item for the entire GitLab user base rather than showing an error.
  */
 export function repoBaseFromPrUrl(prUrl: string): string {
   if (!prUrl) return ''
-  const idx = prUrl.indexOf('/pull/')
+  const idx = earliestMarkerIndex(prUrl)
   if (idx < 0) return ''
   return prUrl.slice(0, idx)
 }
 
 /**
- * Branch page URL (…/tree/<branch>) derived from the PR URL's repo
- * base. Empty string when there is no PR URL to derive the repo from.
+ * Branch page URL derived from the PR URL's repo base.
+ *
+ * The `/tree/` vs `/-/tree/` split is not cosmetic: GitLab puts a `/-/`
+ * discriminator before sub-paths, so a GitHub-shaped link on a GitLab repo
+ * is a 404. Deriving the shape from the URL (rather than the provider
+ * string) keeps this correct even when the caller never learned the
+ * provider, e.g. a bare MR URL off the board badge.
  */
 export function branchUrlFromPrUrl(prUrl: string, branch: string): string {
   const base = repoBaseFromPrUrl(prUrl)
   if (!base || !branch) return ''
-  return `${base}/tree/${encodeURIComponent(branch)}`
+  const tree = providerFromPrUrl(prUrl) === 'gitlab' ? GITLAB_TREE_SEGMENT : '/tree/'
+  return `${base}${tree}${encodeURIComponent(branch)}`
 }

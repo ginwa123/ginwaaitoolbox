@@ -2,6 +2,8 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalar_core = @import("nalarcore");
 const gserverz = nalar_core.gserverz;
+const pr_provider = nalar_core.pr_provider;
+const pr_cli = nalar_core.pr_cli;
 const run_captured = @import("helpers").run_captured;
 
 /// The `gh` binary. See `git_pr_status.zig` for the shared constants.
@@ -56,17 +58,56 @@ const CreatePullRequestResult = struct {
 fn createPullRequestUseCase(
     allocator: std.mem.Allocator,
     io: std.Io,
+    provider: pr_provider.PrProvider,
     worktree_path: []const u8,
     base: []const u8,
     title: []const u8,
     body: []const u8,
 ) !CreatePullRequestResult {
-    // Run `gh pr create --base <base> --title <title> --body <body>`.
-    const argv = &[_][]const u8{
-        GH_PROGRAM, "pr",     "create",
-        "--base",   base,     "--title",
-        title,      "--body", body,
-    };
+    // The program MUST be derived from the provider. Hardcoding `gh`
+    // here — which is what this did before GitLab support — made
+    // `provider: "gitlab"` spawn `gh mr create`, and gh answers that
+    // with `unknown command "mr"`. The unit tests did not catch it
+    // because they pass the program in explicitly; the functional
+    // harness did, because it is the only place the real handler runs.
+    const cli = pr_cli.cliFor(provider) orelse return ghFailed(allocator, "the generic provider has no forge CLI, so a pull/merge request cannot be created");
+    return createPullRequestUseCaseWith(allocator, io, cli.program, provider, worktree_path, base, title, body);
+}
+
+fn createPullRequestUseCaseWith(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    prog: []const u8,
+    provider: pr_provider.PrProvider,
+    worktree_path: []const u8,
+    base: []const u8,
+    title: []const u8,
+    body: []const u8,
+) !CreatePullRequestResult {
+    const cli = pr_cli.cliFor(provider) orelse return ghFailed(allocator, "the generic provider has no forge CLI, so a pull/merge request cannot be created");
+
+    // `glab mr create` does not infer the source branch the way
+    // `gh pr create` infers it from the worktree checkout, and it must
+    // be told explicitly. Reading it here (rather than requiring the
+    // caller to pass it) keeps the request body unchanged for GitHub
+    // and removes a field the dialog would otherwise have to send.
+    var source_branch: ?[]u8 = null;
+    // FUNCTION scope on purpose. A `defer` inside the `if` below would
+    // fire at the end of that BLOCK — freeing `source_branch` before
+    // `createArgv` copies it into argv and long before the spawn reads
+    // it. That is a use-after-free that segfaults the server, and it is
+    // invisible on the GitHub path because only GitLab passes a branch.
+    defer if (source_branch) |b| allocator.free(b);
+    if (provider == .gitlab) {
+        source_branch = currentBranch(allocator, io, worktree_path);
+        if (source_branch == null) {
+            return ghFailed(allocator, "could not determine the current branch in the worktree, which glab mr create needs as --source-branch");
+        }
+    }
+
+    var argv_buf: [pr_cli.create_argv_max][]const u8 = undefined;
+    const argv = pr_cli.createArgv(&argv_buf, provider, prog, base, source_branch orelse "", title, body) orelse
+        return ghFailed(allocator, "could not build the create command for this provider");
 
     // stdout + stderr are captured concurrently and capped; the child
     // is killed + reaped if it outlives the deadline, so a `gh` stuck
@@ -76,36 +117,65 @@ fn createPullRequestUseCase(
         .max_output_bytes = MAX_CAPTURE_BYTES,
         .timeout_ms = GH_TIMEOUT_MS,
     }) catch |err| {
-        // Spawn-time failure (gh not installed, perm denied, etc).
-        // Synthesize a stderr message so the handler can return it verbatim.
-        return ghFailed(allocator, std.fmt.allocPrint(allocator, "{s} (is the gh CLI installed and on PATH?)", .{@errorName(err)}) catch "");
+        // Spawn-time failure (CLI not installed, perm denied, etc).
+        // Synthesize a stderr message so the handler can return it
+        // verbatim. `bufPrint`, not `allocPrint`: ghFailed copies the
+        // message into the request arena, so an allocated temporary here
+        // would leak on every spawn failure.
+        var msg_buf: [192]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "{s} (is the {s} CLI installed and on PATH?)", .{ @errorName(err), cli.program }) catch "forge CLI spawn failed";
+        return ghFailed(allocator, msg);
     };
     defer res.deinit(allocator);
 
     if (res.timed_out) {
-        return ghFailed(allocator, "gh pr create timed out");
+        return ghFailed(allocator, std.fmt.allocPrint(allocator, "{s} {s} create timed out", .{ cli.program, cli.noun }) catch "create timed out");
     }
 
     switch (res.term) {
         .exited => |code| {
             if (code != 0) {
-                // Surface the gh CLI error verbatim so the user can debug
+                // Surface the CLI error verbatim so the user can debug
                 // (e.g. "no commits between origin/main and worktree/feature-x").
                 return ghFailed(allocator, std.mem.trim(u8, res.stderr, " \n\r"));
             }
         },
-        .signal => return ghFailed(allocator, "gh killed by signal"),
-        else => return ghFailed(allocator, "gh terminated abnormally"),
+        .signal => return ghFailed(allocator, std.fmt.allocPrint(allocator, "{s} killed by signal", .{cli.program}) catch "killed by signal"),
+        else => return ghFailed(allocator, std.fmt.allocPrint(allocator, "{s} terminated abnormally", .{cli.program}) catch "terminated abnormally"),
     }
 
-    // gh pr create prints the PR URL on stdout. `res` is freed by the
-    // defer above, so the URL must be copied into the request arena
-    // before returning.
+    // The CLI prints the PR/MR URL on stdout, but NOT always on its own:
+    // `glab mr create` prefixes a "Creating merge request for <branch>
+    // on <host>…" banner before the link. Taking the whole stdout —
+    // which is what this did before GitLab support — would store that
+    // banner as `pr_url`, and the frontend would then hand it to
+    // `set_pull_request`, which rejects it as an unparseable URL.
+    // `res` is freed by the defer above, so the extracted slice must be
+    // copied into the request arena before returning.
     return .{
         .status = .success,
-        .pr_url = allocator.dupe(u8, std.mem.trim(u8, res.stdout, " \n\r")) catch "",
+        .pr_url = allocator.dupe(u8, pr_cli.extractCreatedUrl(res.stdout)) catch "",
         .stderr = "",
     };
+}
+
+/// The branch checked out in `path`, OWNED by `allocator` (the caller
+/// must free it), or null when it cannot be determined — detached HEAD,
+/// not a repo, git missing.
+///
+/// The null is load-bearing rather than an empty string: this returns an
+/// owned allocation, and an "" return would be indistinguishable from the
+/// empty string literal, which the caller must never free.
+fn currentBranch(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ?[]u8 {
+    const res = std.process.run(allocator, io, .{ .argv = &.{ "git", "-C", path, "branch", "--show-current" } }) catch return null;
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
+    if (res.term.exited != 0) return null;
+    const trimmed = std.mem.trim(u8, res.stdout, " \n\r");
+    if (trimmed.len == 0) return null;
+    return allocator.dupe(u8, trimmed) catch null;
 }
 
 /// `.gh_failed` result whose `stderr` is a copy of `msg` in the request
@@ -138,6 +208,10 @@ pub fn gitPrCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         base: []const u8 = "main",
         title: []const u8 = "",
         body: []const u8 = "",
+        /// Which forge to open on. "" = auto-detect from the worktree's
+        /// `origin` remote, falling back to GitHub. Optional so every
+        /// existing GitHub caller keeps working unchanged.
+        provider: []const u8 = "",
     };
     const parsed = std.json.parseFromSliceLeaky(Body, allocator, req.body, .{}) catch {
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "Invalid JSON body" }) });
@@ -150,9 +224,17 @@ pub fn gitPrCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
         return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "title is required" }) });
     }
 
+    // `resolveCreateProvider` fails only on an unparseable provider name,
+    // so a bare `catch` is exhaustive here — an `else => return err` arm
+    // is an unreachable prong and breaks the exe build.
+    const provider = resolveCreateProvider(allocator, ctx.io, parsed) catch {
+        return res.jsonResponse(.{ .status_code = 400, .data = try http_response.makeErrorResponse(allocator, .{ .@"error" = "provider must be \"github\", \"gitlab\", or \"generic\"" }) });
+    };
+
     const result = try createPullRequestUseCase(
         allocator,
         ctx.io,
+        provider,
         parsed.worktree_path,
         parsed.base,
         parsed.title,
@@ -167,12 +249,122 @@ pub fn gitPrCreateHandler(ctx: gserverz.HttpContext, req: gserverz.HttpRequest, 
     return res.jsonResponse(.{ .status_code = status_code, .data = try http_response.makeGitPrCreateResponse(allocator, http_response.GitPrCreateResponse{
         .success = result.status == .success,
         .pr_url = result.pr_url,
+        .provider = provider.toString(),
         .@"error" = result.stderr,
     }) });
 }
 
+/// Which forge to create on. There is no URL to sniff here (we are
+/// making one), so the order is: explicit body field, then the
+/// worktree's `origin` remote, then GitHub.
+fn resolveCreateProvider(allocator: std.mem.Allocator, io: std.Io, body: anytype) !pr_provider.PrProvider {
+    if (body.provider.len > 0) {
+        return pr_provider.PrProvider.fromString(body.provider) orelse error.UnknownProvider;
+    }
+    const res = std.process.run(allocator, io, .{
+        .argv = &.{ "git", "-C", body.worktree_path, "remote", "get-url", "origin" },
+    }) catch return .github;
+    defer {
+        allocator.free(res.stdout);
+        allocator.free(res.stderr);
+    }
+    if (res.term.exited != 0) return .github;
+    const p = pr_provider.detectProviderFromRemote(res.stdout);
+    if (!pr_cli.hasCli(p)) return .github;
+    return p;
+}
+
 // ===== Tests merged from git_pr_create_test.zig (2026-09-11 flatten) =====
 // Stub test file - Chunk 3 fills this in.
+// ===== Behavioural tests: the forge CLI argv + output handling =====
+//
+// Everything below used to be source-grep only. `createPullRequestUseCase`
+// had ZERO coverage of the argv it built or the stdout it turned into a
+// `pr_url`, which is exactly the half that GitLab support changes — and
+// the half that decides whether the user ends up with a working link.
+//
+// Hermetic like the git_pr_status fixtures: `createPullRequestUseCase`
+// takes the program from `pr_cli.createArgv`, so a test points it at a
+// shell script it just wrote. No `gh` install, no `glab` install, no
+// network.
+
+const builtin_t = @import("builtin");
+
+fn skipOnWindows() bool {
+    return builtin_t.os.tag == .windows;
+}
+
+fn haveGit() bool {
+    var c = std.process.spawn(std.testing.io, .{
+        .argv = &.{"git", "--version"},
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return false;
+    _ = c.wait(std.testing.io) catch return false;
+    return true;
+}
+
+/// A throwaway dir under `.zig-cache/tmp` plus executable fixtures.
+const Fixture = struct {
+    tmp: std.testing.TmpDir,
+    root: []u8,
+    allocator: std.mem.Allocator,
+
+    fn init(allocator: std.mem.Allocator) !Fixture {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        // NOT sized from `std.fs.max_path_bytes`: that is ~96 KB on
+        // Windows, and this is a stack buffer. These tests are
+        // Windows-skipped today, but a 96 KB frame here would blow the
+        // stack the moment anyone un-skips them. A tmpdir path is
+        // comfortably under 512 bytes.
+        var buf: [512]u8 = undefined;
+        const root = try tmp.dir.realPath(std.testing.io, &buf);
+        const owned = try allocator.dupe(u8, buf[0..root]);
+        return .{ .tmp = tmp, .root = owned, .allocator = allocator };
+    }
+
+    fn deinit(self: *Fixture) void {
+        self.tmp.cleanup();
+        self.allocator.free(self.root);
+    }
+
+    fn writeExec(self: *Fixture, name: []const u8, script: []const u8) ![]u8 {
+        try self.tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data = script });
+        if (builtin_t.os.tag != .windows) {
+            try self.tmp.dir.setFilePermissions(std.testing.io, name, .executable_file, .{});
+        }
+        return std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.root, name });
+    }
+
+    /// `writeExec` for an allocator-owned script: writes, frees, returns.
+    fn writeScript(self: *Fixture, name: []const u8, script: []const u8) ![]u8 {
+        defer self.allocator.free(script);
+        return self.writeExec(name, script);
+    }
+};
+
+/// A git repo inside the fixture, with one commit and a checked-out
+/// branch — `glab mr create` needs `--source-branch`, which the use case
+/// reads from `git branch --show-current`.
+fn makeGitRepoOnBranch(fx: *Fixture) ![]u8 {
+    const a = fx.allocator;
+    const repo = try std.fmt.allocPrint(a, "{s}/repo", .{fx.root});
+    var init = run_captured.run(a, std.testing.io, &.{ "git", "init", "-q", "-b", "worktree/feature-x", repo }, .{
+        .timeout_ms = 30_000,
+    }) catch return error.SkipZigTest;
+    defer init.deinit(a);
+    if (init.term.exited != 0) return error.SkipZigTest;
+    return repo;
+}
+
+/// Frees every owned field of a create result.
+fn freeCreateResult(a: std.mem.Allocator, res: CreatePullRequestResult) void {
+    a.free(res.pr_url);
+    a.free(res.stderr);
+}
+
 const testing = std.testing;
 const nalarcore = @import("nalarcore");
 const text_normalize = @import("helpers").text_normalize;
@@ -255,5 +447,157 @@ test "git_pr_create handler body has worktree_path, base, title, body fields" {
     if (std.mem.indexOf(u8, source, "body: []const u8") == null) {
         std.debug.print("!! git_pr_create.zig Body struct is missing 'body' field !!\n", .{});
         return error.BodyFieldMissing;
+    }
+}
+
+// ───────────────────────── GitLab (glab) create path ─────────────────────────
+
+test "create: github still runs the exact historical gh pr create argv" {
+    if (skipOnWindows()) return error.SkipZigTest;
+    if (!haveGit()) return error.SkipZigTest;
+    const a = testing.allocator;
+    var fx = try Fixture.init(a);
+    defer fx.deinit();
+    const repo = try makeGitRepoOnBranch(&fx);
+    defer a.free(repo);
+
+    const argv_file = try std.fmt.allocPrint(a, "{s}/argv", .{fx.root});
+    defer a.free(argv_file);
+    // Echoes the URL so the success path is also exercised.
+    const gh = try fx.writeScript("gh", try std.fmt.allocPrint(a,
+        "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > '{s}'\necho '{s}'"
+    , .{ argv_file, "https://github.com/acme/app/pull/42" }));
+    defer a.free(gh);
+
+    const res = try createPullRequestUseCaseWith(a, std.testing.io, gh, .github, repo, "main", "T", "B");
+    defer freeCreateResult(a, res);
+
+    try testing.expectEqual(GhStatus.success, res.status);
+    try testing.expectEqualStrings("https://github.com/acme/app/pull/42", res.pr_url);
+
+    const recorded = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, argv_file, a, .limited(64 * 1024));
+    defer a.free(recorded);
+    // No --head: gh infers it from the worktree checkout, and that
+    // behaviour must not change for existing GitHub users.
+    try testing.expect(std.mem.indexOf(u8, recorded, "pr\ncreate\n--base\nmain\n--title\nT\n--body\nB\n") != null);
+    try testing.expect(std.mem.indexOf(u8, recorded, "--head") == null);
+}
+
+test "create: gitlab runs glab mr create with --source-branch and --yes" {
+    // --yes is load-bearing: without it glab drops into an interactive
+    // confirm in a non-tty child and burns the whole 60s budget.
+    // --source-branch is equally required because glab will not infer it.
+    if (skipOnWindows()) return error.SkipZigTest;
+    if (!haveGit()) return error.SkipZigTest;
+    const a = testing.allocator;
+    var fx = try Fixture.init(a);
+    defer fx.deinit();
+    const repo = try makeGitRepoOnBranch(&fx);
+    defer a.free(repo);
+
+    const argv_file = try std.fmt.allocPrint(a, "{s}/argv", .{fx.root});
+    defer a.free(argv_file);
+    const glab = try fx.writeScript("glab", try std.fmt.allocPrint(a,
+        "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done > '{s}'\necho '{s}'"
+    , .{ argv_file, "https://gitlab.com/group/sub/repo/-/merge_requests/7" }));
+    defer a.free(glab);
+
+    const res = try createPullRequestUseCaseWith(a, std.testing.io, glab, .gitlab, repo, "main", "T", "B");
+    defer freeCreateResult(a, res);
+
+    try testing.expectEqual(GhStatus.success, res.status);
+    try testing.expectEqualStrings("https://gitlab.com/group/sub/repo/-/merge_requests/7", res.pr_url);
+
+    const recorded = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, argv_file, a, .limited(64 * 1024));
+    defer a.free(recorded);
+    try testing.expect(std.mem.indexOf(u8, recorded, "mr\ncreate\n--source-branch\nworktree/feature-x\n--target-branch\nmain\n--title\nT\n--description\nB\n--yes\n") != null);
+}
+
+test "create: a glab banner before the URL does not become pr_url" {
+    // THE regression this guards: the use case used to treat the WHOLE
+    // trimmed stdout as the URL. glab prints a banner first, so that
+    // stored a non-URL as pr_url, and the frontend then handed it to
+    // set_pull_request, which rejects it as unparseable.
+    if (skipOnWindows()) return error.SkipZigTest;
+    if (!haveGit()) return error.SkipZigTest;
+    const a = testing.allocator;
+    var fx = try Fixture.init(a);
+    defer fx.deinit();
+    const repo = try makeGitRepoOnBranch(&fx);
+    defer a.free(repo);
+
+    const glab = try fx.writeExec("glab",
+        "#!/bin/sh\n" ++
+            "echo 'Creating merge request for worktree/feature-x on gitlab.com'\n" ++
+            "echo\n" ++
+            "echo 'https://gitlab.com/g/s/r/-/merge_requests/7'\n"
+    );
+    defer a.free(glab);
+
+    const res = try createPullRequestUseCaseWith(a, std.testing.io, glab, .gitlab, repo, "main", "T", "B");
+    defer freeCreateResult(a, res);
+    try testing.expectEqualStrings("https://gitlab.com/g/s/r/-/merge_requests/7", res.pr_url);
+}
+
+test "create: the generic provider fails without spawning anything" {
+    if (skipOnWindows()) return error.SkipZigTest;
+    const a = testing.allocator;
+    var fx = try Fixture.init(a);
+    defer fx.deinit();
+    // A script that would leave a sentinel if it ever ran.
+    const sentinel = try std.fmt.allocPrint(a, "{s}/ran", .{fx.root});
+    defer a.free(sentinel);
+    const prog = try fx.writeScript("nope", try std.fmt.allocPrint(a, "touch '{s}'\n", .{sentinel}));
+    defer a.free(prog);
+
+    const res = try createPullRequestUseCaseWith(a, std.testing.io, prog, .generic, fx.root, "main", "T", "B");
+    defer freeCreateResult(a, res);
+    try testing.expectEqual(GhStatus.gh_failed, res.status);
+    try testing.expect(std.mem.indexOf(u8, res.stderr, "no forge CLI") != null);
+    // The sentinel is the real assertion: if the generic provider ever
+    // falls through to a spawn, this file appears.
+    const spawned = if (std.Io.Dir.cwd().access(std.testing.io, sentinel, .{})) |_| true else |_| false;
+    if (spawned) {
+        std.debug.print("!! the generic provider spawned a CLI instead of short-circuiting !!\n", .{});
+        return error.CLIWasSpawned;
+    }
+}
+
+test "create: a missing CLI names glab, not gh" {
+    if (skipOnWindows()) return error.SkipZigTest;
+    const a = testing.allocator;
+    var fx = try Fixture.init(a);
+    defer fx.deinit();
+
+    const res = try createPullRequestUseCaseWith(a, std.testing.io, "/nalar/definitely/not/glab", .gitlab, fx.root, "main", "T", "B");
+    defer freeCreateResult(a, res);
+    try testing.expectEqual(GhStatus.gh_failed, res.status);
+    try testing.expect(std.mem.indexOf(u8, res.stderr, "glab") != null);
+    try testing.expect(std.mem.indexOf(u8, res.stderr, "gh") == null);
+}
+
+test "create: the handler body accepts a provider field" {
+    // The wire contract: POST /api/git/pr must be able to say which forge.
+    const a = testing.allocator;
+    const source = try readSource(a, HANDLER_PATH);
+    defer a.free(source);
+    if (std.mem.indexOf(u8, source, "provider: []const u8 = \"\"") == null) {
+        std.debug.print("!! git_pr_create Body struct has no provider field !!\n", .{});
+        return error.ProviderFieldMissing;
+    }
+}
+
+test "create: the production entry derives the program from the provider" {
+    // Regression guard for a bug the Zig tests structurally could not
+    // see: `createPullRequestUseCase` passed GH_PROGRAM for EVERY
+    // provider, so `provider: "gitlab"` spawned `gh mr create` and gh
+    // answered `unknown command "mr"`. Only the functional harness,
+    // which runs the real handler, ever hit it.
+    const a = testing.allocator;
+    const source = try readSource(a, HANDLER_PATH);
+    defer a.free(source);
+    if (std.mem.indexOf(u8, source, "createPullRequestUseCaseWith(allocator, io, cli.program") == null) {
+        std.debug.print("!! createPullRequestUseCase hardcodes the gh program for every provider !!\n", .{});
+        return error.ProgramNotDerivedFromProvider;
     }
 }

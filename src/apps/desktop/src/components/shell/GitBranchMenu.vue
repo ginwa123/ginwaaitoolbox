@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { forgeWording } from '../../helpers/forgeWording'
 /**
  * Right-click menu for git-branch badges (sidebar chat rows + kanban
  * cards). Teleported to body so overflow ancestors never clip it.
@@ -6,21 +8,26 @@
  * derived from the PR repo base) and wire @open-branch / @open-pr to
  * their window.open calls. Items with an empty URL render disabled.
  */
-withDefaults(
+const props = withDefaults(
   defineProps<{
     x: number
     y: number
     branch?: string
     branchUrl?: string
     prUrl?: string
+    /** Which forge the PR/MR lives on; '' falls back to GitHub wording. */
+    prProvider?: string
   }>(),
-  { branch: '', branchUrl: '', prUrl: '' },
+  { branch: '', branchUrl: '', prUrl: '', prProvider: '' },
 )
 
 const emit = defineEmits<{
   openBranch: []
   openPr: []
 }>()
+
+// A GitLab user reads "Open merge request", not "Open pull request".
+const forge = computed(() => forgeWording(props.prProvider))
 </script>
 
 <template>
@@ -52,7 +59,7 @@ const emit = defineEmits<{
         data-testid="open-branch-new-tab-item"
         class="block w-full text-left px-3 py-1.5 hover:opacity-80 disabled:opacity-40"
         :disabled="!branchUrl"
-        :title="branchUrl || 'Branch URL unavailable (no PR found for this branch)'"
+        :title="branchUrl || `Branch URL unavailable (no ${forge.short} found for this branch)`"
         @click="emit('openBranch')"
       >
         <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open branch in new tab
@@ -63,10 +70,11 @@ const emit = defineEmits<{
         data-testid="open-pr-new-tab-item"
         class="block w-full text-left px-3 py-1.5 hover:opacity-80 disabled:opacity-40"
         :disabled="!prUrl"
-        :title="prUrl || 'No pull request found for this branch'"
+        :title="prUrl || `No ${forge.noun} found for this branch`"
         @click="emit('openPr')"
       >
-        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open pull request in new tab
+        <span aria-hidden="true" class="mr-2 opacity-70">&#8599;</span>Open {{ forge.noun }} in new
+        tab
       </button>
     </div>
   </Teleport>

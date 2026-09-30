@@ -984,7 +984,7 @@ defineExpose({
                 v-if="item.git_branch && prStatuses[item.id]"
                 class="mr-1 inline-flex items-center align-middle cursor-context-menu"
                 :style="chatBranchStyle(item.id)"
-                :title="chatBranchTitle(item) + ' — right-click to open GitHub'"
+                :title="chatBranchTitle(item) + ' — right-click to open the change request'"
                 :data-pr-status="prStatuses[item.id] || undefined"
                 :data-pr-conflict="prConflicts[item.id] || undefined"
                 data-testid="chat-git-branch"
@@ -1058,9 +1058,7 @@ defineExpose({
 
       <!-- Loading indicator -->
       <div v-if="chatsLoading" class="py-2 text-center shrink-0">
-        <span
-          class="px-[var(--sb-gutter)] py-2 text-micro"
-          style="color: var(--semantic-text-dim)"
+        <span class="px-[var(--sb-gutter)] py-2 text-micro" style="color: var(--semantic-text-dim)"
           >Loading...</span
         >
       </div>
