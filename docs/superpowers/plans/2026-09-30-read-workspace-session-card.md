@@ -219,12 +219,29 @@ No change to: `JsonHit`, `JsonFull`, `JsonEntry`, the `behavior` discriminator, 
 - [ ] Run `ChatView` specs; confirm green.
 - [ ] `Commit:` `feat(chatview): navigate to the session a search hit came from`
 
-### Task 8 — Functional wire-shape gate
+### Task 8 — Functional wire-shape gate — **PREMISE FAILED, see note**
 
-- [ ] Add one test to `tests/functional/agent_workspace_history_test.py` that seeds a session, runs the tool, and asserts `created_at` is not a bare integer. Use the existing harness (isolated tmpdir `HOME`, free port excluding 8081). Never boot a server by hand.
-- [ ] Run `python3 -m pytest tests/functional/agent_workspace_history_test.py -q`.
-- [ ] Run the sibling `agent_knowledge_edit_test.py` too, to prove the harness is not broken by the new test.
-- [ ] `Commit:` `test(functional): assert FTS created_at is not a nano epoch`
+**This task was written on a wrong assumption and is NOT DONE.** It assumed a functional
+test could invoke the tool over HTTP and assert `created_at` on the response. It cannot:
+
+- `tests/functional/agent_workspace_history_test.py:11-15` states it plainly — *"A full
+  end-to-end LLM tool_call is not feasible here (no stub LLM emits tool_calls)."*
+- That is still true. `agent_add_mcp_server_test.py:34-36` repeats it for a sibling tool.
+- The only stub in the suite, `CaptureServer` in
+  `responses_tool_output_sanitize_test.py:78-152`, **hangs up without responding**
+  (`conn.shutdown(SHUT_RDWR)` in its `finally`). It captures request bytes; it cannot
+  emit a tool_call to drive a turn.
+
+**What covers the wire instead:** the Zig test added in Task 1 runs the REAL
+`searchMessagesFts` SQL against an in-memory SQLite with the real `messages_fts` table
+and asserts the exact string. The payload is produced at that layer; nothing between it
+and `llm_history.response_content` rewrites `created_at`.
+
+**Follow-up worth its own ticket:** a stub LLM that *responds* with a
+Responses-API `tool_call` would unlock end-to-end tool tests for this tool and every
+other agent tool. That is test infrastructure, not a card change.
+
+- [ ] (deferred) Add the functional assertion once a responding stub LLM exists.
 
 ### Task 9 — Full gates
 
