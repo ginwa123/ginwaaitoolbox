@@ -314,7 +314,12 @@ const Fixture = struct {
     fn init(allocator: std.mem.Allocator) !Fixture {
         var tmp = std.testing.tmpDir(.{});
         errdefer tmp.cleanup();
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        // NOT sized from `std.fs.max_path_bytes`: that is ~96 KB on
+        // Windows, and this is a stack buffer. These tests are
+        // Windows-skipped today, but a 96 KB frame here would blow the
+        // stack the moment anyone un-skips them. A tmpdir path is
+        // comfortably under 512 bytes.
+        var buf: [512]u8 = undefined;
         const root = try tmp.dir.realPath(std.testing.io, &buf);
         const owned = try allocator.dupe(u8, buf[0..root]);
         return .{ .tmp = tmp, .root = owned, .allocator = allocator };

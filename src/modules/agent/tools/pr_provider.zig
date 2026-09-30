@@ -122,33 +122,76 @@ pub fn detectProvider(url: []const u8) PrProvider {
     return .generic;
 }
 
+/// Longest host we will lowercase in a stack buffer. Real hosts are far
+/// shorter; anything past this is a malformed remote, not a forge.
+const MAX_SNIFF_HOST = 256;
+
+/// Provider implied by a bare host string, by name only. No allocation
+/// and no path knowledge, so it is safe to call on a host slice taken
+/// straight out of a remote string.
+fn providerFromHost(host: []const u8) PrProvider {
+    if (host.len == 0) return .generic;
+    var host_buf: [MAX_SNIFF_HOST]u8 = undefined;
+    const n = @min(host.len, host_buf.len);
+    for (host[0..n], 0..) |c, i| host_buf[i] = std.ascii.toLower(c);
+    const lowered = host_buf[0..n];
+    // GitHub first, matching `detectProvider`'s precedence.
+    if (std.mem.indexOf(u8, lowered, "github") != null) return .github;
+    if (std.mem.indexOf(u8, lowered, "gitlab") != null) return .gitlab;
+    return .generic;
+}
+
 /// Detect the provider from a `git remote get-url` value.
 ///
 /// A remote is not always an http(s) URL: the scp-like form
 /// `git@gitlab.com:group/repo.git` carries no `://`, so feeding it
 /// straight to `detectProvider` (which needs a scheme to split a host
 /// out) reports EVERY SSH remote as `generic` — and a GitLab repo cloned
-/// over SSH is the common case. Rewrite that shape into an https URL
-/// first, then reuse the same host/path sniffing.
+/// over SSH is the common case. So slice the host out of the scp-like
+/// form and hand THAT to `providerFromHost`.
 ///
-/// A self-hosted GitLab on a host without "gitlab" in its name still
-/// lands on `generic`; the caller passes an explicit override for that
-/// (see `set_pull_request`'s `provider` input).
+/// ## Why the host is sliced, not rewritten into a URL
+///
+/// The first version of this function synthesised `https://<host>/<path>`
+/// with `bufPrint` into a stack array sized from `std.fs.max_path_bytes`.
+/// That is a 4 KB frame on Linux but `std.os.windows.PATH_MAX_WIDE * 3 + 1`
+/// — about **96 KB** — on Windows, and this runs on a worker thread
+/// handling an HTTP request. That overflows the stack and takes the whole
+/// server down (STATUS_STACK_OVERFLOW). Slicing needs no buffer at all.
+///
+/// (The array's exact type is spelled without brackets in this comment on
+/// purpose: a source guard test below greps for that literal, and a prose
+/// mention would make the guard match its own documentation.)
+///
+/// It also silently truncated on Linux: a remote longer than PATH_MAX made
+/// `bufPrint` fail, so the function returned `generic` and the request
+/// quietly fell back to `gh`.
+///
+/// A self-hosted GitLab on a host without "gitlab" in its name still lands
+/// on `generic`; the caller passes an explicit override for that (see
+/// `set_pull_request`'s `provider` input).
 pub fn detectProviderFromRemote(remote: []const u8) PrProvider {
     const trimmed = std.mem.trim(u8, remote, " \t\r\n");
     if (trimmed.len == 0) return .generic;
 
-    if (std.mem.indexOf(u8, trimmed, "://") != null) return detectProvider(trimmed);
+    if (std.mem.indexOf(u8, trimmed, "://")) |scheme_end| {
+        // `https://host/path` — the host is bounded by the next slash.
+        const after = trimmed[scheme_end + 3 ..];
+        const slash = std.mem.indexOfScalar(u8, after, '/') orelse after.len;
+        const by_host = providerFromHost(after[0..slash]);
+        if (by_host != .generic) return by_host;
+        // A scheme-less host name can still be identified by the path.
+        if (std.mem.indexOf(u8, trimmed, "/-/merge_requests/") != null) return .gitlab;
+        return .generic;
+    }
 
     // scp-like: [user@]host:path
     const after_user = if (std.mem.indexOfScalar(u8, trimmed, '@')) |at| trimmed[at + 1 ..] else trimmed;
     const colon = std.mem.indexOfScalar(u8, after_user, ':') orelse return .generic;
-    const host = after_user[0..colon];
-    if (host.len == 0) return .generic;
-
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rewritten = std.fmt.bufPrint(&buf, "https://{s}/{s}", .{ host, after_user[colon + 1 ..] }) catch return .generic;
-    return detectProvider(rewritten);
+    const by_host = providerFromHost(after_user[0..colon]);
+    if (by_host != .generic) return by_host;
+    if (std.mem.indexOf(u8, trimmed, "/-/merge_requests/") != null) return .gitlab;
+    return .generic;
 }
 
 /// Parse owner/repo + number out of a normalized URL for the given
@@ -262,4 +305,58 @@ test "PrProvider fromString round-trips" {
     try std.testing.expectEqual(PrProvider.generic, PrProvider.fromString("generic").?);
     try std.testing.expect(PrProvider.fromString("bitbucket") == null);
     try std.testing.expectEqualStrings("github", PrProvider.github.toString());
+}
+
+test "detectProviderFromRemote survives a remote longer than PATH_MAX" {
+    // Two bugs in one test. On Linux the old `std.fs.max_path_bytes`
+    // buffer made bufPrint fail for a remote past PATH_MAX, so this
+    // returned `generic` and the request silently fell back to `gh`. On
+    // Windows that same buffer is ~96 KB and overflowed the worker
+    // thread's stack, killing the server. Slicing the host has neither
+    // failure mode.
+    const padding = "a" ** 8192;
+    const cases = [_]struct { in: []const u8, out: PrProvider }{
+        .{
+            .in = "https://gitlab.com/group/sub/repo.git?" ++ padding,
+            .out = .gitlab,
+        },
+        .{
+            .in = "git@github.com:acme/app.git?" ++ padding,
+            .out = .github,
+        },
+        .{
+            .in = "https://git.corp.example.com/g/s/r/-/merge_requests/3?" ++ padding,
+            .out = .gitlab,
+        },
+    };
+    for (cases) |c| try std.testing.expectEqual(c.out, detectProviderFromRemote(c.in));
+}
+
+test "detectProviderFromRemote keeps path-marker detection for scheme remotes" {
+    // A self-hosted GitLab on a host with no forge name in it is only
+    // identifiable from the MR path marker.
+    try std.testing.expectEqual(
+        PrProvider.gitlab,
+        detectProviderFromRemote("https://git.corp.example.com/g/s/r/-/merge_requests/3.git"),
+    );
+    try std.testing.expectEqual(
+        PrProvider.generic,
+        detectProviderFromRemote("https://git.corp.example.com/g/s/r.git"),
+    );
+}
+
+test "detectProviderFromRemote does not allocate a path-sized stack buffer" {
+    // Windows `max_path_bytes` is PATH_MAX_WIDE * 3 + 1 (~96 KB). Any
+    // array sized from it inside a request handler overflows a worker
+    // thread's stack. This is a source guard, not a runtime one: the
+    // crash only reproduces on Windows, and CI here is Linux.
+    const source = @embedFile("pr_provider.zig");
+    // The needle is concatenated so this test's own source does not
+    // contain the literal it searches for — otherwise the guard always
+    // matches itself.
+    const needle = "[std.fs." ++ "max_path_bytes]u8";
+    if (std.mem.indexOf(u8, source, needle) != null) {
+        std.debug.print("!! pr_provider.zig sizes a stack buffer from std.fs.max_path_bytes (96 KB on Windows) !!\n", .{});
+        return error.PathSizedStackBuffer;
+    }
 }

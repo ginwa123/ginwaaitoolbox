@@ -5,7 +5,8 @@ Exercises the endpoint the `nalarcli pr-status` command calls
 
   1. Missing path → 400 (route is registered, validator runs).
   2. Unknown provider → 400 (strict validator).
-  3. gitlab provider → 400 (v1 is github-only).
+  3. gitlab provider → no longer rejected up front; it reaches the glab
+     path (see `git_pr_gitlab_test.py` for the full GitLab coverage).
   4. Non-repo path → 404 (not shadowing, real handler answer).
   5. Happy path via a fake `gh` on PATH → 200 with normalized status.
 """
@@ -64,16 +65,27 @@ def test_unknown_provider_is_400(
     assert "error" in r, f"got: {r!r}"
 
 
-def test_gitlab_provider_is_400_v1_github_only(
+def test_gitlab_provider_is_not_rejected_up_front(
     harness: FunctionalHarness, repo: Path
 ) -> None:
+    """`provider=gitlab` used to be a hard 400 before any lookup.
+
+    Now it reaches the glab path. On a box with no `glab` installed the
+    honest answer is 422 naming glab — what must NOT happen is a 400
+    blaming GitHub, which is what a GitLab user used to get.
+    """
     r = harness.http(
         "GET",
         "/api/git/pr/status",
         params={"path": str(repo), "provider": "gitlab"},
-        expect=400,
+        expect=(200, 422, 502),
     ).json()
-    assert "github" in r["error"].lower(), f"got: {r!r}"
+    assert "only the github provider" not in r.get("error", ""), f"got: {r!r}"
+    if r.get("error"):
+        # Whichever way it failed, the message must be about GitLab.
+        assert "glab" in r["error"] or "gitlab" in r["error"].lower(), f"got: {r!r}"
+    else:
+        assert r["provider"] == "gitlab", f"got: {r!r}"
 
 
 def test_non_repo_path_is_404(
@@ -235,4 +247,9 @@ def test_fetch_failure_surfaces_gh_stderr(
     finally:
         h2.teardown()
     assert "gh auth login" in body["error"], f"got: {body!r}"
-    assert body["error"].startswith("failed to fetch PR status: "), f"got: {body!r}"
+    # The prefix names the forge's own noun ("pull request" on GitHub,
+    # "merge request" on GitLab) instead of a hardcoded "PR", so the
+    # message matches whichever CLI actually ran.
+    assert body["error"].startswith("failed to fetch pull request status: "), (
+        f"got: {body!r}"
+    )
