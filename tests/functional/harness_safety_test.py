@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
 import pytest
 
+# The module object, not just its names: the 8.3 tests below swap
+# ALLOWED_TMP_PREFIXES out at runtime, which needs the module binding.
+import harness
 from harness import (
     ALLOWED_TMP_PREFIXES,
     REQUIRED_TMP_SUBSTR,
@@ -84,6 +88,111 @@ def test_is_safe_tmp_resolves_symlinks_in_path() -> None:
         # substring — but its realpath is /home/alice which is NOT
         # in the allow-list, so it must be rejected.
         assert is_safe_tmp(str(link), fake_home) is False
+
+
+# ─── allow-list prefix spelling: the windows-2022 8.3 bug ──────────────────
+#
+# `is_safe_tmp` compares the CANDIDATE through `os.path.realpath` against
+# the allow-list PREFIXES raw. On Windows realpath also expands 8.3 short
+# names, so a candidate under a runner's `%TEMP%` of
+# `C:\Users\RUNNER~1\AppData\Local\Temp` canonicalises to
+# `C:\Users\runneradmin\...` and stops matching the raw prefix built from
+# the same `%TEMP%`. On the windows-2022 cell that rejected the harness's
+# OWN tempdir on every test: 548 errors, all one line.
+#
+# The bug is not "Windows" — it is "the two sides are spelled differently".
+# A symlink alias reproduces that on any host, which is what the two tests
+# below use, so the regression is guarded on Linux too.
+
+
+@pytest.fixture
+def tmpdir_alias(monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point ALLOWED_TMP_PREFIXES at a SYMLINK ALIAS of the real tmpdir.
+
+    Yields the alias path; removes it on teardown.
+
+    A fixture rather than a helper because the alias is a real filesystem
+    entry: a helper that returned it and relied on the caller to unlink
+    leaks a symlink into the system tmpdir every time a test fails, which
+    is the kind of litter that outlives the branch that made it.
+
+    The alias is deliberately NOT named ``nalar-func-*`` so it cannot
+    satisfy the namespace check on its own and mask a broken comparison.
+    """
+    real_root = Path(tempfile.gettempdir()).resolve()
+    alias = real_root / f"tmpalias-{os.getpid()}"
+    if alias.is_symlink() or alias.exists():
+        alias.unlink()
+    try:
+        alias.symlink_to(real_root, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this host cannot create a symlink")
+    monkeypatch.setattr(harness, "ALLOWED_TMP_PREFIXES", (str(alias) + os.sep,))
+    try:
+        yield alias
+    finally:
+        alias.unlink(missing_ok=True)
+
+
+def test_allowlist_prefix_spelled_differently_still_matches(
+    tmpdir_alias: Path,
+) -> None:
+    """A prefix naming the tmpdir another way must still match.
+
+    This is the regression guard for the windows-2022 failure: 548 errors
+    whose message printed a candidate and a prefix that visibly matched,
+    because neither printed string was the one compared.
+    """
+    real_root = Path(tempfile.gettempdir()).resolve()
+    real_dir = Path(tempfile.mkdtemp(prefix=REQUIRED_TMP_SUBSTR))
+    try:
+        # The precondition that gives this test teeth: a RAW startswith
+        # FAILS here, so only canonicalisation of both sides can rescue
+        # it. Remove `_canonical_prefix` and this assertion flips.
+        assert not str(real_dir).startswith(str(tmpdir_alias) + os.sep)
+        assert str(real_dir).startswith(str(real_root) + os.sep)
+        assert is_safe_tmp(str(real_dir), "/home/someone-else") is True
+    finally:
+        shutil.rmtree(real_dir, ignore_errors=True)
+
+
+def test_canonicalising_both_sides_does_not_widen_the_allowlist(
+    tmpdir_alias: Path,  # noqa: ARG001 — the monkeypatch IS the point
+) -> None:
+    """The counterpart: the fix must not accept what it previously rejected.
+
+    Canonicalising the allow-list is only safe because the prefix still
+    resolves to a tmpdir. A ``nalar-func-`` path somewhere else entirely
+    has to stay rejected, or the guard would rmtree wherever it is told.
+
+    The path need not exist — ``is_safe_tmp`` is a spelling + allow-list
+    check, not a stat. The first draft of this test built its "outside"
+    path with ``tempfile.mkdtemp``, which puts the directory INSIDE the
+    allow-listed tmpdir; it then asserted a rejection that only held
+    because the namespace substring was missing, not because of the
+    directory at all. A test that passes for the wrong reason is worse
+    than no test, so the path here is absolute, carries the substring,
+    and is under a directory nothing allow-lists.
+    """
+    outside = os.path.join(os.sep, "not-a-tmpdir-at-all", REQUIRED_TMP_SUBSTR + "probe")
+    assert os.path.isabs(outside)
+    assert REQUIRED_TMP_SUBSTR in outside
+    assert is_safe_tmp(outside, "/home/someone-else") is False
+
+
+def test_allowlist_prefix_matches_regardless_of_case() -> None:
+    """A Windows path comparison is case-insensitive; this now is too.
+
+    ``normcase`` is the half of ``_canonical`` the 8.3 bug did not need.
+    It is asserted here so nobody "simplifies" it away as dead code on a
+    POSIX box, where normcase is a no-op. Only the WINDOWS branch can
+    vary the case, so on POSIX this is a tautology by construction —
+    stated plainly rather than dressed up as coverage.
+    """
+    if os.name != "nt":
+        pytest.skip("normcase is a no-op off Windows; covered by the win32 cell")
+    shouted = tempfile.gettempdir().upper() + os.sep + REQUIRED_TMP_SUBSTR + "case-probe"
+    assert is_safe_tmp(shouted, "/home/someone-else") is True
 
 
 # ─── teardown safety net ──────────────────────────────────────────────────

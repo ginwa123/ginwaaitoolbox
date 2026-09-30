@@ -21,6 +21,35 @@ from typing import Iterator
 import pytest
 
 from harness import FunctionalHarness, FunctionalHarnessError
+from platform_gates import apply_runtime_gates, collect_ignore_for
+
+# Suite files this platform cannot even IMPORT (they raise at module scope
+# on `import pty` and friends). `collect_ignore` — not a skip marker — is
+# the only thing that works: collection dies before any marker is
+# evaluated. The table lives in tests/platform_gates.py so the reason is
+# written down once for all three suites.
+#
+# CAVEAT, verified on pytest 8.4: `collect_ignore` applies to DIRECTORY
+# collection only. Naming one of these files explicitly on the command line
+# collects it anyway, because an explicit arg is not a directory scan. That
+# is fine for CI — `zig build functional-test-all` passes
+# `tests/functional/` and `tests/functional_ui/`, and a whole-run collection
+# on a simulated win32 shows 737 tests with these 5 absent — but a developer
+# running `pytest tests/functional/tui_perf_test.py` on Windows gets a real
+# ImportError. On a POSIX host it runs, because `pty` exists there; the gate
+# only matters where the import genuinely fails.
+collect_ignore = collect_ignore_for()
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Apply the runtime (skip-marker) half of the platform-gate table.
+
+    Delegated to ``platform_gates`` rather than inlined: the hook body is
+    the same for both suites, and a copy that has to be kept in agreement
+    in two places is a copy that will drift. See
+    ``apply_runtime_gates`` for why items are marked rather than ignored.
+    """
+    apply_runtime_gates(items)
 
 
 # ─── Session-scoped: resolve the nalar binary once ─────────────────────────

@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from harness import harness_path
 from ui_harness import UIHarness
 
 
@@ -37,7 +38,7 @@ def _create_agent(h: UIHarness, workspace_id: str, name: str = "ui asp agent") -
     r = h.http(
         "POST",
         f"/api/workspaces/{workspace_id}/items/agent",
-        json_body={"name": name, "path": "/tmp/agent-system-prompt-ui-test"},
+        json_body={"name": name, "path": harness_path(h, "agent-system-prompt-ui-test")},
         expect=201,
     )
     return r.json()["item"]["id"]

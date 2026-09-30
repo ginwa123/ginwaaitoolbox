@@ -18,7 +18,10 @@ Wire behaviour pinned here (real nalar, real --static-dir, isolated HOME):
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
+
+import pytest
 
 from harness import FunctionalHarness
 
@@ -38,6 +41,30 @@ def _make_version(root: Path, body: str) -> Path:
     return root
 
 
+def _symlink_supported(link: Path, target: Path) -> bool:
+    """Whether this host lets an unprivileged process create a symlink.
+
+    On Windows a symlink needs either Developer Mode or
+    ``SeCreateSymbolicLinkPrivilege``. A GitHub ``windows-2022`` runner
+    runs the agent elevated, so it MAY work — which is exactly why this
+    probes instead of skipping on ``os.name``: skipping would turn a
+    platform that CAN run the test into one that doesn't. A host that
+    refuses reports ``OSError`` (WinError 1314 / EPERM) and the caller
+    skips with the reason.
+    """
+    probe = link.with_name(f"{link.name}.probe")
+    try:
+        probe.symlink_to(target)
+    except (OSError, NotImplementedError, AttributeError):
+        return False
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return True
+
+
 def _point_link(link: Path, target: Path) -> None:
     """Atomically point `link` at `target` (same dance as extraction.zig)."""
     tmp = link.with_name(f"{link.name}.tmp-{os.getpid()}")
@@ -55,6 +82,11 @@ def test_stable_symlink_serves_the_app(
     base.mkdir()
     v1 = _make_version(base / "hash-v1", "stable shell v1")
     stable = base / "current"
+    if not _symlink_supported(stable, v1.name):
+        pytest.skip(
+            f"this host cannot create a symlink ({sys.platform}); "
+            "the product's stable-webapp layout requires one"
+        )
     stable.symlink_to(v1.name)
 
     h = FunctionalHarness.boot(
@@ -82,6 +114,11 @@ def test_flipping_the_stable_link_never_404s_the_running_daemon(
     v1 = _make_version(base / "hash-v1", "stable shell v1")
     v2 = _make_version(base / "hash-v2", "stable shell v2")
     stable = base / "current"
+    if not _symlink_supported(stable, v1.name):
+        pytest.skip(
+            f"this host cannot create a symlink ({sys.platform}); "
+            "the product's stable-webapp layout requires one"
+        )
     stable.symlink_to(v1.name)
 
     first = FunctionalHarness.boot(

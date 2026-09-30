@@ -1394,46 +1394,109 @@ jobs:
           files: bin-stage-${{ matrix.target.zig }}/*
 
   functional-test:
-    # Linux-only: API functional suites. `needs: backend` is kept for
-    # ORDERING (the shared venv + Playwright cache below is written by
-    # this job and read by functional-test-ui); `if: !cancelled()` is
-    # what decides whether it runs at all.
+    # BOTH functional suites — the API suite (tests/functional/) and the
+    # Playwright UI suite (tests/functional_ui/) — in ONE job per
+    # platform, in ONE pytest invocation.
     #
-    # The `if:` is load-bearing. A bare `needs:` SKIPS every dependent
-    # job the moment one of its needs fails, so a red backend cell used
+    # This REPLACES the two ubuntu-24.04-only jobs (`functional-test` and
+    # `functional-test-ui`) that came before it. Three things changed, and
+    # the reasons matter more than the mechanics:
+    #
+    # 1. THREE PLATFORMS, NOT ONE. The suites exercise a real binary over
+    #    a real socket, and both have shipped Windows/macOS bugs the Linux
+    #    cell structurally cannot see — a hardcoded "/tmp" that stops
+    #    being an absolute path, a tmpdir allow-list that only matched
+    #    POSIX prefixes, an rmtree that raced a still-running child. None
+    #    of those are hypothetical: they are what the platform-gate table
+    #    in tests/platform_gates.py and the `harness_path()` helper exist
+    #    for, and both were written in THIS change. A gate that is never
+    #    exercised by CI is a comment, not a gate.
+    #
+    # 2. ONE JOB INSTEAD OF TWO. Running the suites as separate jobs cost
+    #    every shared input twice per PR: a second venv `pip install -r`,
+    #    a second `playwright install chromium` (~150 MB), a second full
+    #    `zig build install` walk for the same binary, and two reports to
+    #    read to answer one question. One `zig build functional-test-all`
+    #    does all of it once. What this does NOT do is halve the test
+    #    wall-clock — the boot-per-test cost is unchanged, and the job is
+    #    not parallelised internally. See the note on `-n auto` below for
+    #    why that is deliberate.
+    #
+    # 3. ONE VERDICT. A single pytest process means a single exit code
+    #    and a single report covering both suites, so "the functional
+    #    tests are green" is one check rather than two that can disagree.
+    #
+    # `needs: backend` is ORDERING only, and `if: !cancelled()` is what
+    # decides whether this runs at all. A bare `needs:` SKIPS every
+    # dependent job the moment one need fails, so a red backend cell used
     # to delete the whole functional signal: run 36555002552 failed
     # `backend (Windows X64)` on a one-line compile error and all three
-    # functional jobs (55 API + 30 Playwright + 10 Android scenarios)
-    # reported "skipped" instead of a verdict. None of them consumes a
-    # backend artifact — each rebuilds from the same SHA via
-    # `zig build functional-test` — so a backend failure carries no
-    # information about whether the suites pass. They now always run.
-    name: functional-test (ubuntu-24.04)
-    runs-on: ubuntu-24.04
+    # functional jobs reported "skipped" instead of a verdict. None of
+    # them consumes a backend artifact — each rebuilds from the same SHA
+    # via `zig build functional-test-all` — so a backend failure carries
+    # no information about whether these suites pass.
+    name: functional-test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
     needs: backend
     if: ${{ !cancelled() }}
+    # A cold Windows cell has to build the vcpkg ports before anything can
+    # link, then a ~90 MB zig build, then two suites that each boot a real
+    # nalar per test. The Linux cell does the same work in a fraction of
+    # the time; a single default for all three would let the slowest cell
+    # be killed by the 360-minute default rather than by a failure.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        # `include`-only complete cells, matching the backend job's shape:
+        # each entry IS a cell, so a typo in an `os:` value cannot fail
+        # open and silently run the wrong platform.
+        include:
+          - os: ubuntu-24.04
+            label: ubuntu-24.04
+          # macOS ARM64, the same image the backend matrix builds on. The
+          # ONLY true macOS blocker found in either suite is
+          # tui_perf_probe.py reading /proc/<pid>/status for RSS; macOS has
+          # no /proc, and tests/platform_gates.py skips that one module
+          # with that reason.
+          - os: macos-15
+            label: macos-15
+          # Windows X64, same image as the backend matrix. Most of the
+          # Windows skips are STRUCTURAL, not incidental — see the
+          # terminal_* and tui_* rows in tests/platform_gates.py, where the
+          # product itself has no pty backend (`terminal_session.zig`
+          # is_pty_os = linux || macos) and Python has no `pty` module.
+          - os: windows-2022
+            label: windows-2022
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install system dependencies (Ubuntu)
-        # A GitHub-hosted runner is a FRESH VM per job, so every job has to
-        # install its own system packages. On the old self-hosted box the
-        # packages lived on the host and one cell's install covered every
-        # other job that landed on the same machine; that is not true here,
-        # which is why the backend cell and both functional jobs each call
-        # the shared script rather than sharing the work.
-        #
-        # The list lives in scripts/ci-install-linux-deps.sh precisely
-        # because it used to be copy-pasted into three places — and when it
-        # drifted, it drifted in all three at once.
-        run: bash scripts/ci-install-linux-deps.sh
+      - name: Setup Python 3.12
+        # Pinned rather than "whatever the image ships": the venv below is
+        # cached, and a venv is only valid for the exact minor version that
+        # created it. An unpinned image default would let a base-image bump
+        # silently restore an unusable venv.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Install Node.js 24
+        # Both suites need Node: the UI suite's UIHarness spawns
+        # `pnpm run dev` to start the Vite dev server during Playwright
+        # tests, and it resolves pnpm via shutil.which('pnpm') /
+        # shutil.which('pnpm.cmd'), so a literal `pnpm` on PATH is what we
+        # need. Pinned to Node 24 to match the dev box.
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
       - name: Install pnpm 11
+        # pnpm/action-setup is the canonical way to install pnpm on a
+        # GitHub-hosted runner. Version pinned to 11.x to match the dev box
+        # and the workspace's existing toolchain. workspace .npmrc lives
+        # in the repo root, NOT in $HOME, so this action does not need any
+        # config_file input.
         uses: pnpm/action-setup@v4
         with:
           version: 11
@@ -1443,88 +1506,264 @@ jobs:
         with:
           version: ${{ env.ZIG_VERSION }}
 
-      - name: Setup Python 3.12
-        # Pinned rather than "whatever the image ships": the venv built from
-        # this interpreter is cached below, and a venv only stays valid for
-        # the exact minor version that created it.
-        uses: actions/setup-python@v5
+      # ── Per-platform system dependencies ────────────────────────────
+      # The nalar service binary links libcurl / openssl / libpq / sqlite3
+      # on every platform, and the UI suite additionally needs a browser.
+      # Each cell therefore needs roughly what the backend matrix cell for
+      # the same image needs — minus the desktop webview, because this job
+      # only builds the SERVICE binary (`zig build functional-test-all`
+      # depends on the default install step, not on `nalar-desktop`). That
+      # is why there is no WebView2 NuGet staging here.
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        # A GitHub-hosted runner is a FRESH VM per job, so every job has
+        # to install its own system packages. The list lives in
+        # scripts/ci-install-linux-deps.sh precisely because it used to be
+        # copy-pasted into three places — and when it drifted, it drifted
+        # in all three at once. It also carries the headless-Chromium
+        # shared-library set (libnss3, libgbm1, libasound2, ...) that the
+        # Playwright launch needs, which is why the UI half of this job
+        # inherits it for free.
+        run: bash scripts/ci-install-linux-deps.sh
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        # Mirrors the backend matrix's macOS cell, minus the desktop-only
+        # bits. No `brew update` (HOMEBREW_NO_AUTO_UPDATE=1): `brew
+        # install` is already idempotent, and refreshing the entire
+        # homebrew/core manifest costs ~30 MB and several seconds on every
+        # run for no benefit.
+        #
+        # openssl@3 + curl are keg-only, so their paths are exported
+        # explicitly. Those exports are what make build.zig's system-deps
+        # probe return use_system=true and skip the ~5-10 min vendored
+        # libcurl cross-compile — the same reason the backend cell sets
+        # them. coreutils provides GNU `timeout`/`stat`; nothing in this
+        # job needs them today, but pnpm's postinstall scripts on macOS
+        # have historically reached for `timeout`, and a missing binary
+        # there fails as an opaque pnpm error rather than a missing
+        # dependency.
+        #
+        # ripgrep is NOT optional: src/modules/agent/tools/search.zig
+        # spawns `rg`, so without it every search-related functional test
+        # fails with error.FileNotFound.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          brew install pkg-config openssl@3 curl ripgrep
+          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        # The windows-2022 image already has VS 2022 with the C++ workload.
+        # This action's only job is to export that environment (cl.exe /
+        # link.exe / INCLUDE / LIB) to $GITHUB_PATH and $GITHUB_ENV so
+        # every LATER step sees it — each `run:` block is a brand-new
+        # process, so Set-Item on Env: would not survive.
+        uses: ilammy/msvc-dev-cmd@v1
         with:
-          python-version: '3.12'
+          arch: x64
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        # `shell: pwsh` per the project rule (bash = mac/linux,
+        # pwsh = windows). The image ships vcpkg already bootstrapped at
+        # C:\vcpkg, so this is normally a no-op; the clone-and-bootstrap
+        # path exists for an image that ever stops shipping it.
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\vcpkg\vcpkg.exe") {
+            Write-Host "ok vcpkg already bootstrapped at C:\vcpkg"
+          } else {
+            Write-Host "vcpkg missing from the image - bootstrapping from source..."
+            git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
+            Write-Error "cl.exe is not on PATH -- ilammy/msvc-dev-cmd did not run"
+            exit 1
+          }
+          $global:LASTEXITCODE = 0
+
+      - name: Install vcpkg ports (Windows)
+        if: runner.os == 'Windows'
+        # ALL FOUR ports in ONE `vcpkg install` invocation. vcpkg takes an
+        # exclusive lock on .vcpkg-running.lock, so running the ports in
+        # parallel (4x Start-Job) fails three of the four with "calling
+        # try_take_exclusive_file_lock failed with 16" — reproduced on CI
+        # run 31936399742 with all 4 jobs completing and useMSVC=True. The
+        # single-command path is also ~30% faster because vcpkg shares its
+        # download cache across the ports.
+        #
+        # build.zig hardcodes the sysroot at C:\vcpkg\installed\x64-windows,
+        # so the host triplet is pinned BEFORE the install: anything else
+        # builds the ports into a directory the Zig build never looks in,
+        # and an arm64 auto-detect would additionally try to rebuild
+        # vcpkg's own host helpers with a cross-toolchain.
+        #
+        # sqlite3 needs the explicit `fts5` feature. Without it, Migration
+        # 058 and 070 (which create the messages_fts / agent_memories_fts
+        # FTS5 virtual tables) fail with "no such module: fts5" at
+        # migration.up() time, which took 184 tests down with them
+        # (CI run 32323478653).
+        shell: pwsh
+        run: |
+          $env:VCPKG_DEFAULT_HOST_TRIPLET = "x64-windows"
+          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3[fts5]:x64-windows"
+          Write-Host ("Running: vcpkg install " + ($portList -join " "))
+          & C:\vcpkg\vcpkg.exe install --recurse $portList
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error ("vcpkg install failed with exit code " + $LASTEXITCODE)
+            exit 1
+          }
+          # Verify each port's install location before the build runs, so
+          # a missing port fails HERE with a package-level message rather
+          # than deep inside a Zig link error. Flat Test-Path statements,
+          # no hashtable iteration: that shape used to trip a brace-counter
+          # desync in PowerShell 5.1 on the old self-hosted Windows box.
+          $expected = @{
+            "curl"    = "C:/vcpkg/installed/x64-windows/include/curl/curl.h"
+            "openssl" = "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h"
+            "libpq"   = "C:/vcpkg/installed/x64-windows/include/libpq-fe.h"
+            "sqlite3" = "C:/vcpkg/installed/x64-windows/include/sqlite3.h"
+          }
+          foreach ($port in $expected.Keys) {
+            if (-not (Test-Path $expected[$port])) {
+              Write-Error ("vcpkg port " + $port + " missing at " + $expected[$port])
+              exit 1
+            }
+            Write-Host ("ok " + $port)
+          }
+          $global:LASTEXITCODE = 0
 
       - name: Cache python venv + playwright chromium
-        # See the functional-test-ui job for the full rationale. The venv
-        # lives at ${{ runner.temp }}/nalar-ci-venv (build.zig reads
-        # NALAR_FUNC_VENV_DIR at config time) and Chromium at
-        # ~/.cache/ms-playwright, both outside the workspace because the
-        # workspace is a fresh checkout on every GitHub-hosted job.
+        # Two things are worth persisting, both OUTSIDE the workspace
+        # because the workspace is a fresh checkout on every GitHub-hosted
+        # job:
+        #   - the pytest/playwright venv, at ${{ runner.temp }}/nalar-ci-venv
+        #     (build.zig reads NALAR_FUNC_VENV_DIR at config time)
+        #   - Playwright's Chromium download, at ~/.cache/ms-playwright
+        #
+        # Key scoped by RUNNER IMAGE (`matrix.os`) plus the interpreter,
+        # never by `runner.os`: a venv is a directory of scripts and
+        # site-packages whose layout and wheel tags are platform-specific
+        # (Windows uses `Scripts/`, not `bin/`), so a Linux-built venv
+        # restored onto a Windows runner is not a slow cache hit — it is a
+        # broken interpreter path. Three cells means three caches; that is
+        # the price of running the suites on three platforms.
         uses: actions/cache@v4
         with:
           path: |
             ~/.cache/ms-playwright
             ${{ runner.temp }}/nalar-ci-venv
-          # SHARED key on purpose: the UI job restores the venv the
-          # functional-test job builds (it installs playwright into the
-          # same venv). That only works because `needs:` runs them in
-          # order and a job's post-step cache save happens before it is
-          # marked complete. Reordering them makes the UI job cold-start.
-          # Caches are immutable, so the second job to finish simply skips
-          # the save with a "Cache already exists" warning.
-          key: v2-py-${{ runner.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
+          key: v3-py-${{ matrix.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
           restore-keys: |
-            v2-py-${{ runner.os }}-py312-
+            v3-py-${{ matrix.os }}-py312-
 
-      - name: "Functional tests: real-data isolation suites"
-        # 8 functional test suites exercising the real nalar HTTP API
-        # against non-trivial data shapes. Each test boots a fresh
-        # nalar binary against an isolated tmpdir HOME (mktemp),
-        # drives the API, and rmtree's the tempdir on teardown.
-        # The Python harness enforces the "never delete real $HOME"
-        # invariant via is_safe_tmp() — see tests/functional/harness.py
-        # for the safety guards.
+      - name: Cache pnpm store
+        # The Vite dev server is spawned by UIHarness during the run via
+        # `pnpm run dev`, so the webapp's (gitignored) node_modules has to
+        # exist before the tests run. Caching pnpm's content-addressed
+        # store is the supported equivalent of the old hand-rolled tarball
+        # cache: it survives across jobs, and pnpm hard-links packages out
+        # of it instead of re-downloading. Scoped by runner image for the
+        # same reason as the venv — pnpm's store holds platform-tagged
+        # optional dependencies.
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: v3-pnpm-${{ matrix.os }}-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            v3-pnpm-${{ matrix.os }}-
+
+      - name: Install webapp dependencies (UI suite needs Vite)
+        # node + pnpm are on PATH from the setup steps above. The store dir
+        # is passed explicitly (rather than via a config file) so it cannot
+        # disagree with the actions/cache path above. Every cell pays this
+        # because both suites now run in the same job — the previous split
+        # charged it to the UI job alone, but charged the UI job its own
+        # venv + browser + binary build instead. One bill beats two.
+        shell: bash
+        env:
+          npm_config_store_dir: ${{ runner.temp }}/pnpm-store
+        run: |
+          set -euo pipefail
+          command -v pnpm >/dev/null 2>&1 || { echo "x pnpm not on PATH -- pnpm/action-setup must have failed" >&2; exit 1; }
+          command -v node >/dev/null 2>&1 || { echo "x node not on PATH -- setup-node must have failed" >&2; exit 1; }
+          pushd src/apps/desktop >/dev/null
+          pnpm install --frozen-lockfile
+          popd >/dev/null
+          echo "ok webapp deps ready"
+
+      - name: "Functional suites: API + Playwright UI (one pytest run)"
+        # ~730 tests across both suites. Each boots its own nalar against an
+        # isolated tmpdir HOME and rmtree's it on teardown; the Python
+        # harness enforces the "never delete real $HOME" invariant via
+        # is_safe_tmp() — see tests/functional/harness.py.
         #
-        # Test count: 8 suites × ~9 tests each = ~55 tests.
-        # Wall-clock: ~5 min total (each test = ~10s including
-        # boot + teardown).
-        #
-        # Gate: needs: backend — runs only after the backend matrix is green.
-        #
-        # The Python pytest harness's
-        # is_safe_tmp() allow-list previously blocked Windows temp
-        # paths (C:/Users/.../AppData/Local/Temp); this was extended
-        # in the worktree/fix-ci-windows-webview2 follow-up so the
-        # Win temp roots are recognised as safe to rmtree. See
-        # tests/functional/harness.py is_safe_tmp() for the full
-        # Windows allow-list.
+        # NO `-n auto` (pytest-xdist), on purpose. xdist is the obvious way
+        # to make this faster and it is wrong here: the port picker binds a
+        # probe socket, closes it, and hands the number to the nalar child,
+        # which binds tens of milliseconds later. That gap is documented in
+        # harness.py's RANDOM_PORT_* comment as the reason the range moved
+        # to 20k-32k in the first place — and widening the range does not
+        # help when N workers draw from it at the same instant. Under -n the
+        # suite would trade a deterministic ~15 min for intermittent
+        # BindFailed at boot. If this job ever needs to be faster, the fix
+        # is a reservation protocol in the picker (bind, hold, hand off),
+        # not a flag.
         shell: bash
         env:
           # The pytest venv lives OUTSIDE the workspace because the
-          # workspace is a fresh checkout on every GitHub-hosted job —
-          # only runner.temp survives long enough for the cache step
-          # above to persist it. build.zig reads this at config time.
+          # workspace is a fresh checkout on every GitHub-hosted job — only
+          # runner.temp survives long enough for the cache step above to
+          # persist it. build.zig reads this at config time, and it is also
+          # what normalises Windows' mixed separators to the `Scripts/`
+          # layout.
           NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
         run: |
           set -u
-          echo "→ functional-test: starting"
-          date +%s > /tmp/functional-test-start.$$ 2>/dev/null || true
-          # zig build functional-test creates the venv at
-          # $NALAR_FUNC_VENV_DIR (see the env block above), installs
-          # requirements, and runs the suite.
+          echo "→ functional-test: starting on $RUNNER_OS"
+          # Two Windows-only PATH edits, both about the SERVICE binary
+          # starting at all rather than about any test:
+          #
+          #   1. vcpkg's bin dir — nalar.exe's DLL imports (libcurl.dll,
+          #      sqlite3.dll, libssl-3-x64.dll, ...) must resolve at
+          #      process-load time.
+          #   2. C:\Windows\System32\downlevel — Windows 11 ships the
+          #      api-ms-win-crt-* UCRT forwarder DLLs there, not in
+          #      System32\, and MinGW's dlopen does not understand API-set
+          #      virtual resolution. Without it the binary
+          #      STATUS_DLL_NOT_FOUNDs before main() runs.
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
+            fi
+          fi
+
           # Retry wrapper (2026-09-13, run 34741794778): `zig build`
           # resolves build.zig.zon deps over the network at config time
-          # (kabelweb/ruangsql tarballs from github.com). A transient
-          # DNS flake aborts the whole job before any test runs with
+          # (kabelweb/ruangsql tarballs from github.com). A transient DNS
+          # flake aborts the whole job before any test runs with
           # `build.zig.zon:19:20: error: invalid HTTP response:
-          # NameServerFailure`. The backend `install` step already
-          # retries 3x for the same class of flake — do the same here,
-          # but ONLY for fetch-phase network errors (log matches the
-          # network pattern). A real pytest failure is not retried.
+          # NameServerFailure`. The backend `install` step already retries
+          # 3x for the same class of flake — do the same here, but ONLY for
+          # fetch-phase network errors (log matches the network pattern). A
+          # real pytest failure is not retried: a flake that needs three
+          # attempts to pass is a flake to fix, not to average out.
           attempt=1
           max_attempts=3
           rc=1
           while [ "$attempt" -le "$max_attempts" ]; do
             echo "→ functional-test: attempt $attempt/$max_attempts"
             set +e
-            zig build functional-test --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 50
+            zig build functional-test-all --summary all 2>&1 | tee /tmp/functional-test.log | tail -n 80
             rc=${PIPESTATUS[0]}
             set -e
             echo "→ functional-test: attempt $attempt exit code $rc"
@@ -1544,204 +1783,34 @@ jobs:
           done
           echo "→ functional-test: exit code $rc"
           if [ "$rc" -ne 0 ]; then
-            echo "✗ functional-test: failed (see /tmp/functional-test.log)"
-            # Surface the last 100 lines for debugging.
-            tail -n 100 /tmp/functional-test.log
+            echo "✗ functional-test: failed (full log: /tmp/functional-test.log)"
+            # Print the VERDICT lines, not just the tail of the log.
+            #
+            # `tail -n 100` is what this used to be, and it is worthless at
+            # scale: pytest's short summary is ONE LINE PER FAILED/ERRORED
+            # TEST, so a run with 548 errors and 92 failures buries every
+            # failure name below the last 100 lines and the log shows only
+            # the ERROR tail. That is exactly what happened on the first
+            # windows-2022 run of this job — the tail showed 7 identical
+            # is_safe_tmp errors and the 92 unrelated failures were simply
+            # not in the log.
+            #
+            # The pattern is NOT anchored with `^`. Every line in this file
+            # carries a `2026-09-30T08:55:52.7383797Z ` timestamp prefix, so
+            # `^FAILED` matches nothing and the block silently reports zero
+            # failures — which is the same uselessness as the tail it
+            # replaced. `grep -c` also exits 1 on zero matches, so a
+            # `|| echo 0` fallback would print "0" AND the real count; use
+            # `|| true` and let grep's own "0" stand.
+            echo "----- failed / errored tests (first 60 of $(grep -cE '(FAILED|ERROR) tests/' /tmp/functional-test.log 2>/dev/null || true)) -----"
+            grep -E '(FAILED|ERROR) tests/' /tmp/functional-test.log 2>/dev/null | sed 's/^[^ ]*Z //' | head -n 60 || echo "  (no FAILED/ERROR lines found — the failure is above the pytest run)"
+            echo "----- summary -----"
+            grep -E '=+ .*(passed|failed|error).* =+' /tmp/functional-test.log 2>/dev/null | tail -n 2 || true
+            echo "----- last 40 lines -----"
+            tail -n 40 /tmp/functional-test.log
             exit 1
           fi
-          echo "✓ functional-test: passed"
-          # Time taken.
-          END=$(date +%s)
-          START=$(cat /tmp/functional-test-start.$$ 2>/dev/null || echo 0)
-          if [ "$START" -gt 0 ]; then
-            echo "→ functional-test: $((END - START))s elapsed"
-          fi
-          rm -f /tmp/functional-test-start.$$
-
-  functional-test-ui:
-    # Linux-only: Playwright UI suites. Runs regardless of BOTH backend
-    # and functional-test results, so a red compile on any platform can
-    # never turn this job's verdict into "skipped".
-    #
-    # `needs:` still orders it after functional-test, which is what
-    # populates the shared venv + Chromium cache key below. `!cancelled()`
-    # rather than `always()` so a manually cancelled run stops promptly
-    # instead of booting a browser for another three minutes.
-    name: functional-test-ui (ubuntu-24.04)
-    runs-on: ubuntu-24.04
-    needs: [backend, functional-test]
-    if: ${{ !cancelled() }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install system dependencies (Ubuntu)
-        # A GitHub-hosted runner is a FRESH VM per job, so every job has to
-        # install its own system packages. On the old self-hosted box the
-        # packages lived on the host and one cell's install covered every
-        # other job that landed on the same machine; that is not true here,
-        # which is why the backend cell and both functional jobs each call
-        # the shared script rather than sharing the work.
-        #
-        # The list lives in scripts/ci-install-linux-deps.sh precisely
-        # because it used to be copy-pasted into three places — and when it
-        # drifted, it drifted in all three at once.
-        run: bash scripts/ci-install-linux-deps.sh
-      - name: Install Node.js 24
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Install pnpm 11
-        uses: pnpm/action-setup@v4
-        with:
-          version: 11
-
-      - name: Install Zig ${{ env.ZIG_VERSION }}
-        uses: mlugg/setup-zig@v2
-        with:
-          version: ${{ env.ZIG_VERSION }}
-
-      - name: Setup Python 3.12
-        # Pinned rather than "whatever the image ships": the venv built from
-        # this interpreter is cached below, and a venv only stays valid for
-        # the exact minor version that created it. An unpinned image default
-        # would let a base-image bump silently restore an unusable venv.
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Cache python venv + playwright chromium
-        # Two things are worth persisting, both OUTSIDE the workspace:
-        #   - the pytest/playwright venv, at ${{ runner.temp }}/nalar-ci-venv
-        #     (build.zig reads NALAR_FUNC_VENV_DIR at config time)
-        #   - Playwright's Chromium download, at ~/.cache/ms-playwright
-        # The workspace itself is a fresh checkout on every GitHub-hosted
-        # job, so a workspace-relative .venv-func would be rebuilt each run.
-        #
-        # Key scoped by OS + interpreter, NOT by runner image: a venv holds
-        # no compiled host artifacts of its own (wheels are manylinux and
-        # platform-tagged by pip, not by distro), so it is safe to share
-        # across Ubuntu point releases. It is NOT safe across Python minor
-        # versions, hence the py312 component. The v2 prefix keeps the
-        # self-hosted era's v1 entries from ever being restored — those were
-        # built against whatever Python the Arch box carried.
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/ms-playwright
-            ${{ runner.temp }}/nalar-ci-venv
-          # SHARED key on purpose: the UI job restores the venv the
-          # functional-test job builds (it installs playwright into the
-          # same venv). That only works because `needs:` runs them in
-          # order and a job's post-step cache save happens before it is
-          # marked complete. Reordering them makes the UI job cold-start.
-          # Caches are immutable, so the second job to finish simply skips
-          # the save with a "Cache already exists" warning.
-          key: v2-py-${{ runner.os }}-py312-${{ hashFiles('tests/functional/requirements.txt', 'tests/functional_ui/requirements.txt') }}
-          restore-keys: |
-            v2-py-${{ runner.os }}-py312-
-
-      - name: Cache pnpm store (UI tests need Vite)
-        # The Vite dev server is spawned by UIHarness during the
-        # functional-test-ui step via `pnpm run dev`, so the webapp's
-        # (gitignored) node_modules has to exist before the tests run.
-        #
-        # This replaces a hand-rolled tarball cache that used to write
-        # node_modules into $HOME/.cache. That scheme only worked because
-        # $HOME persists on the self-hosted box; on a GitHub-hosted runner
-        # $HOME is fresh for every job, so the tarball was never there to
-        # restore — each run paid a full re-download AND wrote ~200 MB that
-        # no later run ever read. Caching pnpm's content-addressed store via
-        # actions/cache is the supported equivalent: it survives across jobs,
-        # and pnpm hard-links packages out of it instead of re-downloading.
-        uses: actions/cache@v4
-        with:
-          path: ~/.local/share/pnpm-store
-          key: v1-pnpm-${{ runner.os }}-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml') }}
-          restore-keys: |
-            v1-pnpm-${{ runner.os }}-
-
-      - name: Install webapp dependencies (UI tests need Vite)
-        # node + pnpm are on PATH from the setup steps at the top of this
-        # job. --store-dir is passed explicitly (rather than via a config
-        # file) so it cannot disagree with the actions/cache path above.
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v pnpm >/dev/null 2>&1 || { echo "x pnpm not on PATH -- pnpm/action-setup must have failed" >&2; exit 1; }
-          command -v node >/dev/null 2>&1 || { echo "x node not on PATH -- setup-node must have failed" >&2; exit 1; }
-          cd src/apps/desktop
-          pnpm install --frozen-lockfile --store-dir "$HOME/.local/share/pnpm-store"
-          echo "ok webapp deps ready"
-
-      - name: "UI tests: functional-test-ui (Playwright + DB-seeded)"
-        # 30 Playwright tests exercising the running Vue webapp
-        # (nalar backend + Vite dev server) in headless Chromium.
-        # Boots a fresh backend + vite per test against an isolated
-        # tmpdir HOME; the chatview tests DB-seed `sessions` +
-        # `llm_history` rows so no real LLM is invoked.
-        #
-        # Gate: needs backend success only — runs even if functional-test fails.
-        # The venv + chromium are restored from cache (saved by the
-        # functional-test job under the same cache key).
-        shell: bash
-        env:
-          # Same venv relocation as the functional-test step — the UI
-          # suite installs playwright + chromium into THIS venv, which
-          # is why both jobs share one cache key.
-          NALAR_FUNC_VENV_DIR: ${{ runner.temp }}/nalar-ci-venv
-        run: |
-          set -u
-          # pnpm is already on PATH from pnpm/action-setup.
-          echo "→ functional-test-ui: starting"
-          date +%s > /tmp/functional-test-ui-start.$$ 2>/dev/null || true
-          # zig build functional-test-ui installs playwright into the
-          # existing venv at $NALAR_FUNC_VENV_DIR, downloads Chromium,
-          # and runs the 30 Playwright tests (10 chatview + 11 safety
-          # + 5 smoke + 4 kanban). Cold cache: ~5 min; warm cache:
-          # ~3 min.
-          # Same transient-fetch retry as the functional-test job above
-          # (2026-09-13, run 34741794778): only network-phase errors
-          # are retried, never real Playwright failures.
-          attempt=1
-          max_attempts=3
-          rc=1
-          while [ "$attempt" -le "$max_attempts" ]; do
-            echo "→ functional-test-ui: attempt $attempt/$max_attempts"
-            set +e
-            zig build functional-test-ui --summary all 2>&1 | tee /tmp/functional-test-ui.log | tail -n 80
-            rc=${PIPESTATUS[0]}
-            set -e
-            echo "→ functional-test-ui: attempt $attempt exit code $rc"
-            if [ "$rc" -eq 0 ]; then
-              break
-            fi
-            if grep -Eq "NameServerFailure|invalid HTTP response|TemporaryFailure|NetworkUnreachable|ConnectionReset|Connection refused|failed to fetch|Could not resolve host" /tmp/functional-test-ui.log 2>/dev/null; then
-              if [ "$attempt" -lt "$max_attempts" ]; then
-                backoff=$((15 * attempt))
-                echo "→ functional-test-ui: transient fetch error, retrying in ${backoff}s..."
-                sleep "$backoff"
-                attempt=$((attempt + 1))
-                continue
-              fi
-            fi
-            break
-          done
-          echo "→ functional-test-ui: exit code $rc"
-          if [ "$rc" -ne 0 ]; then
-            echo "✗ functional-test-ui: failed (see /tmp/functional-test-ui.log)"
-            tail -n 100 /tmp/functional-test-ui.log
-            exit 1
-          fi
-          echo "✓ functional-test-ui: passed"
-          END=$(date +%s)
-          START=$(cat /tmp/functional-test-ui-start.$$ 2>/dev/null || echo 0)
-          if [ "$START" -gt 0 ]; then
-            echo "→ functional-test-ui: $((END - START))s elapsed"
-          fi
-          rm -f /tmp/functional-test-ui-start.$$
-
+          echo "✓ functional-test: both suites passed"
 
   android-functional-test:
     # The Android client's functional UI suite: a real `nalar` binary against an

@@ -38,8 +38,29 @@ def _boot_auth_ui(default_nalar_bin: Path) -> UIHarness:
 
 
 def _create_admin(bin_path: Path, home: Path) -> None:
+    """Run `nalar create-admin` against the harness's isolated HOME.
+
+    Every variable the harness shadows for the SERVER has to be
+    shadowed here too, or this subprocess lands somewhere else. On
+    Windows ``Config.zig getDefaultConfigDir`` reads ``%APPDATA%``, not
+    ``$HOME`` — shadowing only ``HOME`` left ``create-admin`` writing its
+    admin row into the runner's real profile while the test went on to
+    assert against the tempdir's database.
+
+    Mirrors the block in ``FunctionalHarness.boot``: ``HOME`` always,
+    ``USERPROFILE``/``APPDATA``/``LOCALAPPDATA`` on Windows, XDG
+    everywhere (Linux ``XDG_CONFIG_HOME`` beats ``$HOME/.config``).
+    """
     env = dict(os.environ)
     env["HOME"] = str(home)
+    if os.name == "nt":
+        env["USERPROFILE"] = str(home)
+        env["APPDATA"] = str(home / "AppData" / "Roaming")
+        env["LOCALAPPDATA"] = str(home / "AppData" / "Local")
+    env["XDG_CONFIG_HOME"] = str(home / ".config")
+    env["XDG_STATE_HOME"] = str(home / ".local" / "state")
+    env["XDG_DATA_HOME"] = str(home / ".local" / "share")
+    env["XDG_CACHE_HOME"] = str(home / ".cache")
     r = subprocess.run(
         [str(bin_path), "create-admin", "--email", EMAIL, "--password", PASSWORD],
         capture_output=True,

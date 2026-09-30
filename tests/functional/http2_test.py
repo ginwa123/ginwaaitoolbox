@@ -17,6 +17,7 @@ Run:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import socket
 import struct
@@ -117,7 +118,7 @@ def test_h1_only_when_flag_absent(default_nalar_bin) -> None:
                 _curl(),
                 "-sS",
                 "-o",
-                "/dev/null",
+                os.devnull,
                 "--http2-prior-knowledge",
                 f"http://127.0.0.1:{h.port}/health",
             ],
@@ -161,7 +162,7 @@ def test_h2_unknown_route_is_404(h2_harness: FunctionalHarness) -> None:
             _curl(),
             "-sS",
             "-o",
-            "/dev/null",
+            os.devnull,
             "-w",
             "%{http_code} %{http_version}",
             "--http2-prior-knowledge",
@@ -190,9 +191,9 @@ def test_h2_reuses_one_connection_for_two_requests(h2_harness: FunctionalHarness
             _curl(),
             "-sS",
             "-o",
-            "/dev/null",
+            os.devnull,
             "-o",
-            "/dev/null",
+            os.devnull,
             "-w",
             "%{num_connects}\n",
             "--http2-prior-knowledge",
@@ -255,7 +256,7 @@ def test_h2_response_headers_are_lowercase(h2_harness: FunctionalHarness) -> Non
             "-D",
             "-",
             "-o",
-            "/dev/null",
+            os.devnull,
             "--http2-prior-knowledge",
             f"http://127.0.0.1:{h2_harness.port}/health",
         ],

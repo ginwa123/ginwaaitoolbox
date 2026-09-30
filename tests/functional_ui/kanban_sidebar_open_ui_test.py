@@ -25,6 +25,7 @@ Run:
 
 from __future__ import annotations
 
+from harness import harness_path
 from ui_harness import UIHarness
 
 
@@ -47,7 +48,7 @@ def _create_agent(h: UIHarness, workspace_id: str, name: str = "UIAGENT_ITEM") -
     r = h.http(
         "POST",
         f"/api/workspaces/{workspace_id}/items/agent",
-        json_body={"name": name, "path": "/tmp/ui-kanban-after-task-agent"},
+        json_body={"name": name, "path": harness_path(h, "ui-kanban-after-task-agent")},
         expect=201,
     )
     return r.json()["item"]["id"]
