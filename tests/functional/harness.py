@@ -59,6 +59,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
@@ -163,6 +164,49 @@ class FunctionalHarnessError(RuntimeError):
 # ============================================================================
 
 
+def _canonical(path: str) -> str:
+    """``normcase(realpath(path))`` — the one spelling every comparison here uses.
+
+    Both halves are load-bearing, and the first one cost 548 test errors
+    on the windows-2022 CI cell before it existed.
+
+    ``realpath`` canonicalises the candidate. On Windows that includes
+    expanding 8.3 SHORT names to long ones, so a path under a runner's
+    ``%TEMP%`` of ``C:\\Users\\RUNNER~1\\AppData\\Local\\Temp`` comes back
+    as ``C:\\Users\\runneradmin\\AppData\\Local\\Temp``. A GitHub
+    ``windows-2022`` runner's ``%TEMP%`` is exactly that short form, and
+    ``tempfile.gettempdir()`` — which builds ``ALLOWED_TMP_PREFIXES`` —
+    returns it verbatim. Comparing the canonicalised candidate against the
+    RAW allow-list therefore failed for the harness's own tempdir, on
+    every test in the job, with an error message that printed both sides
+    in a form that visibly matched and so read as nonsense:
+
+        mkdtemp produced an unsafe path: C:\\Users\\RUNNER~1\\...\\nalar-func-abc
+        Expected prefix in ('C:\\\\Users\\\\RUNNER~1\\\\AppData\\\\Local\\\\Temp\\\\',)
+
+    (neither of those is the string that was compared — ``real`` is).
+
+    ``normcase`` supplies the other half: a Windows path comparison is
+    case-insensitive, which this function has always assumed and never
+    actually got. On POSIX both calls are near-identity, so nothing
+    changes there.
+    """
+    return os.path.normcase(os.path.realpath(path))
+
+
+@lru_cache(maxsize=32)
+def _canonical_prefix(prefix: str) -> str:
+    """``_canonical`` for an allow-list entry, memoised.
+
+    The prefixes come from ``tempfile.gettempdir()`` and never change
+    within a process, but ``realpath`` costs syscalls and this is on the
+    teardown path of every test. Cached per prefix string, so a test that
+    monkeypatches ``ALLOWED_TMP_PREFIXES`` with a fresh tuple still gets
+    a freshly-computed value rather than a stale one.
+    """
+    return _canonical(prefix)
+
+
 def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str]) -> bool:
     """Return True iff ``path`` is a tmpdir the harness is allowed to rmtree.
 
@@ -173,6 +217,13 @@ def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str])
       - paths missing the REQUIRED_TMP_SUBSTR namespace
       - paths that resolve to the real ``$HOME`` (catches symlinks)
 
+    Every comparison below is made in ONE canonical form, on both sides.
+    The allow-list is an assertion about *which directories*; spelling
+    the same directory two different ways is not a different directory,
+    and treating it as one would either fail safe-but-uselessly (the
+    8.3 bug above) or — if resolved the other way round — pass something
+    that should not pass.
+
     This function is the single source of truth for "may this be deleted".
     ANY rmtree in the harness MUST be gated by it.
     """
@@ -181,12 +232,12 @@ def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str])
     p = os.fspath(path)
     if not os.path.isabs(p):
         return False
-    real = os.path.realpath(p)
-    if not any(real.startswith(prefix) for prefix in ALLOWED_TMP_PREFIXES):
+    real = _canonical(p)
+    if not any(real.startswith(_canonical_prefix(prefix)) for prefix in ALLOWED_TMP_PREFIXES):
         return False
     if REQUIRED_TMP_SUBSTR not in real:
         return False
-    real_home = os.path.realpath(os.fspath(orig_home)) if orig_home else ""
+    real_home = _canonical(os.fspath(orig_home)) if orig_home else ""
     if real_home and real == real_home:
         return False
     return True

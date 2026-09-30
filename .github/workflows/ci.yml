@@ -1783,9 +1783,31 @@ jobs:
           done
           echo "→ functional-test: exit code $rc"
           if [ "$rc" -ne 0 ]; then
-            echo "✗ functional-test: failed (see /tmp/functional-test.log)"
-            # Surface the last 100 lines for debugging.
-            tail -n 100 /tmp/functional-test.log
+            echo "✗ functional-test: failed (full log: /tmp/functional-test.log)"
+            # Print the VERDICT lines, not just the tail of the log.
+            #
+            # `tail -n 100` is what this used to be, and it is worthless at
+            # scale: pytest's short summary is ONE LINE PER FAILED/ERRORED
+            # TEST, so a run with 548 errors and 92 failures buries every
+            # failure name below the last 100 lines and the log shows only
+            # the ERROR tail. That is exactly what happened on the first
+            # windows-2022 run of this job — the tail showed 7 identical
+            # is_safe_tmp errors and the 92 unrelated failures were simply
+            # not in the log.
+            #
+            # The pattern is NOT anchored with `^`. Every line in this file
+            # carries a `2026-09-30T08:55:52.7383797Z ` timestamp prefix, so
+            # `^FAILED` matches nothing and the block silently reports zero
+            # failures — which is the same uselessness as the tail it
+            # replaced. `grep -c` also exits 1 on zero matches, so a
+            # `|| echo 0` fallback would print "0" AND the real count; use
+            # `|| true` and let grep's own "0" stand.
+            echo "----- failed / errored tests (first 60 of $(grep -cE '(FAILED|ERROR) tests/' /tmp/functional-test.log 2>/dev/null || true)) -----"
+            grep -E '(FAILED|ERROR) tests/' /tmp/functional-test.log 2>/dev/null | sed 's/^[^ ]*Z //' | head -n 60 || echo "  (no FAILED/ERROR lines found — the failure is above the pytest run)"
+            echo "----- summary -----"
+            grep -E '=+ .*(passed|failed|error).* =+' /tmp/functional-test.log 2>/dev/null | tail -n 2 || true
+            echo "----- last 40 lines -----"
+            tail -n 40 /tmp/functional-test.log
             exit 1
           fi
           echo "✓ functional-test: both suites passed"
