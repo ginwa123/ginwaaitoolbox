@@ -5,79 +5,49 @@ import { extractParam } from '../../helpers/extractParam'
 import { normalizeToolContent } from './_shared/toolOutputParser'
 
 /**
- * ReadWorkspaceSession — renders the rich `<read_workspace_session>`
- * envelope returned by the `read_workspace_session` tool (see
- * `read_workspace_session.zig`). The tool is the LLM's window into
- * OTHER chat sessions in its own workspace — list, FTS search,
- * per-session read, and search-within — so surfacing it as a
- * structured card matters: a raw-XML dump in the chat is unreadable.
+ * ReadWorkspaceSession — renders the `read_workspace_session` tool result
+ * (see `read_workspace_session.zig`). The tool is the LLM's window into
+ * OTHER chat sessions in its own workspace — list, FTS search, per-session
+ * read, and search-within — so surfacing it as a structured card matters:
+ * a raw JSON dump in the chat is unreadable.
  *
- * Four output shapes, all well-formed by construction:
+ * The payload is JSON inside the standard tool envelope
+ * (`{tool, parameters, success, data, error, v}`); this card renders
+ * `data`, which is discriminated by `behavior`:
  *
  *   behavior="list" (workspace session discovery):
- *     <read_workspace_session behavior="list" limit="M">
- *       <count>K</count>
- *       <total_count>T</total_count>
- *       <sessions>
- *         <session>
- *           <id>s_xxx</id>
- *           <name>...</name>
- *           <status>active</status>
- *           <message_count>N</message_count>
- *           <last_activity>...</last_activity>
- *           <preview>...latest human message...</preview>
- *         </session>
- *         ...
- *       </sessions>
- *     </read_workspace_session>
+ *     { behavior, limit, count, total_count,
+ *       sessions: [{ id, name, status, message_count, last_activity, preview }] }
  *
  *   behavior="search" | "search-within" (FTS results):
- *     <read_workspace_session behavior="search" offset="N" limit="M">
- *       <query>...FTS query...</query>
- *       [<session_id>s_xxx</session_id>]  <!-- search-within only -->
- *       <count>K</count>
- *       <total_count>T</total_count>
- *       <results>
- *         <entry>
- *           <id>h_xxx</id>
- *           <session_id>s_xxx</session_id>
- *           <session_name>...</session_name>
- *           <role>user|assistant|tool</role>
- *           <created_at>...</created_at>
- *           <snippet>...with [match] markers around hits...</snippet>
- *         </entry>
- *         ...
- *       </results>
- *     </read_workspace_session>
+ *     { behavior, query, session_id, offset, limit, count, total_count,
+ *       results: [{ id, session_id, session_name, role, created_at, snippet }],
+ *       full_contents: [{ id, session_id, role, content, content_truncated }] | null }
  *
  *   behavior="read" (per-session message index):
- *     <read_workspace_session behavior="read" order="asc|desc">
- *       <session_id>s_xxx</session_id>
- *       <count>K</count>
- *       <total_count>T</total_count>
- *       <message_index>
- *         <entry>
- *           <id>h_xxx</id>
- *           <role>user|assistant|tool</role>
- *           <created_at>...</created_at>
- *           <preview>...first 100 chars...</preview>
- *           <tool_call_id>...</tool_call_id>  <!-- only for tool role -->
- *           <tool_name>...</tool_name>         <!-- only for tool role -->
- *           <content truncated="0|1">...</content>  <!-- only for requested message_ids -->
- *         </entry>
- *         ...
- *       </message_index>
- *     </read_workspace_session>
+ *     { behavior, order, session_id, count, total_count,
+ *       message_index: [{ id, role, created_at, preview, tool_call_id,
+ *                         tool_name, content, content_truncated }] }
  *
- *   Denied (cross-workspace target):
- *     <read_workspace_session><denied session_id="s_xxx">...</denied></read_workspace_session>
+ *   denied: { denied: true, session_id, message }
+ *   error:  { error: "..." }
  *
- *   Error:
- *     <read_workspace_session><error>...</error></read_workspace_session>
+ * Two details worth knowing before editing this file:
  *
- * Parsing uses regex (consistent with Search.vue / ListSkills.vue) —
- * the backend emits well-formed XML and regex is plenty for this
- * fixed shape.
+ *   * `snippet` marks its match with BARE brackets, not tags. The backend
+ *     calls `snippet(messages_fts, 0, '[', ']', '...', 10)`, so a real value
+ *     looks like `...a [portal] that refuses...`. `parseSnippet` also
+ *     tolerates `[match]`/`[/match]` for transcripts persisted earlier.
+ *
+ *   * `created_at` is `YYYY-MM-DD HH:MM:SS` (the `created_iso` column), the
+ *     same format the tool's own `since`/`until` parameters accept. It sorts
+ *     lexicographically, which is what makes the recency grouping below
+ *     correct. It was a raw nanosecond epoch until commit 1655f221.
+ *
+ * Search results are grouped by `session` and a role-facet footer shows
+ * page-scoped counts — the backend indexes the whole JSON envelope for
+ * tool rows, so a natural-language query matches tool output heavily and
+ * the ratio is worth surfacing.
  */
 
 // ── Shared types ──────────────────────────────────────────────────────────
