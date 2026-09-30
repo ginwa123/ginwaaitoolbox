@@ -2454,7 +2454,12 @@ pub fn searchMessagesFts(
         \\        snippet(messages_fts, 0, '[', ']', '...', 10) AS snippet,
         \\        h.tool_call_id AS tool_call_id,
         \\        h.tool_name AS tool_name,
-        \\        COALESCE(h.created_at_nano, '') AS created_at,
+        // Prefer the populated `created_iso` string over the raw
+        // nanosecond epoch so the returned `created_at` is readable and
+        // matches the `YYYY-MM-DD HH:MM:SS` format `since`/`until` already
+        // accept. NULLIF falls back to the epoch only for legacy
+        // pre-migration rows whose `created_iso` is NULL or empty.
+        \\        COALESCE(NULLIF(h.created_iso, ''), h.created_at_nano, '') AS created_at,
         \\        rank AS fts_rank
         \\    FROM messages_fts
         \\    JOIN llm_history h ON h.rowid = messages_fts.rowid
@@ -9685,6 +9690,61 @@ test "searchMessagesFts: since AND until together produce a date range (regressi
     // Both h_mid and h_new should be present (h_old should not).
     try testing.expect(std.mem.indexOf(u8, ids[0], "h_old") == null or
         std.mem.indexOf(u8, ids[1], "h_old") == null);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// created_at shape
+//
+// The `since`/`until` filters above take an ISO date string, so the
+// `created_at` we hand back has to be an ISO string too — returning the
+// raw nanosecond epoch made the tool accept one format and emit another.
+// ────────────────────────────────────────────────────────────────────────
+
+test "searchMessagesFts: created_at is a readable ISO timestamp, not a nanosecond epoch" {
+    var s = try llmHistorySearchMessagesFtsSetupDb();
+    defer { s.db.deinit(); s.threaded.deinit(); }
+    const alloc = testing.allocator;
+
+    // Seed both columns the way production writes them: `created_at_nano`
+    // is a 19-digit nanosecond epoch, `created_iso` is the local-time
+    // string `saveMessage` populates.
+    const nano: []const u8 = "1790706338823948836";
+    const iso: []const u8 = "2026-09-30 19:53:35";
+    try s.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, role, response_content, created_at_nano, created_iso) " ++
+        "VALUES ('h_ts','s1','user','readable timestamp check',?,?)", &.{ nano, iso });
+
+    const hits = try searchMessagesFts(alloc, &s.db, "readable timestamp", .{});
+    defer freeHits(alloc, hits);
+
+    try testing.expectEqual(@as(usize, 1), hits.len);
+
+    const created_at = hits[0].created_at;
+    // `YYYY-MM-DD HH:MM:SS`: dashes at 4/7, space at 10, colons at 13/16,
+    // digits everywhere else.
+    const shape_ok = created_at.len == 19 and
+        std.ascii.isDigit(created_at[0]) and std.ascii.isDigit(created_at[1]) and
+        std.ascii.isDigit(created_at[2]) and std.ascii.isDigit(created_at[3]) and
+        created_at[4] == '-' and
+        std.ascii.isDigit(created_at[5]) and std.ascii.isDigit(created_at[6]) and
+        created_at[7] == '-' and
+        std.ascii.isDigit(created_at[8]) and std.ascii.isDigit(created_at[9]) and
+        created_at[10] == ' ' and
+        std.ascii.isDigit(created_at[11]) and std.ascii.isDigit(created_at[12]) and
+        created_at[13] == ':' and
+        std.ascii.isDigit(created_at[14]) and std.ascii.isDigit(created_at[15]) and
+        created_at[16] == ':' and
+        std.ascii.isDigit(created_at[17]) and std.ascii.isDigit(created_at[18]);
+
+    if (!shape_ok) {
+        std.debug.print(
+            "\nsearchMessagesFts created_at = \"{s}\" — expected YYYY-MM-DD HH:MM:SS, not a nanosecond epoch\n",
+            .{created_at},
+        );
+    }
+    try testing.expect(shape_ok);
+    try testing.expectEqualStrings(iso, created_at);
+    try testing.expect(!std.mem.eql(u8, created_at, nano));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
