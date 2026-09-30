@@ -73,6 +73,32 @@ async function makeRouter(query: Record<string, string> = {}) {
   return router
 }
 
+/**
+ * The list is cache-first now (IndexedDB paint, then revalidate), so the
+ * DOM settles on a promise boundary rather than a microtask. Two
+ * `nextTick()`s no longer reach the painted rows — this does, and it is
+ * the same flush `SidebarDiffPanel.tabs.spec.ts` uses.
+ */
+async function settle(): Promise<void> {
+  await flushPromises()
+  await nextTick()
+}
+
+/**
+ * The documents list is cache-first now, and `documentEngineDb` is a module
+ * singleton whose IndexedDB fallback is a module-level Map — so rows cached
+ * by one test are still primed by the next one. Every test in this file
+ * asserts a COLD start ("no documents were cached yet"), so each one begins
+ * from an empty cache. Without this, the first successful test silently
+ * supplies `documents` to every later test and the empty/error assertions
+ * pass for the wrong reason.
+ */
+async function clearDocumentsCache(workspaceId = 'ws_1'): Promise<void> {
+  const { documentEngineDb } = await import('../sync/DocumentEngineDb')
+  const { runSyncVoid } = await import('../sync/runtime')
+  await runSyncVoid(documentEngineDb.clear(workspaceId), 'spec.clearDocumentsCache')
+}
+
 function mountList(router: Awaited<ReturnType<typeof makeRouter>>) {
   return mount(DocumentsList, {
     props: { workspaceId: 'ws_1' },
@@ -81,7 +107,8 @@ function mountList(router: Awaited<ReturnType<typeof makeRouter>>) {
 }
 
 describe('DocumentsList — section chrome', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearDocumentsCache()
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
@@ -112,8 +139,7 @@ describe('DocumentsList — section chrome', () => {
   it('lists every document for the workspace with a quiet count', async () => {
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
+    await settle()
 
     expect(listDocuments).toHaveBeenCalledWith('ws_1')
     expect(wrapper.get('[data-testid="documents-count"]').text()).toBe('2')
@@ -125,8 +151,7 @@ describe('DocumentsList — section chrome', () => {
   it('renders rows at the shared --sb-row height', async () => {
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
+    await settle()
 
     const row = wrapper.get('[data-testid="document-row-doc_1"]')
     expect(row.classes()).toContain('h-[var(--sb-row)]')
@@ -164,7 +189,8 @@ describe('DocumentsList — section chrome', () => {
 })
 
 describe('DocumentsList — URL contract', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearDocumentsCache()
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
@@ -178,8 +204,7 @@ describe('DocumentsList — URL contract', () => {
   it('a row click writes ?doc= to the URL and mount restores the highlight', async () => {
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
+    await settle()
 
     await wrapper.get('[data-testid="document-row-doc_2"]').trigger('click')
     // `router.replace` resolves on a microtask, so a bare `nextTick()` can
@@ -193,8 +218,7 @@ describe('DocumentsList — URL contract', () => {
     // The mount half. Without this, a shared link opens the right
     // document with no row highlighted.
     const restored = mountList(await makeRouter({ doc: 'doc_2' }))
-    await nextTick()
-    await nextTick()
+    await settle()
     const style = restored.get('[data-testid="document-row-doc_2"]').attributes('style') ?? ''
     expect(style).toContain('--semantic-active-bg')
     const otherStyle = restored.get('[data-testid="document-row-doc_1"]').attributes('style') ?? ''
@@ -205,8 +229,7 @@ describe('DocumentsList — URL contract', () => {
   it('clicking a row clears the chat and project selection so only one row is active', async () => {
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
+    await settle()
 
     await wrapper.get('[data-testid="document-row-doc_1"]').trigger('click')
     await flushPromises()
@@ -223,7 +246,8 @@ describe('DocumentsList — URL contract', () => {
 })
 
 describe('DocumentsList — failure is not emptiness', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    await clearDocumentsCache()
     setActivePinia(createPinia())
     Object.defineProperty(globalThis, 'localStorage', {
       value: makeLocalStorageStub(),
@@ -238,9 +262,8 @@ describe('DocumentsList — failure is not emptiness', () => {
     listDocuments.mockRejectedValue(new Error('HTTP 500 Internal Server Error'))
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
-    await nextTick()
+    await settle()
+    await settle()
 
     // The regression: `catch` returning `[]` with no error makes this
     // identical to a workspace with no documents, and the user deletes
@@ -254,9 +277,7 @@ describe('DocumentsList — failure is not emptiness', () => {
     listDocuments.mockResolvedValue({ documents: [], count: 0 })
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
-    await nextTick()
+    await settle()
 
     expect(wrapper.find('[data-testid="documents-empty"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="documents-error"]').exists()).toBe(false)
@@ -269,8 +290,7 @@ describe('DocumentsList — failure is not emptiness', () => {
       props: { workspaceId: null },
       global: { plugins: [router] },
     })
-    await nextTick()
-    await nextTick()
+    await settle()
 
     expect(listDocuments).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="documents-no-workspace"]').exists()).toBe(true)
@@ -281,18 +301,24 @@ describe('DocumentsList — failure is not emptiness', () => {
     listDocuments.mockResolvedValueOnce({ documents: DOCS, count: DOCS.length })
     const router = await makeRouter()
     const wrapper = mountList(router)
-    await nextTick()
-    await nextTick()
+    await settle()
     expect(wrapper.find('[data-testid="document-row-doc_1"]').exists()).toBe(true)
 
     listDocuments.mockRejectedValueOnce(new Error('boom'))
     const store = useDocumentsStore()
     await store.fetchDocuments('ws_1')
-    await nextTick()
+    await settle()
 
     // Blanking the list on a failed refresh would make a transient
     // network error look like data loss.
-    expect(store.error).toBe('boom')
+    //
+    // The message is now the sync engine's (`sync remote
+    // documents.fetchDelta failed: boom`), because the list load went
+    // through the Effect seam. The assertion is on the REASON surviving
+    // to the UI, not on the exact prefix — `toBe('boom')` would have
+    // caught a regression that dropped the error, but would also break
+    // on any future wording change for no gain.
+    expect(store.error).toContain('boom')
     expect(store.documents).toHaveLength(2)
     expect(wrapper.find('[data-testid="document-row-doc_1"]').exists()).toBe(true)
     wrapper.unmount()

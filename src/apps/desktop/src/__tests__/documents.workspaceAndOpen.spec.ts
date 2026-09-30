@@ -49,7 +49,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { createApp, nextTick, reactive, ref } from 'vue'
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 
 import * as realApi from '../api'
 import { useWorkspacesStore } from '../stores/workspaces'
@@ -160,7 +160,20 @@ function navigate(path: string, query: Record<string, string> = {}) {
   route.fullPath = path + (qs ? `?${qs}` : '')
 }
 
-beforeEach(() => {
+/**
+ * The documents list is cache-first now, and `documentEngineDb` is a module
+ * singleton whose IndexedDB fallback is a module-level Map — so rows cached
+ * by one test are still primed by the next one. Every test here asserts a
+ * COLD start, so each one begins from an empty cache.
+ */
+async function clearDocumentsCache(workspaceId: string): Promise<void> {
+  const { documentEngineDb } = await import('../sync/DocumentEngineDb')
+  const { runSyncVoid } = await import('../sync/runtime')
+  await runSyncVoid(documentEngineDb.clear(workspaceId), 'spec.clearDocumentsCache')
+}
+
+beforeEach(async () => {
+  await clearDocumentsCache(WS_ID)
   setActivePinia(createPinia())
   document.body.innerHTML = ''
   Object.defineProperty(globalThis, 'localStorage', {
@@ -205,8 +218,14 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+/**
+ * The list load is cache-first now (IndexedDB read, then revalidate), so the
+ * painted rows land on a promise boundary rather than a microtask. Four
+ * `nextTick()`s no longer reach them — this does.
+ */
 const flush = async () => {
-  for (let i = 0; i < 4; i++) await nextTick()
+  await flushPromises()
+  for (let i = 0; i < 2; i++) await nextTick()
 }
 
 // ─── BUG 1 ────────────────────────────────────────────────────────────────

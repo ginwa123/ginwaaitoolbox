@@ -37,7 +37,22 @@ const doc = (id: string, overrides: Partial<api.Document> = {}): api.Document =>
   ...overrides,
 })
 
-beforeEach(() => {
+/**
+ * The list is cache-first now, and `documentEngineDb` is a module singleton
+ * whose IndexedDB fallback is a module-level Map. That cache deliberately
+ * outlives `createPinia()` — which is the feature — but it means rows
+ * cached by one test are still primed by the next, flipping `loaded` to
+ * true before the mocked `listDocuments` is ever consulted. Every test
+ * here asserts a cold load, so each starts from an empty cache.
+ */
+async function clearDocumentsCache(workspaceId = 'ws_1'): Promise<void> {
+  const { documentEngineDb } = await import('../sync/DocumentEngineDb')
+  const { runSyncVoid } = await import('../sync/runtime')
+  await runSyncVoid(documentEngineDb.clear(workspaceId), 'spec.clearDocumentsCache')
+}
+
+beforeEach(async () => {
+  await clearDocumentsCache()
   setActivePinia(createPinia())
   listDocuments.mockReset()
   createDocument.mockReset()
@@ -69,7 +84,13 @@ describe('documents store — load', () => {
     // lets the component render "could not load" instead of "no
     // documents". Asserting only one of the two would pass a store that
     // sets error on success.
-    expect(store.error).toBe('HTTP 500')
+    //
+    // The load now goes through the sync engine, so the message is the
+    // engine's (`sync remote documents.fetchDelta failed: HTTP 500`).
+    // Asserted on the REASON surviving rather than the exact string: the
+    // contract is that the failure reaches `error`, and pinning the prefix
+    // would break on any future rewording for no extra protection.
+    expect(store.error).toContain('HTTP 500')
     expect(store.loaded).toBe(false)
     expect(store.documents).toEqual([])
   })
