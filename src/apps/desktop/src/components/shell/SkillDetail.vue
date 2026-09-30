@@ -98,7 +98,7 @@ defineExpose({})
   <div class="skill-detail h-full flex flex-col overflow-hidden">
     <!-- Empty State -->
     <div v-if="!skillName" class="flex-1 flex items-center justify-center">
-      <p class="text-sm" style="color: var(--semantic-text-muted);">
+      <p class="text-body" style="color: var(--semantic-text-muted);">
         Select a skill to view details
       </p>
     </div>
@@ -113,7 +113,7 @@ defineExpose({})
 
     <!-- Error State -->
     <div v-else-if="error" class="flex-1 flex items-center justify-center">
-      <p class="text-sm" style="color: var(--color-red);">{{ error }}</p>
+      <p class="text-body" style="color: var(--color-red);">{{ error }}</p>
     </div>
 
     <!-- Skill Content -->
@@ -122,8 +122,8 @@ defineExpose({})
       <div class="p-4 shrink-0" style="border-bottom: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-3">
-            <span class="text-lg">🛠️</span>
-            <h3 class="text-base font-semibold" style="color: var(--semantic-text);">
+            <span class="text-title-sm">🛠️</span>
+            <h3 class="text-lead font-semibold" style="color: var(--semantic-text);">
               {{ skillDetail.name }}
             </h3>
           </div>
@@ -138,12 +138,12 @@ defineExpose({})
             </svg>
           </button>
         </div>
-        <p class="text-sm" style="color: var(--semantic-text-muted);">
+        <p class="text-body" style="color: var(--semantic-text-muted);">
           {{ skillDetail.description }}
         </p>
         <div
           v-if="skillDetail.path"
-          class="text-xs mt-2 p-2 rounded truncate"
+          class="text-dense mt-2 p-2 rounded truncate"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-dim);"
         >
           <span class="font-medium">Path:</span> {{ skillDetail.path }}
@@ -153,11 +153,11 @@ defineExpose({})
 
       <!-- Content -->
       <div class="flex-1 overflow-y-auto p-4">
-        <h4 class="text-sm font-medium mb-2 shrink-0" style="color: var(--semantic-text);">
+        <h4 class="text-body font-medium mb-2 shrink-0" style="color: var(--semantic-text);">
           Content
         </h4>
         <pre
-          class="text-xs p-4 rounded whitespace-pre-wrap"
+          class="text-dense p-4 rounded whitespace-pre-wrap"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted);"
         >{{ skillDetail.content }}</pre>
       </div>
@@ -172,16 +172,16 @@ defineExpose({})
           class="rounded-xl p-6 max-w-sm mx-4"
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
         >
-          <h3 class="text-base font-semibold mb-2" style="color: var(--semantic-text);">
+          <h3 class="text-lead font-semibold mb-2" style="color: var(--semantic-text);">
             Delete Skill?
           </h3>
-          <p class="text-sm mb-4" style="color: var(--semantic-text-muted);">
+          <p class="text-body mb-4" style="color: var(--semantic-text-muted);">
             Are you sure you want to delete "<strong>{{ skillDetail.name }}</strong>"? This action cannot be undone.
           </p>
           <div class="flex gap-3 justify-end">
             <button
               @click="cancelDelete"
-              class="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+              class="px-4 py-2 rounded-lg text-body font-medium transition-colors duration-200"
               style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
               :disabled="isDeleting"
             >
@@ -189,7 +189,7 @@ defineExpose({})
             </button>
             <button
               @click="handleDelete"
-              class="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+              class="px-4 py-2 rounded-lg text-body font-medium transition-colors duration-200"
               style="background-color: var(--color-red); color: white;"
               :disabled="isDeleting"
             >

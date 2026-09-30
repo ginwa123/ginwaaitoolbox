@@ -354,7 +354,7 @@ defineExpose({ commitDraft })
       <span
         v-for="(tag, idx) in props.modelValue"
         :key="`${tag}-${idx}`"
-        class="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded font-medium"
+        class="inline-flex items-center gap-1 text-meta px-1.5 py-0.5 rounded font-medium"
         :style="tagChipStyle(tag)"
         :data-testid="`${props.testId}-chip-${tag}`"
       >
@@ -380,7 +380,7 @@ defineExpose({ commitDraft })
         type="text"
         :placeholder="props.modelValue.length === 0 ? 'Add tags (letters, digits, hyphens)…' : ''"
         :data-testid="`${props.testId}-field`"
-        class="flex-1 min-w-[120px] bg-transparent outline-none text-sm"
+        class="flex-1 min-w-[120px] bg-transparent outline-none text-body"
         style="color: var(--semantic-text);"
       />
     </div>
@@ -394,7 +394,7 @@ defineExpose({ commitDraft })
         <li
           v-for="(suggestion, idx) in filteredSuggestions"
           :key="suggestion"
-          class="px-3 py-1.5 cursor-pointer text-sm transition-colors duration-100"
+          class="px-3 py-1.5 cursor-pointer text-body transition-colors duration-100"
           :class="idx === highlightedIndex ? 'bg-violet-500/20' : ''"
           :style="{ color: 'var(--semantic-text)' }"
           :data-testid="`${props.testId}-suggestion-${suggestion}`"
@@ -412,7 +412,7 @@ defineExpose({ commitDraft })
       </ul>
       <div
         v-if="props.loadingMore"
-        class="px-3 py-1.5 text-xs text-center"
+        class="px-3 py-1.5 text-dense text-center"
         style="color: var(--semantic-text-dim);"
         :data-testid="`${props.testId}-suggestions-loading`"
       >
@@ -421,7 +421,7 @@ defineExpose({ commitDraft })
     </div>
     <div
       v-if="hasError"
-      class="mt-1 text-[11px]"
+      class="mt-1 text-meta"
       style="color: rgb(248, 113, 113);"
       :data-testid="`${props.testId}-error`"
       role="alert"

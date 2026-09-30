@@ -785,3 +785,43 @@ test "App: init dupes cwd from Config" {
     defer app.deinit();
     try testing.expectEqualStrings("/tmp/proj", app.cfg.cwd);
 }
+
+// ===== Tests merged from tdd_round2_test.zig (2026-09-29 flatten) =====
+// Section 3 of tdd_round2_test.zig: the `app.onMessages` regression
+// tests (role-detection robustness). The file's leading doc comment
+// lives in transport.zig, which carries section 1.
+
+// ============================================================================
+// 3. app.onMessages — role heuristic robustness
+// ============================================================================
+
+fn testAppForOnMessages() !App {
+    return App.init(testing.allocator, undefined, .{ .server = "http://test" });
+}
+
+test "onMessages: assistant role stops streaming regardless of case" {
+    var app = try testAppForOnMessages();
+    defer app.deinit();
+    app.is_streaming = true;
+    const body = "{\"messages\":[{\"role\":\"ASSISTANT\",\"content\":\"done\"}]}";
+    try app.onMessages(body);
+    try testing.expect(!app.is_streaming);
+}
+
+test "onMessages: malformed JSON body is ignored, not a crash" {
+    var app = try testAppForOnMessages();
+    defer app.deinit();
+    app.is_streaming = true;
+    try app.onMessages("this is not json {{{");
+    // State unchanged; still waiting for the reply.
+    try testing.expect(app.is_streaming);
+}
+
+test "onMessages: non-object message entries are skipped" {
+    var app = try testAppForOnMessages();
+    defer app.deinit();
+    const body = "{\"messages\":[\"junk\",42,null,{\"role\":\"assistant\",\"content\":\"ok\"}]}";
+    try app.onMessages(body);
+    // welcome + the one valid assistant message
+    try testing.expectEqual(@as(usize, 2), app.viewport.lines.items.len);
+}

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from chatview_boot import open_chatview
 from db_seed import DbSeed
 from ui_harness import UIHarness
 
@@ -158,11 +159,7 @@ def test_command_stdout_updates_live_and_survives_reload(
         )
 
     page.set_viewport_size({"width": 1440, "height": 900})
-    page.goto(
-        h.web_url(f"/app?view=chat&session={SESSION_ID}"),
-        wait_until="domcontentloaded",
-        timeout=30000,
-    )
+    open_chatview(page, h, workspace_id, SESSION_ID)
     page.locator(".virtual-scroller").first.wait_for(timeout=15000, state="visible")
 
     card = page.locator(".chat-tool-card").filter(

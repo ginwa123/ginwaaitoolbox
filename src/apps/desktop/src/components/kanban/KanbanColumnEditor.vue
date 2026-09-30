@@ -195,14 +195,14 @@ onBeforeUnmount(() => {
           <div class="px-5 pt-5 pb-4">
             <h3
               :id="`kanban-column-editor-title-${mode}`"
-              class="text-base font-semibold flex items-center gap-2"
+              class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
               <span aria-hidden="true">{{ headerIcon }}</span>
               {{ headerText }}
             </h3>
             <p
-              class="text-xs mt-1"
+              class="text-dense mt-1"
               style="color: var(--semantic-text-dim);"
             >
               {{ descriptionText }}
@@ -212,7 +212,7 @@ onBeforeUnmount(() => {
           <!-- Name input (add / rename) or confirmation text (delete) -->
           <div v-if="showNameInput" class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Column Name
@@ -223,7 +223,7 @@ onBeforeUnmount(() => {
               type="text"
               :placeholder="mode === 'add' ? 'In review' : ''"
               :data-testid="`kanban-column-editor-${mode}-name`"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -232,12 +232,12 @@ onBeforeUnmount(() => {
               @keyup.enter="handleSubmit"
             />
             <label
-              class="block text-xs font-medium mb-2 mt-3"
+              class="block text-dense font-medium mb-2 mt-3"
               style="color: var(--semantic-text-dim);"
             >
               Description
               <span
-                class="ml-1 text-[10px]"
+                class="ml-1 text-micro"
                 style="color: var(--semantic-text-dim);"
               >(optional — what this column means)</span>
             </label>
@@ -248,7 +248,7 @@ onBeforeUnmount(() => {
               rows="3"
               :placeholder="mode === 'add' ? 'e.g. Awaiting code review — must pass CI before merge' : ''"
               :data-testid="`kanban-column-editor-${mode}-description`"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 resize-y"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200 resize-y"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -257,7 +257,7 @@ onBeforeUnmount(() => {
               "
             ></textarea>
             <div
-              class="text-[10px] mt-1 text-right"
+              class="text-micro mt-1 text-right"
               style="color: var(--semantic-text-dim);"
               :data-testid="`kanban-column-editor-${mode}-description-counter`"
             >
@@ -268,7 +268,7 @@ onBeforeUnmount(() => {
             <!-- Delete-mode confirmation: surface the column name so the
                  user has explicit context on what they're deleting. -->
             <div
-              class="text-sm px-3 py-2 rounded-lg"
+              class="text-body px-3 py-2 rounded-lg"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -286,7 +286,7 @@ onBeforeUnmount(() => {
               type="button"
               @click="handleClose"
               :data-testid="`kanban-column-editor-${mode}-cancel`"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -300,7 +300,7 @@ onBeforeUnmount(() => {
               @click="handleSubmit"
               :disabled="showNameInput && !name.trim()"
               :data-testid="`kanban-column-editor-${mode}-submit`"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               :style="isDestructive
                 ? 'background: var(--color-red, #ef4444); color: var(--color-bg);'
                 : 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);'"

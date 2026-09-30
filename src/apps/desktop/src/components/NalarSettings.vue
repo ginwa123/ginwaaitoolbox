@@ -652,7 +652,7 @@ const isLoading = computed(() => !loaded.value)
 <template>
   <div class="flex flex-col h-full" data-testid="nalar-settings">
     <!-- Loading state -->
-    <div v-if="isLoading" class="flex-1 flex items-center justify-center text-sm" style="color: var(--semantic-text-muted);">
+    <div v-if="isLoading" class="flex-1 flex items-center justify-center text-body" style="color: var(--semantic-text-muted);">
       Loading settings…
     </div>
 
@@ -679,8 +679,8 @@ const isLoading = computed(() => !loaded.value)
           style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
         >
           <div class="flex items-center gap-2">
-            <span class="text-base" aria-hidden="true">🗂️</span>
-            <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">Interface</h3>
+            <span class="text-lead" aria-hidden="true">🗂️</span>
+            <h3 class="text-body font-semibold" style="color: var(--semantic-text);">Interface</h3>
           </div>
 
           <label class="flex items-start gap-3 cursor-pointer" data-testid="row-browser-tabs">
@@ -693,10 +693,10 @@ const isLoading = computed(() => !loaded.value)
               style="accent-color: var(--color-violet);"
             />
             <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium" style="color: var(--semantic-text);">
+              <div class="text-body font-medium" style="color: var(--semantic-text);">
                 Browser-style tabs
               </div>
-              <div class="text-xs mt-0.5" style="color: var(--semantic-text-dim);">
+              <div class="text-dense mt-0.5" style="color: var(--semantic-text-dim);">
                 Keep several chats, boards and pages open at once in a tab strip
                 above the content area. Shortcuts: Shift+Alt+T (new),
                 Shift+Alt+W (close), Shift+Alt+Z (reopen),

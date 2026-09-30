@@ -243,7 +243,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
       <div class="flex flex-1">
         <button
           @click="activeTab = 'explorer'"
-          class="flex-1 h-full px-3 text-sm font-medium transition-colors"
+          class="flex-1 h-full px-3 text-body font-medium transition-colors"
           :style="{
             color: activeTab === 'explorer' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'explorer' ? 'var(--semantic-active-bg)' : 'transparent',
@@ -254,7 +254,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
         </button>
         <button
           @click="activeTab = 'git'"
-          class="flex-1 h-full px-3 text-sm font-medium transition-colors flex items-center justify-center gap-1"
+          class="flex-1 h-full px-3 text-body font-medium transition-colors flex items-center justify-center gap-1"
           :style="{
             color: activeTab === 'git' ? 'var(--semantic-text)' : 'var(--semantic-text-dim)',
             backgroundColor: activeTab === 'git' ? 'var(--semantic-active-bg)' : 'transparent',
@@ -264,7 +264,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           Git
           <span
             v-if="hasChanges"
-            class="px-1.5 py-0.5 rounded text-xs font-medium"
+            class="px-1.5 py-0.5 rounded text-dense font-medium"
             style="background-color: var(--color-orange); color: var(--color-bg);"
           >
             {{ stagedFiles.length + unstagedFiles.length }}
@@ -295,8 +295,8 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           v-else-if="!isGitRepo || !hasInput"
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-3xl mb-3">🌿</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim);">
+          <span class="text-display mb-3">🌿</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim);">
             {{ !hasInput ? 'Select a workspace to view git status' : 'Not a git repository' }}
           </p>
         </div>
@@ -306,11 +306,11 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           v-else-if="!hasChanges"
           class="flex-1 flex flex-col items-center justify-center p-4 text-center"
         >
-          <span class="text-3xl mb-3">✓</span>
-          <p class="text-xs" style="color: var(--semantic-text-dim);">
+          <span class="text-display mb-3">✓</span>
+          <p class="text-dense" style="color: var(--semantic-text-dim);">
             Working tree clean
           </p>
-          <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+          <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
             Branch: {{ branch }}
           </p>
         </div>
@@ -319,7 +319,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
         <div v-else class="flex-1 overflow-y-auto">
           <!-- Branch info -->
           <div
-            class="px-3 py-2 text-xs flex items-center gap-2"
+            class="px-3 py-2 text-dense flex items-center gap-2"
             style="border-bottom: 1px solid var(--color-border);"
           >
             <span style="color: var(--semantic-text-muted);">🌿</span>
@@ -338,14 +338,14 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <!-- Staged Changes -->
           <div v-if="stagedFiles.length > 0" class="py-1">
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide flex items-center justify-between"
+              class="px-3 py-1.5 text-dense font-semibold uppercase tracking-wide flex items-center justify-between"
               style="color: var(--color-green);"
             >
               <span>Staged ({{ stagedFiles.length }})</span>
               <button
                 @click="unstageAllFiles"
                 :disabled="isStaging"
-                class="px-1.5 py-0.5 rounded text-xs transition-all hover:opacity-100 disabled:opacity-50"
+                class="px-1.5 py-0.5 rounded text-dense transition-all hover:opacity-100 disabled:opacity-50"
                 style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green);"
                 title="Unstage All"
               >
@@ -355,11 +355,11 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
             <div
               v-for="file in stagedFiles"
               :key="'staged-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-white/5 group"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:bg-white/5 group"
               @contextmenu="showContextMenu($event, file, true)"
               @click="emit('file-click', file, true)"
             >
-              <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
+              <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
               <span class="flex-1 truncate" style="color: var(--semantic-text);">
                 {{ file.path }}
               </span>
@@ -376,7 +376,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
                 </svg>
               </button>
               <span
-                class="text-xs px-1.5 py-0.5 rounded"
+                class="text-dense px-1.5 py-0.5 rounded"
                 style="background-color: rgba(34, 197, 94, 0.2); color: var(--color-green);"
               >
                 {{ getDisplayStatus(file).text }}
@@ -387,14 +387,14 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <!-- Unstaged Changes -->
           <div v-if="unstagedFiles.length > 0" class="py-1">
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide flex items-center justify-between"
+              class="px-3 py-1.5 text-dense font-semibold uppercase tracking-wide flex items-center justify-between"
               style="color: var(--color-orange);"
             >
               <span>Changes ({{ unstagedFiles.length }})</span>
               <button
                 @click="stageAllFiles"
                 :disabled="isStaging"
-                class="px-1.5 py-0.5 rounded text-xs transition-all hover:opacity-100 disabled:opacity-50"
+                class="px-1.5 py-0.5 rounded text-dense transition-all hover:opacity-100 disabled:opacity-50"
                 style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange);"
                 title="Stage All"
               >
@@ -404,11 +404,11 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
             <div
               v-for="file in unstagedFiles"
               :key="'unstaged-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-white/5 group"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:bg-white/5 group"
               @contextmenu="showContextMenu($event, file, false)"
               @click="emit('file-click', file, false)"
             >
-              <span class="text-base">{{ getDisplayStatus(file).icon }}</span>
+              <span class="text-lead">{{ getDisplayStatus(file).icon }}</span>
               <span class="flex-1 truncate" style="color: var(--semantic-text);">
                 {{ file.path }}
               </span>
@@ -424,7 +424,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
                 </svg>
               </button>
               <span
-                class="text-xs px-1.5 py-0.5 rounded"
+                class="text-dense px-1.5 py-0.5 rounded"
                 style="background-color: rgba(245, 158, 11, 0.2); color: var(--color-orange);"
               >
                 {{ getDisplayStatus(file).text }}
@@ -435,14 +435,14 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <!-- Untracked Files -->
           <div v-if="untrackedFiles.length > 0" class="py-1">
             <div
-              class="px-3 py-1.5 text-xs font-semibold uppercase tracking-wide flex items-center justify-between"
+              class="px-3 py-1.5 text-dense font-semibold uppercase tracking-wide flex items-center justify-between"
               style="color: var(--semantic-text-dim);"
             >
               <span>Untracked ({{ untrackedFiles.length }})</span>
               <button
                 @click="stageAllFiles"
                 :disabled="isStaging"
-                class="px-1.5 py-0.5 rounded text-xs transition-all hover:opacity-100 disabled:opacity-50"
+                class="px-1.5 py-0.5 rounded text-dense transition-all hover:opacity-100 disabled:opacity-50"
                 style="background-color: rgba(156, 163, 175, 0.2); color: var(--semantic-text-dim);"
                 title="Stage All"
               >
@@ -452,10 +452,10 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
             <div
               v-for="file in untrackedFiles"
               :key="'untracked-' + file.path"
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-sm transition-colors hover:bg-white/5 group"
+              class="w-full flex items-center gap-2 px-3 py-1.5 text-body transition-colors hover:bg-white/5 group"
               @contextmenu="showContextMenu($event, file, false)"
             >
-              <span class="text-base">❓</span>
+              <span class="text-lead">❓</span>
               <span class="flex-1 truncate" style="color: var(--semantic-text-muted);">
                 {{ file.path }}
               </span>
@@ -471,7 +471,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
                 </svg>
               </button>
               <span
-                class="text-xs px-1.5 py-0.5 rounded"
+                class="text-dense px-1.5 py-0.5 rounded"
                 style="background-color: rgba(156, 163, 175, 0.2); color: var(--semantic-text-dim);"
               >
                 Untracked
@@ -500,7 +500,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <button
             v-if="!contextMenu.staged"
             @click="stageFile(contextMenu.file!)"
-            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center gap-2"
             style="color: var(--semantic-text);"
           >
             <svg class="w-4 h-4" style="color: var(--color-green);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -512,7 +512,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <button
             v-if="contextMenu.staged"
             @click="unstageFile(contextMenu.file!)"
-            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center gap-2"
             style="color: var(--semantic-text);"
           >
             <svg class="w-4 h-4" style="color: var(--color-orange);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -526,7 +526,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <button
             v-if="!contextMenu.staged && unstagedFiles.length > 0"
             @click="stageAllFiles"
-            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center gap-2"
             style="color: var(--semantic-text);"
           >
             <svg class="w-4 h-4" style="color: var(--color-green);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -537,7 +537,7 @@ const hasChanges = computed(() => stagedFiles.value.length > 0 || unstagedFiles.
           <button
             v-if="contextMenu.staged && stagedFiles.length > 0"
             @click="unstageAllFiles"
-            class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center gap-2"
+            class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center gap-2"
             style="color: var(--semantic-text);"
           >
             <svg class="w-4 h-4" style="color: var(--color-orange);" fill="none" viewBox="0 0 24 24" stroke="currentColor">

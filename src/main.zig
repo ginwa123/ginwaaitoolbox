@@ -712,8 +712,9 @@ pub fn main(init: std.process.Init) !void {
     // 4. Every other 3+ segment route under /api/workspaces starts with a
     // literal `items` in that same position, and no
     // `POST /api/workspaces/:workspace_id/:param` route exists, so a param
-    // sibling cannot shadow this. `workspace_items_default_test.zig`
-    // asserts both facts statically so a future sibling cannot.
+    // sibling cannot shadow this. The inline tests at the bottom of
+    // `workspace_items_default.zig` assert both facts statically so a future
+    // sibling cannot.
     try authed.post("/api/workspaces/:workspace_id/default-project", ai_mod.http_handlers.workspaceDefaultProjectHandler);
     try authed.post("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsCreateHandler);
     try authed.get("/api/workspaces/:workspace_id/items", ai_mod.http_handlers.workspaceItemsListHandler);

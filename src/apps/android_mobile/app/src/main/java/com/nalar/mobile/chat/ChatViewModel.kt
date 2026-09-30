@@ -1295,7 +1295,7 @@ class ChatViewModel(
                         // Recorded like auth, so the inspector shows the exact
                         // bytes the chat sent.
                         httpTransport = RecordingAuthTransport(
-                            HttpsAuthTransport(AuthConfig.BASE_URL),
+                            HttpsAuthTransport { AuthConfig.BASE_URL },
                         ),
                     ),
                     cache = RoomChatCache(application),

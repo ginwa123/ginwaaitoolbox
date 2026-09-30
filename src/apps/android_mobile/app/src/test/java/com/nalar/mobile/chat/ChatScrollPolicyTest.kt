@@ -454,4 +454,103 @@ class ChatScrollPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun sendingATurnFromHistoryFollowsTheTurnWhenItLands() {
+        // The reported behaviour, in its plainest form: the reader is reading
+        // history, they ask for a turn, and the turn they asked for is the one
+        // on screen when it arrives.
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+        assertFalse("precondition: the reader is in history", scroll.isFollowingNewest)
+
+        val sent = scroll.onTurnSent()
+
+        assertEquals(ChatScrollAction.PinToNewest(ChatPinReason.TURN_SENT), sent)
+        assertTrue(
+            "asking for a turn re-arms the follow before the turn exists",
+            scroll.isFollowingNewest,
+        )
+        // There is no optimistic bubble, so the row arrives over SSE a frame or
+        // two later. That is the frame the follow has to still be armed for.
+        assertEquals(
+            ChatScrollAction.PinToNewest(ChatPinReason.NEWER_CONTENT),
+            scroll.onContentChanged(sessionId = "s1", groupCount = 11),
+        )
+    }
+
+    @Test
+    fun aScrollInFlightWhenTheTurnWasSentDoesNotDisarmTheFollow() {
+        // The race. A fling that was already running when the reader hit send
+        // keeps reporting frames for a few more milliseconds, and the pin the
+        // send asked for has its own settling frames on top. Both arrive as
+        // "the viewport moved away from the end".
+        //
+        // Read literally, that is the reader leaving — and taking the follow
+        // with it. But neither of those movements is the reader's, and the
+        // turn they just asked for lands a frame later and is answered with
+        // `Hold`: the send appears to do nothing.
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+        assertFalse("precondition: the reader is in history", scroll.isFollowingNewest)
+        scroll.onTurnSent()
+
+        // The fling's trailing frame, still reading the pre-send position.
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+
+        assertEquals(
+            "a movement that was already in flight when the turn was sent is not " +
+                "the reader leaving, and must not cancel the follow they asked for",
+            ChatScrollAction.PinToNewest(ChatPinReason.NEWER_CONTENT),
+            scroll.onContentChanged(sessionId = "s1", groupCount = 11),
+        )
+    }
+
+    @Test
+    fun aQueuedTurnFollowsTheTranscriptWhenTheWorkerDrainsIt() {
+        // A queue is a send that produces no row: nothing lands between asking
+        // and the worker draining the turn, so the follow has to survive a
+        // stretch of unrelated content and a reader who is sitting at the end
+        // waiting. What it must not survive is the reader deliberately leaving.
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+        scroll.onTurnSent()
+
+        // The reader arrives at the end: the pin did what it was asked to.
+        scroll.onViewportMoved(lastVisibleIndex = 9, totalItems = 10, isScrolling = true)
+        // The run they queued behind streams while they wait.
+        scroll.onContentChanged(sessionId = "s1", groupCount = 11)
+        // And then the queued turn is drained into the transcript.
+        val drained = scroll.onContentChanged(sessionId = "s1", groupCount = 12)
+
+        assertEquals(ChatScrollAction.PinToNewest(ChatPinReason.NEWER_CONTENT), drained)
+    }
+
+    @Test
+    fun leavingAfterTheTurnLandedStillStopsTheTranscriptFollowing() {
+        // The other side of the same latch, and the reason it has to be spent.
+        // Arming the follow on a send is not a promise to drag the reader back
+        // for the rest of the session: once the turn they asked for is on
+        // screen, a reader who scrolls away is followed no more.
+        val scroll = ChatScrollState()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 10)
+        scroll.onViewportMoved(lastVisibleIndex = 2, totalItems = 10, isScrolling = true)
+        scroll.onTurnSent()
+        scroll.onContentChanged(sessionId = "s1", groupCount = 11)
+
+        // A fresh gesture, after the sent turn is already on screen.
+        scroll.onViewportMoved(lastVisibleIndex = 3, totalItems = 11, isScrolling = true)
+
+        assertFalse(
+            "a deliberate scroll away after the turn landed must disengage the follow",
+            scroll.isFollowingNewest,
+        )
+        assertEquals(
+            ChatScrollAction.Hold,
+            scroll.onContentChanged(sessionId = "s1", groupCount = 12),
+        )
+    }
 }

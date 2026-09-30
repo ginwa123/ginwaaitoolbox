@@ -19,7 +19,7 @@
       testId          string   Data-testid prefix for the rendered
                                 input / display elements.
       displayClass    string   Optional CSS class for the display
-                                text (e.g. text-sm font-semibold).
+                                text (e.g. text-body font-semibold).
                                 Defaults to ''.
     emits:
       save    [newValue: string]  Fires on Enter or blur when the
@@ -158,7 +158,7 @@ function handleKeydown(event: KeyboardEvent) {
         :maxlength="maxlength"
         :aria-label="`Editing ${ariaLabel}`"
         :data-testid="`${testId}-input`"
-        class="flex-1 min-w-0 px-2 py-0.5 rounded text-sm outline-none transition-all duration-200"
+        class="flex-1 min-w-0 px-2 py-0.5 rounded text-body outline-none transition-all duration-200"
         style="
           background-color: var(--semantic-sidebar-bg);
           border: 1px solid var(--color-border);
@@ -169,7 +169,7 @@ function handleKeydown(event: KeyboardEvent) {
       />
       <button
         type="button"
-        class="shrink-0 px-2 py-0.5 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+        class="shrink-0 px-2 py-0.5 rounded text-dense font-medium hover:opacity-80 transition-opacity"
         style="
           background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
           color: var(--color-bg);
@@ -183,7 +183,7 @@ function handleKeydown(event: KeyboardEvent) {
       </button>
       <button
         type="button"
-        class="shrink-0 px-2 py-0.5 rounded text-xs font-medium hover:opacity-80 transition-opacity"
+        class="shrink-0 px-2 py-0.5 rounded text-dense font-medium hover:opacity-80 transition-opacity"
         style="
           background-color: var(--semantic-card-bg);
           border: 1px solid var(--color-border);

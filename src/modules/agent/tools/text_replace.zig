@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const ToolProperty = schemas.ToolProperty;
 const ToolParameters = schemas.ToolParameters;
 const AgentToolFunction = schemas.AgentToolFunction;
@@ -12,6 +14,7 @@ pub const TextReplaceInput = struct {
 };
 
 pub const TextReplaceError = error{
+    InvalidPath,
     OldStrNotFound,
     OldStrNotUnique,
     PathNotFound,
@@ -342,6 +345,13 @@ pub fn executeTextReplace(
     if (std.mem.eql(u8, path, "")) {
         return TextReplaceError.PathNotFound;
     }
+    // The LLM chooses this path. On Windows a malformed NT name makes std's
+    // Io backend `ntstatusBug()` — a panic that kills the process, not just
+    // this call. See helpers/path_validate.zig.
+    if (invalidPathReason(path)) |reason| {
+        std.log.debug("text_replace rejected path: {s}", .{reason});
+        return TextReplaceError.InvalidPath;
+    }
 
     // Read existing file
     const file = try std.Io.Dir.cwd().openFile(io, path, .{});
@@ -477,7 +487,11 @@ pub const TextReplaceErrorJSON = struct {
     @"error": ?[]const u8 = null,
 };
 
-fn errorMessageFor(allocator: std.mem.Allocator, err: anyerror, path: []const u8) ![]u8 {
+/// The actionable message for an execution failure (not an arguments
+/// failure — the exec wrapper builds that one itself). `pub` because the
+/// exec wrapper is what puts it in the envelope: the model reads it, so it
+/// must not be a bare Zig error name.
+pub fn errorMessageFor(allocator: std.mem.Allocator, err: anyerror, path: []const u8) ![]u8 {
     return switch (err) {
         error.OldStrNotFound => try allocator.dupe(u8, "Make sure the text exists exactly once in the file."),
         error.OldStrNotUnique => try allocator.dupe(u8, "There are multiple occurrences of the text in the file. Expand old_str to include more context to make it unique."),
@@ -550,6 +564,7 @@ pub const text_replace_tool: AgentTool = .{
 };
 
 const text_replace = @import("text_replace.zig");
+const absPath = @import("helpers").test_path.absPath;
 
 fn createTestFile(path: []const u8, content: []const u8) !void {
     // Ensure parent directory exists using createDirPath
@@ -577,7 +592,8 @@ fn deleteTestFile(path: []const u8) void {
 }
 
 test "text_replace - unified diff contains diff markers" {
-    const test_path = "test_diff_view_unified.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_unified.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -607,7 +623,8 @@ test "text_replace - unified diff contains diff markers" {
 }
 
 test "text_replace - split diff_view before contains original content" {
-    const test_path = "test_diff_view_before.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_before.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -632,7 +649,8 @@ test "text_replace - split diff_view before contains original content" {
 }
 
 test "text_replace - split diff_view after contains replacement content" {
-    const test_path = "test_diff_view_after.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_after.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -657,7 +675,8 @@ test "text_replace - split diff_view after contains replacement content" {
 }
 
 test "text_replace - split diff_view before and after are distinct" {
-    const test_path = "test_diff_view_distinct.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_distinct.txt");
     try createTestFile(test_path, "original text\n");
 
     var result = try text_replace.executeTextReplace(
@@ -686,7 +705,8 @@ test "text_replace - split diff_view before and after are distinct" {
 }
 
 test "text_replace - unified diff shows line removal" {
-    const test_path = "test_diff_view_removal.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_removal.txt");
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -715,7 +735,8 @@ test "text_replace - unified diff shows line removal" {
 }
 
 test "text_replace - unified diff shows line insertion" {
-    const test_path = "test_diff_view_insert.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_insert.txt");
     try createTestFile(test_path, "line1\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -745,7 +766,8 @@ test "text_replace - unified diff shows line insertion" {
 }
 
 test "text_replace - unified diff shows multiline replacement" {
-    const test_path = "test_diff_view_multiline.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_multiline.txt");
     try createTestFile(test_path,
         \\fn add(a: i32, b: i32) i32 {
         \\    return a + b;
@@ -778,7 +800,8 @@ test "text_replace - unified diff shows multiline replacement" {
 }
 
 test "text_replace - unified diff includes hunk header with line numbers" {
-    const test_path = "test_diff_view_hunk.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_hunk.txt");
     try createTestFile(test_path, "line1\nline2\nline3\nline4\nline5\n");
 
     var result = try text_replace.executeTextReplace(
@@ -803,7 +826,8 @@ test "text_replace - unified diff includes hunk header with line numbers" {
 }
 
 test "text_replace - lines_changed reflects actual change count" {
-    const test_path = "test_diff_view_lines.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_diff_view_lines.txt");
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -834,7 +858,8 @@ test "text_replace - lines_changed reflects actual change count" {
 // ============================================================================
 
 test "generateUnifiedDiff output contains git merge conflict markers" {
-    const test_path = "test_git_conflict_markers.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_git_conflict_markers.txt");
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -859,7 +884,8 @@ test "generateUnifiedDiff output contains git merge conflict markers" {
 }
 
 test "generateUnifiedDiff split view shows old_str under <<<<<<<" {
-    const test_path = "test_split_before.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_split_before.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -887,7 +913,8 @@ test "generateUnifiedDiff split view shows old_str under <<<<<<<" {
 }
 
 test "generateUnifiedDiff split view shows new_str under =======" {
-    const test_path = "test_split_after.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_split_after.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -917,7 +944,8 @@ test "generateUnifiedDiff split view shows new_str under =======" {
 }
 
 test "generateUnifiedDiff before field equals old_str exactly" {
-    const test_path = "test_before_exact.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_before_exact.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -940,7 +968,8 @@ test "generateUnifiedDiff before field equals old_str exactly" {
 }
 
 test "generateUnifiedDiff after field equals new_str exactly" {
-    const test_path = "test_after_exact.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_after_exact.txt");
     try createTestFile(test_path, "Hello World\n");
 
     var result = try text_replace.executeTextReplace(
@@ -963,7 +992,8 @@ test "generateUnifiedDiff after field equals new_str exactly" {
 }
 
 test "generateUnifiedDiff multiline old_str shows all lines in split view" {
-    const test_path = "test_multiline_split.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_multiline_split.txt");
     try createTestFile(test_path,
         \\fn add(a: i32, b: i32) i32 {
         \\    return a + b;
@@ -998,7 +1028,8 @@ test "generateUnifiedDiff multiline old_str shows all lines in split view" {
 }
 
 test "generateUnifiedDiff unified output has both traditional diff and conflict markers" {
-    const test_path = "test_unified_and_conflict.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_unified_and_conflict.txt");
     try createTestFile(test_path, "line1\nline2\nline3\n");
 
     var result = try text_replace.executeTextReplace(
@@ -1780,7 +1811,8 @@ test "executeTextReplace - non-existent file returns FileNotFound" {
 }
 
 test "executeTextReplace - old_str not found returns OldStrNotFound" {
-    const test_path = "test_err_not_found.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_err_not_found.txt");
     try createTestFile(test_path, "line1\nline2\nline3\n");
     defer deleteTestFile(test_path);
 
@@ -1795,7 +1827,8 @@ test "executeTextReplace - old_str not found returns OldStrNotFound" {
 }
 
 test "executeTextReplace - old_str not unique returns OldStrNotUnique" {
-    const test_path = "test_err_not_unique.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_err_not_unique.txt");
     try createTestFile(test_path, "foo\nfoo\nfoo\n");
     defer deleteTestFile(test_path);
 
@@ -1810,7 +1843,8 @@ test "executeTextReplace - old_str not unique returns OldStrNotUnique" {
 }
 
 test "executeTextReplace - empty new_str deletes content" {
-    const test_path = "test_delete.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_delete.txt");
     try createTestFile(test_path, "before\nDELETE_ME\nafter\n");
     defer deleteTestFile(test_path);
 
@@ -1832,7 +1866,8 @@ test "executeTextReplace - empty new_str deletes content" {
 }
 
 test "executeTextReplace - file with no trailing newline" {
-    const test_path = "test_no_newline.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_no_newline.txt");
     // Note: createTestFile uses writeStreamingAll which doesn't auto-add a newline.
     try createTestFile(test_path, "no newline at end");
     defer deleteTestFile(test_path);
@@ -1864,7 +1899,8 @@ test "executeTextReplace - empty file (zero-byte file)" {
     // byte position so the "uniqueness" check returns OldStrNotUnique. We use
     // a non-empty old_str that doesn't appear, then verify the file-write
     // path doesn't crash and the diff_view is populated correctly.
-    const test_path = "test_empty_file.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_empty_file.txt");
     try createTestFile(test_path, "");
     defer deleteTestFile(test_path);
 
@@ -1885,7 +1921,8 @@ test "executeTextReplace - empty file (zero-byte file)" {
 test "executeTextReplace - file with only a single newline" {
     // File = "\n" (single empty line plus trailing). Test that the tool can
     // handle a minimal non-empty file.
-    const test_path = "test_single_newline.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_single_newline.txt");
     try createTestFile(test_path, "\n");
     defer deleteTestFile(test_path);
 
@@ -1906,7 +1943,8 @@ test "executeTextReplace - file with only a single newline" {
 }
 
 test "executeTextReplace - file with CRLF line endings" {
-    const test_path = "test_crlf_file.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_crlf_file.txt");
     try createTestFile(test_path, "line1\r\nline2\r\nTARGET\r\nline4\r\n");
     defer deleteTestFile(test_path);
 
@@ -1929,7 +1967,8 @@ test "executeTextReplace - file with CRLF line endings" {
 }
 
 test "executeTextReplace - file with Unicode content" {
-    const test_path = "test_unicode_file.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_unicode_file.txt");
     try createTestFile(test_path, "before\n中文内容\nafter\n");
     defer deleteTestFile(test_path);
 
@@ -1950,7 +1989,8 @@ test "executeTextReplace - file with Unicode content" {
 }
 
 test "executeTextReplace - replacement at very end of file (no trailing newline)" {
-    const test_path = "test_end_of_file.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_end_of_file.txt");
     try createTestFile(test_path, "line1\nline2\nFINAL");
     defer deleteTestFile(test_path);
 
@@ -1972,7 +2012,8 @@ test "executeTextReplace - replacement at very end of file (no trailing newline)
 
 test "executeTextReplace - replacement of identical-looking content (case sensitivity)" {
     // Case sensitivity check: lowercase "foo" must NOT match uppercase "FOO"
-    const test_path = "test_case_sensitive.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_case_sensitive.txt");
     try createTestFile(test_path, "FOO\n");
     defer deleteTestFile(test_path);
 
@@ -1987,7 +2028,8 @@ test "executeTextReplace - replacement of identical-looking content (case sensit
 }
 
 test "executeTextReplace - multi-line replacement that crosses line boundaries" {
-    const test_path = "test_multiline_cross.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_multiline_cross.txt");
     try createTestFile(test_path, "header\nmiddle1\nmiddle2\nmiddle3\nfooter\n");
     defer deleteTestFile(test_path);
 
@@ -2012,7 +2054,8 @@ test "executeTextReplace - multi-line replacement that crosses line boundaries" 
 }
 
 test "executeTextReplace - large file (50 lines) succeeds" {
-    const test_path = "test_large_file.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_large_file.txt");
     var content_buf: [2000]u8 = undefined;
     var pos: usize = 0;
     for (0..49) |i| {
@@ -2057,7 +2100,8 @@ test "executeTextReplace - special XML chars in old_str (search works on raw byt
     // diff_view's `before`/`after` fields hold the RAW bytes from old_str /
     // new_str. So old_str can contain literal '<' / '>' / '&' and still
     // match the file, and the before field will contain them unescaped.
-    const test_path = "test_xml_chars_in_search.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_xml_chars_in_search.txt");
     try createTestFile(test_path, "before\nif (a < b && c > d)\nafter\n");
     defer deleteTestFile(test_path);
 
@@ -2082,7 +2126,8 @@ test "executeTextReplace - special XML chars in old_str (search works on raw byt
 test "executeTextReplace - JSON output preserves raw bytes, diff_view unescaped" {
     // Verify the boundary: diff_view holds raw bytes; toJSONSuccess carries
     // them through as JSON strings. A user-facing test that verifies both shapes.
-    const test_path = "test_xml_escape_boundary.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_xml_escape_boundary.txt");
     try createTestFile(test_path, "before\n<tag>\nafter\n");
     defer deleteTestFile(test_path);
 
@@ -2115,7 +2160,8 @@ test "executeTextReplace - JSON output preserves raw bytes, diff_view unescaped"
 test "executeTextReplace - replacement succeeds when old_str is at byte 0" {
     // 1:1 line replacement — change is visible only in the split view
     // (<<<<<<< / ======= / >>>>>>>) since the unified hunk shows context.
-    const test_path = "test_byte_zero.txt";
+    var test_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const test_path = try absPath(&test_path_buf, "test_byte_zero.txt");
     try createTestFile(test_path, "FIRST\nrest of file\n");
     defer deleteTestFile(test_path);
 

@@ -3,6 +3,7 @@ package com.nalar.mobile.chat
 import com.nalar.mobile.auth.AuthHttpResponse
 import com.nalar.mobile.auth.AuthTransport
 import com.nalar.mobile.auth.SessionStore
+import com.nalar.mobile.testing.FakeSseBus
 import com.nalar.mobile.testing.InMemoryChatCache
 import java.io.IOException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -116,35 +117,14 @@ class ChatViewModelQueueTest {
         }
     }
 
-    private class FakeEventStream : ChatEventStream {
-        var onEvent: ((ChatStreamEvent) -> Unit)? = null
-        var onState: ((ChatStreamState) -> Unit)? = null
-
-        override fun start(
-            onEvent: (ChatStreamEvent) -> Unit,
-            onState: (ChatStreamState) -> Unit,
-        ) {
-            this.onEvent = onEvent
-            this.onState = onState
-        }
-
-        override fun stop() {
-            onEvent = null
-            onState = null
-        }
-
-        fun emit(event: ChatStreamEvent) = onEvent?.invoke(event) ?: Unit
-        fun state(next: ChatStreamState) = onState?.invoke(next) ?: Unit
-    }
-
     private fun model(
         ioDispatcher: CoroutineDispatcher,
         transport: AuthTransport = FakeTransport(),
-        stream: FakeEventStream = FakeEventStream(),
+        bus: FakeSseBus = FakeSseBus(),
     ) = ChatViewModel(
         client = ChatClient(MemorySessionStore(), httpTransport = transport),
         cache = InMemoryChatCache(),
-        eventStream = stream,
+        bus = bus,
         ioDispatcher = ioDispatcher,
     ).also { it.onUserChanged("user_a") }
 
@@ -185,7 +165,7 @@ class ChatViewModelQueueTest {
     @Test
     fun aFailedReadLeavesWhatTheStreamSaidRatherThanBlanking() = queueTest { schedulers ->
         val transport = FakeTransport()
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, transport, stream)
 
         model.openSession("sess_1")
@@ -211,7 +191,7 @@ class ChatViewModelQueueTest {
     @Test
     fun theReadRepairsAMirrorThatMissedAFrame() = queueTest { schedulers ->
         val transport = FakeTransport()
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, transport, stream)
 
         model.openSession("sess_1")
@@ -229,7 +209,7 @@ class ChatViewModelQueueTest {
     @Test
     fun aReconnectRereadsTheQueue() = queueTest { schedulers ->
         val transport = FakeTransport(queueBody = queuePage("q1" to "still waiting"))
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, transport, stream)
 
         model.openSession("sess_1")
@@ -252,7 +232,7 @@ class ChatViewModelQueueTest {
 
     @Test
     fun aQueuedFrameAppendsTheTurnWithItsText() = queueTest { schedulers ->
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, FakeTransport(), stream)
 
         model.openSession("sess_1")
@@ -276,7 +256,7 @@ class ChatViewModelQueueTest {
         // broadcast (`insert_queue_message.zig`), so the identical frame really
         // does arrive twice. A blind append would show every queued turn twice,
         // and the header with it.
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, FakeTransport(), stream)
 
         model.openSession("sess_1")
@@ -295,7 +275,7 @@ class ChatViewModelQueueTest {
 
     @Test
     fun aDrainedFrameRemovesThatTurnAndNotAnother() = queueTest { schedulers ->
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, FakeTransport(), stream)
 
         model.openSession("sess_1")
@@ -327,7 +307,7 @@ class ChatViewModelQueueTest {
         // carries every account's queueing. Applying one for a chat the reader
         // is not in would show another conversation's message in this
         // transcript's panel.
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, FakeTransport(), stream)
 
         model.openSession("sess_1")
@@ -385,7 +365,7 @@ class ChatViewModelQueueTest {
     @Test
     fun switchingChatsDropsThePreviousChatsQueue() = queueTest { schedulers ->
         val transport = FakeTransport()
-        val stream = FakeEventStream()
+        val stream = FakeSseBus()
         val model = model(schedulers.ioDispatcher, transport, stream)
 
         model.openSession("sess_1")

@@ -26,7 +26,7 @@ function maskValue(v: string): string {
 
 <template>
   <div class="space-y-4">
-    <p class="text-xs leading-relaxed max-w-2xl" style="color: var(--semantic-text-muted);">
+    <p class="text-dense leading-relaxed max-w-2xl" style="color: var(--semantic-text-muted);">
       External tool providers the agent can call. Each entry has a unique name, a URL,
       and optional HTTP headers (e.g. <code style="font-family: var(--font-mono);">CONTEXT7_API_KEY</code>).
     </p>
@@ -36,7 +36,7 @@ function maskValue(v: string): string {
         type="button"
         data-testid="add-btn"
         @click="emit('add')"
-        class="px-3 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+        class="px-3 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
         style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
       >+ Add server</button>
     </div>
@@ -61,10 +61,10 @@ function maskValue(v: string): string {
       >
         <div class="flex items-center justify-between gap-3">
           <div class="flex-1 min-w-0">
-            <div class="text-sm font-medium flex items-center gap-2" style="color: var(--semantic-text);">
+            <div class="text-body font-medium flex items-center gap-2" style="color: var(--semantic-text);">
               <span>{{ server.name }}</span>
               <span
-                class="text-[10px] px-1.5 h-4 inline-flex items-center rounded font-medium uppercase tracking-wide"
+                class="text-micro px-1.5 h-4 inline-flex items-center rounded font-medium uppercase tracking-wide"
                 :style="{
                   color: (server.transport ?? 'http') === 'stdio' ? 'var(--color-violet)' : 'var(--semantic-text-dim)',
                   borderColor: (server.transport ?? 'http') === 'stdio' ? 'var(--color-violet)' : 'var(--color-border)',
@@ -74,18 +74,18 @@ function maskValue(v: string): string {
               <span
                 v-if="server.enabled === false"
                 data-testid="disabled-pill"
-                class="text-[10px] px-1.5 h-4 inline-flex items-center rounded font-medium uppercase tracking-wide"
+                class="text-micro px-1.5 h-4 inline-flex items-center rounded font-medium uppercase tracking-wide"
                 style="color: var(--color-red); border: 1px solid var(--color-red);"
               >Disabled</span>
             </div>
             <div
               v-if="(server.transport ?? 'http') === 'stdio'"
-              class="text-xs font-mono mt-0.5 truncate"
+              class="text-dense font-mono mt-0.5 truncate"
               style="color: var(--semantic-text-dim);"
             >$ {{ server.command }}{{ (server.args ?? []).length ? ' ' + (server.args ?? []).join(' ') : '' }}</div>
             <div
               v-else
-              class="text-xs font-mono mt-0.5 truncate"
+              class="text-dense font-mono mt-0.5 truncate"
               style="color: var(--semantic-text-dim);"
             >{{ server.url }}</div>
           </div>
@@ -113,21 +113,21 @@ function maskValue(v: string): string {
               type="button"
               data-testid="edit-btn"
               @click="emit('edit', server)"
-              class="px-2.5 h-7 rounded-md text-xs border transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense border transition-colors duration-150"
               style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
             >Edit</button>
             <button
               type="button"
               data-testid="delete-btn"
               @click="emit('delete', server.name)"
-              class="px-2.5 h-7 rounded-md text-xs transition-colors duration-150"
+              class="px-2.5 h-7 rounded-md text-dense transition-colors duration-150"
               style="color: var(--color-red);"
               aria-label="Delete server"
             >⌫</button>
           </div>
         </div>
 
-        <ul v-if="server.headers && server.headers.length" class="mt-2 space-y-0.5 font-mono text-xs">
+        <ul v-if="server.headers && server.headers.length" class="mt-2 space-y-0.5 font-mono text-dense">
           <li
             v-for="(h, i) in server.headers"
             :key="i"

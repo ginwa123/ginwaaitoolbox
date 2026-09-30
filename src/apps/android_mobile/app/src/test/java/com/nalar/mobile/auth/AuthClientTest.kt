@@ -1,9 +1,11 @@
 package com.nalar.mobile.auth
 
+import com.nalar.mobile.BuildConfig
 import java.io.IOException
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -271,8 +273,114 @@ class AuthClientTest {
         )
     }
 
-    @Test(expected = IllegalArgumentException::class)
-    fun httpsTransportRejectsCleartextBaseUrl() {
-        HttpsAuthTransport("http://agent.ginwa.site")
+    /**
+     * One transport, and the assertion is that the *request* is refused.
+     *
+     * The guard used to run in the constructor, because the host was a build
+     * constant and there was nothing a person could change. It is now a
+     * person-typed setting read per request, so the refusal has to happen on the
+     * request path too — an `IllegalArgumentException` out of a constructor
+     * would be a launch crash on a device that has been pointed at a host this
+     * build cannot open, with no way to reach the screen that fixes it.
+     */
+    private fun refuse(url: String) = assertThrows(
+        "$url must be refused",
+        IllegalArgumentException::class.java,
+    ) {
+        HttpsAuthTransport { url }.get(path = AuthConfig.ME_PATH, headers = emptyMap())
+    }
+
+    @Test
+    fun httpsTransportRefusesCleartextToAHostThisBuildCannotReach() {
+        // The plain-HTTP exception is not "HTTP is fine anywhere" — it is the
+        // three loopback addresses the debug `network_security_config.xml`
+        // grants cleartext to, and nothing else. A cleartext URL to any other
+        // host would be accepted by the client and then refused by the platform
+        // at connect time, with an error nobody can act on, so it is refused
+        // here instead where the sentence can name the rule. This is asserted
+        // in *both* variants on purpose: the debug allowance is the narrow one.
+        refuse("http://agent.ginwa.site")
+    }
+
+    @Test
+    fun httpsTransportAcceptsCleartextToTheHostsTheDebugConfigPermits() {
+        // The half that has to stay true, or the functional UI suite's whole
+        // `-PnalarBaseUrl=http://10.0.2.2:<port>` seam stops working. Asserted
+        // against the flag rather than as a fixed expectation so it means the
+        // right thing in both variants; `CLEAR_TEXT_HOSTS` is empty in release,
+        // which is pinned by `ServerUrlContractTest` reading the build script,
+        // since these tests only ever run under debug.
+        if (!BuildConfig.ALLOW_INSECURE_HTTP) return
+
+        val cleartext = "http://127.0.0.1:1/api/auth/me"
+        // Resolving is the assertion: reaching the socket with an unroutable
+        // port fails at connect, and `AuthClient` turns that into Unavailable
+        // rather than letting it escape as the scheme rule.
+        val transport = HttpsAuthTransport { "http://127.0.0.1:1" }
+        assertTrue(
+            "cleartext to a permitted host must not be refused by the scheme rule",
+            runCatching { transport.get(path = "/api/auth/me", headers = emptyMap()) }
+                .exceptionOrNull() !is IllegalArgumentException,
+        )
+        assertTrue(cleartext.startsWith("http://"))
+    }
+
+    @Test
+    fun httpsTransportRejectsEverySchemeThatIsNotHttpOrHttps() {
+        // The widening is for plain HTTP specifically, so the flag cannot be
+        // used to smuggle in a scheme this client has no business opening.
+        //
+        // A scheme-*less* host used to be in this list, because the guard was a
+        // bare `startsWith("https://")`. It is not any more, and that is the
+        // feature rather than a hole: the host is a person-typed setting now, and
+        // the common thing a self-hoster types is `nalar.example.com`. See the
+        // next test for the other half of that change.
+        for (url in listOf("ftp://agent.ginwa.site", "file:///etc/hosts", "ws://agent.ginwa.site")) {
+            refuse(url)
+        }
+    }
+
+    @Test
+    fun aSchemeLessHostIsResolvedToHttpsRatherThanRefused() {
+        // The old guard read `startsWith("https://")`, so a person who typed
+        // their own domain without a scheme got an error telling them the
+        // address was invalid — having done nothing wrong. It now resolves to
+        // `https://`, and the refusal that *does* happen is the one about a
+        // scheme this client cannot open.
+        var baseUrl = "agent.ginwa.site"
+        val transport = HttpsAuthTransport { baseUrl }
+
+        // Nothing that could be the scheme rule: the name resolves, and the
+        // request goes out over TLS to a host that does not exist.
+        val failure = runCatching { transport.get(path = AuthConfig.ME_PATH, headers = emptyMap()) }
+        assertTrue(
+            "a scheme-less host must not be refused by the scheme rule: ${failure.exceptionOrNull()}",
+            failure.exceptionOrNull() !is IllegalArgumentException,
+        )
+
+        // And it is HTTPS that gets used, not HTTP.
+        baseUrl = "ftp://agent.ginwa.site"
+        assertThrows(IllegalArgumentException::class.java) {
+            transport.get(path = AuthConfig.ME_PATH, headers = emptyMap())
+        }
+    }
+
+    @Test
+    fun theTransportReadsTheHostPerRequestRatherThanCapturingIt() {
+        // The behaviour the whole feature rests on. A transport built while the
+        // app pointed at one server has to reach whichever server the holder
+        // names when the call is made — otherwise "change the server" would need
+        // the whole ViewModel graph torn down, and would silently do nothing on
+        // the four clients that captured the host at construction.
+        var baseUrl = "https://first.example"
+        val transport = HttpsAuthTransport { baseUrl }
+
+        baseUrl = "ftp://second.example"
+        assertThrows(
+            "a transport holding a captured host would still have used the first",
+            IllegalArgumentException::class.java,
+        ) {
+            transport.get(path = AuthConfig.ME_PATH, headers = emptyMap())
+        }
     }
 }

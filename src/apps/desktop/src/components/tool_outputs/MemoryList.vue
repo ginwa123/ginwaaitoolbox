@@ -65,10 +65,10 @@ defineExpose({
 
     <!-- Error State -->
     <div v-else-if="error" class="text-center py-8">
-      <p class="text-sm" style="color: var(--color-red);">{{ error }}</p>
+      <p class="text-body" style="color: var(--color-red);">{{ error }}</p>
       <button
         @click="loadMemories"
-        class="mt-3 px-4 py-2 rounded-lg text-sm transition-colors duration-200"
+        class="mt-3 px-4 py-2 rounded-lg text-body transition-colors duration-200"
         style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
       >
         Retry
@@ -77,7 +77,7 @@ defineExpose({
 
     <!-- Empty State -->
     <div v-else-if="memories.length === 0" class="text-center py-8">
-      <p class="text-sm" style="color: var(--semantic-text-muted);">No memories yet</p>
+      <p class="text-body" style="color: var(--semantic-text-muted);">No memories yet</p>
     </div>
 
     <!-- Memory List -->
@@ -93,15 +93,15 @@ defineExpose({
         @click="openMemory(mem)"
       >
         <div class="flex items-start gap-3">
-          <span class="text-lg mt-0.5">🧠</span>
+          <span class="text-title-sm mt-0.5">🧠</span>
           <div class="flex-1 min-w-0">
-            <h3 class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+            <h3 class="text-body font-medium truncate" style="color: var(--semantic-text);">
               {{ mem.title }}
             </h3>
-            <p class="text-xs mt-1 truncate" style="color: var(--semantic-text-muted);">
+            <p class="text-dense mt-1 truncate" style="color: var(--semantic-text-muted);">
               {{ mem.name }}
             </p>
-            <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+            <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
               {{ formatSize(mem.size) }}
             </p>
           </div>

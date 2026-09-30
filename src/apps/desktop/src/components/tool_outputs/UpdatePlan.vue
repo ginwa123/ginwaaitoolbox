@@ -196,7 +196,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !parsed.success }"
     data-testid="update-plan"
   >
@@ -221,7 +221,7 @@ const handleToggle = (next: boolean) => {
       <!-- Error body — always visible when expanded AND error. -->
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="update-plan-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -232,7 +232,7 @@ const handleToggle = (next: boolean) => {
       <template v-if="parsed.success">
         <div
           v-if="parsed.sessionId"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
           data-testid="update-plan-session-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Session:</span>
@@ -242,7 +242,7 @@ const handleToggle = (next: boolean) => {
         </div>
         <div
           v-if="parsed.updatedAt"
-          class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+          class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
           data-testid="update-plan-updated-row"
         >
           <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Updated:</span>
@@ -289,7 +289,7 @@ const handleToggle = (next: boolean) => {
         <!-- Hint when no fields (empty envelope edge case). -->
         <div
           v-if="!parsed.sessionId && !parsed.updatedAt && !hasChecklist"
-          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
           data-testid="update-plan-empty"
         >
           (no fields in envelope)

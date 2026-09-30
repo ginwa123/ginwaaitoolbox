@@ -239,7 +239,7 @@ onUnmounted(() => {
     v-if="runningCount > 0"
     data-testid="bg-commands-pill"
     @click="show = true"
-    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-all duration-200 hover:scale-105"
+    class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-dense transition-all duration-200 hover:scale-105"
     style="
       background-color: var(--semantic-card-bg);
       border: 1px solid var(--color-border);
@@ -275,12 +275,12 @@ onUnmounted(() => {
             style="border-bottom: 1px solid var(--color-border)"
           >
             <div class="flex items-center gap-2">
-              <span class="text-xl">⌨️</span>
-              <h3 class="text-base font-semibold" style="color: var(--semantic-text)">
+              <span class="text-title">⌨️</span>
+              <h3 class="text-lead font-semibold" style="color: var(--semantic-text)">
                 Background commands
               </h3>
               <span
-                class="px-2 py-0.5 text-xs rounded-full"
+                class="px-2 py-0.5 text-dense rounded-full"
                 style="background-color: var(--semantic-active-bg); color: var(--semantic-text-dim)"
               >
                 {{ processes.length }}
@@ -289,7 +289,7 @@ onUnmounted(() => {
             <div class="flex items-center gap-1">
               <button
                 data-testid="bg-list-refresh"
-                class="p-1.5 rounded-lg transition-colors hover:opacity-70 text-xs"
+                class="p-1.5 rounded-lg transition-colors hover:opacity-70 text-dense"
                 style="color: var(--semantic-text-dim)"
                 aria-label="Refresh background commands"
                 title="Refresh (list updates automatically via SSE)"
@@ -320,14 +320,14 @@ onUnmounted(() => {
             <div
               v-if="listError"
               data-testid="bg-list-error"
-              class="text-center py-4 text-sm"
+              class="text-center py-4 text-body"
               style="color: var(--color-red)"
             >
               {{ listError }}
             </div>
             <div v-else-if="processes.length === 0" data-testid="bg-empty" class="text-center py-8">
-              <span class="text-3xl mb-2 block">📭</span>
-              <p class="text-sm" style="color: var(--semantic-text-dim)">
+              <span class="text-display mb-2 block">📭</span>
+              <p class="text-body" style="color: var(--semantic-text-dim)">
                 No background commands for this session
               </p>
             </div>
@@ -354,17 +354,17 @@ onUnmounted(() => {
                     class="bg-running-dot mt-1.5 shrink-0"
                     aria-hidden="true"
                   ></span>
-                  <span v-else class="mt-1.5 shrink-0 text-xs" aria-hidden="true">⚪</span>
+                  <span v-else class="mt-1.5 shrink-0 text-dense" aria-hidden="true">⚪</span>
                   <div class="flex-1 min-w-0">
                     <p
-                      class="text-sm font-mono truncate"
+                      class="text-body font-mono truncate"
                       style="color: var(--semantic-text)"
                       :title="proc.command"
                     >
                       {{ proc.command }}
                     </p>
                     <p
-                      class="text-xs mt-0.5"
+                      class="text-dense mt-0.5"
                       style="color: var(--semantic-text-dim)"
                       :title="fullDateTitle(proc.started_at)"
                     >
@@ -374,7 +374,7 @@ onUnmounted(() => {
                   <span
                     data-testid="bg-status-badge"
                     :data-running="proc.running"
-                    class="px-2 py-0.5 text-xs rounded-full shrink-0"
+                    class="px-2 py-0.5 text-dense rounded-full shrink-0"
                     :style="
                       proc.running
                         ? 'background-color: var(--color-green); color: #fff;'
@@ -403,10 +403,10 @@ onUnmounted(() => {
                 <!-- Expandable log tail -->
                 <div v-if="expandedPid === proc.pid" class="mt-2">
                   <div class="flex items-center justify-between mb-1">
-                    <span v-if="proc.running" class="text-[11px]" style="color: var(--color-green)">
+                    <span v-if="proc.running" class="text-meta" style="color: var(--color-green)">
                       ● live — auto-refreshing
                     </span>
-                    <span v-else class="text-[11px]" style="color: var(--semantic-text-dim)">
+                    <span v-else class="text-meta" style="color: var(--semantic-text-dim)">
                       log tail
                       <span v-if="logTruncated[proc.pid]">
                         (truncated, showing last {{ LOG_MAX_BYTES }} bytes)</span
@@ -419,7 +419,7 @@ onUnmounted(() => {
                       data-testid="bg-log-refresh"
                       :data-pid="proc.pid"
                       @click.stop="refreshLog(proc.pid)"
-                      class="px-2 py-0.5 text-[11px] rounded-md transition-colors hover:opacity-70"
+                      class="px-2 py-0.5 text-meta rounded-md transition-colors hover:opacity-70"
                       style="
                         background-color: var(--semantic-card-bg);
                         border: 1px solid var(--color-border);
@@ -431,7 +431,7 @@ onUnmounted(() => {
                   </div>
                   <div
                     v-if="logLoading[proc.pid] && !logContent[proc.pid]"
-                    class="text-xs py-2"
+                    class="text-dense py-2"
                     style="color: var(--semantic-text-dim)"
                   >
                     Loading log…
@@ -439,7 +439,7 @@ onUnmounted(() => {
                   <div
                     v-else-if="logError[proc.pid]"
                     data-testid="bg-log-error"
-                    class="text-xs py-2"
+                    class="text-dense py-2"
                     style="color: var(--color-red)"
                   >
                     {{ logError[proc.pid] }}
@@ -448,7 +448,7 @@ onUnmounted(() => {
                     v-else
                     data-testid="bg-log-content"
                     :data-pid="proc.pid"
-                    class="bg-log-pre text-xs font-mono whitespace-pre-wrap break-words overflow-y-auto"
+                    class="bg-log-pre text-dense font-mono whitespace-pre-wrap break-words overflow-y-auto"
                     style="
                       background-color: var(--semantic-card-bg);
                       border: 1px solid var(--color-border);

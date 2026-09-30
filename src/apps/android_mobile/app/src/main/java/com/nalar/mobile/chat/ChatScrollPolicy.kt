@@ -187,6 +187,29 @@ class ChatScrollState {
     private var readerIsScrolling: Boolean = false
 
     /**
+     * True between "the reader asked for the newest turn" and the transcript
+     * proving it got there.
+     *
+     * A send has no optimistic bubble, so the turn it asks for lands a frame or
+     * two later — and in between, every viewport reading is the pin's own
+     * settling frames plus whatever fling was still running when the reader hit
+     * send. Read as ordinary movement those frames are the reader leaving, and
+     * they take the follow down with them a moment before it is needed: the
+     * turn that lands is answered with `Hold` and the send looks like it did
+     * nothing.
+     *
+     * A queue is the same case stretched out. Nothing lands at all between
+     * asking and the worker draining the turn, so the follow has to survive
+     * the whole wait.
+     *
+     * It is spent as soon as the transcript is at the end — by the viewport
+     * reading that confirms the pin landed, or by the content change that
+     * produced one — so a reader who deliberately scrolls away afterwards is
+     * followed no more. See [onViewportMoved] and [onContentChanged].
+     */
+    private var followArmed: Boolean = false
+
+    /**
      * Remembers where the reader was when a backwards page was requested, so the
      * response can put them back rather than at the end.
      */
@@ -220,7 +243,13 @@ class ChatScrollState {
         if (action !is ChatScrollAction.Hold) sessionOpenPending = false
 
         when (action) {
-            is ChatScrollAction.PinToNewest -> isFollowingNewest = true
+            is ChatScrollAction.PinToNewest -> {
+                isFollowingNewest = true
+                // The pin this produced is the answer the reader asked for, so
+                // the arm is spent: a later scroll away is the reader's own.
+                followArmed = false
+            }
+
             is ChatScrollAction.RestoreAnchor -> pendingAnchor = null
             ChatScrollAction.Hold -> Unit
         }
@@ -236,6 +265,10 @@ class ChatScrollState {
     fun onTurnSent(): ChatScrollAction {
         isFollowingNewest = true
         pendingAnchor = null
+        // The turn does not exist yet, so nothing but the viewport reading can
+        // report the pin landing before it arrives. Hold the arm until one of
+        // them does — see [followArmed].
+        followArmed = true
         return ChatScrollAction.PinToNewest(ChatPinReason.TURN_SENT)
     }
 
@@ -283,6 +316,19 @@ class ChatScrollState {
         readerIsScrolling = isScrolling
         if (!wasScrolling && !isScrolling) return
         if (totalItems <= 0) return
-        isFollowingNewest = lastVisibleIndex >= totalItems - 1
+        if (lastVisibleIndex >= totalItems - 1) {
+            // We are where the reader last asked to be, so the arm is spent.
+            followArmed = false
+            isFollowingNewest = true
+            return
+        }
+        // A send is an explicit "take me to the newest turn", and the scroll
+        // the transcript is running to honour it is not the reader's. Its
+        // settling frames — and any fling still in flight when the send was
+        // pressed — land here as movement away from the end. Taking them at
+        // face value disarms the follow a moment before it is needed, and the
+        // turn the reader asked for is answered with `Hold`.
+        if (followArmed) return
+        isFollowingNewest = false
     }
 }

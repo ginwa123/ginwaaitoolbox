@@ -27,6 +27,11 @@ from pathlib import Path
 
 import pytest
 
+from chatview_boot import (
+    bind_session_workspace,
+    create_workspace,
+    open_chatview,
+)
 from db_seed import DbSeed
 
 
@@ -51,10 +56,11 @@ def _seed_db_path(h) -> Path:
     return h.temp_dir / ".config" / "nalar" / "agent.db"
 
 
-def _seed_mixed_session(h, session_id: str, count: int = 700) -> None:
+def _seed_mixed_session(h, workspace_id: str, session_id: str, count: int = 700) -> None:
     seed = DbSeed(_seed_db_path(h))
     with seed.connect() as conn:
         seed.seed_session(conn, session_id, f"Popin probe {count}")
+        bind_session_workspace(conn, workspace_id, session_id)
         stamps = DbSeed.baseline_timestamps(count=count, interval_seconds=30)
         for i in range(count):
             if i % 4 < 2:
@@ -111,13 +117,10 @@ def _geom(page) -> dict:
 def test_small_scrolls_neither_hole_nor_jump(ui_harness, page) -> None:
     h = ui_harness
     session_id = "sess-scroll-popin-probe"
-    _seed_mixed_session(h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_mixed_session(h, workspace_id, session_id)
 
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=30000,
-    )
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_function(
         "() => [...document.querySelectorAll('.virtual-scroller')]"
         ".some((el) => el.offsetParent !== null)",
@@ -241,13 +244,10 @@ def test_small_scrolls_while_streaming_neither_hole_nor_jump(ui_harness, page) -
     """
     h = ui_harness
     session_id = "sess-scroll-popin-streaming"
-    _seed_mixed_session(h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_mixed_session(h, workspace_id, session_id)
 
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=30000,
-    )
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_function(
         "() => [...document.querySelectorAll('.virtual-scroller')]"
         ".some((el) => el.offsetParent !== null)",
@@ -288,13 +288,10 @@ def test_small_scrolls_up_into_unmeasured_head(ui_harness, page) -> None:
     """
     h = ui_harness
     session_id = "sess-scroll-popin-up"
-    _seed_mixed_session(h, session_id)
+    workspace_id = create_workspace(h)
+    _seed_mixed_session(h, workspace_id, session_id)
 
-    page.goto(
-        h.web_url(f"/app?view=chat&session={session_id}"),
-        wait_until="load",
-        timeout=30000,
-    )
+    open_chatview(page, h, workspace_id, session_id)
     page.wait_for_function(
         "() => [...document.querySelectorAll('.virtual-scroller')]"
         ".some((el) => el.offsetParent !== null)",

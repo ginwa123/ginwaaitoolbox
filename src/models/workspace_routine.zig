@@ -109,3 +109,33 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .updated_at = if (self.updated_at) |ua| ua else null,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "workspace_routine: init + deinit" {
+    var r = try init(testing.allocator, .{
+        .id = "wr_1",
+        .workspace_item_id = "item_1",
+        .instruction = "Check the build status",
+        .schedule = "*/5 * * * *",
+        .next_run_at = "2026-08-15 12:00:00",
+        .enabled = true,
+    });
+    defer deinit(&r, testing.allocator);
+
+    try testing.expectEqualStrings("wr_1", r.id);
+    try testing.expectEqualStrings("item_1", r.workspace_item_id);
+    try testing.expectEqualStrings("*/5 * * * *", r.schedule);
+    try testing.expect(r.enabled);
+    try testing.expectEqualStrings("idle", r.last_status);
+    try testing.expect(r.next_run_at != null);
+}

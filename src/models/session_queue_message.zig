@@ -68,3 +68,27 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .created_at = self.created_at,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "session_queue_message: init + deinit with image-only" {
+    var m = try init(testing.allocator, .{
+        .id = "q_1",
+        .session_id = "session_1",
+        .image_url = "data:image/png;base64,abc",
+    });
+    defer deinit(&m, testing.allocator);
+
+    try testing.expectEqualStrings("q_1", m.id);
+    try testing.expect(m.message == null);
+    try testing.expectEqualStrings("data:image/png;base64,abc", m.image_url.?);
+}

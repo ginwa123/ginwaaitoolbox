@@ -266,8 +266,8 @@ onUnmounted(() => {
       class="flex flex-col items-center justify-center gap-1 py-16 text-center"
       :data-testid="`kanban-view-${props.itemId}-rows-empty`"
     >
-      <p class="text-sm" style="color: var(--semantic-text-muted)">No columns on this board</p>
-      <p class="text-xs" style="color: var(--semantic-text-dim)">
+      <p class="text-body" style="color: var(--semantic-text-muted)">No columns on this board</p>
+      <p class="text-dense" style="color: var(--semantic-text-dim)">
         Add one in Settings to start tracking tasks.
       </p>
     </div>
@@ -300,7 +300,7 @@ onUnmounted(() => {
             @click="emit('toggleCollapse', group.column.id)"
           >
             <span
-              class="text-[9px] transition-transform duration-200"
+              class="text-micro transition-transform duration-200"
               :style="{
                 transform: isCollapsed(group.column.id) ? 'rotate(0deg)' : 'rotate(90deg)',
               }"
@@ -315,7 +315,7 @@ onUnmounted(() => {
             v-model="renameValue"
             type="text"
             :data-testid="`kanban-row-group-${group.column.id}-rename-input`"
-            class="flex-1 px-2 py-0.5 rounded text-sm outline-none"
+            class="flex-1 px-2 py-0.5 rounded text-body outline-none"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -328,7 +328,7 @@ onUnmounted(() => {
           <button
             v-else
             type="button"
-            class="flex-1 text-left text-xs font-bold uppercase truncate hover:opacity-80"
+            class="flex-1 text-left text-dense font-bold uppercase truncate hover:opacity-80"
             style="color: var(--semantic-text); letter-spacing: 0.07em"
             :data-testid="`kanban-row-group-${group.column.id}-name`"
             @click="startInlineRename(group.column)"
@@ -345,7 +345,7 @@ onUnmounted(() => {
                fastest way to size a group before expanding it, so it
                has to clear the contrast bar. -->
           <span
-            class="text-[11px] font-semibold px-2 py-0.5 rounded-full shrink-0"
+            class="text-meta font-semibold px-2 py-0.5 rounded-full shrink-0"
             style="background-color: var(--color-bg-p1); color: var(--semantic-text-muted)"
             :data-testid="`kanban-row-group-${group.column.id}-count`"
           >
@@ -360,7 +360,7 @@ onUnmounted(() => {
               :data-testid="`kanban-row-group-${group.column.id}-menu-trigger`"
               @click.stop="toggleMenu(group.column.id)"
             >
-              <span class="text-base leading-none" aria-hidden="true">⋮</span>
+              <span class="text-lead leading-none" aria-hidden="true">⋮</span>
             </button>
             <ul
               v-if="openMenuColumnId === group.column.id"
@@ -374,7 +374,7 @@ onUnmounted(() => {
               <li>
                 <button
                   type="button"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+                  class="w-full px-3 py-2 text-left text-body hover:opacity-80"
                   style="color: var(--semantic-text)"
                   :data-testid="`kanban-row-group-${group.column.id}-menu-rename`"
                   @click="handleMenuRename(group.column.id)"
@@ -385,7 +385,7 @@ onUnmounted(() => {
               <li>
                 <button
                   type="button"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+                  class="w-full px-3 py-2 text-left text-body hover:opacity-80"
                   style="color: var(--semantic-text)"
                   :data-testid="`kanban-row-group-${group.column.id}-menu-sort`"
                   @click="handleMenuSort(group.column.id)"
@@ -396,7 +396,7 @@ onUnmounted(() => {
               <li>
                 <button
                   type="button"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+                  class="w-full px-3 py-2 text-left text-body hover:opacity-80"
                   style="color: #ef4444"
                   :data-testid="`kanban-row-group-${group.column.id}-menu-delete`"
                   @click="handleMenuDelete(group.column.id)"
@@ -407,7 +407,7 @@ onUnmounted(() => {
               <li>
                 <button
                   type="button"
-                  class="w-full px-3 py-2 text-left text-sm hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="w-full px-3 py-2 text-left text-body hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
                   style="color: var(--semantic-text)"
                   :data-testid="`kanban-row-group-${group.column.id}-menu-run-all`"
                   :disabled="!!props.runAllBusyByColumn[group.column.id]"
@@ -430,7 +430,7 @@ onUnmounted(() => {
              that matters. `line-clamp-2` bounds the worst case. -->
         <p
           v-if="group.column.description"
-          class="text-xs px-3 pt-1.5 pb-1.5 leading-relaxed line-clamp-2"
+          class="text-dense px-3 pt-1.5 pb-1.5 leading-relaxed line-clamp-2"
           style="color: var(--semantic-text-muted)"
           :title="group.column.description"
           :data-testid="`kanban-row-group-${group.column.id}-description`"
@@ -463,7 +463,7 @@ onUnmounted(() => {
 
           <div
             v-if="group.rows.length === 0"
-            class="text-xs py-3"
+            class="text-dense py-3"
             style="color: var(--semantic-text-dim)"
             :data-testid="`kanban-row-group-${group.column.id}-empty`"
           >
@@ -474,7 +474,7 @@ onUnmounted(() => {
             v-if="moreTasksAvailable(group.column.id) && group.rows.length > 0"
             type="button"
             :disabled="loadingMoreTasks(group.column.id)"
-            class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
+            class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-dense transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
             style="color: var(--semantic-text-dim)"
             :data-testid="`kanban-row-group-${group.column.id}-load-more`"
             @click="handleLoadMore(group.column.id)"

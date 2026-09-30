@@ -74,6 +74,14 @@ fun RecentsDrawerContent(
     recentsExpanded: Boolean = true,
     onToggleRecentsSection: () -> Unit = {},
     /**
+     * Whether the reader has asked to see past the recents preview, and the tap
+     * that asks. Forwarded for the same reason [recentsExpanded] is: the two
+     * drawers are one drawer, and a preview that survives a screen switch in one
+     * of them and not the other is a drawer that forgets.
+     */
+    recentsShowAll: Boolean = false,
+    onToggleRecentsShowAll: () -> Unit = {},
+    /**
      * The top-level "New Chat" row, forwarded here rather than wired in each of
      * the two call sites — the whole reason this file exists. A caller that
      * forgot to pass it would render a drawer whose one always-available action
@@ -106,6 +114,8 @@ fun RecentsDrawerContent(
         projectActions = projectActions,
         recentsExpanded = recentsExpanded,
         onToggleRecents = onToggleRecentsSection,
+        recentsShowAll = recentsShowAll,
+        onToggleRecentsShowAll = onToggleRecentsShowAll,
         isCreatingChat = isCreatingChat,
         onNewChat = onNewChat,
     )

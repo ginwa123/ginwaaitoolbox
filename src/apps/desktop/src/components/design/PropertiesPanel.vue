@@ -341,14 +341,14 @@ const showTypeSpecificSection = computed(
     -->
     <div
       v-if="previewMode"
-      class="flex-1 flex items-center justify-center p-6 text-sm"
+      class="flex-1 flex items-center justify-center p-6 text-body"
       style="color: var(--semantic-text-dim);"
       data-testid="properties-panel-preview"
     >
       <div class="text-center">
-        <div class="text-3xl mb-2" aria-hidden="true">▶</div>
+        <div class="text-display mb-2" aria-hidden="true">▶</div>
         <div>Previewing — interact with the mockup</div>
-        <div class="text-xs mt-1" style="opacity: 0.7;">
+        <div class="text-dense mt-1" style="opacity: 0.7;">
           Press Esc to return to editing
         </div>
       </div>
@@ -363,14 +363,14 @@ const showTypeSpecificSection = computed(
     -->
     <div
       v-else-if="elements.length > 1"
-      class="flex-1 flex items-center justify-center p-6 text-sm"
+      class="flex-1 flex items-center justify-center p-6 text-body"
       style="color: var(--semantic-text-dim);"
       data-testid="properties-panel-multi"
     >
       <div class="text-center">
-        <div class="text-3xl mb-2" aria-hidden="true">▦</div>
+        <div class="text-display mb-2" aria-hidden="true">▦</div>
         <div>{{ elements.length }} elements selected</div>
-        <div class="text-xs mt-1" style="opacity: 0.7;">
+        <div class="text-dense mt-1" style="opacity: 0.7;">
           Press Esc to deselect all
         </div>
       </div>
@@ -379,12 +379,12 @@ const showTypeSpecificSection = computed(
     <!-- ─── Empty state ────────────────────────────────────────────── -->
     <div
       v-else-if="elements.length === 0"
-      class="flex-1 flex items-center justify-center p-6 text-sm"
+      class="flex-1 flex items-center justify-center p-6 text-body"
       style="color: var(--semantic-text-dim);"
       data-testid="properties-panel-empty"
     >
       <div class="text-center">
-        <div class="text-3xl mb-2" aria-hidden="true">◇</div>
+        <div class="text-display mb-2" aria-hidden="true">◇</div>
         <div>Select an element to edit its properties</div>
       </div>
     </div>
@@ -395,7 +395,7 @@ const showTypeSpecificSection = computed(
         class="px-4 py-3 shrink-0"
         style="border-bottom: 1px solid var(--color-border);"
       >
-        <div class="text-xs" style="color: var(--semantic-text-dim);">
+        <div class="text-dense" style="color: var(--semantic-text-dim);">
           {{ singleElement.type }}
         </div>
         <input
@@ -403,7 +403,7 @@ const showTypeSpecificSection = computed(
           :value="singleElement.name"
           :disabled="readonly"
           data-testid="properties-input-name"
-          class="w-full bg-transparent text-base font-semibold outline-none mt-1"
+          class="w-full bg-transparent text-lead font-semibold outline-none mt-1"
           style="color: var(--semantic-text);"
           placeholder="Element name"
           @change="(e) => handleStringChange('name', (e.target as HTMLInputElement).value)"
@@ -417,66 +417,66 @@ const showTypeSpecificSection = computed(
         style="border-bottom: 1px solid var(--color-border);"
         data-testid="properties-section-geometry"
       >
-        <div class="text-xs font-semibold mb-2" style="color: var(--semantic-text-dim);">
+        <div class="text-dense font-semibold mb-2" style="color: var(--semantic-text-dim);">
           Geometry
         </div>
         <div class="grid grid-cols-2 gap-2">
-          <label class="text-xs" style="color: var(--semantic-text-dim);">
+          <label class="text-dense" style="color: var(--semantic-text-dim);">
             X
             <input
               type="number"
               :value="singleElement.x"
               :disabled="readonly"
               data-testid="properties-input-x"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleNumericChange('x', Number((e.target as HTMLInputElement).value))"
             />
           </label>
-          <label class="text-xs" style="color: var(--semantic-text-dim);">
+          <label class="text-dense" style="color: var(--semantic-text-dim);">
             Y
             <input
               type="number"
               :value="singleElement.y"
               :disabled="readonly"
               data-testid="properties-input-y"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleNumericChange('y', Number((e.target as HTMLInputElement).value))"
             />
           </label>
-          <label class="text-xs" style="color: var(--semantic-text-dim);">
+          <label class="text-dense" style="color: var(--semantic-text-dim);">
             W
             <input
               type="number"
               :value="singleElement.width"
               :disabled="readonly"
               data-testid="properties-input-width"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleNumericChange('width', Number((e.target as HTMLInputElement).value))"
             />
           </label>
-          <label class="text-xs" style="color: var(--semantic-text-dim);">
+          <label class="text-dense" style="color: var(--semantic-text-dim);">
             H
             <input
               type="number"
               :value="singleElement.height"
               :disabled="readonly"
               data-testid="properties-input-height"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleNumericChange('height', Number((e.target as HTMLInputElement).value))"
             />
           </label>
-          <label class="col-span-2 text-xs" style="color: var(--semantic-text-dim);">
+          <label class="col-span-2 text-dense" style="color: var(--semantic-text-dim);">
             Rotation (deg)
             <input
               type="number"
               :value="singleElement.rotation"
               :disabled="readonly"
               data-testid="properties-input-rotation"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleNumericChange('rotation', Number((e.target as HTMLInputElement).value))"
             />
@@ -491,11 +491,11 @@ const showTypeSpecificSection = computed(
         style="border-bottom: 1px solid var(--color-border);"
         data-testid="properties-section-style"
       >
-        <div class="text-xs font-semibold mb-2" style="color: var(--semantic-text-dim);">
+        <div class="text-dense font-semibold mb-2" style="color: var(--semantic-text-dim);">
           Style
         </div>
         <div class="space-y-2">
-          <label class="block text-xs" style="color: var(--semantic-text-dim);">
+          <label class="block text-dense" style="color: var(--semantic-text-dim);">
             Fill color
             <input
               type="text"
@@ -503,13 +503,13 @@ const showTypeSpecificSection = computed(
               :disabled="readonly"
               placeholder="(none)"
               data-testid="properties-input-fill"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none font-mono"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none font-mono"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleStringChange('fill', (e.target as HTMLInputElement).value)"
             />
           </label>
           <div class="grid grid-cols-2 gap-2">
-            <label class="text-xs" style="color: var(--semantic-text-dim);">
+            <label class="text-dense" style="color: var(--semantic-text-dim);">
               Stroke
               <input
                 type="text"
@@ -517,38 +517,38 @@ const showTypeSpecificSection = computed(
                 :disabled="readonly"
                 placeholder="(none)"
                 data-testid="properties-input-stroke"
-                class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none font-mono"
+                class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none font-mono"
                 style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
                 @change="(e) => handleStringChange('stroke', (e.target as HTMLInputElement).value)"
               />
             </label>
-            <label class="text-xs" style="color: var(--semantic-text-dim);">
+            <label class="text-dense" style="color: var(--semantic-text-dim);">
               Width
               <input
                 type="number"
                 :value="singleElement.stroke_width"
                 :disabled="readonly"
                 data-testid="properties-input-stroke-width"
-                class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+                class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
                 style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
                 @change="(e) => handleNumericChange('stroke_width', Number((e.target as HTMLInputElement).value))"
               />
             </label>
           </div>
           <div class="grid grid-cols-2 gap-2">
-            <label class="text-xs" style="color: var(--semantic-text-dim);">
+            <label class="text-dense" style="color: var(--semantic-text-dim);">
               Corner radius
               <input
                 type="number"
                 :value="singleElement.corner_radius"
                 :disabled="readonly"
                 data-testid="properties-input-corner-radius"
-                class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+                class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
                 style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
                 @change="(e) => handleNumericChange('corner_radius', Number((e.target as HTMLInputElement).value))"
               />
             </label>
-            <label class="text-xs" style="color: var(--semantic-text-dim);">
+            <label class="text-dense" style="color: var(--semantic-text-dim);">
               Opacity (0-1)
               <input
                 type="number"
@@ -558,7 +558,7 @@ const showTypeSpecificSection = computed(
                 :value="singleElement.opacity"
                 :disabled="readonly"
                 data-testid="properties-input-opacity"
-                class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+                class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
                 style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
                 @change="(e) => handleNumericChange('opacity', Number((e.target as HTMLInputElement).value))"
               />
@@ -574,23 +574,23 @@ const showTypeSpecificSection = computed(
         style="border-bottom: 1px solid var(--color-border);"
         data-testid="properties-section-type"
       >
-        <div class="text-xs font-semibold mb-2" style="color: var(--semantic-text-dim);">
+        <div class="text-dense font-semibold mb-2" style="color: var(--semantic-text-dim);">
           {{ singleElement.type === 'text' ? 'Text' : 'Image' }}
         </div>
         <template v-if="isTextElement">
-          <label class="block text-xs mb-2" style="color: var(--semantic-text-dim);">
+          <label class="block text-dense mb-2" style="color: var(--semantic-text-dim);">
             Text content
             <textarea
               :value="singleElement.text_content"
               :disabled="readonly"
               rows="3"
               data-testid="properties-input-text-content"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleStringChange('text_content', (e.target as HTMLTextAreaElement).value)"
             />
           </label>
-          <label class="block text-xs" style="color: var(--semantic-text-dim);">
+          <label class="block text-dense" style="color: var(--semantic-text-dim);">
             Text style (font-family)
             <input
               type="text"
@@ -598,14 +598,14 @@ const showTypeSpecificSection = computed(
               :disabled="readonly"
               placeholder="sans-serif"
               data-testid="properties-input-text-style"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none font-mono"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none font-mono"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleStringChange('text_style', (e.target as HTMLInputElement).value)"
             />
           </label>
         </template>
         <template v-else-if="isImageElement">
-          <label class="block text-xs" style="color: var(--semantic-text-dim);">
+          <label class="block text-dense" style="color: var(--semantic-text-dim);">
             Image URL
             <input
               type="text"
@@ -613,7 +613,7 @@ const showTypeSpecificSection = computed(
               :disabled="readonly"
               placeholder="https://..."
               data-testid="properties-input-image-url"
-              class="w-full mt-0.5 px-2 py-1 rounded text-sm outline-none font-mono"
+              class="w-full mt-0.5 px-2 py-1 rounded text-body outline-none font-mono"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               @change="(e) => handleStringChange('image_url', (e.target as HTMLInputElement).value)"
             />
@@ -631,7 +631,7 @@ const showTypeSpecificSection = computed(
           type="button"
           :disabled="readonly"
           data-testid="properties-toggle-html-editor"
-          class="w-full text-left text-xs font-semibold flex items-center gap-2 mb-2 transition-colors"
+          class="w-full text-left text-dense font-semibold flex items-center gap-2 mb-2 transition-colors"
           style="color: var(--semantic-text-dim);"
           @click="htmlExpanded = !htmlExpanded"
         >
@@ -652,13 +652,13 @@ const showTypeSpecificSection = computed(
               :disabled="readonly"
               rows="8"
               data-testid="properties-html-fallback-textarea"
-              class="w-full px-2 py-1 rounded text-xs font-mono outline-none"
+              class="w-full px-2 py-1 rounded text-dense font-mono outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               :placeholder="monacoLoadError ? `Monaco failed to load: ${monacoLoadError}` : 'Edit HTML body'"
             />
             <div
               v-if="monacoLoadError"
-              class="text-[10px] mt-1"
+              class="text-micro mt-1"
               style="color: var(--semantic-text-dim);"
             >
               TODO: install monaco-editor for syntax highlighting
@@ -669,7 +669,7 @@ const showTypeSpecificSection = computed(
               type="button"
               :disabled="readonly"
               data-testid="properties-html-cancel"
-              class="px-2 py-1 rounded text-xs"
+              class="px-2 py-1 rounded text-dense"
               style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
               @click="handleHtmlCancel"
             >Cancel</button>
@@ -677,7 +677,7 @@ const showTypeSpecificSection = computed(
               type="button"
               :disabled="readonly"
               data-testid="properties-html-save"
-              class="px-2 py-1 rounded text-xs"
+              class="px-2 py-1 rounded text-dense"
               style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
               @click="handleHtmlSave"
             >Save</button>
@@ -695,7 +695,7 @@ const showTypeSpecificSection = computed(
             type="button"
             :disabled="readonly"
             data-testid="properties-delete-button"
-            class="w-full px-3 py-1.5 rounded text-sm font-medium transition-all"
+            class="w-full px-3 py-1.5 rounded text-body font-medium transition-all"
             style="background-color: rgba(220, 38, 38, 0.18); color: rgb(248, 113, 113); border: 1px solid rgba(220, 38, 38, 0.4);"
             @click="handleDeleteClick"
           >
@@ -707,21 +707,21 @@ const showTypeSpecificSection = computed(
           class="space-y-2"
           data-testid="properties-delete-confirm"
         >
-          <div class="text-xs" style="color: var(--semantic-text);">
+          <div class="text-dense" style="color: var(--semantic-text);">
             Delete "{{ singleElement.name }}"? This cannot be undone.
           </div>
           <div class="flex gap-2">
             <button
               type="button"
               data-testid="properties-delete-cancel"
-              class="flex-1 px-2 py-1 rounded text-xs"
+              class="flex-1 px-2 py-1 rounded text-dense"
               style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
               @click="handleDeleteCancel"
             >Cancel</button>
             <button
               type="button"
               data-testid="properties-delete-confirm"
-              class="flex-1 px-2 py-1 rounded text-xs font-medium"
+              class="flex-1 px-2 py-1 rounded text-dense font-medium"
               style="background-color: rgba(220, 38, 38, 0.6); color: white;"
               @click="handleDeleteConfirm"
             >Delete</button>

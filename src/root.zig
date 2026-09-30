@@ -919,6 +919,7 @@ pub const move_element_to_page = @import("modules/agent/tools/move_element_to_pa
 pub const get_design_context = @import("modules/agent/tools/get_design_context.zig");
 pub const preview_design_page = @import("modules/agent/tools/preview_design_page.zig");
 pub const present_files = @import("modules/agent/tools/present_files.zig");
+pub const file_sandbox = @import("modules/agent/tools/file_sandbox.zig");
 
 pub const config = @import("modules/config/Config.zig");
 pub const parse_thinking = @import("modules/config/parse_thinking.zig");
@@ -1071,6 +1072,10 @@ test {
     // lazy-compilation workaround as cleanup_stale_worker above.
     _ = @import("agentic_loop/update_worker.zig");
     _ = @import("http_handlers/worker_list.zig");
+    // The download endpoint half of the present_files contract: it holds the
+    // status mapping tests plus the static checks that keep it on the shared
+    // file_sandbox rule (docs/plans/2026-09-29-present-files-sandbox-parity.md).
+    _ = @import("http_handlers/files_download.zig");
     // schedulers/cleanup_stale_background_process.zig has inline tests
     // (mirrors cleanup_stale_worker pattern). Re-imported here for the
     // same reason — see plan 2026-08-19-cleanup-stale-background-process.
@@ -1087,17 +1092,17 @@ test {
     // 2026-09-10-web-launch-toggle): impl + unit tests in one file.
     // Same discovery workaround as mcp_http above.
     _ = @import("modules/config/web_port.zig");
-    // Config struct + config_test.zig (the `test { ... }` block at the
-    // bottom of Config.zig pulls in config_test.zig +
-    // parse_thinking_test.zig). Registered here so `zig build test`
-    // discovers them — the `pub const config` re-export above alone
-    // doesn't trigger discovery.
+    // Config struct + its `test { ... }` block at the bottom of
+    // Config.zig (the config_test.zig + parse_thinking_test.zig
+    // suites are now inline in Config.zig itself). Registered here so
+    // `zig build test` discovers them — the `pub const config`
+    // re-export above alone doesn't trigger discovery.
     _ = @import("modules/config/Config.zig");
     // Per-user config store unit tests (Migration 092, users.config_json).
     // Same discovery workaround as Config.zig above.
     _ = @import("modules/config/UserConfigStore.zig");
-    _ = @import("service/crash_handler_test.zig"); // crash signal/exception handler contracts
-    _ = @import("service/signal_handlers_test.zig"); // SIGINT+SIGTERM graceful-shutdown contracts
+    _ = @import("service/crash_handler.zig"); // crash signal/exception handler contracts
+    _ = @import("service/signal_handlers.zig"); // SIGINT+SIGTERM graceful-shutdown contracts
     // http_handlers/git_file_diffs.zig has inline tests for the diff
     // splitter, the path extractor, and capDiff's truncation branch.
     // `http_handlers/mod.zig` re-exports only `gitFileDiffsHandler`, and a
@@ -1105,6 +1110,43 @@ test {
     // so all of those tests were silently unrun. Same discovery workaround
     // as Config.zig above — verified with a canary test, not inferred.
     _ = @import("http_handlers/git_file_diffs.zig");
+    // The `gh` handlers spawn child processes, and their inline tests
+    // (JSON payload shapes, error mapping, and the `run_captured`
+    // contract) never ran — same discovery gap as git_file_diffs above.
+    // `runGhPrView` in particular shipped with ZERO functional tests and
+    // then aborted the whole server from
+    // `std/Io/Threaded.zig:closeFd` <- `childCleanupPosix` <- `Child.wait`
+    // (`thread N panic: reached unreachable code`), which is exactly the
+    // class of bug the wiring assertions below are supposed to catch.
+    _ = @import("http_handlers/git_pr_status.zig");
+    _ = @import("http_handlers/git_pr_create.zig");
+    _ = @import("http_handlers/git_pr_diff.zig");
+
+    // ===== src/models/: Sanity tests for the entity models (split out of models_test.zig) =====
+    // The per-model `init` / `deinit` / `clone` sanity tests used to live
+    // in one models_test.zig that no test root imported, so they never
+    // ran. They now sit inline at the bottom of each model file, and the
+    // per-file imports below are what make `zig build test` discover them
+    // (a `pub const` re-export of the model does NOT pull in its tests —
+    // same discovery gap as Config.zig / git_file_diffs.zig above).
+    _ = @import("models/workspace.zig");
+    _ = @import("models/workspace_item.zig");
+    _ = @import("models/workspace_item_task.zig");
+    _ = @import("models/workspace_routine.zig");
+    _ = @import("models/session.zig");
+    _ = @import("models/session_activity.zig");
+    _ = @import("models/session_agent.zig");
+    _ = @import("models/session_queue_message.zig");
+    _ = @import("models/session_skill.zig");
+    _ = @import("models/session_background_process.zig");
+    _ = @import("models/kanban_column.zig");
+    _ = @import("models/kanban_assignment.zig");
+    _ = @import("models/design_page.zig");
+    _ = @import("models/design_page_element.zig");
+    _ = @import("models/llm_history.zig");
+    _ = @import("models/worker.zig");
+    _ = @import("models/log.zig");
+    _ = @import("models/agent_memory.zig");
 }
 
 // ─── Fetch-once MCP tools cache tests (plan: mcp-fetch-once-cache) ───
@@ -1195,4 +1237,144 @@ test "mcp fetch-once: error publish (mark_init=false) leaves retry open" {
     ctx.storeMcpToolsCache(null, true);
     try std.testing.expect(ctx.isMcpToolsInit());
     try std.testing.expect(ctx.getMcpToolsCached(std.testing.allocator) == null);
+}
+
+// ===== Tests merged from windows_posix_tmp_path_test.zig (2026-09-29 flatten) =====
+// Static-contract gate: no Zig test may open or create a file at a literal
+// `/tmp/...` path (run 36496521345, job 109177302271 — `backend (Windows X64)`).
+//
+// Seven of the eight Windows-only failures shared one anti-pattern: tests
+// built paths with `allocPrint(..., "/tmp/x_{d}.md", ...)` and passed them to
+// `std.Io.Dir.createFileAbsolute`. On Windows `/tmp/x` is NOT the POSIX temp
+// dir — it resolves against the cwd's drive as `D:\tmp\x`, and `D:\tmp` does
+// not exist, so `NtCreateFile` returns `STATUS_OBJECT_PATH_NOT_FOUND` and Zig
+// surfaces `error.FileNotFound`. Linux passed, so the bug was invisible until
+// the hosted windows-2022 runner.
+//
+// Scope — what this gate does and does NOT catch:
+//
+//   * Catches: a *file*-creating/opening call whose path literal is `/tmp/...`
+//     on the same line. These need the parent directory to already exist,
+//     which `/tmp/x` does not on Windows.
+//   * Ignores: `createDirPath` / `mkdirP` / `makePath` with a `/tmp` path.
+//     These *create* the parent chain, so they succeed on Windows (they just
+//     litter `D:\tmp`) — `service/daemon.zig` and
+//     `modules/agent/tools/memories.zig` use that shape and are green.
+//   * Ignores: `/tmp/...` held in a variable and passed on a later line, and
+//     `/tmp/...` used as a plain string (DB fixtures compared with
+//     `expectEqualStrings`, CLI-arg parsing, JSON payloads). Neither touches
+//     the filesystem in a way that breaks.
+//
+// So this is a guard against the exact regression, not a full `/tmp` audit.
+// The replacement is `std.testing.tmpDir(.{})`, which roots under
+// `.zig-cache/tmp/<random>/` on every platform and is deleted by
+// `tmp.cleanup()`.
+
+/// File-creating/opening entry points: the path must resolve to a real file,
+/// so a missing parent directory is a hard error on Windows. Ordered so the
+/// longer names are tried first (`createFileAbsolute` before `createFile`).
+const tmp_gate_file_ops = [_][]const u8{
+    "createFileAbsolute",
+    "openFileAbsolute",
+    "deleteFileAbsolute",
+    "createFile",
+};
+
+/// Directories that hold no first-party Zig and are expensive to walk.
+const tmp_gate_pruned_dirs = [_][]const u8{
+    "node_modules",
+    ".zig-cache",
+    "zig-out",
+    ".gradle",
+    "dist",
+    "build",
+    "html",
+};
+
+/// Returns the index of a `/tmp` that begins a path (so `.zig-cache/tmp/x`
+/// does not count), or null when the line has no such token.
+fn tmpGatePathStartIndex(line: []const u8) ?usize {
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, line, at, "/tmp")) |i| {
+        // A preceding path character means this is a segment of a longer
+        // path (e.g. `.zig-cache/tmp`), not a `/tmp` root.
+        if (i == 0 or line[i - 1] == '"' or line[i - 1] == '\'' or line[i - 1] == '(') return i;
+        at = i + 1;
+    }
+    return null;
+}
+
+/// Returns true when `line` opens/creates a file at a literal `/tmp` path.
+fn tmpGateIsFileOpLine(line: []const u8) bool {
+    if (tmpGatePathStartIndex(line) == null) return false;
+    for (tmp_gate_file_ops) |op| {
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, line, at, op)) |i| {
+            const after = line[i + op.len ..];
+            // Require an actual invocation, not the name mentioned in prose.
+            if (after.len > 0 and after[0] == '(') return true;
+            at = i + op.len;
+        }
+    }
+    return false;
+}
+
+test "static contract: no test opens or creates a file at a literal /tmp path" {
+    const root = std.Io.Dir.cwd();
+    var src = try root.openDir(std.testing.io, "src", .{ .iterate = true });
+    defer src.close(std.testing.io);
+
+    var walker = try src.walkSelectively(std.testing.allocator);
+    defer walker.deinit();
+
+    var offenders: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (offenders.items) |o| std.testing.allocator.free(o);
+        offenders.deinit(std.testing.allocator);
+    }
+
+    // `SelectiveWalker` owns the path buffer and invalidates `entry.path` on
+    // the next call, so offender strings are copied out with `allocPrint`.
+    // Descent is opt-in via `enter`, which is what keeps this off the
+    // multi-hundred-megabyte `.zig-cache` / `node_modules` trees.
+    // A directory we cannot iterate ends the walk rather than failing —
+    // a partial scan beats a crash.
+    while (walker.next(std.testing.io) catch null) |entry| {
+        if (entry.kind == .directory) {
+            for (tmp_gate_pruned_dirs) |pruned| {
+                if (std.mem.eql(u8, entry.basename, pruned)) break;
+            } else {
+                try walker.enter(std.testing.io, entry);
+                continue;
+            }
+            continue;
+        }
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
+
+        const contents = src.readFileAlloc(std.testing.io, entry.path, std.testing.allocator, .limited(4 << 20)) catch continue;
+        defer std.testing.allocator.free(contents);
+
+        var line_it = std.mem.splitScalar(u8, contents, '\n');
+        while (line_it.next()) |line| {
+            if (!tmpGateIsFileOpLine(line)) continue;
+            try offenders.append(std.testing.allocator, try std.fmt.allocPrint(
+                std.testing.allocator,
+                "src/{s}: {s}",
+                .{ entry.path, std.mem.trim(u8, line, " \t") },
+            ));
+        }
+    }
+
+    if (offenders.items.len == 0) return;
+    std.debug.print(
+        "\n=== {d} Windows-unsafe /tmp file op(s) — these pass on Linux and FAIL on the windows-2022 runner ===\n",
+        .{offenders.items.len},
+    );
+    for (offenders.items) |o| std.debug.print("  {s}\n", .{o});
+    std.debug.print(
+        "Fix: use `var tmp = testing.tmpDir(.{{}}); defer tmp.cleanup();` + `tmp.dir.writeFile(io, .{{ .sub_path = ..., .data = ... }})`.\n\n",
+        .{},
+    );
+    return error.PosixTmpPathInFileOp;
 }

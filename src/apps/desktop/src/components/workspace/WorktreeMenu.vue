@@ -91,7 +91,7 @@ const onCreateWorktree = () => {
     <!-- Header — shows current branch and (optional) status. Gives the
          user context for what they're acting on. -->
     <div
-      class="px-3 py-2 text-[10px] uppercase tracking-wider"
+      class="px-3 py-2 text-micro uppercase tracking-wider"
       style="
         color: var(--semantic-text-dim);
         border-bottom: 1px solid var(--color-border);
@@ -118,7 +118,7 @@ const onCreateWorktree = () => {
         @click="onCreatePr"
         disabled
         title="Disabled"
-        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
+        class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text)"
       >
         <span>🔀</span>
@@ -129,7 +129,7 @@ const onCreateWorktree = () => {
         @click="onViewFolder"
         disabled
         title="Disabled"
-        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
+        class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
         <span>📁</span>
@@ -140,7 +140,7 @@ const onCreateWorktree = () => {
         @click="onClear"
         disabled
         title="Disabled"
-        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
+        class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--color-red); border-top: 1px solid var(--color-border)"
       >
         <span>🗑️</span>
@@ -153,7 +153,7 @@ const onCreateWorktree = () => {
       <button
         data-testid="worktree-menu-create-worktree"
         @click="onCreateWorktree"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center gap-2"
         style="color: var(--semantic-text)"
       >
         <span>🌳</span>
@@ -164,7 +164,7 @@ const onCreateWorktree = () => {
         @click="onViewFolder"
         disabled
         title="Disabled"
-        class="w-full text-left px-3 py-2 text-xs flex items-center gap-2 opacity-40 cursor-not-allowed"
+        class="w-full text-left px-3 py-2 text-dense flex items-center gap-2 opacity-40 cursor-not-allowed"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
         <span>📁</span>
@@ -173,7 +173,7 @@ const onCreateWorktree = () => {
       <button
         data-testid="worktree-menu-refresh"
         @click="onRefresh"
-        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center gap-2"
+        class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center gap-2"
         style="color: var(--semantic-text); border-top: 1px solid var(--color-border)"
       >
         <span>🔄</span>

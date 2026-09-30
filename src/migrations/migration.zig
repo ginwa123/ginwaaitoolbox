@@ -2011,21 +2011,28 @@ pub const allMigrations: []const Migration = &.{
     // genuinely race. No backfill: the list read creates it on demand.
     // Plan: docs/plans/2026-09-27-sidebar-new-chat-default-project.md (D6, D12)
     .{ .version = Migration094AddDefaultProjectToWorkspaceItems.version, .name = Migration094AddDefaultProjectToWorkspaceItems.name, .up = Migration094AddDefaultProjectToWorkspaceItems.up },
-    // Migration 095 — `session_skill_events`, the append-only skill usage
+    // Migration 095 — `agent_memories.workspace_id`, so `save_memory` /
+    // `load_memory` stop sharing one note pool across every workspace.
+    // `''` is the "no workspace" bucket; legacy rows land there, which is
+    // why they stop being visible to workspace sessions (re-home with an
+    // explicit UPDATE if you want to keep one).
+    // Plan: docs/plans/2026-09-29-memory-workspace-isolation.md
+    .{ .version = Migration095AddWorkspaceIdToAgentMemories.version, .name = Migration095AddWorkspaceIdToAgentMemories.name, .up = Migration095AddWorkspaceIdToAgentMemories.up },
+    // Migration 096 — `session_skill_events`, the append-only skill usage
     // ledger. Answers "which turn loaded this skill", "was it only listed and
     // then ignored" and "has the body changed since it was read" — none of
     // which `session_skills` can answer, because it keeps only the latest body
     // per (session, skill) and only `use_skill` writes it.
     // Plan: docs/plans/2026-09-27-skill-evals.md (W1)
-    .{ .version = Migration095CreateSessionSkillEvents.version, .name = Migration095CreateSessionSkillEvents.name, .up = Migration095CreateSessionSkillEvents.up },
-    // Migration 096 — the skill-eval tables. `skill_eval_facts` caches the
+    .{ .version = Migration096CreateSessionSkillEvents.version, .name = Migration096CreateSessionSkillEvents.name, .up = Migration096CreateSessionSkillEvents.up },
+    // Migration 097 — the skill-eval tables. `skill_eval_facts` caches the
     // INTRINSIC half of a verdict against (skill_key, content_hash,
     // context_key) so two sessions evaluating the same body at the same commit
     // share one computation; `skill_eval_runs` makes "once per self-prompted
     // session" a DB invariant; `skill_eval_results` holds the session-relative
     // half plus the `base_content_hash` staleness guard used on apply.
     // Plan: docs/plans/2026-09-27-skill-evals.md (§4.6, W0)
-    .{ .version = Migration096CreateSkillEvalTables.version, .name = Migration096CreateSkillEvalTables.name, .up = Migration096CreateSkillEvalTables.up },
+    .{ .version = Migration097CreateSkillEvalTables.version, .name = Migration097CreateSkillEvalTables.name, .up = Migration097CreateSkillEvalTables.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -5063,8 +5070,7 @@ pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
     }
 };
 
-// ============================================================================
-// Migration 095 — `session_skill_events`, the skill usage ledger.
+// Migration 096 — `session_skill_events`, the skill usage ledger.
 // ============================================================================
 //
 // `session_skills` (Migration 008) keeps only the LATEST body of each skill a
@@ -5083,8 +5089,8 @@ pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
 // disk now, instead of diffing two full bodies.
 //
 // Plan: docs/plans/2026-09-27-skill-evals.md (W1)
-pub const Migration095CreateSessionSkillEvents = struct {
-    pub const version: u32 = 95;
+pub const Migration096CreateSessionSkillEvents = struct {
+    pub const version: u32 = 96;
     pub const name = "create_session_skill_events";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
@@ -5119,7 +5125,7 @@ pub const Migration095CreateSessionSkillEvents = struct {
 };
 
 // ============================================================================
-// Migration 096 — the skill-eval tables: shared facts, runs, results.
+// Migration 097 — the skill-eval tables: shared facts, runs, results.
 // ============================================================================
 //
 // Three tables, one feature (docs/plans/2026-09-27-skill-evals.md §4.6-4.7):
@@ -5161,8 +5167,8 @@ pub const Migration095CreateSessionSkillEvents = struct {
 //
 // Idempotency: CREATE TABLE/INDEX IF NOT EXISTS.
 // One statement per db.exec (sqlite3_prepare_v2 compiles only the first).
-pub const Migration096CreateSkillEvalTables = struct {
-    pub const version: u32 = 96;
+pub const Migration097CreateSkillEvalTables = struct {
+    pub const version: u32 = 97;
     pub const name = "create_skill_eval_tables";
 
     pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
@@ -5274,6 +5280,77 @@ pub const Migration096CreateSkillEvalTables = struct {
         try db.exec(allocator,
             "CREATE INDEX IF NOT EXISTS idx_skill_eval_results_session ON skill_eval_results(session_id, created_at DESC)",
             &[_][]const u8{});
+    }
+};
+
+// ============================================================================
+// Migration 095 — per-workspace isolation for `agent_memories`.
+// ============================================================================
+//
+// ## Why this migration exists
+//
+// The `save_memory` / `load_memory` agent tools store their notes in
+// `agent_memories` (Migration 070) with NO owner column of any kind.
+// The tool description even said so — "Global scope: memories are
+// visible across all workspaces and sessions. There is no per-workspace
+// filter." Every workspace on the machine therefore read and wrote the
+// same note pool: a note saved while working on project X was recalled
+// verbatim by an agent whose cwd was project Y, and `load_memory {id}`
+// would hand over a full 1 MiB body belonging to a different workspace.
+//
+// Workspace isolation is the rule the rest of the product already
+// follows (`read_workspace_session` scopes server-side from
+// `ctx.session_id`; the kanban tools scope every query by
+// `workspace_id`). This migration makes the memory store obey it too.
+//
+// ## The `''` sentinel
+//
+// `workspace_id TEXT NOT NULL DEFAULT ''` — `''` means "this memory
+// belongs to no workspace" and is the project's existing convention for
+// an absent string value (Migration 094's `is_default`, Migration 070's
+// `tags`). A session that cannot be resolved to a workspace
+// (`workspace_scope.resolveWorkspaceId` returns null — a bare CLI chat,
+// a session whose cwd matches no `workspace_items.path`) writes into the
+// `''` bucket, which is a bucket like any other: those sessions share
+// it with each other, but NO workspace session can see it. Fail-closed
+// in the direction that matters.
+//
+// Pre-existing rows land in `''` for free — `NOT NULL DEFAULT ''` on an
+// ADD COLUMN is an O(1) metadata change, no table rewrite, no backfill
+// UPDATE. They are therefore invisible to workspace-scoped sessions
+// after this migration. That is deliberate: re-homing 300+ rows that
+// span every workspace a user ever typed into would either guess a
+// workspace or copy the same note into all of them, and copying it into
+// all of them is the exact leak this migration exists to close. To keep
+// them, re-home the ones you want explicitly:
+//
+//   UPDATE agent_memories SET workspace_id = 'ws_...' WHERE id = 'mem_...';
+//
+// ## What is NOT changed
+//
+// `agent_memories_fts` still indexes `content` + `tags` only. The
+// workspace filter is a JOIN predicate on the source table (the FTS5
+// query already joins `agent_memories` for `snippet()`), so no FTS
+// rebuild, no trigger change and no re-tokenization is required. A
+// partitioned virtual table would force a full reindex of every note on
+// a schema-only concern.
+pub const Migration095AddWorkspaceIdToAgentMemories = struct {
+    pub const version: u32 = 95;
+    pub const name = "add_workspace_id_to_agent_memories";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(.{ .db = db }, allocator, "agent_memories", "workspace_id", "workspace_id TEXT NOT NULL DEFAULT ''");
+
+        // Every read path filters `workspace_id = ?` and the FTS path
+        // orders by the join's own rank, so a leading `workspace_id`
+        // column lets SQLite seek straight to the calling workspace's
+        // rows instead of probing every FTS hit. `updated_at DESC` rides
+        // along for the (still unused, but already indexed) "most recent
+        // memories in this workspace" surface.
+        try db.exec(allocator,
+            \\CREATE INDEX IF NOT EXISTS idx_agent_memories_workspace
+            \\ON agent_memories(workspace_id, updated_at DESC)
+        , &[_][]const u8{});
     }
 };
 
@@ -6527,15 +6604,7493 @@ test "Migration094 is registered in allMigrations" {
     return error.Migration094NotRegistered;
 }
 
-// ─── Migration 095 — session_skill_events ────────────────────────────────
+// ─── Tests for Migration 095 (agent_memories.workspace_id) ────────────
 
-test "Migration095 creates the ledger table and both indexes" {
+/// Create a pre-Migration-095 `agent_memories` (+ FTS5 side table) with
+/// rows in it, so the ADD COLUMN can be exercised against data rather
+/// than an empty table.
+fn setupAgentMemoriesPre095(ctx: *TestCtx) !void {
+    try ctx.db.exec(testing.allocator,
+        \\CREATE TABLE agent_memories (
+        \\    id TEXT PRIMARY KEY,
+        \\    content TEXT NOT NULL,
+        \\    tags TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &[_][]const u8{});
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_memories (id, content) VALUES ('mem_aaa', 'legacy note one')",
+        &[_][]const u8{},
+    );
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_memories (id, content) VALUES ('mem_bbb', 'legacy note two')",
+        &[_][]const u8{},
+    );
+}
+
+test "Migration095 adds workspace_id and files every pre-existing row in the '' bucket" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupAgentMemoriesPre095(&ctx);
+
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT id, workspace_id FROM agent_memories ORDER BY id
+    , &.{});
+    defer q.deinit();
+    const a = (try q.next()) orelse return error.RowMissing;
+    defer a.deinit(alloc);
+    try testing.expectEqualStrings("mem_aaa", a.values[0]);
+    try testing.expectEqualStrings("", a.values[1]);
+    const b = (try q.next()) orelse return error.RowMissing;
+    defer b.deinit(alloc);
+    try testing.expectEqualStrings("mem_bbb", b.values[0]);
+    try testing.expectEqualStrings("", b.values[1]);
+}
+
+test "Migration095 creates the workspace index and is idempotent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupAgentMemoriesPre095(&ctx);
+
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+    // Re-running must not throw "duplicate column" / "index already exists"
+    // and must not rewrite a row that already has an owner.
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        "UPDATE agent_memories SET workspace_id = 'ws_kept' WHERE id = 'mem_aaa'",
+        &[_][]const u8{},
+    );
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT workspace_id FROM agent_memories WHERE id = 'mem_aaa'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("ws_kept", row.values[0]);
+
+    var idx = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_memories_workspace'",
+        &.{});
+    defer idx.deinit();
+    const irow = (try idx.next()) orelse return error.IndexMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("idx_agent_memories_workspace", irow.values[0]);
+}
+
+test "Migration095 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration095AddWorkspaceIdToAgentMemories.version) return;
+    }
+    return error.Migration095NotRegistered;
+}
+
+// ===== Tests merged from migration_test.zig (2026-09-29 flatten) =====
+
+test "migration module imports" {
+    // Test that the migration module can be imported
+    try std.testing.expect(true);
+}
+
+// ===== Tests merged from migration_009_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 009 (remove_created_column).
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// Migration 009's `INSERT INTO ... SELECT datetime(CAST(created AS
+// INTEGER), 'unixepoch') FROM llm_history_old` references a `created`
+// column that has **never existed** in this codebase — Migration 001
+// has always created `llm_history` with a `created_at` column
+// directly. On a fresh DB (no historical `created` column),
+// `runMigrations` aborts with:
+//
+//   sqlite3_prepare_v2 error: no such column: created
+//
+// which crashes the server during startup. A static source check
+// would not catch this — only executing the INSERT against an
+// actual schema exposes the bug. The fix (Migration 009 now uses
+// `COALESCE(created_at, CURRENT_TIMESTAMP)`) is verified by
+// running migration 009 against the schema state left by
+// migrations 001–008.
+//
+// The SqliteBackend's public API (see
+// `src/modules/databases/sqlite/Sqlite.zig`) is: `init`, `exec`,
+// `query` (returns `Rows` with `next()` → `?Row` carrying
+// `values: [][]u8`). Column reads go through `Row.values[i]`, which
+// is always text.
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB and apply migrations 001–008,
+/// matching the schema state that migration 009 was always meant to
+/// consume. After this returns, the DB has the full pre-migration-009
+/// `llm_history` schema with all columns added by 002–008, ready for
+/// migration 009 to do its rename-and-copy dance.
+
+fn setupDb009() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Replay migrations 001–008 in version order. Migration 001 itself
+    // creates the table; the rest are ADD COLUMN. This mirrors what a
+    // fresh-install DB looks like when migration 009 is about to run.
+    try Migration001CreateLLMHistory.up(&db, alloc);
+    try Migration002AddRoleToLLMHistory.up(&db, alloc);
+    try Migration003AddReasoningContent.up(&db, alloc);
+    try Migration004AddSessionDir.up(&db, alloc);
+    try Migration005AddIsFeedToLLM.up(&db, alloc);
+    try Migration006AddAgent.up(&db, alloc);
+    try Migration007AddSessionTracking.up(&db, alloc);
+    try Migration008AddSessionSkills.up(&db, alloc);
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: migration 009 does not crash on a fresh-DB schema ────────────
+//
+// This is the canonical regression test for the "fresh-DB crash" bug.
+// It MUST NOT return an error (the bug was `error.PrepareFailed` with
+// message "no such column: created" from Migration 009's INSERT...SELECT).
+// Before the fix, this test fails on a fresh DB. After the fix, it
+// passes — and the CI smoke test (`scripts/ci-smoke-test.sh`) depends
+// on this passing on the test runner's fresh $HOME.
+
+test "Migration009RemoveCreatedColumn does not crash on fresh-DB schema (no 'created' column)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb009();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: pre-migration `llm_history` exists with `created_at` (not
+    // `created`). If this assertion fails, the setup helper drifted out
+    // of sync with Migration 001 — fix the helper, not the test.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM pragma_table_info('llm_history') WHERE name IN ('created', 'created_at')",
+            &.{});
+        defer q.deinit();
+        var has_created: bool = false;
+        var has_created_at: bool = false;
+        while (try q.next()) |row| {
+            defer row.deinit(alloc);
+            if (std.mem.eql(u8, row.values[0], "created")) has_created = true;
+            if (std.mem.eql(u8, row.values[0], "created_at")) has_created_at = true;
+        }
+        try testing.expect(!has_created);
+        try testing.expect(has_created_at);
+    }
+
+    // Run migration 009 — this is the line that crashed pre-fix.
+    try Migration009RemoveCreatedColumn.up(&ctx.db, alloc);
+
+    // Post-conditions: `llm_history_old` is gone (it was renamed then
+    // dropped), `llm_history` still exists with `created_at`.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE name IN ('llm_history', 'llm_history_old') ORDER BY name",
+            &.{});
+        defer q.deinit();
+        var seen_llm_history: bool = false;
+        var seen_llm_history_old: bool = false;
+        while (try q.next()) |row| {
+            defer row.deinit(alloc);
+            if (std.mem.eql(u8, row.values[0], "llm_history")) seen_llm_history = true;
+            if (std.mem.eql(u8, row.values[0], "llm_history_old")) seen_llm_history_old = true;
+        }
+        try testing.expect(seen_llm_history);
+        try testing.expect(!seen_llm_history_old);
+    }
+}
+
+// ─── Test 2: pre-existing rows survive the rename-and-copy ────────────────
+//
+// Verifies that the COALESCE(created_at, CURRENT_TIMESTAMP) fix doesn't
+// silently NULL out pre-existing rows. Inserts a single row with an
+// explicit created_at, runs migration 009, asserts the row is still
+// present with the same created_at value.
+
+test "Migration009RemoveCreatedColumn preserves pre-existing rows' created_at" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb009();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert a deterministic row in the pre-migration schema.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('row_1', 'sess_1', 'm1', 'hello', '2026-06-30 12:34:56')",
+        &.{});
+
+    try Migration009RemoveCreatedColumn.up(&ctx.db, alloc);
+
+    // Read it back: should still exist with the original created_at.
+    var q = try ctx.db.query(alloc,
+        "SELECT id, created_at FROM llm_history WHERE id = 'row_1'",
+        &.{});
+    defer q.deinit();
+
+    const row = (try q.next()) orelse return error.RowMissing009;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("row_1", row.values[0]);
+    try testing.expectEqualStrings("2026-06-30 12:34:56", row.values[1]);
+}
+
+// ===== Tests merged from migration_routines_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 044 (add task_type + routines table).
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// Migration 044 introduces two new schema objects (a `task_type` column
+// on the existing `workspace_item_tasks` table and a new `routines`
+// table with a UNIQUE + FOREIGN KEY constraint and an index). A static
+// source check would not catch a typo in the column type, a missing
+// DEFAULT, a missing CASCADE, or a misspelled index name — all of
+// which are easy regressions to make when writing a migration by hand.
+//
+// The working precedent for in-process sqlite-backed tests is
+// `inherited_context_test.zig`: it opens `":memory:"` via
+// `std.Io.Threaded + db.init(io, ":memory:")`, hands the schema from
+// scratch (mimicking the state a real DB would have just before the
+// migration), runs the migration, and asserts via `db.query`. We
+// mirror that exact pattern here.
+//
+// The SqliteBackend's public API (see
+// `ruangsql src/sqlite/Sqlite.zig (github.com/ginwa123/ruangsql)`) is: `init`, `exec`,
+// `query` (returns `Rows` with `next()` → `?Row` carrying
+// `values: [][]u8`), `queryRow`, and `deinit`. There is no
+// `prepare`/`step`/`columnText`/`columnInt`/`columnType`/`bindText`
+// public API — column reads go through `Row.values[i]`, which is
+// always text (so for the `enabled INTEGER NOT NULL DEFAULT 1`
+// assertion we read the column as text and compare against "1").
+//
+// Plan: docs/superpowers/plans/2026-06-13-add-task-routines.md
+// Design: docs/plans/2026-06-13-add-task-routines-design.md
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with the workspace_item_tasks table
+/// present (matching the state after Migration 034), ready for
+/// Migration 044 to add the `task_type` column on top.
+
+fn setupDb044() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Mirror the state left by Migration 034 exactly — same columns,
+    // same NULL/NOT NULL semantics, same default timestamps. This is
+    // what a real DB looks like the moment before Migration 044 runs.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    session_id TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Look up a single scalar text value from a SELECT. Returns the
+/// empty slice if there is no row.
+fn scalarText044(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const u8, args: []const []const u8) ![]u8 {
+    var q = try db.query(alloc, sql, args);
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(alloc);
+        return try alloc.dupe(u8, row.values[0]);
+    }
+    return try alloc.dupe(u8, "");
+}
+
+// ─── Test 1: ALTER TABLE adds task_type with default 'standard' ──────────
+
+test "Migration044AddRoutines adds task_type column defaulting to standard" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb044();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration044AddRoutines.up(&ctx.db, alloc);
+
+    // Insert a row WITHOUT specifying task_type. The new column should
+    // backfill it with the default 'standard' (the backwards-compat
+    // contract for every pre-existing task row).
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'foo', 'wi1')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t2', 'bar', 'wi1')",
+        &.{});
+
+    const v1 = try scalarText044(alloc, &ctx.db, "SELECT task_type FROM workspace_item_tasks WHERE id = 't1'", &.{});
+    defer alloc.free(v1);
+    try testing.expectEqualStrings("standard", v1);
+
+    const v2 = try scalarText044(alloc, &ctx.db, "SELECT task_type FROM workspace_item_tasks WHERE id = 't2'", &.{});
+    defer alloc.free(v2);
+    try testing.expectEqualStrings("standard", v2);
+}
+
+test "Migration044AddRoutines accepts explicit task_type override" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb044();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration044AddRoutines.up(&ctx.db, alloc);
+
+    // Insert a row with task_type='routine'. The column must accept
+    // the override (not just always force 'standard').
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) VALUES ('t1', 'foo', 'wi1', 'routine')",
+        &.{});
+
+    const v = try scalarText044(alloc, &ctx.db, "SELECT task_type FROM workspace_item_tasks WHERE id = 't1'", &.{});
+    defer alloc.free(v);
+    try testing.expectEqualStrings("routine", v);
+}
+
+// ─── Test 2: routines table with expected columns + constraints ──────────
+
+test "Migration044AddRoutines creates routines table with expected columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb044();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration044AddRoutines.up(&ctx.db, alloc);
+
+    // We need a parent workspace_item_tasks row for the FOREIGN KEY to
+    // be satisfied. (The FK is on task_id → workspace_item_tasks.id.)
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'parent', 'wi1')",
+        &.{});
+
+    // Insert a routine row referencing the parent. Verify the
+    // explicit-supplied columns and the implicit-default columns.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO routines (id, task_id, schedule, initial_prompt, next_run_at)
+        \\VALUES ('r1', 't1', '*/5 * * * *', 'do the thing', '2099-01-01 00:00:00')
+    , &.{});
+
+    // Read each column separately. SQLite `||` with a NULL operand
+    // returns NULL, so we can't use string concatenation as a
+    // one-shot "all columns in one string" check. The Row.values
+    // API also returns each column as text, so this is the natural
+    // way to assert on a multi-column read.
+    const v = try scalarText044(alloc, &ctx.db,
+        "SELECT schedule, initial_prompt, enabled, last_status, last_run_at FROM routines WHERE id = 'r1'",
+        &.{});
+    defer alloc.free(v);
+    // Single-column scalar read — assert schedule (column 0) first.
+    try testing.expectEqualStrings("*/5 * * * *", v);
+
+    // Re-read each column independently and assert.
+    const schedule = try scalarText044(alloc, &ctx.db, "SELECT schedule FROM routines WHERE id = 'r1'", &.{});
+    defer alloc.free(schedule);
+    try testing.expectEqualStrings("*/5 * * * *", schedule);
+
+    const initial_prompt = try scalarText044(alloc, &ctx.db, "SELECT initial_prompt FROM routines WHERE id = 'r1'", &.{});
+    defer alloc.free(initial_prompt);
+    try testing.expectEqualStrings("do the thing", initial_prompt);
+
+    // enabled is INTEGER NOT NULL DEFAULT 1 — read as text (the Row
+    // API only returns text), the value is the string "1".
+    const enabled = try scalarText044(alloc, &ctx.db, "SELECT enabled FROM routines WHERE id = 'r1'", &.{});
+    defer alloc.free(enabled);
+    try testing.expectEqualStrings("1", enabled);
+
+    // last_status and last_run_at are nullable. Their text
+    // representation in the Row API is the empty string when NULL.
+    const last_status = try scalarText044(alloc, &ctx.db, "SELECT COALESCE(last_status, '') FROM routines WHERE id = 'r1'", &.{});
+    defer alloc.free(last_status);
+    try testing.expectEqualStrings("", last_status);
+
+    const last_run_at = try scalarText044(alloc, &ctx.db, "SELECT COALESCE(last_run_at, '') FROM routines WHERE id = 'r1'", &.{});
+    defer alloc.free(last_run_at);
+    try testing.expectEqualStrings("", last_run_at);
+}
+
+test "Migration044AddRoutines enforces UNIQUE constraint on routines.task_id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb044();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration044AddRoutines.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES ('t1', 'parent', 'wi1')",
+        &.{});
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO routines (id, task_id, schedule, initial_prompt, next_run_at) VALUES ('r1', 't1', '* * * * *', 'a', '2099-01-01 00:00:00')",
+        &.{});
+
+    // Second insert with the same task_id must fail (UNIQUE constraint).
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO routines (id, task_id, schedule, initial_prompt, next_run_at) VALUES ('r2', 't1', '* * * * *', 'b', '2099-01-01 00:00:00')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+}
+
+test "Migration044AddRoutines creates idx_routines_enabled_next_run index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb044();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration044AddRoutines.up(&ctx.db, alloc);
+
+    // Query sqlite_master for the index name. If the migration forgot
+    // to create the index, the query returns zero rows.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_routines_enabled_next_run'",
+        &.{});
+    defer q.deinit();
+
+    var found = false;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        if (std.mem.eql(u8, row.values[0], "idx_routines_enabled_next_run")) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+// ===== Tests merged from migration_chat_list_index_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 048 (add chat-list covering index).
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// Migration 048 adds a single new SQLite index
+// (`idx_llm_history_created_session` on `(created_at DESC, session_id)`)
+// that is the load-bearing optimization for the chat-list query at
+// `llm_history.zig:115`. A static source check would not catch a
+// misspelled index name, a wrong column order, or a missing `DESC` on
+// `created_at` — all of which would make the planner silently fall
+// back to a full table scan. We assert the index actually exists in
+// `sqlite_master` after `up()` runs, mirroring the pattern from
+// `migration_routines_test.zig`.
+//
+// The SqliteBackend's public API (see
+// `ruangsql src/sqlite/Sqlite.zig (github.com/ginwa123/ruangsql)`) is: `init`, `exec`,
+// `query` (returns `Rows` with `next()` → `?Row` carrying
+// `values: [][]u8`). There is no `prepare`/`step`/`columnText`/
+// `columnInt` public API — column reads go through `Row.values[i]`,
+// which is always text.
+//
+// Plan: docs/plans/2026-06-19-performance-indexes.md (Chunk 1)
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with the `llm_history` table present
+/// (matching the schema created by Migration 001), ready for
+/// Migration 048 to add the `idx_llm_history_created_session` index on top.
+
+fn setupDb048() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Mirror the state left by Migration 001 exactly — same columns,
+    // same NULL/NOT NULL semantics. The index only touches
+    // (created_at, session_id) so those are the columns that must
+    // exist with compatible types.
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    response_content TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_results_json TEXT,
+        \\    finish_reason TEXT,
+        \\    usage_json TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: index exists in sqlite_master after up() ─────────────────────
+
+test "Migration048AddChatListIndex creates idx_llm_history_created_session index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb048();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration048AddChatListIndex.up(&ctx.db, alloc);
+
+    // Query sqlite_master for the index name. If the migration forgot
+    // to create the index, the query returns zero rows. We check
+    // `name` (not just existence) so a typo in the index name is
+    // caught — sqlite_master would still report it as a row.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_llm_history_created_session'
+    , &.{});
+    defer q.deinit();
+
+    var found = false;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        if (std.mem.eql(u8, row.values[0], "idx_llm_history_created_session")) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+// ─── Test 2: migration is idempotent (re-running up() does not fail) ─────
+
+test "Migration048AddChatListIndex is idempotent on re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb048();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // The migration uses `CREATE INDEX IF NOT EXISTS` so a second
+    // run is a no-op. We assert no error is returned.
+    try Migration048AddChatListIndex.up(&ctx.db, alloc);
+    try Migration048AddChatListIndex.up(&ctx.db, alloc);
+
+    // And the index is still there exactly once.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_llm_history_created_session'
+    , &.{});
+    defer q.deinit();
+
+    const row = (try q.next()) orelse return error.ExpectedRow048;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+// ===== Tests merged from migration_defensive_indexes_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 049 (add defensive indexes).
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// Migration 049 adds two low-cost insurance indexes — one on
+// `workspace_items(position DESC, id ASC)` and one on
+// `routines(last_status)`. A static source check would not catch a
+// misspelled index name, a wrong column order, or a dropped
+// `CREATE INDEX` statement — all of which would make the planner
+// silently fall back to a full table scan. We assert the indexes
+// actually exist in `sqlite_master` after `up()` runs, mirroring the
+// pattern from `migration_chat_list_index_test.zig` (the most recent
+// precedent) and `migration_routines_test.zig`.
+//
+// The SqliteBackend's public API (see
+// `ruangsql src/sqlite/Sqlite.zig (github.com/ginwa123/ruangsql)`) is: `init`, `exec`,
+// `query` (returns `Rows` with `next()` → `?Row` carrying
+// `values: [][]u8`). There is no `prepare`/`step`/`columnText`/
+// `columnInt` public API — column reads go through `Row.values[i]`,
+// which is always text.
+//
+// Plan: docs/plans/2026-06-19-performance-indexes.md (Chunk 3)
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with BOTH `workspace_items` and
+/// `routines` (plus the FK parent `workspace_item_tasks`) present —
+/// matching the schema state just before Migration 049 runs. Migration
+/// 049 does not add any columns, only two new indexes on existing
+/// tables, so the minimum column set is whatever the two target
+/// indexes reference.
+
+fn setupDb049() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // workspace_item_tasks — parent of the routines.task_id FK.
+    // The new indexes don't reference it, but the routines table
+    // declares an FK to it so SQLite will reject CREATE TABLE
+    // without it (the FK is a column-level constraint, so the
+    // referenced table must exist before CREATE TABLE routines).
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL
+        \\)
+    , &.{});
+
+    // workspace_items — minimum columns for the position_id index.
+    // The index covers (position DESC, id ASC), so both columns must
+    // exist with compatible types. We mirror Migration 028's original
+    // schema (id, workspace_id, item_type) and add `position` (the
+    // Migration 045 schema). The test never inserts rows, so the
+    // other columns are inert.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL,
+        \\    name TEXT,
+        \\    path TEXT,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+
+    // routines — minimum columns for the last_status index. We
+    // mirror the full Migration 044 CREATE TABLE (sans the
+    // created_at / updated_at defaults which the test doesn't care
+    // about) so the new index is guaranteed compatible.
+    try db.exec(alloc,
+        \\CREATE TABLE routines (
+        \\    id TEXT PRIMARY KEY,
+        \\    task_id TEXT NOT NULL UNIQUE,
+        \\    schedule TEXT NOT NULL,
+        \\    initial_prompt TEXT NOT NULL,
+        \\    enabled INTEGER NOT NULL DEFAULT 1,
+        \\    last_run_at DATETIME,
+        \\    next_run_at DATETIME NOT NULL,
+        \\    last_status TEXT,
+        \\    last_error TEXT,
+        \\    FOREIGN KEY (task_id) REFERENCES workspace_item_tasks(id) ON DELETE CASCADE
+        \\)
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Look up a single scalar text value from a SELECT. Returns the
+/// empty slice if there is no row.
+fn scalarText049(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const u8, args: []const []const u8) ![]u8 {
+    var q = try db.query(alloc, sql, args);
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(alloc);
+        return try alloc.dupe(u8, row.values[0]);
+    }
+    return try alloc.dupe(u8, "");
+}
+
+// ─── Test 1: idx_workspace_items_position_id exists in sqlite_master ─────
+
+test "Migration049AddDefensiveIndexes creates idx_workspace_items_position_id index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb049();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration049AddDefensiveIndexes.up(&ctx.db, alloc);
+
+    // Query sqlite_master for the index name. If the migration forgot
+    // to create the index, the query returns zero rows. We check
+    // `name` (not just existence) so a typo in the index name is
+    // caught — sqlite_master would still report it as a row.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_workspace_items_position_id'
+    , &.{});
+    defer q.deinit();
+
+    var found = false;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        if (std.mem.eql(u8, row.values[0], "idx_workspace_items_position_id")) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+// ─── Test 2: idx_routines_last_status exists in sqlite_master ────────────
+
+test "Migration049AddDefensiveIndexes creates idx_routines_last_status index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb049();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration049AddDefensiveIndexes.up(&ctx.db, alloc);
+
+    // Same pattern as test 1 but for the routines index.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_routines_last_status'
+    , &.{});
+    defer q.deinit();
+
+    var found = false;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        if (std.mem.eql(u8, row.values[0], "idx_routines_last_status")) {
+            found = true;
+        }
+    }
+    try testing.expect(found);
+}
+
+// ─── Test 3: migration is idempotent (re-running up() does not fail) ─────
+
+test "Migration049AddDefensiveIndexes is idempotent on re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb049();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // The migration uses `CREATE INDEX IF NOT EXISTS` so a second
+    // run is a no-op for both indexes. We assert no error is
+    // returned. (Defensive: if a future change drops the IF NOT
+    // EXISTS, this test fails immediately.)
+    try Migration049AddDefensiveIndexes.up(&ctx.db, alloc);
+    try Migration049AddDefensiveIndexes.up(&ctx.db, alloc);
+
+    // And both indexes are still there exactly once. COUNT(*) is
+    // returned as text per the SqliteBackend's row-as-text API.
+    const wi_count = try scalarText049(alloc, &ctx.db,
+        \\SELECT COUNT(*) FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_workspace_items_position_id'
+    , &.{});
+    defer alloc.free(wi_count);
+    try testing.expectEqualStrings("1", wi_count);
+
+    const r_count = try scalarText049(alloc, &ctx.db,
+        \\SELECT COUNT(*) FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_routines_last_status'
+    , &.{});
+    defer alloc.free(r_count);
+    try testing.expectEqualStrings("1", r_count);
+}
+
+// ===== Tests merged from migration_git_worktree_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 046 (add git_worktree_cwd column to
+// sessions).
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// Migration 046 is a simple ALTER TABLE ADD COLUMN, but a static source
+// check would not catch a typo in the column name, a missing NULL/NOT
+// NULL semantic, or a missing registration in `allMigrations` — all of
+// which would silently break the new `set_git_worktree` tool that
+// Chunks 2-4 of the plan will build on top of this column.
+//
+// The working precedent for in-process sqlite-backed tests is
+// `migration_routines_test.zig`: it opens `":memory:"` via
+// `std.Io.Threaded + db.init(io, ":memory:")`, hands the schema from
+// scratch (mimicking the state a real DB would have just before the
+// migration), runs the migration, and asserts via `db.query`. We
+// mirror that exact pattern here.
+//
+// Plan: docs/plans/2026-06-18-set-git-worktree-tool.md (Chunk 1)
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with the sessions table present
+/// (matching the state left by migrations 017 + 022 + 025 + 029 + 040),
+/// ready for Migration 046 to add the `git_worktree_cwd` column on top.
+
+fn setupDb046() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Mirror the state left by Migration 017 + 022 + 025 + 029 + 040
+    // exactly — same columns, same NULL/NOT NULL semantics, same default
+    // timestamps. This is what a real DB looks like the moment before
+    // Migration 046 runs.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT,
+        \\    workspace_id TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    selected_profile_model TEXT
+        \\)
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Look up a single scalar text value from a SELECT. Returns the
+/// empty slice if there is no row.
+fn scalarText046(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const u8, args: []const []const u8) ![]u8 {
+    var q = try db.query(alloc, sql, args);
+    defer q.deinit();
+    if (try q.next()) |row| {
+        defer row.deinit(alloc);
+        return try alloc.dupe(u8, row.values[0]);
+    }
+    return try alloc.dupe(u8, "");
+}
+
+// ─── Test 1: ALTER TABLE adds git_worktree_cwd defaulting to NULL ────────
+
+test "Migration046AddGitWorktreeCwdToSessions adds git_worktree_cwd column defaulting to NULL" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb046();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration046AddGitWorktreeCwdToSessions.up(&ctx.db, alloc);
+
+    // Insert a row WITHOUT specifying git_worktree_cwd. The new column
+    // should backfill NULL (the backwards-compat contract for every
+    // pre-existing session row).
+    try ctx.db.exec(alloc, "INSERT INTO sessions (id, name) VALUES ('t1', 'foo')", &.{});
+
+    // NULL is mapped to the empty string by COALESCE at the read site
+    // (matching the convention used for cwd, created_at, updated_at,
+    // and selected_profile_model).
+    const v = try scalarText046(alloc, &ctx.db, "SELECT COALESCE(s.git_worktree_cwd, '') FROM sessions s WHERE s.id = 't1'", &.{});
+    defer alloc.free(v);
+    try testing.expectEqualStrings("", v);
+}
+
+// ─── Test 2: explicit value round-trips ──────────────────────────────────
+
+test "Migration046AddGitWorktreeCwdToSessions accepts explicit value" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb046();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration046AddGitWorktreeCwdToSessions.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc, "INSERT INTO sessions (id, name) VALUES ('t1', 'foo')", &.{});
+    try ctx.db.exec(alloc, "UPDATE sessions SET git_worktree_cwd = '/abs/path' WHERE id = 't1'", &.{});
+
+    const v = try scalarText046(alloc, &ctx.db, "SELECT s.git_worktree_cwd FROM sessions s WHERE s.id = 't1'", &.{});
+    defer alloc.free(v);
+    try testing.expectEqualStrings("/abs/path", v);
+}
+
+// ===== Tests merged from migration_051_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 051 (add kanban columns + task column refs).
+//
+// NOTE on numbering: The plan was written before Migrations 048 (chat-list
+// index), 049 (defensive indexes), and 050 (pinned-to-workspace-item-tasks)
+// landed on the branch. Per the plan's "find the LAST migration and add
+// after it" instruction, this migration uses the next available number
+// (051) instead of the originally proposed 048.
+//
+// What Migration 051 adds
+// ───────────────────────
+// 1. `kanban_columns` table with FK ON DELETE CASCADE to `workspace_items(id)`
+// 2. Index `idx_kanban_columns_item_position` on (workspace_item_id, position)
+// 3. Two new columns on `workspace_item_tasks`:
+//      `kanban_column_id TEXT` (nullable — NULL for non-kanban items)
+//      `kanban_position INTEGER NOT NULL DEFAULT 0` (per-column ordering)
+// 4. Index `idx_tasks_column_position` on (kanban_column_id, kanban_position)
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// A static source check would not catch a misspelled table name, missing
+// column, wrong DEFAULT, or missing FK clause. Asserting the actual
+// schema after `up()` runs mirrors the pattern used by
+// `migration_chat_list_index_test.zig` and `migration_routines_test.zig`.
+//
+// The SqliteBackend's public API (see
+// `src/modules/databases/sqlite/Sqlite.zig`) is: `init`, `exec`, `query`
+// (returns `Rows` with `next()` → `?Row` carrying `values: [][]u8`).
+// Column reads go through `Row.values[i]`, which is always text.
+//
+// Plan: docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 1)
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with `workspace_items` and
+/// `workspace_item_tasks` tables present (matching the schema after
+/// Migrations 028 and 034), ready for Migration 051 to add the kanban
+/// schema on top.
+
+fn setupDb051() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Mirror the state left by Migration 028 + 034 — same column names
+    // that Migration 051's FK references and ALTER TABLE statements
+    // depend on.
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT)",
+        &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: kanban_columns has the expected columns ──────────────────────
+
+test "Migration051 creates kanban_columns table with expected columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb051();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration051AddKanban.up(&ctx.db, alloc);
+
+    // Assert kanban_columns exists with the expected columns in the
+    // expected order. pragma_table_info orders rows by cid (column
+    // ordinal), so the iteration order matches CREATE TABLE column order.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM pragma_table_info('kanban_columns') ORDER BY cid",
+        &.{});
+    defer q.deinit();
+
+    const expected = [_][]const u8{
+        "id",
+        "workspace_item_id",
+        "name",
+        "position",
+        "created_at",
+    };
+    var i: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(i < expected.len);
+        try testing.expectEqualStrings(expected[i], row.values[0]);
+        i += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), i);
+}
+
+// ─── Test 2: workspace_item_tasks gets the two new columns ───────────────
+
+test "Migration051 adds kanban_column_id and kanban_position to workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb051();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration051AddKanban.up(&ctx.db, alloc);
+
+    // Assert the two new columns are present. Sorted by name for a
+    // stable assertion regardless of ALTER TABLE execution order.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM pragma_table_info('workspace_item_tasks') " ++
+        "WHERE name IN ('kanban_column_id', 'kanban_position') " ++
+        "ORDER BY name",
+        &.{});
+    defer q.deinit();
+
+    const expected = [_][]const u8{ "kanban_column_id", "kanban_position" };
+    var i: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings(expected[i], row.values[0]);
+        i += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), i);
+}
+
+// ===== Tests merged from migration_053_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 053 (add kanban_column.description).
+//
+// Why this file exists
+// ────────────────────
+// Migration 053 introduces the optional `description` column on
+// `kanban_columns` so each column can carry a free-text "meaning"
+// alongside its display name. The migration must:
+//   1. ALTER TABLE kanban_columns ADD COLUMN description TEXT NOT NULL DEFAULT ''
+//   2. Be idempotent (use DEFAULT so existing rows survive)
+//   3. Add `description` to the pragma_table_info result set
+//
+// Plan: docs/superpowers/plans/2026-06-27-kanban-column-description-settings.md
+//   (Chunk 1, Task 1.1)
+
+fn setupDb053() !struct { db: sqlite.SqliteBackend, threaded: std.Io.Threaded } {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    // Migration 051 needs `workspace_items` (FK target) and
+    // `workspace_item_tasks` (ALTER TABLE target). Mirror
+    // migration_051_test.zig's setup; 051 assumes these tables exist
+    // (the production migrator walks 001 → 051 in order, so by the
+    // time 051 runs they are already there).
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT)",
+        &.{});
+    // Migration 051 creates kanban_columns — must run before 053.
+    try Migration051AddKanban.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "migration 053 adds description column with default empty string" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb053();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: kanban_columns exists (051 seeded it).
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('kanban_columns') ORDER BY cid
+    , &.{});
+    defer q.deinit();
+    const names_before: [5][]const u8 = .{ "id", "workspace_item_id", "name", "position", "created_at" };
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < names_before.len);
+        try testing.expectEqualStrings(names_before[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, 5), idx);
+
+    // Apply migration 053.
+    try Migration053AddKanbanColumnDescription.up(&ctx.db, alloc);
+
+    // Re-check pragma_table_info — description is now present.
+    var q2 = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('kanban_columns') ORDER BY cid
+    , &.{});
+    defer q2.deinit();
+    const names_after: [6][]const u8 = .{ "id", "workspace_item_id", "name", "position", "created_at", "description" };
+    var idx2: usize = 0;
+    while (try q2.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx2 < names_after.len);
+        try testing.expectEqualStrings(names_after[idx2], row.values[0]);
+        idx2 += 1;
+    }
+    try testing.expectEqual(@as(usize, 6), idx2);
+}
+
+test "migration 053 is safe on populated kanban_columns tables" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb053();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Insert one existing row (no description column yet).
+    try ctx.db.exec(alloc,
+        "INSERT INTO kanban_columns (id, workspace_item_id, name, position) " ++
+        "VALUES ('col_pre_053', 'wi_1', 'todo', 0)",
+        &.{},
+    );
+
+    // Apply migration 053 — the existing row should get description=''.
+    try Migration053AddKanbanColumnDescription.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT description FROM kanban_columns WHERE id = 'col_pre_053'",
+        &.{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing053;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+// ===== Tests merged from migration_054_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 054
+// (make `session_queue_messages.message` nullable).
+//
+// Why this file exists
+// ────────────────────
+// Migration 054 drops the NOT NULL constraint on `session_queue_messages.message`
+// so that image-only queued messages can be inserted without hitting
+// `NOT NULL constraint failed: session_queue_messages.message` at the
+// SqliteBackend.bind layer (which binds empty `[]const u8` as SQL NULL).
+// The migration recreates the table to drop NOT NULL portably across all
+// SQLite versions / platforms.
+//
+// The migration must:
+//   1. Drop the NOT NULL on `message` (inserting empty message no longer errors)
+//   2. Preserve all existing rows (id, session_id, message, image_url)
+//   3. Recreate `idx_session_queue_messages_session` (re-added after the table swap)
+//   4. Handle both schemas: with `image_url` (post-Migration037) and without
+//
+// Plan: docs/superpowers/plans/2026-07-01-session-queue-message-nullable.md
+//   (Migration 054 design)
+
+/// Test fixture for the migration_054 test suite. Hoisted to a top-level named
+/// struct (NOT inline anonymous) because Zig 0.16 treats two anonymous
+/// `struct { db, threaded }` types as distinct types even with identical
+/// fields — see project memory `zig-anonymous-struct-type-identity.md`.
+
+const TestCtx054 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB with the Migration 018 baseline — i.e. the exact
+/// schema that exists in production BEFORE Migration 037 (no image_url) and
+/// BEFORE Migration 054 (message NOT NULL). This is the "bug exists" baseline.
+fn setupDbWithoutImageUrl054() !TestCtx054 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try Migration018CreateSessionQueueMessages.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Set up an in-memory DB with the Migration 037 schema — i.e. the same as
+/// `setupDbWithoutImageUrl` PLUS the `image_url` column. This mirrors the
+/// production state for any DB that ran up to Migration 053.
+fn setupDbWithImageUrl054() !TestCtx054 {
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithoutImageUrl054();
+    errdefer ctx.threaded.deinit();
+    errdefer ctx.db.deinit();
+    try Migration037AddImageUrlToSessionQueueMessages.up(&ctx.db, alloc);
+    return ctx;
+}
+
+test "migration 054: bug exists before migration (insert empty message fails)" {
+    // RED-GREEN half: this test demonstrates the original bug. With the
+    // original Migration018 schema, inserting a row whose `message` is bound
+    // as NULL (the SqliteBackend convention for empty `[]const u8`) hits the
+    // NOT NULL constraint. After Migration054, the same insert succeeds.
+    //
+    // Note: we use `?` placeholders + `&.{ ... }` so the SqliteBackend bind
+    // layer (src/modules/databases/sqlite/Sqlite.zig:73-74) sees the empty
+    // `""` as `[]const u8` of length 0 and binds it as SQL NULL. A literal
+    // `''` in the SQL is treated as the empty string, not NULL, and would
+    // NOT trip the NOT NULL constraint.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithoutImageUrl054();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Inserting with empty bound `message` — exactly the image-only queued
+    // message shape that triggered the production bug. The NOT NULL on
+    // `message` should fire because the empty slice binds as NULL.
+    const rc = ctx.db.exec(alloc,
+        "INSERT INTO session_queue_messages (id, session_id, message) " ++
+        "VALUES (?, ?, ?)",
+        &.{ "msg-bug", "sess-bug", "" },
+    );
+    try testing.expectError(error.ExecuteFailed, rc);
+}
+
+test "migration 054: empty message insert succeeds after migration" {
+    // GREEN half: after applying the migration, the same INSERT that errored
+    // above must succeed. The row must be readable and message is "" (or NULL,
+    // which row.read returns as "").
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithoutImageUrl054();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration054MakeSessionQueueMessageNullable.up(&ctx.db, alloc);
+
+    // Sanity: `message` no longer has NOT NULL.
+    var q = try ctx.db.query(alloc,
+        "SELECT \"notnull\" FROM pragma_table_info('session_queue_messages') " ++
+        "WHERE name = 'message'",
+        &[_][]const u8{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NotFound054;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+
+    // The insert that triggered the bug must now succeed.
+    try ctx.db.exec(alloc,
+        "INSERT INTO session_queue_messages (id, session_id, message) " ++
+        "VALUES ('msg-fix', 'sess-fix', '')",
+        &[_][]const u8{},
+    );
+
+    // Row is present and read back as "" (empty `[]const u8` binds as NULL,
+    // but row read returns NULL as "").
+    var q2 = try ctx.db.query(alloc,
+        "SELECT message FROM session_queue_messages WHERE id = 'msg-fix'",
+        &[_][]const u8{},
+    );
+    defer q2.deinit();
+    const row2 = (try q2.next()) orelse return error.NotFound054;
+    defer row2.deinit(alloc);
+    try testing.expectEqualStrings("", row2.values[0]);
+}
+
+test "migration 054: existing rows survive the migration (no image_url)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithoutImageUrl054();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Insert a row before the migration.
+    try ctx.db.exec(alloc,
+        "INSERT INTO session_queue_messages (id, session_id, message) " ++
+        "VALUES ('msg-pre', 'sess-pre', 'hello world')",
+        &[_][]const u8{},
+    );
+
+    try Migration054MakeSessionQueueMessageNullable.up(&ctx.db, alloc);
+
+    // The row must survive — id, session_id, message all preserved.
+    var q = try ctx.db.query(alloc,
+        "SELECT id, session_id, message FROM session_queue_messages " ++
+        "WHERE id = 'msg-pre'",
+        &[_][]const u8{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NotFound054;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("msg-pre", row.values[0]);
+    try testing.expectEqualStrings("sess-pre", row.values[1]);
+    try testing.expectEqualStrings("hello world", row.values[2]);
+}
+
+test "migration 054: existing rows survive the migration (with image_url)" {
+    // Production-style DB: Migration018 + Migration037 applied (so image_url
+    // exists), but NOT yet Migration054. The migration must preserve the
+    // image_url column AND its data.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithImageUrl054();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO session_queue_messages (id, session_id, message, image_url) " ++
+        "VALUES ('msg-img', 'sess-img', 'with image', 'data:image/png;base64,xxx')",
+        &[_][]const u8{},
+    );
+
+    try Migration054MakeSessionQueueMessageNullable.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT id, session_id, message, image_url FROM session_queue_messages " ++
+        "WHERE id = 'msg-img'",
+        &[_][]const u8{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NotFound054;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("msg-img", row.values[0]);
+    try testing.expectEqualStrings("sess-img", row.values[1]);
+    try testing.expectEqualStrings("with image", row.values[2]);
+    try testing.expectEqualStrings("data:image/png;base64,xxx", row.values[3]);
+}
+
+test "migration 054: index idx_session_queue_messages_session is recreated" {
+    // The migration drops and recreates the table — the index from Migration018
+    // must be restored, otherwise the GET /api/queue_messages/:session_id
+    // endpoint becomes slow + the FK lookup in workflow.zig regresses.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithoutImageUrl054();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: index exists after Migration018. We have to properly deinit
+    // the row from `try q.next()` or we leak — see project memory
+    // `zig-migration-tests-three-pitfalls.md`.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type='index' " ++
+            "AND name = 'idx_session_queue_messages_session'",
+            &[_][]const u8{},
+        );
+        defer q.deinit();
+        if (try q.next()) |row| {
+            defer row.deinit(alloc);
+            try testing.expectEqualStrings("idx_session_queue_messages_session", row.values[0]);
+        } else {
+            try testing.expect(false); // index should exist after Migration018
+        }
+    }
+
+    try Migration054MakeSessionQueueMessageNullable.up(&ctx.db, alloc);
+
+    // After the migration, the index is back.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='index' " ++
+        "AND name = 'idx_session_queue_messages_session'",
+        &[_][]const u8{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.NotFound054;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("idx_session_queue_messages_session", row.values[0]);
+}
+
+test "migration 054: table has the expected columns in the expected order" {
+    // The recreated table must have exactly: id, session_id, message, image_url,
+    // created_at (in that order). ORDER BY cid confirms column ordering.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithImageUrl054();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration054MakeSessionQueueMessageNullable.up(&ctx.db, alloc);
+
+    const expected: [5][]const u8 = .{
+        "id", "session_id", "message", "image_url", "created_at",
+    };
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM pragma_table_info('session_queue_messages') ORDER BY cid",
+        &[_][]const u8{},
+    );
+    defer q.deinit();
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected.len);
+        try testing.expectEqualStrings(expected[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), idx);
+}
+
+// ===== Tests merged from migration_057_test.zig (2026-09-29 flatten) =====
+
+// Behavioral tests for Migration 057 (add v6 element properties to
+// `design_page_elements`).
+//
+// What Migration 057 adds
+// ───────────────────────
+// 11 new columns on `design_page_elements`:
+//   type, rotation, fill, stroke, stroke_width, corner_radius,
+//   opacity, text_content, text_style, image_url, parent_id
+//
+// All defaults are sensible:
+//   - text/colour fields default to '' (the "no value" sentinel
+//     per the `sqlite-backend-empty-slice-binds-as-null` convention)
+//   - numeric defaults are 0 or 1.0 (no rotation, full opacity)
+//   - `parent_id` is nullable (TEXT) for non-nested elements
+//   - `type` defaults to 'rectangle' (the most common shape)
+//
+// Why a behavioral DB test (not a static check)?
+// ───────────────────────────────────────────────
+// A static source check would not catch a misspelled column name,
+// wrong DEFAULT clause, missing ALTER TABLE statement, or a typo in
+// the column type. Asserting the actual schema after `up()` runs
+// mirrors the pattern used by `migration_051_test.zig`.
+//
+// Plan: docs/superpowers/plans/2026-07-08-design-mode-redesign.md (Task 1.1)
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB with `workspace_items` +
+/// `design_pages` (Migration 055 v1 schema with `html` column) +
+/// `design_page_elements` (Migration 056 v5 schema, 12 columns).
+/// This mirrors the state of a DB that has Migrations 1..56 applied,
+/// which is the precondition for Migration 057.
+
+fn setupDb057() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // workspace_items: required for the design_pages FK reference
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    // workspace_item_tasks: required for Migration 066 FK from design_pages
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, workspace_item_id TEXT NOT NULL, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+    // design_pages v1 schema (Migration 055 — pre-upgrade, includes html)
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY, workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    workspace_item_task_id TEXT,
+        \\    html TEXT NOT NULL DEFAULT '',
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE)
+    , &.{});
+    // design_page_elements v5 schema (Migration 056 — 12 columns, no v6 props)
+    try db.exec(alloc,
+        \\CREATE TABLE design_page_elements (
+        \\    id TEXT PRIMARY KEY, page_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+        \\    file_path TEXT NOT NULL DEFAULT '', x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0, width INTEGER NOT NULL DEFAULT 375,
+        \\    height INTEGER NOT NULL DEFAULT 667, z_index INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0, created_at DATETIME, updated_at DATETIME,
+        \\    FOREIGN KEY (page_id) REFERENCES design_pages(id) ON DELETE CASCADE)
+    , &.{});
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: Migration 057 adds all 11 v6 columns ────────────────────────
+
+test "Migration057 adds the 11 v6 element properties columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb057();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the upgrade path through 055 → 056 → 057, mirroring what
+    // the live migration manager does for an existing v1 user.
+    try Migration055AddDesignPages.up(&ctx.db, alloc);
+    try Migration056UpgradeDesignPagesToFileModel.up(&ctx.db, alloc);
+    try Migration057AddDesignElementProperties.up(&ctx.db, alloc);
+
+    // Assert all 11 new columns exist on design_page_elements.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('design_page_elements')
+        \\WHERE name IN ('type','rotation','fill','stroke','stroke_width',
+        \\                'corner_radius','opacity','text_content',
+        \\                'text_style','image_url','parent_id')
+        \\ORDER BY name
+    , &.{});
+    defer q.deinit();
+
+    const expected = [_][]const u8{
+        "corner_radius",
+        "fill",
+        "image_url",
+        "opacity",
+        "parent_id",
+        "rotation",
+        "stroke",
+        "stroke_width",
+        "text_content",
+        "text_style",
+        "type",
+    };
+    var i: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(i < expected.len);
+        try testing.expectEqualStrings(expected[i], row.values[0]);
+        i += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), i);
+}
+
+// ─── Test 2: Migration 057 idempotent on a v6-ready DB ──────────────────
+
+test "Migration057 is idempotent when the columns already exist" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb057();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run once.
+    try Migration055AddDesignPages.up(&ctx.db, alloc);
+    try Migration056UpgradeDesignPagesToFileModel.up(&ctx.db, alloc);
+    try Migration057AddDesignElementProperties.up(&ctx.db, alloc);
+
+    // Run again — addColumnIfMissing must make this a no-op. If it
+    // weren't idempotent, the second run would crash with
+    // "duplicate column name: type" (or similar).
+    try Migration057AddDesignElementProperties.up(&ctx.db, alloc);
+}
+
+// ─── Test 3: Migration 057 preserves existing v5 columns ─────────────────
+
+test "Migration057 preserves the v5 columns on design_page_elements" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb057();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration055AddDesignPages.up(&ctx.db, alloc);
+    try Migration056UpgradeDesignPagesToFileModel.up(&ctx.db, alloc);
+    try Migration057AddDesignElementProperties.up(&ctx.db, alloc);
+
+    // The 12 v5 columns must still be present after 057 (which is
+    // strictly additive — never drop).
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('design_page_elements')
+        \\WHERE name IN ('id','page_id','name','file_path','x','y','width',
+        \\                'height','z_index','position','created_at','updated_at')
+        \\ORDER BY name
+    , &.{});
+    defer q.deinit();
+
+    var found: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        found += 1;
+    }
+    try testing.expectEqual(@as(usize, 12), found);
+}
+
+// ===== Tests merged from migration_058_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 058
+// (FTS5 virtual table on `llm_history` for workspace history search).
+//
+// Why this file exists
+// ────────────────────
+// Migration 058 creates `messages_fts` (a non-external-content FTS5 table
+// over `llm_history.response_content` — content is duplicated so that
+// the FTS5 `snippet()` and `highlight()` helper functions work) plus
+// 3 sync triggers. This file verifies:
+//   1. The virtual table is created with the correct configuration
+//      (porter+unicode61 tokenizer)
+//   2. Exactly 3 triggers exist on `llm_history` (INSERT/UPDATE/DELETE)
+//   3. Pre-existing rows in `llm_history` are backfilled into the FTS index
+//   4. New INSERTs into `llm_history` are auto-indexed (trigger fires)
+//   5. DELETEs from `llm_history` remove the row from the FTS index
+//
+// Why the test bootstraps with Migration001CreateLLMHistory
+// ──────────────────────────────────────────────────────────
+// Mirrors the migration_054_test.zig pattern — set up the minimum
+// pre-migration baseline (just `llm_history` itself), then apply the
+// migration. This isolates the migration's effect from any schema
+// interaction with Migrations 002..057 that may or may not have run on
+// production DBs.
+//
+// Why FTS5 MATCH ? with single-token words
+// ────────────────────────────────────────
+// FTS5 tokenizes input by default; bare ASCII words are safe queries.
+// Multi-word queries would require FTS5 expression syntax (AND, OR, "...",
+// prefix*) which would couple the test to the tokenizer's exact behavior.
+// Single-token MATCH keeps the contract tight: "the row containing word
+// W is in the FTS index".
+//
+// Plan: workspace history FTS (Chunk 1, Task 1.3 — Migration 058 regression test)
+//
+// Versioning note: the original plan called this Migration 055 but the
+// branch already had AddDesignPages (55), UpgradeDesignPagesToFileModel
+// (56), AddDesignElementProperties (57). 058 is the next free slot.
+
+/// Test fixture for the migration_058 test suite. Hoisted to a top-level named
+/// struct (NOT inline anonymous) because Zig 0.16 treats two anonymous
+/// `struct { db, threaded }` types as distinct types even with identical
+/// fields — see project memory `zig-anonymous-struct-type-identity.md`.
+
+const TestCtx058 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB with just the `llm_history` baseline table. This
+/// matches the state of an existing-DB user right before Migration 058 runs
+/// (i.e., after Migrations 001..057 have all applied).
+fn setupDbWithLlmHistory058() !TestCtx058 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try Migration001CreateLLMHistory.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Count rows in `sqlite_master` of a given type, optionally matching
+/// `tbl_name`. Returns 0 if no match. Helper for the trigger + table tests.
+fn countSqliteMaster058(db: *sqlite.SqliteBackend, alloc: std.mem.Allocator, sql: []const u8) !usize {
+    var q = try db.query(alloc, sql, &[_][]const u8{});
+    defer q.deinit();
+    var count: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        count += 1;
+    }
+    return count;
+}
+
+test "migration 058: creates messages_fts virtual table" {
+    // After Migration 058, `sqlite_master` must contain a row for
+    // `messages_fts` with type='table' (FTS5 virtual tables show up as
+    // 'table' rows in sqlite_master, not 'view' or 'index').
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory058();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: pre-migration, no `messages_fts` exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+            &[_][]const u8{},
+        );
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // pre-migration should NOT have messages_fts
+        }
+    }
+
+    try Migration058AddLlmHistoryFts.up(&ctx.db, alloc);
+
+    // Post-migration: `messages_fts` exists as a table.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+        &[_][]const u8{},
+    );
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.VirtualTableNotCreated058;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("messages_fts", row.values[0]);
+}
+
+test "migration 058: installs sync triggers (exactly 3 on llm_history)" {
+    // The migration creates 3 triggers named llm_history_ai, _ad, _au.
+    // After Migration 058, querying sqlite_master with
+    // `tbl_name='llm_history'` AND `type='trigger'` must return exactly 3.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory058();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: pre-migration, zero triggers on llm_history.
+    const pre_count = try countSqliteMaster058(&ctx.db, alloc,
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='llm_history'");
+    try testing.expectEqual(@as(usize, 0), pre_count);
+
+    try Migration058AddLlmHistoryFts.up(&ctx.db, alloc);
+
+    // Post-migration: exactly 3 triggers.
+    const post_count = try countSqliteMaster058(&ctx.db, alloc,
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='llm_history'");
+    try testing.expectEqual(@as(usize, 3), post_count);
+
+    // Verify the exact names (the migration uses _ai, _ad, _au).
+    var names_buf: [3][]u8 = .{ &[_]u8{}, &[_]u8{}, &[_]u8{} };
+    defer for (names_buf) |n| if (n.len > 0) alloc.free(n);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type='trigger' AND tbl_name='llm_history'
+        \\ORDER BY name
+    , &[_][]const u8{});
+    defer q.deinit();
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < 3);
+        names_buf[idx] = try alloc.dupe(u8, row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), idx);
+    try testing.expectEqualStrings("llm_history_ad", names_buf[0]);
+    try testing.expectEqualStrings("llm_history_ai", names_buf[1]);
+    try testing.expectEqualStrings("llm_history_au", names_buf[2]);
+}
+
+test "migration 058: backfills existing rows into FTS index" {
+    // Pre-existing rows must be backfilled into messages_fts during
+    // migration. Insert 2 rows BEFORE the migration, run it, then verify
+    // that FTS5 MATCH on a unique word from each row returns the row.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory058();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Insert 2 rows BEFORE the migration — uses Migration001's schema
+    // (id, session_id, model, response_content). Note: the `id` column
+    // is TEXT PRIMARY KEY so we pass explicit IDs.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content) " ++
+        "VALUES ('msg-pre-1', 'sess-1', 'm', 'first message contains zephyrword')",
+        &[_][]const u8{},
+    );
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content) " ++
+        "VALUES ('msg-pre-2', 'sess-2', 'm', 'second message contains quasarterm')",
+        &[_][]const u8{},
+    );
+
+    try Migration058AddLlmHistoryFts.up(&ctx.db, alloc);
+
+    // FTS MATCH on 'zephyrword' must return the row with id 'msg-pre-1'.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT h.id FROM llm_history h
+            \\JOIN messages_fts f ON f.rowid = h.rowid
+            \\WHERE messages_fts MATCH ?
+        , &.{"zephyrword"});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.BackfillMissingRow1058;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("msg-pre-1", row.values[0]);
+
+        // Should be only 1 row matching zephyrword.
+        const extra = (try q.next()) orelse null;
+        if (extra) |e| {
+            defer e.deinit(alloc);
+            try testing.expect(false); // zephyrword matched more than 1 row
+        }
+    }
+
+    // FTS MATCH on 'quasarterm' must return the row with id 'msg-pre-2'.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT h.id FROM llm_history h
+            \\JOIN messages_fts f ON f.rowid = h.rowid
+            \\WHERE messages_fts MATCH ?
+        , &.{"quasarterm"});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.BackfillMissingRow2058;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("msg-pre-2", row.values[0]);
+    }
+}
+
+test "migration 058: INSERT trigger fires for new rows" {
+    // After migration, INSERT INTO llm_history must auto-add to the FTS
+    // index. Insert one new row AFTER migration; FTS MATCH must find it.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory058();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration058AddLlmHistoryFts.up(&ctx.db, alloc);
+
+    // Insert AFTER migration.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content) " ++
+        "VALUES ('msg-post-1', 'sess-1', 'm', 'post-migration message has deltaword')",
+        &[_][]const u8{},
+    );
+
+    // FTS MATCH on 'deltaword' must return the new row.
+    var q = try ctx.db.query(alloc,
+        \\SELECT h.id FROM llm_history h
+        \\JOIN messages_fts f ON f.rowid = h.rowid
+        \\WHERE messages_fts MATCH ?
+    , &.{"deltaword"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.InsertTriggerDidNotFire058;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("msg-post-1", row.values[0]);
+}
+
+test "migration 058: DELETE trigger removes row from index" {
+    // After migration, DELETE FROM llm_history must auto-remove from the
+    // FTS index. Insert one row, delete it, then FTS MATCH must return
+    // null (no rows match).
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory058();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration058AddLlmHistoryFts.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content) " ++
+        "VALUES ('msg-del-1', 'sess-1', 'm', 'about to be deleted contains omegaword')",
+        &[_][]const u8{},
+    );
+
+    // Sanity: the row IS indexed before deletion.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT h.id FROM llm_history h
+            \\JOIN messages_fts f ON f.rowid = h.rowid
+            \\WHERE messages_fts MATCH ?
+        , &.{"omegaword"});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowNotIndexedBeforeDelete058;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("msg-del-1", row.values[0]);
+    }
+
+    // Delete the row.
+    try ctx.db.exec(alloc,
+        "DELETE FROM llm_history WHERE id = 'msg-del-1'",
+        &[_][]const u8{},
+    );
+
+    // After deletion, FTS MATCH on the unique word must return null.
+    var q = try ctx.db.query(alloc,
+        \\SELECT h.id FROM llm_history h
+        \\JOIN messages_fts f ON f.rowid = h.rowid
+        \\WHERE messages_fts MATCH ?
+    , &.{"omegaword"});
+    defer q.deinit();
+    const row = (try q.next()) orelse null;
+    if (row) |r| {
+        defer r.deinit(alloc);
+        try testing.expect(false); // DELETE trigger did not fire — row still in index
+    }
+}
+
+// ===== Tests merged from migration_059_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 059
+// (llm_history.created_iso column populated by application code + backfill).
+//
+// Why this file exists
+// ────────────────────
+// Migration 059 adds a regular TEXT column `created_iso` to
+// `llm_history`. The column is populated by **application code** in
+// `saveMessage` (libc `localtime_r` + `strftime`) at INSERT time, and
+// by an idempotent backfill `UPDATE` for legacy rows that pre-date
+// the application update. The workspace history / getCompactedMessages
+// SQL filters on `since`/`until` bind to this column, so the documented
+// `since`/`until` format works.
+//
+// Before this migration, the filters did a lex comparison on the
+// `created_at` TEXT column (which stores Unix microseconds like
+// `"1784119389936251112"`) against user input like `"2026-07-15 00:00:00"`.
+// Because `'1' < '2'` lexicographically, every data row was always
+// considered "less than" a date string starting with `'2'`, so the
+// filter silently returned 0 rows.
+//
+// ## Why application code, not SQLite triggers?
+//
+// v1 of this migration used INSERT/UPDATE triggers to populate
+// `created_iso`. This had two production failures:
+//   1. Triggers are invisible to application code — when the
+//      trigger's `datetime()` overflowed, debugging required
+//      reading SQL trigger bodies.
+//   2. The trigger's `datetime(CAST(<microseconds> AS REAL) / 1000000, ...)`
+//      overflows SQLite's `datetime()` range (cap: year 9999) and
+//      silently returns NULL for modern timestamps.
+//
+// Application-level computation via Zig's `std.time.epoch` API
+// (in `helpers.currentTimeIsoLocal`) sidesteps both issues.
+//
+// ## Why not a STORED GENERATED column?
+//
+// `datetime(..., 'localtime')` is non-deterministic (depends on the
+// system timezone). SQLite silently DROPS any GENERATED ALWAYS AS
+// STORED column whose expression uses a non-deterministic function —
+// verified empirically against SQLite 3.53.3. The column is omitted
+// from `pragma_table_info` with no error.
+//
+// ## Idempotency
+//
+// `addColumnIfMissing` skips the ALTER if the column exists.
+// The backfill UPDATE has `WHERE created_iso IS NULL OR created_iso = ''`,
+// so it only touches rows that still need populating.
+// The CREATE INDEX uses IF NOT EXISTS.
+//
+// This file verifies:
+//   1. The column `created_iso` exists on `llm_history` after the
+//      migration (NOT a generated column).
+//   2. The migration's idempotent backfill populates `created_iso`
+//      from `created_at` for legacy rows.
+//   3. Lex comparison against a date string picks up the correct rows
+//      (the actual bug regression).
+//   4. The index `idx_llm_history_created_iso` is created.
+//   5. The migration is idempotent (re-runs are no-ops).
+//
+// Plan: workspace history `created_iso` backfill.
+
+const TestCtx059 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB with just the `llm_history` baseline table.
+/// Mirrors the migration_058_test.zig / migration_054_test.zig pattern.
+fn setupDbWithLlmHistory059() !TestCtx059 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try Migration001CreateLLMHistory.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Read a column attribute by name from `pragma_table_xinfo('llm_history')`.
+/// Returns null if the column doesn't exist.
+///
+/// We use `pragma_table_xinfo` (NOT `pragma_table_info`) because the
+/// `xinfo` variant includes a 7th column "hidden" with values:
+///   - 0 = normal column
+///   - 2 = VIRTUAL generated column
+///   - 3 = STORED generated column
+/// `pragma_table_info` only returns the 6 normal columns and doesn't
+/// surface the generated-column flag at all.
+fn columnExists059(
+    db: *sqlite.SqliteBackend,
+    alloc: std.mem.Allocator,
+    column_name: []const u8,
+) !?struct { found: bool, is_generated: bool } {
+    var q = try db.query(alloc,
+        "SELECT name, hidden FROM pragma_table_xinfo('llm_history') WHERE name = ?",
+        &.{column_name});
+    defer q.deinit();
+    const row = (try q.next()) orelse return .{ .found = false, .is_generated = false };
+    defer row.deinit(alloc);
+    // `hidden` is 0 for normal columns, 2 for VIRTUAL generated, 3 for
+    // STORED generated. We treat any nonzero as "is generated".
+    const gen = std.fmt.parseInt(u32, row.values[1], 10) catch 0;
+    return .{ .found = true, .is_generated = gen != 0 };
+}
+
+test "migration 059: creates created_iso regular TEXT column (not generated)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory059();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Pre-migration: no created_iso column.
+    const pre = try columnExists059(&ctx.db, alloc, "created_iso");
+    try testing.expectEqual(false, pre.?.found);
+
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Post-migration: column exists, is NOT generated (regular TEXT).
+    // The trigger-based approach can't use GENERATED ALWAYS AS STORED
+    // because `datetime(..., 'localtime')` is non-deterministic.
+    const post = try columnExists059(&ctx.db, alloc, "created_iso");
+    try testing.expect(post != null);
+    try testing.expectEqual(true, post.?.found);
+    try testing.expectEqual(false, post.?.is_generated);
+}
+
+test "migration 059: backfills existing rows from created_at" {
+    // Application code in `saveMessage` is responsible for populating
+    // `created_iso` on new INSERTs. This test exercises the migration's
+    // idempotent backfill (the `UPDATE ... WHERE created_iso IS NULL`),
+    // which fills `created_iso` for rows that existed before the
+    // application was updated. Equivalent to the "INSERT trigger"
+    // behavior in v1, but explicit and re-runnable.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory059();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Insert a row FIRST with a known microsecond timestamp and NULL
+    // `created_iso` (matching the production state of legacy rows).
+    const micros: []const u8 = "1780000000000000";
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_iso','s1','m','content with isocheckword',?)", &.{micros});
+
+    // Pre-migration: `created_iso` is NULL (no column yet actually,
+    // we need to add it first manually to simulate the legacy state).
+    // Easier: run the migration itself, which adds the column AND
+    // backfills.
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Post-migration: the row's created_iso is populated.
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_iso'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing059;
+    defer row.deinit(alloc);
+    const generated = row.values[0];
+
+    // Compute the expected value using the SAME SQLite expression the
+    // migration's backfill uses (substring + datetime). This keeps the
+    // test timezone-agnostic.
+    var expected_q = try ctx.db.query(alloc,
+        "SELECT datetime(substr(?, 1, 10), 'unixepoch')", &.{micros});
+    defer expected_q.deinit();
+    const expected_row = (try expected_q.next()) orelse return error.ExpectedExprFailed059;
+    defer expected_row.deinit(alloc);
+    const expected = expected_row.values[0];
+
+    try testing.expectEqualStrings(expected, generated);
+    try testing.expect(generated.len > 0);
+}
+
+test "migration 059: lex comparison against a date string selects the correct rows (regression)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory059();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Insert two rows at known microsecond timestamps. `created_iso`
+    // is populated by the migration's backfill (substr(micros, 1, 10)).
+    const old_micros: []const u8 = "1780000000000000";
+    const new_micros: []const u8 = "1785000000000000";
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_old','s1','m','old isocheckword',?)", &.{old_micros});
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_new','s1','m','new isocheckword',?)", &.{new_micros});
+
+    // Re-run the migration so the backfill UPDATE processes these
+    // newly-inserted rows (the FIRST run happened BEFORE these inserts).
+    // Re-runs are idempotent.
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Compute the ISO for `new_micros` using the same expression the
+    // backfill uses (substr(micros, 1, 10)). Lex comparison must use
+    // the same expression or it won't match.
+    var iso_q = try ctx.db.query(alloc,
+        "SELECT datetime(substr(?, 1, 10), 'unixepoch')", &.{new_micros});
+    defer iso_q.deinit();
+    const iso_row = (try iso_q.next()) orelse return error.IsoExprFailed059;
+    defer iso_row.deinit(alloc);
+    const new_iso = iso_row.values[0];
+
+    // Lex comparison against `created_iso`: rows with created_iso >=
+    // new_iso should match. This is the EXACT shape of the bug fix —
+    // a date string like "2026-07-15 00:00:00" lexicographically
+    // matches against the populated ISO column, not the raw microsecond
+    // string.
+    var hits_q = try ctx.db.query(alloc,
+        \\SELECT id FROM llm_history
+        \\WHERE created_iso >= ?
+        \\ORDER BY id
+    , &.{new_iso});
+    defer hits_q.deinit();
+
+    var count: usize = 0;
+    var matched_ids: [4][]u8 = undefined;
+    var match_idx: usize = 0;
+    while (try hits_q.next()) |row| {
+        defer row.deinit(alloc);
+        if (match_idx < matched_ids.len) {
+            matched_ids[match_idx] = try alloc.dupe(u8, row.values[0]);
+            match_idx += 1;
+        }
+        count += 1;
+    }
+    defer for (matched_ids[0..match_idx]) |id| alloc.free(id);
+
+    // Only h_new should match (created_iso >= new_iso excludes h_old).
+    try testing.expectEqual(@as(usize, 1), count);
+    try testing.expectEqualStrings("h_new", matched_ids[0]);
+}
+
+test "migration 059: creates idx_llm_history_created_iso index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory059();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Post-migration: an index named `idx_llm_history_created_iso` exists
+    // on the `created_iso` column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type='index' AND tbl_name='llm_history' AND name='idx_llm_history_created_iso'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.IndexNotCreated059;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("idx_llm_history_created_iso", row.values[0]);
+}
+
+test "migration 059: is idempotent on a re-run (column + triggers + index)" {
+    // `addColumnIfMissing` checks pragma_table_info first, the triggers
+    // use `IF NOT EXISTS`, and the index uses `IF NOT EXISTS`. A re-run
+    // on a DB that already has everything is a no-op.
+    const alloc = testing.allocator;
+    var ctx = try setupDbWithLlmHistory059();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+    // Run it again — must not error.
+    try Migration059AddCreatedIso.up(&ctx.db, alloc);
+
+    // Still exactly one created_iso column.
+    const post = try columnExists059(&ctx.db, alloc, "created_iso");
+    try testing.expectEqual(true, post.?.found);
+    try testing.expectEqual(false, post.?.is_generated);
+}
+
+// ===== Tests merged from migration_060_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 060
+// (llm_history.created_iso re-backfill).
+//
+// Why this file exists
+// ────────────────────
+// Production databases that ran V1 of Migration 059 (which used
+// SQLite INSERT/UPDATE triggers to populate `created_iso`) ended up
+// with many rows having `created_iso = NULL` because the trigger's
+// `datetime(CAST(<microseconds> AS REAL) / 1000000, 'unixepoch',
+// 'localtime')` overflowed SQLite's `datetime()` range (cap: year
+// 9999) for modern timestamps. This silently broke the
+// `since`/`until` filter on workspace history reads and
+// `getCompactedMessages`.
+//
+// Migration 060 unconditionally re-runs the v2 backfill UPDATE so
+// production users get a fix on the next nalar restart without
+// having to nuke their `agent.db`.
+//
+// This file verifies:
+//   1. Legacy rows with NULL `created_iso` get populated.
+//   2. The migration is idempotent (re-runs are no-ops on populated rows).
+//   3. A row with an empty string `created_at` falls back to `now`.
+//   4. Existing populated rows are NOT overwritten (defensive).
+
+const TestCtx060 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb060() !TestCtx060 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try Migration001CreateLLMHistory.up(&db, alloc);
+    // Migration 060 expects `created_iso` to exist. Migration 059
+    // creates it (with a backfill that touches the existing rows).
+    // Migration 060 then re-runs the backfill.
+    try Migration059AddCreatedIso.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "migration 060: re-backfills rows with NULL created_iso" {
+    // Simulates the production state: v1 of Migration 059 (broken trigger)
+    // left a row with NULL created_iso. v2 of Migration 059 used a
+    // different SQL expression that doesn't match what v1's broken trigger
+    // would have left, so production NULLs persist.
+    const alloc = testing.allocator;
+    var ctx = try setupDb060();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const micros: []const u8 = "1785000000000000"; // ~2026-07-25
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_legacy','s1','m','legacy row',?)", &.{micros});
+
+    try Migration060RebackfillCreatedIso.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_legacy'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing060;
+    defer row.deinit(alloc);
+    try testing.expect(row.values[0].len > 0);
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "2026") != null);
+}
+
+test "migration 060: re-backfills row with empty created_at using datetime('now')" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb060();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_empty','s1','m','empty created_at','')", &.{});
+
+    try Migration060RebackfillCreatedIso.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_empty'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing060;
+    defer row.deinit(alloc);
+    try testing.expect(row.values[0].len > 0);
+    // datetime('now') produces the current date — match any YYYY-MM-DD prefix.
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "-") != null);
+}
+
+test "migration 060: idempotent on re-run (no changes after second run)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb060();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const micros: []const u8 = "1785000000000000";
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_idem','s1','m','idempotent row',?)", &.{micros});
+
+    try Migration060RebackfillCreatedIso.up(&ctx.db, alloc);
+    var q1 = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_idem'", &.{});
+    defer q1.deinit();
+    const row1 = (try q1.next()) orelse return error.RowMissing060;
+    const first_value = try alloc.dupe(u8, row1.values[0]);
+    row1.deinit(alloc);
+    defer alloc.free(first_value);
+
+    // Run again — should not change anything.
+    try Migration060RebackfillCreatedIso.up(&ctx.db, alloc);
+    var q2 = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_idem'", &.{});
+    defer q2.deinit();
+    const row2 = (try q2.next()) orelse return error.RowMissing060;
+    defer row2.deinit(alloc);
+    try testing.expectEqualStrings(first_value, row2.values[0]);
+}
+
+test "migration 060: only updates rows where created_iso is NULL or empty" {
+    // Regression check: production datasets that already have valid
+    // created_iso (because the application ran the corrected saveMessage
+    // for new inserts) must NOT be overwritten with a coarser computation.
+    //
+    // We can verify this by inserting a row WITH a created_iso value
+    // that's clearly human-set (e.g. longer than 19 chars or contains
+    // a non-ASCII marker). After the migration, that value should be
+    // intact because the second (unconditional) UPDATE doesn't run —
+    // the WHERE guard stopped it.
+    //
+    // For a simpler robustness check: insert a row, hand-set
+    // `created_iso` to a known literal, run the migration, and verify
+    // the literal is preserved.
+    const alloc = testing.allocator;
+    var ctx = try setupDb060();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const micros: []const u8 = "1785000000000000";
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at, created_iso) " ++
+        "VALUES ('h_pre','s1','m','pre-populated row',?, 'CUSTOM-MARKER-ISO')",
+        &.{micros});
+
+    try Migration060RebackfillCreatedIso.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_pre'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing060;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("CUSTOM-MARKER-ISO", row.values[0]);
+}
+
+// ===== Tests merged from migration_061_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 061
+// (`llm_history.created_iso` year-fix).
+//
+// Why this file exists
+// ────────────────────
+// Migration 060 re-backfilled NULL/empty `created_iso` rows but did
+// NOT detect the **wrong-year** rows that were silently produced by
+// `saveMessage` passing nanosecond values (length 19) to a helper
+// expecting microseconds. The helper divided by `us_per_s` (1e6)
+// instead of `ns_per_s` (1e9), producing sec ≈ 1.78e12 instead of
+// 1.78e9 — which decodes as year 58,507 instead of 2026. The wrong
+// values passed Migration 060's `IS NULL OR = ''` guard and were
+// never overwritten.
+//
+// Migration 061 fixes both shapes (NULL/empty AND wrong-year) with
+// a single UPDATE that recomputes from `created_at` directly. The
+// `created_iso NOT LIKE '[12][09][0-9][0-9]-%'` clause is what
+// catches the year 58,507 rows.
+//
+// This file verifies:
+//   1. Legacy rows with NULL `created_iso` get populated.
+//   2. Rows with a wrong-year `created_iso` (e.g. `58507-07-26 ...`)
+//      get re-populated with the correct year.
+//   3. Already-correct rows are NOT overwritten (idempotent on
+//      correct rows; see the `LIKE '[12][09][0-9][0-9]-%'` guard).
+//   4. `saveMessage` (in the same test binary) writes a correct-year
+//      `created_iso` when invoked with the post-fix code path.
+//   5. `inserLLMHistories` (the other INSERT path that previously
+//      omitted `created_iso` entirely) writes a correct-year value.
+
+const TestCtx061 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb061() !TestCtx061 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try Migration001CreateLLMHistory.up(&db, alloc);
+    try Migration059AddCreatedIso.up(&db, alloc);
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "migration 061: backfills rows with NULL created_iso" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb061();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const micros: []const u8 = "1785000000000000"; // ~2026-07-25
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at) " ++
+        "VALUES ('h_null','s1','m','null iso',?)", &.{micros});
+
+    try Migration061FixCreatedIsoYear.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_null'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing061;
+    defer row.deinit(alloc);
+    try testing.expect(row.values[0].len > 0);
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "2026") != null);
+}
+
+test "migration 061: backfills rows with wrong-year created_iso (e.g. 58507-07-26 ...)" {
+    // This is the regression check for the year-58,507 bug. The
+    // pre-fix `saveMessage` produced these values by passing
+    // nanoseconds (length 19) to a helper expecting microseconds.
+    const alloc = testing.allocator;
+    var ctx = try setupDb061();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const nanos: []const u8 = "1784152565916089746"; // 2026-07-15 21:56:05 UTC, in ns
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at, created_iso) " ++
+        "VALUES ('h_bad_year','s1','m','wrong year',?, '58507-07-26 11:32:30')",
+        &.{nanos});
+
+    try Migration061FixCreatedIsoYear.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_bad_year'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing061;
+    defer row.deinit(alloc);
+    try testing.expect(row.values[0].len > 0);
+    // The fixed value MUST be year 2026, not 58507.
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "2026") != null);
+    try testing.expect(std.mem.indexOf(u8, row.values[0], "58507") == null);
+}
+
+test "migration 061: does NOT overwrite correct-year created_iso" {
+    // A row whose `created_iso` value matches what the migration
+    // would compute from `created_at` MUST be preserved (the LIKE
+    // guard stops the UPDATE). We pick a `created_at` whose substr
+    // recompute equals the hand-set ISO string, so even if the
+    // migration DID overwrite, the result would be identical.
+    //
+    // created_at "1784131200000000" (microseconds) → substr(1,10)
+    //   "1784131200" → datetime(1784131200, 'unixepoch') =
+    //   '2026-07-15 16:00:00' UTC. Verified with:
+    //   `SELECT strftime('%s', '2026-07-15 16:00:00')` → 1784131200.
+    const alloc = testing.allocator;
+    var ctx = try setupDb061();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const micros: []const u8 = "1784131200000000";
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, created_at, created_iso) " ++
+        "VALUES ('h_correct','s1','m','correct row',?, '2026-07-15 16:00:00')",
+        &.{micros});
+
+    try Migration061FixCreatedIsoYear.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT created_iso FROM llm_history WHERE id = 'h_correct'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing061;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2026-07-15 16:00:00", row.values[0]);
+}
+
+test "migration 061: handles mixed NULL + wrong-year + correct rows in one pass" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb061();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const nanos: []const u8 = "1784152565916089746"; // 2026-07-15 21:56:05 UTC, in ns
+    try ctx.db.exec(alloc,
+        \\INSERT INTO llm_history (id, session_id, model, response_content, created_at, created_iso) VALUES
+        \\('h_null','s1','m','null row',       ?, NULL),
+        \\('h_empty','s1','m','empty row',     ?, ''),
+        \\('h_bad','s1','m','bad year row',    ?, '58507-07-26 11:32:30'),
+        \\('h_ok','s1','m','correct row',      ?, '2026-07-15 21:56:05'),
+        \\('h_old','s1','m','1999 row',        ?, '1999-12-31 23:59:59')
+    , &.{nanos, nanos, nanos, nanos, nanos});
+
+    try Migration061FixCreatedIsoYear.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT id, created_iso FROM llm_history ORDER BY id", &.{});
+    defer q.deinit();
+    var rows: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        rows += 1;
+        const id = row.values[0];
+        const iso = row.values[1];
+        if (std.mem.eql(u8, id, "h_null") or std.mem.eql(u8, id, "h_empty") or
+            std.mem.eql(u8, id, "h_bad"))
+        {
+            // These three rows had bad values; they MUST be fixed
+            // to year 2026 (because substr(1784152565916..., 1, 10)
+            // → 1784152565 → 2026-07-15 21:56:05).
+            try testing.expect(std.mem.indexOf(u8, iso, "2026") != null);
+            try testing.expect(std.mem.indexOf(u8, iso, "58507") == null);
+        } else if (std.mem.eql(u8, id, "h_ok")) {
+            // Correct row: MUST be preserved verbatim (the LIKE
+            // guard '20[0-9][0-9]-%' matched, so WHERE is false).
+            try testing.expectEqualStrings("2026-07-15 21:56:05", iso);
+        } else if (std.mem.eql(u8, id, "h_old")) {
+            // '1999-...' starts with '19', not '20'. The LIKE guard
+            // does NOT match, so the migration does NOT touch it.
+            // Pre-2000 rows are legitimate data, not a bug.
+            try testing.expectEqualStrings("1999-12-31 23:59:59", iso);
+        }
+    }
+    try testing.expectEqual(@as(usize, 5), rows);
+}
+
+// ===== Tests merged from migration_062_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 062
+// (workspace_item_tasks.description).
+//
+// Why this file exists
+// ────────────────────
+// Migration 062 introduces a free-form `description` column on
+// `workspace_item_tasks` so each task (chat / routine / kanban) can
+// carry a user-visible "notes" field alongside its display name.
+// The detail dialog (frontend, Chunk 2) reads and writes it; the
+// backend persists it. The migration must:
+//   1. Add `description TEXT NOT NULL DEFAULT ''` to the table
+//   2. Be idempotent (existing rows survive via DEFAULT '')
+//   3. Be safe for fresh-DB installs that already declare the column
+//      in their canonical CREATE TABLE — use `addColumnIfMissing`
+//      so the helper handles both fresh-DB and upgrade-from-v1 paths
+//      gracefully (see memory `nalar-fresh-db-migration-cascade`).
+//
+// Plan: docs/superpowers/plans/2026-07-16-kanban-task-detail-dialog.md
+//   (Chunk 1, Task 1.1)
+
+const Migration062 = Migration062AddTaskDescription;
+const createWorkspaceItemTask = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
+
+const TestCtx062 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb062() !TestCtx062 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    // workspace_items (FK target for workspace_item_tasks.workspace_item_id)
+    // and workspace_item_tasks itself must exist before migration 061
+    // can run — production walks migrations 001 → 061 in order, so by
+    // the time 061 runs they're already there. We create minimal
+    // mirrors here for the unit test.
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    // The behavioural tests below INSERT into `task_type` (via the
+    // routine/memory branches of task_create.zig and via
+    // createWorkspaceItemTask), so the column must exist before
+    // Migration 062 runs. The real migration (034) declares this and
+    // 30+ others; we only need the minimum that the create helper
+    // references. Migration 062's `addColumnIfMissing` will then add
+    // `description` to this minimal table.
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration062 adds description column to workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: description does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('workspace_item_tasks')
+            \\WHERE name = 'description'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply migration 061.
+    try Migration062.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'description'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing062;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("description", row.values[0]);
+
+    // Confirm there are no extra rows (i.e. only one match).
+    try testing.expect((try q.next()) == null);
+}
+
+test "Migration062 is idempotent on a column that already exists" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Simulate a fresh-DB install where the canonical CREATE TABLE
+    // already includes `description TEXT NOT NULL DEFAULT ''`. The
+    // migration must be a no-op (NOT a "duplicate column" crash).
+    // Drop the minimal table from setupDb() and re-create it with the
+    // canonical schema that already declares description.
+    try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT,
+        \\    workspace_item_id TEXT,
+        \\    description TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+
+    // Should not error — `addColumnIfMissing` detects the column
+    // already exists and short-circuits.
+    try Migration062.up(&ctx.db, alloc);
+
+    // Re-check: still one `description` column (no duplicates).
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'description'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing062;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration062 gives pre-existing rows an empty-string description" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing task (no description column yet — it's
+    // added by the migration).
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_pre_061', 'Task', 'wi_1')",
+        &.{});
+
+    // Apply migration 061 — the existing row should get description=''.
+    try Migration062.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT description FROM workspace_item_tasks WHERE id = 'task_pre_061'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing062;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+// =====================================================================
+// Behavioural regression tests for the empty-string-bind bug.
+//
+// Why these tests exist
+// ---------------------
+// The migration adds a `NOT NULL DEFAULT ''` column. The `task_create`
+// HTTP handler calls `createWorkspaceItemTask` (and the routine/memory
+// branches do their own INSERTs). All three paths previously wrote the
+// description with `db.exec(..., description orelse "")` — which passes
+// an empty `[]const u8` to the SQLite backend. `SqliteBackend.exec`
+// binds an empty slice as SQL NULL (see project memory
+// `sqlite-backend-empty-slice-binds-as-null`), so the INSERT crashed
+// with `NOT NULL constraint failed: workspace_item_tasks.description`
+// for every standard/routine/memory task create where the caller
+// either omitted description (= null in JSON) or sent `""`.
+//
+// The fix splits the INSERT into a three-way branch:
+//   - description == null  → omit the description column; DEFAULT ''
+//     applies.
+//   - description == ""   → use a SQL `''` literal (not a `?` bind).
+//   - description == "x…" → bind via `?` like normal.
+//
+// The static tests above check that the three-way branch EXISTS in
+// the source. These behavioural tests actually run the helper against
+// an in-memory sqlite with the real Migration 062 applied, and prove
+// no `NOT NULL` violation fires for any of the three caller shapes.
+
+/// Seed a workspace_items row so `workspace_item_tasks.workspace_item_id`
+/// has a real FK target. Returns the parent id.
+fn seedParent062(ctx: *TestCtx062, allocator: std.mem.Allocator) ![]const u8 {
+    const parent_id = "wi_parent_061";
+    try ctx.db.exec(allocator,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES (?, 'ws_1', 'chat')",
+        &[_][]const u8{parent_id});
+    return parent_id;
+}
+
+/// Read back the description column for a task by id. Returns an
+/// owned copy (allocated with `allocator`) because `row.values[0]`
+/// is freed by `row.deinit(allocator)` at function exit; returning the
+/// raw borrowed slice would be a use-after-free once the defer fires
+/// (see project memory `zig-slice-headers-across-defer-lifetimes`).
+fn readDescription062(ctx: *TestCtx062, allocator: std.mem.Allocator, task_id: []const u8) !?[]u8 {
+    var q = try ctx.db.query(allocator,
+        "SELECT description FROM workspace_item_tasks WHERE id = ?",
+        &[_][]const u8{task_id});
+    defer q.deinit();
+    const row_opt = try q.next();
+    if (row_opt) |row| {
+        defer row.deinit(allocator);
+        return try allocator.dupe(u8, row.values[0]);
+    }
+    return null;
+}
+
+/// Wrapper that frees the owned `readDescription` slice. The caller
+/// passes the slice via this helper so the free lives close to the
+/// assertion (no leaks even if the assertion panics).
+fn expectDescriptionEquals062(
+    ctx: *TestCtx062,
+    allocator: std.mem.Allocator,
+    task_id: []const u8,
+    expected: []const u8,
+) !void {
+    const owned = (try readDescription062(ctx, allocator, task_id)) orelse return error.NoRow062;
+    defer allocator.free(owned);
+    try testing.expectEqualStrings(expected, owned);
+}
+
+test "createWorkspaceItemTask: description = null succeeds and stores ''" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration062.up(&ctx.db, alloc);
+    const parent_id = try seedParent062(&ctx, alloc);
+
+    // Caller passes null (omitted body field).
+    const task = try createWorkspaceItemTask(alloc, &ctx.db,
+        "t_desc_null_061", "No description", parent_id, "standard", null,
+        // tags — Migration 067 added this arg; pre-Migration-067 callers
+        // passed null. The migration_062_test exercises the description
+        // path only; tags are exercised in migration_067_test.zig.
+        null,
+        // image_urls (Migration 069) — added as 8th-arg default-null;
+        // migration_062_test predates the column and exercises the
+        // description path only. image_urls is exercised in
+        // migration_069_test.zig.
+        null,
+        // cwd (Migration 070) — null (omitted body field → empty-string
+        // sentinel). migration_062_test predates Migration 070 and
+        // exercises the description path only; cwd is fully covered in
+        // migration_071_test.zig.
+        null,
+        // video_urls (Migration 090) — null. Covered in video_urls_validation tests.
+        null);
+    defer task.deinit(alloc);
+
+    // SELECT the column back and confirm it was stored as the empty
+    // string (DEFAULT '' via the omitted-column branch).
+    try testing.expectEqualStrings("", task.description);
+    try expectDescriptionEquals062(&ctx, alloc, "t_desc_null_061", "");
+}
+
+test "createWorkspaceItemTask: description = '' (empty string) succeeds and stores ''" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration062.up(&ctx.db, alloc);
+    const parent_id = try seedParent062(&ctx, alloc);
+
+    // This is the EXACT bug case. Pre-fix: `description orelse ""` made
+    // the bind arg an empty `[]const u8` which SqliteBackend.exec
+    // converts to SQL NULL → `NOT NULL constraint failed`. Post-fix:
+    // the empty-string branch uses a SQL `''` literal.
+    const task = try createWorkspaceItemTask(alloc, &ctx.db,
+        "t_desc_empty_061", "Empty description", parent_id, "standard", "",
+        // tags — see comment on the null-tags branch above.
+        null,
+        // image_urls — null (omitted body field → empty-string
+        // sentinel). See migration_069_test for full-coverage tests.
+        null,
+        // cwd (Migration 070) — null. See comment above.
+        null,
+        // video_urls (Migration 090) — null. See comment above.
+        null);
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("", task.description);
+    try expectDescriptionEquals062(&ctx, alloc, "t_desc_empty_061", "");
+}
+
+test "createWorkspaceItemTask: description = 'hello world' succeeds and stores the value" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration062.up(&ctx.db, alloc);
+    const parent_id = try seedParent062(&ctx, alloc);
+
+    const task = try createWorkspaceItemTask(alloc, &ctx.db,
+        "t_desc_filled_061", "With description", parent_id, "standard",
+        "hello world from test",
+        // tags — see comment on the null-tags branch above.
+        null,
+        // image_urls — null (omitted body field → empty-string
+        // sentinel). See migration_069_test for full-coverage tests.
+        null,
+        // cwd (Migration 070) — null. See comment above.
+        null,
+        // video_urls (Migration 090) — null. See comment above.
+        null);
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("hello world from test", task.description);
+    try expectDescriptionEquals062(&ctx, alloc, "t_desc_filled_061", "hello world from test");
+}
+
+// Direct `db.exec` mirror of the createRoutineTask + createMemoryTask
+// INSERT branches. These branches don't go through
+// `createWorkspaceItemTask` so they need their own exercise of the
+// `''`-literal-vs-bind footgun fix. The test asserts the same three
+// caller shapes work — null, "", "x…" — for each task_type the
+// handler can produce.
+
+const RoutineCase062 = struct {
+    task_id: []const u8,
+    desc: ?[]const u8,
+};
+const MemoryCase062 = struct {
+    task_id: []const u8,
+    desc: ?[]const u8,
+};
+
+test "task_create direct INSERT branches: null/empty/value all succeed for routine task_type" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration062.up(&ctx.db, alloc);
+    const parent_id = try seedParent062(&ctx, alloc);
+
+    const cases = [_]RoutineCase062{
+        .{ .task_id = "t_routine_null_061", .desc = null },
+        .{ .task_id = "t_routine_empty_061", .desc = "" },
+        .{ .task_id = "t_routine_filled_061", .desc = "routine desc" },
+    };
+
+    for (cases) |case| {
+        // Mirror the createRoutineTask three-way branch from task_create.zig.
+        // (We deliberately inline this so the test exercises the PATTERN
+        // that the handler uses, not a wrapper around it.)
+        if (case.desc) |d| {
+            if (d.len > 0) {
+                try ctx.db.exec(alloc,
+                    "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
+                    "VALUES (?, ?, ?, 'routine', ?)",
+                    &[_][]const u8{ case.task_id, "Routine", parent_id, d });
+            } else {
+                try ctx.db.exec(alloc,
+                    "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
+                    "VALUES (?, ?, ?, 'routine', '')",
+                    &[_][]const u8{ case.task_id, "Routine", parent_id });
+            }
+        } else {
+            try ctx.db.exec(alloc,
+                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+                "VALUES (?, ?, ?, 'routine')",
+                &[_][]const u8{ case.task_id, "Routine", parent_id });
+        }
+
+        try expectDescriptionEquals062(&ctx, alloc, case.task_id, case.desc orelse "");
+    }
+}
+
+test "task_create direct INSERT branches: null/empty/value all succeed for memory task_type" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb062();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration062.up(&ctx.db, alloc);
+    const parent_id = try seedParent062(&ctx, alloc);
+
+    // Same three-way exercise, task_type='memory' branch.
+    const cases = [_]MemoryCase062{
+        .{ .task_id = "t_memory_null_061", .desc = null },
+        .{ .task_id = "t_memory_empty_061", .desc = "" },
+        .{ .task_id = "t_memory_filled_061", .desc = "memory desc" },
+    };
+
+    for (cases) |case| {
+        if (case.desc) |d| {
+            if (d.len > 0) {
+                try ctx.db.exec(alloc,
+                    "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
+                    "VALUES (?, ?, ?, 'memory', ?)",
+                    &[_][]const u8{ case.task_id, "Memory", parent_id, d });
+            } else {
+                try ctx.db.exec(alloc,
+                    "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type, description) " ++
+                    "VALUES (?, ?, ?, 'memory', '')",
+                    &[_][]const u8{ case.task_id, "Memory", parent_id });
+            }
+        } else {
+            try ctx.db.exec(alloc,
+                "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, task_type) " ++
+                "VALUES (?, ?, ?, 'memory')",
+                &[_][]const u8{ case.task_id, "Memory", parent_id });
+        }
+
+        try expectDescriptionEquals062(&ctx, alloc, case.task_id, case.desc orelse "");
+    }
+}
+
+// ===== Tests merged from migration_063_test.zig (2026-09-29 flatten) =====
+
+// Static regression checks for Migration 063
+// (sessions.is_auto_retry_until_stop + sessions.last_finish_reason).
+//
+// Why this file exists
+// ────────────────────
+// Migration 063 introduces two new columns on `sessions`:
+//   - `is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0` — opt-in flag
+//     that lets a session keep retrying past the 10-attempt TooManyRetries
+//     bail (unattended mode for overnight runs).
+//   - `last_finish_reason TEXT` — denormalized cache of the most recent
+//     `finish_reason` the workflow observed, so a server restart mid-
+//     conversation picks up where the last turn left off.
+//
+// The migration must:
+//   1. Add both columns to a fresh DB that only has the canonical
+//      `sessions(id, name, status)` columns (upgrade-from-v1 path).
+//   2. Be idempotent (re-runs don't crash with "duplicate column name").
+//   3. Give existing rows a `0` default for the flag and NULL for
+//      `last_finish_reason`.
+//
+// Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
+//   (Chunk 1, Task 1.1)
+
+const TestCtx063 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb063() !TestCtx063 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    // Minimal v1 sessions table — the canonical pre-Migration-063 schema
+    // only declares id/name/status (Migration 017 line 263-269). The
+    // migration must add the new columns on top of this.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active'
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration063 adds is_auto_retry_until_stop column to sessions" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('sessions')
+            \\WHERE name = 'is_auto_retry_until_stop'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('sessions')
+        \\WHERE name = 'is_auto_retry_until_stop'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing063;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("is_auto_retry_until_stop", row.values[0]);
+
+    // No duplicate row.
+    try testing.expect((try q.next()) == null);
+}
+
+test "Migration063 adds last_finish_reason column to sessions" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_finish_reason'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing063;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("last_finish_reason", row.values[0]);
+    try testing.expect((try q.next()) == null);
+}
+
+test "Migration063 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+    // Re-run — must not crash with "duplicate column name".
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    // Still exactly one column of each name.
+    for ([_][]const u8{ "is_auto_retry_until_stop", "last_finish_reason" }) |col| {
+        var q = try ctx.db.query(alloc,
+            \\SELECT COUNT(*) FROM pragma_table_info('sessions')
+            \\WHERE name = ?
+        , &[_][]const u8{col});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing063;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1", row.values[0]);
+    }
+}
+
+test "Migration063 default for is_auto_retry_until_stop is 0 on existing rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one v1-shape session row (only id/name, no new columns yet).
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('s_pre_063', 'Pre')",
+        &.{});
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    // The existing row should now have is_auto_retry_until_stop = '0'
+    // (the NOT NULL DEFAULT 0 fires). SQLite stores INTEGER columns
+    // as INTEGER affinity, but SqliteBackend.query reads values as
+    // text — verify the string form '0'.
+    var q = try ctx.db.query(alloc,
+        "SELECT is_auto_retry_until_stop FROM sessions WHERE id = 's_pre_063'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing063;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "Migration063 last_finish_reason is NULL on existing rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('s_pre_063b', 'Pre')",
+        &.{});
+
+    try Migration063AddSessionAutoRetry.up(&ctx.db, alloc);
+
+    // SELECT last_finish_reason — expect empty string (SQL NULL is
+    // surfaced as "" by SqliteBackend per the project's convention;
+    // see project memory `sqlite-backend-empty-slice-binds-as-null`).
+    var q = try ctx.db.query(alloc,
+        "SELECT last_finish_reason FROM sessions WHERE id = 's_pre_063b'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing063;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+// ===== Tests merged from migration_063_runtime_test.zig (2026-09-29 flatten) =====
+
+// Behavioral regression tests for the runtime CRUD helpers added
+// with Migration 063 (sessions.is_auto_retry_until_stop +
+// sessions.last_finish_reason).
+//
+// Why this file exists
+// ────────────────────
+// Migration 063 (migration_063_test.zig) verifies the SCHEMA change.
+// This file verifies the helper functions the rest of the codebase
+// uses to read + write the new columns:
+//   - create_session() takes is_auto_retry_until_stop as a parameter
+//   - getSession() reads both new columns back via SELECT
+//   - updateSessionAutoRetryUntilStop() toggles the flag
+//   - updateSessionLastFinishReason() persists the latest finish_reason
+//   - getSessionListWithCursor() / getSessionList() SELECT both new
+//     columns (covered separately in Task 1.4)
+//
+// The setup mirrors `migration_062_test.zig:32-59` — declare the
+// `sessions` table with the post-Migration-063 canonical shape
+// (includes the two new columns) to exercise the "fresh-DB canonical
+// CREATE TABLE" path that `addColumnIfMissing` handles.
+//
+// Plan: docs/superpowers/plans/2026-07-16-session-auto-retry-until-stop.md
+//   (Chunk 1, Task 1.3)
+
+const llm_history = nalarcore.llm_history;
+
+const TestCtx063rt = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb063rt() !TestCtx063rt {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Canonical post-Migration-063 schema. Both new columns are
+    // already declared, so `addColumnIfMissing` (when called from
+    // the migration's up()) short-circuits cleanly — no "duplicate
+    // column" error. The runtime CRUD tests here use this shape
+    // directly without re-running the migration.
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    cwd TEXT,
+        \\    created_at DATETIME,
+        \\    updated_at DATETIME,
+        \\    selected_profile_model TEXT,
+        \\    git_worktree_cwd TEXT,
+        \\    is_auto_retry_until_stop INTEGER NOT NULL DEFAULT 0,
+        \\    last_finish_reason TEXT,
+        \\    pr_url TEXT,
+        \\    pr_provider TEXT
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Reads a single text column from sessions by id. Returns an owned
+/// copy (allocated with `testing.allocator`) so the caller can keep
+/// the value alive after `row.deinit()`. Returns null if the row is
+/// missing or the column is NULL (surfaced as empty []u8 — see the
+/// `sqlite-backend-empty-slice-binds-as-null` project memory for the
+/// NULL-as-empty-string convention).
+fn readColumn063rt(
+    ctx: *TestCtx063rt,
+    allocator: std.mem.Allocator,
+    column: []const u8,
+    row_id: []const u8,
+) !?[]u8 {
+    // SqliteBackend.query takes argv as []const []const u8 (a slice of
+    // string slices), not a tuple. Column name is interpolated via
+    // std.fmt.allocPrint because `query` doesn't support format-string
+    // substitution for table/column identifiers.
+    const sql = try std.fmt.allocPrint(allocator, "SELECT {s} FROM sessions WHERE id = ?", .{column});
+    defer allocator.free(sql);
+    const argv = [_][]const u8{row_id};
+    var q = try ctx.db.query(allocator, sql, argv[0..]);
+    defer q.deinit();
+    const row_opt = try q.next();
+    if (row_opt) |row| {
+        defer row.deinit(allocator);
+        return try allocator.dupe(u8, row.values[0]);
+    }
+    return null;
+}
+
+test "create_session: is_auto_retry_until_stop = '1' is persisted to sessions row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063rt();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s1", "test", "1");
+        defer session.deinit(alloc);
+
+        const got = (try readColumn063rt(&ctx, alloc, "is_auto_retry_until_stop", "s1")) orelse
+            return error.NoRow063rt;
+        defer alloc.free(got);
+        try testing.expectEqualStrings("1", got);
+    }
+}
+
+test "create_session: empty is_auto_retry_until_stop defaults to '0'" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063rt();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Pass empty string — the helper coerces to "0" via SQL binding.
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s2", "test", "");
+        defer session.deinit(alloc);
+
+        const got = (try readColumn063rt(&ctx, alloc, "is_auto_retry_until_stop", "s2")) orelse
+            return error.NoRow063rt;
+        defer alloc.free(got);
+        try testing.expectEqualStrings("0", got);
+    }
+}
+
+test "getSession: reads back is_auto_retry_until_stop + last_finish_reason" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063rt();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Write the new columns directly so we can verify getSession
+    // surfaces them — bypass create_session (which coerces the flag).
+    // db.exec takes argv as `[]const []const u8` (a slice of strings);
+    // an empty `&.{}` tuple binds every `?` as SQL NULL, so the
+    // 5 placeholders below need explicit strings.
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name, status, is_auto_retry_until_stop, last_finish_reason) " ++
+        "VALUES (?, ?, 'active', ?, ?)",
+        &[_][]const u8{ "s3", "test", "1", "stop" });
+
+    const got = (try llm_history.getSession(alloc, &ctx.db, "s3")) orelse
+        return error.NoRow063rt;
+    defer got.deinit(alloc);
+    try testing.expectEqualStrings("1", got.is_auto_retry_until_stop);
+    try testing.expectEqualStrings("stop", got.last_finish_reason);
+}
+
+test "updateSessionAutoRetryUntilStop: toggles 0 -> 1" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063rt();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s4", "test", "");
+        defer session.deinit(alloc);
+    }
+
+    try llm_history.updateSessionAutoRetryUntilStop(alloc, &ctx.db, "s4", "1");
+
+    const got = (try readColumn063rt(&ctx, alloc, "is_auto_retry_until_stop", "s4")) orelse
+        return error.NoRow063rt;
+    defer alloc.free(got);
+    try testing.expectEqualStrings("1", got);
+}
+
+test "updateSessionLastFinishReason: persists the latest value" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063rt();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s5", "test", "");
+        defer session.deinit(alloc);
+    }
+
+    try llm_history.updateSessionLastFinishReason(alloc, &ctx.db, "s5", "tool_calls");
+
+    const got = (try readColumn063rt(&ctx, alloc, "last_finish_reason", "s5")) orelse
+        return error.NoRow063rt;
+    defer alloc.free(got);
+    try testing.expectEqualStrings("tool_calls", got);
+}
+
+test "updateSessionLastFinishReason: overwrites on every call" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb063rt();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    {
+        const session = try llm_history.create_session(alloc, &ctx.db, "s6", "test", "");
+        defer session.deinit(alloc);
+    }
+
+    try llm_history.updateSessionLastFinishReason(alloc, &ctx.db, "s6", "length");
+    try llm_history.updateSessionLastFinishReason(alloc, &ctx.db, "s6", "stop");
+
+    const got = (try readColumn063rt(&ctx, alloc, "last_finish_reason", "s6")) orelse
+        return error.NoRow063rt;
+    defer alloc.free(got);
+    try testing.expectEqualStrings("stop", got);
+}
+
+// ===== Tests merged from migration_064_test.zig (2026-09-29 flatten) =====
+
+// Behavioural tests for Migration 064 (add the `logs` table for
+// frontend error capture).
+//
+// Why this file exists
+// ────────────────────
+// Migration 064 introduces the `logs` table that the frontend's
+// `window.error` / `unhandledrejection` / `console.error` /
+// `console.warn` listeners POST into (Chunk 2 handler). The schema
+// must be exactly:
+//   - 11 columns in the right order (the Ch3 SELECT * ORDER BY
+//     created_at DESC relies on the cid ordering to be deterministic).
+//   - 2 indexes (`idx_logs_created_at DESC` for the primary read path,
+//     `idx_logs_level` for `WHERE level = ?` filtering).
+//   - Idempotent on a re-run (`CREATE TABLE IF NOT EXISTS` +
+//     `CREATE INDEX IF NOT EXISTS`) so a fresh-DB install and an
+//     upgrade-from-v62 install both succeed.
+//
+// A static source check would not catch a typo'd column name, a
+// missing index, a missing `IF NOT EXISTS` (which would crash on a
+// re-run), or a wrong column type. Asserting the actual schema after
+// `up()` runs mirrors the pattern in `migration_062_test.zig`.
+//
+// Plan: docs/plans/2026-07-17-frontend-error-logs-design.md
+
+// ─── Test helpers ─────────────────────────────────────────────────────────
+
+/// Open a fresh in-memory sqlite DB. Mirrors the `setupDb` helper in
+/// `ai_workflow/tui/routines/Scheduler.zig` (the project's canonical
+/// Io.Threaded + :memory: pattern).
+
+fn setupDb064() !struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+} {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ─── Test 1: Migration 064 creates all 11 columns in the right order ──────
+
+test "Migration064 creates logs table with all 11 columns in the right order" {
+    const alloc = testing.allocator;
+    var s = try setupDb064();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try Migration064AddFrontendLogs.up(&s.db, alloc);
+
+    var rows = try s.db.query(
+        alloc,
+        "SELECT name FROM pragma_table_info('logs') ORDER BY cid",
+        &[_][]const u8{},
+    );
+    defer rows.deinit();
+
+    const expected = [_][]const u8{
+        "id", "created_at", "level", "kind", "message",
+        "stack", "source", "line", "route_path", "session_id", "count",
+    };
+
+    var idx: usize = 0;
+    while (try rows.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected.len);
+        try testing.expectEqualStrings(expected[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), idx);
+}
+
+// ─── Test 2: Migration 064 creates the 2 indexes ──────────────────────────
+
+test "Migration064 creates the idx_logs_created_at and idx_logs_level indexes" {
+    const alloc = testing.allocator;
+    var s = try setupDb064();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try Migration064AddFrontendLogs.up(&s.db, alloc);
+
+    var rows = try s.db.query(
+        alloc,
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='logs' ORDER BY name",
+        &[_][]const u8{},
+    );
+    defer rows.deinit();
+
+    var found_created_at = false;
+    var found_level = false;
+    while (try rows.next()) |row| {
+        defer row.deinit(alloc);
+        if (std.mem.eql(u8, row.values[0], "idx_logs_created_at")) found_created_at = true;
+        if (std.mem.eql(u8, row.values[0], "idx_logs_level")) found_level = true;
+    }
+    try testing.expect(found_created_at);
+    try testing.expect(found_level);
+}
+
+// ─── Test 3: Migration 064 is idempotent on a re-run ──────────────────────
+
+test "Migration063 is idempotent (re-running up() does not error)" {
+    const alloc = testing.allocator;
+    var s = try setupDb064();
+    defer s.threaded.deinit();
+    defer s.db.deinit();
+
+    try Migration064AddFrontendLogs.up(&s.db, alloc);
+    // Second run must not error — `CREATE TABLE IF NOT EXISTS` +
+    // `CREATE INDEX IF NOT EXISTS` make this a safe no-op. If they
+    // were bare CREATE / CREATE INDEX, the second run would crash
+    // with "table logs already exists" / "index already exists".
+    try Migration064AddFrontendLogs.up(&s.db, alloc);
+}
+
+// ===== Tests merged from migration_065_test.zig (2026-09-29 flatten) =====
+
+// Static + behavioural regression checks for Migration 065
+// (`workspace_item_tasks.last_human_touched_at`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 065 adds a single nullable INTEGER column that stamps the
+// last time a HUMAN (not the AI agent) interacted with a task —
+// dragged it, renamed it, edited its description, pinned it, sent a
+// chat message, or opened its chat. The kanban card UI uses this
+// column together with `sessions.last_finish_reason` to decide
+// whether to show the "AI finished — awaiting review" dot or the
+// "reviewed" checkmark (see docs/plans/2026-07-26-kanban-task-notification-icon.md).
+//
+// The migration must:
+//   1. Add `last_human_touched_at INTEGER` (nullable, no DEFAULT —
+//      NULL = "never touched", which the kanban SELECT uses to mean
+//      "AI finished and human hasn't seen it").
+//   2. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column name" — see the project's hard-fought
+//      knowledge about fresh-DB migration cascades in
+//      `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+//      cascade is fragile").
+//   3. Be safe for fresh-DB installs that already declare the column
+//      in their canonical CREATE TABLE — use `addColumnIfMissing` so
+//      the helper handles both fresh-DB and upgrade-from-v1 paths.
+//   4. Leave existing rows at NULL (NOT 0 or the current time — the
+//      "user has touched this task" semantic is binary; we cannot
+//      retroactively know whether a row from before the migration was
+//      reviewed).
+//
+// Plan: docs/plans/2026-07-26-kanban-task-notification-icon.md (Chunk 1)
+
+const TestCtx065 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb065() !TestCtx065 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    // workspace_items (FK target for workspace_item_tasks.workspace_item_id)
+    // and workspace_item_tasks itself must exist before the migration
+    // can run. Production walks migrations 001 → 064 first, so they're
+    // already there; we create minimal mirrors here for the unit test.
+    // The minimal `workspace_item_tasks` schema matches the v1 shape —
+    // no `last_human_touched_at` column yet, that's exactly what the
+    // migration adds.
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration065 adds last_human_touched_at column to workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb065();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('workspace_item_tasks')
+            \\WHERE name = 'last_human_touched_at'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration065AddTaskHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'last_human_touched_at'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing065;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("last_human_touched_at", row.values[0]);
+
+    // Confirm there are no extra rows (i.e. only one match — not the
+    // "column literally named INTEGER" footgun from passing only a
+    // type to addColumnIfMissing; see project memory
+    // `addColumnIfMissing-requires-name-type`).
+    try testing.expect((try q.next()) == null);
+
+    // Type sanity: the column must be INTEGER (so unix-ms comparisons
+    // work as arithmetic), not TEXT or a literal "INTEGER" string in
+    // the column-name slot.
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'last_human_touched_at'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing065;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("INTEGER", type_row.values[0]);
+}
+
+test "Migration065 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb065();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration065AddTaskHumanTouchedAt.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column name".
+    try Migration065AddTaskHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Still exactly one column of that name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'last_human_touched_at'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing065;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration065 is idempotent on a fresh-DB install where the canonical schema already declares the column" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb065();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Simulate a fresh-DB install where the canonical CREATE TABLE
+    // already includes `last_human_touched_at INTEGER`. The migration
+    // must be a no-op (NOT a "duplicate column" crash). This is the
+    // same fresh-DB-vs-upgrade split that bit Migration 020 / 052 —
+    // see project memory `nalar-data-and-routines.md` §"Migration
+    // #009-#052 fresh-DB cascade is fragile".
+    try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT,
+        \\    workspace_item_id TEXT,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    last_human_touched_at INTEGER
+        \\)
+    , &.{});
+
+    // Should not error — addColumnIfMissing detects the column exists.
+    try Migration065AddTaskHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Re-check: still exactly one column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'last_human_touched_at'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing065;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration065 leaves pre-existing rows at NULL (not 0, not now)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb065();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing task BEFORE applying the migration. The
+    // semantics matter: we cannot retroactively know whether the user
+    // touched this task before the migration ran, so the value must
+    // be NULL (the "I don't know" state) — NOT 0 (which the kanban
+    // SELECT would interpret as "touched at unix epoch 0, i.e. way
+    // before the AI's finish_reason update, i.e. still needs review"
+    // — semantically equivalent but misleading in logs) and NOT the
+    // current time (which would silently mark every legacy task as
+    // "reviewed" the moment the migration runs).
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_pre_065', 'Legacy task', 'wi_1')",
+        &.{});
+
+    try Migration065AddTaskHumanTouchedAt.up(&ctx.db, alloc);
+
+    // SQL NULL is surfaced as "" by SqliteBackend.query — see project
+    // memory `sqlite-backend-empty-slice-binds-as-null` and the
+    // existing Migration063 test for the same convention.
+    var q = try ctx.db.query(alloc,
+        "SELECT last_human_touched_at FROM workspace_item_tasks WHERE id = 'task_pre_065'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing065;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "Migration065 stamps a value when set after the migration" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb065();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_a', 'A', 'wi_1')",
+        &.{});
+
+    try Migration065AddTaskHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Now stamp a unix-ms timestamp — should persist as the literal
+    // integer (formatted as TEXT by SqliteBackend.bind). This is the
+    // exact call shape that llm_history.updateTaskLastHumanTouchedAt
+    // will use.
+    const now_ms_str = try std.fmt.allocPrint(alloc, "{d}", .{@as(i64, 1_786_000_000_000)});
+    defer alloc.free(now_ms_str);
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_item_tasks SET last_human_touched_at = ? WHERE id = ?",
+        &[_][]const u8{ now_ms_str, "task_a" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT last_human_touched_at FROM workspace_item_tasks WHERE id = 'task_a'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing065;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1786000000000", row.values[0]);
+}
+
+// ===== Tests merged from migration_066_test.zig (2026-09-29 flatten) =====
+
+// Static + behavioural regression checks for Migration 066
+// (`design_pages.workspace_item_task_id` FK + backfill).
+//
+// Why this file exists
+// ────────────────────
+// Migration 066 adds a single nullable TEXT column to `design_pages`
+// that binds each page 1:1 to a `workspace_item_tasks` chat-session
+// row. The replacement of the name-pattern lookup in
+// `AppLayout.handleDesignOpenChat` with a direct FK lookup depends
+// on this column being (a) added, (b) uniquely indexed, (c) backfilled
+// for every existing page so legacy DBs do not orphan their per-page
+// chats.
+//
+// The migration must:
+//   1. Add `workspace_item_task_id TEXT` (nullable, no DEFAULT —
+//      NULL = "not yet backfilled"; after `up()` returns, every row
+//      must be backfilled).
+//   2. Create a UNIQUE index on the column (the 1:1 invariant; SQLite
+//      uses the same index for the FK lookup, so no second index is
+//      needed).
+//   3. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column" or "index already exists" — see project
+//      memory `nalar-data-and-routines.md` §"Migration #009-#052
+//      fresh-DB cascade is fragile").
+//   4. Be safe for fresh-DB installs that already declare the column
+//      in their canonical CREATE TABLE — `addColumnIfMissing` handles
+//      both fresh-DB and upgrade-from-v1 paths.
+//   5. **Backfill** every pre-existing page with a fresh
+//      `workspace_item_tasks` row named `"Design Chat: <page_name>"`
+//      (or `"Design Chat: untitled"` for empty page names) so the
+//      design canvas chat surface has a stable task row for every
+//      legacy page.
+//
+// The migration-registration trap (defining the struct without
+// registering it in `allMigrations`) is checked in Test 5 — see
+// project memory `migration-registration-trap.md`.
+//
+// Plan: docs/superpowers/plans/2026-07-28-design-page-workspace-item-task-fk.md
+// (Task 1).
+
+const TestCtx066 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Mirror of the production schema BEFORE Migration 066 — no
+/// `workspace_item_task_id` column on `design_pages`. The migration
+/// itself adds the column via `addColumnIfMissing`.
+fn setupDb066() !TestCtx066 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // workspace_items + workspace_item_tasks: FK targets + chat-session
+    // table that the backfill creates new rows in. Production walks
+    // migrations 001 → 065 first; we mirror the minimal schema here.
+    // The minimal `workspace_item_tasks` schema matches the v65 shape
+    // (description added by Migration 062, task_type is the
+    // NOT NULL DEFAULT 'standard' column).
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (" ++
+            "id TEXT PRIMARY KEY, " ++
+            "name TEXT, " ++
+            "workspace_item_id TEXT, " ++
+            "task_type TEXT NOT NULL DEFAULT 'standard', " ++
+            "description TEXT NOT NULL DEFAULT ''" ++
+            ")",
+        &.{});
+
+    // design_pages: the pre-migration shape (Migration 055 + 056
+    // schema — id, workspace_item_id, name, width, height, x, y,
+    // position, created_at, updated_at, FK to workspace_items).
+    // NO `workspace_item_task_id` column yet — that's exactly what
+    // Migration 066 adds.
+    try db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration066 adds workspace_item_task_id column to design_pages" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb066();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('design_pages')
+            \\WHERE name = 'workspace_item_task_id'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration066AddDesignPageTaskFk.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('design_pages')
+        \\WHERE name = 'workspace_item_task_id'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing066;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("workspace_item_task_id", row.values[0]);
+
+    // Confirm there are no extra rows (i.e. only one match — not the
+    // "column literally named TEXT" footgun from passing only a type
+    // to addColumnIfMissing; see project memory
+    // `addColumnIfMissing-requires-name-type`).
+    try testing.expect((try q.next()) == null);
+
+    // Type sanity: the column must be TEXT (so the FK to
+    // workspace_item_tasks.id works), not a literal "TEXT" string
+    // in the column-name slot.
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type FROM pragma_table_info('design_pages')
+        \\WHERE name = 'workspace_item_task_id'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing066;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", type_row.values[0]);
+
+    // UNIQUE index sanity — must exist after the migration (the
+    // 1:1 invariant enforcement). Catch a regression where
+    // someone drops the CREATE INDEX step but leaves the column.
+    var qi = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type = 'index'
+        \\  AND name = 'idx_design_pages_workspace_item_task_id'
+    , &.{});
+    defer qi.deinit();
+    const index_row = (try qi.next()) orelse return error.UniqueIndexMissing066;
+    defer index_row.deinit(alloc);
+    try testing.expectEqualStrings("idx_design_pages_workspace_item_task_id", index_row.values[0]);
+}
+
+test "Migration066 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb066();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration066AddDesignPageTaskFk.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column
+    // name" or "index already exists" — the
+    // `addColumnIfMissing` + `CREATE … IF NOT EXISTS` calls are all
+    // idempotent.
+    try Migration066AddDesignPageTaskFk.up(&ctx.db, alloc);
+
+    // Still exactly one column of that name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('design_pages')
+        \\WHERE name = 'workspace_item_task_id'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing066;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration066 is idempotent on a fresh-DB install where the canonical schema already declares the column" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb066();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Simulate a fresh-DB install where the canonical CREATE TABLE
+    // for design_pages already includes `workspace_item_task_id TEXT`.
+    // The migration must be a no-op for the column add (NOT a
+    // "duplicate column" crash), the index add must be idempotent
+    // (IF NOT EXISTS), and the backfill must find no rows to update
+    // (table is empty after the recreate).
+    try ctx.db.exec(alloc, "DROP TABLE design_pages", &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE design_pages (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL DEFAULT '',
+        \\    width INTEGER NOT NULL DEFAULT 1440,
+        \\    height INTEGER NOT NULL DEFAULT 1024,
+        \\    x INTEGER NOT NULL DEFAULT 0,
+        \\    y INTEGER NOT NULL DEFAULT 0,
+        \\    position INTEGER NOT NULL DEFAULT 0,
+        \\    workspace_item_task_id TEXT,
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+        \\)
+    , &.{});
+
+    // Should not error — addColumnIfMissing detects the column exists,
+    // CREATE INDEX IF NOT EXISTS is a no-op, backfill query returns
+    // zero rows.
+    try Migration066AddDesignPageTaskFk.up(&ctx.db, alloc);
+
+    // Re-check: still exactly one column of that name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('design_pages')
+        \\WHERE name = 'workspace_item_task_id'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing066;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration066 backfills a workspace_item_tasks row for each existing design page" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb066();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: one workspace_item, then 3 design pages (with one
+    // empty-name edge case to exercise the "Design Chat: untitled"
+    // fallback). The setupDb() schema does NOT yet include the
+    // `workspace_item_task_id` column; we add it manually first
+    // (simulating that the migration's `addColumnIfMissing` step has
+    // already run on a legacy DB) — every existing row gets NULL.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+            "VALUES ('wi_1', 'ws_1', 'design')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "ALTER TABLE design_pages ADD COLUMN workspace_item_task_id TEXT",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO design_pages (id, workspace_item_id, name, position) " ++
+            "VALUES ('page_a', 'wi_1', 'Login', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO design_pages (id, workspace_item_id, name, position) " ++
+            "VALUES ('page_b', 'wi_1', 'Dashboard', 1)",
+        &.{});
+    try ctx.db.exec(alloc,
+        // Empty name — exercises the "Design Chat: untitled" fallback.
+        "INSERT INTO design_pages (id, workspace_item_id, name, position) " ++
+            "VALUES ('page_c', 'wi_1', '', 2)",
+        &.{});
+
+    // Sanity: all 3 pages have NULL task_id BEFORE the migration runs.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT COUNT(*) FROM design_pages WHERE workspace_item_task_id IS NULL",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing066;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("3", row.values[0]);
+    }
+
+    // Apply the migration. addColumnIfMissing no-ops (column exists);
+    // CREATE INDEX IF NOT EXISTS creates the unique index; backfill
+    // creates 3 new tasks + updates 3 pages.
+    try Migration066AddDesignPageTaskFk.up(&ctx.db, alloc);
+
+    // 1. Every page now has a non-NULL workspace_item_task_id that
+    //    points at a real workspace_item_tasks row. Joining both
+    //    tables catches both the UPDATE and the FK invariant in one
+    //    query — if the migration forgot the UPDATE, the JOIN would
+    //    still return 3 rows (matching by workspace_item_id, not the
+    //    new task_id), so we use the actual `workspace_item_task_id`
+    //    column for the join.
+    var qj = try ctx.db.query(alloc,
+        \\SELECT dp.id, dp.name, t.id, t.name, t.task_type, t.description
+        \\FROM design_pages dp
+        \\JOIN workspace_item_tasks t
+        \\  ON t.id = dp.workspace_item_task_id
+        \\WHERE dp.workspace_item_id = 'wi_1'
+        \\ORDER BY dp.position ASC
+    , &.{});
+    defer qj.deinit();
+
+    // Expected: page_a → "Design Chat: Login", page_b → "Design Chat:
+    // Dashboard", page_c → "Design Chat: untitled" (empty name
+    // fallback). task_type is always 'standard'; description is ''.
+    const expected: [3][]const u8 = .{ "Design Chat: Login", "Design Chat: Dashboard", "Design Chat: untitled" };
+    const expected_page_ids: [3][]const u8 = .{ "page_a", "page_b", "page_c" };
+    for (expected, 0..) |_, i| {
+        const row = (try qj.next()) orelse return error.BackfillRowMissing066;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings(expected_page_ids[i], row.values[0]);
+        try testing.expectEqualStrings(expected[i], row.values[3]);
+        try testing.expectEqualStrings("standard", row.values[4]);
+        try testing.expectEqualStrings("", row.values[5]);
+        // Sanity: the task id is non-empty (i.e. was actually
+        // generated, not the empty-slice-as-NULL trap).
+        try testing.expect(row.values[2].len > 0);
+    }
+    // No 4th row expected — the backfill should produce exactly
+    // one task per page.
+    try testing.expect((try qj.next()) == null);
+
+    // 2. No page was left with NULL workspace_item_task_id after the
+    //    backfill (the migration's WHERE clause should match every
+    //    pre-existing row exactly once).
+    var qnull = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM design_pages WHERE workspace_item_task_id IS NULL",
+        &.{});
+    defer qnull.deinit();
+    const null_row = (try qnull.next()) orelse return error.RowMissing066;
+    defer null_row.deinit(alloc);
+    try testing.expectEqualStrings("0", null_row.values[0]);
+
+    // 3. Re-run safety: a second `up()` call must not produce extra
+    //    task rows (the backfill's WHERE workspace_item_task_id IS
+    //    NULL matches zero rows on the second pass).
+    try Migration066AddDesignPageTaskFk.up(&ctx.db, alloc);
+    var qc = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM workspace_item_tasks WHERE workspace_item_id = 'wi_1'",
+        &.{});
+    defer qc.deinit();
+    const count_row = (try qc.next()) orelse return error.RowMissing066;
+    defer count_row.deinit(alloc);
+    try testing.expectEqualStrings("3", count_row.values[0]);
+}
+
+test "Migration066 is registered in allMigrations" {
+    // The migration-registration trap: defining the struct is not
+    // enough — it must also be added to `migration.zig::allMigrations`.
+    // A static-contract test that just imports the struct directly
+    // would pass with the tuple missing (because tests import the
+    // struct, not the slice). This test iterates the slice and
+    // catches the regression where someone deletes the registration
+    // tuple. See project memory `migration-registration-trap.md`.
+    for (allMigrations) |m| {
+        if (m.version == Migration066AddDesignPageTaskFk.version) return;
+    }
+    return error.Migration066NotRegistered066;
+}
+
+// ===== Tests merged from migration_067_test.zig (2026-09-29 flatten) =====
+
+// Static + behavioural regression checks for Migration 067
+// (`workspace_item_tasks.tags`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 067 adds a `tags TEXT NOT NULL DEFAULT ''` column to
+// `workspace_item_tasks` to support the kanban task tags feature
+// (plan: docs/superpowers/plans/2026-07-28-kanban-task-tags.md).
+// Tags are stored as a JSON-encode array string (e.g.
+// `'["bug","urgent","frontend"]'`); empty string = "no tags".
+//
+// The migration must:
+//   1. Add `tags TEXT NOT NULL DEFAULT ''` to `workspace_item_tasks`.
+//   2. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column name").
+//   3. Be safe for fresh-DB installs that already declare the column
+//      in their canonical CREATE TABLE — use `addColumnIfMissing` so
+//      the helper handles both fresh-DB and upgrade-from-v1 paths.
+//   4. Leave existing rows at '' (the canonical "no tags" sentinel).
+//   5. Be registered in `allMigrations` — defining the struct alone
+//      is a silent-skip bug per project memory
+//      `migration-registration-trap`.
+//
+// Plan: docs/superpowers/plans/2026-07-28-kanban-task-tags.md (Task 1)
+
+const TestCtx067 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb067() !TestCtx067 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // workspace_items (FK target for workspace_item_tasks.workspace_item_id)
+    // and workspace_item_tasks itself must exist before the migration
+    // can run. Production walks migrations 001 → 066 first, so they're
+    // already there; we create minimal mirrors here for the unit test.
+    // The minimal `workspace_item_tasks` schema matches the v1 shape —
+    // no `tags` column yet, that's exactly what the migration adds.
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT)",
+        &.{});
+    try db.exec(alloc,
+        "CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT, workspace_item_id TEXT, task_type TEXT NOT NULL DEFAULT 'standard')",
+        &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration067 adds tags column to workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb067();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('workspace_item_tasks')
+            \\WHERE name = 'tags'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration067AddTaskTags.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'tags'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing067;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("tags", row.values[0]);
+
+    // Confirm there are no extra rows (guards against the "column literally
+    // named TEXT" footgun from passing only a type to addColumnIfMissing;
+    // see project memory `addColumnIfMissing-requires-name-type`).
+    try testing.expect((try q.next()) == null);
+
+    // Type sanity: the column must be TEXT (NOT NULL DEFAULT '' applies
+    // independently of the type).
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'tags'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing067;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", type_row.values[0]);
+}
+
+test "Migration067 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb067();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration067AddTaskTags.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column name".
+    try Migration067AddTaskTags.up(&ctx.db, alloc);
+
+    // Still exactly one column of that name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'tags'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing067;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration067 is idempotent on a fresh-DB install where the canonical schema already declares the column" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb067();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Simulate a fresh-DB install where the canonical CREATE TABLE
+    // already includes `tags TEXT`. The migration must be a no-op
+    // (NOT a "duplicate column" crash). Mirrors the fresh-DB-vs-
+    // upgrade split that hit Migration 020 / 052 — see project memory
+    // `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+    // cascade is fragile".
+    try ctx.db.exec(alloc, "DROP TABLE workspace_item_tasks", &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT,
+        \\    workspace_item_id TEXT,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    tags TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+
+    // Should not error — addColumnIfMissing detects the column exists.
+    try Migration067AddTaskTags.up(&ctx.db, alloc);
+
+    // Re-check: still exactly one column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'tags'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing067;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration067 leaves pre-existing rows at empty string (the no-tags sentinel)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb067();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing task BEFORE applying the migration. We
+    // cannot retroactively know what tags the user wanted, so the
+    // value must be '' (canonical "no tags" sentinel) — NOT NULL
+    // (the column is NOT NULL DEFAULT ''). Matches the description
+    // column (Migration 062) sentinel pattern.
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_pre_067', 'Legacy task', 'wi_1')",
+        &.{});
+
+    try Migration067AddTaskTags.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT tags FROM workspace_item_tasks WHERE id = 'task_pre_067'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing067;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "Migration067 accepts a JSON array string when set after the migration" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb067();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'chat')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+        "VALUES ('task_a', 'A', 'wi_1')",
+        &.{});
+
+    try Migration067AddTaskTags.up(&ctx.db, alloc);
+
+    // Now update with a JSON array — should persist verbatim. This is
+    // the exact call shape that llm_history.createWorkspaceItemTask
+    // (with tags) will use post-Migration 067.
+    try ctx.db.exec(alloc,
+        "UPDATE workspace_item_tasks SET tags = ? WHERE id = ?",
+        &[_][]const u8{ "[\"bug\",\"urgent\",\"frontend\"]", "task_a" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT tags FROM workspace_item_tasks WHERE id = 'task_a'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing067;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("[\"bug\",\"urgent\",\"frontend\"]", row.values[0]);
+}
+
+test "Migration067 is registered in allMigrations" {
+    // Catches the silent-skip regression where the struct is defined
+    // but the registration tuple is missing (per project memory
+    // `migration-registration-trap`). Search the slice by version
+    // number so the test stays stable across reordering.
+    const all = allMigrations;
+    for (all) |m| {
+        if (m.version == Migration067AddTaskTags.version) return;
+    }
+    return error.Migration067NotRegistered067;
+}
+
+// ===== Tests merged from migration_068_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 068
+// (`llm_history.is_loading` + UNIQUE INDEX on `tool_call_id`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 068 adds an `is_loading INTEGER NOT NULL DEFAULT 0` column
+// to `llm_history` so we can mark tool-result placeholder rows that
+// were pre-created BEFORE the long-running tool execution started.
+//
+// It also adds a partial UNIQUE INDEX on `tool_call_id`:
+//     CREATE UNIQUE INDEX idx_llm_history_tool_call_id_loading
+//         ON llm_history(tool_call_id)
+//         WHERE tool_call_id IS NOT NULL AND tool_call_id != ''
+//
+// The UNIQUE INDEX is required so duplicate placeholders for the same
+// id are rejected at the DB level — without it, the dispatcher could
+// accidentally create two placeholders for one tool_call.id (a race
+// between the dispatcher + a stray retry). The partial WHERE clause
+// excludes empty-string tool_call_ids (the assistant message rows)
+// so the assistant row's `tool_call_id = ''` doesn't conflict with
+// the placeholders' `tool_call_id = 'tcA'` etc.
+//
+// The migration must:
+//   1. Add `is_loading INTEGER NOT NULL DEFAULT 0` to `llm_history`.
+//   2. Add the partial UNIQUE INDEX on `tool_call_id`.
+//   3. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column name" or "index already exists").
+//   4. Leave existing rows at `is_loading = 0` (the canonical "not
+//      loading" sentinel — every historical row was either written
+//      directly by the dispatcher (not loading) or it was the
+//      assistant message (which doesn't apply here)).
+//   5. Be registered in `allMigrations` — defining the struct alone
+//      is a silent-skip bug per project memory
+//      `migration-registration-trap`.
+//
+// Plan: docs/superpowers/plans/2026-08-06-tool-call-loading-placeholder.md
+// Bug: task_1785784899843 ("invalid function ID tool call error")
+
+const TestCtx068 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb068() !TestCtx068 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal `llm_history` schema matching the v1 shape — no
+    // `is_loading` column yet (that's exactly what the migration
+    // adds). Production walks migrations 001 → 067 first, so
+    // `tool_call_id` and `is_feed_to_llm` are already there; we
+    // include them so the migration's addColumnIfMissing succeeds
+    // and the partial UNIQUE INDEX has the column to attach to.
+    try db.exec(alloc,
+        \\CREATE TABLE llm_history (
+        \\    id TEXT PRIMARY KEY,
+        \\    session_id TEXT NOT NULL,
+        \\    model TEXT NOT NULL,
+        \\    response_content TEXT,
+        \\    tool_calls_json TEXT,
+        \\    tool_call_id TEXT,
+        \\    is_feed_to_llm INTEGER DEFAULT 1
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration068 adds is_loading column to llm_history" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb068();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('llm_history')
+            \\WHERE name = 'is_loading'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration068AddToolCallLoading.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('llm_history')
+        \\WHERE name = 'is_loading'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing068;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("is_loading", row.values[0]);
+
+    // Type sanity: the column must be INTEGER (NOT NULL DEFAULT 0).
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type, "notnull", dflt_value
+        \\FROM pragma_table_info('llm_history')
+        \\WHERE name = 'is_loading'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing068;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("INTEGER", type_row.values[0]);
+    // "notnull" is 1 when NOT NULL.
+    try testing.expectEqualStrings("1", type_row.values[1]);
+    // Default value is "0" — the canonical "not loading" sentinel.
+    try testing.expectEqualStrings("0", type_row.values[2]);
+}
+
+test "Migration068 adds partial UNIQUE INDEX on tool_call_id" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb068();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration068AddToolCallLoading.up(&ctx.db, alloc);
+
+    // Confirm the index exists.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name, sql FROM sqlite_master
+        \\WHERE type = 'index' AND tbl_name = 'llm_history'
+        \\AND name = 'idx_llm_history_tool_call_id_loading'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.IndexMissing068;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("idx_llm_history_tool_call_id_loading", row.values[0]);
+}
+
+test "Migration068 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb068();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration068AddToolCallLoading.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column name"
+    // or "index idx_llm_history_tool_call_id_loading already exists".
+    try Migration068AddToolCallLoading.up(&ctx.db, alloc);
+
+    // Still exactly one is_loading column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('llm_history')
+        \\WHERE name = 'is_loading'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing068;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration068 leaves pre-existing rows at is_loading=0 (the not-loading sentinel)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb068();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing row BEFORE applying the migration. Every
+    // historical row was either written directly (not loading) or
+    // pre-existed; the migration MUST backfill is_loading = 0 for
+    // every row.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content) " ++
+            "VALUES ('msg_pre_068', 'sess_1', 'm', 'pre-existing')",
+        &.{});
+
+    try Migration068AddToolCallLoading.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT is_loading FROM llm_history WHERE id = 'msg_pre_068'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing068;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "Migration068 enables the UNIQUE INDEX to reject duplicate tool_call_ids" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb068();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration068AddToolCallLoading.up(&ctx.db, alloc);
+
+    // Two rows with the SAME tool_call_id must be rejected. The
+    // assistant message has tool_call_id = '' (not the placeholder's
+    // id), but the index is partial so the assistant row passes
+    // through unaffected.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, tool_call_id, is_loading) " ++
+            "VALUES ('msg_tool_a', 'sess_1', 'm', 'result_a', 'tcA', 0)",
+        &.{});
+    // Second placeholder with the same tool_call_id — must fail.
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, tool_call_id, is_loading) " ++
+            "VALUES ('msg_tool_a_dup', 'sess_1', 'm', 'result_a_dup', 'tcA', 0)",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+
+    // But a row with tool_call_id = '' (the assistant message shape)
+    // is allowed — the partial WHERE clause excludes it. Insert a
+    // SECOND row with tool_call_id = '' to prove the partial index
+    // is correctly scoped.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, tool_call_id) " ++
+            "VALUES ('msg_assistant', 'sess_1', 'm', 'assistant content', '')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, response_content, tool_call_id) " ++
+            "VALUES ('msg_user', 'sess_1', 'm', 'user message', '')",
+        &.{});
+}
+
+test "Migration068 is registered in allMigrations" {
+    // Catches the silent-skip regression where the struct is defined
+    // but the registration tuple is missing (per project memory
+    // `migration-registration-trap`). Search the slice by version
+    // number so the test stays stable across reordering.
+    const all = allMigrations;
+    for (all) |m| {
+        if (m.version == Migration068AddToolCallLoading.version) return;
+    }
+    return error.Migration068NotRegistered068;
+}
+
+// ===== Tests merged from migration_069_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 069
+// (`workspace_item_tasks.image_urls`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 069 adds an `image_urls TEXT NOT NULL DEFAULT ''` column
+// to `workspace_item_tasks` so task-attached images can be stored inline
+// as `||`-delimited base64 data URLs. This replaces the broken
+// filesystem-backed attachment endpoints (`POST/GET /api/.../attachments`).
+//
+// The migration must:
+//   1. Add the `image_urls` column with `TEXT NOT NULL DEFAULT ''`.
+//   2. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column name").
+//   3. Leave existing rows at `image_urls = ''` (the canonical "no
+//      images" sentinel — every historical task predates the feature).
+//   4. Be registered in `allMigrations` — defining the struct alone
+//      is a silent-skip bug per project memory
+//      `migration-registration-trap`.
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-image-urls-column.md
+// Bug: task_1785795051796 ("kanban task not saving the images or
+// base 64 in kanban description, after create a task or run aent")
+
+const TestCtx069 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb069() !TestCtx069 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal `workspace_item_tasks` schema matching the pre-Migration-069
+    // shape — no `image_urls` column yet (that's exactly what the migration
+    // adds). Production walks migrations 001 → 068 first, so `description`
+    // (Migration 062) and `tags` (Migration 067) are already there; we
+    // include them so the migration's addColumnIfMissing succeeds and the
+    // schema mirrors what real production rows look like.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    description TEXT NOT NULL DEFAULT '',
+        \\    tags TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration069 adds image_urls column to workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb069();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('workspace_item_tasks')
+            \\WHERE name = 'image_urls'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration069AddTaskImageUrls.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'image_urls'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing069;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("image_urls", row.values[0]);
+
+    // Type + nullability + default sanity: the column must be
+    // TEXT NOT NULL DEFAULT '' (the canonical "no images" sentinel —
+    // matches the `description` / `tags` patterns from
+    // Migrations 062 / 067).
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type, "notnull", dflt_value
+        \\FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'image_urls'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing069;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", type_row.values[0]);
+    // "notnull" is 1 when NOT NULL.
+    try testing.expectEqualStrings("1", type_row.values[1]);
+    // Default value is the SQL `''` literal (the canonical "no
+    // images" sentinel). `pragma_table_info` reports it as the
+    // SQL literal text (i.e. `''` with the single quotes — see the
+    // same pattern in migration_062_test for `description`'s
+    // DEFAULT '' column). Accept either the bare empty string or the
+    // single-quoted empty-string literal — both represent the same
+    // semantic default.
+    const dflt = type_row.values[2];
+    try testing.expect(dflt.len == 0 or std.mem.eql(u8, dflt, "''"));
+}
+
+test "Migration069 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb069();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration069AddTaskImageUrls.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column name".
+    try Migration069AddTaskImageUrls.up(&ctx.db, alloc);
+
+    // Still exactly one image_urls column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'image_urls'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing069;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration069 leaves pre-existing rows at image_urls='' (the no-images sentinel)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb069();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing row BEFORE applying the migration. Every
+    // historical task predates the feature; the migration MUST
+    // backfill image_urls = '' for every row (the column has NOT NULL
+    // DEFAULT '' and ADD COLUMN applies DEFAULT to existing rows at
+    // the storage layer).
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+            "VALUES ('task_pre_069', 'Pre-existing task', 'item_1')",
+        &.{});
+
+    try Migration069AddTaskImageUrls.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT image_urls FROM workspace_item_tasks WHERE id = 'task_pre_069'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing069;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "Migration069 round-trips a ||-delimited image_urls string" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb069();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration069AddTaskImageUrls.up(&ctx.db, alloc);
+
+    // Insert a task with two data URLs joined by || (the convention
+    // `llm_history.image_url` uses). Confirm the raw string round-trips
+    // — the column stores bytes verbatim, the join/split is the
+    // caller's responsibility.
+    const joined = "data:image/png;base64,iVBORw0KGgo||data:image/jpeg;base64,/9j/4AAQ";
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, image_urls) " ++
+            "VALUES ('task_imgs', 'Two-image task', 'item_1', ?)",
+        &[_][]const u8{joined});
+
+    var q = try ctx.db.query(alloc,
+        "SELECT image_urls FROM workspace_item_tasks WHERE id = 'task_imgs'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing069;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings(joined, row.values[0]);
+}
+
+test "Migration069 is registered in allMigrations" {
+    // Catches the silent-skip regression where the struct is defined
+    // but the registration tuple is missing (per project memory
+    // `migration-registration-trap`). Search the slice by version
+    // number so the test stays stable across reordering.
+    const all = allMigrations;
+    for (all) |m| {
+        if (m.version == Migration069AddTaskImageUrls.version) return;
+    }
+    return error.Migration069NotRegistered069;
+}
+
+// ===== Tests merged from migration_070_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 070
+// (`agent_memories` table + `agent_memories_fts` FTS5 virtual table).
+//
+// Why this file exists
+// ────────────────────
+// Migration 070 backs the new `save_memory` + `load_memory` agent tools.
+// It creates:
+//   - `agent_memories` — the source table (id PK, content, tags, timestamps)
+//   - `agent_memories_fts` — a non-external-content FTS5 virtual table
+//     over `content` + `tags` (content is duplicated so `snippet()` works,
+//     matching the existing `messages_fts` pattern from Migration 058)
+//   - 3 sync triggers (INSERT / DELETE / UPDATE) that keep the FTS index
+//     in lockstep with the source table
+//
+// Plan: docs/superpowers/plans/2026-08-06-save-load-memory-fts5.md (Task 1)
+// Task: task_1785958319567 (save_memory + load_memory tools)
+//
+// Why non-external-content
+// ─────────────────────────
+// `snippet()` returns NULL for external-content FTS5 tables. The
+// `load_memory` tool needs snippets to render compact `<snippet>` blocks
+// (10 tokens with `[match]` markers). Duplicating content costs ~2x
+// storage but enables the only UX feature that matters here.
+//
+// Why FTS5 MATCH ? with single-token words
+// ─────────────────────────────────────────
+// Same rationale as migration_058_test.zig — multi-word queries would
+// couple the test to the tokenizer's exact behavior; single-token MATCH
+// keeps the contract tight: "the row containing word W is in the FTS
+// index".
+
+/// Test fixture. Hoisted to a top-level named struct (NOT inline anonymous)
+/// because Zig 0.16 treats two anonymous `struct { db, threaded }` types as
+/// distinct types even with identical fields — see project memory
+/// `zig-anonymous-struct-type-identity.md`.
+
+const TestCtx070 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB with the empty (pre-migration) state. After
+/// Migration 070 runs, `agent_memories` exists and the FTS5 sync triggers
+/// are installed.
+fn setupDb070() !TestCtx070 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration070 creates agent_memories table with correct columns" {
+    // After migration, `pragma_table_info('agent_memories')` must show
+    // columns: id (TEXT PK), content (TEXT NOT NULL), tags (TEXT NOT NULL
+    // DEFAULT ''), created_at (DATETIME DEFAULT CURRENT_TIMESTAMP),
+    // updated_at (DATETIME DEFAULT CURRENT_TIMESTAMP).
+    const alloc = testing.allocator;
+    var ctx = try setupDb070();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: table does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_memories'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // pre-migration should NOT have agent_memories
+        }
+    }
+
+    try Migration070AddAgentMemories.up(&ctx.db, alloc);
+
+    // Post-migration: table exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_memories'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.AgentMemoriesTableNotCreated070;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("agent_memories", row.values[0]);
+    }
+
+    // Verify the 5 expected columns exist with the expected names.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM pragma_table_info('agent_memories') ORDER BY cid",
+        &.{});
+    defer q.deinit();
+    const expected_columns = [_][]const u8{ "id", "content", "tags", "created_at", "updated_at" };
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected_columns.len);
+        try testing.expectEqualStrings(expected_columns[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected_columns.len), idx);
+}
+
+test "Migration070 is idempotent on a re-run" {
+    // The migration's CREATE statements all use IF NOT EXISTS. A second
+    // run must NOT crash with "table agent_memories already exists" or
+    // similar errors.
+    const alloc = testing.allocator;
+    var ctx = try setupDb070();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration070AddAgentMemories.up(&ctx.db, alloc);
+    try Migration070AddAgentMemories.up(&ctx.db, alloc);
+
+    // Still exactly 1 agent_memories table.
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_memories'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing070;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration070 creates agent_memories_fts FTS5 virtual table" {
+    // After migration, `sqlite_master` must contain a row for
+    // `agent_memories_fts` with type='table' (FTS5 virtual tables show
+    // up as 'table' rows in sqlite_master, not 'view' or 'index').
+    const alloc = testing.allocator;
+    var ctx = try setupDb070();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration070AddAgentMemories.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='agent_memories_fts'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.FtsVirtualTableNotCreated070;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("agent_memories_fts", row.values[0]);
+}
+
+test "Migration070 installs sync triggers (exactly 3 on agent_memories)" {
+    // The migration creates 3 triggers: agent_memories_ai, _ad, _au.
+    // After migration, querying sqlite_master with `tbl_name='agent_memories'`
+    // AND `type='trigger'` must return exactly 3.
+    const alloc = testing.allocator;
+    var ctx = try setupDb070();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: pre-migration, zero triggers on agent_memories.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='agent_memories'",
+            &.{});
+        defer q.deinit();
+        var pre_count: usize = 0;
+        while (try q.next()) |row| {
+            defer row.deinit(alloc);
+            pre_count += 1;
+        }
+        try testing.expectEqual(@as(usize, 0), pre_count);
+    }
+
+    try Migration070AddAgentMemories.up(&ctx.db, alloc);
+
+    // Post-migration: exactly 3 triggers.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type='trigger' AND tbl_name='agent_memories'
+        \\ORDER BY name
+        , &.{});
+    defer q.deinit();
+    const names = [_][]const u8{ "agent_memories_ad", "agent_memories_ai", "agent_memories_au" };
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < names.len);
+        try testing.expectEqualStrings(names[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, names.len), idx);
+}
+
+test "Migration070 sync triggers keep FTS5 in lockstep with source table" {
+    // The whole point of the triggers is that INSERT/UPDATE/DELETE on
+    // `agent_memories` auto-mirror into `agent_memories_fts`. Insert a
+    // row, FTS5 MATCH on a unique word from it must return the row.
+    const alloc = testing.allocator;
+    var ctx = try setupDb070();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration070AddAgentMemories.up(&ctx.db, alloc);
+
+    // INSERT a row post-migration. The ai trigger should auto-add it to FTS5.
+    try ctx.db.exec(alloc,
+        \\INSERT INTO agent_memories (id, content, tags)
+        \\VALUES ('mem-trig-1', 'this row contains zeppelinword for trigger test', 'preferences')
+        , &.{});
+
+    // FTS5 MATCH on the unique word must return the row.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT m.id FROM agent_memories m
+            \\JOIN agent_memories_fts f ON f.rowid = m.rowid
+            \\WHERE agent_memories_fts MATCH ?
+            , &.{"zeppelinword"});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.InsertTriggerDidNotFire070;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("mem-trig-1", row.values[0]);
+    }
+
+    // UPDATE the content. The au trigger should remove the old FTS5 row
+    // and insert the new one. The OLD word must NOT match; the NEW word must.
+    try ctx.db.exec(alloc,
+        \\UPDATE agent_memories SET content = 'updated content has quasarword now'
+        \\WHERE id = 'mem-trig-1'
+        , &.{});
+
+    // Old word no longer matches (au trigger's DELETE part fired).
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT m.id FROM agent_memories m
+            \\JOIN agent_memories_fts f ON f.rowid = m.rowid
+            \\WHERE agent_memories_fts MATCH ?
+            , &.{"zeppelinword"});
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // UPDATE trigger DELETE part did not fire
+        }
+    }
+
+    // New word matches (au trigger's INSERT part fired).
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT m.id FROM agent_memories m
+            \\JOIN agent_memories_fts f ON f.rowid = m.rowid
+            \\WHERE agent_memories_fts MATCH ?
+            , &.{"quasarword"});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.UpdateTriggerInsertPartDidNotFire070;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("mem-trig-1", row.values[0]);
+    }
+
+    // DELETE the row. The ad trigger should remove it from FTS5.
+    try ctx.db.exec(alloc,
+        "DELETE FROM agent_memories WHERE id = 'mem-trig-1'",
+        &.{});
+
+    // New word no longer matches (ad trigger fired).
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT m.id FROM agent_memories m
+            \\JOIN agent_memories_fts f ON f.rowid = m.rowid
+            \\WHERE agent_memories_fts MATCH ?
+            , &.{"quasarword"});
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // DELETE trigger did not fire
+        }
+    }
+}
+
+test "Migration070 is registered in allMigrations" {
+    // Catches the silent-skip regression where the struct is defined but
+    // the registration tuple is missing (per project memory
+    // `migration-registration-trap`). Search the slice by version number
+    // so the test stays stable across reordering.
+    const all = allMigrations;
+    for (all) |m| {
+        if (m.version == Migration070AddAgentMemories.version) return;
+    }
+    return error.Migration070NotRegistered070;
+}
+
+// ===== Tests merged from migration_071_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 071
+// (`workspace_item_tasks.cwd`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 071 adds a `cwd TEXT NOT NULL DEFAULT ''` column to
+// `workspace_item_tasks` so each task can carry its own cwd_session
+// (which becomes the cwd_session for that task's chat sessions).
+// Per-task cwd OVERRIDES the kanban-level path (`workspace_items.path`)
+// which OVERRIDES the per-session sandbox fallback
+// (`$TMPDIR/session_<id>/`). The chain is implemented in
+// `session_create.zig::useCase`.
+//
+// The migration must:
+//   1. Add the `cwd` column with `TEXT NOT NULL DEFAULT ''`.
+//   2. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column name").
+//   3. Leave existing rows at `cwd = ''` (the canonical "no per-task
+//      cwd" sentinel — every historical task predates the feature).
+//   4. Be registered in `allMigrations` — defining the struct alone
+//      is a silent-skip bug per project memory
+//      `migration-registration-trap`.
+//
+// Plan: docs/superpowers/plans/2026-08-06-kanban-cwd-session-optional.md
+// Tasks: task_1785959915548 (kanban cwd → optional + per-task cwd picker)
+
+const TestCtx071 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+fn setupDb071() !TestCtx071 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // Minimal `workspace_item_tasks` schema matching the pre-Migration-070
+    // shape — no `cwd` column yet (that's exactly what the migration adds).
+    // Production walks migrations 001 → 069 first, so `description`
+    // (Migration 062), `tags` (Migration 067), and `image_urls`
+    // (Migration 069) are already there; we include them so the
+    // migration's addColumnIfMissing succeeds and the schema mirrors
+    // what real production rows look like.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    description TEXT NOT NULL DEFAULT '',
+        \\    tags TEXT NOT NULL DEFAULT '',
+        \\    image_urls TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    // Minimal `workspace_items` table so the FK target exists for
+    // round-trip tests that need to INSERT a parent row first.
+    // Production walks migrations 001 → 069 first, so this table is
+    // always there; the test mirrors that.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_items (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_id TEXT NOT NULL,
+        \\    item_type TEXT NOT NULL
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration071 adds cwd column to workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('workspace_item_tasks')
+            \\WHERE name = 'cwd'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'cwd'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("cwd", row.values[0]);
+
+    // Type + nullability + default sanity: the column must be
+    // TEXT NOT NULL DEFAULT '' (the canonical "no per-task cwd" sentinel
+    // — matches the `description` / `tags` / `image_urls` patterns from
+    // Migrations 062 / 067 / 069).
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type, "notnull", dflt_value
+        \\FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'cwd'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing071;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", type_row.values[0]);
+    // "notnull" is 1 when NOT NULL.
+    try testing.expectEqualStrings("1", type_row.values[1]);
+    // Default value is the SQL `''` literal (the canonical "no
+    // per-task cwd" sentinel). `pragma_table_info` reports it as the
+    // SQL literal text (i.e. `''` with the single quotes — same pattern
+    // as the other NOT NULL DEFAULT '' columns). Accept either the bare
+    // empty string or the single-quoted empty-string literal — both
+    // represent the same semantic default.
+    const dflt = type_row.values[2];
+    try testing.expect(dflt.len == 0 or std.mem.eql(u8, dflt, "''"));
+}
+
+test "Migration071 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column name".
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    // Still exactly one cwd column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'cwd'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration071 leaves pre-existing rows at cwd='' (the no-per-task-cwd sentinel)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing row BEFORE applying the migration. Every
+    // historical task predates the feature; the migration MUST
+    // backfill cwd = '' for every row (the column has NOT NULL
+    // DEFAULT '' and ADD COLUMN applies DEFAULT to existing rows at
+    // the storage layer).
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id) " ++
+            "VALUES ('task_pre_070', 'Pre-existing task', 'item_1')",
+        &.{});
+
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT cwd FROM workspace_item_tasks WHERE id = 'task_pre_070'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "Migration071 round-trips a per-task cwd path" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    // Insert a task with an absolute path on disk as its per-task cwd.
+    // Confirm the raw string round-trips — the column stores bytes
+    // verbatim, the resolution chain (task.cwd → item.path → sandbox)
+    // is the caller's responsibility.
+    const cwd_path = "/home/me/projects/repo-A";
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspace_item_tasks (id, name, workspace_item_id, cwd) " ++
+            "VALUES ('task_cwd', 'Per-task cwd task', 'item_1', ?)",
+        &[_][]const u8{cwd_path});
+
+    var q = try ctx.db.query(alloc,
+        "SELECT cwd FROM workspace_item_tasks WHERE id = 'task_cwd'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings(cwd_path, row.values[0]);
+}
+
+test "Migration071 is registered in allMigrations" {
+    // Catches the silent-skip regression where the struct is defined
+    // but the registration tuple is missing (per project memory
+    // `migration-registration-trap`). Search the slice by version
+    // number so the test stays stable across reordering.
+    const all = allMigrations;
+    for (all) |m| {
+        if (m.version == Migration071AddTaskCwd.version) return;
+    }
+    return error.Migration071NotRegistered071;
+}
+
+// ─── createWorkspaceItemTask round-trip tests (Migration 071) ───────────
+//
+// These tests exercise the model's createWorkspaceItemTask function
+// (the canonical INSERT path for new tasks) to lock in the contract:
+// the new `cwd` arg must (a) be accepted as the 10th parameter,
+// (b) store the supplied path verbatim, and (c) default to '' when
+// the caller passes null (matches the description / tags / image_urls
+// pattern).
+
+const createWorkspaceItemTask_fromMigration071 = @import("nalarcore").ai_mod.llm_history.createWorkspaceItemTask;
+
+test "createWorkspaceItemTask: cwd = '/home/me/proj-A' round-trips verbatim" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    const parent_id = try insertWorkspaceItem071(&ctx, alloc, "item_001");
+
+    const task = try createWorkspaceItemTask_fromMigration071(
+        alloc,
+        &ctx.db,
+        "t_cwd_001",
+        "Task with cwd",
+        parent_id,
+        "standard",
+        null, // description
+        null, // tags
+        null, // image_urls
+        "/home/me/proj-A", // cwd (Migration 071 10th arg)
+        null, // video_urls (Migration 090)
+    );
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("/home/me/proj-A", task.cwd);
+
+    // Read back from DB to verify persistence.
+    var q = try ctx.db.query(alloc,
+        "SELECT cwd FROM workspace_item_tasks WHERE id = 't_cwd_001'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("/home/me/proj-A", row.values[0]);
+}
+
+test "createWorkspaceItemTask: cwd = '' stores '' (SQL '' literal, NOT NULL DEFAULT '')" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    const parent_id = try insertWorkspaceItem071(&ctx, alloc, "item_002");
+
+    // Empty-string cwd — must use the SQL '' literal branch (NOT
+    // bind via `?`, which would NULL-bind and fail NOT NULL).
+    const task = try createWorkspaceItemTask_fromMigration071(
+        alloc,
+        &ctx.db,
+        "t_cwd_002",
+        "Task with empty cwd",
+        parent_id,
+        "standard",
+        null,
+        null,
+        null,
+        "", // cwd
+        null, // video_urls (Migration 090)
+    );
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("", task.cwd);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT cwd FROM workspace_item_tasks WHERE id = 't_cwd_002'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "createWorkspaceItemTask: cwd = null omits column (DEFAULT '' applies)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb071();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+    try Migration071AddTaskCwd.up(&ctx.db, alloc);
+
+    const parent_id = try insertWorkspaceItem071(&ctx, alloc, "item_003");
+
+    // null cwd — column omitted from INSERT, DEFAULT '' applies.
+    const task = try createWorkspaceItemTask_fromMigration071(
+        alloc,
+        &ctx.db,
+        "t_cwd_003",
+        "Task with null cwd",
+        parent_id,
+        "standard",
+        null,
+        null,
+        null,
+        null, // cwd — omitted, DEFAULT '' fills in
+        null, // video_urls (Migration 090)
+    );
+    defer task.deinit(alloc);
+
+    try testing.expectEqualStrings("", task.cwd);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT cwd FROM workspace_item_tasks WHERE id = 't_cwd_003'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing071;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+// Helper for the round-trip tests above — inserts a minimal
+// workspace_item row so the FK constraint on
+// workspace_item_tasks.workspace_item_id is satisfied. Returns
+// the input slice borrowed from the caller's stack — caller MUST
+// NOT free it.
+fn insertWorkspaceItem071(
+    ctx: *TestCtx071,
+    alloc: std.mem.Allocator,
+    item_id: []const u8,
+) ![]const u8 {
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type)
+        \\VALUES (?, 'ws_test', 'kanban')
+    , &.{item_id});
+    // Borrow the input — caller owns the backing memory (the
+    // literal `"item_001"` lives in the test function's stack
+    // frame; the test ends before the literal's lifetime ends).
+    return item_id;
+}
+
+// ===== Tests merged from migration_072_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 072
+// (`workspace_item_tasks` → `kanban` table extraction).
+//
+// Why this file exists
+// ────────────────────
+// Migration 072 moves the two kanban-board-placement columns
+// (`kanban_column_id`, `kanban_position`) off the universal
+// `workspace_item_tasks` table and into a dedicated `kanban` join
+// table. This is purely structural — the wire format
+// (`Task.kanban_column_id`, `Task.kanban_position`) stays identical,
+// served via a `LEFT JOIN kanban k ON k.workspace_item_task_id = t.id` in list
+// queries.
+//
+// The migration must:
+//   1. Create the `kanban` table with the expected schema
+//      (workspace_item_task_id PK, kanban_column_id NOT NULL, kanban_position
+//      DEFAULT 0, FKs to workspace_item_tasks + kanban_columns).
+//   2. Create the `idx_kanban_column_position` index.
+//   3. Backfill rows from existing `workspace_item_tasks`
+//      (only rows whose `kanban_column_id` references a real
+//      `kanban_columns.id` — orphans are skipped per the design
+//      decision in the plan, risk R8).
+//   4. Drop `workspace_item_tasks.kanban_column_id`.
+//   5. Drop `workspace_item_tasks.kanban_position`.
+//   6. Drop `idx_tasks_column_position` from workspace_item_tasks.
+//   7. Be idempotent on a re-run (re-running must not crash with
+//      "duplicate column name" or "table already exists" — relies
+//      on `CREATE TABLE IF NOT EXISTS` + `DROP COLUMN IF EXISTS`-
+//      style helpers).
+//   8. Preserve the wire format — after migration, a `LEFT JOIN`
+//      from `workspace_item_tasks` to `kanban` returns the same
+//      (column_id, position) pairs that the old direct columns
+//      returned (with NULL/0 for non-kanban tasks).
+//
+// Plan: docs/superpowers/plans/2026-08-15-extract-kanban-columns-to-kanban-table.md
+// Tasks: task_1786527996378 ("move column workspace_item_tasks table").
+
+const TestCtx072 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up a pre-Migration-072 in-memory DB — mirrors the schema a real
+/// production user has after walking migrations 001 → 071. Includes
+/// the two columns we're about to drop, plus the index we're about
+/// to drop. Also seeds the FK target tables (`workspace_items`,
+/// `kanban_columns`) so the backfill SELECT has valid references.
+fn setupDb072() !TestCtx072 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    // workspace_items — FK target for workspace_item_tasks.workspace_item_id
+    try db.exec(alloc,
+        "CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, item_type TEXT NOT NULL)",
+        &.{});
+    // kanban_columns — FK target for the new kanban.kanban_column_id.
+    // Production walks Migration 051 to create this; the test mirrors it
+    // so the backfill SELECT can validate column-id references.
+    try db.exec(alloc,
+        \\CREATE TABLE kanban_columns (
+        \\    id TEXT PRIMARY KEY,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    name TEXT NOT NULL,
+        \\    position INTEGER NOT NULL,
+        \\    FOREIGN KEY (workspace_item_id) REFERENCES workspace_items(id) ON DELETE CASCADE
+        \\)
+    , &.{});
+    // Pre-Migration-072 workspace_item_tasks — the full set of task
+    // attributes from migrations 001 → 071 PLUS the two columns we're
+    // about to extract.
+    try db.exec(alloc,
+        \\CREATE TABLE workspace_item_tasks (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    workspace_item_id TEXT NOT NULL,
+        \\    description TEXT NOT NULL DEFAULT '',
+        \\    created_at TEXT,
+        \\    updated_at TEXT,
+        \\    task_type TEXT NOT NULL DEFAULT 'standard',
+        \\    is_pinned INTEGER DEFAULT 0,
+        \\    pinned_position INTEGER DEFAULT 0,
+        \\    kanban_column_id TEXT,
+        \\    kanban_position INTEGER NOT NULL DEFAULT 0,
+        \\    last_human_touched_at INTEGER,
+        \\    tags TEXT NOT NULL DEFAULT '',
+        \\    cwd TEXT NOT NULL DEFAULT ''
+        \\)
+    , &.{});
+    // The legacy per-column-position index that Migration 072 drops.
+    try db.exec(alloc,
+        "CREATE INDEX idx_tasks_column_position " ++
+        "ON workspace_item_tasks(kanban_column_id, kanban_position)",
+        &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Insert a workspace_items row + a kanban_columns row + a task with
+/// a kanban placement. Returns nothing; the caller asserts on the
+/// post-migration state.
+fn seedKanbanCard072(
+    ctx: *TestCtx072,
+    alloc: std.mem.Allocator,
+    task_id: []const u8,
+    column_id: []const u8,
+    position: i64,
+) !void {
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO kanban_columns (id, workspace_item_id, name, position) " ++
+        "VALUES (?, 'wi_1', 'todo', 0)",
+        &.{column_id});
+    const pos_str = try std.fmt.allocPrint(alloc, "{d}", .{position});
+    defer alloc.free(pos_str);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks
+        \\(id, name, workspace_item_id, kanban_column_id, kanban_position)
+        \\VALUES (?, 'Task', 'wi_1', ?, ?)
+    , &.{ task_id, column_id, pos_str });
+}
+
+// ============================================================================
+// Test 0 — Column-delete cascades the kanban row (FK regression test)
+// ============================================================================
+//
+// The original Migration 072 DDL declared the FK on
+// `kanban.kanban_column_id` as `ON DELETE SET NULL`. That action is
+// incompatible with the column's `NOT NULL` constraint — SQLite rejects
+// the parent DELETE with "NOT NULL constraint failed:
+// kanban.kanban_column_id". The fix is `ON DELETE CASCADE`: deleting a
+// column un-places its tasks (deletes the kanban row).
+//
+// This test seeds a column + task + kanban row, runs the migration,
+// deletes the column, and asserts the kanban row is gone. Without
+// CASCADE, the DELETE would crash (and the test would fail with
+// `error.SqLiteError`).
+test "Migration072 kanban_column_id FK is ON DELETE CASCADE — deleting a column un-places its task" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // NB: PRAGMA foreign_keys is deliberately OFF in this project's
+    // SqliteBackend init (see src/ai_workflow/tui/kanban_model.zig:306
+    // for the rationale — application code simulates CASCADE
+    // manually). We turn it ON here so this test exercises the
+    // *schema-declared* FK behavior, which is what someone running
+    // with the default `sqlite3` CLI would observe. If PRAGMA is
+    // off, the FK is documentation-only and the test would falsely
+    // pass even with the buggy `SET NULL` declaration.
+    try ctx.db.exec(alloc, "PRAGMA foreign_keys = ON", &.{});
+
+    // Seed: one valid task on column col_1.
+    try seedKanbanCard072(&ctx, alloc, "task_to_unplace", "col_1", 0);
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Pre-condition: the kanban row exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM kanban WHERE workspace_item_task_id = 'task_to_unplace'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing072;
+        defer row.deinit(alloc);
+    }
+
+    // Action: delete the column. With ON DELETE CASCADE this should
+    // silently cascade-delete the kanban row. With the buggy
+    // ON DELETE SET NULL, this would fail with `NOT NULL
+    // constraint failed: kanban.kanban_column_id`.
+    try ctx.db.exec(alloc,
+        "DELETE FROM kanban_columns WHERE id = 'col_1'",
+        &.{});
+
+    // Post-condition: the kanban row is gone.
+    var q = try ctx.db.query(alloc,
+        "SELECT 1 FROM kanban WHERE workspace_item_task_id = 'task_to_unplace'",
+        &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+// ============================================================================
+// Test 1 — Migration creates the `kanban` table
+// ============================================================================
+
+test "Migration072 creates the kanban table with the expected schema" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: kanban table does NOT exist before migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM sqlite_master
+            \\WHERE type = 'table' AND name = 'kanban'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Confirm the kanban table exists.
+    var q = try ctx.db.query(alloc,
+        \\SELECT 1 FROM sqlite_master
+        \\WHERE type = 'table' AND name = 'kanban'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing072;
+    defer row.deinit(alloc);
+}
+
+// ============================================================================
+// Test 2 — Migration creates the per-column-position index
+// ============================================================================
+
+test "Migration072 creates idx_kanban_column_position index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT 1 FROM sqlite_master
+        \\WHERE type = 'index' AND name = 'idx_kanban_column_position'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing072;
+    defer row.deinit(alloc);
+}
+
+// ============================================================================
+// Test 3 — Migration backfills existing rows
+// ============================================================================
+
+test "Migration072 backfills kanban rows from workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try seedKanbanCard072(&ctx, alloc, "task_a", "col_1", 0);
+    try seedKanbanCard072(&ctx, alloc, "task_b", "col_1", 1);
+    try seedKanbanCard072(&ctx, alloc, "task_c", "col_2", 0);
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Verify the backfill: three rows in kanban with the expected
+    // workspace_item_task_id / column_id / position triples.
+    var q = try ctx.db.query(alloc,
+        \\SELECT workspace_item_task_id, kanban_column_id, kanban_position
+        \\FROM kanban
+        \\ORDER BY workspace_item_task_id ASC
+    , &.{});
+    defer q.deinit();
+
+    const row_a = (try q.next()) orelse return error.RowMissing072;
+    defer row_a.deinit(alloc);
+    try testing.expectEqualStrings("task_a", row_a.values[0]);
+    try testing.expectEqualStrings("col_1", row_a.values[1]);
+    try testing.expectEqualStrings("0", row_a.values[2]);
+
+    const row_b = (try q.next()) orelse return error.RowMissing072;
+    defer row_b.deinit(alloc);
+    try testing.expectEqualStrings("task_b", row_b.values[0]);
+    try testing.expectEqualStrings("col_1", row_b.values[1]);
+    try testing.expectEqualStrings("1", row_b.values[2]);
+
+    const row_c = (try q.next()) orelse return error.RowMissing072;
+    defer row_c.deinit(alloc);
+    try testing.expectEqualStrings("task_c", row_c.values[0]);
+    try testing.expectEqualStrings("col_2", row_c.values[1]);
+    try testing.expectEqualStrings("0", row_c.values[2]);
+
+    try testing.expect((try q.next()) == null); // no extra rows
+}
+
+// ============================================================================
+// Test 4 — Backfill skips orphan kanban_column_id references (R8)
+// ============================================================================
+
+test "Migration072 backfill skips tasks whose kanban_column_id has no matching kanban_columns row" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: task with a valid column (col_1) + task pointing at a
+    // deleted/orphan column (col_deleted).
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO kanban_columns (id, workspace_item_id, name, position) " ++
+        "VALUES ('col_1', 'wi_1', 'todo', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks
+        \\(id, name, workspace_item_id, kanban_column_id, kanban_position)
+        \\VALUES ('task_valid', 'Valid', 'wi_1', 'col_1', 0)
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks
+        \\(id, name, workspace_item_id, kanban_column_id, kanban_position)
+        \\VALUES ('task_orphan', 'Orphan', 'wi_1', 'col_deleted', 5)
+    , &.{});
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Only the valid row was backfilled — the orphan was skipped.
+    var q = try ctx.db.query(alloc,
+        "SELECT workspace_item_task_id FROM kanban ORDER BY workspace_item_task_id ASC",
+        &.{});
+    defer q.deinit();
+
+    const row1 = (try q.next()) orelse return error.RowMissing072;
+    defer row1.deinit(alloc);
+    try testing.expectEqualStrings("task_valid", row1.values[0]);
+
+    try testing.expect((try q.next()) == null); // task_orphan NOT backfilled
+}
+
+// ============================================================================
+// Test 5 — Migration drops the kanban_column_id and kanban_position columns
+// ============================================================================
+
+test "Migration072 drops kanban_column_id from workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'kanban_column_id'
+    , &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+test "Migration072 drops kanban_position from workspace_item_tasks" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name = 'kanban_position'
+    , &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+// ============================================================================
+// Test 6 — Migration drops idx_tasks_column_position index
+// ============================================================================
+
+test "Migration072 drops the legacy idx_tasks_column_position index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT 1 FROM sqlite_master
+        \\WHERE type = 'index' AND name = 'idx_tasks_column_position'
+    , &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null);
+}
+
+// ============================================================================
+// Test 7 — Migration is idempotent on re-run
+// ============================================================================
+
+test "Migration072 is idempotent — re-running does not crash" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+    // Re-run: must not crash with "duplicate column name" or
+    // "table kanban already exists". The CREATE TABLE IF NOT
+    // EXISTS + dropColumnIfExists helpers make this a no-op.
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // Verify the schema is still correct after the re-run.
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('workspace_item_tasks')
+        \\WHERE name IN ('kanban_column_id', 'kanban_position')
+    , &.{});
+    defer q.deinit();
+    try testing.expect((try q.next()) == null); // columns still gone
+}
+
+// ============================================================================
+// Test 8 — Wire-format preservation via LEFT JOIN
+// ============================================================================
+
+test "Migration072 preserves the wire format — LEFT JOIN returns the same data the old direct columns did" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb072();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Seed: one task on a kanban column, one task with no column
+    // assignment (the "chat task in a kanban item" case — has
+    // kanban_column_id IS NULL).
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO workspace_items (id, workspace_id, item_type) " ++
+        "VALUES ('wi_1', 'ws_1', 'kanban')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT OR IGNORE INTO kanban_columns (id, workspace_item_id, name, position) " ++
+        "VALUES ('col_1', 'wi_1', 'todo', 0)",
+        &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks
+        \\(id, name, workspace_item_id, kanban_column_id, kanban_position)
+        \\VALUES ('task_on_board', 'On board', 'wi_1', 'col_1', 7)
+    , &.{});
+    try ctx.db.exec(alloc,
+        \\INSERT INTO workspace_item_tasks
+        \\(id, name, workspace_item_id, kanban_column_id, kanban_position)
+        \\VALUES ('task_unassigned', 'Unassigned', 'wi_1', NULL, 0)
+    , &.{});
+
+    try Migration072ExtractKanbanTable.up(&ctx.db, alloc);
+
+    // The "wire format" query — what every list query uses to
+    // populate Task.kanban_column_id and Task.kanban_position.
+    var q = try ctx.db.query(alloc,
+        \\SELECT t.id, k.kanban_column_id, COALESCE(k.kanban_position, 0)
+        \\FROM workspace_item_tasks t
+        \\LEFT JOIN kanban k ON k.workspace_item_task_id = t.id
+        \\ORDER BY t.id ASC
+    , &.{});
+    defer q.deinit();
+
+    const row_on = (try q.next()) orelse return error.RowMissing072;
+    defer row_on.deinit(alloc);
+    try testing.expectEqualStrings("task_on_board", row_on.values[0]);
+    try testing.expectEqualStrings("col_1", row_on.values[1]); // matched column
+    try testing.expectEqualStrings("7", row_on.values[2]); // matched position
+
+    const row_un = (try q.next()) orelse return error.RowMissing072;
+    defer row_un.deinit(alloc);
+    try testing.expectEqualStrings("task_unassigned", row_un.values[0]);
+    try testing.expectEqualStrings("", row_un.values[1]); // NULL → empty string
+    try testing.expectEqualStrings("0", row_un.values[2]); // COALESCE → 0
+
+    try testing.expect((try q.next()) == null); // no extra rows
+}
+
+// ===== Tests merged from migration_073_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 073
+// (`session_activity` append-only log).
+//
+// Why this file exists
+// ────────────────────
+// Migration 073 adds a per-session activity log that records every
+// `update_activity` tool call AND every compaction event. This is
+// purely additive — `worker.last_activity_description` (the live UI
+// signal) keeps being overwritten as before.
+//
+// The migration must:
+//   1. Create the `session_activity` table with the expected schema
+//      (id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
+//      description TEXT NOT NULL, created_at DATETIME DEFAULT
+//      CURRENT_TIMESTAMP).
+//   2. Create the `idx_session_activity_session_created` index over
+//      `(session_id, created_at DESC)` so the per-session "most
+//      recent N" query is fast.
+//   3. Be idempotent on a re-run (CREATE TABLE IF NOT EXISTS + CREATE
+//      INDEX IF NOT EXISTS — per the project-wide
+//      `migration-is-idempotent` invariant).
+//   4. Allow INSERT + SELECT round-trip on a row.
+//
+// Plan: docs/superpowers/plans/2026-08-13-session-activity-table.md
+// Task: task_1786629034327 ("new table session_activity")
+
+const TestCtx073 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB with the empty (pre-migration) state. After
+/// Migration 073 runs, `session_activity` exists and the index is
+/// installed.
+fn setupDb073() !TestCtx073 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ============================================================================
+// Test 1 — Migration creates the `session_activity` table with the right
+// columns in the right order.
+// ============================================================================
+
+test "Migration073 creates session_activity table with correct columns" {
+    // After migration, `pragma_table_info('session_activity')` must
+    // show columns in order: id (TEXT PK), session_id (TEXT NOT NULL),
+    // description (TEXT NOT NULL), created_at (DATETIME DEFAULT
+    // CURRENT_TIMESTAMP).
+    const alloc = testing.allocator;
+    var ctx = try setupDb073();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: table does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_activity'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // pre-migration should NOT have session_activity
+        }
+    }
+
+    try Migration073AddSessionActivity.up(&ctx.db, alloc);
+
+    // Post-migration: table exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='session_activity'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.SessionActivityTableNotCreated073;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("session_activity", row.values[0]);
+    }
+
+    // Verify the 4 expected columns exist with the expected names + order.
+    var q = try ctx.db.query(alloc,
+        "SELECT name FROM pragma_table_info('session_activity') ORDER BY cid",
+        &.{});
+    defer q.deinit();
+    const expected_columns = [_][]const u8{ "id", "session_id", "description", "created_at" };
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected_columns.len);
+        try testing.expectEqualStrings(expected_columns[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected_columns.len), idx);
+}
+
+// ============================================================================
+// Test 2 — Idempotent on re-run.
+// ============================================================================
+
+test "Migration073 is idempotent on a re-run" {
+    // The migration's CREATE statements all use IF NOT EXISTS. A
+    // second run must NOT crash with "table session_activity already
+    // exists" or similar errors.
+    const alloc = testing.allocator;
+    var ctx = try setupDb073();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration073AddSessionActivity.up(&ctx.db, alloc);
+    try Migration073AddSessionActivity.up(&ctx.db, alloc);
+
+    // Still exactly 1 session_activity table.
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='session_activity'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing073;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+// ============================================================================
+// Test 3 — Index created.
+// ============================================================================
+
+test "Migration073 creates idx_session_activity_session_created index" {
+    // After migration, `sqlite_master` must contain a row for
+    // `idx_session_activity_session_created` with type='index' over
+    // (session_id, created_at DESC).
+    const alloc = testing.allocator;
+    var ctx = try setupDb073();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Sanity: pre-migration, index doesn't exist.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_session_activity_session_created'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse null;
+        if (row) |r| {
+            defer r.deinit(alloc);
+            try testing.expect(false); // pre-migration should not have the index
+        }
+    }
+
+    try Migration073AddSessionActivity.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM sqlite_master
+        \\WHERE type='index' AND name='idx_session_activity_session_created'
+        , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.IndexNotCreated073;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("idx_session_activity_session_created", row.values[0]);
+}
+
+// ============================================================================
+// Test 4 — INSERT + SELECT round-trip.
+// ============================================================================
+
+test "Migration073 fresh-DB replay: insert and select a session_activity row" {
+    // After migration, an INSERT into session_activity followed by a
+    // SELECT must round-trip the values correctly. The id is supplied
+    // by the caller (TEXT PK), so we hardcode one for determinism.
+    const alloc = testing.allocator;
+    var ctx = try setupDb073();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration073AddSessionActivity.up(&ctx.db, alloc);
+
+    try ctx.db.exec(alloc,
+        \\INSERT INTO session_activity (id, session_id, description) VALUES (?, ?, ?)
+        , &.{ "act_001", "sess_test", "[2026-08-13 10:00] test @ /tmp | Thinking | hello" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT id, session_id, description FROM session_activity WHERE session_id = ?",
+        &.{"sess_test"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing073;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("act_001", row.values[0]);
+    try testing.expectEqualStrings("sess_test", row.values[1]);
+    try testing.expectEqualStrings("[2026-08-13 10:00] test @ /tmp | Thinking | hello", row.values[2]);
+
+    // No further rows.
+    try testing.expect((try q.next()) == null);
+}
+
+// ===== Tests merged from migration_074_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 074
+// (`llm_history.cache_creation_input_tokens` +
+// `llm_history.cache_read_input_tokens`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 074 adds two cache-breakdown columns to `llm_history` so
+// the Anthropic profile's `cache_creation_input_tokens` and
+// `cache_read_input_tokens` survive the trip from the SSE parser
+// through `CallResponse.usage` → `saveMessage` / `insertLLMHistories`
+// → the row. OpenAI rows always carry 0 (the parser never sets the
+// fields for that profile).
+//
+// The migration must:
+//   1. Add `cache_creation_input_tokens` and `cache_read_input_tokens`
+//      columns to `llm_history`, both INTEGER DEFAULT 0 (so legacy
+//      rows backfill cleanly).
+//   2. Be idempotent on a re-run — `ALTER TABLE … ADD COLUMN` is NOT
+//      idempotent, so we use the existing `addColumnIfMissing` helper
+//      (probe `pragma_table_info` first; same pattern as Migration 020).
+//   3. Allow INSERT + SELECT round-trip on a row with explicit cache
+//      values populated.
+//
+// Set-up uses `MigrationManager.registerAllMigrations` + `runMigrations`
+// so the test schema matches what production runs (per the reviewer
+// note on PR #172: "when setup db, use from migrations module, migrations
+// module will load all table"). This avoids the drift trap of hand-rolling
+// a minimal `llm_history` schema — the moment a new column or trigger
+// lands in production, the hand-rolled baseline silently tests an
+// outdated schema.
+//
+// Plan: docs/superpowers/plans/2026-08-13-fix-anthropic-total-tokens.md
+// Task: task_1786640688092 ("fixing antropic agent total tokens")
+
+const TestCtx074 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB and run every production migration through
+/// 074. After this returns, the schema is exactly what a production
+/// DB looks like after Migration 074 has run — including the 2
+/// cache-breakdown columns.
+fn setupDb074() !TestCtx074 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ============================================================================
+// Test 1 — Migration adds the 2 columns with the right name + type +
+// default 0. (Schema is post-migration; verifies the columns are
+// present and have the right shape.)
+// ============================================================================
+
+test "Migration074 adds cache_creation_input_tokens + cache_read_input_tokens to llm_history" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb074();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Post-migration: both columns exist with type=INTEGER and dflt_value=0.
+    var q = try ctx.db.query(alloc,
+        "SELECT name, type, dflt_value FROM pragma_table_info('llm_history') " ++
+            "WHERE name IN ('cache_creation_input_tokens', 'cache_read_input_tokens') " ++
+            "ORDER BY name",
+        &.{});
+    defer q.deinit();
+
+    const expected = [_]struct { name: []const u8, type: []const u8, default: []const u8 }{
+        .{ .name = "cache_creation_input_tokens", .type = "INTEGER", .default = "0" },
+        .{ .name = "cache_read_input_tokens", .type = "INTEGER", .default = "0" },
+    };
+
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected.len);
+        try testing.expectEqualStrings(expected[idx].name, row.values[0]);
+        try testing.expectEqualStrings(expected[idx].type, row.values[1]);
+        try testing.expectEqualStrings(expected[idx].default, row.values[2]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), idx);
+}
+
+// ============================================================================
+// Test 2 — Idempotent on re-run. `runMigrations` tracks versions in
+// `schema_migrations` so a second run is a no-op. We also call
+// `Migration074AddLlmHistoryCacheTokenColumns.up` directly a second
+// time to verify the `addColumnIfMissing` helper doesn't error with
+// "duplicate column name" (the failure mode it specifically guards
+// against).
+// ============================================================================
+
+test "Migration074 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb074();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Run all migrations again — the schema_migrations version row
+    // makes Migration 074 a no-op.
+    var manager = MigrationManager.init(alloc, &ctx.db);
+    defer manager.deinit();
+    try registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    // Both columns still exist exactly once each.
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM pragma_table_info('llm_history') " ++
+            "WHERE name IN ('cache_creation_input_tokens', 'cache_read_input_tokens')",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing074;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("2", row.values[0]);
+
+    // Also directly re-run Migration 074's up() — verifies the
+    // addColumnIfMissing helper doesn't crash with "duplicate column
+    // name" (the failure mode SQLite raises for the second ALTER).
+    try Migration074AddLlmHistoryCacheTokenColumns.up(&ctx.db, alloc);
+    try Migration074AddLlmHistoryCacheTokenColumns.up(&ctx.db, alloc);
+}
+
+// ============================================================================
+// Test 3 — Legacy-style INSERTs that OMIT the cache columns still
+// succeed with default 0 backfill. This is the regression check for
+// the "legacy rows backfill cleanly" contract — an old DB with rows
+// already inserted would NOT re-INSERT; the new columns just show as 0.
+// ============================================================================
+
+test "Migration074 lets legacy-shape INSERTs succeed with default 0 cache counts" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb074();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // INSERT that does NOT mention the 2 cache columns — the
+    // INSERT-time DEFAULT 0 (set by Migration 074) must kick in.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model) VALUES (?, ?, ?)",
+        &.{ "h_legacy", "sess_legacy", "claude-opus-4" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT cache_creation_input_tokens, cache_read_input_tokens FROM llm_history WHERE id = ?",
+        &.{"h_legacy"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing074;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+    try testing.expectEqualStrings("0", row.values[1]);
+}
+
+// ============================================================================
+// Test 4 — INSERT + SELECT round-trip with explicit cache values.
+// Mirrors what `saveMessage` / `insertLLMHistories` will write when an
+// Anthropic call returns cache_creation=500, cache_read=5000.
+// ============================================================================
+
+test "Migration074: insert and select an llm_history row with explicit cache counts" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb074();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, cache_creation_input_tokens, cache_read_input_tokens) " ++
+            "VALUES (?, ?, ?, ?, ?)",
+        &.{ "h_cached", "sess_cached", "claude-opus-4", "500", "5000" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT cache_creation_input_tokens, cache_read_input_tokens " ++
+            "FROM llm_history WHERE id = ?",
+        &.{"h_cached"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing074;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("500", row.values[0]);
+    try testing.expectEqualStrings("5000", row.values[1]);
+}
+
+// ============================================================================
+// Test 5 — Migration 074 is registered in `allMigrations` (mirrors the
+// pattern in migration_066_test.zig / migration_067_test.zig /
+// migration_068_test.zig / migration_069_test.zig / migration_070_test.zig
+// / migration_071_test.zig). Defining the struct alone is not enough —
+// it must also be added to `migration.zig::allMigrations` so the
+// production migration runner picks it up.
+// ============================================================================
+
+test "Migration074 is registered in allMigrations" {
+    const all = allMigrations;
+    var found: bool = false;
+    for (all) |m| {
+        if (m.version == Migration074AddLlmHistoryCacheTokenColumns.version and
+            std.mem.eql(u8, m.name, Migration074AddLlmHistoryCacheTokenColumns.name))
+        {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+// ===== Tests merged from migration_075_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 075
+// (rename 5 timestamp columns to `_nano` suffix).
+//
+// Why this file exists
+// ────────────────────
+// Migration 075 renames:
+//   - `logs.created_at`              → `logs.created_at_nano` (datetime-namespace; actually ms INTEGER)
+//   - `llm_history.created_at`      → `llm_history.created_at_nano` (TEXT ns — the only true nanosecond column)
+//   - `session_skills.loaded_at`    → `session_skills.loaded_at_nano` (INTEGER s)
+//   - `worker.last_activity`        → `worker.last_activity_nano` (INTEGER s)
+//   - `workspace_item_tasks.last_human_touched_at` → `workspace_item_tasks.last_human_touched_at_nano` (INTEGER ms)
+//
+// Plus 2 index renames (the only ones whose name explicitly contains
+// the old column name):
+//   - `idx_logs_created_at`    → `idx_logs_created_at_nano`
+//   - `idx_worker_last_activity` → `idx_worker_last_activity_nano`
+//
+// The 2 generic `idx_llm_history_*_created` indexes keep their names
+// (use a generic `_created` suffix) — SQLite internally updates the
+// column reference during the RENAME.
+//
+// The `_nano` suffix is a uniform project convention (see project memory
+// `timestamp-columns-nano-suffix-convention`) — it documents "integer
+// stored since Unix epoch", NOT strict nanoseconds. The actual precision
+// varies per column and is documented in the migration doc-comment +
+// the corresponding Zig model file.
+//
+// Wire format preserved: the JSON field name on HTTP responses stays
+// exactly the same (`created_at`, `loaded_at`, `last_activity`,
+// `last_human_touched_at`). The new SQL column is aliased to the old
+// wire name in every SELECT projection so the frontend JSON shape is
+// byte-identical.
+//
+// The migration must:
+//   1. Rename all 5 columns via `ALTER TABLE … RENAME COLUMN`
+//      (SQLite >= 3.25; this project bundles 3.53.3).
+//   2. Drop the 2 old indexes and re-CREATE them under the new name.
+//   3. Be idempotent on a re-run — `renameColumnIfExists` probes
+//      `pragma_table_info` first; if the old column doesn't exist
+//      (fresh-DB already has the new name, or a re-run after the
+//      rename succeeded), the helper returns silently.
+//   4. Preserve data — `ALTER TABLE … RENAME COLUMN` is in-place
+//      and preserves all rows + indices on the column.
+//   5. Preserve FK references — other tables' FK constraints that
+//      point AT this table are auto-updated by SQLite's RENAME.
+//
+// Plan: docs/superpowers/plans/2026-08-16-rename-timestamp-columns-nano-suffix.md
+// Task: task_1786891244388_1 (kanban: sprint bulan juni → "change column name").
+
+const TestCtx075 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB and run every production migration through
+/// 074. After this returns, the schema is exactly what a production
+/// DB looks like after Migration 074 has run — BEFORE Migration 075's
+/// rename. We seed one row in each affected table so the post-rename
+/// round-trip test can verify the data survived the rename.
+fn setupDb075() !TestCtx075 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    // Seed one row in each affected table so the data-preservation
+    // tests have something to verify against. IMPORTANT: by the time
+    // `setupDb()` returns, ALL migrations 001 → 075 have already run
+    // (Migration075 is in the `allMigrations` slice — verified by the
+    // test `Migration075 runs cleanly via registerAllMigrations +
+    // runMigrations`). So all column references must use the NEW
+    // (_nano) names. The migration preserves the data — these seeds
+    // populate values that the test verifies after the rename.
+    trySeed075(alloc, &db, "INSERT INTO workspaces (id, name) VALUES ('ws_1', 'Test')", &.{}, "workspaces");
+    trySeed075(alloc, &db, "INSERT INTO workspace_items (id, workspace_id, item_type) VALUES ('wi_1', 'ws_1', 'kanban')", &.{}, "workspace_items");
+    trySeed075(alloc, &db, "INSERT INTO sessions (id, name, status) VALUES ('sess_1', 'S', 'active')", &.{}, "sessions");
+
+    // llm_history — the actual nanosecond column (TEXT).
+    trySeed075(alloc, &db,
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
+            "VALUES ('h_1', 'sess_1', 'm1', '1784119389936251112')",
+        &.{}, "llm_history");
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+fn trySeed075(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, sql: []const u8, argv: []const []const u8, table_name: []const u8) void {
+    db.exec(alloc, sql, argv) catch |err| {
+        std.debug.print("FAIL seed {s}: {s}\n", .{ table_name, @errorName(err) });
+    };
+}
+
+/// Returns the list of column names on `table` (via pragma_table_info).
+/// Caller owns the returned slice. Each element is allocated via
+/// `alloc.dupe` and the slice itself is heap-allocated — both must be
+/// freed.
+fn listColumns075(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, table: []const u8) ![]const []u8 {
+    var q = try db.query(alloc,
+        "SELECT name FROM pragma_table_info(?) ORDER BY cid",
+        &.{table});
+    defer q.deinit();
+    var cols = std.ArrayList([]u8).empty;
+    errdefer {
+        for (cols.items) |c| alloc.free(c);
+        cols.deinit(alloc);
+    }
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try cols.append(alloc, try alloc.dupe(u8, row.values[0]));
+    }
+    return cols.toOwnedSlice(alloc);
+}
+
+// ============================================================================
+// Test 1 — All 5 columns renamed
+// ============================================================================
+
+test "Migration075 renames the 5 timestamp columns to _nano suffix" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // Verify each table has the new column and NOT the old one.
+    const cases = [_]struct { table: []const u8, old: []const u8, new: []const u8 }{
+        .{ .table = "logs", .old = "created_at", .new = "created_at_nano" },
+        .{ .table = "llm_history", .old = "created_at", .new = "created_at_nano" },
+        .{ .table = "session_skills", .old = "loaded_at", .new = "loaded_at_nano" },
+        .{ .table = "worker", .old = "last_activity", .new = "last_activity_nano" },
+        .{ .table = "workspace_item_tasks", .old = "last_human_touched_at", .new = "last_human_touched_at_nano" },
+    };
+
+    for (cases) |c| {
+        // New column exists.
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM pragma_table_info(?) WHERE name = ?",
+            &.{ c.table, c.new });
+        defer q.deinit();
+        const row = (try q.next()) orelse {
+            std.debug.print("MISSING new column: {s}.{s}\n", .{ c.table, c.new });
+            return error.NewColumnMissing075;
+        };
+        defer row.deinit(alloc);
+
+        // Old column is gone.
+        var q2 = try ctx.db.query(alloc,
+            "SELECT 1 FROM pragma_table_info(?) WHERE name = ?",
+            &.{ c.table, c.old });
+        defer q2.deinit();
+        const r2 = try q2.next();
+        if (r2 != null) {
+            std.debug.print("OLD column still present: {s}.{s}\n", .{ c.table, c.old });
+            return error.OldColumnStillPresent075;
+        }
+    }
+}
+
+// ============================================================================
+// Test 2 — Data preserved across the rename (llm_history only — the
+// other tables use the same migration_064_test.zig setup pattern, see
+// README in this file for the reasoning).
+// ============================================================================
+
+test "Migration075 preserves the seeded data across the rename" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // llm_history.created_at_nano still holds the original ns string.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT created_at_nano FROM llm_history WHERE id = 'h_1'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing075;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("1784119389936251112", row.values[0]);
+    }
+}
+
+// ============================================================================
+// Test 3 — Old indexes renamed to new indexes (DROPPED + CREATED)
+// ============================================================================
+
+test "Migration075 renames idx_logs_created_at → idx_logs_created_at_nano" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // Old index is gone.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_logs_created_at'",
+            &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // New index exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_logs_created_at_nano'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.NewIndexMissing075;
+        defer row.deinit(alloc);
+    }
+}
+
+test "Migration075 renames idx_worker_last_activity → idx_worker_last_activity_nano" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // Old index is gone.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_worker_last_activity'",
+            &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // New index exists.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_worker_last_activity_nano'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.NewIndexMissing075;
+        defer row.deinit(alloc);
+    }
+}
+
+// ============================================================================
+// Test 4 — Generic indexes still reference the renamed column
+// ============================================================================
+
+test "Migration075 updates the internal column reference of idx_llm_history_session_created" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // The index's NAME is unchanged (uses generic `_created` suffix).
+    // The internal column reference DOES update — verified by querying
+    // EXPLAIN QUERY PLAN on a SELECT that uses this index.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_llm_history_session_created'",
+            &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.IndexMissing075;
+        defer row.deinit(alloc);
+    }
+
+    // Verify the index is still usable — EXPLAIN should pick it up
+    // for a query that filters on session_id.
+    {
+        var q = try ctx.db.query(alloc,
+            "EXPLAIN QUERY PLAN SELECT id FROM llm_history WHERE session_id = 'sess_1' ORDER BY created_at_nano DESC",
+            &.{});
+        defer q.deinit();
+        var found_index: bool = false;
+        while (try q.next()) |row| {
+            defer row.deinit(alloc);
+            for (row.values) |v| {
+                if (std.mem.indexOf(u8, v, "idx_llm_history_session_created") != null) {
+                    found_index = true;
+                    break;
+                }
+            }
+        }
+        try testing.expect(found_index);
+    }
+}
+
+// ============================================================================
+// Test 5 — Idempotent on re-run (the killer test — renameColumnIfExists
+// probes pragma_table_info first)
+// ============================================================================
+
+test "Migration075 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Run once.
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+    // Run a second time — must NOT crash with "no such column" (the
+    // raw `ALTER TABLE … RENAME COLUMN` failure mode) nor with any
+    // other error.
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+    // Run a third time for good measure.
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // Verify the schema is still correct after all 3 runs.
+    var q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM pragma_table_info('llm_history') " ++
+            "WHERE name IN ('created_at', 'created_at_nano')",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing075;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+// ============================================================================
+// Test 6 — Full-migration runner is idempotent (schema_migrations tracking)
+// ============================================================================
+
+test "Migration075 is registered in allMigrations" {
+    const all = allMigrations;
+    var found: bool = false;
+    for (all) |m| {
+        if (m.version == Migration075RenameTimestampColumnsToNanoSuffix.version and
+            std.mem.eql(u8, m.name, Migration075RenameTimestampColumnsToNanoSuffix.name))
+        {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+test "Migration075 runs cleanly via registerAllMigrations + runMigrations" {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    // Re-run — schema_migrations version 75 makes Migration 075 a no-op.
+    var manager2 = MigrationManager.init(alloc, &db);
+    defer manager2.deinit();
+    try registerAllMigrations(&manager2);
+    try manager2.runMigrations();
+
+    // Schema check: the new column names exist.
+    var q = try db.query(alloc,
+        "SELECT 1 FROM pragma_table_info('llm_history') WHERE name = 'created_at_nano'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing075;
+    defer row.deinit(alloc);
+}
+
+// ============================================================================
+// Test 7 — INSERT after the rename uses the new column name
+// ============================================================================
+
+test "Migration075: INSERT into llm_history uses created_at_nano (not created_at)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // INSERT with the new column name — must succeed.
+    try ctx.db.exec(alloc,
+        "INSERT INTO llm_history (id, session_id, model, created_at_nano) " ++
+            "VALUES (?, ?, ?, ?)",
+        &.{ "h_after", "sess_1", "m1", "1784119389936251113" });
+
+    // SELECT from the new column.
+    var q = try ctx.db.query(alloc,
+        "SELECT created_at_nano FROM llm_history WHERE id = 'h_after'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing075;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1784119389936251113", row.values[0]);
+}
+
+// ============================================================================
+// Test 8 — ORDER BY on the new column works (verifies the index survived)
+// ============================================================================
+
+test "Migration075: ORDER BY last_activity_nano DESC on worker uses the renamed index" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // EXPLAIN QUERY PLAN should pick up idx_worker_last_activity_nano for
+    // an ORDER BY last_activity_nano DESC query.
+    var q = try ctx.db.query(alloc,
+        "EXPLAIN QUERY PLAN SELECT id FROM worker ORDER BY last_activity_nano DESC",
+        &.{});
+    defer q.deinit();
+    var found_index: bool = false;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        for (row.values) |v| {
+            if (std.mem.indexOf(u8, v, "idx_worker_last_activity_nano") != null) {
+                found_index = true;
+                break;
+            }
+        }
+    }
+    try testing.expect(found_index);
+}
+
+// ============================================================================
+// Test 9 — Full table-info diff (regression: no extra columns lost or gained)
+// ============================================================================
+
+test "Migration075: per-table column count is preserved (rename doesn't drop or add columns)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb075();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Snapshot before.
+    const before_logs = try listColumns075(alloc, &ctx.db, "logs");
+    defer {
+        for (before_logs) |c| alloc.free(c);
+        alloc.free(before_logs);
+    }
+    const before_llm = try listColumns075(alloc, &ctx.db, "llm_history");
+    defer {
+        for (before_llm) |c| alloc.free(c);
+        alloc.free(before_llm);
+    }
+    const before_skills = try listColumns075(alloc, &ctx.db, "session_skills");
+    defer {
+        for (before_skills) |c| alloc.free(c);
+        alloc.free(before_skills);
+    }
+    const before_worker = try listColumns075(alloc, &ctx.db, "worker");
+    defer {
+        for (before_worker) |c| alloc.free(c);
+        alloc.free(before_worker);
+    }
+    const before_tasks = try listColumns075(alloc, &ctx.db, "workspace_item_tasks");
+    defer {
+        for (before_tasks) |c| alloc.free(c);
+        alloc.free(before_tasks);
+    }
+
+    try Migration075RenameTimestampColumnsToNanoSuffix.up(&ctx.db, alloc);
+
+    // Snapshot after.
+    const after_logs = try listColumns075(alloc, &ctx.db, "logs");
+    defer {
+        for (after_logs) |c| alloc.free(c);
+        alloc.free(after_logs);
+    }
+    const after_llm = try listColumns075(alloc, &ctx.db, "llm_history");
+    defer {
+        for (after_llm) |c| alloc.free(c);
+        alloc.free(after_llm);
+    }
+    const after_skills = try listColumns075(alloc, &ctx.db, "session_skills");
+    defer {
+        for (after_skills) |c| alloc.free(c);
+        alloc.free(after_skills);
+    }
+    const after_worker = try listColumns075(alloc, &ctx.db, "worker");
+    defer {
+        for (after_worker) |c| alloc.free(c);
+        alloc.free(after_worker);
+    }
+    const after_tasks = try listColumns075(alloc, &ctx.db, "workspace_item_tasks");
+    defer {
+        for (after_tasks) |c| alloc.free(c);
+        alloc.free(after_tasks);
+    }
+
+    // Column counts must be identical (rename is in-place).
+    try testing.expectEqual(before_logs.len, after_logs.len);
+    try testing.expectEqual(before_llm.len, after_llm.len);
+    try testing.expectEqual(before_skills.len, after_skills.len);
+    try testing.expectEqual(before_worker.len, after_worker.len);
+    try testing.expectEqual(before_tasks.len, after_tasks.len);
+}
+
+// ===== Tests merged from migration_077_test.zig (2026-09-29 flatten) =====
+
+// Behavioural regression checks for Migration 077
+// (users + user_companies + user_company_members + workspaces.user_id +
+//  sessions.user_id + default user_system + backfill).
+//
+// Why this file exists
+// ────────────────────
+// Migration 077 lays the schema foundation for multi-user / multi-tenant nalar:
+//   - `users` table (id, email, name, password_hash, role, is_active,
+//     created_at, updated_at, last_login_at)
+//   - `user_companies` table (id, name, slug, description, is_active,
+//     created_at, updated_at, created_by)
+//   - `user_company_members` join table (user_id, user_company_id, role,
+//     joined_at, invited_by) with composite PRIMARY KEY
+//   - Additive `user_id` column on `workspaces` (nullable, no FK constraint)
+//   - Additive `user_id` column on `sessions` (nullable, no FK constraint)
+//   - Default `user_system` user (is_active=0, password_hash='!disabled',
+//     can never log in)
+//   - Backfill of all legacy workspaces + sessions to user_id='user_system'
+//
+// The migration must:
+//   1. Create all 3 new tables with the right column types + defaults.
+//   2. Add `user_id` columns to `workspaces` + `sessions` via
+//      `addColumnIfMissing` (idempotent on re-run).
+//   3. Create the 6 supporting indexes (idx_users_email, idx_users_active,
+//      idx_user_companies_slug, idx_user_companies_active,
+//      idx_user_company_members_user, idx_user_company_members_company,
+//      idx_workspaces_user_id, idx_sessions_user_id).
+//   4. Insert the default `user_system` user (idempotent via INSERT OR IGNORE).
+//   5. Backfill all legacy rows (workspaces, sessions) where user_id IS NULL
+//      to user_id='user_system'. Idempotent — re-running on a DB where every
+//      row already has user_id set is a no-op.
+//   6. Be safe for fresh-DB installs (the canonical CREATE TABLE in earlier
+//      migrations does NOT declare user_id, so the ALTER TABLE adds it; on
+//      re-run, `addColumnIfMissing` short-circuits).
+//
+// Set-up uses `MigrationManager.registerAllMigrations` + `runMigrations` so
+// the test schema matches what production runs (per project memory
+// `project-test-use-migrations-module`). This avoids the drift trap of
+// hand-rolling a minimal workspaces / sessions schema — the moment a new
+// column lands in production, the hand-rolled baseline silently tests an
+// outdated schema.
+//
+// Plan: docs/superpowers/plans/2026-08-21-users-rbac-foundation.md
+// Task: task_1787199963946_1
+// Spec: docs/superpowers/specs/2026-08-21-users-rbac-foundation-design.md
+
+const TestCtx077 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Set up an in-memory DB and run every production migration through 077.
+/// After this returns, the schema is exactly what a production DB looks
+/// like after Migration 077 has run — the 3 new tables exist, the 2
+/// additive columns are present, the default user_system is in the
+/// users table, and every existing row (zero, since this is a fresh DB)
+/// would have user_id='user_system' if there were any.
+fn setupDb077() !TestCtx077 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    var manager = MigrationManager.init(alloc, &db);
+    defer manager.deinit();
+    try registerAllMigrations(&manager);
+    try manager.runMigrations();
+
+    return .{ .db = db, .threaded = threaded };
+}
+
+// ============================================================================
+// Test 1 — `users` table has all 9 columns with the right types + defaults.
+// ============================================================================
+
+test "Migration077 creates users table with all 9 columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Expected columns: (name, type, default value or "" for none).
+    // Migration 092 appends `config_json` (nullable TEXT, per-user LLM
+    // config for `--auth` mode) — the full migration chain runs in
+    // setupDb, so it is present here.
+    const expected = [_]struct { name: []const u8, type: []const u8, default: []const u8 }{
+        .{ .name = "id", .type = "TEXT", .default = "" },
+        .{ .name = "email", .type = "TEXT", .default = "" },
+        .{ .name = "name", .type = "TEXT", .default = "''" },
+        .{ .name = "password_hash", .type = "TEXT", .default = "" },
+        .{ .name = "role", .type = "TEXT", .default = "'user'" },
+        .{ .name = "is_active", .type = "INTEGER", .default = "1" },
+        .{ .name = "created_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
+        .{ .name = "updated_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
+        .{ .name = "last_login_at", .type = "DATETIME", .default = "" },
+        .{ .name = "config_json", .type = "TEXT", .default = "" },
+    };
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name, type, dflt_value FROM pragma_table_info('users') ORDER BY cid
+    , &.{});
+    defer q.deinit();
+
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected.len);
+        try testing.expectEqualStrings(expected[idx].name, row.values[0]);
+        try testing.expectEqualStrings(expected[idx].type, row.values[1]);
+        // SQLite's dflt_value is the raw literal (e.g. "''" for empty-string DEFAULT,
+        // "'user'" for the role default). Compare as-is.
+        if (expected[idx].default.len > 0) {
+            try testing.expectEqualStrings(expected[idx].default, row.values[2]);
+        }
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), idx);
+}
+
+// ============================================================================
+// Test 2 — `user_companies` table has all 8 columns with the right types +
+// defaults.
+// ============================================================================
+
+test "Migration077 creates user_companies table with all 8 columns" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const expected = [_]struct { name: []const u8, type: []const u8, default: []const u8 }{
+        .{ .name = "id", .type = "TEXT", .default = "" },
+        .{ .name = "name", .type = "TEXT", .default = "" },
+        .{ .name = "slug", .type = "TEXT", .default = "" },
+        .{ .name = "description", .type = "TEXT", .default = "''" },
+        .{ .name = "is_active", .type = "INTEGER", .default = "1" },
+        .{ .name = "created_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
+        .{ .name = "updated_at", .type = "DATETIME", .default = "CURRENT_TIMESTAMP" },
+        .{ .name = "created_by", .type = "TEXT", .default = "" },
+    };
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name, type, dflt_value FROM pragma_table_info('user_companies') ORDER BY cid
+    , &.{});
+    defer q.deinit();
+
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected.len);
+        try testing.expectEqualStrings(expected[idx].name, row.values[0]);
+        try testing.expectEqualStrings(expected[idx].type, row.values[1]);
+        if (expected[idx].default.len > 0) {
+            try testing.expectEqualStrings(expected[idx].default, row.values[2]);
+        }
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), idx);
+}
+
+// ============================================================================
+// Test 3 — `user_company_members` join table has the composite PRIMARY KEY.
+// ============================================================================
+
+test "Migration077 creates user_company_members table with composite PK" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Verify the table exists with all 5 user-defined columns.
+    const expected = [_][]const u8{
+        "user_id", "user_company_id", "role", "joined_at", "invited_by",
+    };
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('user_company_members') ORDER BY cid
+    , &.{});
+    defer q.deinit();
+
+    var idx: usize = 0;
+    while (try q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(idx < expected.len);
+        try testing.expectEqualStrings(expected[idx], row.values[0]);
+        idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected.len), idx);
+
+    // Verify the composite PRIMARY KEY (user_id, user_company_id) is in
+    // place. SQLite stores the PK info in pragma_table_info's `pk` column;
+    // the composite PK manifests as pk=1 on user_id and pk=2 on
+    // user_company_id (the order they're declared in the PRIMARY KEY clause).
+    var pk_q = try ctx.db.query(alloc,
+        \\SELECT name, pk FROM pragma_table_info('user_company_members')
+        \\WHERE pk > 0 ORDER BY pk
+    , &.{});
+    defer pk_q.deinit();
+
+    const expected_pk = [_][]const u8{ "user_id", "user_company_id" };
+    var pk_idx: usize = 0;
+    while (try pk_q.next()) |row| {
+        defer row.deinit(alloc);
+        try testing.expect(pk_idx < expected_pk.len);
+        try testing.expectEqualStrings(expected_pk[pk_idx], row.values[0]);
+        pk_idx += 1;
+    }
+    try testing.expectEqual(@as(usize, expected_pk.len), pk_idx);
+
+    // Verify the CHECK constraint on `role` rejects invalid values.
+    // `sqlite3_prepare_v2` will return an error if the constraint fails.
+    // Valid value: insert succeeds. Invalid value: insert fails with
+    // CHECK constraint failed.
+    try ctx.db.exec(alloc,
+        "INSERT INTO users (id, email, name, password_hash) VALUES ('u_pk', 'u_pk@x', 'U', 'h')",
+        &.{});
+    try ctx.db.exec(alloc,
+        "INSERT INTO user_companies (id, name, slug) VALUES ('c_pk', 'C', 'c-pk')",
+        &.{});
+
+    // Valid role: 'member' (the default) — should succeed.
+    try ctx.db.exec(alloc,
+        "INSERT INTO user_company_members (user_id, user_company_id, role) " ++
+            "VALUES ('u_pk', 'c_pk', 'member')",
+        &.{});
+
+    // Invalid role: 'superuser' (not in the CHECK list) — should fail.
+    const result = ctx.db.exec(alloc,
+        "INSERT INTO user_company_members (user_id, user_company_id, role) " ++
+            "VALUES ('u_pk', 'c_pk', 'superuser')",
+        &.{});
+    try testing.expectError(error.ExecuteFailed, result);
+}
+
+// ============================================================================
+// Test 4 — workspaces.user_id added + backfill works (NULL → user_system).
+// ============================================================================
+
+test "Migration077 adds user_id to workspaces and backfills legacy rows to user_system" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Verify the column exists with type=TEXT, nullable.
+    var col_q = try ctx.db.query(alloc,
+        \\SELECT type, "notnull" FROM pragma_table_info('workspaces')
+        \\WHERE name = 'user_id'
+    , &.{});
+    defer col_q.deinit();
+    const col_row = (try col_q.next()) orelse return error.ColumnMissing077;
+    defer col_row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", col_row.values[0]);
+    try testing.expectEqualStrings("0", col_row.values[1]); // 0 = nullable
+
+    // Insert a legacy row WITH user_id=NULL (mimics a row from a pre-077 DB).
+    // The column allows NULL by default since the migration uses
+    // "user_id TEXT" (no NOT NULL).
+    try ctx.db.exec(alloc,
+        "INSERT INTO workspaces (id, name, user_id) VALUES ('ws_legacy', 'Legacy', NULL)",
+        &.{});
+
+    // Verify it's NULL.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM workspaces WHERE id = 'ws_legacy'", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing077;
+        defer row.deinit(alloc);
+        // NULL is represented as an empty string by SqliteBackend.exec,
+        // matching the project convention (see project memory
+        // `sqlite-backend-empty-slice-binds-as-null`).
+        try testing.expectEqualStrings("", row.values[0]);
+    }
+
+    // Re-run the migration. `addColumnIfMissing` is a no-op (column
+    // exists), `CREATE TABLE IF NOT EXISTS` is a no-op, `INSERT OR IGNORE`
+    // is a no-op for user_system — but the backfill UPDATE will convert
+    // the NULL user_id to 'user_system'.
+    try Migration077AddUsersAndRbacSchema.up(&ctx.db, alloc);
+
+    // Verify the legacy row is now backfilled.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM workspaces WHERE id = 'ws_legacy'", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing077;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("user_system", row.values[0]);
+    }
+}
+
+// ============================================================================
+// Test 5 — sessions.user_id added + backfill works (NULL → user_system).
+// ============================================================================
+
+test "Migration077 adds user_id to sessions and backfills legacy rows to user_system" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Verify the column exists with type=TEXT, nullable.
+    var col_q = try ctx.db.query(alloc,
+        \\SELECT type, "notnull" FROM pragma_table_info('sessions')
+        \\WHERE name = 'user_id'
+    , &.{});
+    defer col_q.deinit();
+    const col_row = (try col_q.next()) orelse return error.ColumnMissing077;
+    defer col_row.deinit(alloc);
+    try testing.expectEqualStrings("TEXT", col_row.values[0]);
+    try testing.expectEqualStrings("0", col_row.values[1]); // 0 = nullable
+
+    // Insert a legacy row with user_id=NULL.
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name, status, user_id) VALUES ('sess_legacy', 'Legacy', 'active', NULL)",
+        &.{});
+
+    // Verify it's NULL.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM sessions WHERE id = 'sess_legacy'", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing077;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("", row.values[0]);
+    }
+
+    // Re-run the migration to trigger the backfill.
+    try Migration077AddUsersAndRbacSchema.up(&ctx.db, alloc);
+
+    // Verify the legacy row is now backfilled.
+    {
+        var q = try ctx.db.query(alloc,
+            "SELECT user_id FROM sessions WHERE id = 'sess_legacy'", &.{});
+        defer q.deinit();
+        const row = (try q.next()) orelse return error.RowMissing077;
+        defer row.deinit(alloc);
+        try testing.expectEqualStrings("user_system", row.values[0]);
+    }
+}
+
+// ============================================================================
+// Test 6 — Default `user_system` user exists with the right shape.
+// ============================================================================
+
+test "Migration077 inserts the default user_system user" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT id, email, name, password_hash, role, is_active
+        \\FROM users WHERE id = 'user_system'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.UserSystemMissing077;
+    defer row.deinit(alloc);
+
+    try testing.expectEqualStrings("user_system", row.values[0]);
+    try testing.expectEqualStrings("system@local", row.values[1]);
+    try testing.expectEqualStrings("System", row.values[2]);
+    try testing.expectEqualStrings("!disabled", row.values[3]);
+    try testing.expectEqualStrings("admin", row.values[4]);
+    try testing.expectEqualStrings("0", row.values[5]); // is_active=0 — can never log in
+
+    // Verify exactly ONE user_system row exists (UNIQUE constraint on
+    // email + INSERT OR IGNORE on the second migration call).
+    var count_q = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM users WHERE id = 'user_system'", &.{});
+    defer count_q.deinit();
+    const count_row = (try count_q.next()) orelse return error.CountMissing077;
+    defer count_row.deinit(alloc);
+    try testing.expectEqualStrings("1", count_row.values[0]);
+}
+
+// ============================================================================
+// Test 7 — Idempotent on re-run (the killer test — addColumnIfMissing + INSERT OR IGNORE).
+// ============================================================================
+
+test "Migration077 is idempotent on re-run via addColumnIfMissing + INSERT OR IGNORE" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb077();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Run .up() three more times — each must NOT crash with
+    // "duplicate column name" or "UNIQUE constraint failed" or any
+    // other error. This is the specific failure mode addColumnIfMissing +
+    // INSERT OR IGNORE are designed to prevent.
+    try Migration077AddUsersAndRbacSchema.up(&ctx.db, alloc);
+    try Migration077AddUsersAndRbacSchema.up(&ctx.db, alloc);
+    try Migration077AddUsersAndRbacSchema.up(&ctx.db, alloc);
+
+    // Verify the schema is still correct after all 4 runs total
+    // (1 from setupDb + 3 from this test).
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('workspaces') WHERE name = 'user_id'
+    , &.{});
+    defer q.deinit();
+    const ws_row = (try q.next()) orelse return error.RowMissing077;
+    defer ws_row.deinit(alloc);
+    try testing.expectEqualStrings("1", ws_row.values[0]);
+
+    var q2 = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_id'
+    , &.{});
+    defer q2.deinit();
+    const sess_row = (try q2.next()) orelse return error.RowMissing077;
+    defer sess_row.deinit(alloc);
+    try testing.expectEqualStrings("1", sess_row.values[0]);
+
+    // Verify exactly ONE user_system row.
+    var q3 = try ctx.db.query(alloc,
+        "SELECT COUNT(*) FROM users WHERE id = 'user_system'", &.{});
+    defer q3.deinit();
+    const user_row = (try q3.next()) orelse return error.RowMissing077;
+    defer user_row.deinit(alloc);
+    try testing.expectEqualStrings("1", user_row.values[0]);
+
+    // Run the full migration runner again — schema_migrations tracking
+    // makes Migration 077 a no-op.
+    var manager = MigrationManager.init(alloc, &ctx.db);
+    defer manager.deinit();
+    try registerAllMigrations(&manager);
+    try manager.runMigrations();
+}
+
+// ============================================================================
+// Test 8 — Migration 077 is registered in `allMigrations`. Defining the
+// struct alone is not enough — it must also be added to
+// `migration.zig::allMigrations` so the production migration runner picks
+// it up (per project memory `migration-registration-trap.md`).
+// ============================================================================
+
+test "Migration077 is registered in allMigrations" {
+    const all = allMigrations;
+    var found: bool = false;
+    for (all) |m| {
+        if (m.version == Migration077AddUsersAndRbacSchema.version and
+            std.mem.eql(u8, m.name, Migration077AddUsersAndRbacSchema.name))
+        {
+            found = true;
+            break;
+        }
+    }
+    try testing.expect(found);
+}
+
+// ===== Tests merged from migration_082_test.zig (2026-09-29 flatten) =====
+
+// Static + behavioural regression checks for Migration 082
+// (`sessions.last_human_touched_at_nano`).
+//
+// Why this file exists
+// ────────────────────
+// Migration 082 adds a single nullable INTEGER column on `sessions` that
+// stamps the last time a HUMAN (not the AI agent) interacted with a
+// chat. The chat sidebar UI uses this column instead of `updated_at`
+// (which gets bumped by every AI SSE tick) so the visible time pill
+// reads "5m ago" if you touched the chat 5 minutes ago even when the
+// agent has been running since.
+//
+// Sibling of Migration 065 (`workspace_item_tasks.last_human_touched_at`,
+// landed in commit `e07a13f6` for the kanban-task-notification-icon plan).
+// This migration does the same thing for the SESSIONS table — the kanban
+// card already uses the task-side column for its "awaiting review" dot,
+// the sidebar now uses the session-side column for its time pill.
+//
+// The migration must:
+//   1. Add `last_human_touched_at_nano INTEGER` (nullable, no DEFAULT —
+//      NULL = "never touched by a human", which the frontend falls back
+//      to `updated_at` for, so pre-migration sessions keep their old
+//      visible time without a regression).
+//   2. Be idempotent on re-run (re-running must not crash with
+//      "duplicate column name" — see the project's hard-fought
+//      knowledge about fresh-DB migration cascades in
+//      `nalar-data-and-routines.md` §"Migration #009-#052 fresh-DB
+//      cascade is fragile").
+//   3. Be safe for fresh-DB installs that already declare the column
+//      in their canonical CREATE TABLE — use `addColumnIfMissing` so
+//      the helper handles both fresh-DB and upgrade-from-v1 paths.
+//   4. Leave existing rows at NULL (NOT 0 or the current time — same
+//      reasoning as Migration 065: we cannot retroactively know whether
+//      a session from before the migration was "touched").
+//
+// Column name uses the `_nano` suffix per the project-wide convention
+// from Migration 075. The wire field stays bare `last_human_touched_at`.
+//
+// Plan: docs/superpowers/plans/2026-08-29-chat-sidebar-last-human-touched.md
+// Spec: docs/superpowers/specs/2026-08-29-chat-sidebar-last-human-touched-design.md
+
+const TestCtx082 = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Minimal `sessions` table mirror matching the v17 production shape
+/// (no `last_human_touched_at_nano` column yet, that's exactly what the
+/// migration adds). The production DB walks migrations 001 → 081 first
+/// so a real `sessions` table is already there; we recreate the v17
+/// shape here so the test exercises the upgrade path.
+fn setupDb082() !TestCtx082 {
+    const alloc = testing.allocator;
+    var threaded = std.Io.Threaded.init(alloc, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+    try db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+test "Migration082 adds last_human_touched_at_nano column to sessions" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb082();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Sanity: column does NOT exist before the migration.
+    {
+        var q = try ctx.db.query(alloc,
+            \\SELECT 1 FROM pragma_table_info('sessions')
+            \\WHERE name = 'last_human_touched_at_nano'
+        , &.{});
+        defer q.deinit();
+        try testing.expect((try q.next()) == null);
+    }
+
+    // Apply the migration.
+    try Migration082AddSessionHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Confirm the column exists with the expected name (NOT "INTEGER"
+    // literal — that footgun was caught in Migration 065's test, see
+    // project memory `addColumnIfMissing-requires-name-type`).
+    var q = try ctx.db.query(alloc,
+        \\SELECT name FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_human_touched_at_nano'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.ColumnMissing082;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("last_human_touched_at_nano", row.values[0]);
+
+    // Confirm exactly one row matched.
+    try testing.expect((try q.next()) == null);
+
+    // Type sanity: the column must be INTEGER (so unix-ms comparisons
+    // work as arithmetic), not TEXT.
+    var qt = try ctx.db.query(alloc,
+        \\SELECT type FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_human_touched_at_nano'
+    , &.{});
+    defer qt.deinit();
+    const type_row = (try qt.next()) orelse return error.RowMissing082;
+    defer type_row.deinit(alloc);
+    try testing.expectEqualStrings("INTEGER", type_row.values[0]);
+
+    // Nullability sanity: NOT NULL must NOT appear in the column's
+    // constraints (the canonical "never touched" state is NULL).
+    var qn = try ctx.db.query(alloc,
+        \\SELECT "notnull" FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_human_touched_at_nano'
+    , &.{});
+    defer qn.deinit();
+    const nn_row = (try qn.next()) orelse return error.RowMissing082;
+    defer nn_row.deinit(alloc);
+    try testing.expectEqualStrings("0", nn_row.values[0]);
+}
+
+test "Migration082 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb082();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Run the migration once…
+    try Migration082AddSessionHumanTouchedAt.up(&ctx.db, alloc);
+    // …and a second time. Must not crash with "duplicate column name".
+    try Migration082AddSessionHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Still exactly one column of that name.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_human_touched_at_nano'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing082;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration082 is idempotent on a fresh-DB install where the canonical schema already declares the column" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb082();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Simulate a fresh-DB install where the canonical CREATE TABLE
+    // already includes `last_human_touched_at_nano INTEGER`. The
+    // migration must be a no-op (NOT a "duplicate column" crash).
+    try ctx.db.exec(alloc, "DROP TABLE sessions", &.{});
+    try ctx.db.exec(alloc,
+        \\CREATE TABLE sessions (
+        \\    id TEXT PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    status TEXT NOT NULL DEFAULT 'active',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    last_human_touched_at_nano INTEGER
+        \\)
+    , &.{});
+
+    // Should not error — addColumnIfMissing detects the column exists.
+    try Migration082AddSessionHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Re-check: still exactly one column.
+    var q = try ctx.db.query(alloc,
+        \\SELECT COUNT(*) FROM pragma_table_info('sessions')
+        \\WHERE name = 'last_human_touched_at_nano'
+    , &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing082;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1", row.values[0]);
+}
+
+test "Migration082 leaves pre-existing rows at NULL (not 0, not now)" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb082();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    // Insert one existing session BEFORE applying the migration. Same
+    // semantic reasoning as Migration 065: we cannot retroactively
+    // know whether the user touched this session before the migration
+    // ran, so the value must be NULL — the frontend treats NULL as
+    // "fall back to updated_at" which gives legacy sessions their
+    // existing visible time without a regression.
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('s_pre_082', 'Legacy chat')",
+        &.{});
+
+    try Migration082AddSessionHumanTouchedAt.up(&ctx.db, alloc);
+
+    // SQL NULL is surfaced as "" by SqliteBackend.query — same
+    // convention as Migration 065's test.
+    var q = try ctx.db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 's_pre_082'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing082;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("", row.values[0]);
+}
+
+test "Migration082 stamps a value when set after the migration" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb082();
+    defer ctx.db.deinit();
+    defer ctx.threaded.deinit();
+
+    try ctx.db.exec(alloc,
+        "INSERT INTO sessions (id, name) VALUES ('s_a', 'A')",
+        &.{});
+
+    try Migration082AddSessionHumanTouchedAt.up(&ctx.db, alloc);
+
+    // Now stamp a unix-ms timestamp — should persist as the literal
+    // integer (formatted as TEXT by SqliteBackend.bind). This is the
+    // exact call shape that llm_history.updateSessionLastHumanTouchedAt
+    // will use.
+    const now_ms_str = try std.fmt.allocPrint(alloc, "{d}", .{@as(i64, 1_786_000_000_000)});
+    defer alloc.free(now_ms_str);
+    try ctx.db.exec(alloc,
+        "UPDATE sessions SET last_human_touched_at_nano = ? WHERE id = ?",
+        &[_][]const u8{ now_ms_str, "s_a" });
+
+    var q = try ctx.db.query(alloc,
+        "SELECT last_human_touched_at_nano FROM sessions WHERE id = 's_a'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing082;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("1786000000000", row.values[0]);
+}
+
+test "Migration082 is registered in allMigrations" {
+    const all = allMigrations;
+    for (all) |m| {
+        if (m.version == Migration082AddSessionHumanTouchedAt.version) return;
+    }
+    return error.Migration082NotRegistered082;
+}
+
+// ─── Migration 096 — session_skill_events ────────────────────────────────
+
+test "Migration096 creates the ledger table and both indexes" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration095CreateSessionSkillEvents.up(&ctx.db, alloc);
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
 
     const cols = try columnsOf(&ctx, "session_skill_events");
     defer {
@@ -6557,13 +14112,13 @@ test "Migration095 creates the ledger table and both indexes" {
     try testing.expectEqualStrings("2", irow.values[0]);
 }
 
-test "Migration095 accepts the production write shape with empty free-text binds" {
+test "Migration096 accepts the production write shape with empty free-text binds" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration095CreateSessionSkillEvents.up(&ctx.db, alloc);
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
 
     // First, prove the trap is real: a bare `?` bound to "" for a NOT NULL
     // column lands as SQL NULL and fails. This is the Migration 079 `content`
@@ -6598,14 +14153,14 @@ test "Migration095 accepts the production write shape with empty free-text binds
     try testing.expectEqualStrings("7", row.values[3]);
 }
 
-test "Migration095 is idempotent on a re-run" {
+test "Migration096 is idempotent on a re-run" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration095CreateSessionSkillEvents.up(&ctx.db, alloc);
-    try Migration095CreateSessionSkillEvents.up(&ctx.db, alloc);
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
+    try Migration096CreateSessionSkillEvents.up(&ctx.db, alloc);
 
     var q = try ctx.db.query(alloc,
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_skill_events'",
@@ -6616,22 +14171,22 @@ test "Migration095 is idempotent on a re-run" {
     try testing.expectEqualStrings("1", row.values[0]);
 }
 
-test "Migration095 is registered in allMigrations" {
+test "Migration096 is registered in allMigrations" {
     for (allMigrations) |m| {
-        if (m.version == Migration095CreateSessionSkillEvents.version) return;
+        if (m.version == Migration096CreateSessionSkillEvents.version) return;
     }
     return error.Migration095NotRegistered;
 }
 
 // ─── Migration 096 — skill_eval_facts / _runs / _results ─────────────────
 
-test "Migration096 creates all three tables and their indexes" {
+test "Migration097 creates all three tables and their indexes" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration096CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
 
     const expected = [_][]const u8{ "skill_eval_facts", "skill_eval_runs", "skill_eval_results" };
     for (expected) |table| {
@@ -6653,13 +14208,13 @@ test "Migration096 creates all three tables and their indexes" {
     try testing.expectEqualStrings("8", irow.values[0]);
 }
 
-test "Migration096's fact key admits exactly one row per (skill, content, context)" {
+test "Migration097's fact key admits exactly one row per (skill, content, context)" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration096CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
 
     const insert =
         \\INSERT OR IGNORE INTO skill_eval_facts (id, skill_key, content_hash, context_key, verdict_intrinsic)
@@ -6690,13 +14245,13 @@ test "Migration096's fact key admits exactly one row per (skill, content, contex
     try testing.expectEqualStrings("3", row.values[0]);
 }
 
-test "Migration096's partial unique index makes one self-prompted run per session" {
+test "Migration097's partial unique index makes one self-prompted run per session" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration096CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
 
     const insert =
         \\INSERT INTO skill_eval_runs (id, session_id, trigger, status)
@@ -6725,13 +14280,13 @@ test "Migration096's partial unique index makes one self-prompted run per sessio
     try testing.expectEqualStrings("3", row.values[0]);
 }
 
-test "Migration096's user_id stays nullable so an empty bind is legal" {
+test "Migration097's user_id stays nullable so an empty bind is legal" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration096CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
 
     // `user_id` is nullable on purpose: `exec` binds "" as SQL NULL, so a
     // plain `?` bind is the correct way to write "no owner" — a NOT NULL
@@ -6749,14 +14304,14 @@ test "Migration096's user_id stays nullable so an empty bind is legal" {
     try testing.expectEqualStrings("<null>", row.values[0]);
 }
 
-test "Migration096 is idempotent on a re-run" {
+test "Migration097 is idempotent on a re-run" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
     defer ctx.threaded.deinit();
     defer ctx.db.deinit();
 
-    try Migration096CreateSkillEvalTables.up(&ctx.db, alloc);
-    try Migration096CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
+    try Migration097CreateSkillEvalTables.up(&ctx.db, alloc);
 
     var q = try ctx.db.query(alloc,
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'skill_eval_%'",
@@ -6767,9 +14322,9 @@ test "Migration096 is idempotent on a re-run" {
     try testing.expectEqualStrings("3", row.values[0]);
 }
 
-test "Migration096 is registered in allMigrations" {
+test "Migration097 is registered in allMigrations" {
     for (allMigrations) |m| {
-        if (m.version == Migration096CreateSkillEvalTables.version) return;
+        if (m.version == Migration097CreateSkillEvalTables.version) return;
     }
-    return error.Migration096NotRegistered;
+    return error.Migration097NotRegistered;
 }

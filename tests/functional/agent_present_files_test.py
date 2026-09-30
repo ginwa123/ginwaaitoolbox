@@ -238,3 +238,80 @@ def test_android_percent_twenty_path_decodes_to_a_space(harness: FunctionalHarne
         "the decoded name must survive into Content-Disposition so a viewer "
         "app and the Open action agree on what the file is called"
     )
+
+
+# ─── The boundary cases only a real directory can prove ───────────────────
+#
+# `isInsideRoot`'s prefix rule ("the character after the root must be a
+# separator") is a pure-string test in Zig and it passes — but a real sibling
+# directory that shares the sandbox's name prefix (`present-files-ws` vs
+# `present-files-ws-evil`) is the shape that actually leaks a file if the rule
+# is wrong. The reverse matters just as much: refusing the sibling must not
+# refuse the sandbox's own subdirectories. Plan:
+# docs/plans/2026-09-29-present-files-sandbox-parity.md — the same shared rule
+# the `present_files` tool applies, so anything the tool accepts is servable
+# here and the card is never dead.
+
+SECRET_BODY = b"a sibling directory must never be served\n"
+
+
+def _sandbox_with_sibling(harness: FunctionalHarness) -> tuple[str, Path]:
+    """Sandbox `<tmp>/present-files-ws` plus sibling `<tmp>/present-files-ws-evil`."""
+    _create_session(harness, "sess_present_boundary")
+    root = Path(harness.temp_dir) / "present-files-ws"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "notes.txt").write_bytes(b"inside\n")
+    (root / "nested").mkdir(parents=True, exist_ok=True)
+    (root / "nested" / "deep.txt").write_bytes(b"nested inside\n")
+
+    sibling = Path(str(root) + "-evil")
+    sibling.mkdir(parents=True, exist_ok=True)
+    (sibling / "secret.txt").write_bytes(SECRET_BODY)
+    _set_session_cwd(harness, "sess_present_boundary", str(root))
+    return "sess_present_boundary", root
+
+
+def test_sibling_dir_sharing_the_root_prefix_is_403(harness: FunctionalHarness):
+    """`present-files-ws-evil` is NOT inside `present-files-ws`."""
+    sid, root = _sandbox_with_sibling(harness)
+    sibling = Path(str(root) + "-evil") / "secret.txt"
+    assert sibling.exists(), "fixture must exist, else the test proves nothing"
+    r = harness.http(
+        "GET",
+        "/api/files/download",
+        params={"session_id": sid, "path": str(sibling)},
+        expect=403,
+    )
+    assert SECRET_BODY not in r.body, "a sibling directory must never be served"
+
+
+def test_nested_file_inside_the_root_is_still_200(harness: FunctionalHarness):
+    """The other half of the same rule — refusing the sibling must not
+    refuse the sandbox's own subdirectories."""
+    sid, root = _sandbox_with_sibling(harness)
+    r = harness.http(
+        "GET",
+        "/api/files/download",
+        params={"session_id": sid, "path": str(root / "nested" / "deep.txt")},
+        expect=200,
+    )
+    assert r.body == b"nested inside\n"
+
+
+def test_a_dotted_filename_is_not_treated_as_traversal(harness: FunctionalHarness):
+    """`report..html` is one filename, not a `..` segment. The endpoint and
+    the `present_files` tool share one rule now, and a filename with two
+    dots in it is a thing the agent presents."""
+    _create_session(harness, "sess_present_dots")
+    root = Path(harness.temp_dir) / "present-files-dots"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "IRON-11463 SB-02 .. final.html").write_bytes(b"<h1>dots</h1>")
+    _set_session_cwd(harness, "sess_present_dots", str(root))
+
+    r = harness.http(
+        "GET",
+        "/api/files/download",
+        params={"session_id": "sess_present_dots", "path": str(root / "IRON-11463 SB-02 .. final.html")},
+        expect=200,
+    )
+    assert r.body == b"<h1>dots</h1>"

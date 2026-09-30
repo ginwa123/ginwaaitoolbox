@@ -64,12 +64,12 @@ const handleKeydown = (event: KeyboardEvent) => {
           <!-- Header -->
           <div class="px-5 pt-5 pb-4">
             <h3
-              class="text-base font-semibold"
+              class="text-lead font-semibold"
               style="color: var(--semantic-text);"
             >
               New Task
             </h3>
-            <p v-if="projectName" class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+            <p v-if="projectName" class="text-dense mt-1" style="color: var(--semantic-text-dim);">
               Add task to "{{ projectName }}"
             </p>
           </div>
@@ -77,7 +77,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <!-- Task Name Input -->
           <div class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Task Name
@@ -87,7 +87,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               v-model="name"
               type="text"
               placeholder="Enter task name..."
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -100,7 +100,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <!-- Task Description Input -->
           <div class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Description (optional)
@@ -109,7 +109,7 @@ const handleKeydown = (event: KeyboardEvent) => {
               v-model="description"
               placeholder="Add a description..."
               rows="3"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200 resize-none"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200 resize-none"
               style="
                 background-color: var(--semantic-sidebar-bg);
                 border: 1px solid var(--color-border);
@@ -122,7 +122,7 @@ const handleKeydown = (event: KeyboardEvent) => {
           <div class="px-5 pb-5 flex justify-end gap-2">
             <button
               @click="handleClose"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted);"
             >
               Cancel
@@ -130,7 +130,7 @@ const handleKeydown = (event: KeyboardEvent) => {
             <button
               @click="handleCreate"
               :disabled="!name.trim()"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
             >
               Create Task

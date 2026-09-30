@@ -197,9 +197,10 @@ def test_vite_port_range_avoids_backend_port_8081() -> None:
 def test_vite_reserved_ports_includes_5173_and_8081() -> None:
     """The UI harness's reserved-port list skips Vite's default + dev backend.
 
-    The picker is asked for ports from the wide shared range 40k-60k
-    with ``VITE_RESERVED_PORTS = (5173, 8081)`` so it never lands on
-    either of these "always-likely-to-be-busy" ports.
+    The picker is asked for ports from the wide shared harness range
+    (``harness.RANDOM_PORT_*``) with ``VITE_RESERVED_PORTS =
+    (5173, 8081)`` so it never lands on either of these
+    "always-likely-to-be-busy" ports.
     """
     from ui_harness import VITE_RESERVED_PORTS
 
@@ -244,20 +245,24 @@ def test_find_free_vite_port_honours_suggested_when_free() -> None:
     Lets a debugging caller force a deterministic port. Returns the
     value verbatim if ``port_is_free_with_reuse`` says yes.
     """
-    from ui_harness import _find_free_vite_port
+    from ui_harness import VITE_PORT_START, _find_free_vite_port
     from harness import port_is_free_with_reuse
 
-    # Find a port in the wide range that nobody is listening on.
-    # (Iterate a small window; if every port is busy the test is moot.)
+    # Find a port in the harness's real range that nobody is listening
+    # on. (Iterate a small window; if every port is busy the test is
+    # moot.)
     chosen = None
-    for p in range(55000, 55100):
+    for p in range(VITE_PORT_START, VITE_PORT_START + 100):
         if port_is_free_with_reuse(p):
             chosen = p
             break
     if chosen is None:
         # Free port probe failed — uncommon, skip rather than flake.
         import pytest
-        pytest.skip("no free port in [55000, 55100] to seed suggested-port test")
+        pytest.skip(
+            f"no free port in [{VITE_PORT_START}, {VITE_PORT_START + 100}] "
+            "to seed suggested-port test"
+        )
 
     assert _find_free_vite_port(chosen) == chosen
 

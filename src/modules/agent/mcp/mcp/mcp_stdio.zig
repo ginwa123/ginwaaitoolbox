@@ -20,15 +20,26 @@ const builtin = @import("builtin");
 
 const MAX_HEADER_BYTES: usize = 8 * 1024;
 
+/// Hard cap on a Content-Length framed body. Mirrors the MCP SDK's
+/// `STDIO_DEFAULT_MAX_BUFFER_SIZE` (10 MiB) so a hostile or broken
+/// server can't make us `alloc` an arbitrary amount of memory: the
+/// header is attacker-controlled, and `Content-Length: 18446744073709551615`
+/// is a syntactically valid frame that a naive parser turns into a
+/// 16 EiB allocation request.
+const MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
 pub const StdioError = error{
     ChildSpawnFailed,
     BrokenPipe,
-    InvalidFrame,        // no Content-Length header found
-    InvalidContentLength,// non-numeric / negative length
+    InvalidFrame, // no Content-Length header found, or the
+    // "header" block contained a non-header line
+    InvalidContentLength, // non-numeric / negative length
+    /// Content-Length parsed fine but exceeds `MAX_BODY_BYTES`.
+    BodyTooLarge,
     UnexpectedEof,
     /// Recv timed out before a full frame was read OR the cancel
     /// callback returned true. Caller should mark the client stale
-    /// via `StdioRegistry.markStale` so the next call auto-respawns.
+    /// via `Lease.markStale` so the next call auto-respawns.
     /// A hung child (pipe-buffer deadlock, awaits-init forever, etc.)
     /// surfaces here instead of blocking the caller forever.
     RecvTimeout,
@@ -36,6 +47,17 @@ pub const StdioError = error{
     /// as RecvTimeout — a child whose stdin pipe is full is as good
     /// as a child that's crashed.
     SendTimeout,
+    /// `StdioRegistry.acquire` could not take the per-server lease
+    /// within its wait budget. Another session is mid-transaction on
+    /// the same child. Not a child failure — retrying later works.
+    LeaseTimeout,
+    /// `StdioClient.recv` observed reader state that can only arise
+    /// from concurrent access to the same client. Reachable only when
+    /// a caller uses `StdioClient` directly instead of going through
+    /// `StdioRegistry.acquire`; surfaced as an error rather than left
+    /// to panic inside `std.Io.Reader.readSliceShort`.
+    ConcurrentAccess,
+    OutOfMemory,
 };
 
 // ============================================================================
@@ -171,6 +193,29 @@ fn readFramed(
     return readFramedWithReader(allocator, io, &reader, deadline_ns, is_cancelled);
 }
 
+/// Shrink an over-allocated read buffer down to its payload length for
+/// hand-off to the caller, keeping the returned slice's `.len` equal to
+/// the size the allocator actually reserved.
+///
+/// WHY THE FALLBACK MATTERS: the caller frees this slice with the same
+/// allocator, and a checking allocator validates `slice.len` against the
+/// size the allocation was made with. `realloc` preserves that invariant
+/// by construction, but the `catch body[0..len]` fallback that used to
+/// be here returned a slice whose `.len` had nothing to do with the
+/// underlying block — an "invalid free" abort, i.e. exactly the class of
+/// crash the DebugAllocator in tests exists to catch, sitting on the OOM
+/// path where it is least likely to be hit in a repro. The fallback is
+/// therefore a real exact-size alloc + copy + free, and a failure there
+/// is reported as OOM instead of being papered over.
+fn shrinkToLen(allocator: std.mem.Allocator, body: []u8, len: usize) StdioError![]u8 {
+    if (body.len == len) return body;
+    if (allocator.realloc(body, len)) |shrunk| return shrunk else |_| {}
+    const exact = allocator.alloc(u8, len) catch return StdioError.OutOfMemory;
+    @memcpy(exact, body[0..len]);
+    allocator.free(body);
+    return exact;
+}
+
 fn readFramedWithReader(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -257,9 +302,9 @@ fn readFramedWithReader(
         // allocation's tracked size corrupts DebugAllocator's canary
         // check in tests. `realloc` may relocate, but the returned
         // slice's `.len` always matches the tracked size.
-        const max_line: usize = 10 * 1024 * 1024;
+        const max_line: usize = MAX_BODY_BYTES;
         var cap: usize = 256;
-        var body = allocator.alloc(u8, cap) catch return StdioError.UnexpectedEof;
+        var body = allocator.alloc(u8, cap) catch return StdioError.OutOfMemory;
         var len: usize = 1; // already read '{'
         body[0] = first[0];
         while (true) {
@@ -270,21 +315,14 @@ fn readFramedWithReader(
                 if (!waitReadable(io, file, deadline_abs, deadline_ns, is_cancelled)) return StdioError.RecvTimeout;
             }
             var b: [1]u8 = undefined;
-            const r = iface.readSliceShort(&b) catch {
-                // EOF before newline — a partial frame is what we have.
-                // If the deadline fired (vs. clean EOF) AND the cancel
-                // callback hasn't been consulted yet, drop the partial
-                // slice and return RecvTimeout — consumers can't parse
-                // a partial frame anyway, and the caller will mark the
-                // client stale. The deadline check happens below on
-                // the first byte read; the partial frame from `body`
-                // is leaked via the caller (it's a `realloc`'d slice
-                // owned by the arena — arena teardown will reclaim).
-                return allocator.realloc(body, len) catch body[0..len];
-            };
-            if (r == 0) {
-                return allocator.realloc(body, len) catch body[0..len];
-            }
+            // A clean EOF is reported by `readSliceShort` as a short
+            // count; the only error it propagates is `error.ReadFailed`
+            // — a genuine read failure (EBADF on a killed child, EIO,
+            // ...). Returning the partial frame on that error is what
+            // this loop used to do, which handed the caller a truncated
+            // JSON document indistinguishable from a complete one.
+            const n_byte = iface.readSliceShort(&b) catch return StdioError.UnexpectedEof;
+            if (n_byte == 0) break;
             // Check deadline / cancel between bytes. The child is
             // hung → this fires; the child crashed but EOF hasn't
             // propagated → still RecvTimeout (better diagnostic for
@@ -297,17 +335,22 @@ fn readFramedWithReader(
             if (b[0] == '\n') {
                 // Trim trailing \r if present.
                 const trimmed_len = if (len > 0 and body[len - 1] == '\r') len - 1 else len;
-                return allocator.realloc(body, trimmed_len) catch body[0..trimmed_len];
+                return shrinkToLen(allocator, body, trimmed_len);
             }
-            if (len >= max_line) return StdioError.InvalidFrame;
+            if (len >= max_line) return StdioError.BodyTooLarge;
             if (len >= cap) {
                 const new_cap = @min(cap * 2, max_line);
-                body = allocator.realloc(body, new_cap) catch return StdioError.UnexpectedEof;
+                body = allocator.realloc(body, new_cap) catch return StdioError.OutOfMemory;
                 cap = new_cap;
             }
             body[len] = b[0];
             len += 1;
         }
+        // EOF before the terminating newline — hand back the partial
+        // frame. Callers that can't parse it mark the client stale and
+        // respawn, which is the only correct recovery: the remainder
+        // of this line, if any, is already gone.
+        return shrinkToLen(allocator, body, len);
     }
 
     // Content-Length framed path (the MCP stdio spec default).
@@ -315,6 +358,10 @@ fn readFramedWithReader(
     var header_len: usize = 1;
     header_buf[0] = first[0];
     var found_blank = false;
+    // Start of the header line currently being accumulated. Reset at
+    // every '\n' so a completed line can be validated as `name: value`
+    // (see the non-header check inside the loop).
+    var line_start: usize = 0;
 
     while (!found_blank) {
         if (iface.bufferedLen() == 0 and (deadline_ns != 0 or is_cancelled != null)) {
@@ -334,6 +381,18 @@ fn readFramedWithReader(
             found_blank = true;
         } else if (header_len >= 2 and std.mem.eql(u8, header_buf[header_len - 2 ..][0..2], "\n\n")) {
             found_blank = true;
+        } else if (byte[0] == '\n') {
+            // A completed line inside the header block that carries no
+            // ':' cannot be an HTTP-style header, so this is not a
+            // Content-Length frame at all — most likely a server that
+            // leaked a log line onto stdout. Bail now instead of
+            // swallowing the *next* JSON message while hunting for a
+            // blank line that will never come.
+            const line = std.mem.trim(u8, header_buf[line_start .. header_len - 1], "\r ");
+            if (line.len > 0 and std.mem.indexOfScalar(u8, line, ':') == null) {
+                return StdioError.InvalidFrame;
+            }
+            line_start = header_len;
         }
     }
 
@@ -349,8 +408,14 @@ fn readFramedWithReader(
         }
     }
     const content_length = cl orelse return StdioError.InvalidFrame;
+    // `Content-Length` is attacker-controlled text, not a trust signal.
+    // Refuse before the alloc: `Content-Length: 18446744073709551615`
+    // parses cleanly and would otherwise become a 16 EiB request that
+    // either aborts the process on an OOM-checked allocator or quietly
+    // succeeds under overcommit and then blocks until the deadline.
+    if (content_length > MAX_BODY_BYTES) return StdioError.BodyTooLarge;
 
-    const body = allocator.alloc(u8, content_length) catch return StdioError.UnexpectedEof;
+    const body = allocator.alloc(u8, content_length) catch return StdioError.OutOfMemory;
     // Chunked body read (NOT a single `readSliceAll`): each chunk is
     // guarded by `waitReadable` so a child that stalls mid-body —
     // header promised N bytes but the bytes never arrive — surfaces
@@ -437,7 +502,15 @@ fn writeFramed(io: std.Io, file: std.Io.File, body: []const u8, deadline_ns: u64
 // name across calls. `send` and `recv` are blocking — there's no async/queue.
 
 pub const StdioClient = struct {
-    allocator: std.mem.Allocator,
+    /// Allocator for response bodies. This is a PER-CLIENT arena, not
+    /// the registry's shared one: `StdioRegistry.arena` is a single
+    /// `std.heap.ArenaAllocator` reachable by every server, and it is
+    /// not thread-safe. Two sessions driving two different servers
+    /// would race inside `ArenaAllocator.alloc` and corrupt both
+    /// bump allocators. Scoping the arena to the client makes every
+    /// allocation of it happen under that client's lease lock, so the
+    /// arena is only ever touched by one thread at a time.
+    arena: std.heap.ArenaAllocator,
     io: std.Io,
     child: std.process.Child,
     stdin: ?std.Io.File,
@@ -453,11 +526,24 @@ pub const StdioClient = struct {
     /// buffered the second line then dropped it with the stack buffer,
     /// so the second recv() hung. Keeping the reader alive preserves
     /// buffered bytes via bufferedLen() checks.
+    ///
+    /// NOT THREAD-SAFE. `std.Io.Reader` is a bare struct of `seek`/`end`
+    /// cursors with no internal locking, and the refill path rewrites
+    /// `seek = 0; end = 0` before reading into `buffer`. Two threads
+    /// sharing one reader can leave `seek > end`, and the very next
+    /// `readSliceShort` then panics on `buffer[seek..end]` — an
+    /// out-of-bounds abort that took the whole server down.
+    /// `StdioRegistry.acquire` is what keeps exactly one thread inside
+    /// this struct at a time.
     read_buf: [4096]u8 = undefined,
     reader: ?std.Io.File.Reader = null,
+    /// Set once `deinit` has killed the child and closed the pipes, so
+    /// a second `deinit` (the `defer` in every caller, plus the
+    /// registry's own teardown) is a no-op instead of a double-kill.
+    is_dead: bool = false,
 
     pub fn init(
-        allocator: std.mem.Allocator,
+        backing_allocator: std.mem.Allocator,
         io: std.Io,
         argv: []const []const u8,
     ) StdioError!StdioClient {
@@ -478,13 +564,18 @@ pub const StdioClient = struct {
         }) catch return StdioError.ChildSpawnFailed;
 
         return .{
-            .allocator = allocator,
+            .arena = std.heap.ArenaAllocator.init(backing_allocator),
             .io = io,
             .child = child,
             .stdin = child.stdin,
             .stdout = child.stdout,
             .stderr = child.stderr,
         };
+    }
+
+    /// Allocator for response bodies — see the `arena` field's docs.
+    pub fn allocator(self: *StdioClient) std.mem.Allocator {
+        return self.arena.allocator();
     }
 
     /// Send a framed JSON-RPC message to the child. Allocates the header
@@ -534,7 +625,36 @@ pub const StdioClient = struct {
         if (self.reader == null) {
             self.reader = std.Io.File.reader(stdout, self.io, &self.read_buf);
         }
-        return try readFramedWithReader(self.allocator, self.io, &self.reader.?, deadline_ns, is_cancelled);
+        // Refuse to read through a reader whose cursors are already out
+        // of order. `seek > end` is not reachable single-threaded — it
+        // is the fingerprint of two threads sharing this client, and
+        // the alternative is letting `readSliceShort` slice
+        // `buffer[seek..end]` and abort the process from inside std.
+        // Failing loudly here keeps a lock-discipline regression a
+        // catchable error instead of a server-wide crash.
+        const iface = &self.reader.?.interface;
+        if (iface.seek > iface.end or iface.end > iface.buffer.len) {
+            return StdioError.ConcurrentAccess;
+        }
+        const res = readFramedWithReader(
+            self.allocator(),
+            self.io,
+            &self.reader.?,
+            deadline_ns,
+            is_cancelled,
+        );
+        if (res) |body| {
+            return body;
+        } else |err| {
+            // Any error means we stopped mid-frame: the byte stream is
+            // no longer aligned to a message boundary, so whatever is
+            // left in the read buffer is the tail of an abandoned
+            // frame. Keep it and the next `recv` parses garbage as if it
+            // were a fresh message. Drop the reader instead and let the
+            // caller's `markStale` respawn the child.
+            self.reader = null;
+            return err;
+        }
     }
 
     /// Convenience overload of `recv` with no timeout and no
@@ -546,8 +666,12 @@ pub const StdioClient = struct {
 
     /// Close stdin (signals EOF to the child) so it can exit gracefully.
     pub fn closeStdin(self: *StdioClient) void {
-        if (self.stdin) |fd| fd.close(self.io);
-        self.stdin = null;
+        if (self.stdin) |fd| {
+            // `deinit` already closed the pipe; a second close would be
+            // a double close of a possibly-recycled fd.
+            if (!self.is_dead) fd.close(self.io);
+            self.stdin = null;
+        }
     }
 
     /// Kill the child immediately (SIGKILL on POSIX, TerminateProcess on
@@ -560,8 +684,27 @@ pub const StdioClient = struct {
     /// pipes. Don't call `closeStdin` or `wait` after kill — both
     /// trigger assertions or use-after-free.
     pub fn deinit(self: *StdioClient) void {
+        if (self.is_dead) return;
+        self.is_dead = true;
         self.reader = null;
+        // Release the per-client arena now rather than letting it ride
+        // along with the registry arena: a registry that respawns a
+        // server repeatedly (every timeout marks it stale) would
+        // otherwise hold the dead children's response buffers until
+        // shutdown.
+        self.arena.deinit();
         self.child.kill(self.io);
+        // `child.kill` closed the pipes but the cached handles still
+        // hold those fd NUMBERS. Leaving them set is not merely
+        // untidy: after a close, the next `spawn`/`open` in this
+        // process is very likely to hand back the same number, so a
+        // `send` on the dead client would write MCP JSON-RPC into
+        // whatever unrelated file or socket now owns that fd, and a
+        // `recv` would try to parse that file's contents as a frame.
+        // Nulling turns both into an honest `BrokenPipe`.
+        self.stdin = null;
+        self.stdout = null;
+        self.stderr = null;
     }
 };
 
@@ -577,19 +720,138 @@ pub const StdioClient = struct {
 // + spinlock — same pattern as `src/agentic_loop/stream_snapshot.zig`.
 
 const Entry = struct {
+    /// The child. ONLY VALID WHEN `has_client` IS TRUE — for a freshly
+    /// created entry this points at an uninitialized arena slot, which
+    /// is why the flag exists rather than a `?*StdioClient` (the
+    /// non-null assertion is what the call sites want to read).
     client: *StdioClient,
+    /// `false` ⇒ `client` is an unallocated slot and no child has ever
+    /// existed for this name. `acquire` spawns into it under the entry
+    /// lock; nothing else may touch `client` before then. Without this
+    /// flag the first `acquire` for a new name deinitializes whatever
+    /// garbage the arena handed back — an ArenaAllocator free-list walk
+    /// through uninitialized memory.
+    has_client: bool = false,
+    /// Pre-reserved uninitialized `StdioClient` slot for the NEXT
+    /// spawn, allocated up front under the registry lock. Phase 3 of
+    /// `acquire` runs with only the entry lock held, and the registry
+    /// arena is not thread-safe, so the allocation cannot happen there
+    /// — two threads respawning two different servers would corrupt
+    /// each other's bump pointers. Consumed (set to null) on use;
+    /// `acquire` tops it back up on every entry.
+    spare: ?*StdioClient = null,
     /// `true` ⇒ the cached `client` is "stale" (a recv/send timed out
-    /// or its cancel-callback fired). The next `getOrSpawn` for this
-    /// name kills the cached client and spawns a fresh one. Atomic
-    /// so the markStale write is visible across the registry's mutex
-    /// boundary — `getOrSpawn` holds the mutex AND checks the atomic
-    /// under release/acquire ordering.
+    /// or its cancel-callback fired). The next `acquire` for this name
+    /// kills the cached client and spawns a fresh one. Atomic so
+    /// `Lease.markStale` — called by the thread that HOLDS the entry
+    /// lock — is visible to the thread that later takes it.
     dirty: std.atomic.Value(bool) = .init(false),
+    /// Serializes whole request/response transactions against this one
+    /// child. This is the lock the server-crash fix turns on: MCP
+    /// stdio is strictly one request / one response over one pipe, so
+    /// a session that interleaves two `recv` calls on the same client
+    /// corrupts `StdioClient.reader` (see its `read_buf` docs) and
+    /// aborts the process.
+    ///
+    /// LOCK ORDER: the registry mutex is NEVER acquired while this one
+    /// is held. `acquire` takes the registry lock only to allocate,
+    /// drops it, then takes this one. A lease holder calls
+    /// `Lease.markStale`, which is a bare atomic store and takes no
+    /// lock at all. `deinit` takes registry → entry, matching the only
+    /// remaining order. Getting this backwards deadlocks shutdown
+    /// against an in-flight request.
+    io_mutex: std.atomic.Mutex = .unlocked,
 };
 
 fn mutexLock(m: *std.atomic.Mutex) void {
     while (!m.tryLock()) std.atomic.spinLoopHint();
 }
+
+/// Take `m`, giving up after `wait_ns` (0 = wait forever) or as soon
+/// as `is_cancelled` returns true. Returns false if the lock was not
+/// taken.
+///
+/// A plain `mutexLock` would be wrong here: the lock holder is a thread
+/// blocked in `read(2)` on a child that may take its full 30s deadline
+/// to answer, and spinning on it for that long burns a core and
+/// ignores the workflow's Stop button. Sleeping between attempts
+/// trades a few ms of latency after a normal contention event for not
+/// melting the box during a pathological one.
+fn tryLockUntil(
+    io: std.Io,
+    m: *std.atomic.Mutex,
+    wait_ns: u64,
+    is_cancelled: ?*const fn () bool,
+) bool {
+    if (m.tryLock()) return true;
+    const has_deadline = wait_ns != 0;
+    var waited: u64 = 0;
+    while (true) {
+        if (is_cancelled) |cb| if (cb()) return false;
+        if (has_deadline) {
+            if (waited >= wait_ns) return false;
+            const step: u64 = @min(2 * std.time.ns_per_ms, wait_ns - waited);
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromNanoseconds(step), .clock = .real },
+                io,
+            ) catch return m.tryLock();
+            waited += step;
+        } else {
+            std.Io.Clock.Duration.sleep(
+                .{ .raw = std.Io.Duration.fromMilliseconds(2), .clock = .real },
+                io,
+            ) catch return m.tryLock();
+        }
+        if (m.tryLock()) return true;
+    }
+}
+
+/// Exclusive, must-be-released handle on one MCP stdio child.
+///
+/// Obtain with `StdioRegistry.acquire`; hand back with `release`. The
+/// child is reachable ONLY through the lease, which is the whole point:
+/// it makes "one thread at a time per child" a type-level property
+/// instead of a convention every call site has to remember. The old
+/// `getOrSpawn` handed out a bare `*StdioClient` that four independent
+/// call sites then drove concurrently, which is how the shared reader
+/// got torn.
+pub const Lease = struct {
+    registry: *StdioRegistry,
+    entry: *Entry,
+    name: []const u8,
+    released: bool = false,
+
+    /// The child. Valid only while the lease is held.
+    pub fn client(self: *const Lease) *StdioClient {
+        return self.entry.client;
+    }
+
+    /// Flag the child for replacement on the next `acquire`. Takes no
+    /// lock — the caller already holds the entry lock, and every other
+    /// observer of `dirty` is also under that lock or is about to take
+    /// it, so an atomic store is the correct (and deadlock-free) tool.
+    ///
+    /// Call this on any recv/send failure or timeout. A child that
+    /// timed out may still be sitting on unread bytes that would be
+    /// misparsed as the next response.
+    pub fn markStale(self: *const Lease) void {
+        self.entry.dirty.store(true, .release);
+    }
+
+    pub fn release(self: *Lease) void {
+        if (self.released) return;
+        self.released = true;
+        self.entry.io_mutex.unlock();
+    }
+};
+
+/// How long `acquire` is willing to wait for another session to finish
+/// its transaction on the same server, and how to abort that wait.
+pub const AcquireOptions = struct {
+    /// 0 = wait indefinitely.
+    wait_ns: u64 = 0,
+    is_cancelled: ?*const fn () bool = null,
+};
 
 pub const StdioRegistry = struct {
     arena: std.heap.ArenaAllocator,
@@ -673,55 +935,126 @@ pub const StdioRegistry = struct {
         };
     }
 
-    /// Get the cached client for `name`, or spawn a new one and cache it.
-    /// Memory ownership: the new client + key are allocated from the arena
-    /// — they'll be freed when the arena deinits.
+    /// Allocate a `StdioClient` struct from the registry arena. The
+    /// struct is left uninitialized; `StdioClient.init` fills it.
+    /// Arena allocation is confined to this helper, which callers only
+    /// ever invoke with the registry lock held.
+    fn allocClientSlot(self: *StdioRegistry) StdioError!*StdioClient {
+        return self.arena.allocator().create(StdioClient) catch StdioError.OutOfMemory;
+    }
+
+    /// Take exclusive use of the child for `name`, spawning one if
+    /// there isn't a live client, and replacing it if a previous holder
+    /// marked it stale.
     ///
-    /// Self-healing: when `name`'s `Entry.dirty` flag is set (via
-    /// `markStale`), the cached client is killed + replaced with a
-    /// fresh spawn. Cheap when dirty=false (a single atomic load).
-    pub fn getOrSpawn(
+    /// The returned `Lease` MUST be released (`defer lease.release()`).
+    /// While it is held, no other thread can reach this child — that
+    /// guarantee is the whole reason this function exists instead of a
+    /// `getOrSpawn`-style accessor. `StdioClient` wraps a
+    /// `std.Io.Reader`, which is two bare cursors with no internal
+    /// locking, and it is NOT safe to drive from two threads.
+    ///
+    /// Memory ownership: the client struct, its key, and its arena are
+    /// all backed by the registry arena and die with it.
+    ///
+    /// Self-healing: when the entry is dirty (some holder called
+    /// `markStale` after a timeout or a cancel), the cached child is
+    /// killed and replaced.
+    pub fn acquire(
         self: *StdioRegistry,
         name: []const u8,
         argv: []const []const u8,
-    ) !*StdioClient {
+        opts: AcquireOptions,
+    ) StdioError!Lease {
+        // Phase 1 — registry lock, held only for map + arena work. All
+        // allocation happens here (the registry arena is not thread
+        // safe) and the lock is dropped before we ever wait on an
+        // entry lock: holding a spinlock for the length of someone
+        // else's 30s read would stall every other server too.
         mutexLock(&self.mutex);
-        defer self.mutex.unlock();
-        if (self.entries.getPtr(name)) |entry_ptr| {
-            const entry = entry_ptr.*;
-            if (entry.dirty.load(.acquire)) {
-                // Drop the stale client + spawn a fresh one. We
-                // can't call `dropAndRespawn` here because it takes
-                // the same mutex — risk of self-recursion on a
-                // non-reentrant mutex.
-                entry.client.deinit();
-                const alloc = self.arena.allocator();
-                const client = try alloc.create(StdioClient);
-                client.* = try StdioClient.init(alloc, self.io, argv);
-                entry.client = client;
-                entry.dirty.store(false, .release);
-                return client;
-            }
-            return entry.client;
+        const entry = self.entries.get(name) orelse blk: {
+            const client_slot = self.allocClientSlot() catch {
+                self.mutex.unlock();
+                return StdioError.OutOfMemory;
+            };
+            const key_dup = self.arena.allocator().dupe(u8, name) catch {
+                self.mutex.unlock();
+                return StdioError.OutOfMemory;
+            };
+            const new_entry = self.arena.allocator().create(Entry) catch {
+                self.mutex.unlock();
+                return StdioError.OutOfMemory;
+            };
+            // A brand-new entry has no child. `has_client` stays false
+            // and `spare` is pre-loaded so phase 3 has a slot to spawn
+            // into without touching the (now unlocked) arena.
+            new_entry.* = .{
+                .client = client_slot,
+                .has_client = false,
+                .spare = self.allocClientSlot() catch {
+                    self.mutex.unlock();
+                    return StdioError.OutOfMemory;
+                },
+            };
+            self.entries.put(key_dup, new_entry) catch {
+                self.mutex.unlock();
+                return StdioError.OutOfMemory;
+            };
+            break :blk new_entry;
+        };
+        // Top the spare back up for an entry that is about to respawn:
+        // consumed in phase 3, and reserved here while the registry lock
+        // still protects the arena.
+        if (entry.spare == null) {
+            entry.spare = self.allocClientSlot() catch {
+                self.mutex.unlock();
+                return StdioError.OutOfMemory;
+            };
         }
+        self.mutex.unlock();
 
-        const alloc = self.arena.allocator();
-        const client = try alloc.create(StdioClient);
-        client.* = try StdioClient.init(alloc, self.io, argv);
+        // Phase 2 — exclusive access to this child. Registry lock is
+        // NOT held; see the LOCK ORDER note on `Entry.io_mutex`.
+        if (!tryLockUntil(self.io, &entry.io_mutex, opts.wait_ns, opts.is_cancelled)) {
+            return StdioError.LeaseTimeout;
+        }
+        errdefer entry.io_mutex.unlock();
 
-        const key_dup = try alloc.dupe(u8, name);
-        const new_entry = try alloc.create(Entry);
-        new_entry.* = .{ .client = client, .dirty = .init(false) };
-        try self.entries.put(key_dup, new_entry);
-        return client;
+        // Phase 3 — nobody else can be touching this child, so respawn
+        // (or spawn, for an entry created above) without any further
+        // locking.
+        if (!entry.has_client or entry.dirty.load(.acquire) or entry.client.is_dead) {
+            if (entry.has_client) entry.client.deinit();
+            // Allocating from the registry arena is NOT thread-safe, and
+            // the registry lock is already released. A `Lease` holder is
+            // the only thread that may be here for THIS entry, but
+            // another thread can be inside `acquire` for a DIFFERENT
+            // entry and reach its own phase 3 at the same moment. So the
+            // slot has to be reserved in phase 1, under the registry lock.
+            const slot = entry.spare orelse return StdioError.OutOfMemory;
+            entry.spare = null;
+            slot.* = StdioClient.init(self.arena.allocator(), self.io, argv) catch |err| {
+                // Keep the flag false / the entry dirty so the next
+                // `acquire` retries instead of handing out the corpse.
+                entry.has_client = false;
+                entry.dirty.store(true, .release);
+                return err;
+            };
+            entry.client = slot;
+            entry.has_client = true;
+            entry.dirty.store(false, .release);
+        }
+        return .{ .registry = self, .entry = entry, .name = name };
     }
 
-    /// Mark the cached client for `name` as "stale". The next
-    /// `getOrSpawn` call for the same name will kill the existing
-    /// child and spawn a fresh one. Idempotent. Cheap (an atomic
-    /// store inside the registry mutex). Used by callers when a
-    /// recv/send times out or when the cancel-callback fires — a
-    /// hung child should not be returned to the next caller.
+    /// Mark the cached client for `name` as "stale" WITHOUT holding its
+    /// entry lock, for callers that do not have a lease (a config save
+    /// invalidating every server, say). Holders of a lease should call
+    /// `Lease.markStale` instead — it needs no lookup and cannot
+    /// deadlock.
+    ///
+    /// The next `acquire` for the same name kills the existing child and
+    /// spawns a fresh one. Idempotent.
     pub fn markStale(self: *StdioRegistry, name: []const u8) void {
         mutexLock(&self.mutex);
         defer self.mutex.unlock();
@@ -733,6 +1066,10 @@ pub const StdioRegistry = struct {
     /// Drop the cached client for `name` (if any) and spawn a fresh one.
     /// Note: the old client's memory isn't reclaimed individually — the
     /// arena owns it. Only the child process is killed.
+    ///
+    /// Not part of the request path (nothing calls it in production);
+    /// kept for tests and for a future "server removed from config"
+    /// cleanup. Takes registry → entry, the one legal nesting order.
     pub fn dropAndRespawn(
         self: *StdioRegistry,
         name: []const u8,
@@ -741,17 +1078,21 @@ pub const StdioRegistry = struct {
         mutexLock(&self.mutex);
         defer self.mutex.unlock();
         if (self.entries.fetchRemove(name)) |kv| {
-            kv.value.client.deinit();
+            // Take the entry lock before killing: a concurrent `acquire`
+            // may be blocked on it and about to dereference this very
+            // client. Without the lock, `deinit` frees the reader
+            // (and the per-client arena) out from under that read.
+            mutexLock(&kv.value.io_mutex);
+            if (kv.value.has_client) kv.value.client.deinit();
+            kv.value.io_mutex.unlock();
         }
-        const alloc = self.arena.allocator();
-        const client = try alloc.create(StdioClient);
-        client.* = try StdioClient.init(alloc, self.io, argv);
-
-        const key_dup = try alloc.dupe(u8, name);
-        const new_entry = try alloc.create(Entry);
-        new_entry.* = .{ .client = client, .dirty = .init(false) };
+        const client_slot = try self.allocClientSlot();
+        const key_dup = try self.arena.allocator().dupe(u8, name);
+        const new_entry = try self.arena.allocator().create(Entry);
+        client_slot.* = try StdioClient.init(self.arena.allocator(), self.io, argv);
+        new_entry.* = .{ .client = client_slot, .dirty = .init(false) };
         try self.entries.put(key_dup, new_entry);
-        return client;
+        return client_slot;
     }
 
     /// Snapshot the current set of keys under the registry lock.
@@ -774,10 +1115,21 @@ pub const StdioRegistry = struct {
     pub fn deinit(self: *StdioRegistry) void {
         mutexLock(&self.mutex);
         defer self.mutex.unlock();
-        // Kill all children first (deterministic order).
+        // Kill all children first (deterministic order). Each entry lock
+        // is taken before its child is killed, so a request that is
+        // mid-`recv` on that child finishes (or aborts) against a live
+        // reader instead of racing the teardown into a use-after-free.
+        // Registry → entry is the only nesting order the rest of this
+        // file uses, so this cannot invert.
         var it = self.entries.iterator();
         while (it.next()) |kv| {
-            kv.value_ptr.*.client.deinit();
+            const entry = kv.value_ptr.*;
+            mutexLock(&entry.io_mutex);
+            // `has_client` guards an entry that was created but never
+            // successfully spawned into — tearing down its uninitialized
+            // slot would walk the arena's free list through garbage.
+            if (entry.has_client) entry.client.deinit();
+            entry.io_mutex.unlock();
         }
         const parent_allocator = self.entries.allocator;
         self.entries.deinit();
@@ -995,7 +1347,7 @@ fn echo_argv() []const []const u8 {
     return if (builtin.os.tag == .windows)
         &.{ "cmd.exe", "/C", "more" }
     else
-        &.{ "cat" };
+        &.{"cat"};
 }
 
 test "StdioClient.init spawns child successfully" {
@@ -1033,7 +1385,7 @@ test "StdioClient.send writes framed bytes to child stdin" {
 }
 
 test "StdioClient.init returns ChildSpawnFailed for missing binary" {
-    _ = StdioClient.init(testing.allocator, testing.io, &.{ "/no/such/binary/should/exist/xyzzy" }) catch |e| {
+    _ = StdioClient.init(testing.allocator, testing.io, &.{"/no/such/binary/should/exist/xyzzy"}) catch |e| {
         try testing.expectEqual(StdioError.ChildSpawnFailed, e);
         return;
     };
@@ -1054,26 +1406,34 @@ test "StdioRegistry.init + deinit roundtrip" {
     try testing.expectEqual(@as(usize, 0), reg.entries.count());
 }
 
-test "StdioRegistry.getOrSpawn returns same client across calls (cached)" {
+test "acquire returns the same client across calls (cached)" {
     var reg = StdioRegistry.init(testing.allocator, testing.io);
     defer reg.deinit();
-    const c1 = try reg.getOrSpawn("alpha", echo_argv());
-    const c2 = try reg.getOrSpawn("alpha", echo_argv());
-    try testing.expectEqual(@intFromPtr(c1), @intFromPtr(c2));
+    var l1 = try reg.acquire("alpha", echo_argv(), .{});
+    const c1 = l1.client();
+    l1.release();
+    var l2 = try reg.acquire("alpha", echo_argv(), .{});
+    defer l2.release();
+    try testing.expectEqual(@intFromPtr(c1), @intFromPtr(l2.client()));
 }
 
-test "StdioRegistry.getOrSpawn with different names returns different clients" {
+test "acquire with different names returns different clients" {
     var reg = StdioRegistry.init(testing.allocator, testing.io);
     defer reg.deinit();
-    const a = try reg.getOrSpawn("a", echo_argv());
-    const b = try reg.getOrSpawn("b", echo_argv());
-    try testing.expect(a != b);
+    var la = try reg.acquire("a", echo_argv(), .{});
+    const a = la.client();
+    la.release();
+    var lb = try reg.acquire("b", echo_argv(), .{});
+    defer lb.release();
+    try testing.expect(a != lb.client());
 }
 
 test "StdioRegistry.dropAndRespawn returns a different client" {
     var reg = StdioRegistry.init(testing.allocator, testing.io);
     defer reg.deinit();
-    const c1 = try reg.getOrSpawn("x", echo_argv());
+    var l1 = try reg.acquire("x", echo_argv(), .{});
+    const c1 = l1.client();
+    l1.release();
     const c2 = try reg.dropAndRespawn("x", echo_argv());
     try testing.expect(c1 != c2);
 }
@@ -1081,8 +1441,10 @@ test "StdioRegistry.dropAndRespawn returns a different client" {
 test "StdioRegistry.deinit kills spawned children (no hang)" {
     {
         var reg = StdioRegistry.init(testing.allocator, testing.io);
-        _ = try reg.getOrSpawn("a", echo_argv());
-        _ = try reg.getOrSpawn("b", echo_argv());
+        var la = try reg.acquire("a", echo_argv(), .{});
+        la.release();
+        var lb = try reg.acquire("b", echo_argv(), .{});
+        lb.release();
         reg.deinit();
     }
     // No assertion — the test passes if deinit returns and the test
@@ -1165,8 +1527,8 @@ test "fd: StdioRegistry spawn + deinit does not leak FDs (20 servers)" {
         while (i < 20) : (i += 1) {
             const name = std.fmt.allocPrint(testing.allocator, "server-{d}", .{i}) catch continue;
             defer testing.allocator.free(name);
-            const client = reg.getOrSpawn(name, echo_argv()) catch continue;
-            _ = client;
+            var lease = reg.acquire(name, echo_argv(), .{}) catch continue;
+            lease.release();
         }
         reg.deinit();
     }
@@ -1192,8 +1554,7 @@ test "fd: failed spawn does not leak FDs (20 attempts at missing binary)" {
     const after = countOpenFds();
     const tolerance: usize = 5;
     if (after > before + tolerance) {
-        std.debug.print("!! FD leak: before={d} after={d} delta={d} (failed-spawn path) !!\n",
-            .{ before, after, after - before });
+        std.debug.print("!! FD leak: before={d} after={d} delta={d} (failed-spawn path) !!\n", .{ before, after, after - before });
         return error.FdLeakSuspected;
     }
 }
@@ -1322,29 +1683,48 @@ test "recv aborts immediately when cancel callback returns true" {
     try testing.expect(elapsed_ms < 200);
 }
 
-test "markStale: getOrSpawn respawns instead of returning cached client" {
-    // Two getOrSpawns with a markStale in between must produce
-    // DIFFERENT StdioClient pointers — the dirty flag forced a
-    // fresh spawn. Uses echo_argv so the spawn is fast and the test
-    // is deterministic.
+test "markStale: acquire respawns instead of returning cached client" {
+    // Two acquires with a markStale in between must produce DIFFERENT
+    // StdioClient pointers — the dirty flag forced a fresh spawn. Uses
+    // echo_argv so the spawn is fast and the test is deterministic.
     var reg = StdioRegistry.init(testing.allocator, testing.io);
     defer reg.deinit();
-    const c1 = try reg.getOrSpawn("foo", echo_argv());
+    var l1 = try reg.acquire("foo", echo_argv(), .{});
+    const c1 = l1.client();
+    l1.release();
     reg.markStale("foo");
-    const c2 = try reg.getOrSpawn("foo", echo_argv());
-    try testing.expect(c1 != c2);
+    var l2 = try reg.acquire("foo", echo_argv(), .{});
+    defer l2.release();
+    try testing.expect(c1 != l2.client());
+}
+
+test "Lease.markStale respawns on the next acquire" {
+    // Same contract as the by-name `markStale`, but driven through the
+    // lease the caller actually holds — which is the path every request
+    // handler uses on a timeout.
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    var l1 = try reg.acquire("bar", echo_argv(), .{});
+    const c1 = l1.client();
+    l1.markStale();
+    l1.release();
+    var l2 = try reg.acquire("bar", echo_argv(), .{});
+    defer l2.release();
+    try testing.expect(c1 != l2.client());
+    // The replacement must come back clean, or the respawn never sticks.
+    try testing.expectEqual(false, l2.entry.dirty.load(.acquire));
 }
 
 test "markStale on unknown name is a no-op (does not panic or insert)" {
     // Self-healing contract: markStale against a server that hasn't
-    // been spawned yet is silently ignored. The next getOrSpawn
+    // been spawned yet is silently ignored. The next acquire
     // for that name still works (creates a fresh entry).
     var reg = StdioRegistry.init(testing.allocator, testing.io);
     defer reg.deinit();
     reg.markStale("not_in_registry"); // must not crash
     try testing.expectEqual(@as(usize, 0), reg.entries.count());
-    const c = try reg.getOrSpawn("not_in_registry", echo_argv());
-    _ = c;
+    var lease = try reg.acquire("not_in_registry", echo_argv(), .{});
+    lease.release();
     try testing.expectEqual(@as(usize, 1), reg.entries.count());
 }
 
@@ -1366,7 +1746,7 @@ test "markStale on unknown name is a no-op (does not panic or insert)" {
 /// Argv for a child that stays alive and silent well past any test
 /// deadline. POSIX-only (`sleep`); Windows callers must skip first.
 fn silent_child_argv() []const []const u8 {
-    return &.{"sleep", "30"};
+    return &.{ "sleep", "30" };
 }
 
 test "recv times out on truly-silent child (empty-args bare command)" {
@@ -1438,7 +1818,11 @@ test "recv with deadline still delivers data (happy path)" {
         std.debug.print("!! happy-path recv failed: {s} !!\n", .{@errorName(err)});
         return err;
     };
-    defer testing.allocator.free(body);
+    // `recv` allocates the body from the client's own arena, so it has
+    // to be freed through the same allocator that produced it —
+    // `testing.allocator.free` on an arena-owned pointer is an
+    // "Invalid free" panic under DebugAllocator.
+    defer client.allocator().free(body);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1}", body);
 }
 
@@ -1458,17 +1842,514 @@ test "recv preserves coalesced back-to-back lines (lightpanda hang)" {
     };
     defer client.deinit();
 
+    // Both bodies come from the client's per-client arena (see the
+    // `recv` allocator note in the happy-path test above).
     const first = client.recv(5_000 * std.time.ns_per_ms, null) catch |err| {
         std.debug.print("!! coalesced first recv failed: {s} !!\n", .{@errorName(err)});
         return err;
     };
-    defer testing.allocator.free(first);
+    defer client.allocator().free(first);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1}", first);
 
     const second = client.recv(5_000 * std.time.ns_per_ms, null) catch |err| {
         std.debug.print("!! coalesced second recv failed: {s} !!\n", .{@errorName(err)});
         return err;
     };
-    defer testing.allocator.free(second);
+    defer client.allocator().free(second);
     try testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":2}", second);
+}
+
+// ============================================================================
+// Framing + lease edge cases (concurrency / framing hardening)
+// ============================================================================
+//
+// Three groups, each pinning a contract that a later refactor can only
+// break silently:
+//
+//   A. Framing edge cases — what `readFramed` does with a header that is
+//      malformed, hostile, or truncated. These are pure parser cases, so
+//      they run off a temp file with no child process.
+//   B. Body-size guards — `Content-Length` is attacker-controlled text.
+//      A frame that parses cleanly must still be rejected *before* the
+//      allocation, and the error has to say "too large" rather than
+//      "out of memory" or "the connection died".
+//   C. Lease / concurrency contracts — one thread at a time per child,
+//      with cancellation, idempotent cleanup, and a post-death client
+//      that refuses to touch recycled file descriptors.
+//
+// NOTE on the omitted CRLF/NDJSON case: `readFramed handles CRLF
+// terminator on newline-delimited JSON` above already pins the trailing
+// `\r` strip, so it is not duplicated here.
+
+/// Temp file + open handle for one `readFramed` case. The framing tests
+/// all need the same three steps (temp dir, write payload, open for
+/// read) and the existing tests above spell them out inline; with a
+/// dozen edge cases to add, folding them into one helper keeps the
+/// actual contract visible in each test body.
+const FramedInput = struct {
+    tmp: std.testing.TmpDir,
+    file: std.Io.File,
+
+    fn deinit(self: *FramedInput) void {
+        self.file.close(testing.io);
+        self.tmp.cleanup();
+    }
+};
+
+fn framedInput(name: []const u8, payload: []const u8) !FramedInput {
+    var tmp = std.testing.tmpDir(.{});
+    errdefer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = name, .data = payload });
+    return .{ .tmp = tmp, .file = try tmp.dir.openFile(testing.io, name, .{}) };
+}
+
+// ── A. Framing edge cases ──────────────────────────────────────────────────
+
+test "readFramed rejects a negative Content-Length as InvalidContentLength" {
+    // A sign character is the cheapest way to smuggle a length past a
+    // naive parser: `-5` is a valid token to anything HTTP-shaped, and
+    // a parser that strips the sign would hand back a 5-byte body that
+    // was never promised. The error has to be the *specific* one so a
+    // caller can tell "garbage header" apart from "well-formed header,
+    // body truncated" — the two need opposite recovery.
+    var input = try framedInput("neg_content_length.txt", "Content-Length: -5\r\n\r\n");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.InvalidContentLength,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed rejects a non-numeric Content-Length as InvalidContentLength" {
+    // Same distinction as the negative case, different failure mode in
+    // `parseInt`. Worth its own test because the two are the only
+    // places `InvalidContentLength` can come from, and both are
+    // reachable from a real server that formats the header wrong.
+    var input = try framedInput("nan_content_length.txt", "Content-Length: abc\r\n\r\n");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.InvalidContentLength,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed returns an empty body and no error for Content-Length: 0" {
+    // A zero-length frame is a server saying "alive, nothing to say".
+    // Turning it into an error makes a keepalive ping look like a dead
+    // transport, and a caller that sees a non-zero `.len` on a
+    // zero-byte allocation gets an invalid free the moment it hands the
+    // slice back to the allocator.
+    var input = try framedInput("zero_content_length.txt", "Content-Length: 0\r\n\r\n");
+    defer input.deinit();
+    const body = try readFramed(testing.allocator, testing.io, input.file, 0, null);
+    defer testing.allocator.free(body);
+    try testing.expectEqual(@as(usize, 0), body.len);
+}
+
+test "readFramed matches the Content-Length header name case-insensitively" {
+    // Header names are case-insensitive and real MCP servers are not
+    // consistent about the casing they emit (`content-length` from some
+    // SDK paths, `Content-Length` from others). A case-sensitive match
+    // degrades silently to "no header found" — InvalidFrame on a frame
+    // that is perfectly valid — so the insensitivity is load-bearing
+    // for interoperability, not a nicety.
+    var input = try framedInput("lower_content_length.txt", "content-length: 5\r\n\r\nhello");
+    defer input.deinit();
+    const body = try readFramed(testing.allocator, testing.io, input.file, 0, null);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("hello", body);
+}
+
+test "readFramed tolerates tabs and trailing spaces around the Content-Length value" {
+    // Real servers (and proxies in front of them) hand-mangle header
+    // whitespace. Trimming only spaces turns a valid frame into
+    // InvalidContentLength and knocks the server offline for a
+    // formatting difference.
+    var input = try framedInput("padded_content_length.txt", "Content-Length:\t 5 \r\n\r\nhello");
+    defer input.deinit();
+    const body = try readFramed(testing.allocator, testing.io, input.file, 0, null);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("hello", body);
+}
+
+test "readFramed finds Content-Length after other headers in the block" {
+    // The MCP spec frames with Content-Length among *possibly many*
+    // headers. Reading only the first line drops every server that also
+    // announces Content-Type, which is most of them.
+    var input = try framedInput(
+        "multi_header.txt",
+        "Content-Type: application/json\r\nContent-Length: 5\r\n\r\nhello",
+    );
+    defer input.deinit();
+    const body = try readFramed(testing.allocator, testing.io, input.file, 0, null);
+    defer testing.allocator.free(body);
+    try testing.expectEqualStrings("hello", body);
+}
+
+test "readFramed returns InvalidFrame on a stray log line instead of swallowing the next message" {
+    // THE REGRESSION this guards. A server that logs to stdout used to
+    // make the parser scan past the log line, keep buffering, and then
+    // sit waiting for a blank line that only the *next* real message
+    // would produce — so a perfectly healthy JSON-RPC response came back
+    // as a timeout and the caller killed the child. Bailing at the
+    // first line without a colon turns an unbounded hang into one cheap
+    // respawn.
+    var input = try framedInput("stray_log_line.txt", "some log line\n{\"jsonrpc\":\"2.0\"}\n");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.InvalidFrame,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed reports UnexpectedEof when EOF lands mid-header" {
+    // A child that dies between spawn and answer leaves a truncated
+    // header. Reporting InvalidFrame would send the operator hunting a
+    // protocol bug in a server that simply crashed; UnexpectedEof is
+    // what makes them respawn.
+    var input = try framedInput("eof_in_header.txt", "Content-Len");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.UnexpectedEof,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed reports UnexpectedEof when the body is shorter than Content-Length promised" {
+    // The body allocation is sized from the header, so a child that dies
+    // 3 bytes into a 100-byte body leaves a hole. Returning the short
+    // buffer would hand the caller a truncated document that looks
+    // complete; blocking for the remainder would hang until the
+    // deadline. UnexpectedEof is the only honest answer.
+    //
+    // Arena-backed: the parser's body allocation is abandoned on this
+    // error path, and a raw `testing.allocator` would report a leak
+    // that says nothing about the contract under test.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var input = try framedInput("eof_in_body.txt", "Content-Length: 100\r\n\r\nhel");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.UnexpectedEof,
+        readFramed(arena.allocator(), testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed returns InvalidFrame when the header block overruns MAX_HEADER_BYTES" {
+    // The header buffer is a fixed 8 KiB stack array, so the bound is
+    // the only thing making that allocation safe: a server (or a
+    // confused proxy) streaming megabytes of headers would otherwise run
+    // us off the end of the stack. The junk is a single header-shaped
+    // line on purpose — this pins the overflow guard, not the
+    // non-header-line guard, which has its own test above.
+    const prefix = "X-Pad: ";
+    const payload = try testing.allocator.alloc(u8, prefix.len + MAX_HEADER_BYTES + 64);
+    defer testing.allocator.free(payload);
+    @memcpy(payload[0..prefix.len], prefix);
+    @memset(payload[prefix.len..], 'a');
+    var input = try framedInput("header_flood.txt", payload);
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.InvalidFrame,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed returns a growth-path NDJSON line at its exact payload length" {
+    // Real tool results blow past the 256-byte seed buffer constantly,
+    // so the realloc-doubling path is the hot path, not a corner case.
+    // The returned `.len` matters as much as the bytes: the caller
+    // frees the slice with the same allocator, and DebugAllocator aborts
+    // when the length doesn't match the reservation — which is exactly
+    // what the `catch body[0..len]` shortcut in `shrinkToLen` used to
+    // do, on the OOM path where no repro would ever reach it.
+    const prefix = "{\"jsonrpc\":\"2.0\",\"result\":\"";
+    const suffix = "\"}\r\n";
+    const fill: usize = 1000;
+    const payload = try testing.allocator.alloc(u8, prefix.len + fill + suffix.len);
+    defer testing.allocator.free(payload);
+    @memcpy(payload[0..prefix.len], prefix);
+    @memset(payload[prefix.len..][0..fill], 'x');
+    @memcpy(payload[prefix.len + fill ..], suffix);
+    const expected = payload[0 .. payload.len - 2]; // drop the CRLF
+    var input = try framedInput("ndjson_growth.txt", payload);
+    defer input.deinit();
+    const body = try readFramed(testing.allocator, testing.io, input.file, 0, null);
+    defer testing.allocator.free(body);
+    try testing.expectEqual(expected.len, body.len);
+    try testing.expectEqualStrings(expected, body);
+}
+
+// ── B. Body-size guards ────────────────────────────────────────────────────
+
+test "readFramed rejects a Content-Length far above the cap as BodyTooLarge" {
+    // 99,999,999,999 is a perfectly valid usize. A parser that trusts
+    // the header turns five bytes of text into a 95 GiB allocation
+    // before it ever looks at the socket, and the process dies on an
+    // OOM-checked allocator (or succeeds under overcommit and then
+    // blocks). The error has to be BodyTooLarge specifically: an
+    // OutOfMemory or UnexpectedEof here both read as "the server is
+    // broken" and invite a retry loop against a hostile endpoint.
+    var input = try framedInput("oversized_content_length.txt", "Content-Length: 99999999999\r\n\r\n");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.BodyTooLarge,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed rejects Content-Length of maxInt(u64) as BodyTooLarge without allocating it" {
+    // The literal the MAX_BODY_BYTES doc calls out: 16 EiB parses
+    // cleanly into a usize and is the maximum an attacker can write in
+    // one header line. Guarded on bit width because on a 32-bit target
+    // the literal doesn't fit a usize at all and the error would be
+    // InvalidContentLength — asserting BodyTooLarge there would pin the
+    // wrong contract for that target.
+    if (comptime @bitSizeOf(usize) < 64) return error.SkipZigTest;
+    var input = try framedInput("maxint_content_length.txt", "Content-Length: 18446744073709551615\r\n\r\n");
+    defer input.deinit();
+    try testing.expectError(
+        StdioError.BodyTooLarge,
+        readFramed(testing.allocator, testing.io, input.file, 0, null),
+    );
+}
+
+test "readFramed's body cap is exclusive: exactly MAX_BODY_BYTES passes, one byte over is BodyTooLarge" {
+    // Off-by-one is a real bug in either direction — `>=` rejects a
+    // legitimate 10 MiB tool result, which is the SDK's own default
+    // buffer size. The `+1` half is the cheap one (it must short-circuit
+    // before the allocation); the exact-cap half pays a 10 MiB
+    // allocation to prove the guard did *not* fire and that the missing
+    // body is what surfaces instead. Arena-backed because that 10 MiB
+    // reservation is abandoned on the EOF path.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var over_buf: [64]u8 = undefined;
+    const over = try std.fmt.bufPrint(&over_buf, "Content-Length: {d}\r\n\r\n", .{MAX_BODY_BYTES + 1});
+    var over_input = try framedInput("one_over_cap.txt", over);
+    defer over_input.deinit();
+    try testing.expectError(
+        StdioError.BodyTooLarge,
+        readFramed(testing.allocator, testing.io, over_input.file, 0, null),
+    );
+
+    var at_buf: [64]u8 = undefined;
+    const at_cap = try std.fmt.bufPrint(&at_buf, "Content-Length: {d}\r\n\r\n", .{MAX_BODY_BYTES});
+    var at_input = try framedInput("exactly_at_cap.txt", at_cap);
+    defer at_input.deinit();
+    try testing.expectError(
+        StdioError.UnexpectedEof,
+        readFramed(arena.allocator(), testing.io, at_input.file, 0, null),
+    );
+}
+
+// ── C. Lease / concurrency contracts ───────────────────────────────────────
+
+test "acquire on an already-leased entry returns LeaseTimeout and the entry stays acquirable" {
+    // Two sessions reaching for the same MCP server is normal traffic,
+    // not an error condition — but the second one must not get the
+    // child, because `StdioClient` wraps a bare-cursor reader with no
+    // internal locking. If the entry lock were a plain spinlock the
+    // loser would peg a core for as long as the winner's recv takes
+    // (up to its full deadline, tens of seconds); LeaseTimeout lets the
+    // caller retry on its own schedule. The second half is the part
+    // that catches a poisoned lock: if the timeout left the entry
+    // wedged, the server is dead for the rest of the process.
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    var held = try reg.acquire("shared", echo_argv(), .{});
+    const c1 = held.client();
+
+    try testing.expectError(
+        StdioError.LeaseTimeout,
+        reg.acquire("shared", echo_argv(), .{ .wait_ns = 20 * std.time.ns_per_ms }),
+    );
+
+    held.release();
+    var next = try reg.acquire("shared", echo_argv(), .{ .wait_ns = 20 * std.time.ns_per_ms });
+    defer next.release();
+    // Same child: the timeout was contention, not a reason to respawn.
+    try testing.expectEqual(@intFromPtr(c1), @intFromPtr(next.client()));
+}
+
+test "acquire honours is_cancelled under contention without respawning the cached child" {
+    // The Stop button has to reach the lease wait too: a user who
+    // cancels while another session is mid-transaction must not be
+    // pinned for the rest of the (tens of seconds long) wait budget.
+    // Contended on purpose — `tryLockUntil` takes a *free* lock
+    // outright without ever consulting the callback, so cancel governs
+    // the waiting and never the fast path.
+    //
+    // Also pins "a cancelled acquire does not kill the cached child":
+    // the next holder must get the same client back, because a cancel
+    // is not a transport failure and respawning here would restart a
+    // healthy server mid-conversation.
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    var held = try reg.acquire("cancelled", echo_argv(), .{});
+    const c1 = held.client();
+
+    const cancel_now = struct {
+        fn call() bool {
+            return true;
+        }
+    }.call;
+
+    const start = std.Io.Timestamp.now(testing.io, .real).nanoseconds;
+    try testing.expectError(
+        StdioError.LeaseTimeout,
+        reg.acquire("cancelled", echo_argv(), .{
+            .wait_ns = 10_000 * std.time.ns_per_ms,
+            .is_cancelled = &cancel_now,
+        }),
+    );
+    const elapsed_ms: i128 = @divTrunc(
+        std.Io.Timestamp.now(testing.io, .real).nanoseconds - start,
+        std.time.ns_per_ms,
+    );
+    // 10s budget, must come back in well under a second: the cancel is
+    // polled before the first sleep, not between them.
+    try testing.expect(elapsed_ms < 2000);
+
+    held.release();
+    var next = try reg.acquire("cancelled", echo_argv(), .{});
+    defer next.release();
+    try testing.expectEqual(@intFromPtr(c1), @intFromPtr(next.client()));
+}
+
+test "Lease.release is idempotent — a double release does not free the entry lock" {
+    // Every production call site pairs `defer lease.release()` with an
+    // explicit release on the happy path, so releasing twice is the
+    // normal shape, not abuse. A second `unlock` on an already-unlocked
+    // mutex is undefined behaviour (an assertion in debug builds) and is
+    // worse than a panic in release: it would let a second caller walk
+    // straight into the child this lease was protecting. The second
+    // acquire below is the proof that the lock is still held — and held
+    // by exactly one holder.
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    var lease = try reg.acquire("double-release", echo_argv(), .{});
+    const c1 = lease.client();
+    lease.release();
+    lease.release();
+
+    var next = try reg.acquire("double-release", echo_argv(), .{ .wait_ns = 50 * std.time.ns_per_ms });
+    defer next.release();
+    try testing.expectEqual(@intFromPtr(c1), @intFromPtr(next.client()));
+    // `next` holds it exclusively — if the extra release had unlocked a
+    // live mutex, this third acquire would sail through.
+    try testing.expectError(
+        StdioError.LeaseTimeout,
+        reg.acquire("double-release", echo_argv(), .{ .wait_ns = 20 * std.time.ns_per_ms }),
+    );
+}
+
+test "StdioClient.deinit is idempotent — the second call is a no-op" {
+    // `defer client.deinit()` coexists with an explicit `deinit()` on
+    // the error path, and the registry kills the same child again during
+    // its own teardown. `std.process.Child.kill` reaps the child and
+    // closes the pipes, so running it twice signals a pid that may
+    // already have been recycled by an unrelated spawn and closes
+    // handles that by then belong to someone else.
+    var client = StdioClient.init(testing.allocator, testing.io, echo_argv()) catch |err| {
+        if (err == error.ChildSpawnFailed) return error.SkipZigTest;
+        return err;
+    };
+    client.deinit();
+    try testing.expect(client.is_dead);
+    try testing.expect(client.stdin == null);
+    client.deinit(); // must not double-kill
+    try testing.expect(client.is_dead);
+    try testing.expect(client.stdout == null);
+}
+
+test "send and recv after deinit return BrokenPipe instead of writing to a recycled fd" {
+    // `child.kill` closes the pipes, but the cached handles keep the fd
+    // NUMBERS. The next open()/spawn() in this process very often gets
+    // the same number back, so a post-deinit `send` would type MCP
+    // JSON-RPC into an unrelated file and a `recv` would parse that
+    // file's contents as a frame. Nulling the handles is what turns both
+    // into an honest BrokenPipe — and this test is the proof that the
+    // nulling happens *before* any syscall, not after one fails.
+    var client = StdioClient.init(testing.allocator, testing.io, echo_argv()) catch |err| {
+        if (err == error.ChildSpawnFailed) return error.SkipZigTest;
+        return err;
+    };
+    client.deinit();
+    try testing.expectError(StdioError.BrokenPipe, client.send("{\"jsonrpc\":\"2.0\"}", 0));
+    try testing.expectError(StdioError.BrokenPipe, client.recv(0, null));
+    // recv must not have re-attached a reader to a dead pipe either.
+    try testing.expect(client.reader == null);
+}
+
+test "recv nulls the reader after a mid-frame failure so the next recv cannot replay buffered bytes" {
+    // The persistent 4 KiB reader buffer can hold the tail of an
+    // abandoned frame. Keeping it means the next recv parses that tail
+    // as a fresh message — a stale JSON-RPC error, or half a response
+    // attributed to a different request id. Dropping the reader costs
+    // one re-read of the pipe and makes the next call honest.
+    //
+    // Framed (not NDJSON) on purpose: the NDJSON EOF path hands the
+    // partial line back *successfully*, so only the Content-Length path
+    // actually stops mid-frame and unwinds the reader.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    // Header promises 100 bytes, the child delivers 2 and exits.
+    const argv: []const []const u8 = &.{ "sh", "-c", "printf 'Content-Length: 100\\r\\n\\r\\nab'" };
+    var client = StdioClient.init(testing.allocator, testing.io, argv) catch |err| {
+        if (err == error.ChildSpawnFailed) return error.SkipZigTest;
+        return err;
+    };
+    defer client.deinit();
+    try testing.expect(client.reader == null); // lazily created, not yet
+
+    const first = client.recv(5_000 * std.time.ns_per_ms, null);
+    if (first) |body| {
+        // A completed frame would mean the truncated header somehow
+        // resolved — the premise of this test is wrong.
+        client.allocator().free(body);
+        return error.TestUnexpectedResult;
+    } else |err| {
+        // UnexpectedEof is the expected shape; RecvTimeout is accepted
+        // because a pathologically slow CI runner can lose the race with
+        // the child's exit. Either way the frame was abandoned.
+        try testing.expect(err == StdioError.UnexpectedEof or err == StdioError.RecvTimeout);
+    }
+    try testing.expect(client.reader == null);
+
+    // Second recv on the same client: it must not surface the abandoned
+    // 2-byte tail as if it were a message. Any error is fine here (the
+    // pipe is at EOF, or the short deadline bounds a not-yet-reaped
+    // child); a successful body is not.
+    const second = client.recv(2_000 * std.time.ns_per_ms, null);
+    if (second) |body| {
+        client.allocator().free(body);
+        return error.TestUnexpectedResult;
+    } else |err| {
+        try testing.expect(err == StdioError.UnexpectedEof or err == StdioError.RecvTimeout);
+    }
+}
+
+test "acquire on a missing binary reports ChildSpawnFailed and leaves the entry re-acquirable" {
+    // A typo in a server's command must not permanently poison the
+    // entry. `acquire` consumes the pre-allocated spare slot and only
+    // then discovers the spawn failed, so a naive implementation either
+    // leaves `has_client` set (handing the next caller a corpse) or
+    // leaks the entry lock (blocking it forever). Driven through the
+    // registry rather than `StdioClient.init` because the entry-level
+    // bookkeeping is what's under test — the direct-init failure is
+    // already covered above.
+    var reg = StdioRegistry.init(testing.allocator, testing.io);
+    defer reg.deinit();
+    try testing.expectError(
+        StdioError.ChildSpawnFailed,
+        reg.acquire("bogus", &.{"/no/such/binary/xyzzy"}, .{}),
+    );
+
+    // Same name, working binary: the failed spawn must not have stranded
+    // the entry lock or left it permanently dirty.
+    var lease = try reg.acquire("bogus", echo_argv(), .{ .wait_ns = 500 * std.time.ns_per_ms });
+    defer lease.release();
+    try testing.expect(lease.client().stdin != null);
+    try testing.expectEqual(false, lease.entry.dirty.load(.acquire));
 }

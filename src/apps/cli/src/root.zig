@@ -21,15 +21,17 @@ pub const commands = @import("commands/root.zig");
 /// access path is `@import("kabelweb").client`.
 pub const custom_http_client = @import("kabelweb").client;
 
-// Test imports — keep them sorted alphabetically.
+// Test imports — keep them sorted alphabetically. Each implementation file
+// carries its own tests inline (merged from the former `*_test.zig` files),
+// so importing the implementation is what makes those tests discoverable.
 test {
-    _ = @import("config_test.zig");
-    _ = @import("client_test.zig");
-    _ = @import("commands/sessions_test.zig");
-    _ = @import("commands/messages_test.zig");
-    _ = @import("commands/send_test.zig");
-    _ = @import("commands/events_test.zig");
-    _ = @import("commands/pr_status_test.zig");
+    _ = @import("config.zig");
+    _ = @import("client.zig");
+    _ = @import("commands/sessions.zig");
+    _ = @import("commands/messages.zig");
+    _ = @import("commands/send.zig");
+    _ = @import("commands/events.zig");
+    _ = @import("commands/pr_status.zig");
 }
 
 const std = @import("std");

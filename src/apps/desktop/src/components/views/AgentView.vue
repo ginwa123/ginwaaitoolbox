@@ -209,12 +209,12 @@ function handleClearAllVisible() {
       <section data-testid="agent-tools-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-2">
-            <h2 class="text-sm font-semibold" style="color: var(--semantic-text);">
+            <h2 class="text-body font-semibold" style="color: var(--semantic-text);">
               Tools
             </h2>
             <span
               data-testid="agent-tools-count"
-              class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+              class="text-micro font-semibold px-1.5 py-0.5 rounded-full"
               :style="{
                 backgroundColor: tools.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
                 color: tools.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
@@ -226,11 +226,11 @@ function handleClearAllVisible() {
             </span>
           </div>
         </div>
-        <p class="text-xs mb-3" style="color: var(--semantic-text-dim);">
+        <p class="text-dense mb-3" style="color: var(--semantic-text-dim);">
           Toggle to give this Agent capabilities. Empty = pure chat (no tools).
         </p>
 
-        <div v-if="agentToolsStore.error" data-testid="agent-tools-error" class="text-xs p-2 rounded mb-2" style="background: var(--color-red); color: var(--color-bg);">
+        <div v-if="agentToolsStore.error" data-testid="agent-tools-error" class="text-dense p-2 rounded mb-2" style="background: var(--color-red); color: var(--color-bg);">
           Tool registry unavailable.
         </div>
 
@@ -242,7 +242,7 @@ function handleClearAllVisible() {
               type="text"
               placeholder="🔍 Search tools…"
               aria-label="Search tools by name or description"
-              class="w-full px-2 py-1.5 pr-7 rounded text-xs outline-none focus:ring-1"
+              class="w-full px-2 py-1.5 pr-7 rounded text-dense outline-none focus:ring-1"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -270,7 +270,7 @@ function handleClearAllVisible() {
               @click="toolsFilter = 'all'"
               :data-testid="`agent-tools-filter-all`"
               :aria-pressed="toolsFilter === 'all'"
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors"
+              class="text-meta px-2 py-0.5 rounded-full font-medium transition-colors"
               :style="toolsFilter === 'all'
                 ? 'background: var(--color-violet); color: var(--color-bg);'
                 : 'background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'"
@@ -282,7 +282,7 @@ function handleClearAllVisible() {
               @click="toolsFilter = 'enabled'"
               data-testid="agent-tools-filter-enabled"
               :aria-pressed="toolsFilter === 'enabled'"
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors"
+              class="text-meta px-2 py-0.5 rounded-full font-medium transition-colors"
               :style="toolsFilter === 'enabled'
                 ? 'background: var(--color-violet); color: var(--color-bg);'
                 : 'background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'"
@@ -294,7 +294,7 @@ function handleClearAllVisible() {
               @click="toolsFilter = 'disabled'"
               data-testid="agent-tools-filter-disabled"
               :aria-pressed="toolsFilter === 'disabled'"
-              class="text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors"
+              class="text-meta px-2 py-0.5 rounded-full font-medium transition-colors"
               :style="toolsFilter === 'disabled'
                 ? 'background: var(--color-violet); color: var(--color-bg);'
                 : 'background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'"
@@ -302,7 +302,7 @@ function handleClearAllVisible() {
               Disabled ({{ disabledFilterCount }})
             </button>
           </div>
-          <div class="flex items-center justify-between text-[11px]" style="color: var(--semantic-text-dim);">
+          <div class="flex items-center justify-between text-meta" style="color: var(--semantic-text-dim);">
             <span data-testid="agent-tools-filter-status">
               <template v-if="trimmedQuery.length === 0 && toolsFilter === 'all'">
                 Showing all {{ filteredTools.length }} tools
@@ -339,12 +339,12 @@ function handleClearAllVisible() {
           </div>
         </div>
 
-        <div v-if="loading" class="text-xs" style="color: var(--semantic-text-dim);" data-testid="agent-tools-loading">
+        <div v-if="loading" class="text-dense" style="color: var(--semantic-text-dim);" data-testid="agent-tools-loading">
           Loading tool registry…
         </div>
         <div
           v-else-if="filteredTools.length === 0 && trimmedQuery.length > 0"
-          class="text-xs p-3 rounded"
+          class="text-dense p-3 rounded"
           style="color: var(--semantic-text-dim); background: var(--semantic-sidebar-bg);"
           data-testid="agent-tools-empty-search"
         >
@@ -358,7 +358,7 @@ function handleClearAllVisible() {
         </div>
         <div
           v-else-if="filteredTools.length === 0 && toolsFilter !== 'all'"
-          class="text-xs p-3 rounded space-y-1.5"
+          class="text-dense p-3 rounded space-y-1.5"
           style="color: var(--semantic-text-dim); background: var(--semantic-sidebar-bg);"
           data-testid="agent-tools-empty-filter"
         >
@@ -394,19 +394,19 @@ function handleClearAllVisible() {
               class="mt-0.5 shrink-0 cursor-pointer"
             />
             <div class="flex-1 min-w-0">
-              <label :for="`tool-${tool.name}`" class="text-xs cursor-pointer flex items-center gap-2">
+              <label :for="`tool-${tool.name}`" class="text-dense cursor-pointer flex items-center gap-2">
                 <span class="font-mono font-semibold" style="color: var(--semantic-text);">{{ tool.name }}</span>
                 <span
                   v-if="isToolEnabled(tool.name)"
                   data-testid="agent-tool-enabled-chip"
-                  class="text-[9px] uppercase tracking-wider font-bold px-1 py-px rounded"
+                  class="text-micro uppercase tracking-wider font-bold px-1 py-px rounded"
                   style="background: var(--color-violet); color: var(--color-bg);"
                 >ON</span>
               </label>
               <!-- Description: 2-line clamp by default, full text when expanded.
                    Clicking the row (not the checkbox) toggles expansion. -->
               <div
-                class="text-[11px] mt-0.5 leading-snug cursor-pointer"
+                class="text-meta mt-0.5 leading-snug cursor-pointer"
                 :class="{ 'agent-desc-clamped': !expandedTools.has(tool.name) }"
                 style="color: var(--semantic-text-dim);"
                 :title="tool.description"
@@ -437,7 +437,7 @@ function handleClearAllVisible() {
     <!-- Right column: System Prompt → Local Memories → Knowledge (ordered per user request) -->
     <div class="flex-1 flex flex-col p-5 gap-6 overflow-y-auto">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-base font-semibold" style="color: var(--semantic-text);">
+        <h2 class="text-lead font-semibold" style="color: var(--semantic-text);">
           {{ props.item.name || 'Agent' }}
         </h2>
       </div>
@@ -449,10 +449,10 @@ function handleClearAllVisible() {
       <section data-testid="agent-system-prompt-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
-            <span aria-hidden="true" class="text-sm">📝</span>
-            <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">System Prompt</h3>
+            <span aria-hidden="true" class="text-body">📝</span>
+            <h3 class="text-body font-semibold" style="color: var(--semantic-text);">System Prompt</h3>
             <span
-              class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+              class="text-micro font-semibold px-1.5 py-0.5 rounded-full"
               :style="{
                 backgroundColor: systemPrompts.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
                 color: systemPrompts.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
@@ -464,15 +464,15 @@ function handleClearAllVisible() {
             type="button"
             @click="emit('addSystemPrompt')"
             data-testid="agent-add-system-prompt"
-            class="text-xs px-2 py-1 rounded font-medium hover:opacity-80"
+            class="text-dense px-2 py-1 rounded font-medium hover:opacity-80"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
           >
             + Add
           </button>
         </div>
 
-        <div v-if="systemPrompts.length === 0" class="text-xs text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
-          <div class="text-lg mb-1" aria-hidden="true">📝</div>
+        <div v-if="systemPrompts.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
+          <div class="text-title-sm mb-1" aria-hidden="true">📝</div>
           <div>No system prompts yet.</div>
           <div class="mt-1">Add one to give this Agent a persona or standing instructions.</div>
         </div>
@@ -490,17 +490,17 @@ function handleClearAllVisible() {
                 type="button"
                 @click="togglePromptExpanded(p.id)"
                 :data-testid="'agent-system-prompt-expand-' + p.id"
-                class="text-[10px] shrink-0"
+                class="text-micro shrink-0"
                 style="color: var(--semantic-text-muted);"
                 :aria-label="expandedPrompts.has(p.id) ? 'Collapse prompt' : 'Expand prompt'"
               >
                 {{ expandedPrompts.has(p.id) ? '▾' : '▸' }}
               </button>
               <div class="min-w-0 flex-1 cursor-pointer" @click="togglePromptExpanded(p.id)">
-                <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                <div class="text-body font-medium truncate" style="color: var(--semantic-text);">
                   {{ p.title || 'Untitled prompt' }}
                 </div>
-                <div class="text-xs truncate" style="color: var(--semantic-text-dim);">
+                <div class="text-dense truncate" style="color: var(--semantic-text-dim);">
                   {{ promptPreview(p.content) }}
                 </div>
               </div>
@@ -508,7 +508,7 @@ function handleClearAllVisible() {
                 type="button"
                 @click.stop="emit('editSystemPrompt', p)"
                 data-testid="agent-edit-system-prompt"
-                class="opacity-0 group-hover:opacity-100 transition-opacity text-xs px-1 rounded hover:bg-white/10"
+                class="opacity-0 group-hover:opacity-100 transition-opacity text-dense px-1 rounded hover:bg-white/10"
                 style="color: var(--semantic-text-muted);"
                 aria-label="Edit system prompt"
                 title="Edit"
@@ -517,7 +517,7 @@ function handleClearAllVisible() {
                 type="button"
                 @click.stop="emit('removeSystemPrompt', p.id)"
                 data-testid="agent-remove-system-prompt"
-                class="opacity-0 group-hover:opacity-100 transition-opacity text-xs px-1 rounded hover:bg-white/10"
+                class="opacity-0 group-hover:opacity-100 transition-opacity text-dense px-1 rounded hover:bg-white/10"
                 style="color: var(--color-red);"
                 aria-label="Remove system prompt"
                 title="Remove"
@@ -526,7 +526,7 @@ function handleClearAllVisible() {
             <pre
               v-if="expandedPrompts.has(p.id)"
               :data-testid="'agent-system-prompt-detail-' + p.id"
-              class="mt-2 text-xs whitespace-pre-wrap break-words max-h-48 overflow-y-auto rounded p-2"
+              class="mt-2 text-dense whitespace-pre-wrap break-words max-h-48 overflow-y-auto rounded p-2"
               style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-dim); font-family: inherit;"
             >{{ p.content }}</pre>
           </li>
@@ -540,13 +540,13 @@ function handleClearAllVisible() {
       <section data-testid="agent-knowledge-panel" class="rounded-xl p-4" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-3">
           <div class="flex items-center gap-2">
-            <span aria-hidden="true" class="text-sm">📚</span>
-            <h2 class="text-sm font-semibold" style="color: var(--semantic-text);">
+            <span aria-hidden="true" class="text-body">📚</span>
+            <h2 class="text-body font-semibold" style="color: var(--semantic-text);">
               Knowledge
             </h2>
             <span
               data-testid="agent-knowledge-count"
-              class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+              class="text-micro font-semibold px-1.5 py-0.5 rounded-full"
               :style="{
                 backgroundColor: knowledge.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
                 color: knowledge.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
@@ -560,14 +560,14 @@ function handleClearAllVisible() {
             type="button"
             @click="emit('addKnowledge')"
             data-testid="agent-add-knowledge"
-            class="text-xs px-2.5 py-1 rounded-lg font-medium hover:opacity-90 transition-opacity"
+            class="text-dense px-2.5 py-1 rounded-lg font-medium hover:opacity-90 transition-opacity"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
           >
             + Add
           </button>
         </div>
-        <div v-if="knowledge.length === 0" class="text-xs text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
-          <div class="text-lg mb-1" aria-hidden="true">📚</div>
+        <div v-if="knowledge.length === 0" class="text-dense text-center py-6 px-4 rounded-lg" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);">
+          <div class="text-title-sm mb-1" aria-hidden="true">📚</div>
           <div>No knowledge files yet.</div>
           <div class="mt-1">Click <strong>+ Add</strong> to attach a markdown file the agent will read on every chat start.</div>
         </div>
@@ -593,10 +593,10 @@ function handleClearAllVisible() {
                 ▸
               </button>
               <div class="flex-1 min-w-0 cursor-pointer" @click="toggleKnowledgeExpanded(k.id)">
-                <div class="text-sm font-medium truncate" style="color: var(--semantic-text);">
+                <div class="text-body font-medium truncate" style="color: var(--semantic-text);">
                   {{ k.label || (k.content ? 'Inline knowledge' : basename(k.file_path)) }}
                 </div>
-                <div v-if="k.content" class="text-[11px] mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
+                <div v-if="k.content" class="text-meta mt-0.5 flex items-center gap-1.5" style="color: var(--semantic-text-dim);">
                   <span
                     class="px-1.5 py-0.5 rounded shrink-0"
                     data-testid="agent-knowledge-inline-badge"
@@ -604,7 +604,7 @@ function handleClearAllVisible() {
                   >Inline text</span>
                   <span v-if="!expandedKnowledge.has(k.id)" class="truncate" :title="k.content">{{ k.content.slice(0, 60) }}{{ k.content.length > 60 ? '…' : '' }}</span>
                 </div>
-                <div v-else class="text-[11px] font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
+                <div v-else class="text-meta font-mono truncate mt-0.5" style="color: var(--semantic-text-dim);" :title="k.file_path">
                   {{ k.file_path }}
                 </div>
               </div>
@@ -612,7 +612,7 @@ function handleClearAllVisible() {
                 type="button"
                 @click="emit('editKnowledge', k)"
                 data-testid="agent-edit-knowledge"
-                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-white/10"
+                class="text-dense shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-white/10"
                 style="color: var(--semantic-text-muted);"
                 :aria-label="`Edit ${k.label || basename(k.file_path)}`"
                 title="Edit this knowledge entry"
@@ -623,7 +623,7 @@ function handleClearAllVisible() {
                 type="button"
                 @click="emit('removeKnowledge', k.id)"
                 data-testid="agent-remove-knowledge"
-                class="text-xs shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-red-500/10"
+                class="text-dense shrink-0 opacity-40 group-hover:opacity-100 transition-opacity px-1.5 py-0.5 rounded hover:bg-red-500/10"
                 style="color: var(--color-red);"
                 :aria-label="`Remove ${k.label || basename(k.file_path)}`"
                 title="Remove this knowledge file"
@@ -641,14 +641,14 @@ function handleClearAllVisible() {
               <template v-if="k.content">
                 <pre
                   data-testid="agent-knowledge-content-preview"
-                  class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto p-2 rounded"
+                  class="text-meta font-mono whitespace-pre-wrap break-words max-h-48 overflow-y-auto p-2 rounded"
                   style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);"
                 >{{ k.content }}</pre>
                 <button
                   type="button"
                   @click="copyKnowledgeContent(k.content)"
                   data-testid="agent-knowledge-copy"
-                  class="text-[11px] px-1.5 py-0.5 rounded font-medium hover:opacity-80"
+                  class="text-meta px-1.5 py-0.5 rounded font-medium hover:opacity-80"
                   style="background: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
                   title="Copy content to clipboard"
                 >
@@ -656,10 +656,10 @@ function handleClearAllVisible() {
                 </button>
               </template>
               <template v-else>
-                <div class="text-[11px] font-mono break-all p-2 rounded" style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);">
+                <div class="text-meta font-mono break-all p-2 rounded" style="background: var(--semantic-card-bg); color: var(--semantic-text-dim); border: 1px solid var(--color-border);">
                   {{ k.file_path }}
                 </div>
-                <div class="text-[11px]" style="color: var(--semantic-text-dim);">
+                <div class="text-meta" style="color: var(--semantic-text-dim);">
                   File-backed — the agent reads this file at chat start.
                 </div>
               </template>
@@ -669,7 +669,7 @@ function handleClearAllVisible() {
       </section>
 
 
-      <div class="text-xs p-3 rounded-xl text-center" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);">
+      <div class="text-dense p-3 rounded-xl text-center" style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border);">
         <span aria-hidden="true">💡</span> Start a conversation from the sidebar. The system prompt is injected first, then knowledge files are loaded into context, and only the tools you've enabled will be available.
       </div>
     </div>

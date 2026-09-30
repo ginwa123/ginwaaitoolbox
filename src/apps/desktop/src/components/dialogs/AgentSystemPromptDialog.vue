@@ -102,42 +102,42 @@ watch(
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); max-height: 70vh;"
         >
           <div class="px-5 pt-5 pb-4">
-            <h3 id="agent-system-prompt-title" class="text-base font-semibold" style="color: var(--semantic-text);">
+            <h3 id="agent-system-prompt-title" class="text-lead font-semibold" style="color: var(--semantic-text);">
               {{ isEdit ? 'Edit System Prompt' : 'Add System Prompt' }}
             </h3>
-            <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+            <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
               Injected into every chat with this Agent, before its knowledge.
             </p>
           </div>
           <div class="px-5 pb-4">
-            <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">Title</label>
+            <label class="block text-dense font-medium mb-2" style="color: var(--semantic-text-dim);">Title</label>
             <input
               ref="titleInput"
               v-model="title"
               type="text"
               placeholder="Persona"
               data-testid="agent-system-prompt-title"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
             />
           </div>
           <div class="px-5 pb-4">
-            <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">Prompt</label>
+            <label class="block text-dense font-medium mb-2" style="color: var(--semantic-text-dim);">Prompt</label>
             <textarea
               v-model="content"
               rows="10"
               placeholder="You are a senior Zig engineer who…"
               data-testid="agent-system-prompt-content"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none resize-y"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none resize-y"
               style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
             ></textarea>
           </div>
-          <div v-if="props.error" data-testid="agent-system-prompt-error" class="mx-5 mb-3 text-xs p-2 rounded" style="background: var(--color-red); color: var(--color-bg);">
+          <div v-if="props.error" data-testid="agent-system-prompt-error" class="mx-5 mb-3 text-dense p-2 rounded" style="background: var(--color-red); color: var(--color-bg);">
             {{ props.error }}
           </div>
           <div class="px-5 pb-5 flex justify-end gap-2">
-            <button type="button" @click="handleClose" :disabled="props.busy" data-testid="agent-system-prompt-cancel" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);">Cancel</button>
-            <button type="button" @click="handleSubmit" :disabled="!canSubmit" data-testid="agent-system-prompt-submit" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);">
+            <button type="button" @click="handleClose" :disabled="props.busy" data-testid="agent-system-prompt-cancel" class="px-3 py-1.5 rounded-lg text-body font-medium disabled:opacity-50" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);">Cancel</button>
+            <button type="button" @click="handleSubmit" :disabled="!canSubmit" data-testid="agent-system-prompt-submit" class="px-3 py-1.5 rounded-lg text-body font-medium disabled:opacity-50" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);">
               <span v-if="props.busy">Saving…</span>
               <span v-else>{{ isEdit ? 'Save' : 'Add' }}</span>
             </button>

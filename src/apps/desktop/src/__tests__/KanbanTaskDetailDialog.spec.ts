@@ -782,13 +782,16 @@ describe('KanbanTaskDetailDialog — create mode', () => {
     expect(strip).toBeNull()
   })
 
-  it('Save button reads "Create task" and is disabled when name is empty', async () => {
+  it('"Create task only" menu item is disabled when name is empty', async () => {
     mountCreateDialog()
     await flushPromises()
+    // In create mode the commit split button's left half is the run
+    // action, so the plain create lives in the caret menu under this
+    // testid.
     const saveBtn = findInDom<HTMLButtonElement>(
       '[data-testid="kanban-task-detail-save"]',
     )
-    expect(saveBtn?.textContent?.trim()).toBe('Create task')
+    expect(saveBtn?.textContent).toContain('Create task only')
     expect(saveBtn?.hasAttribute('disabled')).toBe(true)
   })
 

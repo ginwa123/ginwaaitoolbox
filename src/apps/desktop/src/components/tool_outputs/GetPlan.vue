@@ -239,7 +239,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !parsed.success }"
     data-testid="get-plan"
   >
@@ -264,7 +264,7 @@ const handleToggle = (next: boolean) => {
       <!-- Error body — always visible when expanded AND error. -->
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="get-plan-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -274,7 +274,7 @@ const handleToggle = (next: boolean) => {
       <!-- Empty result (valid response, no plan yet). -->
       <div
         v-else-if="parsed.isEmpty"
-        class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-xs"
+        class="px-3 py-3 text-center text-[var(--semantic-text-muted)] text-dense"
         data-testid="get-plan-empty"
       >
         No plan set — use <code class="text-[var(--color-violet)]">update_plan</code> to lay one out.
@@ -320,7 +320,7 @@ const handleToggle = (next: boolean) => {
         <!-- Edge case: body present but no checklist lines at all. -->
         <div
           v-if="checklistLines.length === 0"
-          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
           data-testid="get-plan-no-checklist"
         >
           (plan body has no checklist lines)

@@ -68,6 +68,8 @@ pub const MemoryToolRule =
     \\
     \\These are **AGENT-MANAGED notes** (SQLite FTS5 index), distinct from the curated `.md` files in `~/.config/nalar/memories/` (auto-injected as `## Global Knowledge`). Use `save_memory` for short structured facts you'd otherwise re-ask; use the `.md` surface for hand-curated insights (architecture notes, project conventions).
     \\
+    \\**SCOPE — PER WORKSPACE, NOT GLOBAL.** Notes are filed under the workspace THIS SESSION belongs to. `load_memory` searches only that workspace, and another workspace's `mem_<16-hex>` id comes back `not found`. The scope is derived from the session server-side — there is no `workspace_id` argument. So a preference you save here will NOT come back in a different workspace; if a fact must hold everywhere, put it in a `~/.config/nalar/memories/*.md` file instead.
+    \\
     \\**TWO TOOLS (append-only — no edit, no delete):**
     \\- `save_memory({ content, tags? })` — APPENDS a new row with a fresh `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. `content` must be 1 KiB – 1 MiB (empty/oversized rejected, no silent truncation). To correct a fact, save a NEW memory — never try to overwrite; recency + rank surface the latest row.
     \\- `load_memory({ query, tags?, limit?, offset?, with_content? })` — FTS5 phrase search over content AND tags. Ranked hits with `<snippet>`; `with_content=true` fetches full body (2 KiB/row cap); `limit` default 10, cap 50; paginate via `<total_count>` + `offset`. By-id lookup (`{ id }`) fetches one row's full body.

@@ -60,3 +60,29 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .updated_at = self.updated_at,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "agent_memory: init + deinit" {
+    var m = try init(testing.allocator, .{
+        .id = "mem_1",
+        .content = "User prefers Anthropic Sonnet for code review.",
+        .tags = "preferences||models",
+        .created_at = "2026-08-15 12:00:00",
+        .updated_at = "2026-08-15 12:00:00",
+    });
+    defer deinit(&m, testing.allocator);
+
+    try testing.expectEqualStrings("mem_1", m.id);
+    try testing.expectEqualStrings("User prefers Anthropic Sonnet for code review.", m.content);
+    try testing.expectEqualStrings("preferences||models", m.tags);
+}

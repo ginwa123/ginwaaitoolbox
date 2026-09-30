@@ -54,7 +54,7 @@ const handleToggle = (next: boolean) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !parsed.success && !isRunning }"
     data-testid="set-git-worktree"
   >
@@ -78,7 +78,7 @@ const handleToggle = (next: boolean) => {
     >
       <div
         v-if="parsed.error"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
@@ -86,7 +86,7 @@ const handleToggle = (next: boolean) => {
 
       <div
         v-if="parsed.path"
-        class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Path:</span>
         <span class="whitespace-pre-wrap break-all text-[var(--color-violet)]" :title="parsed.path">{{ parsed.path }}</span>
@@ -94,7 +94,7 @@ const handleToggle = (next: boolean) => {
 
       <div
         v-if="parsed.branch"
-        class="flex gap-2 px-2 py-1.5 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0 text-[var(--semantic-text-muted)]">Branch:</span>
         <span class="whitespace-pre-wrap break-all text-[var(--semantic-text)] font-mono">{{ parsed.branch }}</span>
@@ -102,7 +102,7 @@ const handleToggle = (next: boolean) => {
 
       <div
         v-if="parsed.cleared"
-        class="flex gap-2 px-2 py-1.5 text-[var(--semantic-text-dim)] text-xs"
+        class="flex gap-2 px-2 py-1.5 text-[var(--semantic-text-dim)] text-dense"
       >
         <span>Worktree binding removed and directory deleted.</span>
       </div>

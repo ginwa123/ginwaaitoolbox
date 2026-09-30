@@ -115,7 +115,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{
       'border-orange-500/50 opacity-85': warningMessage && !hasError,
       'border-red-500/50 opacity-90': hasError,
@@ -134,7 +134,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
       </span>
       <span
         v-if="displayPath"
-        class="text-[var(--semantic-text-dim)] text-[0.7rem] max-w-[150px] truncate"
+        class="text-[var(--semantic-text-dim)] text-meta max-w-[150px] truncate"
         :title="displayPath"
       >
         in {{ displayPath }}
@@ -142,7 +142,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
       <span
         v-if="isRunning"
         data-testid="glob-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse"
+        class="text-micro text-yellow-500 animate-pulse"
         >running…</span
       >
 
@@ -181,7 +181,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
     <div v-if="isExpanded" class="gl-content">
       <div
         v-if="hasError && errorMessage"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense"
         data-testid="glob-error"
       >
         <span class="font-semibold shrink-0">Error:</span>
@@ -210,14 +210,14 @@ const handleOpenInEditor = (e: Event, path: string) => {
       </div>
       <div
         v-else-if="warningMessage"
-        class="px-3 py-2 text-center text-[var(--color-orange)] text-xs"
+        class="px-3 py-2 text-center text-[var(--color-orange)] text-dense"
         data-testid="glob-empty"
       >
         {{ warningMessage }}
       </div>
       <div
         v-else
-        class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+        class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
         data-testid="glob-empty"
       >
         (no files)
@@ -236,7 +236,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 .gl-title {
   color: var(--color-violet);
   font-weight: 600;
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
 }
 
 .gl-pattern {
@@ -251,7 +251,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 .gl-summary {
   margin-left: auto;
   color: var(--semantic-text-muted);
-  font-size: 0.65rem;
+  font-size: var(--text-micro);
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -259,24 +259,24 @@ const handleOpenInEditor = (e: Event, path: string) => {
 
 .gl-offset {
   color: var(--semantic-text-dim);
-  font-size: 0.6rem;
+  font-size: var(--text-micro);
 }
 
 .gl-warning-text {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: var(--text-micro);
   color: var(--color-orange);
 }
 
 .gl-error-text {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: var(--text-micro);
   color: #f87171;
 }
 
 .gl-toggle {
   color: var(--semantic-text-muted);
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
   width: 1rem;
   text-align: center;
 }
@@ -304,7 +304,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
 .gl-file-path {
   flex: 1;
   color: var(--semantic-text);
-  font-size: 0.7rem;
+  font-size: var(--text-meta);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -318,7 +318,7 @@ const handleOpenInEditor = (e: Event, path: string) => {
   color: var(--semantic-text-muted);
   opacity: 0;
   transition: opacity 0.15s;
-  font-size: 0.85rem;
+  font-size: var(--text-meta);
   flex-shrink: 0;
 }
 

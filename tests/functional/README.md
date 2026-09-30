@@ -158,10 +158,14 @@ the harness never uses port 8081 (the always-running dev nalar).
 ### Random by default
 
 The harness picks a **random** port from a wide range
-(`[40000, 60000]`, see `RANDOM_PORT_START` / `RANDOM_PORT_END` in
-`harness.py`). With 20,000 ports of headroom and 50 attempts per boot,
-the probability of collision is effectively zero for any realistic host
-occupancy.
+(`[20000, 32000]`, see `RANDOM_PORT_START` / `RANDOM_PORT_END` in
+`harness.py`). The range deliberately sits below Linux's default
+`net.ipv4.ip_local_port_range` (32768-60999): the original 40000-60000
+window lived inside the kernel's outgoing-source pool, so a port chosen
+by a probe bind could be re-allocated before the child bound its real
+listener (commit f131e6c4). With 12,000 ports of headroom and 50
+attempts per boot, the probability of collision is effectively zero for
+any realistic host occupancy.
 
 This replaced the previous sequential scan (`8080, 8082, ..., 8199`)
 that caused two recurring CI failures:

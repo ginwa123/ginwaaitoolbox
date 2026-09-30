@@ -696,7 +696,7 @@ const handleColumnDrop = (event: DragEvent) => {
         v-model="renameValue"
         type="text"
         :data-testid="`kanban-column-${column.id}-rename-input`"
-        class="flex-1 px-2 py-0.5 rounded text-sm outline-none"
+        class="flex-1 px-2 py-0.5 rounded text-body outline-none"
         style="
           background-color: var(--semantic-card-bg);
           border: 1px solid var(--color-border);
@@ -709,7 +709,7 @@ const handleColumnDrop = (event: DragEvent) => {
       <button
         v-else
         type="button"
-        class="flex-1 text-left text-sm font-medium truncate hover:opacity-80"
+        class="flex-1 text-left text-body font-medium truncate hover:opacity-80"
         style="color: var(--semantic-text)"
         :data-testid="`kanban-column-${column.id}-name`"
         @click="startInlineRename"
@@ -718,7 +718,7 @@ const handleColumnDrop = (event: DragEvent) => {
       </button>
       <!-- Count badge -->
       <span
-        class="text-xs px-1.5 py-0.5 rounded-full shrink-0"
+        class="text-dense px-1.5 py-0.5 rounded-full shrink-0"
         style="background-color: var(--color-bg-p1); color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-count`"
       >
@@ -733,7 +733,7 @@ const handleColumnDrop = (event: DragEvent) => {
           :data-testid="`kanban-column-${column.id}-menu-trigger`"
           @click.stop="toggleMenu"
         >
-          <span class="text-base leading-none">⋮</span>
+          <span class="text-lead leading-none">⋮</span>
         </button>
         <ul
           v-if="menuOpen"
@@ -744,7 +744,7 @@ const handleColumnDrop = (event: DragEvent) => {
           <li>
             <button
               type="button"
-              class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+              class="w-full px-3 py-2 text-left text-body hover:opacity-80"
               style="color: var(--semantic-text)"
               :data-testid="`kanban-column-${column.id}-menu-rename`"
               @click="handleMenuRename"
@@ -761,7 +761,7 @@ const handleColumnDrop = (event: DragEvent) => {
             -->
             <button
               type="button"
-              class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+              class="w-full px-3 py-2 text-left text-body hover:opacity-80"
               style="color: var(--semantic-text)"
               :data-testid="`kanban-column-${column.id}-menu-sort`"
               @click="handleMenuSort"
@@ -772,7 +772,7 @@ const handleColumnDrop = (event: DragEvent) => {
           <li>
             <button
               type="button"
-              class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+              class="w-full px-3 py-2 text-left text-body hover:opacity-80"
               style="color: #ef4444"
               :data-testid="`kanban-column-${column.id}-menu-delete`"
               @click="handleMenuDelete"
@@ -790,7 +790,7 @@ const handleColumnDrop = (event: DragEvent) => {
             -->
             <button
               type="button"
-              class="w-full px-3 py-2 text-left text-sm hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="w-full px-3 py-2 text-left text-body hover:opacity-80 disabled:opacity-50 disabled:cursor-not-allowed"
               style="color: var(--semantic-text)"
               :data-testid="`kanban-column-${column.id}-menu-run-all`"
               :disabled="runAllBusy"
@@ -811,7 +811,7 @@ const handleColumnDrop = (event: DragEvent) => {
          description" sentinel plus legacy KanbanColumn literals. -->
     <p
       v-if="column.description"
-      class="text-[11px] px-3 pt-0.5 pb-1.5 truncate"
+      class="text-meta px-3 pt-0.5 pb-1.5 truncate"
       style="color: var(--semantic-text-dim)"
       :title="column.description"
       :data-testid="`kanban-column-${column.id}-description`"
@@ -903,7 +903,7 @@ const handleColumnDrop = (event: DragEvent) => {
            the drop zone a clear "drop here" affordance. -->
       <div
         v-if="cardsInColumn.length === 0"
-        class="text-xs text-center py-6"
+        class="text-dense text-center py-6"
         style="color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-empty`"
       >
@@ -921,7 +921,7 @@ const handleColumnDrop = (event: DragEvent) => {
         type="button"
         :disabled="loadingMoreTasks"
         @click="handleManualLoadMore"
-        class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
+        class="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-dense transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-80"
         style="color: var(--semantic-text-dim)"
         :data-testid="`kanban-column-${column.id}-load-more`"
       >

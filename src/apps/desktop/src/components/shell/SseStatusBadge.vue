@@ -110,7 +110,7 @@ onUnmounted(() => {
   gap: 0.4rem;
   padding: 0.15rem 0.6rem;
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
   font-weight: 500;
   line-height: 1.2;
   white-space: nowrap;

@@ -688,8 +688,8 @@ const sendMessage = () => {
       style="background: rgba(135, 169, 135, 0.15); border: 1px solid var(--color-green)"
     >
       <span style="color: var(--color-green)">💬</span>
-      <span class="text-sm font-medium" style="color: var(--color-green)">Review Mode</span>
-      <span class="text-xs" style="color: var(--semantic-text-dim)"
+      <span class="text-body font-medium" style="color: var(--color-green)">Review Mode</span>
+      <span class="text-dense" style="color: var(--semantic-text-dim)"
         >- Submit your code review comment</span
       >
     </div>
@@ -708,11 +708,11 @@ const sendMessage = () => {
           class="w-6 h-6 border-2 rounded-full animate-spin mx-auto mb-2"
           style="border-color: var(--color-violet); border-top-color: transparent"
         ></div>
-        <p class="text-sm" style="color: var(--semantic-text-dim)">Searching…</p>
+        <p class="text-body" style="color: var(--semantic-text-dim)">Searching…</p>
       </div>
       <div
         v-else-if="filteredFiles.length === 0"
-        class="p-2 text-sm"
+        class="p-2 text-body"
         style="color: var(--semantic-text-dim)"
       >
         No files found
@@ -722,7 +722,7 @@ const sendMessage = () => {
           v-for="(file, idx) in visibleFiles"
           :key="file.path"
           @click="selectFile(file)"
-          class="w-full text-left px-3 py-1.5 rounded text-sm flex items-center gap-2 transition-colors"
+          class="w-full text-left px-3 py-1.5 rounded text-body flex items-center gap-2 transition-colors"
           :class="idx === selectedFileIndex ? 'file-item-selected' : ''"
           :style="
             idx === selectedFileIndex
@@ -732,13 +732,13 @@ const sendMessage = () => {
           @mouseenter="selectedFileIndex = idx"
         >
           <span>{{ file.isDirectory ? '📁' : '📄' }}</span>
-          <span class="truncate font-mono text-xs">{{ file.path }}</span>
+          <span class="truncate font-mono text-dense">{{ file.path }}</span>
         </button>
       </div>
       <!-- Footer info (render cap vs server total) -->
       <div
         v-if="!isLoadingFiles && filteredFiles.length > 0"
-        class="px-3 py-1.5 text-xs rounded mt-1"
+        class="px-3 py-1.5 text-dense rounded mt-1"
         style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-dim)"
       >
         showing {{ visibleFiles.length }} of {{ serverTotal }} files
@@ -755,7 +755,7 @@ const sendMessage = () => {
         <button
           type="button"
           @click="toggleQueuePanel"
-          class="flex items-center gap-2 px-3 py-3 rounded-xl text-sm transition-all duration-200 border"
+          class="flex items-center gap-2 px-3 py-3 rounded-xl text-body transition-all duration-200 border"
           :style="
             showQueuePanel
               ? 'background-color: var(--color-blue-1); border-color: var(--color-violet); color: var(--semantic-text);'
@@ -763,14 +763,14 @@ const sendMessage = () => {
           "
         >
           <span
-            class="text-xs font-medium px-1.5 py-0.5 rounded"
+            class="text-dense font-medium px-1.5 py-0.5 rounded"
             style="background-color: var(--color-violet); color: var(--color-bg)"
           >
             {{ queuedMessagesList.length }}
           </span>
           <span style="color: var(--semantic-text-dim)">Queued</span>
           <span
-            class="text-xs"
+            class="text-dense"
             :style="
               showQueuePanel ? 'color: var(--color-violet);' : 'color: var(--semantic-text-muted);'
             "
@@ -794,10 +794,10 @@ const sendMessage = () => {
             class="px-4 py-2 border-b flex items-center justify-between"
             style="border-color: var(--color-border)"
           >
-            <span class="text-sm font-medium" style="color: var(--semantic-text)"
+            <span class="text-body font-medium" style="color: var(--semantic-text)"
               >Queued Messages</span
             >
-            <span class="text-xs" style="color: var(--semantic-text-dim)"
+            <span class="text-dense" style="color: var(--semantic-text-dim)"
               >{{ queuedMessagesList.length }} messages</span
             >
           </div>
@@ -816,17 +816,17 @@ const sendMessage = () => {
               @mouseleave="(e) => ((e.target as HTMLElement).style.backgroundColor = '')"
               @click="useQueuedMessage(msg)"
             >
-              <span v-if="isCompletionMsg(msg)" class="text-xs font-medium"
+              <span v-if="isCompletionMsg(msg)" class="text-dense font-medium"
                 >Background pid {{ completionPid(msg) }}</span
               >
-              <p class="text-sm truncate" style="color: var(--semantic-text)">{{ msg.message }}</p>
-              <p class="text-xs mt-1" style="color: var(--semantic-text-dim)">Click to use</p>
+              <p class="text-body truncate" style="color: var(--semantic-text)">{{ msg.message }}</p>
+              <p class="text-dense mt-1" style="color: var(--semantic-text-dim)">Click to use</p>
             </div>
           </div>
 
           <!-- Panel footer -->
           <div
-            class="px-4 py-2 text-xs text-center"
+            class="px-4 py-2 text-dense text-center"
             style="background-color: var(--semantic-sidebar-bg); color: var(--semantic-text-muted)"
           >
             Click a message to use it
@@ -840,7 +840,7 @@ const sendMessage = () => {
         placeholder="Type a message... (@ to search files)"
         :disabled="isInitializing"
         data-testid="chat-message-textarea"
-        class="flex-1 px-4 py-3 rounded-xl text-sm outline-none transition-all duration-200 resize-none"
+        class="flex-1 px-4 py-3 rounded-xl text-body outline-none transition-all duration-200 resize-none"
         :class="isInitializing ? 'opacity-60 cursor-not-allowed' : ''"
         style="
           background-color: transparent;
@@ -859,7 +859,7 @@ const sendMessage = () => {
       <button
         type="button"
         @click="triggerFilePicker"
-        class="px-3 py-3 rounded-xl text-sm transition-all duration-200 border flex items-center gap-1 composer-ghost-btn"
+        class="px-3 py-3 rounded-xl text-body transition-all duration-200 border flex items-center gap-1 composer-ghost-btn"
         style="
           background-color: transparent;
           border-color: transparent;
@@ -898,7 +898,7 @@ const sendMessage = () => {
         @click="handleStopClick"
         :disabled="isStopping"
         data-testid="stop-session-button"
-        class="px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 border flex items-center justify-center gap-2 composer-stop-btn"
+        class="px-4 py-3 rounded-xl text-body font-medium transition-all duration-200 border flex items-center justify-center gap-2 composer-stop-btn"
         :class="isStopping ? 'cursor-not-allowed opacity-70' : ''"
         style="
           background-color: transparent;
@@ -930,7 +930,7 @@ const sendMessage = () => {
         type="submit"
         :disabled="isLoading || isInitializing"
         data-testid="send-message-button"
-        class="px-4 py-3 rounded-xl font-medium text-sm transition-all duration-200 border flex items-center justify-center gap-2"
+        class="px-4 py-3 rounded-xl font-medium text-body transition-all duration-200 border flex items-center justify-center gap-2"
         :class="
           isLoading || isInitializing ? 'cursor-not-allowed' : 'hover:opacity-90 active:scale-95'
         "

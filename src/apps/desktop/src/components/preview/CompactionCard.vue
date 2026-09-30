@@ -252,7 +252,7 @@ parse(props.content)
   margin: 8px 0;
   background-color: var(--color-bg-elevated);
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--text-dense);
   color: var(--color-text);
   max-width: 100%;
   box-sizing: border-box;
@@ -266,18 +266,18 @@ parse(props.content)
 }
 
 .compaction-icon {
-  font-size: 18px;
+  font-size: var(--text-title-sm);
   line-height: 1;
 }
 
 .compaction-title {
   flex: 1;
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--text-body);
 }
 
 .compaction-count {
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--color-text-dim);
   background-color: var(--color-bg);
   padding: 3px 8px;
@@ -304,7 +304,7 @@ parse(props.content)
 }
 
 .metadata-label {
-  font-size: 10px;
+  font-size: var(--text-micro);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--color-text-dim);
@@ -312,14 +312,14 @@ parse(props.content)
 
 .metadata-value {
   font-family: monospace;
-  font-size: 12px;
+  font-size: var(--text-dense);
   color: var(--color-text);
   word-break: break-all;
 }
 
 .compaction-section-title {
   margin: 0 0 6px 0;
-  font-size: 11px;
+  font-size: var(--text-meta);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -338,7 +338,7 @@ parse(props.content)
   border: none;
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-meta);
   color: var(--color-accent, var(--color-violet));
   padding: 0;
   text-decoration: underline;
@@ -370,7 +370,7 @@ parse(props.content)
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--color-border-soft);
-  font-size: 12px;
+  font-size: var(--text-dense);
   min-width: 0;
 }
 
@@ -379,7 +379,7 @@ parse(props.content)
 }
 
 .role-badge {
-  font-size: 9px;
+  font-size: var(--text-micro);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -414,7 +414,7 @@ parse(props.content)
 
 .entry-id {
   font-family: monospace;
-  font-size: 10px;
+  font-size: var(--text-micro);
   color: var(--color-text-dim);
   max-width: 100px;
   overflow: hidden;
@@ -434,7 +434,7 @@ parse(props.content)
 
 .entry-tool-call-id {
   font-family: monospace;
-  font-size: 10px;
+  font-size: var(--text-micro);
   background-color: var(--color-bg);
   padding: 1px 5px;
   border-radius: 3px;
@@ -453,7 +453,7 @@ parse(props.content)
   border: none;
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-dense);
   font-weight: 600;
   color: var(--color-text);
   padding: 0;
@@ -469,14 +469,14 @@ parse(props.content)
 }
 
 .summary-toggle-icon {
-  font-size: 10px;
+  font-size: var(--text-micro);
   width: 12px;
   text-align: center;
   flex-shrink: 0;
 }
 
 .summary-toggle-hint {
-  font-size: 10px;
+  font-size: var(--text-micro);
   font-weight: 400;
   color: var(--color-text-dim);
   margin-left: auto;
@@ -489,7 +489,7 @@ parse(props.content)
   border-radius: 4px;
   border: 1px solid var(--color-border-soft);
   font-family: monospace;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   white-space: pre-wrap;
   word-wrap: break-word;

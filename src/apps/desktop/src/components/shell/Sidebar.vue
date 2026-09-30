@@ -1414,7 +1414,7 @@ defineExpose({
          Plan: docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md -->
     <div
       class="h-12 flex items-center shrink-0"
-      :class="isCollapsed ? 'justify-center px-0' : 'px-4 justify-between'"
+      :class="isCollapsed ? 'justify-center px-0' : 'px-[var(--sb-gutter)] justify-between'"
       style="border-bottom: 1px solid var(--color-border)"
     >
       <div
@@ -1447,7 +1447,7 @@ defineExpose({
       <div v-if="!isCollapsed" class="flex items-center gap-3">
         <button
           @click="goToSettings"
-          class="text-xs font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+          class="text-micro font-medium transition-colors duration-150 hover:text-[--semantic-text]"
           style="color: var(--semantic-text-dim)"
           title="Settings"
           aria-label="Settings"
@@ -1459,7 +1459,7 @@ defineExpose({
           v-if="authEnabled"
           :disabled="loggingOut"
           @click="handleLogout"
-          class="text-xs font-medium transition-colors duration-150 hover:text-[--semantic-text]"
+          class="text-micro font-medium transition-colors duration-150 hover:text-[--semantic-text]"
           style="color: var(--semantic-text-dim)"
           title="Log out"
           aria-label="Log out"
@@ -1486,7 +1486,7 @@ defineExpose({
          title/aria-label. -->
     <button
       data-testid="sidebar-new-chat-button"
-      class="h-10 flex items-center gap-2 shrink-0 px-4 border-b transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40"
+      class="h-10 flex items-center gap-2 shrink-0 px-[var(--sb-gutter)] border-b transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-40"
       :class="isCollapsed ? 'justify-center px-0' : 'hover:bg-[var(--semantic-card-bg)]'"
       style="border-color: var(--color-border)"
       :disabled="!workspacesStore.activeWorkspaceId || isCreatingChat"
@@ -1501,19 +1501,19 @@ defineExpose({
       @click="handleNewChat"
     >
       <span
-        class="w-3.5 text-center text-sm leading-none"
+        class="w-[var(--sb-hit)] text-center text-meta leading-none"
         :style="{ color: 'var(--semantic-text-dim)' }"
         aria-hidden="true"
       >{{ isCreatingChat ? '◌' : '✎' }}</span>
       <span
         v-if="!isCollapsed"
-        class="text-xs font-medium"
+        class="text-dense font-medium"
         :style="{ color: 'var(--semantic-text-dim)' }"
       >New Chat</span>
     </button>
 
     <!-- Content -->
-    <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'p-3'">
+    <nav class="flex-1 flex flex-col overflow-hidden" :class="isCollapsed ? 'px-2 py-3' : 'py-2'">
       <!-- Chats List Component -->
       <ChatsList ref="chatsListRef" :collapsed="isCollapsed" @navigate="handleChatsNavigate" />
 

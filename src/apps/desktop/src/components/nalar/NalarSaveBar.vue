@@ -26,7 +26,7 @@ const emit = defineEmits<{
       class="sticky bottom-0 left-0 right-0 flex items-center justify-between gap-4 px-4 h-12 border-t backdrop-blur-sm"
       style="background-color: rgba(24, 22, 22, 0.92); border-color: var(--color-border);"
     >
-      <div class="flex items-center gap-2 text-xs font-mono" style="color: var(--semantic-text-muted);">
+      <div class="flex items-center gap-2 text-dense font-mono" style="color: var(--semantic-text-muted);">
         <span
           class="w-1.5 h-1.5 rounded-full"
           style="background-color: var(--color-yellow);"
@@ -40,7 +40,7 @@ const emit = defineEmits<{
           data-testid="reset-btn"
           :disabled="saving"
           @click="emit('reset')"
-          class="px-3 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+          class="px-3 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
           style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
         >Reset</button>
         <button
@@ -48,7 +48,7 @@ const emit = defineEmits<{
           data-testid="save-btn"
           :disabled="saving"
           @click="emit('save')"
-          class="px-4 h-8 rounded-md text-xs font-medium border transition-colors duration-150"
+          class="px-4 h-8 rounded-md text-dense font-medium border transition-colors duration-150"
           style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
         >{{ saving ? 'Saving…' : 'Save changes' }}</button>
       </div>

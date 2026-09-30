@@ -15,7 +15,11 @@ import java.io.IOException
 class RecordingAuthTransport(
     private val delegate: AuthTransport,
     private val store: NetworkLogStore = NetworkLogStore.default,
-    private val baseUrl: String = AuthConfig.BASE_URL,
+    // Read per record rather than captured, so the inspector shows the host the
+    // call actually went to. A server the reader has since changed would
+    // otherwise be logged under the previous one, which is precisely the moment
+    // the inspector is most worth having.
+    private val baseUrlProvider: () -> String = { AuthConfig.BASE_URL },
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val nanoTime: () -> Long = System::nanoTime,
 ) : AuthTransport {
@@ -53,7 +57,7 @@ class RecordingAuthTransport(
         val requestHeaders = listOf(
             HttpHeader(HttpsHttpExchange.ACCEPT_HEADER, HttpsHttpExchange.DEFAULT_ACCEPT),
         ) + headers.map { (name, value) -> HttpHeader(name, value) }
-        val url = baseUrl.trimEnd('/') + path
+        val url = baseUrlProvider().trimEnd('/') + path
         val startedAt = nowMillis()
         val startedNanos = nanoTime()
 

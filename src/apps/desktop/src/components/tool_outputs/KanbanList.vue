@@ -172,7 +172,7 @@ const copyId = async (e: Event, id: string) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-90': !isSuccess }"
     data-testid="kanban-list"
   >
@@ -183,16 +183,16 @@ const copyId = async (e: Event, id: string) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">kanban_list</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">kanban_list</span>
       <span
-        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-xs"
+        class="flex-1 truncate text-left text-[var(--semantic-text-muted)] text-dense"
         :title="headerTitle"
       >
         {{ headerLabel }}
       </span>
 
       <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
+      <span class="text-dense font-semibold" :class="isSuccess ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
 
@@ -200,13 +200,13 @@ const copyId = async (e: Event, id: string) => {
       <span
         v-if="isRunning"
         data-testid="kanban-list-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse shrink-0"
+        class="text-micro text-yellow-500 animate-pulse shrink-0"
       >
         running…
       </span>
 
       <!-- Toggle indicator -->
-      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-sm">
+      <span class="w-4 text-center text-[var(--semantic-text-muted)] text-body">
         {{ isExpanded ? '−' : '+' }}
       </span>
     </div>
@@ -214,7 +214,7 @@ const copyId = async (e: Event, id: string) => {
     <!-- Expanded content -->
     <div v-if="isExpanded" class="border-t border-[var(--color-border)] bg-black/[0.02]">
       <!-- Error message -->
-      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="errorMessage" class="flex gap-2 px-2 py-1.5 text-red-500 text-dense">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
       </div>
@@ -222,7 +222,7 @@ const copyId = async (e: Event, id: string) => {
       <!-- Empty board hint (kanban exists but has 0 columns) -->
       <div
         v-else-if="hintMessage"
-        class="flex gap-2 px-2 py-1.5 text-[var(--semantic-text-dim)] text-xs italic border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-[var(--semantic-text-dim)] text-dense italic border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0 not-italic">Hint:</span>
         <span class="whitespace-pre-wrap break-all">{{ hintMessage }}</span>
@@ -232,14 +232,14 @@ const copyId = async (e: Event, id: string) => {
       <template v-if="isSuccess">
         <!-- Columns section -->
         <div
-          class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]"
+          class="px-3 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-b border-dashed border-[var(--color-border)]"
         >
           Columns ({{ columns.length }})
         </div>
 
         <div
           v-if="columns.length === 0"
-          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-xs italic"
+          class="px-3 py-2 text-center text-[var(--semantic-text-muted)] text-dense italic"
         >
           No columns on this board.
         </div>
@@ -257,13 +257,13 @@ const copyId = async (e: Event, id: string) => {
               {{ col.name }}
             </span>
             <span
-              class="text-[var(--semantic-text-dim)] text-[0.65rem] truncate shrink-0 max-w-[10rem]"
+              class="text-[var(--semantic-text-dim)] text-micro truncate shrink-0 max-w-[10rem]"
               :title="col.id"
             >
               {{ col.id }}
             </span>
             <span
-              class="shrink-0 px-1.5 py-0.5 rounded text-[0.65rem] font-semibold"
+              class="shrink-0 px-1.5 py-0.5 rounded text-micro font-semibold"
               :class="
                 col.task_count > 0
                   ? 'bg-violet-500/15 text-[var(--color-violet)]'
@@ -275,7 +275,7 @@ const copyId = async (e: Event, id: string) => {
             </span>
             <button
               v-if="col.id"
-              class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-base transition-opacity shrink-0"
+              class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-lead transition-opacity shrink-0"
               @click.stop="copyId($event, col.id)"
               title="Copy column id"
             >
@@ -287,7 +287,7 @@ const copyId = async (e: Event, id: string) => {
         <!-- Tasks section (only when there are tasks) -->
         <template v-if="tasks.length > 0">
           <div
-            class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-y border-dashed border-[var(--color-border)]"
+            class="px-3 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-y border-dashed border-[var(--color-border)]"
           >
             Tasks ({{ tasks.length }})
           </div>
@@ -299,7 +299,7 @@ const copyId = async (e: Event, id: string) => {
               class="group/row flex items-center gap-2 px-2 py-1 hover:bg-violet-500/5"
             >
               <span
-                class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-[0.65rem]"
+                class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-micro"
               >
                 #{{ task.position }}
               </span>
@@ -310,7 +310,7 @@ const copyId = async (e: Event, id: string) => {
                 {{ task.name }}
               </span>
               <span
-                class="px-1.5 py-0.5 rounded text-[0.65rem] font-medium truncate max-w-[8rem] shrink-0"
+                class="px-1.5 py-0.5 rounded text-micro font-medium truncate max-w-[8rem] shrink-0"
                 :class="
                   task.column_name
                     ? 'bg-violet-500/15 text-[var(--color-violet)]'
@@ -321,7 +321,7 @@ const copyId = async (e: Event, id: string) => {
                 {{ task.column_name || 'unassigned' }}
               </span>
               <button
-                class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-base transition-opacity shrink-0"
+                class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-lead transition-opacity shrink-0"
                 @click.stop="copyId($event, task.id)"
                 title="Copy task id"
               >
@@ -332,7 +332,7 @@ const copyId = async (e: Event, id: string) => {
             <!-- Unassigned tasks get their own subsection -->
             <template v-if="unassignedTasks.length > 0">
               <div
-                class="px-3 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-t border-dashed border-[var(--color-border)]"
+                class="px-3 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] border-t border-dashed border-[var(--color-border)]"
               >
                 Unassigned ({{ unassignedTasks.length }})
               </div>
@@ -342,7 +342,7 @@ const copyId = async (e: Event, id: string) => {
                 class="group/row flex items-center gap-2 px-2 py-1 hover:bg-violet-500/5"
               >
                 <span
-                  class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-[0.65rem]"
+                  class="text-[var(--semantic-text-muted)] shrink-0 w-8 text-right text-micro"
                 >
                   #{{ task.position }}
                 </span>
@@ -353,12 +353,12 @@ const copyId = async (e: Event, id: string) => {
                   {{ task.name }}
                 </span>
                 <span
-                  class="px-1.5 py-0.5 rounded text-[0.65rem] font-medium bg-black/[0.05] text-[var(--semantic-text-muted)] shrink-0"
+                  class="px-1.5 py-0.5 rounded text-micro font-medium bg-black/[0.05] text-[var(--semantic-text-muted)] shrink-0"
                 >
                   unassigned
                 </span>
                 <button
-                  class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-base transition-opacity shrink-0"
+                  class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover/row:opacity-100 hover:!text-violet-500 text-lead transition-opacity shrink-0"
                   @click.stop="copyId($event, task.id)"
                   title="Copy task id"
                 >

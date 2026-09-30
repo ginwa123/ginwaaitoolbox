@@ -5,6 +5,18 @@
   (no Teleport, no backdrop, no show prop) so the agent chat lives
   in the normal layout flow, mirroring StandardTaskChatView.
 
+  App bar
+  ───────
+  This component used to hand-roll its own header — `px-5 py-3`, a
+  text "✕ Close" button, no sidebar toggle, spanning the full window
+  width ABOVE the right sidebar. That made agent mode look nothing
+  like kanban mode (a `h-11` bar with a `◫` toggle beside the
+  sidebar) or folder mode (no bar at all). It now delegates to the
+  shared ChatAppBar by forwarding `:show-header` to the inner
+  ChatView and re-emitting its `close`, so all three workspace-item
+  modes render the identical bar. The per-session busy spinner
+  rides along in ChatView's `app-bar-extras` slot.
+
   Public API:
     props:  task, workspaceId, itemId, cwd
     emits:  close
@@ -22,10 +34,6 @@ interface Props {
 
 const props = defineProps<Props>()
 const emit = defineEmits<{ close: [] }>()
-
-function handleClose() {
-  emit('close')
-}
 </script>
 
 <template>
@@ -37,37 +45,23 @@ function handleClose() {
     style="background-color: var(--semantic-content-bg)"
     data-testid="agent-chat-view"
   >
-    <div
-      class="relative px-5 py-3 flex items-center justify-between shrink-0"
-      style="border-bottom: 1px solid var(--color-border)"
+    <ChatView
+      :key="'agent-chat-' + props.task.id"
+      :chat-id="props.task.id"
+      :chat-name="props.task.name || 'Agent Chat'"
+      type="task"
+      :cwd="props.cwd"
+      :show-header="true"
+      @close="emit('close')"
     >
-      <h3 class="text-sm font-semibold" style="color: var(--semantic-text)">
-        {{ props.task.name || 'Agent Chat' }}
-      </h3>
-      <button
-        type="button"
-        @click="handleClose"
-        data-testid="agent-chat-close"
-        class="text-sm px-2 py-1 rounded"
-        style="color: var(--semantic-text-dim)"
-      >
-        ✕ Close
-      </button>
       <!-- Same per-session worker indicator the sidebar/task rows show:
            a yellow circle spinner while
            processingState[task.id] is true. The key matches the inner
            ChatView's session id (it strips a leading `chat-`, and we
            pass the raw task id, so both resolve to task.id). -->
-      <SessionSlider :session-id="props.task.id" test-id="agent-chat-slider" />
-    </div>
-    <div class="flex-1 min-h-0">
-      <ChatView
-        :key="'agent-chat-' + props.task.id"
-        :chat-id="props.task.id"
-        :chat-name="props.task.name || 'Agent Chat'"
-        type="task"
-        :cwd="props.cwd"
-      />
-    </div>
+      <template #app-bar-extras>
+        <SessionSlider :session-id="props.task.id" test-id="agent-chat-slider" />
+      </template>
+    </ChatView>
   </div>
 </template>

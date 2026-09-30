@@ -59,3 +59,29 @@ pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
         .description = self.description,
     });
 }
+
+// ===== Tests merged from models_test.zig (2026-09-29 flatten) =====
+
+// Sanity tests for the `src/models/` entity models.
+//
+// Verifies that every model file compiles, that `init` populates the
+// struct as expected, that `deinit` releases its strings, and that
+// external callers can read the struct's fields directly (matching
+// the file-level struct pattern requested by the user).
+
+const testing = std.testing;
+
+test "kanban_column: init + deinit" {
+    var c = try init(testing.allocator, .{
+        .id = "col_1",
+        .workspace_item_id = "item_1",
+        .name = "todo",
+        .position = 0,
+        .description = "Open work",
+    });
+    defer deinit(&c, testing.allocator);
+
+    try testing.expectEqualStrings("col_1", c.id);
+    try testing.expectEqualStrings("todo", c.name);
+    try testing.expectEqualStrings("Open work", c.description);
+}

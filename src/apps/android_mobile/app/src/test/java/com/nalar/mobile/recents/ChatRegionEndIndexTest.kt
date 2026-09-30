@@ -30,6 +30,21 @@ class ChatRegionEndIndexTest {
     }
 
     @Test
+    fun anOpenListCountsTheRowBetweenItsLastChatAndItsFooter() {
+        // The "Show fewer" row is a row in the list, drawn only once the reader
+        // opens the whole thing. Forgetting it arms the trigger a row early for
+        // exactly the readers who opened the list — the ones paging matters to.
+        assertEquals(
+            32,
+            chatRegionEndIndex(
+                visibleChatCount = 30,
+                recentsExpanded = true,
+                rowsAfterChats = 1,
+            ),
+        )
+    }
+
+    @Test
     fun anEmptyChatListHasNoRegionToPage() {
         // Nothing to page, and a number here would let the trigger arm on the
         // Projects header below — paging a workspace's chats from a scroll

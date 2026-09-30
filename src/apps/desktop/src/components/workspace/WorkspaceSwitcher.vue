@@ -205,7 +205,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
   <div ref="rootRef" class="relative min-w-0" data-testid="workspace-switcher">
     <button
       type="button"
-      class="max-w-[180px] inline-flex items-center gap-1.5 text-sm font-semibold tracking-tight transition-opacity duration-150 hover:opacity-80"
+      class="max-w-[180px] inline-flex items-center gap-1.5 text-dense font-semibold tracking-tight transition-opacity duration-150 hover:opacity-80"
       style="color: var(--semantic-text)"
       :title="`Workspace: ${triggerLabel}`"
       aria-haspopup="listbox"
@@ -217,7 +217,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
     >
       <template v-if="collapsed">
         <span
-          class="w-7 h-7 rounded-md flex items-center justify-center text-xs font-semibold tracking-tight border"
+          class="w-[var(--sb-hit)] h-[var(--sb-hit)] rounded-md flex items-center justify-center text-dense font-semibold tracking-tight border"
           style="border-color: var(--color-border); color: var(--semantic-text)"
           data-testid="workspace-switcher-monogram"
           >{{ triggerMonogram }}</span
@@ -226,7 +226,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
       <template v-else>
         <span class="truncate">{{ triggerLabel }}</span>
         <span
-          class="text-[10px] shrink-0"
+          class="text-meta shrink-0"
           style="color: var(--semantic-text-dim)"
           aria-hidden="true"
           >▾</span
@@ -261,7 +261,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
           >
             <button
               type="button"
-              class="flex-1 min-w-0 text-left px-3 py-2 text-sm hover:opacity-90 flex items-center justify-between gap-2"
+              class="flex-1 min-w-0 text-left px-3 py-2 text-dense hover:opacity-90 flex items-center justify-between gap-2"
               style="color: var(--semantic-text)"
               :aria-selected="ws.id === activeWorkspaceId"
               :data-testid="`workspace-switcher-option-${ws.id}`"
@@ -271,7 +271,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
             >
               <span class="truncate">{{ ws.name }}</span>
               <span class="flex items-center gap-2 shrink-0">
-                <span class="text-[11px]" style="color: var(--semantic-text-dim)">{{
+                <span class="text-micro" style="color: var(--semantic-text-dim)">{{
                   ws.items_count ?? ws.items?.length ?? 0
                 }}</span>
                 <span
@@ -283,7 +283,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
             </button>
             <button
               type="button"
-              class="px-1.5 py-1 text-xs opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+              class="px-1.5 py-1 text-dense opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity"
               style="color: var(--semantic-text-dim)"
               title="Rename workspace"
               :aria-label="`Rename workspace ${ws.name}`"
@@ -294,7 +294,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
             </button>
             <button
               type="button"
-              class="px-1.5 py-1 text-xs opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity"
+              class="px-1.5 py-1 text-dense opacity-60 hover:opacity-100 focus-visible:opacity-100 transition-opacity"
               style="color: var(--semantic-text-dim)"
               title="Delete workspace"
               :aria-label="`Delete workspace ${ws.name}`"
@@ -307,7 +307,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
 
           <div
             v-if="workspaces.length === 0"
-            class="px-3 py-2 text-xs"
+            class="px-3 py-2 text-dense"
             style="color: var(--semantic-text-muted)"
             data-testid="workspace-switcher-empty"
           >
@@ -317,7 +317,7 @@ onBeforeUnmount(() => document.removeEventListener('mousedown', onDocumentMouseD
 
         <button
           type="button"
-          class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+          class="w-full text-left px-3 py-2 text-dense hover:opacity-80"
           style="color: var(--semantic-text-dim); border-top: 1px solid var(--color-border)"
           data-testid="workspace-switcher-add-workspace"
           @click="startCreate"

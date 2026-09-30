@@ -211,12 +211,12 @@ function openInNewTab() {
   <div class="preview-content-renderer">
     <div
       v-if="args.title"
-      class="text-sm font-semibold text-[var(--semantic-text)] mb-2 pb-2 border-b border-dashed border-[var(--color-border)]"
+      class="text-body font-semibold text-[var(--semantic-text)] mb-2 pb-2 border-b border-dashed border-[var(--color-border)]"
     >
       {{ args.title }}
       <span
         v-if="args.language && contentType === 'code'"
-        class="ml-2 text-xs text-[var(--semantic-text-muted)] font-normal"
+        class="ml-2 text-dense text-[var(--semantic-text-muted)] font-normal"
         >[{{ args.language }}]</span
       >
     </div>
@@ -233,7 +233,7 @@ function openInNewTab() {
           }
         "
       />
-      <div v-else class="text-xs text-red-500 italic">
+      <div v-else class="text-dense text-red-500 italic">
         Image source invalid (expected data: URL or http(s) URL)
       </div>
     </div>
@@ -267,7 +267,7 @@ function openInNewTab() {
       >
         <button
           type="button"
-          class="px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text)] text-xs cursor-pointer transition-colors"
+          class="px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)] text-[var(--semantic-text)] text-dense cursor-pointer transition-colors"
           data-testid="preview-open-new-tab-button"
           title="Open HTML preview in a new browser tab"
           @click.stop="openInNewTab"
@@ -283,13 +283,13 @@ function openInNewTab() {
     -->
     <div
       v-else
-      class="text-xs text-[var(--semantic-text)] markdown-content"
+      class="text-dense text-[var(--semantic-text)] markdown-content"
       v-html="renderedContent"
     />
 
     <div
       v-if="args.caption"
-      class="mt-2 pt-2 text-xs italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]"
+      class="mt-2 pt-2 text-dense italic text-[var(--semantic-text-muted)] border-t border-dashed border-[var(--color-border)]"
     >
       {{ args.caption }}
     </div>
@@ -312,22 +312,26 @@ function openInNewTab() {
   border-radius: 0.25rem;
   overflow-x: auto;
 }
+/* Type is NOT restated here. style.css already sets `.markdown-content`
+   h1-h4 and code off the scale, and a scoped :deep() rule outranks it —
+   so declaring a size here makes the SAME markdown render at one size in a
+   preview card and another in the transcript, which is the drift this
+   scale exists to stop. Proved in a browser: with the sizes restated
+   here the two hosts resolved to 20/18/16/12 against 24/20/18/14.
+   Margins and weights stay: the card is deliberately tighter than the
+   transcript, and that is a real difference worth keeping. */
 .markdown-content :deep(code) {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.75rem;
 }
 .markdown-content :deep(h1) {
-  font-size: 1.25rem;
   font-weight: 700;
   margin: 0.5rem 0;
 }
 .markdown-content :deep(h2) {
-  font-size: 1.1rem;
   font-weight: 600;
   margin: 0.4rem 0;
 }
 .markdown-content :deep(h3) {
-  font-size: 1rem;
   font-weight: 600;
   margin: 0.3rem 0;
 }

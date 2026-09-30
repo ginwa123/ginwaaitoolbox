@@ -13,6 +13,9 @@ pub const prompt = @import("prompts.zig");
 pub const LLMModels = @import("LLMModels.zig");
 const helpers = @import("helpers");
 const custom_http_client = @import("kabelweb").client;
+// Leaf module (std-only) shared with the agentic loop — same cross-directory
+// import `prompts.zig` already uses.
+const args_repair = @import("../../agentic_loop/tools_args_repair.zig");
 
 /// Log level for agent logging
 const LogLevel = enum { err, warn, info, debug };
@@ -646,7 +649,6 @@ const AnthropicRequest = struct {
 /// Request shape for POST /v1/responses  (https://developers.openai.com/api/reference/resources/responses)
 /// Mirrors the chat completions feature set: model, input (messages), instructions (system),
 /// max_output_tokens, stream, temperature, reasoning.effort, tools, tool_choice, user.
-
 const ResponsesInputContent = struct {
     /// "input_text" | "input_image" | "input_video"
     content_type: []const u8,
@@ -1773,14 +1775,15 @@ pub const Agent = struct {
             if (msg.tool_calls) |tcs| {
                 const tc_slice = try arena_alloc.alloc(JsonToolCall, tcs.len);
                 for (tcs, 0..) |tc, j| {
+                    // Repair before falling back to "{}": a Windows path
+                    // written with raw backslashes is invalid JSON, and
+                    // substituting "{}" here would both hide that and echo
+                    // the model's own call back to it as an empty object.
                     const normalized_args = blk: {
                         const raw = tc.function.arguments;
                         if (raw.len == 0) break :blk "{}";
-                        const parsed = std.json.parseFromSlice(std.json.Value, arena_alloc, raw, .{}) catch {
-                            break :blk "{}";
-                        };
-                        parsed.deinit();
-                        break :blk raw;
+                        const repaired = args_repair.repairToolCallArguments(arena_alloc, raw) catch break :blk "{}";
+                        break :blk if (repaired) |r| r.slice() else "{}";
                     };
                     tc_slice[j] = .{
                         .id = tc.id,
@@ -3371,4 +3374,4883 @@ test "AnthropicContentBlock video serializes type video" {
     defer alloc.free(s);
     try std.testing.expect(std.mem.indexOf(u8, s, "\"video\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, s, "data:video/mp4") != null);
+}
+
+// ===== Tests merged from agent_request_user_id_test.zig (2026-09-29 flatten) =====
+const testing = std.testing;
+
+/// Hardcoded identifier — the value that every Anthropic + OpenAI call
+/// from this fork of nalar sends. See `Agent.userIdentifier` default.
+const HARDCODED_USER_ID = "AnakMagang";
+
+fn makeAgentUserId(user_id: []const u8) Agent {
+    var a = Agent.init(testing.allocator, testing.io);
+    a.model = "test-model";
+    a.userIdentifier = user_id;
+    return a;
+}
+
+test "Agent default userIdentifier is hardcoded to 'AnakMagang'" {
+    var a = Agent.init(testing.allocator, testing.io);
+    defer a.deinit();
+    try testing.expectEqualStrings("AnakMagang", a.userIdentifier);
+}
+
+test "buildJsonOpenAIRequest includes 'user' field when userIdentifier is set" {
+    var a = makeAgentUserId(HARDCODED_USER_ID);
+    defer a.deinit();
+
+    const params = AgentCall{ .tools = &.{}, .messages = &.{} };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"user\":\"" ++ HARDCODED_USER_ID ++ "\"") != null);
+}
+
+test "buildJsonOpenAIRequest omits 'user' field when userIdentifier is empty" {
+    var a = makeAgentUserId("");
+    defer a.deinit();
+
+    const params = AgentCall{ .tools = &.{}, .messages = &.{} };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"user\":") == null);
+}
+
+test "buildJsonAnthropicRequest includes metadata.user_id when userIdentifier is set" {
+    var a = makeAgentUserId(HARDCODED_USER_ID);
+    a.UrlStyle = "anthropic";
+    defer a.deinit();
+
+    const params = AgentCall{ .tools = &.{}, .messages = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"metadata\":{\"user_id\":\"" ++ HARDCODED_USER_ID ++ "\"}") != null);
+}
+
+test "buildJsonAnthropicRequest omits metadata entirely when userIdentifier is empty" {
+    var a = makeAgentUserId("");
+    a.UrlStyle = "anthropic";
+    defer a.deinit();
+
+    const params = AgentCall{ .tools = &.{}, .messages = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"metadata\"") == null);
+}
+
+// ===== Tests merged from anthropic_adaptive_test.zig (2026-09-29 flatten) =====
+// Tests for the new Anthropic `thinking_budget_tokens` override +
+// `type: "adaptive"` mode in `buildJsonAnthropicRequest`. Plan
+// 2026-08-23-model-thinking.
+//
+// The pre-existing tests at `anthropic_request_test.zig` cover the
+// default 50%-of-max_tokens heuristic; this file covers the NEW
+// paths:
+//   1. Explicit budget override (`Agent.thinkingBudgetTokens` set) →
+//      emitted verbatim (still clamped to >=1024 and <max_tokens).
+//   2. Explicit budget override below the 1024 floor → clamped to 1024.
+//   3. Explicit budget override at the ceiling → clamped to max_tokens - 1.
+//   4. No override + `thinkingAdaptive` = true → `type: "adaptive"`,
+//      no `budget_tokens` field.
+//   5. No override + `thinkingAdaptive` = false → falls back to the
+//      50%-of-max heuristic (existing behavior, NOT covered here).
+//   6. `thinkingEnabled` = false (regardless of override) → entire
+//      `thinking` field omitted (existing behavior).
+
+const AnthropicAdaptiveMakeOpts = struct {
+    thinkingEnabled: bool = true,
+    thinkingBudgetTokens: ?u32 = null,
+    thinkingAdaptive: bool = false,
+    maxTokens: usize = 16384,
+};
+
+fn makeAgentAnthropicAdaptive(opts: AnthropicAdaptiveMakeOpts) Agent {
+    var a = Agent.init(testing.allocator, std.testing.io);
+    a.apiKey = "test-key";
+    a.model = "claude-sonnet-4-5";
+    a.baseUrl = "https://api.minimax.io/anthropic";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = opts.thinkingEnabled;
+    a.thinkingBudgetTokens = opts.thinkingBudgetTokens;
+    a.thinkingAdaptive = opts.thinkingAdaptive;
+    a.maxTokens = opts.maxTokens;
+    a.temperature = 1.0;
+    return a;
+}
+
+fn messagesListAnthropicAdaptive() []const AgentMessage {
+    return &.{
+        .{
+            .role = .user,
+            .content = "hi",
+        },
+    };
+}
+
+fn emptyToolsAnthropicAdaptive() []const AgentTool {
+    return &.{};
+}
+
+test "buildJsonAnthropicRequest: thinkingBudgetTokens honored as exact budget" {
+    // 16384 / 2 = 8192 (the heuristic). User wants 2048.
+    // With override, the request body MUST carry budget_tokens=2048
+    // and MUST emit type:enabled (not adaptive).
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingBudgetTokens = 2048 });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 16384,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"enabled\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"budget_tokens\":2048") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"adaptive\"") == null);
+}
+
+test "buildJsonAnthropicRequest: thinkingBudgetTokens below floor clamps to 1024" {
+    // max_tokens=8192, override=512 (below the 1024 floor).
+    // Anthropic requires budget_tokens >= 1024, so we MUST clamp.
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingBudgetTokens = 512, .maxTokens = 8192 });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 8192,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"budget_tokens\":1024") != null);
+}
+
+test "buildJsonAnthropicRequest: thinkingBudgetTokens above ceiling clamps to max_tokens - 1" {
+    // max_tokens=2048, override=4096 (way above max_tokens).
+    // Anthropic requires budget_tokens < max_tokens strictly, so
+    // we MUST clamp to 2047.
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingBudgetTokens = 4096, .maxTokens = 2048 });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 2048,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"budget_tokens\":2047") != null);
+}
+
+test "buildJsonAnthropicRequest: thinkingBudgetTokens=null + thinkingAdaptive=true emits type:adaptive" {
+    // User picked "auto" in the UI → workflow sets
+    // thinkingAdaptive=true and leaves thinkingBudgetTokens=null.
+    // The request body MUST emit type:adaptive with NO budget_tokens
+    // field (Anthropic picks its own budget).
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingBudgetTokens = null, .thinkingAdaptive = true });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 16384,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"adaptive\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "budget_tokens") == null);
+}
+
+test "buildJsonAnthropicRequest: thinkingBudgetTokens=null + thinkingAdaptive=false falls back to 50% heuristic" {
+    // User picked "on" in the UI → workflow sets thinkingAdaptive=false.
+    // The request body MUST emit type:enabled with budget_tokens =
+    // half of max_tokens (the existing 50%-of-max heuristic).
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingBudgetTokens = null, .thinkingAdaptive = false, .maxTokens = 8192 });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 8192,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"enabled\"") != null);
+    // 8192 / 2 = 4096 — the heuristic value.
+    try testing.expect(std.mem.indexOf(u8, body, "\"budget_tokens\":4096") != null);
+}
+
+test "buildJsonAnthropicRequest: thinkingEnabled=false omits thinking entirely (override is ignored)" {
+    // thinkingEnabled is the master gate — even with
+    // thinkingBudgetTokens set, the entire `thinking` block is
+    // omitted from the request body.
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingEnabled = false, .thinkingBudgetTokens = 4096 });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 16384,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"thinking\"") == null);
+    try testing.expect(std.mem.indexOf(u8, body, "budget_tokens") == null);
+}
+
+test "buildJsonAnthropicRequest: thinkingBudgetTokens wins over thinkingAdaptive (precedence)" {
+    // When both are set (which shouldn't happen in production but
+    // could via a misconfigured profile), the explicit budget
+    // wins. The adaptive flag is only consulted when budget is null.
+    var a = makeAgentAnthropicAdaptive(.{ .thinkingBudgetTokens = 3000, .thinkingAdaptive = true });
+    defer a.deinit();
+
+    const params = AgentCall{
+        .tools = emptyToolsAnthropicAdaptive(),
+        .messages = messagesListAnthropicAdaptive(),
+        .max_tokens = 16384,
+    };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"enabled\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"budget_tokens\":3000") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"type\":\"adaptive\"") == null);
+}
+
+// ===== Tests merged from anthropic_request_test.zig (2026-09-29 flatten) =====
+// Regression tests for the Anthropic request-builder bugs documented in
+// `docs/superpowers/plans/<anthropic-request-fixes>.md`.
+//
+// These are unit tests of `Agent.buildJsonAnthropicRequest` — we exercise
+// the request body that hits the wire, but without doing any actual
+// network I/O. Companion to the SSE-parser tests in
+// `parse_anthropic_sse_test.zig`.
+//
+// Why each test exists:
+//   - System messages must move to a top-level `"system"` field
+//     (Anthropic rejects `role: "system"` inside `messages` and 400s).
+//   - `thinking: {type: "enabled"}` is missing the required
+//     `budget_tokens` field — every call with thinkingEnabled=true 400s.
+//   - `temperature` must be omitted (or exactly `1`) when
+//     `thinking.type == "enabled"` — Anthropic 400s otherwise.
+//   - The Anthropic serializer was emitting a bogus `stream_options`
+//     block (copy-pasted from OpenAI). Anthropic has no such request
+//     key — we already get usage on `message_start` / `message_delta`
+//     SSE events unconditionally.
+
+fn makeAgentAnthropicRequest(opts: struct {
+    model: []const u8 = "claude-test",
+    thinkingEnabled: bool = true,
+    maxTokens: usize = 4096,
+}) Agent {
+    var a = Agent.init(testing.allocator, testing.io);
+    a.model = opts.model;
+    a.thinkingEnabled = opts.thinkingEnabled;
+    a.maxTokens = opts.maxTokens;
+    a.UrlStyle = "anthropic";
+    return a;
+}
+
+fn userMsgAnthropicRequest(text: []const u8) AgentMessage {
+    return .{
+        .role = .user,
+        .content = text,
+        .content_parts = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+}
+
+fn sysMsgAnthropicRequest(text: []const u8) AgentMessage {
+    return .{
+        .role = .system,
+        .content = text,
+        .content_parts = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+}
+
+// Build and return the body. Caller frees with `freeAnthropicBody`.
+// Don't bother parsing here — most assertions are simpler against the
+// raw JSON text (substring match + length). One helper, `parseBody`,
+// covers the cases that need parsed-shape inspection.
+fn buildAnthropicBodyRawAnthropicRequest(
+    a: *Agent,
+    messages: []const AgentMessage,
+    temperature: ?f32,
+    max_tokens: ?usize,
+) ![]u8 {
+    const params = AgentCall{
+        .tools = &.{},
+        .messages = messages,
+        .temperature = temperature,
+        .max_tokens = max_tokens,
+    };
+    return try a.buildJsonAnthropicRequest(params, true);
+}
+
+const ParsedBodyAnthropicRequest = struct {
+    raw: []u8,
+    parsed: std.json.Parsed(std.json.Value),
+};
+
+fn buildAndParseAnthropicRequest(
+    a: *Agent,
+    messages: []const AgentMessage,
+    temperature: ?f32,
+    max_tokens: ?usize,
+) !ParsedBodyAnthropicRequest {
+    const raw = try buildAnthropicBodyRawAnthropicRequest(a, messages, temperature, max_tokens);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, raw, .{});
+    return .{ .raw = raw, .parsed = parsed };
+}
+
+fn freeBodyAnthropicRequest(body: ParsedBodyAnthropicRequest) void {
+    testing.allocator.free(body.raw);
+    body.parsed.deinit();
+}
+
+// ============================================================================
+// Bug 1 — system messages go to top-level "system" field
+// ============================================================================
+
+test "buildJsonAnthropicRequest: system message moves to top-level 'system' field, not into messages" {
+    var a = makeAgentAnthropicRequest(.{});
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{
+        sysMsgAnthropicRequest("You are a helpful assistant."),
+        userMsgAnthropicRequest("Hello."),
+    };
+
+    var body = try buildAndParseAnthropicRequest(&a, &messages, null, null);
+    defer freeBodyAnthropicRequest(body);
+
+    // Top-level "system" string must match the system message content.
+    try testing.expect(body.parsed.value.object.get("system") != null);
+    const system_str = body.parsed.value.object.get("system").?;
+    try testing.expect(system_str == .string);
+    try testing.expectEqualStrings("You are a helpful assistant.", system_str.string);
+
+    // No message inside `messages` should have role == "system" — the
+    // only message remaining should be the user one.
+    try testing.expect(body.parsed.value.object.get("messages") != null);
+    const messages_arr = body.parsed.value.object.get("messages").?;
+    try testing.expect(messages_arr == .array);
+    try testing.expectEqual(@as(usize, 1), messages_arr.array.items.len);
+    const only_msg = messages_arr.array.items[0];
+    try testing.expect(only_msg.object.get("role") != null);
+    try testing.expectEqualStrings("user", only_msg.object.get("role").?.string);
+}
+
+test "buildJsonAnthropicRequest: multiple system messages are joined with '\\n\\n' into top-level 'system'" {
+    var a = makeAgentAnthropicRequest(.{});
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{
+        sysMsgAnthropicRequest("First part."),
+        sysMsgAnthropicRequest("Second part."),
+        userMsgAnthropicRequest("Hi."),
+    };
+
+    var body = try buildAndParseAnthropicRequest(&a, &messages, null, null);
+    defer freeBodyAnthropicRequest(body);
+
+    try testing.expect(body.parsed.value.object.get("system") != null);
+    const system_str = body.parsed.value.object.get("system").?;
+    try testing.expect(system_str == .string);
+    try testing.expectEqualStrings("First part.\n\nSecond part.", system_str.string);
+
+    const messages_arr = body.parsed.value.object.get("messages").?;
+    try testing.expectEqual(@as(usize, 1), messages_arr.array.items.len);
+}
+
+test "buildJsonAnthropicRequest: no system message → top-level 'system' field absent" {
+    var a = makeAgentAnthropicRequest(.{});
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{
+        userMsgAnthropicRequest("Hello."),
+    };
+
+    var body = try buildAndParseAnthropicRequest(&a, &messages, null, null);
+    defer freeBodyAnthropicRequest(body);
+
+    // Top-level "system" field must be omitted entirely (not null, not
+    // empty string — Anthropic only has a system prompt when we send
+    // one).
+    try testing.expect(body.parsed.value.object.get("system") == null);
+}
+
+// ============================================================================
+// Bug 2 — thinking.enabled must include budget_tokens
+// ============================================================================
+
+test "buildJsonAnthropicRequest: thinkingEnabled emits budget_tokens (>=1024 and <max_tokens)" {
+    // Default Agent.maxTokens is 4096 → budget should be min(2048, 4095) = 2048.
+    var a = makeAgentAnthropicRequest(.{ .maxTokens = 4096 });
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const raw = try buildAnthropicBodyRawAnthropicRequest(&a, &messages, null, null);
+    defer testing.allocator.free(raw);
+
+    // Substring match on raw body — robust to JSON key order + whitespace.
+    try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":") != null);
+    // Also check the value is exactly 2048 (50% of 4096 with the >=
+    // 1024 floor satisfied and < max_tokens satisfied trivially).
+    try testing.expect(std.mem.indexOf(u8, raw, "\"budget_tokens\":2048") != null);
+}
+
+test "buildJsonAnthropicRequest: budget_tokens is clamped to max_tokens-1 when max_tokens is small" {
+    // maxTokens=1500 → budget floor of 1024 wins, must be < 1500 → budget=1024.
+    var a = makeAgentAnthropicRequest(.{ .maxTokens = 1500 });
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const raw = try buildAnthropicBodyRawAnthropicRequest(&a, &messages, null, null);
+    defer testing.allocator.free(raw);
+
+    try testing.expect(std.mem.indexOf(u8, raw, "\"budget_tokens\":1024") != null);
+}
+
+test "buildJsonAnthropicRequest: thinkingEnabled=false omits thinking field entirely" {
+    var a = makeAgentAnthropicRequest(.{ .thinkingEnabled = false });
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const raw = try buildAnthropicBodyRawAnthropicRequest(&a, &messages, null, null);
+    defer testing.allocator.free(raw);
+
+    try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\"") == null);
+}
+
+// ============================================================================
+// Bug 2 — small-max_tokens guard
+// ============================================================================
+
+test "buildJsonAnthropicRequest: thinkingEnabled=true with max_tokens<1025 forces thinking off (no budget that violates the floor)" {
+    // max_tokens=1024 → can't be thinking-enabled: floor would be 1024,
+    // but must be < max_tokens. Expect thinking omitted from output.
+    var a = makeAgentAnthropicRequest(.{ .maxTokens = 1024 });
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const raw = try buildAnthropicBodyRawAnthropicRequest(&a, &messages, null, null);
+    defer testing.allocator.free(raw);
+
+    try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\"") == null);
+}
+
+// ============================================================================
+// Bug 3 — temperature must not be sent alongside thinking.enabled
+// ============================================================================
+
+test "buildJsonAnthropicRequest: temperature is omitted when thinkingEnabled=true (even if caller set it)" {
+    var a = makeAgentAnthropicRequest(.{ .thinkingEnabled = true });
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const raw = try buildAnthropicBodyRawAnthropicRequest(&a, &messages, 0.7, null);
+    defer testing.allocator.free(raw);
+
+    // thinking is ON...
+    try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\":") != null);
+    // ...and temperature is NOT sent.
+    try testing.expect(std.mem.indexOf(u8, raw, "\"temperature\"") == null);
+}
+
+test "buildJsonAnthropicRequest: temperature is emitted when thinkingEnabled=false" {
+    var a = makeAgentAnthropicRequest(.{ .thinkingEnabled = false });
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const raw = try buildAnthropicBodyRawAnthropicRequest(&a, &messages, 0.7, null);
+    defer testing.allocator.free(raw);
+
+    try testing.expect(std.mem.indexOf(u8, raw, "\"thinking\"") == null);
+    // `temperature` is emitted. Match the wire shape exactly:
+    //   - `std.json.fmt` renders `f32` 0.7 as `0.699999988079071`
+    //     (0.7 is not exactly representable in IEEE-754 binary32), so
+    //     we accept either "0.699999988079071" or a literal "0.7".
+    const temp_present = std.mem.indexOf(u8, raw, "\"temperature\":") != null;
+    try testing.expect(temp_present);
+    const temp_value_ok =
+        std.mem.indexOf(u8, raw, "\"temperature\":0.699999988079071") != null or
+        std.mem.indexOf(u8, raw, "\"temperature\":0.7") != null;
+    try testing.expect(temp_value_ok);
+}
+
+// ============================================================================
+// Bug 4 — Anthropic doesn't accept stream_options
+// ============================================================================
+
+test "buildJsonAnthropicRequest: stream=true emits 'stream':true and does NOT emit 'stream_options'" {
+    var a = makeAgentAnthropicRequest(.{});
+    defer a.deinit();
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    // stream=true (third arg is bool `stream`).
+    const raw = try a.buildJsonAnthropicRequest(
+        .{ .tools = &.{}, .messages = &messages, .temperature = null, .max_tokens = null },
+        true,
+    );
+    defer testing.allocator.free(raw);
+
+    try testing.expect(std.mem.indexOf(u8, raw, "\"stream\":true") != null);
+    try testing.expect(std.mem.indexOf(u8, raw, "\"stream_options\"") == null);
+}
+
+// ============================================================================
+// Regression: OpenAI path is unaffected
+// ============================================================================
+
+test "regression: buildJsonOpenAIRequest keeps 'stream_options.include_usage' verbatim" {
+    var a = makeAgentAnthropicRequest(.{});
+    defer a.deinit();
+    // Ensure anthropic is NOT selected.
+    a.UrlStyle = "openai";
+
+    const messages = [_]AgentMessage{userMsgAnthropicRequest("hi")};
+    const body = try a.buildJsonOpenAIRequest(
+        .{ .tools = &.{}, .messages = &messages, .temperature = 0.5, .max_tokens = null },
+        true,
+    );
+    defer testing.allocator.free(body);
+
+    // OpenAI keeps stream_options.include_usage=true.
+    try testing.expect(std.mem.indexOf(u8, body, "\"stream_options\":{\"include_usage\":true}") != null);
+}
+
+// ============================================================================
+// Regression: callStreaming auth headers per UrlStyle
+// ============================================================================
+
+fn agentSourceContainsAnthropicRequest(needle: []const u8) !bool {
+    const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, "src/modules/agent/Agent.zig", testing.allocator, .limited(1024 * 1024));
+    defer testing.allocator.free(raw);
+    return std.mem.indexOf(u8, raw, needle) != null;
+}
+
+test "callStreaming: anthropic style sends x-api-key + anthropic-version (not only Bearer)" {
+    // Regression for `AuthError: Missing API key` on anthropic-style
+    // chat (e.g. opencode.ai/zen/go/v1/messages): callStreaming sent
+    // only `Authorization: Bearer`, which Anthropic-style upstreams
+    // ignore. The header block must branch on UrlStyle and emit the
+    // Anthropic auth headers, mirroring the Test probe in llm_test.zig.
+    try testing.expect(try agentSourceContainsAnthropicRequest("x-api-key"));
+    try testing.expect(try agentSourceContainsAnthropicRequest("anthropic-version"));
+    try testing.expect(try agentSourceContainsAnthropicRequest("is_anthropic"));
+}
+
+// ===== Tests merged from call_streaming_test.zig (2026-09-29 flatten) =====
+// Regression tests for `Agent.callStreaming` deadline / error-propagation behavior.
+//
+// Background (audit, 2026-01-15):
+//   - `HttpOptions.read_timeout_ms` was defined but never read.
+//   - Read errors were caught and silently `break`-en out of the loop.
+//   - The `n == 0` retry path had no max retry count and no deadline.
+//   - `callback(ctx, .{ .done = true })` was sent unconditionally, even after errors.
+//   - The function returned a `CallResponse` with `finish_reason = null` on the
+//     error path, which the workflow treated as a generic failure and silently
+//     retired. Net effect: a Wi-Fi drop mid-stream left the AI agent "stuck".
+//
+// Fix: the read loop now enforces an overall deadline, an idle window, and
+// surfaces read errors via new `CallError` variants. These tests pin the new
+// behavior so it can't silently regress.
+//
+// Manual integration test (for real-world verification, run by hand):
+//   1. Start nalar-dev on port 8080.
+//   2. Begin an agent turn that streams a long response.
+//   3. Mid-stream: `sudo tc qdisc add dev lo root netem loss 100%` (drops
+//      all loopback packets, simulating a Wi-Fi drop on localhost).
+//   4. Confirm the worker log emits "[STREAM] idle for {N}ms" and the
+//      workflow retries within 30s, instead of spinning for minutes.
+//   5. Cleanup: `sudo tc qdisc del dev lo root`.
+
+const posix = std.posix;
+const linux = std.posix.system;
+const builtin = @import("builtin");
+
+// Platform socket constants. Mirrors http_server.zig to keep this test
+// self-contained (no cross-module dependency).
+const AF_INET = if (builtin.os.tag == .windows) @as(u32, 2) else posix.AF.INET;
+const SOCK_STREAM = if (builtin.os.tag == .windows) @as(u32, 1) else posix.SOCK.STREAM;
+const IPPROTO_TCP = if (builtin.os.tag == .windows) @as(u32, 6) else posix.IPPROTO.TCP;
+const SOL_SOCKET: i32 = if (builtin.os.tag == .windows) 0xffff else 1;
+const SO_REUSEADDR: u32 = if (builtin.os.tag == .windows) 4 else 2;
+
+const expectCallStreaming = std.testing.expect;
+const expectEqualCallStreaming = std.testing.expectEqual;
+const expectErrorCallStreaming = std.testing.expectError;
+const expectEqualStringsCallStreaming = std.testing.expectEqualStrings;
+const testing_allocatorCallStreaming = std.testing.allocator;
+
+// ============================================================================
+// Structural tests — pin the new error variants and HttpOptions field so the
+// fix can't be silently removed by a future refactor.
+// ============================================================================
+
+test "CallError has the four new streaming variants" {
+    // Compile-time + runtime check: each new error must be assignable to CallError.
+    const a: Agent.CallError = error.StreamTimeout;
+    const b: Agent.CallError = error.StreamIdleTimeout;
+    const c: Agent.CallError = error.StreamInterrupted;
+    const d: Agent.CallError = error.StreamEmpty;
+    // Use them so the compiler doesn't optimize the assignments away.
+    try expectCallStreaming(a != b);
+    try expectCallStreaming(b != c);
+    try expectCallStreaming(c != d);
+    try expectCallStreaming(a != d);
+    try expectEqualStringsCallStreaming("StreamTimeout", @errorName(a));
+    try expectEqualStringsCallStreaming("StreamIdleTimeout", @errorName(b));
+    try expectEqualStringsCallStreaming("StreamInterrupted", @errorName(c));
+    try expectEqualStringsCallStreaming("StreamEmpty", @errorName(d));
+}
+
+// Pinned 2026-06-28 when idle_timeout_ms was raised from 60_000 to 180_000
+// to support reasoning models. The hard floor is 30_000ms (1.2× the ~25s
+// TCP keepalive window) — below that, the idle deadline fires before
+// keepalive can return ECONNRESET, and we conflate StreamInterrupted
+// (dead conn) with StreamIdleTimeout (hung stream). Don't drop below this.
+test "HttpOptions.idle_timeout_ms default stays above TCP keepalive window" {
+    const defaults = HttpOptions{};
+    try expectCallStreaming(defaults.idle_timeout_ms >= 30_000);
+    // Also pin the actual current value so a future bump (or accidental
+    // revert to 60_000) shows up as a clear test failure, not a silent
+    // behavioral change.
+    try expectEqualCallStreaming(@as(u32, 180_000), defaults.idle_timeout_ms);
+}
+
+// ============================================================================
+// Static regression test for the callStreaming transport (2026-07-25).
+//
+// Background: callStreaming was migrated from std.http.Client (with a custom
+// StreamWatchdog thread that dup2'd the socket fd to /dev/null on
+// idle/total timeouts) to libcurl's openStream + StreamScanner. The
+// watchdog path caused the production FD-leak hang and the std.Io.Threaded
+// closeFd panic — both fixed by the transport swap. This test pins the
+// NEW contracts so a regression that re-introduces std.http.Client (or
+// drops the libcurl scanner) gets caught at test time rather than in
+// production after hours of accumulated FDs.
+//
+// Note: the OLD "ReadFailed diagnostic checks BOTH transport and HTTP
+// body_err" test (verified `response.request.reader.body_err` and
+// `std.http.Reader.BodyError` substrings) was deleted alongside the
+// std.http.Reader dependency — the libcurl scanner doesn't surface
+// ReadFailed at all (it returns `custom_http_client.Error` variants
+// which callStreaming maps to StreamInterrupted / ApiError).
+// ============================================================================
+
+const AGENT_SOURCE_PATHCallStreaming = "src/modules/agent/Agent.zig";
+
+test "callStreaming uses kabelweb client (libcurl) transport" {
+    // Contract 4 below asserts that `StreamWatchdog` and `apply_tcp_keepalive`
+    // are ABSENT from this file, and this very test's comments name both — so
+    // read the implementation half only (the inline suite is not the subject).
+    const whole = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        AGENT_SOURCE_PATHCallStreaming,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATHCallStreaming});
+        return err;
+    };
+    defer std.testing.allocator.free(whole);
+    const source = try helpers.text_normalize.implementationOnly(std.testing.allocator, whole);
+    defer std.testing.allocator.free(source);
+
+    // Contract 1: callStreaming must import the libcurl-backed transport
+    // (kabelweb's client half).
+    if (std.mem.indexOf(u8, source, "@import(\"kabelweb\")") == null) {
+        std.debug.print(
+            "!! {s} does not import kabelweb — callStreaming regressed " ++
+                "to the std.http.Client path that caused the FD-leak hang !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.CustomHttpClientImportMissing;
+    }
+
+    // Contract 2: callStreaming must use the libcurl Scanner (not raw byte
+    // parsing with line_buffer + readSliceShort + '\n' byte scanning).
+    if (std.mem.indexOf(u8, source, "custom_http_client.StreamScanner") == null) {
+        std.debug.print(
+            "!! {s} does not use custom_http_client.StreamScanner — callStreaming " ++
+                "regressed to hand-rolled SSE parsing, dropping the libcurl " ++
+                "chunked-encoding correctness !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.StreamScannerMissing;
+    }
+
+    // Contract 3: the Agent struct must own a libcurl Client field, not
+    // a std.http.Client. The old `httpClient: std.http.Client` field is
+    // the symptom of the regressed path.
+    if (std.mem.indexOf(u8, source, "client: custom_http_client.Client") == null) {
+        std.debug.print(
+            "!! {s} Agent struct does not own a custom_http_client.Client — " ++
+                "the std.http path is back !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.LibcurlClientFieldMissing;
+    }
+    if (std.mem.indexOf(u8, source, "httpClient: std.http.Client") != null) {
+        std.debug.print(
+            "!! {s} still has `httpClient: std.http.Client` — the old transport " ++
+                "is coexisting with the new one; remove the old field !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.OldHttpClientFieldPresent;
+    }
+
+    // Contract 4: the StreamWatchdog + apply_tcp_keepalive + dup2-to-/dev/null
+    // machinery must NOT be present (it was the workaround for std.http
+    // parking workers in recv(); libcurl doesn't have that problem).
+    if (std.mem.indexOf(u8, source, "StreamWatchdog") != null) {
+        std.debug.print(
+            "!! {s} still references StreamWatchdog — the old std.http " ++
+                "parked-in-recv() workaround leaked FDs in production !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.StreamWatchdogPresent;
+    }
+    if (std.mem.indexOf(u8, source, "apply_tcp_keepalive") != null) {
+        std.debug.print(
+            "!! {s} still has apply_tcp_keepalive — the libcurl transport " ++
+                "doesn't need it (libcurl handles TCP keepalive internally) !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.ApplyTcpKeepalivePresent;
+    }
+
+    // Contract 5: the Anthropic endpoint must be the correct /v1/messages
+    // (the previous std.http path used a buggy /messages that the libcurl
+    // migration fixed in passing).
+    if (std.mem.indexOf(u8, source, "/v1/messages") == null) {
+        std.debug.print(
+            "!! {s} uses the wrong Anthropic endpoint — must be /v1/messages, " ++
+                "not the legacy /messages !!\n",
+            .{AGENT_SOURCE_PATHCallStreaming},
+        );
+        return error.AnthropicEndpointWrong;
+    }
+}
+
+// ============================================================================
+// Real network test — spins up a fake HTTP server, points the agent at it,
+// and verifies the idle-timeout fix actually fires on a stalled connection.
+// ============================================================================
+
+const ServerBehavior = enum {
+    /// Accept one connection, send only the HTTP head, then sleep forever.
+    /// Tests: StreamIdleTimeout (the agent gets the head, reads 0 bytes for
+    /// the body, and the idle window expires).
+    head_only_then_stall,
+    /// Accept one connection, send head + one valid SSE chunk, then sleep
+    /// forever. Tests: StreamIdleTimeout (after the first chunk, no more
+    /// bytes arrive, idle window expires).
+    one_chunk_then_stall,
+    /// Accept one connection, send head, then close immediately (RST or FIN).
+    /// Tests: StreamEmpty (the agent gets the head, reads 0 bytes for the
+    /// body, the socket is already in `.closing` state, no chunks delivered).
+    head_then_close,
+};
+
+const FakeServer = struct {
+    listener_fd: i32,
+    port: u16,
+    thread: std.Thread,
+    stop: std.atomic.Value(bool) = .init(false),
+    /// Set by the server thread once a connection has been accepted.
+    /// Test code can wait on this to avoid races.
+    connection_seen: std.atomic.Value(bool) = .init(false),
+
+    fn start(behavior: ServerBehavior) !FakeServer {
+        const fd: i32 = blk: {
+            const rc = linux.socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (rc > std.math.maxInt(i32)) return error.SocketCreationFailed;
+            break :blk @as(i32, @intCast(rc));
+        };
+        errdefer _ = linux.close(fd);
+
+        // Allow fast port reuse so repeated test runs don't TIME_WAIT.
+        const opt: i32 = 1;
+        try posix.setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, std.mem.asBytes(&opt));
+
+        // Bind to 127.0.0.1:0 (OS-assigned port).
+        var sockaddr: linux.sockaddr.in = .{
+            .family = AF_INET,
+            .port = 0, // OS-assigned
+            .addr = @bitCast(@as(u32, 0x0100007f)), // 127.0.0.1
+            .zero = undefined,
+        };
+        {
+            const rc = linux.bind(fd, @ptrCast(&sockaddr), @sizeOf(linux.sockaddr.in));
+            if (rc != 0) return error.BindFailed;
+        }
+        {
+            const rc = linux.listen(fd, 1);
+            if (rc != 0) return error.ListenFailed;
+        }
+
+        // Read back the assigned port.
+        var assigned: linux.sockaddr.in = undefined;
+        var assigned_len: linux.socklen_t = @sizeOf(linux.sockaddr.in);
+        {
+            const rc = linux.getsockname(fd, @ptrCast(&assigned), &assigned_len);
+            if (rc != 0) return error.GetsocknameFailed;
+        }
+        const port = std.mem.bigToNative(u16, assigned.port);
+
+        var server = FakeServer{
+            .listener_fd = fd,
+            .port = port,
+            .thread = undefined, // set below
+        };
+        server.thread = try std.Thread.spawn(.{}, serve, .{
+            server.listener_fd,
+            behavior,
+            &server.stop,
+            &server.connection_seen,
+        });
+        return server;
+    }
+
+    fn shutdown(self: *FakeServer) void {
+        self.stop.store(true, .release);
+        // Force the accept() to return by closing the listener. This unblocks
+        // the worker thread even if it's stuck in accept().
+        _ = linux.close(self.listener_fd);
+        self.thread.join();
+    }
+
+    /// Block until the worker thread has accepted a connection, or 5s elapses.
+    /// Avoids a race where the agent's request reaches the kernel before the
+    /// server thread has been scheduled.
+    fn waitForConnection(self: *FakeServer) void {
+        const start_ms = nowMs();
+        while (!self.connection_seen.load(.acquire)) {
+            if (nowMs() - start_ms > 5_000) return; // best-effort
+            std.Io.sleep(std.testing.io, .{ .nanoseconds = 10 * std.time.ns_per_ms }, .real) catch return;
+        }
+    }
+};
+
+fn nowMs() i64 {
+    return @intCast(@divTrunc(std.Io.Timestamp.now(std.testing.io, .real).nanoseconds, std.time.ns_per_ms));
+}
+
+fn serve(
+    listener_fd: i32,
+    behavior: ServerBehavior,
+    stop: *std.atomic.Value(bool),
+    connection_seen: *std.atomic.Value(bool),
+) void {
+    const head =
+        "HTTP/1.1 200 OK\r\n" ++
+        "Content-Type: text/event-stream\r\n" ++
+        "Transfer-Encoding: chunked\r\n" ++
+        "Connection: close\r\n" ++
+        "\r\n";
+
+    // Loop accepting connections so the FD-leak regression tests can drive
+    // multiple callStreaming calls against the same port (the original single-
+    // accept server returned after one connection, so subsequent agent calls
+    // got ECONNREFUSED — a different code path that doesn't exercise the
+    // leak). Each iteration handles one connection according to `behavior`.
+    while (!stop.load(.acquire)) {
+        const conn_rc = linux.accept(listener_fd, null, null);
+        if (conn_rc > std.math.maxInt(i32)) {
+            // Listener closed (test teardown) or accept errored. Exit.
+            return;
+        }
+        const conn_fd: i32 = @intCast(conn_rc);
+        defer _ = linux.close(conn_fd);
+
+        connection_seen.store(true, .release);
+
+        sendAll(conn_fd, head) catch continue;
+
+        switch (behavior) {
+            .head_only_then_stall => {
+                sleepUntilStop(stop, 60_000);
+                return;
+            },
+            .one_chunk_then_stall => {
+                const body_chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+                var hex_buf: [16]u8 = undefined;
+                const chunk_header = std.fmt.bufPrint(&hex_buf, "{x}\r\n", .{body_chunk.len}) catch continue;
+                sendAll(conn_fd, chunk_header) catch continue;
+                sendAll(conn_fd, body_chunk) catch continue;
+                sendAll(conn_fd, "\r\n") catch continue;
+                sleepUntilStop(stop, 60_000);
+                return;
+            },
+            .head_then_close => {
+                // Close immediately. The client will see FIN and reader state
+                // will transition to `.closing` before it has read any body.
+                // Loop continues to accept the next connection.
+                continue;
+            },
+        }
+    }
+}
+
+fn sendAll(fd: i32, data: []const u8) !void {
+    var sent: usize = 0;
+    while (sent < data.len) {
+        const rc = linux.write(fd, data[sent..].ptr, data.len - sent);
+        if (rc > std.math.maxInt(i32)) return error.WriteFailed;
+        const n: i32 = @intCast(rc);
+        if (n < 0) return error.WriteFailed;
+        if (n == 0) return error.WriteFailed;
+        sent += @as(usize, @intCast(n));
+    }
+}
+
+fn sleepUntilStop(stop: *std.atomic.Value(bool), max_ms: u64) void {
+    const start_ms = nowMs();
+    while (!stop.load(.acquire)) {
+        if (nowMs() - start_ms > @as(i64, @intCast(max_ms))) return;
+        std.Io.sleep(std.testing.io, .{ .nanoseconds = 50 * std.time.ns_per_ms }, .real) catch return;
+    }
+}
+
+fn noopCallback(_: ?*anyopaque, _: StreamChunk) void {}
+
+/// Build a minimal AgentCall. Allocates nothing — content is a static string.
+fn makeCall() AgentCall {
+    return .{
+        .tools = &.{},
+        .messages = &.{
+            .{ .role = .user, .content = "hello" },
+        },
+    };
+}
+
+/// Build a base URL like "http://127.0.0.1:NNNNN" pointing at the fake server.
+fn makeBaseUrl(allocator: std.mem.Allocator, port: u16) ![]u8 {
+    return std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port});
+}
+
+/// Helper: run callStreaming against a fake server with custom timeouts.
+/// Returns the outcome (CallError or success) and the elapsed wall-clock ms.
+fn runStreamingWithTimeout(
+    port: u16,
+    idle_timeout_ms: u32,
+    read_timeout_ms: u32,
+) !struct {
+    result: anyerror!CallResponse,
+    elapsed_ms: i64,
+} {
+    var a = try Agent.init_with_options(testing_allocatorCallStreaming, std.testing.io, .{
+        .idle_timeout_ms = idle_timeout_ms,
+        .read_timeout_ms = read_timeout_ms,
+    });
+    defer a.deinit();
+
+    const base_url = try makeBaseUrl(testing_allocatorCallStreaming, port);
+    defer testing_allocatorCallStreaming.free(base_url);
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    const start_ms = nowMs();
+    const result = a.callStreaming(makeCall(), null, noopCallback);
+    const elapsed_ms = nowMs() - start_ms;
+    return .{ .result = result, .elapsed_ms = elapsed_ms };
+}
+
+test "callStreaming returns StreamIdleTimeout within idle window when server stalls after head" {
+    // The watchdog thread force-cancels the in-flight recv via shutdown(SHUT_RD)
+    // when no body bytes arrive for `idle_timeout_ms`. The recv returns 0 (EOF)
+    // per Linux's "may unblock pending receives" semantics for SHUT_RD, and the
+    // watchdog's dup2-to-/dev/null trick leaves the fd valid for the Io
+    // runtime's later close(). Without the watchdog, the worker would hang in
+    // recv() indefinitely (the previous skip-rationale that this test replaced).
+    //
+    // The watchdog polls every ~250ms, so the test's wall-clock time is bounded
+    // by the next poll boundary after idle_timeout_ms elapses. We use a small
+    // idle_timeout_ms (50ms) to keep the test fast; the upper bound
+    // (idle_ms + 750ms) gives one full extra poll cycle of slack for scheduling
+    // jitter. read_timeout_ms is short so the test fails fast if the watchdog
+    // doesn't fire on idle.
+    //
+    // NOTE: this test is currently skip-listed. The watchdog's idle check fires
+    // correctly (callStreaming returns within ~250ms with elapsed_ms ~252ms in
+    // debug runs), but subsequent Agent.deinit / httpClient.deinit cleanup
+    // hangs in std.Io.Threaded.closeFd when the connection was half-closed by
+    // the watchdog's dup2-to-/dev/null trick. The full callStreaming stack
+    // returns, but the deferred client deinit never completes — the test
+    // process hangs past `read_timeout_ms` and is killed by the test runner's
+    // outer timeout. Marking the test as skipped keeps `zig build test` fast
+    // (the watchdog timing is verified by the structural `CallError has the
+    // four new streaming variants` test above). Re-enable this test once the
+    // Io runtime's close path handles the dup2-replaced fd correctly.
+    if (true) return error.SkipZigTest;
+    var server = try FakeServer.start(.head_only_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const idle_ms: u32 = 500;
+    const outcome = try runStreamingWithTimeout(server.port, idle_ms, 30_000);
+
+    // Detection must happen between [idle_ms, idle_ms + ~750ms] (one watchdog
+    // poll cycle of slack). The previous 500ms idle + 30s read_timeout values
+    // made each test take ~30s end-to-end; lower bounds make the test
+    // ~10x faster while still pinning the same behavior.
+    try expectCallStreaming(outcome.elapsed_ms >= @as(i64, @intCast(idle_ms)) - 50);
+    try expectCallStreaming(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 750);
+
+    try expectErrorCallStreaming(error.StreamIdleTimeout, outcome.result);
+}
+
+test "callStreaming returns StreamIdleTimeout within idle window when server stalls after first chunk" {
+    // Same hang-on-cleanup issue as the test above — see the comment there
+    // for the full explanation. Skipped to keep `zig build test` fast.
+    if (true) return error.SkipZigTest;
+    var server = try FakeServer.start(.one_chunk_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const idle_ms: u32 = 50;
+    const outcome = try runStreamingWithTimeout(server.port, idle_ms, 2_000);
+
+    try expectCallStreaming(outcome.elapsed_ms >= @as(i64, @intCast(idle_ms)) - 50);
+    try expectCallStreaming(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 750);
+
+    try expectErrorCallStreaming(error.StreamIdleTimeout, outcome.result);
+}
+
+/// Portable fixture for the cancellation test: a listener that accepts ONE
+/// connection, answers with an HTTP/1.1 SSE head plus a single `data:` chunk,
+/// then holds the connection open without sending anything else.
+///
+/// Deliberately NOT the `FakeServer` the other tests in this file use: that one
+/// is built on raw `std.os.linux` syscalls (socket/bind/listen/accept/write) and
+/// is therefore Linux-only. This uses `std.Io.net`, which works on Linux, macOS
+/// and Windows alike, so the cancel contract is covered on every platform we
+/// ship instead of being skipped on two of them.
+const StallServer = struct {
+    allocator: std.mem.Allocator,
+    listener: std.Io.net.Server,
+    thread: std.Thread,
+    port: u16,
+    stop: std.atomic.Value(bool),
+
+    fn start(allocator: std.mem.Allocator) !*StallServer {
+        const io = std.testing.io;
+        const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
+        const listener = address.listen(io, .{}) catch return error.AddressInUse;
+
+        const self = try allocator.create(StallServer);
+        errdefer allocator.destroy(self);
+        self.* = .{
+            .allocator = allocator,
+            .listener = listener,
+            // Port 0 above means "OS picks"; the resolved value only lands in
+            // the socket AFTER listen() runs.
+            .port = listener.socket.address.getPort(),
+            .thread = undefined,
+            .stop = std.atomic.Value(bool).init(false),
+        };
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+        return self;
+    }
+
+    fn run(self: *StallServer) void {
+        const io = std.testing.io;
+        // One-shot: the test opens exactly one connection.
+        const conn = self.listener.accept(io) catch return;
+        defer conn.socket.close(io);
+
+        const head =
+            "HTTP/1.1 200 OK\r\n" ++
+            "Content-Type: text/event-stream\r\n" ++
+            "Transfer-Encoding: chunked\r\n" ++
+            "Connection: close\r\n" ++
+            "\r\n";
+        const body = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        var framed_buf: [160]u8 = undefined;
+        const framed = std.fmt.bufPrint(&framed_buf, "{x}\r\n{s}\r\n", .{ body.len, body }) catch return;
+
+        // Written BEFORE the client can cancel, so this never races a closed
+        // peer (no SIGPIPE on POSIX).
+        var writer = conn.writer(io, &.{});
+        writer.interface.writeAll(head) catch return;
+        writer.interface.writeAll(framed) catch return;
+        writer.interface.flush() catch return;
+
+        // Hold the connection open with no further bytes — exactly the state a
+        // user is in when they press Stop mid-stream.
+        while (!self.stop.load(.acquire)) {
+            std.Io.sleep(io, .{ .nanoseconds = 20 * std.time.ns_per_ms }, .real) catch return;
+        }
+    }
+
+    fn deinit(self: *StallServer) void {
+        const io = std.testing.io;
+        self.stop.store(true, .release);
+        self.thread.join();
+        self.listener.deinit(io);
+        self.allocator.destroy(self);
+    }
+};
+
+test "callStreaming reports a mid-stream cancel as error.Cancelled, never as a retryable error" {
+    // The workflow treats EVERY non-Cancelled error as a transient failure: it
+    // increments retry_count, saves a retry diagnostic to history, sleeps, and
+    // re-issues the request (workflow.zig, the callDynamicAgentNew catch). So
+    // the most damaging way to get this wrong is for a user's Stop to arrive as
+    // StreamInterrupted/StreamEmpty — the turn the user just cancelled would
+    // silently re-run.
+    //
+    // `cancel_fn` answers false on its FIRST poll and true afterwards, which
+    // walks the real sequence: the loop enters the read (and the stream
+    // genuinely delivers one chunk), the transfer then fails, and only THEN is
+    // the cancel consulted. That reaches the classification branch in the
+    // scanner `catch` — returning true immediately would only ever exercise the
+    // pre-read check and would leave the branch below untested.
+    var server = try StallServer.start(testing_allocatorCallStreaming);
+    defer server.deinit();
+
+    // `callStreaming` is arena-scoped BY CONTRACT: `StreamingAggregator.deinit`
+    // is a documented no-op because production hands it the per-iteration
+    // arena (see `workflow.zig`'s loop), so its buffers are reclaimed wholesale.
+    // Using `testing.allocator` here would report the aggregator's own
+    // content buffer as a leak — a property of the contract, not a bug.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorCallStreaming);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const CancelState = struct {
+        var polls: u32 = 0;
+        fn should() bool {
+            polls += 1;
+            return polls > 1;
+        }
+    };
+    CancelState.polls = 0;
+
+    var a = Agent.init_with_options(alloc, std.testing.io, .{
+        // Large, so a correct implementation cannot be "saved" by the idle
+        // watchdog firing first.
+        .idle_timeout_ms = 60_000,
+        // Small: after the cancel the deferred `stream.deinit()` join still
+        // waits for the parked worker (no bytes are arriving — see the
+        // kabelweb `openStream` comment on XFERINFOFUNCTION), and this bounds
+        // that wait.
+        .read_timeout_ms = 1_500,
+    });
+    defer a.deinit();
+
+    const base_url = try makeBaseUrl(alloc, server.port);
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    var call = makeCall();
+    call.cancel_fn = &CancelState.should;
+
+    const start_ms = nowMs();
+    const result = a.callStreaming(call, null, noopCallback);
+    const elapsed_ms = nowMs() - start_ms;
+
+    // The transport error from the aborted request must not leak out.
+    try expectErrorCallStreaming(error.Cancelled, result);
+    // Bounded by read_timeout_ms, not by the 60s idle window.
+    try expectCallStreaming(elapsed_ms < 10_000);
+    // The thunk must actually have been consulted — guards against a
+    // `cancel_fn` that is silently never called.
+    try expectCallStreaming(CancelState.polls >= 2);
+}
+
+// Note: the original third skipped test ("head_then_close") was a pre-existing
+// flaky test unrelated to the watchdog (its skip comment said "the std.testing.io
+// event loop scheduling is not deterministic in this environment"). The watchdog
+// fix doesn't change that path's behavior, so we omit the test rather than
+// resurrect a flaky one.
+
+test "callStreaming returns within idle_timeout when server is silent (watchdog timing)" {
+    // Same hang-on-cleanup issue as the first streaming test — see the
+    // comment there for the full explanation. Skipped to keep
+    // `zig build test` fast.
+    if (true) return error.SkipZigTest;
+    // Pin the watchdog's actual timing. The watchdog wakes every ~250ms,
+    // so detection should happen within (idle_timeout_ms, idle_timeout_ms + 750ms).
+    var server = try FakeServer.start(.head_only_then_stall);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const idle_ms: u32 = 50;
+    const outcome = try runStreamingWithTimeout(server.port, idle_ms, 2_000);
+
+    // Lower bound: not faster than the timeout
+    try expectCallStreaming(outcome.elapsed_ms >= @as(i64, @intCast(idle_ms)) - 50);
+    // Upper bound: detection within one extra watchdog-poll cycle (~750ms)
+    try expectCallStreaming(outcome.elapsed_ms <= @as(i64, @intCast(idle_ms)) + 750);
+
+    try expectErrorCallStreaming(error.StreamIdleTimeout, outcome.result);
+}
+
+// ============================================================================
+// FD-leak regression tests (2026-07-15).
+//
+// Symptom (production nalar, 9-hour uptime, 8081):
+//   - Total FDs: ~820
+//   - Of which: ~818 anonymous pipes (self-pipes held entirely by nalar,
+//     appearing in only 1 process in /proc)
+//   - Burst pattern: created in a 6-minute window concurrent with retry storm
+//   - Source: each `callStreaming` that fails (HttpRequestFailed) leaks
+//     internal pipe FDs that `req.deinit()` / `httpClient.deinit()` don't
+//     fully close in Zig 0.16 std.http. After ~10 retries, +800 FDs.
+//
+// Diagnosis:
+//   - sse_manager.zig::notify_pipe is process-global (2 FDs total, not per-call)
+//   - bash.zig already has the kill+wait pipe-cleanup pattern from PR #91
+//   - HttpClient.zig already has the defer-pipe-close pattern from PR #91
+//   - The remaining leak is in `Agent.callStreaming` itself: on the error
+//     path (e.g. server closes before any response is read), the connection's
+//     underlying socket + internal stdlib pipes are not fully cleaned up by
+//     `req.deinit()`.
+//
+// These tests verify that bounded N callStreaming calls leave the process
+// FD table bounded — i.e. the leak is closed.
+//
+// Implementation note: tests use the FakeServer's `head_then_close` behavior
+// (server closes the TCP connection immediately after accepting), which
+// reliably triggers the error path that historically leaked. The server
+// runs in a worker thread; the test process exits cleanly because we
+// always `defer server.shutdown()`.
+// ============================================================================
+
+/// Count anonymous pipes currently open in the test process via /proc/self/fd.
+/// Returns 0 on non-Linux (the leak is Linux-only) and on any proc access error.
+fn countPipes() usize {
+    if (builtin.os.tag != .linux) return 0;
+
+    // Open /proc/self/fd with posix.openat AT_FDCWD path.
+    const dir = std.c.opendir("/proc/self/fd") orelse return 0;
+    defer _ = std.c.closedir(dir);
+
+    var pipes: usize = 0;
+    var buf: [4096]u8 = undefined; // scratch buffer for std.c.readlink target
+    while (std.c.readdir(dir)) |raw_entry| {
+        const entry: *std.c.dirent = @ptrCast(raw_entry);
+        // On Linux, `name` is a fixed-size [256]u8 array terminated by NUL.
+        const name_slice = entry.name[0..];
+        const name_len = std.mem.indexOfScalar(u8, name_slice, 0) orelse name_slice.len;
+        const name = name_slice[0..name_len];
+
+        // Skip "." and ".."
+        if (std.mem.eql(u8, name, ".") or std.mem.eql(u8, name, "..")) continue;
+
+        // Build "/proc/self/fd/N" path
+        var link_path: [64]u8 = undefined;
+        const link_path_z = std.fmt.bufPrintZ(&link_path, "/proc/self/fd/{s}", .{name}) catch continue;
+
+        // Readlink to find the FD's type
+        const target_len_signed = std.c.readlink(link_path_z, &buf, buf.len);
+        if (target_len_signed > 0) {
+            const target = buf[0..@intCast(target_len_signed)];
+            // Anonymous pipes show as "pipe:[N]" in /proc. AF_UNIX sockets
+            // show as "socket:[N]" — we only count pipes here.
+            if (target.len >= 5 and std.mem.eql(u8, target[0..5], "pipe:")) {
+                pipes += 1;
+            }
+        }
+    }
+    return pipes;
+}
+
+test "callStreaming does not leak pipe FDs across many failed calls (TDD: RED → GREEN)" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Skipped: same std.Io.Threaded.closeFd hang as the 3 tests above (see
+    // the comment on the first "StreamIdleTimeout" test for the full
+    // diagnosis). The dup2-to-/dev/null trick added in PR #117 prevents
+    // the kernel panic on closeFd, but the Io runtime's worker thread,
+    // parked in recv() on the original socket file description, never
+    // observes the dup2 and stays blocked. Re-enable when std.Io.Threaded
+    // properly handles dup2-replaced fds, OR when Agent.callStreaming
+    // uses a dedicated single-use http.Client for failure paths.
+    if (true) return error.SkipZigTest;
+
+    // The pre-fix leak rate is so severe (~100 pipes per failed call) that
+    // running N≥3 iterations in the shared test-runner process hits the
+    // 1024 FD limit. Keep N tiny (2) and add an early-bail baseline check:
+    // if the test runner's own pipe count is already near the limit, skip.
+
+    const pipes_baseline = countPipes();
+    // Default Linux FD soft limit is 1024. Leave 200 FDs of headroom for the
+    // test infra itself (listen socket, agent, httpClient, FDs needed by
+    // countPipes iteration, etc).
+    if (pipes_baseline > 800) {
+        std.debug.print(
+            "  skip: baseline pipes={} too high (likely shared test runner with prior leak); " ++
+                "the leak is reproducible in isolation — run this test alone to verify the fix.\n",
+            .{pipes_baseline},
+        );
+        return error.SkipZigTest;
+    }
+
+    // Use head_then_close: server closes the TCP connection immediately
+    // after accepting, before sending any response body. This reliably
+    // triggers the error path that historically leaked pipe FDs.
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocatorCallStreaming, server.port);
+    defer testing_allocatorCallStreaming.free(base_url);
+
+    var a = try Agent.init_with_options(testing_allocatorCallStreaming, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Warmup: one call to absorb any one-time allocation (e.g. httpClient
+    // pool init) so we measure the per-call steady-state, not setup cost.
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+
+    const pipes_before = countPipes();
+
+    // N=2 keeps the test fast and stays within FD limit. Pre-fix the leak
+    // is ~100/call → +200 pipes → easily detected by the assertion. Post-fix
+    // the growth should be 0-2 pipes total.
+    const N: usize = 2;
+    var i: usize = 0;
+    while (i < N) : (i += 1) {
+        _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    }
+
+    const pipes_after = countPipes();
+    const growth = pipes_after -| pipes_before;
+
+    // Pre-fix baseline: ~100+ pipes per call. Post-fix threshold: ≤2
+    // pipes per call (so N=2 → ≤4 growth). If the leak returns at the
+    // pre-fix scale, this catches it (expect ~200 growth).
+    try expectCallStreaming(growth < N * 2);
+}
+
+test "callStreaming zero-pipe-budget: even one failed call must not grow pipes" {
+    // Stronger assertion: a single failed callStreaming MUST not grow the
+    // pipe count at all. Any growth is a leak. Skipped if countPipes() is
+    // unavailable on this platform, or if the shared test runner already
+    // has too many open pipes to safely run another iteration.
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Skipped: same std.Io.Threaded.closeFd hang as the test above.
+    if (true) return error.SkipZigTest;
+
+    if (countPipes() > 800) return error.SkipZigTest;
+
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocatorCallStreaming, server.port);
+    defer testing_allocatorCallStreaming.free(base_url);
+
+    var a = try Agent.init_with_options(testing_allocatorCallStreaming, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Warmup
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    const pipes_before = countPipes();
+
+    // One additional call
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    const pipes_after = countPipes();
+
+    // Strict: zero growth. The pre-fix baseline would fail this at ~100+.
+    try expectEqualCallStreaming(pipes_before, pipes_after);
+}
+
+test "callStreaming recovers cleanly after a failed call (success path)" {
+    // Regression guard: when the server closes immediately (head_then_close),
+    // the agent should remain usable for the next call. This catches a class
+    // of bugs where the Agent's internal state is corrupted after a failed
+    // HTTP attempt (e.g. partial parse, leftover stream state).
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    // Skipped: same std.Io.Threaded.closeFd hang as the test above.
+    if (true) return error.SkipZigTest;
+
+    if (countPipes() > 800) return error.SkipZigTest;
+
+    var server = try FakeServer.start(.head_then_close);
+    defer server.shutdown();
+    server.waitForConnection();
+
+    const base_url = try makeBaseUrl(testing_allocatorCallStreaming, server.port);
+    defer testing_allocatorCallStreaming.free(base_url);
+
+    var a = try Agent.init_with_options(testing_allocatorCallStreaming, std.testing.io, .{
+        .idle_timeout_ms = 2_000,
+        .read_timeout_ms = 5_000,
+    });
+    defer a.deinit();
+    a.baseUrl = base_url;
+    a.model = "test-model";
+    a.apiKey = "test-key";
+
+    // Two consecutive failed calls — both must NOT crash, hang, or leak.
+    // (The pre-fix leak crashes the test runner with ProcessFdQuotaExceeded
+    // after a handful of iterations.)
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+
+    // Sanity: we should be able to start a third call without the test
+    // runner having run out of FDs or corrupted state.
+    _ = a.callStreaming(makeCall(), null, noopCallback) catch {};
+}
+
+// ===== Tests merged from image_content_test.zig (2026-09-29 flatten) =====
+const expectEqualImageContent = std.testing.expectEqual;
+const expectEqualStringsImageContent = std.testing.expectEqualStrings;
+const expectImageContent = std.testing.expect;
+
+test "ContentPart - text part creation" {
+    const part = ContentPart{
+        .part_type = "text",
+        .text = try std.testing.allocator.dupe(u8, "Hello, world!"),
+        .image_url = null,
+    };
+    defer {
+        if (part.text) |t| std.testing.allocator.free(t);
+    }
+
+    try expectEqualStringsImageContent("text", part.part_type);
+    try expectEqualStringsImageContent("Hello, world!", part.text.?);
+    try expectEqualImageContent(@as(?ImageUrl, null), part.image_url);
+}
+
+test "ContentPart - image_url part creation" {
+    const url_str = try std.testing.allocator.dupe(u8, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+    const part = ContentPart{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{
+            .url = url_str,
+            .detail = null,
+        },
+    };
+    defer {
+        if (part.image_url) |img| {
+            if (img.url) |u| std.testing.allocator.free(u);
+        }
+    }
+
+    try expectEqualStringsImageContent("image_url", part.part_type);
+    try expectEqualImageContent(@as(?[]const u8, null), part.text);
+    try expectImageContent(part.image_url != null);
+    try expectImageContent(std.mem.startsWith(u8, part.image_url.?.url.?, "data:image/png;base64,"));
+}
+
+test "ImageUrl - with detail option" {
+    const url_str = try std.testing.allocator.dupe(u8, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+    const img = ImageUrl{
+        .url = url_str,
+        .detail = try std.testing.allocator.dupe(u8, "low"),
+    };
+    defer {
+        if (img.url) |u| std.testing.allocator.free(u);
+        if (img.detail) |d| std.testing.allocator.free(d);
+    }
+
+    try expectImageContent(img.url != null);
+    try expectEqualStringsImageContent("low", img.detail.?);
+}
+
+test "AgentMessage - with content_parts (multimodal)" {
+    const text_part = try std.testing.allocator.dupe(u8, "What is in this image?");
+    const url_str = try std.testing.allocator.dupe(u8, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==");
+    
+    const parts = try std.testing.allocator.alloc(ContentPart, 2);
+    parts[0] = .{
+        .part_type = "text",
+        .text = text_part,
+        .image_url = null,
+    };
+    parts[1] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{
+            .url = url_str,
+            .detail = null,
+        },
+    };
+
+    const msg = AgentMessage{
+        .role = .user,
+        .content = null,
+        .content_parts = parts,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+    defer msg.deinit(std.testing.allocator);
+
+    try expectEqualImageContent(@as(?[]const u8, null), msg.content);
+    try expectImageContent(msg.content_parts != null);
+    try expectEqualImageContent(@as(usize, 2), msg.content_parts.?.len);
+    try expectEqualStringsImageContent("text", msg.content_parts.?[0].part_type);
+    try expectEqualStringsImageContent("image_url", msg.content_parts.?[1].part_type);
+}
+
+test "AgentMessage deinit handles content_parts correctly" {
+    const text_part = try std.testing.allocator.dupe(u8, "Hello");
+    const url_str = try std.testing.allocator.dupe(u8, "data:image/png;base64,abc123");
+    
+    const parts = try std.testing.allocator.alloc(ContentPart, 1);
+    parts[0] = .{
+        .part_type = "text",
+        .text = text_part,
+        .image_url = .{
+            .url = url_str,
+            .detail = null,
+        },
+    };
+
+    const msg = AgentMessage{
+        .role = .user,
+        .content = null,
+        .content_parts = parts,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+    // deinit should free all allocated memory without leaking
+    msg.deinit(std.testing.allocator);
+    
+    // If we get here without memory errors, the test passes
+    try expectImageContent(true);
+}
+
+test "ContentPart - base64 image URL format validation" {
+    // Test that we can create ContentPart with proper base64 data URL format
+    // as expected by OpenAI API
+    const base64_data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    const url = try std.fmt.allocPrint(std.testing.allocator, "data:image/png;base64,{s}", .{base64_data});
+    
+    const part = ContentPart{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{
+            .url = url,
+            .detail = null,
+        },
+    };
+    defer {
+        if (part.image_url) |img| {
+            if (img.url) |u| std.testing.allocator.free(u);
+        }
+    }
+    
+    try expectImageContent(std.mem.startsWith(u8, part.image_url.?.url.?, "data:image/png;base64,"));
+}
+
+test "AgentMessage - legacy content field still works" {
+    // Verify backward compatibility - AgentMessage with plain content
+    const content = try std.testing.allocator.dupe(u8, "Hello, this is plain text content");
+    
+    const msg = AgentMessage{
+        .role = .user,
+        .content = content,
+        .content_parts = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+    defer msg.deinit(std.testing.allocator);
+
+    try expectEqualStringsImageContent("Hello, this is plain text content", msg.content.?);
+    try expectEqualImageContent(@as(?[]const ContentPart, null), msg.content_parts);
+}
+
+// ===== Tests merged from openai_reasoning_test.zig (2026-09-29 flatten) =====
+// Tests for the new OpenAI `reasoning_effort` field on the request
+// body built by `buildJsonOpenAIRequest`. Plan
+// 2026-08-23-model-thinking.
+
+const OpenaiReasoningMakeOpts = struct {
+    reasoningEffort: ?[]const u8 = null,
+    thinkingEnabled: bool = true,
+};
+
+fn makeAgentOpenaiReasoning(opts: OpenaiReasoningMakeOpts) Agent {
+    var a = Agent.init(testing.allocator, std.testing.io);
+    a.apiKey = "test-key";
+    a.model = "o1-preview";
+    a.baseUrl = "https://api.openai.com/v1";
+    a.UrlStyle = "openai";
+    a.thinkingEnabled = opts.thinkingEnabled;
+    a.reasoningEffort = opts.reasoningEffort;
+    a.maxTokens = 8192;
+    return a;
+}
+
+fn emptyMessagesOpenaiReasoning() []const AgentMessage {
+    return &.{
+        .{
+            .role = .user,
+            .content = "solve x^2 + 2x + 1 = 0",
+        },
+    };
+}
+
+fn emptyToolsOpenaiReasoning() []const AgentTool {
+    return &.{};
+}
+
+test "buildJsonOpenAIRequest: reasoningEffort set emits reasoning_effort field" {
+    var a = makeAgentOpenaiReasoning(.{ .reasoningEffort = "high" });
+
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = emptyMessagesOpenaiReasoning() };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"high\"") != null);
+}
+
+test "buildJsonOpenAIRequest: reasoningEffort null omits reasoning_effort field" {
+    var a = makeAgentOpenaiReasoning(.{ .reasoningEffort = null });
+
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = emptyMessagesOpenaiReasoning() };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "reasoning_effort") == null);
+}
+
+test "buildJsonOpenAIRequest: reasoningEffort empty string omits field" {
+    // The frontend uses "" for "auto" / null. The Agent field is
+    // ?[]const u8 so an empty slice is a valid-but-meaningless
+    // value — we treat it the same as null (omit).
+    var a = makeAgentOpenaiReasoning(.{ .reasoningEffort = "" });
+
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = emptyMessagesOpenaiReasoning() };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "reasoning_effort") == null);
+}
+
+test "buildJsonOpenAIRequest: reasoning_effort coexists with tools + temperature" {
+    // o1 supports tool calls (function calling); the reasoning_effort
+    // field must coexist with tools and not be silenced by them.
+    var a = makeAgentOpenaiReasoning(.{ .reasoningEffort = "medium" });
+
+    const tool: AgentTool = .{
+        .type = "function",
+        .function = .{
+            .name = "get_weather",
+            .description = "Get the weather",
+            .parameters = .{
+                .type = "object",
+                .properties = &.{
+                    .{ .name = "city", .type = "string", .description = "City name" },
+                },
+                .required = &.{"city"},
+            },
+        },
+    };
+
+    const params = AgentCall{
+        .messages = emptyMessagesOpenaiReasoning(),
+        .tools = &.{tool},
+        .temperature = 0.7,
+    };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"medium\"") != null);
+    // temperature is serialized as a JSON float — Zig emits e.g.
+    // "0.699999988079071" for 0.7, so we only check the field name
+    // exists, not the exact value. The jsonStringify uses std.json
+    // default float formatting which preserves full f32 precision.
+    try testing.expect(std.mem.indexOf(u8, body, "\"temperature\":") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"get_weather\"") != null);
+}
+
+test "buildJsonOpenAIRequest: each reasoning_effort value passes through verbatim" {
+    // Parametric sweep over the 4 canonical values. Backend is a
+    // dumb pipe — the server validates per-model compatibility.
+    const values = [_][]const u8{ "low", "medium", "high", "auto" };
+    for (values) |v| {
+        var a = makeAgentOpenaiReasoning(.{ .reasoningEffort = v });
+        const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = emptyMessagesOpenaiReasoning() };
+        const body = try a.buildJsonOpenAIRequest(params, true);
+        defer testing.allocator.free(body);
+
+        var needle: [128]u8 = undefined;
+        const formatted = try std.fmt.bufPrint(&needle, "\"reasoning_effort\":\"{s}\"", .{v});
+        try testing.expect(std.mem.indexOf(u8, body, formatted) != null);
+    }
+}
+
+// Reasoning-echo backfill (task_1789091513563_0): DeepSeek-style
+// providers in thinking mode reject replays where an assistant message
+// lacks `reasoning_content`. Turns with no reasoning deltas persist
+// NULL — the builder must emit "" instead of omitting the field.
+
+fn assistantMsgNoReasoningOpenaiReasoning(text: ?[]const u8) AgentMessage {
+    return .{ .role = .assistant, .content = text };
+}
+
+test "buildJsonOpenAIRequest: thinking on + assistant null reasoning emits empty reasoning_content" {
+    var a = makeAgentOpenaiReasoning(.{ .thinkingEnabled = true });
+    const msgs = [_]AgentMessage{
+        .{ .role = .user, .content = "hello" },
+        assistantMsgNoReasoningOpenaiReasoning("final answer"),
+    };
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"\"") != null);
+}
+
+test "buildJsonOpenAIRequest: thinking off + all-null history omits reasoning_content" {
+    // Plain sessions keep their exact wire shape — no new field.
+    var a = makeAgentOpenaiReasoning(.{ .thinkingEnabled = false });
+    const msgs = [_]AgentMessage{
+        .{ .role = .user, .content = "hello" },
+        assistantMsgNoReasoningOpenaiReasoning("final answer"),
+    };
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "reasoning_content") == null);
+}
+
+test "buildJsonOpenAIRequest: thinking off but history has reasoning backfills null assistant" {
+    // Mid-session thinking toggle-off: older turns carry reasoning, a
+    // newer turn has none. The null one gets "" (echo validator sees
+    // the field on every assistant message); the real one is verbatim.
+    var a = makeAgentOpenaiReasoning(.{ .thinkingEnabled = false });
+    const msgs = [_]AgentMessage{
+        .{ .role = .assistant, .content = "first", .reasoning_content = "real-thinking" },
+        assistantMsgNoReasoningOpenaiReasoning(null),
+    };
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"real-thinking\"") != null);
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"\"") != null);
+}
+
+test "buildJsonOpenAIRequest: backfill is assistant-only, user messages stay clean" {
+    var a = makeAgentOpenaiReasoning(.{ .thinkingEnabled = true });
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = emptyMessagesOpenaiReasoning() };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "reasoning_content") == null);
+}
+
+test "buildJsonOpenAIRequest: assistant with reasoning keeps verbatim value" {
+    var a = makeAgentOpenaiReasoning(.{ .thinkingEnabled = true });
+    const msgs = [_]AgentMessage{
+        .{ .role = .user, .content = "hello" },
+        .{ .role = .assistant, .content = "final answer", .reasoning_content = "model's reasoning..." },
+        .{ .role = .user, .content = "follow up" },
+    };
+    const params = AgentCall{ .tools = emptyToolsOpenaiReasoning(), .messages = &msgs };
+    const body = try a.buildJsonOpenAIRequest(params, true);
+    defer testing.allocator.free(body);
+
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"model's reasoning...\"") != null);
+}
+
+// ===== Tests merged from openai_responses_test.zig (2026-09-29 flatten) =====
+// Behavioural tests for OpenAI Responses API (url_style = "openai-response").
+// Covers buildJsonResponsesRequest + parse_responses_stream_chunk parity
+// with the legacy chat-completions stack. Mirrors the shape of
+// openai_reasoning_test.zig / parse_anthropic_sse_test.zig /
+// anthropic_request_test.zig — arena allocator, substring + parsed JSON
+// asserts, no network I/O.
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn makeResponsesAgentOpenaiResponses(opts: struct {
+    reasoningEffort: ?[]const u8 = null,
+    thinkingEnabled: bool = true,
+    maxTokens: usize = 4096,
+    model: []const u8 = "gpt-4o",
+    baseUrl: []const u8 = "https://api.openai.com/v1",
+    userIdentifier: []const u8 = "",
+}) Agent {
+    var a = Agent.init(testing.allocator, std.testing.io);
+    a.model = opts.model;
+    a.baseUrl = opts.baseUrl;
+    a.UrlStyle = "openai-response";
+    a.thinkingEnabled = opts.thinkingEnabled;
+    a.reasoningEffort = opts.reasoningEffort;
+    a.maxTokens = opts.maxTokens;
+    a.userIdentifier = opts.userIdentifier;
+    return a;
+}
+
+fn userMsgOpenaiResponses(text: []const u8) AgentMessage {
+    return .{
+        .role = .user,
+        .content = text,
+        .content_parts = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+}
+
+fn sysMsgOpenaiResponses(text: []const u8) AgentMessage {
+    return .{
+        .role = .system,
+        .content = text,
+        .content_parts = null,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .reasoning_content = null,
+    };
+}
+
+fn assistantMsgOpenaiResponses(text: ?[]const u8, reasoning: ?[]const u8) AgentMessage {
+    return .{
+        .role = .assistant,
+        .content = text,
+        .reasoning_content = reasoning,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .content_parts = null,
+    };
+}
+
+fn assistantMsgFullOpenaiResponses(text: ?[]const u8, reasoning: ?[]const u8, id: ?[]const u8, enc: ?[]const u8) AgentMessage {
+    return .{
+        .role = .assistant,
+        .content = text,
+        .reasoning_content = reasoning,
+        .reasoning_id = id,
+        .reasoning_encrypted_content = enc,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .content_parts = null,
+    };
+}
+
+fn buildResponsesBodyOpenaiResponses(
+    a: *Agent,
+    messages: []const AgentMessage,
+    tools: []const AgentTool,
+    temperature: ?f32,
+    max_tokens: ?usize,
+    stream: bool,
+) ![]u8 {
+    const params = AgentCall{
+        .tools = tools,
+        .messages = messages,
+        .temperature = temperature,
+        .max_tokens = max_tokens,
+    };
+    return try a.buildJsonResponsesRequest(params, stream);
+}
+
+const ParsedBodyOpenaiResponses = struct {
+    raw: []u8,
+    parsed: std.json.Parsed(std.json.Value),
+};
+
+fn buildAndParseOpenaiResponses(
+    a: *Agent,
+    messages: []const AgentMessage,
+    tools: []const AgentTool,
+    temperature: ?f32,
+    max_tokens: ?usize,
+    stream: bool,
+) !ParsedBodyOpenaiResponses {
+    const raw = try buildResponsesBodyOpenaiResponses(a, messages, tools, temperature, max_tokens, stream);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, raw, .{});
+    return .{ .raw = raw, .parsed = parsed };
+}
+
+fn freeBodyOpenaiResponses(body: ParsedBodyOpenaiResponses) void {
+    testing.allocator.free(body.raw);
+    body.parsed.deinit();
+}
+
+fn sampleToolOpenaiResponses() AgentTool {
+    return .{
+        .type = "function",
+        .function = .{
+            .name = "get_weather",
+            .description = "Get the weather",
+            .parameters = .{
+                .type = "object",
+                .properties = &.{
+                    .{ .name = "city", .type = "string", .description = "City name" },
+                },
+                .required = &.{"city"},
+            },
+        },
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Builder: instructions from system messages
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: single system message becomes instructions" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        sysMsgOpenaiResponses("You are a helpful assistant."),
+        userMsgOpenaiResponses("Hello."),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const ins = body.parsed.value.object.get("instructions");
+    try testing.expect(ins != null);
+    try testing.expect(ins.? == .string);
+    try testing.expectEqualStrings("You are a helpful assistant.", ins.?.string);
+
+    // system message must NOT appear in input[]
+    const input = body.parsed.value.object.get("input").?.array;
+    for (input.items) |item| {
+        if (item.object.get("role")) |r| {
+            try testing.expect(!std.mem.eql(u8, r.string, "system"));
+        }
+    }
+    // input should have exactly 1 entry (the user message)
+    try testing.expectEqual(@as(usize, 1), input.items.len);
+}
+
+test "buildJsonResponsesRequest: multiple system messages joined with \\n\\n into instructions" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        sysMsgOpenaiResponses("First part."),
+        sysMsgOpenaiResponses("Second part."),
+        userMsgOpenaiResponses("Hi."),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const ins = body.parsed.value.object.get("instructions").?.string;
+    try testing.expectEqualStrings("First part.\n\nSecond part.", ins);
+}
+
+test "buildJsonResponsesRequest: no system message omits instructions field" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("Hello.")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("instructions") == null);
+    // also check raw has no "instructions" key
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"instructions\"") == null);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: input[] with input_text / input_image
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: user plain text becomes input message with input_text" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hello world")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 1), input.items.len);
+    const item = input.items[0];
+    try testing.expectEqualStrings("message", item.object.get("type").?.string);
+    try testing.expectEqualStrings("user", item.object.get("role").?.string);
+    const content = item.object.get("content").?.array;
+    try testing.expectEqual(@as(usize, 1), content.items.len);
+    try testing.expectEqualStrings("input_text", content.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("hello world", content.items[0].object.get("text").?.string);
+}
+
+test "buildJsonResponsesRequest: user content_parts with text+image emits input_text and input_image with detail default auto" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const text_dup = try testing.allocator.dupe(u8, "what is this?");
+    defer testing.allocator.free(text_dup);
+    const url_dup = try testing.allocator.dupe(u8, "data:image/png;base64,abc123");
+    defer testing.allocator.free(url_dup);
+
+    const parts = try testing.allocator.alloc(ContentPart, 2);
+    defer testing.allocator.free(parts);
+    parts[0] = .{ .part_type = "text", .text = text_dup, .image_url = null };
+    parts[1] = .{ .part_type = "image_url", .text = null, .image_url = .{ .url = url_dup, .detail = null } };
+
+    const messages = [_]AgentMessage{
+        .{ .role = .user, .content = null, .content_parts = parts, .tool_calls = null, .tool_call_id = null, .reasoning_content = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 1), input.items.len);
+    const content = input.items[0].object.get("content").?.array;
+    try testing.expectEqual(@as(usize, 2), content.items.len);
+    try testing.expectEqualStrings("input_text", content.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("what is this?", content.items[0].object.get("text").?.string);
+    try testing.expectEqualStrings("input_image", content.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("data:image/png;base64,abc123", content.items[1].object.get("image_url").?.string);
+    // detail defaults to "auto" when null
+    try testing.expectEqualStrings("auto", content.items[1].object.get("detail").?.string);
+}
+
+test "buildJsonResponsesRequest: user content_parts image with explicit detail preserves it" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const url_dup = try testing.allocator.dupe(u8, "data:image/jpeg;base64,xyz");
+    defer testing.allocator.free(url_dup);
+    const parts = try testing.allocator.alloc(ContentPart, 1);
+    defer testing.allocator.free(parts);
+    parts[0] = .{ .part_type = "image_url", .text = null, .image_url = .{ .url = url_dup, .detail = "high" } };
+
+    const messages = [_]AgentMessage{
+        .{ .role = .user, .content = null, .content_parts = parts, .tool_calls = null, .tool_call_id = null, .reasoning_content = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const content = body.parsed.value.object.get("input").?.array.items[0].object.get("content").?.array;
+    try testing.expectEqualStrings("high", content.items[0].object.get("detail").?.string);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: assistant output_text (content + reasoning_content)
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: assistant with content and reasoning_content emits separate reasoning and message items" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgOpenaiResponses("final answer", "thinking trace"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // input[0]=user, input[1]=reasoning, input[2]=assistant message
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    const summary = reasoning.object.get("summary").?.array;
+    try testing.expectEqual(@as(usize, 1), summary.items.len);
+    try testing.expectEqualStrings("summary_text", summary.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("thinking trace", summary.items[0].object.get("text").?.string);
+    // reasoning item must NOT have role/content, and must NOT leak into message
+    try testing.expect(reasoning.object.get("role") == null);
+    try testing.expect(reasoning.object.get("content") == null);
+
+    const assistant = input.items[2];
+    try testing.expectEqualStrings("message", assistant.object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", assistant.object.get("role").?.string);
+    const content = assistant.object.get("content").?.array;
+    try testing.expectEqual(@as(usize, 1), content.items.len);
+    try testing.expectEqualStrings("output_text", content.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("final answer", content.items[0].object.get("text").?.string);
+    // assistant content must NOT contain reasoning
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"thinking trace\"") != null);
+    // ensure reasoning is not represented as output_text inside message
+    for (content.items) |c| {
+        try testing.expect(!std.mem.eql(u8, c.object.get("text").?.string, "thinking trace"));
+    }
+}
+
+test "buildJsonResponsesRequest: assistant with only content emits single message item" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgOpenaiResponses("only content", null),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 2), input.items.len);
+    const assistant = input.items[1];
+    try testing.expectEqualStrings("message", assistant.object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", assistant.object.get("role").?.string);
+    const content = assistant.object.get("content").?.array;
+    try testing.expectEqual(@as(usize, 1), content.items.len);
+    try testing.expectEqualStrings("output_text", content.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("only content", content.items[0].object.get("text").?.string);
+    // no reasoning item
+    for (input.items) |item| {
+        try testing.expect(!std.mem.eql(u8, item.object.get("type").?.string, "reasoning"));
+    }
+}
+
+test "buildJsonResponsesRequest: assistant with only reasoning_content emits single reasoning item" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgOpenaiResponses(null, "only reasoning"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 2), input.items.len);
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    const summary = reasoning.object.get("summary").?.array;
+    try testing.expectEqual(@as(usize, 1), summary.items.len);
+    try testing.expectEqualStrings("summary_text", summary.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("only reasoning", summary.items[0].object.get("text").?.string);
+    // no message item for this assistant turn
+    for (input.items) |item| {
+        if (std.mem.eql(u8, item.object.get("type").?.string, "message")) {
+            if (item.object.get("role")) |r| {
+                if (std.mem.eql(u8, r.string, "assistant")) {
+                    // the only assistant item should be reasoning, not message
+                    try testing.expect(false); // should not reach
+                }
+            }
+        }
+    }
+}
+
+test "buildJsonResponsesRequest: assistant reasoning with id and encrypted_content emits them" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{
+            .role = .assistant,
+            .content = "final answer",
+            .reasoning_content = "thinking trace",
+            .reasoning_id = "rs_123",
+            .reasoning_encrypted_content = "ENC...",
+            .tool_calls = null,
+            .tool_call_id = null,
+            .content_parts = null,
+        },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    try testing.expectEqualStrings("rs_123", reasoning.object.get("id").?.string);
+    try testing.expectEqualStrings("ENC...", reasoning.object.get("encrypted_content").?.string);
+    const summary = reasoning.object.get("summary").?.array;
+    try testing.expectEqualStrings("thinking trace", summary.items[0].object.get("text").?.string);
+}
+
+test "buildJsonResponsesRequest: assistant reasoning without id omits id and encrypted_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgOpenaiResponses("final answer", "thinking trace"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const reasoning = body.parsed.value.object.get("input").?.array.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    try testing.expect(reasoning.object.get("id") == null);
+    try testing.expect(reasoning.object.get("encrypted_content") == null);
+    // raw should not contain empty id
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"id\":\"\"") == null);
+}
+
+test "buildJsonResponsesRequest: empty assistant without tools emits output_text empty string" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgOpenaiResponses(null, null),
+    };
+    // also test with empty strings
+    const messages2 = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgOpenaiResponses("", ""),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+    const assistant = body.parsed.value.object.get("input").?.array.items[1];
+    const content = assistant.object.get("content").?.array;
+    try testing.expectEqual(@as(usize, 1), content.items.len);
+    try testing.expectEqualStrings("output_text", content.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("", content.items[0].object.get("text").?.string);
+
+    var body2 = try buildAndParseOpenaiResponses(&a, &messages2, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body2);
+    const assistant2 = body2.parsed.value.object.get("input").?.array.items[1];
+    const content2 = assistant2.object.get("content").?.array;
+    try testing.expectEqual(@as(usize, 1), content2.items.len);
+    try testing.expectEqualStrings("", content2.items[0].object.get("text").?.string);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: function_call + function_call_output for tools
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: assistant tool_calls become function_call items" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_123");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "get_weather");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{\"city\":\"Paris\"}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("weather?"),
+        .{ .role = .assistant, .content = null, .reasoning_content = null, .tool_calls = tc_array, .tool_call_id = null, .content_parts = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // user + function_call (no assistant message because content empty and has tool_calls)
+    try testing.expectEqual(@as(usize, 2), input.items.len);
+    const fc = input.items[1];
+    try testing.expectEqualStrings("function_call", fc.object.get("type").?.string);
+    try testing.expectEqualStrings("call_123", fc.object.get("call_id").?.string);
+    try testing.expectEqualStrings("get_weather", fc.object.get("name").?.string);
+    try testing.expectEqualStrings("{\"city\":\"Paris\"}", fc.object.get("arguments").?.string);
+}
+
+test "buildJsonResponsesRequest: assistant with content and tool_calls emits message + function_call" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_456");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "search");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{\"q\":\"test\"}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{ .role = .assistant, .content = "thinking", .reasoning_content = null, .tool_calls = tc_array, .tool_call_id = null, .content_parts = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    // input[0]=user, input[1]=assistant message, input[2]=function_call
+    try testing.expectEqualStrings("message", input.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", input.items[1].object.get("role").?.string);
+    try testing.expectEqualStrings("function_call", input.items[2].object.get("type").?.string);
+}
+
+test "buildJsonResponsesRequest: tool role becomes function_call_output" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{ .role = .assistant, .content = null, .reasoning_content = null, .tool_calls = null, .tool_call_id = null, .content_parts = null },
+        .{ .role = .tool, .content = "tool result", .tool_call_id = "call_123", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // user + assistant(empty) + function_call_output
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    const fco = input.items[2];
+    try testing.expectEqualStrings("function_call_output", fco.object.get("type").?.string);
+    try testing.expectEqualStrings("call_123", fco.object.get("call_id").?.string);
+    try testing.expectEqualStrings("tool result", fco.object.get("output").?.string);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: temperature, max_output_tokens, store, stream, user, tools
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: temperature is emitted" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, 0.7, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("temperature") != null);
+    // f32 0.7 serializes as 0.699999988079071 or 0.7 depending on formatting
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"temperature\":") != null);
+}
+
+test "buildJsonResponsesRequest: max_output_tokens from params overrides self.maxTokens" {
+    var a = makeResponsesAgentOpenaiResponses(.{ .maxTokens = 4096 });
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+
+    var body1 = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, 8192, true);
+    defer freeBodyOpenaiResponses(body1);
+    try testing.expectEqual(@as(i64, 8192), body1.parsed.value.object.get("max_output_tokens").?.integer);
+
+    var body2 = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body2);
+    try testing.expectEqual(@as(i64, 4096), body2.parsed.value.object.get("max_output_tokens").?.integer);
+}
+
+test "buildJsonResponsesRequest: store is always false" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const store = body.parsed.value.object.get("store").?;
+    try testing.expect(store == .bool);
+    try testing.expectEqual(false, store.bool);
+}
+
+test "buildJsonResponsesRequest: stream true emits stream:true, stream false omits it" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+
+    var body_true = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body_true);
+    try testing.expectEqual(true, body_true.parsed.value.object.get("stream").?.bool);
+
+    var body_false = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, false);
+    defer freeBodyOpenaiResponses(body_false);
+    // When stream=false, the field is omitted (jsonStringify only writes when self.stream is true)
+    try testing.expect(body_false.parsed.value.object.get("stream") == null);
+    try testing.expect(std.mem.indexOf(u8, body_false.raw, "\"stream\"") == null);
+}
+
+test "buildJsonResponsesRequest: user field present when identifier set, absent when empty" {
+    var a_with = makeResponsesAgentOpenaiResponses(.{ .userIdentifier = "user-123" });
+    defer a_with.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body_with = try buildAndParseOpenaiResponses(&a_with, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body_with);
+    try testing.expectEqualStrings("user-123", body_with.parsed.value.object.get("user").?.string);
+
+    var a_without = makeResponsesAgentOpenaiResponses(.{ .userIdentifier = "" });
+    defer a_without.deinit();
+    var body_without = try buildAndParseOpenaiResponses(&a_without, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body_without);
+    try testing.expect(body_without.parsed.value.object.get("user") == null);
+}
+
+test "buildJsonResponsesRequest: tools and tool_choice present when tools non-empty" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    const tools = [_]AgentTool{sampleToolOpenaiResponses()};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &tools, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("tools") != null);
+    const tools_arr = body.parsed.value.object.get("tools").?.array;
+    try testing.expectEqual(@as(usize, 1), tools_arr.items.len);
+    try testing.expectEqualStrings("get_weather", tools_arr.items[0].object.get("name").?.string);
+    try testing.expectEqualStrings("auto", body.parsed.value.object.get("tool_choice").?.string);
+}
+
+test "buildJsonResponsesRequest: tools absent omits tools and tool_choice" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("tools") == null);
+    try testing.expect(body.parsed.value.object.get("tool_choice") == null);
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"tool_choice\"") == null);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: reasoning.effort
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: reasoningEffort set emits reasoning.effort" {
+    var a = makeResponsesAgentOpenaiResponses(.{ .reasoningEffort = "high" });
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const reasoning = body.parsed.value.object.get("reasoning").?;
+    try testing.expect(reasoning == .object);
+    try testing.expectEqualStrings("high", reasoning.object.get("effort").?.string);
+}
+
+test "buildJsonResponsesRequest: reasoningEffort null omits reasoning field" {
+    var a = makeResponsesAgentOpenaiResponses(.{ .reasoningEffort = null });
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("reasoning") == null);
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"reasoning\"") == null);
+}
+
+test "buildJsonResponsesRequest: reasoningEffort empty string omits reasoning field" {
+    var a = makeResponsesAgentOpenaiResponses(.{ .reasoningEffort = "" });
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("reasoning") == null);
+}
+
+test "buildJsonResponsesRequest: reasoningEffort each value passes through verbatim" {
+    const values = [_][]const u8{ "low", "medium", "high", "auto" };
+    for (values) |v| {
+        var a = makeResponsesAgentOpenaiResponses(.{ .reasoningEffort = v });
+        defer a.deinit();
+        const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+        var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+        defer freeBodyOpenaiResponses(body);
+
+        const reasoning = body.parsed.value.object.get("reasoning").?;
+        try testing.expectEqualStrings(v, reasoning.object.get("effort").?.string);
+    }
+}
+
+test "buildJsonResponsesRequest: reasoningEffort null + thinkingEnabled true omits reasoning (no auto fallback)" {
+    // Regression: must NOT auto-map thinkingEnabled -> reasoning.effort "medium"
+    var a = makeResponsesAgentOpenaiResponses(.{ .reasoningEffort = null, .thinkingEnabled = true });
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("reasoning") == null);
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"reasoning\"") == null);
+}
+
+test "buildJsonResponsesRequest: reasoningEffort null + thinkingEnabled false omits reasoning" {
+    var a = makeResponsesAgentOpenaiResponses(.{ .reasoningEffort = null, .thinkingEnabled = false });
+    defer a.deinit();
+    const messages = [_]AgentMessage{userMsgOpenaiResponses("hi")};
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    try testing.expect(body.parsed.value.object.get("reasoning") == null);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: response.output_text.delta -> content
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: response.output_text.delta populates content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.output_text.delta\",\"delta\":\"hello world\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("hello world", chunk.?.content.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+    try testing.expect(chunk.?.tool_calls_delta == null);
+}
+
+test "parse_responses_stream_chunk: response.output_text.delta empty string returns null" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.output_text.delta\",\"delta\":\"\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk == null);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: reasoning deltas -> reasoning_content
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: response.reasoning_text.delta populates reasoning_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.reasoning_text.delta\",\"delta\":\"step 1\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("step 1", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.reasoning_summary_text.delta populates reasoning_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"summary\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("summary", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.reasoning.delta populates reasoning_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.reasoning.delta\",\"delta\":\"reasoning chunk\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("reasoning chunk", chunk.?.reasoning_content.?);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: tool call deltas
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: response.output_item.added function_call emits tool_calls_delta with id+name" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_abc\",\"name\":\"get_weather\",\"arguments\":\"\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.tool_calls_delta != null);
+    try testing.expectEqual(@as(usize, 1), chunk.?.tool_calls_delta.?.len);
+    try testing.expectEqual(@as(usize, 0), chunk.?.tool_calls_delta.?[0].index);
+    try testing.expectEqualStrings("call_abc", chunk.?.tool_calls_delta.?[0].id.?);
+    try testing.expectEqualStrings("get_weather", chunk.?.tool_calls_delta.?[0].function_name.?);
+}
+
+test "parse_responses_stream_chunk: response.output_item.added non-function_call returns null" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk == null);
+}
+
+test "parse_responses_stream_chunk: response.function_call_arguments.delta emits tool_calls_delta arguments" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"city\\\":\\\"Paris\\\"}\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.tool_calls_delta != null);
+    try testing.expectEqual(@as(usize, 1), chunk.?.tool_calls_delta.?.len);
+    try testing.expectEqualStrings("{\"city\":\"Paris\"}", chunk.?.tool_calls_delta.?[0].function_arguments.?);
+    try testing.expectEqual(@as(usize, 0), chunk.?.tool_calls_delta.?[0].index);
+}
+
+test "parse_responses_stream_chunk: response.function_call_arguments.delta with output_index 1" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"partial\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(usize, 1), chunk.?.tool_calls_delta.?[0].index);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: terminal events — finish_reason + usage + tool_calls override
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: response.completed without function_call => finish_reason stop" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: response.completed with function_call output => finish_reason tool_calls" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"call_id\":\"call_123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .tool_calls), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: response.completed with mixed output containing function_call => tool_calls" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"search\",\"arguments\":\"{}\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .tool_calls), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: response.completed usage maps input_tokens->prompt_tokens etc" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":42,\"output_tokens\":7,\"total_tokens\":49}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.usage != null);
+    try testing.expectEqual(@as(u32, 42), chunk.?.usage.?.prompt_tokens);
+    try testing.expectEqual(@as(u32, 7), chunk.?.usage.?.completion_tokens);
+    try testing.expectEqual(@as(u32, 49), chunk.?.usage.?.total_tokens);
+}
+
+test "parse_responses_stream_chunk: response.completed usage with cached_tokens via input_tokens_details" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":100,\"output_tokens\":20,\"total_tokens\":120,\"input_tokens_details\":{\"cached_tokens\":30}}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(u32, 30), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "parse_responses_stream_chunk: response.completed usage without total_tokens computes prompt+completion" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(u32, 15), chunk.?.usage.?.total_tokens);
+}
+
+test "parse_responses_stream_chunk: response.incomplete with max_output_tokens => finish_reason length" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .length), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: response.failed => finish_reason content_filter" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"total_tokens\":10}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .content_filter), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: response.incomplete without max_output_tokens reason => stop" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.incomplete\",\"response\":{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"content_filter\"},\"output\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":0,\"total_tokens\":10}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: ignored lifecycle events return null
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: ignored events return null" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const ignored = [_][]const u8{
+        "{\"type\":\"response.output_text.done\",\"output_index\":0,\"text\":\"hi\"}",
+        "{\"type\":\"response.created\",\"response\":{\"id\":\"resp_123\"}}",
+        "{\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_123\"}}",
+        "{\"type\":\"response.queued\",\"response\":{\"id\":\"resp_123\"}}",
+        "{\"type\":\"response.content_part.added\",\"part\":{\"type\":\"output_text\"}}",
+        "{\"type\":\"response.output_item.done\",\"output_index\":0}",
+        "{\"type\":\"response.function_call_arguments.done\",\"output_index\":0,\"arguments\":\"{}\"}",
+        "{\"type\":\"response.reasoning_text.done\"}",
+        "{\"type\":\"response.refusal.done\"}",
+    };
+    for (ignored) |data| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk == null);
+    }
+}
+
+test "parse_responses_stream_chunk: response.refusal.delta populates content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.refusal.delta\",\"delta\":\"I cannot do that\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("I cannot do that", chunk.?.content.?);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: dispatch via UrlStyle
+// ---------------------------------------------------------------------------
+
+test "parse_stream_chunk dispatches to Responses parser when UrlStyle is openai-response" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // This is Responses-shaped, should parse via Responses parser
+    const data = "{\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("hello", chunk.?.content.?);
+}
+
+test "parse_stream_chunk dispatches to OpenAI parser when UrlStyle is openai" {
+    var a = Agent.init(testing.allocator, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "openai";
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"id\":\"chatcmpl-x\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("hello", chunk.?.content.?);
+}
+
+// ---------------------------------------------------------------------------
+// Parser: terminal reasoning metadata (Task 4)
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: response.completed with reasoning item captures id/summary/encrypted_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data =
+        "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_123\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking trace\"}],\"encrypted_content\":\"ENC_DATA\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"final answer\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_123", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_DATA", chunk.?.reasoning_encrypted_content.?);
+    try testing.expectEqualStrings("thinking trace", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.completed with multiple summary entries joins with newline" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data =
+        "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_456\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"step 1\"},{\"type\":\"summary_text\",\"text\":\"step 2\"},{\"type\":\"summary_text\",\"text\":\"step 3\"}],\"encrypted_content\":\"ENC2\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_456", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC2", chunk.?.reasoning_encrypted_content.?);
+    try testing.expectEqualStrings("step 1\nstep 2\nstep 3", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.completed without reasoning item has no reasoning metadata" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expect(chunk.?.reasoning_encrypted_content == null);
+    try testing.expect(chunk.?.reasoning_content == null);
+}
+
+test "parse_responses_stream_chunk: response.completed reasoning item without encrypted_content still captures id and summary" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data =
+        "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_789\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"only summary\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_789", chunk.?.reasoning_id.?);
+    try testing.expect(chunk.?.reasoning_encrypted_content == null);
+    try testing.expectEqualStrings("only summary", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.completed reasoning item with empty summary has no reasoning_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const data =
+        "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_empty\",\"summary\":[],\"encrypted_content\":\"ENC_EMPTY\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_empty", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_EMPTY", chunk.?.reasoning_encrypted_content.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+}
+
+// ---------------------------------------------------------------------------
+// Aggregator: reasoning metadata via terminal chunk
+// ---------------------------------------------------------------------------
+
+test "StreamingAggregator: terminal reasoning chunk populates reasoning_id and encrypted_content" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var agg = StreamingAggregator.init(arena.allocator());
+    defer agg.deinit();
+
+    // Simulate delta reasoning
+    try agg.process_chunk(.{ .reasoning_content = "delta thinking" });
+    // Simulate terminal chunk with id/encrypted/summary fallback
+    try agg.process_chunk(.{
+        .reasoning_id = "rs_agg_1",
+        .reasoning_encrypted_content = "ENC_AGG",
+        .reasoning_content = "summary fallback",
+        .finish_reason = .stop,
+        .usage = .{ .prompt_tokens = 10, .completion_tokens = 5, .total_tokens = 15 },
+    });
+
+    var res = try agg.finalize();
+    defer res.deinit();
+    // Delta content wins over summary fallback
+    try testing.expectEqualStrings("delta thinking", res.reasoning_content.?);
+    try testing.expectEqualStrings("rs_agg_1", res.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_AGG", res.reasoning_encrypted_content.?);
+}
+
+test "StreamingAggregator: summary fallback used when no delta reasoning" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var agg = StreamingAggregator.init(arena.allocator());
+    defer agg.deinit();
+
+    try agg.process_chunk(.{
+        .reasoning_id = "rs_fallback",
+        .reasoning_encrypted_content = "ENC_FB",
+        .reasoning_content = "summary only",
+        .finish_reason = .stop,
+    });
+
+    var res = try agg.finalize();
+    defer res.deinit();
+    try testing.expectEqualStrings("summary only", res.reasoning_content.?);
+    try testing.expectEqualStrings("rs_fallback", res.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_FB", res.reasoning_encrypted_content.?);
+}
+
+test "StreamingAggregator: no reasoning stays null" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var agg = StreamingAggregator.init(arena.allocator());
+    defer agg.deinit();
+
+    try agg.process_chunk(.{ .content = "hello", .finish_reason = .stop });
+    var res = try agg.finalize();
+    defer res.deinit();
+    try testing.expect(res.reasoning_content == null);
+    try testing.expect(res.reasoning_id == null);
+    try testing.expect(res.reasoning_encrypted_content == null);
+}
+
+// ---------------------------------------------------------------------------
+// Task 6: Multi-turn replay — builder ordering with reasoning metadata
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: multi-turn replay preserves ordering reasoning before assistant per turn" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("first question"),
+        assistantMsgFullOpenaiResponses("first answer", "first thinking", "rs_1", "ENC_1"),
+        userMsgOpenaiResponses("second question"),
+        assistantMsgFullOpenaiResponses("second answer", "second thinking", "rs_2", "ENC_2"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // Expected: [user, reasoning(rs_1), assistant(first answer), user, reasoning(rs_2), assistant(second answer)]
+    try testing.expectEqual(@as(usize, 6), input.items.len);
+
+    try testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("user", input.items[0].object.get("role").?.string);
+
+    try testing.expectEqualStrings("reasoning", input.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_1", input.items[1].object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_1", input.items[1].object.get("encrypted_content").?.string);
+    try testing.expectEqualStrings("first thinking", input.items[1].object.get("summary").?.array.items[0].object.get("text").?.string);
+
+    try testing.expectEqualStrings("message", input.items[2].object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", input.items[2].object.get("role").?.string);
+    try testing.expectEqualStrings("first answer", input.items[2].object.get("content").?.array.items[0].object.get("text").?.string);
+
+    try testing.expectEqualStrings("message", input.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("user", input.items[3].object.get("role").?.string);
+
+    try testing.expectEqualStrings("reasoning", input.items[4].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_2", input.items[4].object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_2", input.items[4].object.get("encrypted_content").?.string);
+    try testing.expectEqualStrings("second thinking", input.items[4].object.get("summary").?.array.items[0].object.get("text").?.string);
+
+    try testing.expectEqualStrings("message", input.items[5].object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", input.items[5].object.get("role").?.string);
+    try testing.expectEqualStrings("second answer", input.items[5].object.get("content").?.array.items[0].object.get("text").?.string);
+}
+
+test "buildJsonResponsesRequest: multi-turn replay reasoning not leaked into output_text" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("q1"),
+        assistantMsgFullOpenaiResponses("a1", "thinking 1", "rs_1", "ENC_1"),
+        userMsgOpenaiResponses("q2"),
+        assistantMsgFullOpenaiResponses("a2", "thinking 2", "rs_2", "ENC_2"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    for (input.items) |item| {
+        if (std.mem.eql(u8, item.object.get("type").?.string, "message")) {
+            if (item.object.get("role")) |r| {
+                if (std.mem.eql(u8, r.string, "assistant")) {
+                    const content = item.object.get("content").?.array;
+                    for (content.items) |c| {
+                        const t = c.object.get("text").?.string;
+                        try testing.expect(!std.mem.eql(u8, t, "thinking 1"));
+                        try testing.expect(!std.mem.eql(u8, t, "thinking 2"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+test "buildJsonResponsesRequest: multi-turn replay encrypted_content preserved verbatim" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const enc1 = "ENCRYPTED_DATA_TURN_1_!@#$%";
+    const enc2 = "ENCRYPTED_DATA_TURN_2_^&*()";
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("q1"),
+        assistantMsgFullOpenaiResponses("a1", "t1", "rs_1", enc1),
+        userMsgOpenaiResponses("q2"),
+        assistantMsgFullOpenaiResponses("a2", "t2", "rs_2", enc2),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqualStrings(enc1, input.items[1].object.get("encrypted_content").?.string);
+    try testing.expectEqualStrings(enc2, input.items[4].object.get("encrypted_content").?.string);
+}
+
+test "buildJsonResponsesRequest: multi-turn replay ids preserved per turn" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("q1"),
+        assistantMsgFullOpenaiResponses("a1", "t1", "rs_alpha", "ENC_A"),
+        userMsgOpenaiResponses("q2"),
+        assistantMsgFullOpenaiResponses("a2", "t2", "rs_beta", "ENC_B"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqualStrings("rs_alpha", input.items[1].object.get("id").?.string);
+    try testing.expectEqualStrings("rs_beta", input.items[4].object.get("id").?.string);
+    // ids must not be swapped
+    try testing.expect(!std.mem.eql(u8, input.items[1].object.get("id").?.string, "rs_beta"));
+    try testing.expect(!std.mem.eql(u8, input.items[4].object.get("id").?.string, "rs_alpha"));
+}
+
+// ---------------------------------------------------------------------------
+// Task 7: Tool-call replay — reasoning separate from function_call
+// ---------------------------------------------------------------------------
+
+test "buildJsonResponsesRequest: tool-call replay reasoning separate from function_call" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_tool_1");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "search");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{\"q\":\"test\"}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("find info"),
+        .{
+            .role = .assistant,
+            .content = null,
+            .reasoning_content = "need to search",
+            .reasoning_id = "rs_tool_1",
+            .reasoning_encrypted_content = "ENC_TOOL_1",
+            .tool_calls = tc_array,
+            .tool_call_id = null,
+            .content_parts = null,
+        },
+        .{ .role = .tool, .content = "tool result here", .tool_call_id = "call_tool_1", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+        assistantMsgFullOpenaiResponses("final answer", "final thinking", "rs_tool_2", "ENC_TOOL_2"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // Expected: [user, reasoning(rs_tool_1), function_call, function_call_output, reasoning(rs_tool_2), assistant(final answer)]
+    try testing.expectEqual(@as(usize, 6), input.items.len);
+
+    try testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("user", input.items[0].object.get("role").?.string);
+
+    try testing.expectEqualStrings("reasoning", input.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_tool_1", input.items[1].object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_TOOL_1", input.items[1].object.get("encrypted_content").?.string);
+    try testing.expectEqualStrings("need to search", input.items[1].object.get("summary").?.array.items[0].object.get("text").?.string);
+
+    try testing.expectEqualStrings("function_call", input.items[2].object.get("type").?.string);
+    try testing.expectEqualStrings("call_tool_1", input.items[2].object.get("call_id").?.string);
+    try testing.expectEqualStrings("search", input.items[2].object.get("name").?.string);
+
+    try testing.expectEqualStrings("function_call_output", input.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("call_tool_1", input.items[3].object.get("call_id").?.string);
+    try testing.expectEqualStrings("tool result here", input.items[3].object.get("output").?.string);
+
+    try testing.expectEqualStrings("reasoning", input.items[4].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_tool_2", input.items[4].object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_TOOL_2", input.items[4].object.get("encrypted_content").?.string);
+
+    try testing.expectEqualStrings("message", input.items[5].object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", input.items[5].object.get("role").?.string);
+    try testing.expectEqualStrings("final answer", input.items[5].object.get("content").?.array.items[0].object.get("text").?.string);
+}
+
+test "buildJsonResponsesRequest: tool-call replay reasoning not inside function_call" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_x");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "do_thing");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{
+            .role = .assistant,
+            .content = null,
+            .reasoning_content = "secret thinking",
+            .reasoning_id = "rs_x",
+            .reasoning_encrypted_content = "ENC_X",
+            .tool_calls = tc_array,
+            .tool_call_id = null,
+            .content_parts = null,
+        },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    // function_call item must not contain reasoning text
+    const input = body.parsed.value.object.get("input").?.array;
+    for (input.items) |item| {
+        if (std.mem.eql(u8, item.object.get("type").?.string, "function_call")) {
+            // function_call has call_id/name/arguments, no summary/content with reasoning
+            try testing.expect(item.object.get("summary") == null);
+            try testing.expect(item.object.get("encrypted_content") == null);
+            const args = item.object.get("arguments").?.string;
+            try testing.expect(std.mem.indexOf(u8, args, "secret thinking") == null);
+        }
+    }
+    // reasoning item must be separate
+    var found_reasoning = false;
+    for (input.items) |item| {
+        if (std.mem.eql(u8, item.object.get("type").?.string, "reasoning")) {
+            found_reasoning = true;
+            try testing.expectEqualStrings("secret thinking", item.object.get("summary").?.array.items[0].object.get("text").?.string);
+        }
+    }
+    try testing.expect(found_reasoning);
+}
+
+test "buildJsonResponsesRequest: tool-call replay final answer separate from reasoning" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_y");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "lookup");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{\"id\":1}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("q"),
+        .{
+            .role = .assistant,
+            .content = null,
+            .reasoning_content = "reasoning before tool",
+            .reasoning_id = "rs_y1",
+            .reasoning_encrypted_content = "ENC_Y1",
+            .tool_calls = tc_array,
+            .tool_call_id = null,
+            .content_parts = null,
+        },
+        .{ .role = .tool, .content = "result", .tool_call_id = "call_y", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+        assistantMsgFullOpenaiResponses("done", "reasoning after tool", "rs_y2", "ENC_Y2"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // last item is assistant message with "done", not reasoning
+    const last = input.items[input.items.len - 1];
+    try testing.expectEqualStrings("message", last.object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", last.object.get("role").?.string);
+    try testing.expectEqualStrings("done", last.object.get("content").?.array.items[0].object.get("text").?.string);
+    // second-to-last is reasoning with "reasoning after tool"
+    const second_last = input.items[input.items.len - 2];
+    try testing.expectEqualStrings("reasoning", second_last.object.get("type").?.string);
+    try testing.expectEqualStrings("reasoning after tool", second_last.object.get("summary").?.array.items[0].object.get("text").?.string);
+    // assistant content must not contain reasoning text
+    try testing.expect(!std.mem.eql(u8, last.object.get("content").?.array.items[0].object.get("text").?.string, "reasoning after tool"));
+}
+
+// ---------------------------------------------------------------------------
+// Task 8: End-to-end — mock SSE stream through StreamingAggregator
+// ---------------------------------------------------------------------------
+
+test "StreamingAggregator: end-to-end reasoning delta + output delta + terminal completed with reasoning output" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    var agg = StreamingAggregator.init(arena.allocator());
+    defer agg.deinit();
+
+    // Simulate reasoning delta
+    {
+        const data = "{\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking step 1 \"}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+    {
+        const data = "{\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking step 2\"}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+    // Simulate output delta
+    {
+        const data = "{\"type\":\"response.output_text.delta\",\"delta\":\"final answer here\"}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+    // Simulate terminal completed with reasoning output (id + encrypted_content + summary)
+    {
+        const data =
+            "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_e2e_123\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"thinking step 1 thinking step 2\"}],\"encrypted_content\":\"ENC_E2E_DATA\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"final answer here\"}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try testing.expectEqualStrings("rs_e2e_123", chunk.?.reasoning_id.?);
+        try testing.expectEqualStrings("ENC_E2E_DATA", chunk.?.reasoning_encrypted_content.?);
+        try agg.process_chunk(chunk.?);
+    }
+
+    var res = try agg.finalize();
+    defer res.deinit();
+
+    // Delta reasoning wins over summary fallback
+    try testing.expectEqualStrings("thinking step 1 thinking step 2", res.reasoning_content.?);
+    try testing.expectEqualStrings("rs_e2e_123", res.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_E2E_DATA", res.reasoning_encrypted_content.?);
+    try testing.expectEqualStrings("final answer here", res.content.?);
+    try testing.expectEqual(@as(?FinishReason, .stop), res.finish_reason);
+}
+
+test "StreamingAggregator: end-to-end terminal summary fallback when no delta reasoning" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    var agg = StreamingAggregator.init(arena.allocator());
+    defer agg.deinit();
+
+    // Only output delta, no reasoning delta
+    {
+        const data = "{\"type\":\"response.output_text.delta\",\"delta\":\"answer only\"}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+    // Terminal with reasoning summary but no prior delta
+    {
+        const data =
+            "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_fallback_e2e\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"fallback thinking\"}],\"encrypted_content\":\"ENC_FB_E2E\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+
+    var res = try agg.finalize();
+    defer res.deinit();
+
+    try testing.expectEqualStrings("fallback thinking", res.reasoning_content.?);
+    try testing.expectEqualStrings("rs_fallback_e2e", res.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_FB_E2E", res.reasoning_encrypted_content.?);
+    try testing.expectEqualStrings("answer only", res.content.?);
+}
+
+test "StreamingAggregator: end-to-end DB round-trip simulation via builder replay" {
+    // Simulate: aggregator finalizes -> CallResponse -> AgentMessage -> builder replay
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    var agg = StreamingAggregator.init(arena.allocator());
+    defer agg.deinit();
+
+    {
+        const data = "{\"type\":\"response.reasoning_text.delta\",\"delta\":\"db thinking\"}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+    {
+        const data = "{\"type\":\"response.output_text.delta\",\"delta\":\"db answer\"}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+    {
+        const data =
+            "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_db_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"db thinking\"}],\"encrypted_content\":\"ENC_DB_1\"}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+        const chunk = a.parse_stream_chunk(data, arena.allocator());
+        try testing.expect(chunk != null);
+        try agg.process_chunk(chunk.?);
+    }
+
+    var res = try agg.finalize();
+    defer res.deinit();
+
+    // Simulate DB round-trip: CallResponse -> AgentMessage (as get_llm_histories would)
+    const msg = AgentMessage{
+        .role = .assistant,
+        .content = res.content,
+        .reasoning_content = res.reasoning_content,
+        .reasoning_id = res.reasoning_id,
+        .reasoning_encrypted_content = res.reasoning_encrypted_content,
+        .tool_calls = null,
+        .tool_call_id = null,
+        .content_parts = null,
+    };
+
+    // Replay via builder: [user, assistant+reasoning] -> input[] with reasoning separate
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("original question"),
+        msg,
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    try testing.expectEqualStrings("reasoning", input.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_db_1", input.items[1].object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_DB_1", input.items[1].object.get("encrypted_content").?.string);
+    try testing.expectEqualStrings("db thinking", input.items[1].object.get("summary").?.array.items[0].object.get("text").?.string);
+    try testing.expectEqualStrings("message", input.items[2].object.get("type").?.string);
+    try testing.expectEqualStrings("db answer", input.items[2].object.get("content").?.array.items[0].object.get("text").?.string);
+    // reasoning must not leak into assistant output_text
+    try testing.expect(!std.mem.eql(u8, input.items[2].object.get("content").?.array.items[0].object.get("text").?.string, "db thinking"));
+}
+
+test "buildJsonResponsesRequest: regression task_1788204837101_1 — reasoning_id+encrypted persisted even when reasoning_content is NULL" {
+    // Real DB row from task_1788204837101_1 (2026-09-01 03:17:31):
+    // assistant: content="Reasoning ID saved but content empty — tracing the summary extraction."
+    //   tool_calls=[bash call_01a05af8ce...], reasoning_content=NULL,
+    //   reasoning_id="rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e",
+    //   reasoning_encrypted_content="Q-PaDgH1f..." (87k, truncated in test)
+    // tool: role=tool, call_id=call_01a05..., output={"tool":"bash",...} (JSON envelope)
+    // Builder must emit a separate reasoning item even when reasoning_content is NULL
+    // so that store:false replay can reconstruct the reasoning block verbatim.
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+
+    const tc_id = try testing.allocator.dupe(u8, "call_01a05af8ce457620beb3a5990637e153");
+    defer testing.allocator.free(tc_id);
+    const tc_name = try testing.allocator.dupe(u8, "bash");
+    defer testing.allocator.free(tc_name);
+    const tc_args = try testing.allocator.dupe(u8, "{\"command\":\"timeout 10 git checkout main 2>&1 | tail -n 5\",\"cwd\":\"/home/ginwa/ginwaaitoolbox\"}");
+    defer testing.allocator.free(tc_args);
+    const tc_array = try testing.allocator.alloc(ToolCall, 1);
+    defer testing.allocator.free(tc_array);
+    tc_array[0] = .{ .id = tc_id, .function = .{ .name = tc_name, .arguments = tc_args } };
+
+    const enc = try testing.allocator.dupe(u8, "Q-PaDgH1f_g4UMio3N6QC9OP42jJO2-WMTCEw6alywPh84L9_64jRusfZspFIeQI7UiYTDzLT6yAPOOfM_e-dMhNZtGD0rjNmMB8DnDBCRxws-8fYmo0BJf8oKM4ze5");
+    defer testing.allocator.free(enc);
+    const rid = try testing.allocator.dupe(u8, "rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e");
+    defer testing.allocator.free(rid);
+
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("trace the summary"),
+        .{
+            .role = .assistant,
+            .content = "Reasoning ID saved but content empty \u{2014} tracing the summary extraction.",
+            .reasoning_content = null,
+            .reasoning_id = rid,
+            .reasoning_encrypted_content = enc,
+            .tool_calls = tc_array,
+            .tool_call_id = null,
+            .content_parts = null,
+        },
+        .{
+            .role = .tool,
+            .content = "{\"tool\":\"bash\",\"parameters\":{\"command\":\"timeout 10 git checkout main\"},\"success\":true,\"data\":{\"command\":\"timeout 10 git checkout main\",\"stdout\":\"Already on 'main'\",\"stderr\":\"\",\"exit_code\":0,\"truncated\":false,\"timeout\":false,\"stdout_lines\":1,\"stderr_lines\":0},\"error\":null,\"v\":1}",
+            .tool_call_id = "call_01a05af8ce457620beb3a5990637e153",
+            .tool_calls = null,
+            .content_parts = null,
+            .reasoning_content = null,
+        },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    // Expected: [user, reasoning(with id+enc, no summary), assistant message, function_call, function_call_output]
+    try testing.expectEqual(@as(usize, 5), input.items.len);
+
+    // input[0] = user
+    try testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("user", input.items[0].object.get("role").?.string);
+
+    // input[1] = reasoning — must exist even though reasoning_content was NULL
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    try testing.expectEqualStrings("rs_6a9643abdb33701b240b4ff4:rs_01a05af855327e6083af347abb5c682e", reasoning.object.get("id").?.string);
+    try testing.expectEqualStrings("Q-PaDgH1f_g4UMio3N6QC9OP42jJO2-WMTCEw6alywPh84L9_64jRusfZspFIeQI7UiYTDzLT6yAPOOfM_e-dMhNZtGD0rjNmMB8DnDBCRxws-8fYmo0BJf8oKM4ze5", reasoning.object.get("encrypted_content").?.string);
+    // summary must be present as empty array when reasoning_content is NULL —
+    // the upstream schema requires the field (omitting it → `missing required field summary`)
+    try testing.expect(reasoning.object.get("summary") != null);
+    try testing.expectEqual(@as(usize, 0), reasoning.object.get("summary").?.array.items.len);
+
+    // input[2] = assistant message with original content, must NOT contain reasoning
+    const assistant = input.items[2];
+    try testing.expectEqualStrings("message", assistant.object.get("type").?.string);
+    try testing.expectEqualStrings("assistant", assistant.object.get("role").?.string);
+    try testing.expectEqualStrings("Reasoning ID saved but content empty \u{2014} tracing the summary extraction.", assistant.object.get("content").?.array.items[0].object.get("text").?.string);
+
+    // input[3] = function_call
+    try testing.expectEqualStrings("function_call", input.items[3].object.get("type").?.string);
+    try testing.expectEqualStrings("call_01a05af8ce457620beb3a5990637e153", input.items[3].object.get("call_id").?.string);
+
+    // input[4] = function_call_output
+    try testing.expectEqualStrings("function_call_output", input.items[4].object.get("type").?.string);
+    try testing.expectEqualStrings("call_01a05af8ce457620beb3a5990637e153", input.items[4].object.get("call_id").?.string);
+}
+
+test "buildJsonResponsesRequest: reasoning with id but no content emits empty summary array" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        assistantMsgFullOpenaiResponses(null, null, "rs_only_id", "ENC_ONLY"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+    const input = body.parsed.value.object.get("input").?.array;
+    // user + reasoning (id+enc, empty summary array, no message) — provider requires summary field
+    try testing.expectEqual(@as(usize, 2), input.items.len);
+    const reasoning = input.items[1];
+    try testing.expectEqualStrings("reasoning", reasoning.object.get("type").?.string);
+    try testing.expectEqualStrings("rs_only_id", reasoning.object.get("id").?.string);
+    try testing.expectEqualStrings("ENC_ONLY", reasoning.object.get("encrypted_content").?.string);
+    try testing.expect(reasoning.object.get("summary") != null);
+    try testing.expectEqual(@as(usize, 0), reasoning.object.get("summary").?.array.items.len);
+    // raw must contain empty summary array (field present)
+    try testing.expect(std.mem.indexOf(u8, body.raw, "\"summary\":[]") != null);
+}
+
+test "parse_responses_stream_chunk: response.reasoning_summary_text.done captures reasoning_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.reasoning_summary_text.done\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"text\":\"final summary via done\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("final summary via done", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.reasoning_summary_part.added captures reasoning_content" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.reasoning_summary_part.added\",\"item_id\":\"rs_1\",\"output_index\":0,\"summary_index\":0,\"part\":{\"type\":\"summary_text\",\"text\":\"part added text\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("part added text", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: response.output_item.done reasoning captures id/enc/summary" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done_1\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"done summary\"}],\"encrypted_content\":\"ENC_DONE\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("done summary", chunk.?.reasoning_content.?);
+    try testing.expectEqualStrings("rs_done_1", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC_DONE", chunk.?.reasoning_encrypted_content.?);
+}
+
+test "parse_responses_stream_chunk: response.output_item.done reasoning without summary still captures id/enc" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_done_2\",\"summary\":[],\"encrypted_content\":\"ENC2\"}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_done_2", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("ENC2", chunk.?.reasoning_encrypted_content.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+}
+
+// ---------------------------------------------------------------------------
+// Spec cases from OpenAI JSON response — output[] handling (user-provided)
+// ---------------------------------------------------------------------------
+
+test "parse_responses_stream_chunk: case 1 normal answer — no reasoning item" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_123\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is 4.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expect(chunk.?.reasoning_content == null);
+    try testing.expectEqual(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 2 reasoning with empty summary" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_123\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_123\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is 4.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_123", chunk.?.reasoning_id.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+    try testing.expectEqual(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 3 reasoning with summary + answer" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_123\",\"summary\":[{\"type\":\"summary_text\",\"text\":\"The calculation requires adding 2 and 2.\"}]},{\"type\":\"message\",\"id\":\"msg_123\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"2 + 2 = 4.\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":10,\"output_tokens\":5,\"total_tokens\":15}}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqualStrings("rs_123", chunk.?.reasoning_id.?);
+    try testing.expectEqualStrings("The calculation requires adding 2 and 2.", chunk.?.reasoning_content.?);
+}
+
+test "parse_responses_stream_chunk: case 4 multiple reasoning items — iterates output[], does not assume [0]/[1]" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_001\",\"summary\":[]},{\"type\":\"reasoning\",\"id\":\"rs_002\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_001\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"The answer is 42.\"}]}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    // parser keeps first id (current single-row model) but must not misinterpret indices
+    try testing.expectEqualStrings("rs_001", chunk.?.reasoning_id.?);
+    try testing.expect(chunk.?.reasoning_content == null);
+}
+
+test "parse_responses_stream_chunk: case 5 tool call" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"function_call\",\"id\":\"fc_123\",\"call_id\":\"call_123\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Jakarta\\\"}\"}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expectEqual(@as(?FinishReason, .tool_calls), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 6 reasoning + tool_call and reasoning + answer are two separate responses" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data1 = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_001\",\"summary\":[]},{\"type\":\"function_call\",\"id\":\"fc_001\",\"call_id\":\"call_001\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Jakarta\\\"}\"}]}}";
+    const c1 = a.parse_stream_chunk(data1, arena.allocator());
+    try testing.expect(c1 != null);
+    try testing.expectEqualStrings("rs_001", c1.?.reasoning_id.?);
+    try testing.expectEqual(@as(?FinishReason, .tool_calls), c1.?.finish_reason);
+    const data2 = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"reasoning\",\"id\":\"rs_002\",\"summary\":[]},{\"type\":\"message\",\"id\":\"msg_001\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Jakarta is currently 30°C.\"}]}]}}";
+    const c2 = a.parse_stream_chunk(data2, arena.allocator());
+    try testing.expect(c2 != null);
+    try testing.expectEqualStrings("rs_002", c2.?.reasoning_id.?);
+    try testing.expectEqual(@as(?FinishReason, .stop), c2.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 7 multiple content parts in one message — don't assume content[0]" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Here is the result:\"},{\"type\":\"output_text\",\"text\":\"2 + 2 = 4.\"}]}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expectEqual(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_responses_stream_chunk: case 8 message containing annotations" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const data = "{\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"According to the source, the answer is 42.\",\"annotations\":[{\"type\":\"url_citation\",\"url\":\"https://example.com\",\"title\":\"Example\"}]}]}]}}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try testing.expect(chunk != null);
+    try testing.expect(chunk.?.reasoning_id == null);
+    try testing.expectEqual(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "buildJsonResponsesRequest: case 2 reasoning empty summary replays as reasoning+message" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("q"),
+        assistantMsgFullOpenaiResponses("The answer is 4.", null, "rs_123", null),
+    };
+    // reasoning_content null but id present -> should still emit reasoning with empty summary
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+    const input = body.parsed.value.object.get("input").?.array;
+    try testing.expectEqual(@as(usize, 3), input.items.len);
+    try testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
+    try testing.expectEqualStrings("reasoning", input.items[1].object.get("type").?.string);
+    try testing.expectEqualStrings("rs_123", input.items[1].object.get("id").?.string);
+    try testing.expectEqual(@as(usize, 0), input.items[1].object.get("summary").?.array.items.len);
+    try testing.expectEqualStrings("message", input.items[2].object.get("type").?.string);
+}
+
+test "buildJsonResponsesRequest: iterates output — not output[0] reasoning assumption" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    // Simulate history with two reasoning turns collapsed into one row — builder emits one reasoning per row
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("q"),
+        assistantMsgFullOpenaiResponses("a", "summary text", "rs_123", "ENC"),
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+    const input = body.parsed.value.object.get("input").?.array;
+    // Must handle reasoning at any index, not fixed positions
+    var found_reasoning = false;
+    var found_message = false;
+    for (input.items) |it| {
+        const t = it.object.get("type").?.string;
+        if (std.mem.eql(u8, t, "reasoning")) found_reasoning = true;
+        if (std.mem.eql(u8, t, "message")) {
+            if (it.object.get("role")) |r| {
+                if (std.mem.eql(u8, r.string, "assistant")) found_message = true;
+            }
+        }
+    }
+    try testing.expect(found_reasoning);
+    try testing.expect(found_message);
+}
+
+// ---------------------------------------------------------------------------
+// Builder: function_call_output sanitization (input[N].output[M] rejection)
+// ---------------------------------------------------------------------------
+// Regression for: `input[20].output[0] did not match any supported type`
+// (muse-spark via Console Go, url_style="openai-response"). A `bash` tool
+// output containing a `cat` of an ELF binary embedded invalid UTF-8 bytes
+// into `function_call_output.output`; std.json emits those bytes raw, so the
+// request body was not valid UTF-8 JSON and the gateway rejected the item.
+
+test "buildJsonResponsesRequest: tool output with invalid UTF-8 is sanitized" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    // ELF magic + invalid bytes, mimicking `cat` of a binary in tool stdout.
+    const raw_output = "\x7fELF\x02\x01\x01\x00\xFF\xFEbinary\x80\x81done";
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{ .role = .tool, .content = raw_output, .tool_call_id = "call_elf", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    var found = false;
+    for (input.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("type").?.string, "function_call_output")) continue;
+        found = true;
+        const out = it.object.get("output").?.string;
+        // Raw invalid bytes must be gone; U+FFFD (EF BF BD) marks each one.
+        try testing.expect(std.mem.indexOf(u8, out, "\xFF") == null);
+        try testing.expect(std.mem.indexOf(u8, out, "\x80") == null);
+        try testing.expect(std.mem.indexOf(u8, out, "\xEF\xBF\xBD") != null);
+        // Body itself must be valid UTF-8 so the gateway can parse it.
+        try testing.expect(std.unicode.utf8ValidateSlice(body.raw));
+    }
+    try testing.expect(found);
+}
+
+test "buildJsonResponsesRequest: tool without call_id is skipped, not emitted empty" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{ .role = .tool, .content = "orphan output", .tool_call_id = null, .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    for (input.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("type").?.string, "function_call_output")) continue;
+        const cid = it.object.get("call_id").?.string;
+        // An empty call_id can never pair with a function_call — must not be sent.
+        try testing.expect(cid.len > 0);
+    }
+}
+
+test "buildJsonResponsesRequest: oversize tool output is truncated with marker" {
+    var a = makeResponsesAgentOpenaiResponses(.{});
+    defer a.deinit();
+    const big = try testing.allocator.alloc(u8, 25_000);
+    defer testing.allocator.free(big);
+    @memset(big, 'x');
+    const messages = [_]AgentMessage{
+        userMsgOpenaiResponses("hi"),
+        .{ .role = .tool, .content = big, .tool_call_id = "call_big", .tool_calls = null, .content_parts = null, .reasoning_content = null },
+    };
+    var body = try buildAndParseOpenaiResponses(&a, &messages, &.{}, null, null, true);
+    defer freeBodyOpenaiResponses(body);
+
+    const input = body.parsed.value.object.get("input").?.array;
+    var found = false;
+    for (input.items) |it| {
+        if (!std.mem.eql(u8, it.object.get("type").?.string, "function_call_output")) continue;
+        found = true;
+        const out = it.object.get("output").?.string;
+        try testing.expect(out.len < big.len);
+        try testing.expect(std.mem.indexOf(u8, out, "[truncated") != null);
+    }
+    try testing.expect(found);
+}
+
+// ===== Tests merged from parse_anthropic_sse_test.zig (2026-09-29 flatten) =====
+// Tests for the Anthropic /v1/messages SSE parser + the raw-SSE sample
+// capture added to Agent.callStreaming. Companion to
+// `docs/superpowers/plans/2026-08-13-anthropic-profile-sse-parsing.md`.
+//
+// Why these are unit tests (not network tests): the existing
+// `call_streaming_test.zig` has 3 tests that actually instantiate
+// `Agent.callStreaming` and ALL THREE are marked
+// `if (true) return error.SkipZigTest;` — `Agent.deinit` hangs in
+// `std.Io.Threaded.closeFd` after a real HTTP roundtrip, which is a
+// pre-existing issue unrelated to this plan. So end-to-end network
+// tests for callStreaming can't run in this CI.
+//
+// To still get real coverage, we test the units that ARE reachable:
+//   1. `Agent.parse_stream_chunk(data, arena)` — the public
+//      SSE-line → StreamChunk mapper. We pass crafted JSON data
+//      strings directly. No network, no hang.
+//   2. `Agent.parse_anthropic_stream_chunk(...)` — the new sibling
+//      parser, reached via the public dispatcher on
+//      `parse_stream_chunk` when `UrlStyle = "anthropic"`.
+//   3. Part A (raw SSE capture) is verified by a static-contract
+//      test that inspects the source for the three required sites
+//      (buffer declaration, append on null parse, surface in final
+//      error message).
+//
+// All tests are deterministic and run in <1s.
+
+const expectParseAnthropicSse = std.testing.expect;
+const expectEqualParseAnthropicSse = std.testing.expectEqual;
+const expectErrorParseAnthropicSse = std.testing.expectError;
+const expectEqualStringsParseAnthropicSse = std.testing.expectEqualStrings;
+const testing_allocatorParseAnthropicSse = std.testing.allocator;
+
+// ===== Regression test for 2026-08-15 "bash tool leak" ===============
+//
+// The user posted a leaked tool_call record with a bash `arguments`
+// payload of literally `$'\xaa\xaa\xaa...'` (22 bytes of 0xAA — Zig's
+// DebugAllocator free-fill byte, octal 252). Fix: make `CallResponse`
+// arena-owned. Caller passes the per-iteration arena's allocator to
+// `Agent.init`. The SSE parser allocates everything on that arena.
+// `StreamingAggregator.finalize` returns slice headers that point
+// straight at the arena — no copy, no separate `deinit`. Any
+// accidental `free`-then-read under DebugAllocator would have
+// produced the 0xAA poison the user observed.
+//
+// Pins the contract:
+//   1. `process_chunk` stores inner bytes on the caller's arena.
+//   2. `finalize` returns slice headers that point at the SAME arena
+//      bytes (no second dupe).
+//   3. Reading the returned bytes BEFORE the arena is destroyed
+//      returns the real arguments — not 0xAA.
+//   4. `CallResponse.deinit` is a documented no-op.
+test "CallResponse arena ownership: tool_call.function.arguments points at caller's arena (no .deinit needed)" {
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var agg = StreamingAggregator.init(arena_alloc);
+    defer agg.deinit();
+
+    // Stage 1: content_block_start arrives with id + name.
+    try agg.process_chunk(.{
+        .tool_calls_delta = &[_]ToolCallDelta{.{
+            .index = 0,
+            .id = "toolu_leak_test",
+            .function_name = "bash",
+        }},
+    });
+
+    // Stage 2: two input_json_delta chunks concatenate to the bash
+    // arguments JSON. Real Anthropic / OpenAI streams could carry
+    // any byte sequence (including legitimate binary data with
+    // 0xAA); the contract must hold regardless of payload content.
+    const args_payload =
+        \\{"command":"cd /tmp && echo hello","cwd":"/tmp"}
+    ;
+    try agg.process_chunk(.{
+        .tool_calls_delta = &[_]ToolCallDelta{.{
+            .index = 0,
+            .function_arguments = args_payload[0..20],
+        }},
+    });
+    try agg.process_chunk(.{
+        .tool_calls_delta = &[_]ToolCallDelta{.{
+            .index = 0,
+            .function_arguments = args_payload[20..],
+        }},
+    });
+
+    const response = try agg.finalize();
+    defer response.deinit();
+
+    try expectParseAnthropicSse(response.tool_calls != null);
+    try expectEqualParseAnthropicSse(@as(usize, 1), response.tool_calls.?.len);
+    const tc = &response.tool_calls.?[0];
+    try expectEqualStringsParseAnthropicSse("toolu_leak_test", tc.id);
+    try expectEqualStringsParseAnthropicSse("bash", tc.function.name);
+
+    // CRITICAL: `tc.function.arguments` points at the same arena
+    // memory the aggregator's internal `arguments` ArrayList holds.
+    // Pre-fix the bytes would have been 0xAA (DebugAllocator free-
+    // fill) because a per-inner-slice `free` fired before the
+    // consumer read the bytes.
+    try expectEqualStringsParseAnthropicSse(args_payload, tc.function.arguments);
+
+    // Belt-and-suspenders: pin the contract by asserting no
+    // `0xAA` byte appears in the returned slice. Legitimate
+    // ASCII/UTF-8/JSON cannot contain this byte.
+    try expectParseAnthropicSse(std.mem.indexOfScalar(u8, tc.function.arguments, 0xAA) == null);
+}
+
+// ===================================================================
+
+// ============================================================================
+// Part B — parse_stream_chunk for Anthropic SSE
+// ============================================================================
+
+test "parse_stream_chunk (anthropic): message_start caches input_tokens, emits no chunk" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    const data =
+        \\{"type":"message_start","message":{"id":"msg_x","type":"message","role":"assistant","content":[],"model":"claude-test","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":42,"output_tokens":1}}}
+    ;
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    // message_start is a pure cache step — no chunk emitted.
+    try expectParseAnthropicSse(chunk == null);
+}
+
+test "parse_stream_chunk (anthropic): content_block_delta text_delta populates content" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // First emit a message_start so the input_tokens cache gets populated.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    var arena2 = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena2.deinit();
+
+    const delta_data =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello world"}}
+    ;
+    const chunk = a.parse_stream_chunk(delta_data, arena2.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualStringsParseAnthropicSse("Hello world", chunk.?.content.?);
+    try expectParseAnthropicSse(chunk.?.tool_calls_delta == null);
+    try expectParseAnthropicSse(chunk.?.finish_reason == null);
+}
+
+test "parse_stream_chunk (anthropic): thinking_delta populates reasoning_content" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step 1"}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualStringsParseAnthropicSse("step 1", chunk.?.reasoning_content.?);
+}
+
+test "parse_stream_chunk (anthropic): content_block_start (tool_use) emits tool_calls_delta with id+name" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_abc","name":"bash","input":{}}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.tool_calls_delta != null);
+    try expectEqualParseAnthropicSse(@as(usize, 1), chunk.?.tool_calls_delta.?.len);
+    try expectEqualStringsParseAnthropicSse("toolu_abc", chunk.?.tool_calls_delta.?[0].id.?);
+    try expectEqualStringsParseAnthropicSse("bash", chunk.?.tool_calls_delta.?[0].function_name.?);
+}
+
+test "parse_stream_chunk (anthropic): input_json_delta appends to tool_calls_delta arguments" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\":\"ls\"}"}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.tool_calls_delta != null);
+    try expectEqualParseAnthropicSse(@as(usize, 1), chunk.?.tool_calls_delta.?.len);
+    try expectEqualStringsParseAnthropicSse("{\"command\":\"ls\"}", chunk.?.tool_calls_delta.?[0].function_arguments.?);
+}
+
+test "parse_stream_chunk (anthropic): message_delta stop_reason=end_turn → finish_reason=.stop" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualParseAnthropicSse(@as(?FinishReason, .stop), chunk.?.finish_reason);
+}
+
+test "parse_stream_chunk (anthropic): message_delta stop_reason=tool_use → finish_reason=.tool_calls" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualParseAnthropicSse(@as(?FinishReason, .tool_calls), chunk.?.finish_reason);
+}
+
+test "parse_stream_chunk (anthropic): message_delta stop_reason=max_tokens → finish_reason=.length" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualParseAnthropicSse(@as(?FinishReason, .length), chunk.?.finish_reason);
+}
+
+test "parse_stream_chunk (anthropic): message_delta stop_reason=refusal → finish_reason=.content_filter" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualParseAnthropicSse(@as(?FinishReason, .content_filter), chunk.?.finish_reason);
+}
+
+test "parse_stream_chunk (anthropic): message_stop returns null (signal-only)" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"message_stop\"}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk == null);
+}
+
+test "parse_stream_chunk (anthropic): content_block_stop returns null (signal-only)" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data = "{\"type\":\"content_block_stop\",\"index\":0}";
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk == null);
+}
+
+test "parse_stream_chunk (anthropic): usage chunk emitted on first delta after message_start with input_tokens" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // Cache input_tokens via message_start.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":7,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // First delta should carry a usage chunk with prompt_tokens=7.
+    var arena2 = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena2.deinit();
+
+    const delta_data =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+    ;
+    const chunk = a.parse_stream_chunk(delta_data, arena2.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 7), chunk.?.usage.?.prompt_tokens);
+}
+
+test "parse_stream_chunk (anthropic): usage emitted exactly once across multiple deltas" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // Cache input_tokens via message_start.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // First delta → usage chunk present.
+    var arena1 = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena1.deinit();
+    const d1 =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}
+    ;
+    const c1 = a.parse_stream_chunk(d1, arena1.allocator());
+    try expectParseAnthropicSse(c1 != null);
+    try expectParseAnthropicSse(c1.?.usage != null);
+
+    // Second delta → no usage chunk (already emitted).
+    var arena2 = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena2.deinit();
+    const d2 =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"b"}}
+    ;
+    const c2 = a.parse_stream_chunk(d2, arena2.allocator());
+    try expectParseAnthropicSse(c2 != null);
+    try expectParseAnthropicSse(c2.?.usage == null);
+}
+
+// ============================================================================
+// Anthropic usage handling — make total_tokens match OpenAI's semantic
+// (prompt_tokens + completion_tokens) so llm_history / compaction
+// code that consumes CallResponse.usage gets the same numbers it would
+// from an OpenAI profile.
+// ============================================================================
+
+test "parse_stream_chunk (anthropic): message_delta usage emits total = input + output (strict API shape — no input in message_delta)" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start caches input_tokens=42 (canonical input — strict API).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":42,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta with ONLY output_tokens (strict Anthropic API doesn't
+    // repeat input_tokens here). prompt must stay 42 (from message_start),
+    // total = 42 + 7.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":7}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 42), chunk.?.usage.?.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 7), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 49), chunk.?.usage.?.total_tokens);
+}
+
+test "parse_stream_chunk (anthropic): message_delta input_tokens OVERRIDES message_start (some relays send input=0 at message_start then correct value at message_delta)" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start with input_tokens=0 (this relay returns 0 here).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta with the AUTHORITATIVE input_tokens=54 (this relay).
+    // The handler must prefer this over the cached 0 from message_start.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54,"output_tokens":23}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 54), chunk.?.usage.?.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 23), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 77), chunk.?.usage.?.total_tokens);
+}
+
+test "parse_stream_chunk (anthropic): message_delta includes cache_creation_input_tokens in total (cache writes ARE billable)" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start: input_tokens=10 (excludes cache_creation).
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta: cache_creation_input_tokens=5 (a cache write — billable).
+    // billable total = 10 (input) + 5 (cache_creation) + 8 (output) = 23.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"cache_creation_input_tokens":5,"output_tokens":8}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 15), chunk.?.usage.?.prompt_tokens); // 10 + 5
+    try expectEqualParseAnthropicSse(@as(usize, 8), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 23), chunk.?.usage.?.total_tokens); // 15 + 8
+}
+
+test "parse_stream_chunk (anthropic): cache_read_input_tokens IS added to prompt + total (cache reads ARE tokens processed)" {
+    // Mirrors the spec TL;DR: cache_read counts as tokens the model
+    // processed, so prompt = input + cache_read and total = prompt +
+    // completion. The cache breakdown is preserved separately on
+    // `Usage` so billing code can still apply the discounted rate.
+    //
+    // Pre-fix: this test asserted prompt=54, total=77 (cache_read=128 was
+    // dropped on the floor, matching the sibling-branch contract labelled
+    // "FREE"). Post-fix: prompt=182 (54+128), total=205 (182+23). The
+    // cache_read count is still 128 on the breakdown for billing.
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start: input_tokens=54, cache_read_input_tokens=128.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":54,"cache_read_input_tokens":128,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta: input_tokens=54 + cache_creation=0 + cache_read=128
+    // (uses cached message_start value because delta omits it)
+    // + output_tokens=23.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":54,"output_tokens":23}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 182), chunk.?.usage.?.prompt_tokens); // 54 + 0 + 128
+    try expectEqualParseAnthropicSse(@as(usize, 23), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 205), chunk.?.usage.?.total_tokens); // 182 + 23
+    try expectEqualParseAnthropicSse(@as(usize, 0), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 128), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+// ============================================================================
+// Task 1 contract — Agent.Usage struct surface area. Pin the new
+// Anthropic cache field names so Tasks 2 + 4 + 5 + 6 can lean on them.
+// (OpenAI rows always carry 0 in both fields.)
+// ============================================================================
+
+test "Agent.Usage struct has cache_creation_input_tokens + cache_read_input_tokens fields (structural contract)" {
+    const u: Usage = .{};
+    // New fields default to 0 — no breakage for OpenAI.
+    try expectEqualParseAnthropicSse(@as(usize, 0), u.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 0), u.cache_read_input_tokens);
+    // Existing fields still work.
+    try expectEqualParseAnthropicSse(@as(usize, 0), u.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 0), u.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 0), u.total_tokens);
+}
+
+test "Agent.Usage can be constructed with explicit cache values" {
+    // Mirrors what parse_anthropic_stream_chunk emits at message_delta
+    // when both cache fields are non-zero.
+    const u: Usage = .{
+        .prompt_tokens = 6500,
+        .completion_tokens = 1000,
+        .total_tokens = 7500,
+        .cache_creation_input_tokens = 500,
+        .cache_read_input_tokens = 5000,
+    };
+    try expectEqualParseAnthropicSse(@as(usize, 6500), u.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 1000), u.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 7500), u.total_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 500), u.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 5000), u.cache_read_input_tokens);
+}
+
+test "parse_stream_chunk (anthropic): message_delta includes BOTH cache_creation AND cache_read in prompt + total" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start caches input_tokens=1000.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":1000,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // message_delta: cache_creation=500, cache_read=5000, output=1000.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":1000,"cache_creation_input_tokens":500,"cache_read_input_tokens":5000,"output_tokens":1000}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 6500), chunk.?.usage.?.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 1000), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 7500), chunk.?.usage.?.total_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 500), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 5000), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "parse_stream_chunk (anthropic): cache_read_only is included in prompt + total" {
+    // Cache reads ONLY (no cache writes) — prompt = input + cache_read.
+    // Pre-fix this would have been `prompt = input = 10`, dropping the
+    // 128 cached-read tokens on the floor.
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const data =
+        \\{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":10,"cache_read_input_tokens":128,"output_tokens":7}}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 138), chunk.?.usage.?.prompt_tokens); // 10 + 128
+    try expectEqualParseAnthropicSse(@as(usize, 7), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 145), chunk.?.usage.?.total_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 0), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 128), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "parse_stream_chunk (anthropic): cache_read from message_start is preserved on first-delta usage chunk" {
+    // Some relays send cache_read_input_tokens at message_start but not at
+    // message_delta. The first-delta usage chunk needs to fold that into
+    // prompt_tokens, mirroring how message_delta folds it later.
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "anthropic";
+
+    // message_start: input_tokens=20 + cache_read_input_tokens=4096.
+    {
+        var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+        defer arena.deinit();
+        const start_data =
+            \\{"type":"message_start","message":{"id":"m","type":"message","role":"assistant","content":[],"model":"c","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":20,"cache_read_input_tokens":4096,"output_tokens":1}}}
+        ;
+        _ = a.parse_stream_chunk(start_data, arena.allocator());
+    }
+
+    // First delta emits a usage chunk. Prompt must be 20 + 0 + 4096 = 4116.
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+    const d1 =
+        \\{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}
+    ;
+    const chunk = a.parse_stream_chunk(d1, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectParseAnthropicSse(chunk.?.usage != null);
+    try expectEqualParseAnthropicSse(@as(usize, 4116), chunk.?.usage.?.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 0), chunk.?.usage.?.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 4116), chunk.?.usage.?.total_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 0), chunk.?.usage.?.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 4096), chunk.?.usage.?.cache_read_input_tokens);
+}
+
+test "Agent.Usage can be constructed with explicit cache values (regression pin at end-of-file)" {
+    // Pinned at the END of the test file (in addition to the canonical
+    // assertion at L436) so the contract surfaces under `rg` near any
+    // future Anthropic-Usage changes. Both must pass.
+    const u: Usage = .{
+        .prompt_tokens = 6500,
+        .completion_tokens = 1000,
+        .total_tokens = 7500,
+        .cache_creation_input_tokens = 500,
+        .cache_read_input_tokens = 5000,
+    };
+    try expectEqualParseAnthropicSse(@as(usize, 6500), u.prompt_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 1000), u.completion_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 7500), u.total_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 500), u.cache_creation_input_tokens);
+    try expectEqualParseAnthropicSse(@as(usize, 5000), u.cache_read_input_tokens);
+}
+
+// ============================================================================
+// Regression test — reproduce the iter-2 SEGV in buildJsonAnthropicRequest
+// (the slice-header 0xAA-poisoning crash seen when an Anthropic chat hits
+// iter 2 after the model emits tool_calls in iter 1). Build the request
+// body directly with a synthetic assistant message that mirrors the shape
+// loadHistoryFromDb produces, and assert the body is well-formed UTF-8 JSON.
+// If this test crashes (segfault in utf8ValidateSlice) the underlying bug
+// is reproduced without needing the full workflow + DB stack.
+// ============================================================================
+
+test "buildJsonAnthropicRequest: assistant message with tool_calls + null reasoning_content survives" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = true;
+    a.userIdentifier = "test-user";
+
+    // Simulate the DB-loaded shape for an assistant message that emitted
+    // tool_calls in the previous iteration: reasoning_content is null,
+    // content is empty, tool_calls_json has 1 tool call with id+name+args.
+    const tc_args_json = "{\"query\":\"recent\"}";
+    const tc_id_dup = try testing_allocatorParseAnthropicSse.dupe(u8, "toolu_test_123");
+    defer testing_allocatorParseAnthropicSse.free(tc_id_dup);
+    const tc_name_dup = try testing_allocatorParseAnthropicSse.dupe(u8, "load_memory");
+    defer testing_allocatorParseAnthropicSse.free(tc_name_dup);
+    const tc_args_dup = try testing_allocatorParseAnthropicSse.dupe(u8, tc_args_json);
+    defer testing_allocatorParseAnthropicSse.free(tc_args_dup);
+    const tc_array = try testing_allocatorParseAnthropicSse.alloc(ToolCall, 1);
+    defer testing_allocatorParseAnthropicSse.free(tc_array);
+    tc_array[0] = .{
+        .id = tc_id_dup,
+        .function = .{
+            .name = tc_name_dup,
+            .arguments = tc_args_dup,
+        },
+    };
+
+    // 3 messages: system + user + assistant-with-tool-calls.
+    // Mirrors what workflow.zig's buildMessages produces for the second
+    // iteration of an Anthropic chat that emitted tool_calls in iter 1.
+    const system_content = try testing_allocatorParseAnthropicSse.dupe(u8, "You are a coding agent.");
+    defer testing_allocatorParseAnthropicSse.free(system_content);
+    const user_content = try testing_allocatorParseAnthropicSse.dupe(u8, "please look up memory");
+    defer testing_allocatorParseAnthropicSse.free(user_content);
+
+    const messages = try testing_allocatorParseAnthropicSse.alloc(AgentMessage, 3);
+    defer testing_allocatorParseAnthropicSse.free(messages);
+    messages[0] = .{ .role = .system, .content = system_content };
+    messages[1] = .{ .role = .user, .content = user_content };
+    messages[2] = .{
+        .role = .assistant,
+        .content = "", // empty text content — model emitted only tool_calls
+        .reasoning_content = null, // no thinking text emitted
+        .tool_calls = tc_array,
+    };
+
+    const params = AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocatorParseAnthropicSse.free(body);
+
+    // If we got here without a SEGV, the slice-pointer corruption didn't
+    // happen for this synthetic input. If this assertion never fires but
+    // the workflow still crashes, the bug needs MORE than just an
+    // assistant-with-tool-calls message to trigger — likely tied to
+    // specific allocator lifetimes that only manifest under the real
+    // workflow's arena setup.
+    try expectParseAnthropicSse(body.len > 100);
+    try expectParseAnthropicSse(std.mem.startsWith(u8, body, "{"));
+}
+
+// ============================================================================
+// Part C — Anthropic request body preserves `image_url` content_parts
+// (smoke test 2026-08-13: "i cannot send image" with profile `url_style:
+// "anthropic"`. Symptom: model says "Sepertinya belum ada gambar yang
+// masuk di percakapan ini — saya hanya melihat pesan teks saja" while
+// the image is correctly stored in `llm_history.image_urls` and is
+// displayed in the frontend UI.
+// Root cause: `buildJsonAnthropicRequest` only emits `content` as a
+// single-text string OR content_blocks (for assistant tool_use). It
+// never reads `msg.content_parts`, so user-attached images are silently
+// dropped before the wire.
+// Fix: when `msg.content_parts` is set, build `AnthropicContentBlock`
+// entries for each part — `text` → `{type:"text", text:...}` and
+// `image_url` → `{type:"image", source:{type:"url", url:"data:..."}}`
+// (Anthropic accepts the OpenAI-flavored `data:image/...;base64,...`
+// URL via its `source.url` field; this matches what every OpenAI-
+// compatible Anthropic relay like api.minimax.io/anthropic expects).
+// ============================================================================
+
+test "buildJsonAnthropicRequest: user message with image content_parts preserves the image URL" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = false;
+    a.userIdentifier = "test-user";
+
+    // Synthetic data: text + 1 image, mirroring what
+    // `transformLLMHistoryToAgentMessage` produces from a DB row with
+    // `image_urls` populated.
+    const text_dup = try testing_allocatorParseAnthropicSse.dupe(u8, "ini gambar apa ?");
+    defer testing_allocatorParseAnthropicSse.free(text_dup);
+    const url_dup = try testing_allocatorParseAnthropicSse.dupe(
+        u8,
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    );
+    defer testing_allocatorParseAnthropicSse.free(url_dup);
+
+    const parts = try testing_allocatorParseAnthropicSse.alloc(ContentPart, 2);
+    defer testing_allocatorParseAnthropicSse.free(parts);
+    parts[0] = .{
+        .part_type = "text",
+        .text = text_dup,
+        .image_url = null,
+    };
+    parts[1] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{ .url = url_dup, .detail = null },
+    };
+
+    const messages = try testing_allocatorParseAnthropicSse.alloc(AgentMessage, 2);
+    defer testing_allocatorParseAnthropicSse.free(messages);
+    messages[0] = .{ .role = .system, .content = "You are a helpful assistant." };
+    messages[1] = .{
+        .role = .user,
+        .content = null, // text lives in content_parts[0]
+        .content_parts = parts,
+    };
+
+    const params = AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocatorParseAnthropicSse.free(body);
+
+    // The body MUST include the user-attached image (otherwise the LLM
+    // — and `api.minimax.io/anthropic` — sees an empty user message and
+    // replies "i don't see an image"). Before the fix, the only
+    // `"type"` strings in the body are `text` / `tool_use` /
+    // `tool_result`; the image was silently dropped.
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"type\":\"image\"") != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, url_dup) != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, text_dup) != null);
+
+    // Sanity: the body's still valid JSON with the user message
+    // emitted as `role: "user"`.
+    try expectParseAnthropicSse(std.mem.startsWith(u8, body, "{"));
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"role\":\"user\"") != null);
+}
+
+test "buildJsonAnthropicRequest: user message with ONLY image (no text) is preserved" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = false;
+
+    const url_dup = try testing_allocatorParseAnthropicSse.dupe(
+        u8,
+        "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD",
+    );
+    defer testing_allocatorParseAnthropicSse.free(url_dup);
+
+    const parts = try testing_allocatorParseAnthropicSse.alloc(ContentPart, 1);
+    defer testing_allocatorParseAnthropicSse.free(parts);
+    parts[0] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{ .url = url_dup, .detail = null },
+    };
+
+    const messages = try testing_allocatorParseAnthropicSse.alloc(AgentMessage, 2);
+    defer testing_allocatorParseAnthropicSse.free(messages);
+    messages[0] = .{ .role = .system, .content = "Helper." };
+    messages[1] = .{
+        .role = .user,
+        .content = null,
+        .content_parts = parts,
+    };
+
+    const params = AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocatorParseAnthropicSse.free(body);
+
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"type\":\"image\"") != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, url_dup) != null);
+}
+
+test "buildJsonAnthropicRequest: user message with plain text (no image) still emits single-text content (regression)" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+    a.thinkingEnabled = false;
+
+    const content_dup = try testing_allocatorParseAnthropicSse.dupe(u8, "halo dunia");
+    defer testing_allocatorParseAnthropicSse.free(content_dup);
+
+    const messages = try testing_allocatorParseAnthropicSse.alloc(AgentMessage, 2);
+    defer testing_allocatorParseAnthropicSse.free(messages);
+    messages[0] = .{ .role = .system, .content = "Helper." };
+    messages[1] = .{
+        .role = .user,
+        .content = content_dup,
+        .content_parts = null,
+    };
+
+    const params = AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocatorParseAnthropicSse.free(body);
+
+    // No images: `content` MUST serialize as a top-level string (the
+    // legacy shape Anthropic accepts), not as an array. We assert that
+    // by checking the substring `"content":"halo dunia"` is in the
+    // body. (It would be `"content":["text:..."]` if we'd broken the
+    // backwards-compat path.)
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"content\":\"halo dunia\"") != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"type\":\"image\"") == null);
+}
+
+test "buildJsonAnthropicRequest: image content uses Anthropic-native source.url wrapper" {
+    // The OpenAI wire format puts the data URL straight under
+    // `image_url: { url: "data:..." }`; Anthropic wraps it under
+    // `source: { type: "url", url: "data:..." }` inside an
+    // `image`-typed content block. This test pins that exact shape
+    // so a future refactor can't accidentally emit OpenAI-style
+    // blocks onto Anthropic.
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.model = "claude-test";
+    a.UrlStyle = "anthropic";
+
+    const url_dup = try testing_allocatorParseAnthropicSse.dupe(u8, "data:image/png;base64,abc123");
+    defer testing_allocatorParseAnthropicSse.free(url_dup);
+    const parts = try testing_allocatorParseAnthropicSse.alloc(ContentPart, 1);
+    defer testing_allocatorParseAnthropicSse.free(parts);
+    parts[0] = .{
+        .part_type = "image_url",
+        .text = null,
+        .image_url = .{ .url = url_dup, .detail = null },
+    };
+
+    const messages = try testing_allocatorParseAnthropicSse.alloc(AgentMessage, 1);
+    defer testing_allocatorParseAnthropicSse.free(messages);
+    messages[0] = .{
+        .role = .user,
+        .content = null,
+        .content_parts = parts,
+    };
+
+    const params = AgentCall{ .messages = messages, .tools = &.{} };
+    const body = try a.buildJsonAnthropicRequest(params, true);
+    defer testing_allocatorParseAnthropicSse.free(body);
+
+    // The Anthropic-native wrapper: `"image"` block + `"source"` with
+    // `"type":"url"`. Confirms our serializer emits the right shape
+    // (vs. accidentally emitting the OpenAI-flat `"image_url":...`
+    // which Anthropic would reject with a 400).
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"type\":\"image\"") != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"source\":{") != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"type\":\"url\"") != null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"url\":\"data:image/png;base64,abc123\"") != null);
+
+    // And the OpenAI-style flat shape MUST NOT appear.
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"image_url\":") == null);
+    try expectParseAnthropicSse(std.mem.indexOf(u8, body, "\"type\":\"image_url\"") == null);
+}
+
+// ============================================================================
+// Part B — OpenAI parser is NOT affected by the dispatch (regression check)
+// ============================================================================
+
+test "parse_stream_chunk (openai): OpenAI-shaped data still parses as before" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    a.UrlStyle = "openai"; // explicit
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualStringsParseAnthropicSse("hello", chunk.?.content.?);
+}
+
+test "parse_stream_chunk (default UrlStyle): falls through to OpenAI parser" {
+    var a: Agent = .init(testing_allocatorParseAnthropicSse, std.testing.io);
+    defer a.deinit();
+    // Don't set UrlStyle — it's "" by default. Should behave like openai.
+
+    var arena = std.heap.ArenaAllocator.init(testing_allocatorParseAnthropicSse);
+    defer arena.deinit();
+
+    const data =
+        \\{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"world"}}]}
+    ;
+    const chunk = a.parse_stream_chunk(data, arena.allocator());
+    try expectParseAnthropicSse(chunk != null);
+    try expectEqualStringsParseAnthropicSse("world", chunk.?.content.?);
+}
+
+// ============================================================================
+// Part A — Raw SSE sample capture (structural contract test)
+//
+// We can't run callStreaming end-to-end here (Agent.deinit hangs after a
+// real HTTP roundtrip — see call_streaming_test.zig:415-441 for the
+// root cause). Instead we verify by source inspection that:
+//   1. callStreaming builds a raw_sse_sample buffer
+//   2. The buffer is appended when parse_stream_chunk returns null AND
+//      chunk_count == 0
+//   3. The final-error message includes a truncated sample
+// These are the three sites that must change together — a regression
+// in any one would re-hide the server's actual payload.
+// ============================================================================
+
+const AGENT_SOURCE_PATHParseAnthropicSse = "src/modules/agent/Agent.zig";
+
+test "callStreaming captures raw SSE sample when chunk_count stays at 0 (structural contract)" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        AGENT_SOURCE_PATHParseAnthropicSse,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATHParseAnthropicSse});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // Contract 1: raw_sse_sample buffer must be declared in callStreaming.
+    if (std.mem.indexOf(u8, source, "raw_sse_sample") == null) {
+        std.debug.print(
+            "!! {s} does not declare `raw_sse_sample` — Part A (raw SSE sample capture) regressed !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.RawSseSampleBufferMissing;
+    }
+
+    // Contract 2: max_raw_sse_sample_len must be defined (we use 2 KiB).
+    if (std.mem.indexOf(u8, source, "max_raw_sse_sample_len") == null) {
+        std.debug.print(
+            "!! {s} does not define `max_raw_sse_sample_len` — sample cap is missing !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.MaxRawSseSampleLenMissing;
+    }
+
+    // Contract 3: the buffer must be appended in the parse_stream_chunk
+    // null branch, gated on chunk_count == 0.
+    const append_pattern = "raw_sse_sample.appendSlice";
+    if (std.mem.indexOf(u8, source, append_pattern) == null) {
+        std.debug.print(
+            "!! {s} does not call `raw_sse_sample.appendSlice` — sample is never captured !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.RawSseSampleAppendMissing;
+    }
+    if (std.mem.indexOf(u8, source, "chunk_count == 0") == null) {
+        std.debug.print(
+            "!! {s} does not gate the sample append on `chunk_count == 0` — would capture redundant data on every chunk !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.ChunkCountGateMissing;
+    }
+
+    // Contract 4: the final error message must mention "first server lines"
+    // so the user knows where to find the sample in the log.
+    if (std.mem.indexOf(u8, source, "first server lines") == null) {
+        std.debug.print(
+            "!! {s} final-error message does not include 'first server lines' — the raw sample is captured but not surfaced !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.FirstServerLinesLabelMissing;
+    }
+}
+
+// ============================================================================
+// Part B — Anthropic parser structural contract (regression check)
+// ============================================================================
+
+test "Agent.zig defines parse_anthropic_stream_chunk (structural contract)" {
+    const source = std.Io.Dir.cwd().readFileAlloc(
+        std.testing.io,
+        AGENT_SOURCE_PATHParseAnthropicSse,
+        std.testing.allocator,
+        .limited(4 * 1024 * 1024),
+    ) catch |err| {
+        std.debug.print("!! cannot read {s}: {{}} !!\n", .{AGENT_SOURCE_PATHParseAnthropicSse});
+        return err;
+    };
+    defer std.testing.allocator.free(source);
+
+    // Contract 1: the new function must exist.
+    if (std.mem.indexOf(u8, source, "parse_anthropic_stream_chunk") == null) {
+        std.debug.print(
+            "!! {s} does not define `parse_anthropic_stream_chunk` — Part B (Anthropic SSE parser) regressed !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.ParseAnthropicStreamChunkMissing;
+    }
+
+    // Contract 2: the dispatcher must branch on UrlStyle.
+    if (std.mem.indexOf(u8, source, "self.UrlStyle") == null) {
+        std.debug.print(
+            "!! {s} does not reference `self.UrlStyle` — UrlStyle dispatch is missing !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.UrlStyleDispatchMissing;
+    }
+
+    // Contract 3: stop_reason mapping helper must exist.
+    if (std.mem.indexOf(u8, source, "map_anthropic_stop_reason") == null) {
+        std.debug.print(
+            "!! {s} does not define `map_anthropic_stop_reason` — Anthropic→OpenAI stop_reason translation is missing !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.StopReasonMappingMissing;
+    }
+
+    // Contract 4: input_tokens cache field on Agent.
+    if (std.mem.indexOf(u8, source, "_anthropic_input_tokens") == null) {
+        std.debug.print(
+            "!! {s} does not declare `_anthropic_input_tokens` — input_tokens cache is missing !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.InputTokensCacheMissing;
+    }
+
+    // Contract 5: usage-emitted-once flag on Agent.
+    if (std.mem.indexOf(u8, source, "_anthropic_usage_emitted") == null) {
+        std.debug.print(
+            "!! {s} does not declare `_anthropic_usage_emitted` — usage-chunk-once guard is missing !!\n",
+            .{AGENT_SOURCE_PATHParseAnthropicSse},
+        );
+        return error.UsageEmittedFlagMissing;
+    }
 }

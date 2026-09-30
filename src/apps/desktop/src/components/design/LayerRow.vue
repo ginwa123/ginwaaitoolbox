@@ -261,7 +261,7 @@ const handleDragEnd = (event: DragEvent): void => {
     v-else
     :draggable="!readonly"
     :class="[
-      'flex items-center gap-2 px-2 py-1.5 text-sm cursor-pointer transition-colors',
+      'flex items-center gap-2 px-2 py-1.5 text-body cursor-pointer transition-colors',
       isBeingDragged && 'layer-row-dragging',
       isDropTarget && 'layer-row-drop-target',
       isDropTargetBlocked && 'layer-row-drop-target-blocked',
@@ -289,7 +289,7 @@ const handleDragEnd = (event: DragEvent): void => {
     <button
       v-if="hasChildren"
       type="button"
-      class="w-4 h-4 flex items-center justify-center text-xs shrink-0"
+      class="w-4 h-4 flex items-center justify-center text-dense shrink-0"
       :data-testid="`design-layer-toggle-${node.element.id}`"
       :aria-label="isCollapsed ? 'Expand' : 'Collapse'"
       @click="handleChevronClick"
@@ -302,7 +302,7 @@ const handleDragEnd = (event: DragEvent): void => {
 
     <!-- Type icon. -->
     <span
-      class="text-base font-mono w-4 text-center shrink-0"
+      class="text-lead font-mono w-4 text-center shrink-0"
       aria-hidden="true"
       style="color: var(--color-violet);"
     >{{ typeIcon(node.element.type) }}</span>
@@ -321,7 +321,7 @@ const handleDragEnd = (event: DragEvent): void => {
     >
       <button
         type="button"
-        class="w-5 h-5 flex items-center justify-center text-xs rounded hover:bg-[var(--color-violet)]/30 disabled:opacity-30 disabled:cursor-not-allowed"
+        class="w-5 h-5 flex items-center justify-center text-dense rounded hover:bg-[var(--color-violet)]/30 disabled:opacity-30 disabled:cursor-not-allowed"
         :draggable="false"
         :data-testid="`design-layer-reorder-up-${node.element.id}`"
         :aria-label="`Move ${node.element.name} up`"
@@ -329,7 +329,7 @@ const handleDragEnd = (event: DragEvent): void => {
       >▲</button>
       <button
         type="button"
-        class="w-5 h-5 flex items-center justify-center text-xs rounded hover:bg-[var(--color-violet)]/30 disabled:opacity-30 disabled:cursor-not-allowed"
+        class="w-5 h-5 flex items-center justify-center text-dense rounded hover:bg-[var(--color-violet)]/30 disabled:opacity-30 disabled:cursor-not-allowed"
         :draggable="false"
         :data-testid="`design-layer-reorder-down-${node.element.id}`"
         :aria-label="`Move ${node.element.name} down`"
@@ -337,7 +337,7 @@ const handleDragEnd = (event: DragEvent): void => {
       >▼</button>
       <button
         type="button"
-        class="w-5 h-5 flex items-center justify-center text-xs rounded hover:bg-[var(--color-violet)]/30"
+        class="w-5 h-5 flex items-center justify-center text-dense rounded hover:bg-[var(--color-violet)]/30"
         :draggable="false"
         :data-testid="`design-layer-delete-${node.element.id}`"
         :aria-label="`Delete ${node.element.name}`"

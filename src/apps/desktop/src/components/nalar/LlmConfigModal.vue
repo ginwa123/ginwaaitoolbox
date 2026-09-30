@@ -114,12 +114,12 @@ async function onTest() {
           class="flex items-center justify-between px-5 h-12 border-b shrink-0"
           style="border-color: var(--color-border);"
         >
-          <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">{{ title }}</h3>
+          <h3 class="text-body font-semibold" style="color: var(--semantic-text);">{{ title }}</h3>
           <button
             type="button"
             @click="emit('cancel')"
             aria-label="Close"
-            class="w-7 h-7 flex items-center justify-center text-sm"
+            class="w-7 h-7 flex items-center justify-center text-body"
             style="color: var(--semantic-text-muted);"
           >✕</button>
         </div>
@@ -127,7 +127,7 @@ async function onTest() {
         <div class="p-5 space-y-4 overflow-y-auto" style="max-height: 70vh;">
           <!-- Name -->
           <div>
-            <label class="block text-xs font-medium mb-1.5" style="color: var(--semantic-text-muted);">
+            <label class="block text-dense font-medium mb-1.5" style="color: var(--semantic-text-muted);">
               Name <span style="color: var(--color-red);">*</span>
             </label>
             <input
@@ -135,11 +135,11 @@ async function onTest() {
               @input="updateName(($event.target as HTMLInputElement).value)"
               type="text"
               :disabled="!nameEditable"
-              class="w-full px-3 h-8 rounded-md border text-sm"
+              class="w-full px-3 h-8 rounded-md border text-body"
               style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
               data-testid="name-input"
             />
-            <p v-if="errors?.name" class="text-xs mt-1" style="color: var(--color-red);">{{ errors.name }}</p>
+            <p v-if="errors?.name" class="text-dense mt-1" style="color: var(--color-red);">{{ errors.name }}</p>
           </div>
 
           <!-- LLM config -->
@@ -156,7 +156,7 @@ async function onTest() {
           <div
             v-if="testResult"
             data-testid="llm-test-result"
-            class="px-3 py-2 rounded-md text-xs border"
+            class="px-3 py-2 rounded-md text-dense border"
             :style="testResult.ok
               ? {
                   borderColor: 'var(--color-green)',
@@ -180,12 +180,12 @@ async function onTest() {
             <div
               v-if="!testResult.ok"
               data-testid="llm-test-error"
-              class="mt-1 font-mono text-[11px]"
+              class="mt-1 font-mono text-meta"
               style="color: var(--semantic-text-muted);"
             >{{ testResult.error }}</div>
             <div
               v-if="!testResult.ok && testResult.details"
-              class="mt-0.5 font-mono text-[11px] break-all"
+              class="mt-0.5 font-mono text-meta break-all"
               style="color: var(--semantic-text-dim);"
             >{{ testResult.details }}</div>
           </div>
@@ -200,7 +200,7 @@ async function onTest() {
             data-testid="llm-test-btn"
             @click="onTest"
             :disabled="!testValid || testing"
-            class="px-4 h-8 rounded-md text-sm border transition-colors duration-150"
+            class="px-4 h-8 rounded-md text-body border transition-colors duration-150"
             :style="{
               borderColor: 'var(--color-border)',
               color: testing ? 'var(--semantic-text-dim)' : 'var(--semantic-text)',
@@ -214,14 +214,14 @@ async function onTest() {
             type="button"
             data-testid="modal-cancel"
             @click="emit('cancel')"
-            class="px-4 h-8 rounded-md text-sm border transition-colors duration-150"
+            class="px-4 h-8 rounded-md text-body border transition-colors duration-150"
             style="border-color: var(--color-border); color: var(--semantic-text-muted); background-color: transparent;"
           >Cancel</button>
           <button
             type="button"
             data-testid="modal-save"
             @click="emit('save')"
-            class="px-4 h-8 rounded-md text-sm font-medium border transition-colors duration-150"
+            class="px-4 h-8 rounded-md text-body font-medium border transition-colors duration-150"
             style="border-color: var(--color-violet); color: var(--color-violet); background-color: transparent;"
           >Save</button>
           </div>

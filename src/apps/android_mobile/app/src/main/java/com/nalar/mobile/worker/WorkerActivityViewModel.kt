@@ -264,7 +264,7 @@ class WorkerActivityViewModel(
                         // Recorded like auth, so the inspector shows the exact
                         // bytes this sent.
                         httpTransport = RecordingAuthTransport(
-                            HttpsAuthTransport(AuthConfig.BASE_URL),
+                            HttpsAuthTransport { AuthConfig.BASE_URL },
                         ),
                     ),
                     store = RunningSessionsStore.default,

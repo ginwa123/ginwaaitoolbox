@@ -75,6 +75,15 @@ KNOWN_EVENTS = {
     "queue_queued",
     "queue_deleted",
     "queue_unknown",
+    # The app's single socket also carries the workers channel
+    # (see CHAT_CHANNELS above), and a real turn upserts a worker.
+    # `decodeChatFrameUnsafe` has a branch for all three worker
+    # actions (ChatEventStream.kt -> ChatStreamEvent.WorkerChanged),
+    # so all three are decodable — not just the `created` that a
+    # given turn happens to surface first.
+    "worker_created",
+    "worker_updated",
+    "worker_deleted",
 }
 
 #: The keys the Kotlin row mapper reads off an `llm_full`. All of them are

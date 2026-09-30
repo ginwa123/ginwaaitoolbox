@@ -364,21 +364,23 @@ class FunctionalHarness:
         #    any subprocess the binary spawned). On Windows,
         #    start_new_session maps to CREATE_NEW_PROCESS_GROUP and
         #    killpg is unavailable — we use kill-by-pid instead.
-        # Windows-only parent isolation: shadow HOME/USERPROFILE/APPDATA so
+        # Windows-only PARENT isolation: shadow HOME/USERPROFILE/APPDATA so
         # stray `~` expansions in test code hit temp_dir, not real home.
-        # Linux/mac keep original parent env per user request ("dont touch
-        # linux and mac") — child env is already isolated for HOME there.
-        # XDG vars are also isolated on Windows for completeness (child
-        # may read XDG_CONFIG_HOME even on Windows via WSL/Git-Bash).
+        # Linux/mac keep the original parent env per user request ("dont touch
+        # linux and mac"). The CHILD env is isolated on every platform — see
+        # the XDG block after this one.
         xdg_config = temp_dir / ".config"
         xdg_state = temp_dir / ".local" / "state"
         xdg_data = temp_dir / ".local" / "share"
         xdg_cache = temp_dir / ".cache"
+        # Created on every platform, not just Windows: the child inherits these
+        # paths from the env block below and the server expects the parent dir
+        # to exist before it writes config.json / state / cache beneath it.
+        xdg_config.mkdir(parents=True, exist_ok=True)
+        xdg_state.mkdir(parents=True, exist_ok=True)
+        xdg_data.mkdir(parents=True, exist_ok=True)
+        xdg_cache.mkdir(parents=True, exist_ok=True)
         if os.name == "nt":
-            xdg_config.mkdir(parents=True, exist_ok=True)
-            xdg_state.mkdir(parents=True, exist_ok=True)
-            xdg_data.mkdir(parents=True, exist_ok=True)
-            xdg_cache.mkdir(parents=True, exist_ok=True)
             os.environ["HOME"] = str(temp_dir)
             os.environ["USERPROFILE"] = str(temp_dir)
             os.environ["XDG_CONFIG_HOME"] = str(xdg_config)
@@ -396,15 +398,25 @@ class FunctionalHarness:
         env = os.environ.copy()
         # Child env: HOME always isolated (existing Linux/mac behavior).
         env["HOME"] = str(temp_dir)
+        # XDG isolation applies to the CHILD on EVERY platform, not just
+        # Windows. On Linux `getDefaultConfigDir` (Config.zig) resolves
+        # $XDG_CONFIG_HOME/nalar BEFORE $HOME/.config/nalar, and the same
+        # XDG-first rule is duplicated for memories/, skills/ and hooks/.
+        # A child that inherits XDG_CONFIG_HOME=/home/runner/.config (which
+        # is exactly what the GitHub Actions ubuntu runner sets) writes
+        # state into the runner's REAL home while every test reads
+        # <temp_dir>/.config — so the assertions inspect a file the server
+        # never touched, and all harness instances in the job share one
+        # config.json, which makes results order-dependent.
+        # Only `env` is shadowed here; os.environ is left alone on Linux/mac.
+        env["XDG_CONFIG_HOME"] = str(xdg_config)
+        env["XDG_STATE_HOME"] = str(xdg_state)
+        env["XDG_DATA_HOME"] = str(xdg_data)
+        env["XDG_CACHE_HOME"] = str(xdg_cache)
         if os.name == "nt":
             env["USERPROFILE"] = str(temp_dir)
             env["APPDATA"] = str(temp_dir / "AppData" / "Roaming")
             env["LOCALAPPDATA"] = str(temp_dir / "AppData" / "Local")
-            # Windows child XDG isolation (matches parent)
-            env["XDG_CONFIG_HOME"] = str(xdg_config)
-            env["XDG_STATE_HOME"] = str(xdg_state)
-            env["XDG_DATA_HOME"] = str(xdg_data)
-            env["XDG_CACHE_HOME"] = str(xdg_cache)
         log_file = log_path.open("wb")
         # `start_new_session=True` is a keyword arg accepted on
         # Python 3.2+ for both POSIX (setsid) and Windows
@@ -796,7 +808,8 @@ def _find_free_port(start: int | None = None) -> int:
     """Find a free port for the nalar backend.
 
     Default behaviour (no ``start``): pick a random port from the wide
-    range ``[RANDOM_PORT_START, RANDOM_PORT_END]`` (40k-60k). Random
+    range ``[RANDOM_PORT_START, RANDOM_PORT_END]`` (20k-32k, clear of
+    the kernel's ephemeral pool). Random
     selection avoids the two pathologies the previous sequential scan
     suffered in CI:
 

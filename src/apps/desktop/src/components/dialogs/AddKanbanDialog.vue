@@ -161,14 +161,14 @@ onBeforeUnmount(() => {
           <div class="px-5 pt-5 pb-4">
             <h3
               id="add-kanban-title"
-              class="text-base font-semibold flex items-center gap-2"
+              class="text-lead font-semibold flex items-center gap-2"
               style="color: var(--semantic-text);"
             >
               <span aria-hidden="true">📋</span>
               Add Project Kanban
             </h3>
             <p
-              class="text-xs mt-1"
+              class="text-dense mt-1"
               style="color: var(--semantic-text-dim);"
             >
               Create a new kanban board
@@ -178,7 +178,7 @@ onBeforeUnmount(() => {
           <!-- Kanban Name -->
           <div class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Kanban Name
@@ -190,7 +190,7 @@ onBeforeUnmount(() => {
               placeholder="Sprint 12"
               data-testid="add-kanban-name"
               :aria-invalid="nameError !== null"
-              class="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all duration-200"
+              class="w-full px-3 py-2 rounded-lg text-body outline-none transition-all duration-200"
               :style="{
                 backgroundColor: 'var(--semantic-sidebar-bg)',
                 border: `1px solid ${nameError ? 'var(--color-red)' : 'var(--color-border)'}`,
@@ -202,7 +202,7 @@ onBeforeUnmount(() => {
             />
             <p
               v-if="nameError"
-              class="text-xs mt-1"
+              class="text-dense mt-1"
               data-testid="add-kanban-name-error"
               style="color: var(--color-red);"
             >
@@ -221,12 +221,12 @@ onBeforeUnmount(() => {
             convention. -->
           <div class="px-5 pb-4">
             <label
-              class="block text-xs font-medium mb-2"
+              class="block text-dense font-medium mb-2"
               style="color: var(--semantic-text-dim);"
             >
               Project Root
               <span
-                class="ml-1 text-[10px]"
+                class="ml-1 text-micro"
                 style="color: var(--semantic-text-dim);"
               >(optional — used as cwd for chat sessions)</span>
             </label>
@@ -234,7 +234,7 @@ onBeforeUnmount(() => {
               type="button"
               @click="showPicker = true"
               data-testid="add-kanban-choose-folder"
-              class="w-full px-3 py-2 rounded-lg text-sm flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
+              class="w-full px-3 py-2 rounded-lg text-body flex items-center justify-between gap-2 transition-all duration-200 hover:opacity-80"
               :style="{
                 backgroundColor: selectedPath
                   ? 'var(--semantic-active-bg)'
@@ -253,13 +253,13 @@ onBeforeUnmount(() => {
               </span>
               <span
                 v-if="selectedPath"
-                class="text-xs shrink-0"
+                class="text-dense shrink-0"
                 style="color: var(--semantic-text-dim);"
                 aria-hidden="true"
               >Browse</span>
               <span
                 v-else
-                class="text-xs shrink-0"
+                class="text-dense shrink-0"
                 style="color: var(--semantic-text-dim);"
                 aria-hidden="true"
               >📂</span>
@@ -272,7 +272,7 @@ onBeforeUnmount(() => {
               type="button"
               @click="handleClose"
               data-testid="add-kanban-cancel"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200"
               style="
                 background-color: var(--semantic-card-bg);
                 border: 1px solid var(--color-border);
@@ -286,7 +286,7 @@ onBeforeUnmount(() => {
               @click="handleCreate"
               :disabled="!name.trim()"
               data-testid="add-kanban-submit"
-              class="px-3 py-1.5 rounded-lg text-sm font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              class="px-3 py-1.5 rounded-lg text-body font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               style="
                 background: linear-gradient(
                   135deg,

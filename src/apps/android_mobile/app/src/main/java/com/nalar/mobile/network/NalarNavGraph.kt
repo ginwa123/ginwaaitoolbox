@@ -48,8 +48,10 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import kotlinx.coroutines.flow.StateFlow
 import androidx.navigation.navDeepLink
+import com.nalar.mobile.auth.AuthConfig
 import com.nalar.mobile.auth.AuthRestoringScreen
 import com.nalar.mobile.auth.AuthUiState
+import com.nalar.mobile.server.ServerChange
 import com.nalar.mobile.auth.SessionPhase
 import com.nalar.mobile.chat.ChatScreen
 import com.nalar.mobile.chat.ChatUiState
@@ -300,6 +302,15 @@ fun NalarNavGraph(
      * that springs open on the reader every time they switch screens.
      */
     onToggleRecentsSection: () -> Unit = {},
+    /**
+     * Show the whole Recents list instead of its first few rows, or put the
+     * preview back.
+     *
+     * Reaches both drawers for the same reason [onToggleRecentsSection] does:
+     * they are one drawer, and a preview the reader expanded in the shell must
+     * still be expanded when they open the drawer from inside a chat.
+     */
+    onToggleRecentsShowAll: () -> Unit = {},
     onRetryHome: () -> Unit,
     onOpenSession: (String) -> Unit,
     onChatDraftChanged: (String) -> Unit,
@@ -350,6 +361,20 @@ fun NalarNavGraph(
      * rendered with inert data needs no worker behind it.
      */
     runningSessionIds: Set<String> = emptySet(),
+    /**
+     * The server this app is pointed at, and the two ways to change it.
+     *
+     * Sampled as a **value** above the `NavHost`, not collected here. The
+     * server only ever changes from a dialog the person opened themselves, and
+     * the change already re-places every auth-scoped view — so there is nothing
+     * for a subscription to save here, and collecting it would put a
+     * recomposition of the whole graph (drawer included) on the critical path of
+     * every keystroke in the field.
+     */
+    serverBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    defaultServerBaseUrl: String = AuthConfig.BUILD_DEFAULT_BASE_URL,
+    onChangeServer: (String) -> ServerChange = { ServerChange.Applied(serverBaseUrl) },
+    onUseDefaultServer: () -> ServerChange = { ServerChange.Applied(defaultServerBaseUrl) },
 ) {
     val coroutineScope = rememberCoroutineScope()
     val openInspector: () -> Unit = { navController.navigate(NalarRoutes.NETWORK) }
@@ -624,6 +649,10 @@ fun NalarNavGraph(
                     errorMessage = authState.errorMessage,
                     onRetry = onRetrySession,
                     onUseAnotherAccount = onUseAnotherAccount,
+                    serverBaseUrl = serverBaseUrl,
+                    defaultServerBaseUrl = defaultServerBaseUrl,
+                    onChangeServer = onChangeServer,
+                    onUseDefaultServer = onUseDefaultServer,
                 )
 
                 SessionPhase.NeedsLogin -> LoginScreen(
@@ -633,6 +662,10 @@ fun NalarNavGraph(
                         onSignIn(credentials.email, credentials.password)
                     },
                     onOpenNetworkInspector = openInspector,
+                    serverBaseUrl = serverBaseUrl,
+                    defaultServerBaseUrl = defaultServerBaseUrl,
+                    onChangeServer = onChangeServer,
+                    onUseDefaultServer = onUseDefaultServer,
                 )
 
                 SessionPhase.Authenticated -> MobileHomeScreen(
@@ -670,6 +703,8 @@ fun NalarNavGraph(
                     projectActions = projectActions,
                     recentsExpanded = homeState.isRecentsExpanded,
                     onToggleRecentsSection = onToggleRecentsSection,
+                    recentsShowAll = homeState.isRecentsShowAll,
+                    onToggleRecentsShowAll = onToggleRecentsShowAll,
                     // The drawer's top-level New Chat. The screen wraps this
                     // with the drawer dismissal; nothing here navigates — the
                     // createdChat collector above does, once the create lands.
@@ -803,6 +838,8 @@ fun NalarNavGraph(
                         // a chat.
                         recentsExpanded = homeState.isRecentsExpanded,
                         onToggleRecentsSection = onToggleRecentsSection,
+                        recentsShowAll = homeState.isRecentsShowAll,
+                        onToggleRecentsShowAll = onToggleRecentsShowAll,
                     )
                 },
             )

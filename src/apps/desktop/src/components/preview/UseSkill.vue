@@ -110,7 +110,7 @@ const copySkillName = async (e: Event) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !isLoaded }"
   >
     <!-- Header -->
@@ -123,7 +123,7 @@ const copySkillName = async (e: Event) => {
       role="button"
       tabindex="0"
     >
-      <span class="text-[var(--color-violet)] font-semibold text-xs">use_skill</span>
+      <span class="text-[var(--color-violet)] font-semibold text-dense">use_skill</span>
       <span
         class="flex-1 truncate text-left text-[var(--color-violet)] font-medium"
         :title="displaySkillName || ''"
@@ -133,23 +133,23 @@ const copySkillName = async (e: Event) => {
       <span
         v-if="isRunning"
         data-testid="use-skill-running"
-        class="text-[0.65rem] text-yellow-500 animate-pulse"
+        class="text-micro text-yellow-500 animate-pulse"
         >running…</span
       >
 
       <!-- Status indicator -->
-      <span class="text-xs font-semibold" :class="isLoaded ? 'text-green-500' : 'text-red-500'">
+      <span class="text-dense font-semibold" :class="isLoaded ? 'text-green-500' : 'text-red-500'">
         {{ statusIndicator }}
       </span>
 
       <!-- Available skills count badge -->
-      <span v-if="hasAvailableSkills" class="text-[var(--semantic-text-muted)] text-[0.65rem]">
+      <span v-if="hasAvailableSkills" class="text-[var(--semantic-text-muted)] text-micro">
         {{ availableSkills.length }} available
       </span>
 
       <!-- Copy button -->
       <button
-        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-base transition-opacity"
+        class="px-0.5 border-none bg-transparent cursor-pointer text-[var(--semantic-text-muted)] opacity-0 group-hover:opacity-100 hover:!text-violet-500 text-lead transition-opacity"
         @click="copySkillName"
         title="Copy skill name"
       >
@@ -159,7 +159,7 @@ const copySkillName = async (e: Event) => {
       <!-- Toggle indicator -->
       <span
         v-if="!isLoaded || errorMessage || hasAvailableSkills || skillContent"
-        class="w-4 text-center text-[var(--semantic-text-muted)] text-sm"
+        class="w-4 text-center text-[var(--semantic-text-muted)] text-body"
       >
         {{ isExpanded ? '−' : '+' }}
       </span>
@@ -173,7 +173,7 @@ const copySkillName = async (e: Event) => {
       <!-- Error message -->
       <div
         v-if="errorMessage"
-        class="flex gap-2 px-2 py-1.5 text-red-500 text-xs border-b border-dashed border-[var(--color-border)]"
+        class="flex gap-2 px-2 py-1.5 text-red-500 text-dense border-b border-dashed border-[var(--color-border)]"
       >
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ errorMessage }}</span>
@@ -185,7 +185,7 @@ const copySkillName = async (e: Event) => {
         class="py-1 border-b border-dashed border-[var(--color-border)]"
       >
         <div
-          class="px-2 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02]"
+          class="px-2 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02]"
         >
           Available skills
         </div>
@@ -193,7 +193,7 @@ const copySkillName = async (e: Event) => {
           <span
             v-for="(skill, idx) in availableSkills"
             :key="idx"
-            class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-[0.65rem]"
+            class="inline-block px-1.5 py-0.5 bg-violet-500/10 text-[var(--color-violet)] rounded text-micro"
           >
             {{ skill }}
           </span>
@@ -203,13 +203,13 @@ const copySkillName = async (e: Event) => {
       <!-- Skill content -->
       <div v-if="skillContent" class="flex-1 min-h-0 flex flex-col overflow-hidden">
         <div
-          class="px-2 py-0.5 text-[0.65rem] text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] shrink-0"
+          class="px-2 py-0.5 text-micro text-[var(--semantic-text-muted)] font-medium bg-black/[0.02] shrink-0"
         >
           Content
           <span class="ml-1">{{ skillContent.split('\n').length }}L</span>
         </div>
         <pre
-          class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-xs overflow-auto"
+          class="flex-1 p-2 m-0 whitespace-pre-wrap break-all leading-relaxed text-[var(--semantic-text)] text-dense overflow-auto"
           >{{ skillContent }}</pre>
       </div>
       <ToolParameters :parameters="parameters" />

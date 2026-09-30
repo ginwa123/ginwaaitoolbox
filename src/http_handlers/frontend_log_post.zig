@@ -625,8 +625,8 @@ test "frontend_log_post handler returns 500 on db error" {
 
 
 /// Open a fresh in-memory sqlite DB with the `logs` table loaded.
-/// Mirrors `migration_063_test.zig::setupDb` and the
-/// `routines/scheduler_test.zig` pattern.
+/// Mirrors the `setupDb063` helper in `migration.zig` and the
+/// `routines/Scheduler.zig` pattern.
 fn setupDbWithLogs() !struct {
     db: sqlite.SqliteBackend,
     threaded: std.Io.Threaded,

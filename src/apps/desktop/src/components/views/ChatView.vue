@@ -35,6 +35,13 @@ import {
 import FileInput from '../file/FileInput.vue'
 import { installSseBus, useSseBus } from '../../helpers/sseBus'
 import { readGitStatusCache } from '../../helpers/gitStatusCache'
+import { Effect } from 'effect'
+import { runEffectExit } from '../../helpers/effectRuntime'
+import {
+  fetchInitialHistoryWithRetry,
+  INITIAL_HISTORY_TIMEOUT_MS,
+} from '../../helpers/chatHistoryRetry'
+import { ChatHistoryError } from '../../api'
 import { tryUnwrapToolOutput, type UnwrappedToolOutput } from '@/helpers/unwrapToolOutput'
 import {
   isBackgroundCommandOutput,
@@ -85,6 +92,7 @@ import McpTool from '../tool_outputs/McpTool.vue'
 import ProgressiveTool from '../tool_outputs/ProgressiveTool.vue'
 import SubAgentPeekHost from '../nalar/SubAgentPeekHost.vue'
 import ChatRightSidebar from './chat_right_sidebar/ChatRightSidebar.vue'
+import ChatAppBar from './ChatAppBar.vue'
 import CenterDiffSection from './chat_right_sidebar/CenterDiffSection.vue'
 import { copyTextToClipboard } from './chat_right_sidebar/DiffCommentBox.vue'
 import {
@@ -123,14 +131,13 @@ const props = defineProps<{
   type?: 'chat' | 'task'
   cwd?: string
   /**
-   * When true, render the compact header bar (chat name + ✕ close
-   * button) above the messages. The host (AppLayout) sets this to
-   * true in the 3-column layout (sidebar | kanban | chatview) so
-   * the user can identify + close the chat without leaving the
-   * kanban. In the full-width standalone chat layout (the
-   * `/app?view=chat` route) the prop is left false, preserving the
-   * original "no header" experience where the chat fills the
-   * viewport edge-to-edge.
+   * When true, render the shared chat app bar (ChatAppBar.vue —
+   * chat name + `◫` sidebar toggle + `✕` close) above the
+   * messages. Every task-chat host sets this so all three
+   * workspace-item modes (kanban / agent / standard folder-chat)
+   * get the identical bar; the standalone `chat-<id>` branch
+   * leaves it false so a bare chat still fills the viewport
+   * edge-to-edge.
    *
    * Defaults to `false` so older call sites that don't supply it
    * still compile — see the nalar-frontend-task-literal-typing-rule
@@ -1124,6 +1131,18 @@ const isInitializing = computed(
 )
 const hasMoreMessages = ref(true)
 const isAtBottom = ref(true)
+// "The server has answered, and the answer was: zero messages."
+//
+// The empty state must be gated on this, not on `messageGroups.length === 0`
+// alone. Before it existed, ANY state that wasn't actively loading — a failed
+// fetch, a mid-retry window, a not-yet-assigned session — rendered
+// "How can I help you?" for sessions with hundreds of messages. The
+// distinction that matters to the reader is "empty" vs "not known yet", and
+// only a completed load can tell us which one we are looking at.
+//
+// Reset to false at the start of every load and set true only when an attempt
+// completes without throwing.
+const historyConfirmed = ref(false)
 
 // File previews render inline inside the chat bubble
 // (see PresentFiles.vue + PreviewContentRenderer.vue). There is no
@@ -2688,21 +2707,18 @@ const applyDeltaExtra = (extra: {
 }
 
 /**
- * Initial load / refresh (the old `loadChatHistory(false)`).
+ * One attempt at the initial load: cache-first paint, then the network page.
  *
- * The `loadMore` branch that used to live here moved to `maybeLoadOlder` /
- * `commitOlderPage`; this function no longer has a `loadMore` parameter, so the
- * two scroll-back call sites can no longer accidentally take the slow path.
+ * Split out of `loadChatHistory` so the retry loop can re-run the WHOLE
+ * attempt (cache-prime included) after a failed network fetch. It fails —
+ * the caller's error channel is the only place that decides what a failed
+ * transcript means, and it must never be "this session is empty".
+ *
+ * The body is still promise-shaped (it awaits IndexedDB reads and the
+ * network page); `runHistoryLoadAttemptEffect` is the one place that bridges
+ * it onto the Effect seam.
  */
-const loadChatHistory = async () => {
-  if (!sessionId.value || isPendingSession.value) return
-
-  isLoading.value = true
-  messageCursor.value = null
-  // Invalidate anything armed for the previous view of this session.
-  resetOlderPrefetch('refresh')
-  error.value = null
-
+const runHistoryLoadAttempt = async () => {
   // Cached mount: paint stored full-fidelity raws instantly (same mapper as
   // the network path, so no shape drift), restore the cursor from sync_state,
   // then refresh just the tail with cursor+asc. Miss/IDB failure falls
@@ -2734,6 +2750,9 @@ const loadChatHistory = async () => {
       } finally {
         isInitialLoad = false
       }
+      // The cache painted rows, so the empty state is already ruled out — but
+      // the tail delta below has not answered yet, so `historyConfirmed`
+      // waits for it. A cached mount is still a "not known yet" state.
       isLoading.value = false
       await nextTick()
       scrollToBottom(true, 'cached-mount')
@@ -2758,6 +2777,10 @@ const loadChatHistory = async () => {
       } catch {
         // Painted cache stands; the next mount retries the tail.
       }
+      // Painted rows exist either way, so "this session is empty" is now
+      // ruled out — the empty state may be shown again if the session is
+      // later reloaded.
+      historyConfirmed.value = true
       setupCodeBlockCopyButtons()
       void rehydrateSubAgentProgress()
       return
@@ -2766,142 +2789,150 @@ const loadChatHistory = async () => {
     // Ignore — network path below is authoritative.
   }
 
+  // `fetchChatHistoryEffect`, not `getChatHistory`: the latter answers a
+  // failed fetch with an empty transcript, which is exactly the "this session
+  // has no messages" lie the empty state would then render. Here the failure
+  // is a `ChatHistoryError` on the error channel; `runPromise` re-raises it
+  // and `runHistoryLoadAttemptEffect` re-types it for the retry loop.
+  const data = await Effect.runPromise(
+    api.fetchChatHistoryEffect(
+      sessionId.value,
+      PAGE_SIZE,
+      undefined,
+      'desc',
+      INITIAL_HISTORY_TIMEOUT_MS,
+    ),
+  )
+
+  if (data.cwd) {
+    sessionCwd.value = data.cwd
+  }
+
+  if (data.git_worktree_cwd !== undefined) {
+    gitWorktreeCwd.value = data.git_worktree_cwd
+  }
+
+  // Attached-PR binding for the sidebar's PR-changes mode. Loaded
+  // here (mount) and re-synced by refreshWorktreeBinding() so a
+  // mid-chat attach/clear flips the panel without a reload.
+  if (data.pr_url !== undefined) {
+    chatPrUrl.value = data.pr_url ?? ''
+  }
+  if (data.pr_provider !== undefined) {
+    chatPrProvider.value = data.pr_provider ?? ''
+  }
+
+  // 2026-08-07-profile-persist-read — load the persisted profile
+  // selection from the messages endpoint response. The watch on
+  // sessionId.value (below) ALSO reads it from getSession() (which
+  // calls the same endpoint), but the watch is `immediate: false`
+  // and races with loadChatHistory on initial mount. Reading it here
+  // is the authoritative source: whichever finishes first, the value
+  // is the same. The watch's later update will agree and not clobber.
+  if (data.selected_profile_model !== undefined) {
+    selectedProfile.value = data.selected_profile_model || null
+  }
+
+  if (data.max_total_tokens !== undefined) {
+    maxTotalTokens.value = data.max_total_tokens
+  }
+  if (data.max_capacity_total_tokens !== undefined) {
+    maxCapacityTotalTokens.value = data.max_capacity_total_tokens
+  }
+  sessionSkills.value = data.skills || []
+
+  const newMessages = toChatMessages(data.messages)
+
+  // Initial load path. Set isInitialLoad BEFORE the messages
+  // assignment so the messages-length watcher's sync callback
+  // sees the flag and skips its own scrollToBottom (which would
+  // yank the user back to the bottom right after we restore a
+  // saved position).
+  isInitialLoad = true
   try {
-    const data = await api.getChatHistory(sessionId.value, PAGE_SIZE, undefined)
-
-    if (data.cwd) {
-      sessionCwd.value = data.cwd
-    }
-
-    if (data.git_worktree_cwd !== undefined) {
-      gitWorktreeCwd.value = data.git_worktree_cwd
-    }
-
-    // Attached-PR binding for the sidebar's PR-changes mode. Loaded
-    // here (mount) and re-synced by refreshWorktreeBinding() so a
-    // mid-chat attach/clear flips the panel without a reload.
-    if (data.pr_url !== undefined) {
-      chatPrUrl.value = data.pr_url ?? ''
-    }
-    if (data.pr_provider !== undefined) {
-      chatPrProvider.value = data.pr_provider ?? ''
-    }
-
-    // 2026-08-07-profile-persist-read — load the persisted profile
-    // selection from the messages endpoint response. The watch on
-    // sessionId.value (below) ALSO reads it from getSession() (which
-    // calls the same endpoint), but the watch is `immediate: false`
-    // and races with loadChatHistory on initial mount. Reading it here
-    // is the authoritative source: whichever finishes first, the value
-    // is the same. The watch's later update will agree and not clobber.
-    if (data.selected_profile_model !== undefined) {
-      selectedProfile.value = data.selected_profile_model || null
-    }
-
-    if (data.max_total_tokens !== undefined) {
-      maxTotalTokens.value = data.max_total_tokens
-    }
-    if (data.max_capacity_total_tokens !== undefined) {
-      maxCapacityTotalTokens.value = data.max_capacity_total_tokens
-    }
-    sessionSkills.value = data.skills || []
-
-    const newMessages = toChatMessages(data.messages)
-
-    // Initial load path. Set isInitialLoad BEFORE the messages
-    // assignment so the messages-length watcher's sync callback
-    // sees the flag and skips its own scrollToBottom (which would
-    // yank the user back to the bottom right after we restore a
-    // saved position).
-    isInitialLoad = true
+    const liveMessagesAtCommit = currentLiveMessages()
+    messages.value = mergeMessagesById(newMessages.slice().reverse(), liveMessagesAtCommit)
+    messageCursor.value = data.next_cursor
+    hasMoreMessages.value = data.has_more
+    // Write-through: persist full server rows so the next mount paints
+    // from cache. Best-effort — IDB failure keeps in-memory behavior.
     try {
-      const liveMessagesAtCommit = currentLiveMessages()
-      messages.value = mergeMessagesById(newMessages.slice().reverse(), liveMessagesAtCommit)
-      messageCursor.value = data.next_cursor
-      hasMoreMessages.value = data.has_more
-      // Write-through: persist full server rows so the next mount paints
-      // from cache. Best-effort — IDB failure keeps in-memory behavior.
-      try {
-        const sid = sessionId.value
-        const allRows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
-        const rows = allRows.filter((row) => !liveMessageIds.has(row.id))
-        await runSyncVoid(chatEngineDb.putLocal(sid, rows), 'messages.putLocal')
-        // Sync cursor must be the newest row, not the pagination cursor:
-        // the backend omits next_cursor when has_more is false (wiping the
-        // cursor to null), and on a full page it points at the oldest row
-        // (re-fetching the same page next mount). Either way the next mount
-        // degrades to a full desc limit=1000 load.
-        if (rows.length === allRows.length) {
-          await runSyncVoid(
-            chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null)),
-            'messages.setCursor',
-          )
-        }
-      } catch {
-        // Ignore — cache is advisory on write.
+      const sid = sessionId.value
+      const allRows = (data.messages ?? []).map((m) => toChatMessage(sid, m))
+      const rows = allRows.filter((row) => !liveMessageIds.has(row.id))
+      await runSyncVoid(chatEngineDb.putLocal(sid, rows), 'messages.putLocal')
+      // Sync cursor must be the newest row, not the pagination cursor:
+      // the backend omits next_cursor when has_more is false (wiping the
+      // cursor to null), and on a full page it points at the oldest row
+      // (re-fetching the same page next mount). Either way the next mount
+      // degrades to a full desc limit=1000 load.
+      if (rows.length === allRows.length) {
+        await runSyncVoid(
+          chatEngineDb.setCursor(sid, newestCursor(allRows, data.next_cursor ?? null, null)),
+          'messages.setCursor',
+        )
       }
+    } catch {
+      // Ignore — cache is advisory on write.
+    }
 
-      const initialContainer = virtualScrollerRef.value?.containerRef
-      const initialCtx = buildScrollContext(initialContainer, {
-        chatId: sessionId.value || props.chatId,
-        messages: messages.value.length,
-        isAtBottom: isAtBottom.value,
-        virtualScrollerRef,
-        wrapperRef: messagesWrapperRef,
-      })
+    const initialContainer = virtualScrollerRef.value?.containerRef
+    const initialCtx = buildScrollContext(initialContainer, {
+      chatId: sessionId.value || props.chatId,
+      messages: messages.value.length,
+      isAtBottom: isAtBottom.value,
+      virtualScrollerRef,
+      wrapperRef: messagesWrapperRef,
+    })
+    scrollLogger.info({
+      ...initialCtx,
+      caller: 'loadChatHistory',
+      reason: 'scroll-to-bottom-forced',
+      extra: { trigger: 'initial-load' },
+    })
+    await nextTick()
+    // Wait one paint frame so the browser has actually laid out the
+    // VirtualScroller items (nextTick alone only waits for Vue's DOM
+    // update, not for layout/paint). After this, the MutationObserver
+    // set up in onMounted takes over: whenever spacers resize (from
+    // measurement updates) it'll re-stick to the bottom as long as the
+    // user hasn't scrolled up.
+    await new Promise<void>((r) => requestAnimationFrame(() => r()))
+
+    // Try to restore the user's previous scroll position (set by
+    // useChatScrollRestore when they last closed this task). If
+    // no saved position exists OR the saved position is "near
+    // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
+    // returns null and we fall through to the existing
+    // scrollToBottom behavior. This is the chat-specific
+    // counterpart of the kanban composable's restore-on-mount
+    // path.
+    const savedScrollTop = chatScrollRestore.restore()
+    if (savedScrollTop !== null) {
+      scrollLogger.markProgrammatic()
+      virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
       scrollLogger.info({
         ...initialCtx,
         caller: 'loadChatHistory',
-        reason: 'scroll-to-bottom-forced',
-        extra: { trigger: 'initial-load' },
+        reason: 'scroll-position-restored',
+        extra: { savedScrollTop, trigger: 'initial-load' },
       })
-      await nextTick()
-      // Wait one paint frame so the browser has actually laid out the
-      // VirtualScroller items (nextTick alone only waits for Vue's DOM
-      // update, not for layout/paint). After this, the MutationObserver
-      // set up in onMounted takes over: whenever spacers resize (from
-      // measurement updates) it'll re-stick to the bottom as long as the
-      // user hasn't scrolled up.
-      await new Promise<void>((r) => requestAnimationFrame(() => r()))
-
-      // Try to restore the user's previous scroll position (set by
-      // useChatScrollRestore when they last closed this task). If
-      // no saved position exists OR the saved position is "near
-      // bottom" (within BOTTOM_THRESHOLD_PX of max), restore()
-      // returns null and we fall through to the existing
-      // scrollToBottom behavior. This is the chat-specific
-      // counterpart of the kanban composable's restore-on-mount
-      // path.
-      const savedScrollTop = chatScrollRestore.restore()
-      if (savedScrollTop !== null) {
-        scrollLogger.markProgrammatic()
-        virtualScrollerRef.value?.scrollToPosition(savedScrollTop, 'auto')
-        scrollLogger.info({
-          ...initialCtx,
-          caller: 'loadChatHistory',
-          reason: 'scroll-position-restored',
-          extra: { savedScrollTop, trigger: 'initial-load' },
-        })
-      } else {
-        scrollToBottom(true, 'initial-load')
-      }
-
-      setupCodeBlockCopyButtons()
-      // 2026-09-04 spawn-subagent-refresh-persist
-      // (task_1788505292766_1) — rehydrate live sub-agent rows after
-      // a (re)load. Fire-and-forget: the map update re-renders cards
-      // when snapshots land; failures keep Task 0's "starting…".
-      void rehydrateSubAgentProgress()
-    } finally {
-      isInitialLoad = false
+    } else {
+      scrollToBottom(true, 'initial-load')
     }
-  } catch (err) {
-    console.error('Failed to load chat history:', err)
-    error.value = 'Failed to load messages'
-    messages.value = []
+
+    setupCodeBlockCopyButtons()
+    // 2026-09-04 spawn-subagent-refresh-persist
+    // (task_1788505292766_1) — rehydrate live sub-agent rows after
+    // a (re)load. Fire-and-forget: the map update re-renders cards
+    // when snapshots land; failures keep Task 0's "starting…".
+    void rehydrateSubAgentProgress()
   } finally {
-    isLoading.value = false
+    isInitialLoad = false
   }
+  // The server answered. Whether the answer was "0 messages" or "500", the
+  // empty state is now allowed to consider rendering.
+  historyConfirmed.value = true
 
   // NOTE — deliberately NO prefetch evaluation here.
   //
@@ -2916,6 +2947,72 @@ const loadChatHistory = async () => {
   // The arm therefore waits for the first real user scroll event, which is also
   // when the prefetch is actually useful. A chat restored to a position near
   // the top arms on its first upward scroll — still ~1.5 viewports early.
+}
+
+/**
+ * The promise-shaped attempt above, as an `Effect`.
+ *
+ * `Effect.tryPromise` is the sanctioned bridge (see `sync/SessionEngineDb.ts`
+ * for the same shape): it is where a rejection becomes a typed
+ * `ChatHistoryError` instead of an unhandled throw, so the retry loop and the
+ * error state can both see it.
+ */
+const runHistoryLoadAttemptEffect = (): Effect.Effect<void, ChatHistoryError> =>
+  Effect.tryPromise({
+    try: runHistoryLoadAttempt,
+    catch: (cause) =>
+      new ChatHistoryError({
+        sessionId: sessionId.value,
+        reason: cause instanceof Error ? cause.message : String(cause),
+      }),
+  })
+
+/**
+ * Initial load / refresh (the old `loadChatHistory(false)`).
+ *
+ * Wraps `runHistoryLoadAttempt` in the retry schedule, then decides what a
+ * fully-failed load means. Two invariants this owns:
+ *
+ *   1. `isLoading` stays true across every attempt, so `isInitializing` keeps
+ *      the skeleton up and the composer disabled for the whole wait. The user
+ *      sees "still loading" — never a transcript that claims to be empty.
+ *   2. `historyConfirmed` is only set by a SUCCESSFUL attempt, so the empty
+ *      state cannot render off a failed fetch. A fully-failed load lands in
+ *      the error state with its Retry button.
+ *
+ * The `loadMore` branch that used to live here moved to `maybeLoadOlder` /
+ * `commitOlderPage`; this function no longer has a `loadMore` parameter, so the
+ * two scroll-back call sites can no longer accidentally take the slow path.
+ */
+const loadChatHistory = async () => {
+  if (!sessionId.value || isPendingSession.value) return
+
+  isLoading.value = true
+  messageCursor.value = null
+  // Invalidate anything armed for the previous view of this session.
+  resetOlderPrefetch('refresh')
+  error.value = null
+  // "Not known yet" until an attempt completes.
+  historyConfirmed.value = false
+
+  // No try/catch: `ensuring` is the finally, `tapError` is the catch, and both
+  // are typed against the error channel. See AGENTS.md, "Frontend — No
+  // `try`/`catch` in the desktop app; use Effect-TS".
+  await runEffectExit(
+    Effect.ensuring(
+      Effect.tapError(fetchInitialHistoryWithRetry(runHistoryLoadAttemptEffect), (err) =>
+        Effect.sync(() => {
+          console.error('Failed to load chat history:', err)
+          error.value = 'Failed to load messages'
+          messages.value = []
+        }),
+      ),
+      Effect.sync(() => {
+        isLoading.value = false
+      }),
+    ),
+    'history.load',
+  )
 }
 
 // ─── Scroll ──────────────────────────────────────────────────────────────────
@@ -2960,6 +3057,36 @@ const scrollToBottom = async (force = false, trigger: string = 'unspecified') =>
       virtualScrollerRef.value.scrollToBottom('auto')
     }
   }
+}
+
+// ─── Follow the newest turn ──────────────────────────────────────────────────
+//
+// "Take me to the newest turn", as an explicit act by the reader rather than an
+// inference from where they happen to be sitting. Sending and queueing are
+// that act: the reader is looking at history, they ask for a turn, and the turn
+// they asked for is what they should be looking at.
+//
+// It has to re-arm `isAtBottom` and not merely pass `force = true`, because
+// `isAtBottom` is what three separate gates read afterwards — the
+// `messages.length` watcher returns early without it, `onContentShift` skips,
+// and a non-forced `scrollToBottom` does nothing. A reader scrolled up into
+// history is `isAtBottom === false` by definition, and there is no optimistic
+// push (see `handleFileInputSubmit`), so the turn that answers the send arrives
+// over SSE a frame or two later and is exactly the content those gates are
+// there to follow.
+//
+// A forced scroll alone cannot do this. It writes `container.scrollTop` and
+// leaves the flag to the native `scroll` event that follows — and the browser
+// fires none when the write is a no-op, which is the common case here: the
+// scroller's sizer already reports a max scrollTop that the container is
+// sitting at. The flag then stays false and the turn lands below the fold with
+// nothing left to bring it up. Setting the flag first is what makes the
+// follow deterministic instead of a race with an event that may not come.
+const followNewestTurn = (trigger: string) => {
+  isAtBottom.value = true
+  lastAutoStickAt.value = Date.now()
+  scrollLogger.markProgrammatic()
+  scrollToBottom(true, trigger)
 }
 
 // Triggered by VirtualScroller when the user scrolls within `loadMoreThreshold`
@@ -3812,6 +3939,13 @@ const connectSse = () => {
         id: event.id ?? `q-${Date.now()}`,
         message: event.message,
       })
+      // A queued turn renders no transcript row — it is only ever a row in the
+      // composer's queue panel — so nothing in `messages` grows and none of
+      // the auto-stick triggers fire. The row that finally reaches the
+      // transcript is the live worker draining this turn, which can be minutes
+      // away, and by then the reader may well have scrolled off the end. Arm
+      // the follow now, at the moment they asked for the turn.
+      followNewestTurn('queue-queued')
     } else if (event.action === 'deleted') {
       queuedMessages.value = queuedMessages.value.filter((m) => m.id !== event.id)
     }
@@ -4127,7 +4261,7 @@ watch(
 
 const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
   await nextTick()
-  scrollToBottom(true, 'send-message')
+  followNewestTurn('send-message')
 
   const currentSessionId = sessionId.value
 
@@ -4196,6 +4330,12 @@ const handleFileInputSubmit = async (userMessage: string, files?: File[]) => {
     })
   } finally {
     isSendingAttachments.value = false
+    // The first pin aimed at the bottom of the transcript as it stood BEFORE
+    // this turn — there is no optimistic push, so the turn is still in flight
+    // at this point and the bottom moves when it renders. Pin again against
+    // the settled position so the turn the server accepted is the one on
+    // screen, whether it arrived over SSE or was pushed here as an error card.
+    followNewestTurn('send-message-settled')
   }
 }
 
@@ -4273,57 +4413,32 @@ const compactSession = async () => {
     -->
     <div :ref="setChatColumnEl" class="relative flex flex-col h-full flex-1 min-w-0 chat-column">
       <!--
-        Chat header. Rendered only when the parent passed the
-        `showHeader` prop (the kanban 3-column layout sets it; the
-        full-width standalone chat layout leaves it false so the
-        existing "no header" experience is preserved). When shown,
-        it includes the chat name (so the user can see which task
-        they're chatting with when the kanban + chat are side by
-        side) and a ✕ button that emits `close` to the host. The
-        host (AppLayout) handles the actual navigation / state
+        Chat app bar. Rendered only when the parent passed the
+        `showHeader` prop. Every task-chat host sets it (kanban
+        branch, AgentChatView, StandardTaskChatView) so all three
+        workspace-item modes get the identical bar; the standalone
+        `chat-<id>` branch leaves it false so a bare chat still
+        fills the viewport edge-to-edge. The markup itself lives in
+        ChatAppBar.vue — the one app bar shared by every mode, so the
+        title, the sidebar toggle and the ✕ cannot drift apart again.
+        The `app-bar-extras` slot lets a host pin mode-specific bits
+        (AgentChatView's SessionSlider) into the same bar.
+        The host (AppLayout) handles the actual navigation / state
         cleanup so the ChatView stays decoupled from router + store
         concerns.
       -->
-      <header
+      <ChatAppBar
         v-if="showHeader && !embedded"
-        class="h-11 flex items-center gap-2 px-3 shrink-0"
-        style="
-          background-color: var(--semantic-sidebar-bg);
-          border-bottom: 1px solid var(--color-border);
-        "
+        :title="chatName"
+        :show-sidebar-toggle="!embedded"
         :data-chat-header="chatId"
+        @toggle-sidebar="chatSidebar.toggle()"
+        @close="emit('close')"
       >
-        <span
-          class="text-sm font-semibold truncate flex-1"
-          style="color: var(--semantic-text)"
-          :data-testid="`chat-header-name-${chatId}`"
-        >
-          {{ chatName }}
-        </span>
-        <button
-          v-if="!embedded"
-          type="button"
-          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim)"
-          title="Toggle changes sidebar (Cmd/Ctrl+B)"
-          aria-label="Toggle changes sidebar"
-          :data-testid="`chat-sidebar-toggle-${chatId}`"
-          @click="chatSidebar.toggle()"
-        >
-          ◫
-        </button>
-        <button
-          type="button"
-          class="shrink-0 w-7 h-7 rounded flex items-center justify-center text-lg hover:opacity-70 transition-opacity"
-          style="color: var(--semantic-text-dim)"
-          title="Close chat (return to kanban)"
-          aria-label="Close chat"
-          :data-testid="`chat-header-close-${chatId}`"
-          @click="emit('close')"
-        >
-          ✕
-        </button>
-      </header>
+        <template #extras>
+          <slot name="app-bar-extras" />
+        </template>
+      </ChatAppBar>
       <!-- Messages (Virtual Scroll) -->
       <!--
         The wrapper MUST be a flex container (`flex flex-col`) so the
@@ -4353,7 +4468,7 @@ const compactSession = async () => {
         <button
           v-if="!showHeader && !embedded && !chatSidebar.isOpen.value"
           type="button"
-          class="absolute top-2 right-2 z-10 w-7 h-7 rounded flex items-center justify-center text-sm hover:opacity-70 transition-opacity"
+          class="absolute top-2 right-2 z-10 w-7 h-7 rounded flex items-center justify-center text-body hover:opacity-70 transition-opacity"
           style="
             color: var(--semantic-text-dim);
             background-color: var(--semantic-card-bg);
@@ -4380,7 +4495,7 @@ const compactSession = async () => {
         <!--       class="w-4 h-4 border-2 rounded-full animate-spin" -->
         <!--       style="border-color: var(--color-violet); border-top-color: transparent" -->
         <!--     ></div> -->
-        <!--     <span class="text-sm" style="color: var(--semantic-text-dim)">Loading more...</span> -->
+        <!--     <span class="text-body" style="color: var(--semantic-text-dim)">Loading more...</span> -->
         <!--   </div> -->
         <!-- </div> -->
 
@@ -4412,10 +4527,10 @@ const compactSession = async () => {
           data-testid="chat-load-error"
           class="flex flex-col items-center justify-center h-full px-4"
         >
-          <p class="text-sm mb-3" style="color: var(--semantic-text-dim)">{{ error }}</p>
+          <p class="text-body mb-3" style="color: var(--semantic-text-dim)">{{ error }}</p>
           <button
             @click="loadChatHistory()"
-            class="px-4 py-1.5 rounded-full text-xs"
+            class="px-4 py-1.5 rounded-full text-dense"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -4426,21 +4541,33 @@ const compactSession = async () => {
           </button>
         </div>
 
-        <!-- Empty State -->
+        <!-- Empty State --
+             Gated on `historyConfirmed`, NOT on "there are no messages".
+             "Zero messages" and "we have not been told yet" are different
+             states and only a completed load can tell them apart: before
+             this gate, a slow or erroring backend — whose failure used to
+             be swallowed into an empty transcript — rendered "How can I
+             help you?" for sessions full of messages. -->
         <div
-          v-if="!isInitializing && !isLoading && !error && messageGroups.length === 0"
+          v-if="
+            historyConfirmed &&
+            !isInitializing &&
+            !isLoading &&
+            !error &&
+            messageGroups.length === 0
+          "
           class="flex flex-col items-center justify-center h-full px-4"
         >
           <div
-            class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-3xl"
+            class="w-16 h-16 rounded-2xl mb-4 flex items-center justify-center text-display"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue))"
           >
             💬
           </div>
-          <h3 class="text-lg font-medium mb-2" style="color: var(--semantic-text)">
+          <h3 class="text-title-sm font-medium mb-2" style="color: var(--semantic-text)">
             How can I help you?
           </h3>
-          <p class="text-sm text-center" style="color: var(--semantic-text-dim)">
+          <p class="text-body text-center" style="color: var(--semantic-text-dim)">
             Start a conversation by typing a message below
           </p>
         </div>
@@ -4484,7 +4611,7 @@ const compactSession = async () => {
         >
           <button
             @click="maybeLoadOlder('manual')"
-            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-xs transition-all duration-200 hover:scale-105"
+            class="flex items-center gap-2 px-4 py-1.5 rounded-full text-dense transition-all duration-200 hover:scale-105"
             style="
               background-color: var(--semantic-card-bg);
               border: 1px solid var(--color-border);
@@ -4567,7 +4694,7 @@ const compactSession = async () => {
                 >
                   <div
                     v-if="hasBubbleContent(group, groupIndex)"
-                    class="text-sm leading-relaxed"
+                    class="text-body leading-relaxed"
                     role="button"
                     tabindex="0"
                     :class="
@@ -5011,13 +5138,13 @@ const compactSession = async () => {
                       >
                         <details class="assistant-reasoning">
                           <summary
-                            class="cursor-pointer select-none text-xs font-medium opacity-70 hover:opacity-100"
+                            class="cursor-pointer select-none text-dense font-medium opacity-70 hover:opacity-100"
                             :style="{ color: 'var(--semantic-text-dim)' }"
                           >
                             Thought
                           </summary>
                           <div
-                            class="mt-1 whitespace-pre-wrap text-xs leading-relaxed opacity-80 border-l-2 pl-3"
+                            class="mt-1 whitespace-pre-wrap text-dense leading-relaxed opacity-80 border-l-2 pl-3"
                             :style="{
                               color: 'var(--semantic-text-dim)',
                               'border-color': 'var(--color-border)',
@@ -5083,7 +5210,7 @@ const compactSession = async () => {
                        bubble" visual artifact between tool calls). -->
                   <!-- <div -->
                   <!--   v-if="hasBubbleContent(group, groupIndex)" -->
-                  <!--   class="text-xs mt-1 px-1" -->
+                  <!--   class="text-dense mt-1 px-1" -->
                   <!--   :class="group.role === 'user' ? 'text-right' : 'text-left'" -->
                   <!--   style="color: var(--semantic-text-dim)" -->
                   <!-- > -->
@@ -5259,7 +5386,7 @@ const compactSession = async () => {
                       :title="profileChipTooltip"
                     >
                       <span>{{ effectiveProfile ?? 'Default' }}</span>
-                      <span class="text-[10px]">▾</span>
+                      <span class="text-micro">▾</span>
                     </button>
                     <div
                       v-if="showProfilePicker"
@@ -5271,7 +5398,7 @@ const compactSession = async () => {
                     >
                       <button
                         @click="selectProfile(null)"
-                        class="w-full text-left px-3 py-2 text-xs hover:opacity-80 flex items-center justify-between"
+                        class="w-full text-left px-3 py-2 text-dense hover:opacity-80 flex items-center justify-between"
                         style="color: var(--semantic-text)"
                         data-testid="profile-picker-default"
                       >
@@ -5282,7 +5409,7 @@ const compactSession = async () => {
                         v-for="p in availableProfiles"
                         :key="p.name"
                         @click="selectProfile(p.name)"
-                        class="w-full text-left px-3 py-2 text-xs hover:opacity-80"
+                        class="w-full text-left px-3 py-2 text-dense hover:opacity-80"
                         style="
                           color: var(--semantic-text);
                           border-top: 1px solid var(--color-border);
@@ -5294,7 +5421,7 @@ const compactSession = async () => {
                             {{ p.name }}
                             <span
                               v-if="activeProfile === p.name"
-                              class="text-[10px] ml-1 px-1 py-0.5 rounded"
+                              class="text-micro ml-1 px-1 py-0.5 rounded"
                               :style="{ backgroundColor: 'var(--color-violet)', color: '#181616' }"
                               data-testid="profile-picker-active-badge"
                               >(active)</span
@@ -5302,13 +5429,13 @@ const compactSession = async () => {
                           </span>
                           <span v-if="effectiveProfile === p.name">✓</span>
                         </div>
-                        <div class="text-[10px] mt-0.5" style="color: var(--semantic-text-muted)">
+                        <div class="text-micro mt-0.5" style="color: var(--semantic-text-muted)">
                           {{ p.model }} · {{ p.base_url }}
                         </div>
                       </button>
                       <div
                         v-if="availableProfiles.length === 0"
-                        class="px-3 py-2 text-xs"
+                        class="px-3 py-2 text-dense"
                         style="color: var(--semantic-text-muted)"
                       >
                         No profiles configured. Add one in Settings.
@@ -5371,7 +5498,7 @@ const compactSession = async () => {
                       }}</span>
                       <span v-if="!gitStatus.is_clean" style="color: var(--color-orange)">●</span>
                       <span v-else style="color: var(--color-green)">✓</span>
-                      <span class="text-[10px]">▾</span>
+                      <span class="text-micro">▾</span>
                     </button>
                     <WorktreeMenu
                       v-if="showWorktreeMenu"
@@ -5421,7 +5548,7 @@ const compactSession = async () => {
         >
           <button
             type="button"
-            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            class="text-dense px-2 py-1 rounded hover:opacity-70"
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-back"
             @click="onCenterDiffBack"
@@ -5429,7 +5556,7 @@ const compactSession = async () => {
             ← Back to chat
           </button>
           <span
-            class="text-xs truncate flex-1"
+            class="text-dense truncate flex-1"
             style="color: var(--semantic-text-dim)"
             data-testid="chat-center-diff-count"
           >
@@ -5438,7 +5565,7 @@ const compactSession = async () => {
           <button
             v-if="reviewCommentsForDiff.length > 0"
             type="button"
-            class="text-xs px-2 py-1 rounded hover:opacity-70"
+            class="text-dense px-2 py-1 rounded hover:opacity-70"
             style="color: var(--color-blue)"
             data-testid="chat-center-diff-copy-all"
             @click="copyAllReviewComments"
@@ -5447,7 +5574,7 @@ const compactSession = async () => {
           </button>
           <span
             v-if="copiedAllReviews"
-            class="text-xs"
+            class="text-dense"
             style="color: var(--color-green)"
             data-testid="chat-center-diff-copied-all"
           >
@@ -5602,7 +5729,7 @@ const compactSession = async () => {
   border-radius: 0.375rem;
   margin: 0.25rem 0;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   line-height: 1.5;
 }
 
@@ -5637,7 +5764,7 @@ const compactSession = async () => {
 
 :deep(.file-path) {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   padding: 0.25rem 0.5rem;
   background-color: rgba(139, 92, 246, 0.1);
   border-radius: 0.25rem;
@@ -5647,14 +5774,14 @@ const compactSession = async () => {
 
 :deep(.search-file) {
   font-weight: 600;
-  font-size: 0.875rem;
+  font-size: var(--text-body);
   color: var(--color-violet);
   margin-top: 0.5rem;
 }
 
 :deep(.search-line) {
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   padding: 0.125rem 0.5rem;
 }
 
@@ -5674,7 +5801,7 @@ const compactSession = async () => {
 :deep(.file-content) {
   margin-top: 0.25rem;
   font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 0.8125rem;
+  font-size: var(--text-dense);
   line-height: 1.5;
   background-color: rgba(0, 0, 0, 0.04);
   border-radius: 0.375rem;
@@ -5738,7 +5865,7 @@ const compactSession = async () => {
   align-items: center;
   gap: 0.35rem;
   color: var(--color-violet);
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-family: var(--font-mono);
@@ -5757,19 +5884,19 @@ const compactSession = async () => {
   background-color: var(--color-bg-p2);
   border: 1px solid var(--color-border-light);
   border-radius: 9999px;
-  font-size: 0.75rem;
+  font-size: var(--text-dense);
   font-family: var(--font-mono);
   color: var(--color-aqua);
 }
 
 :deep(.tool-inline) {
-  font-size: 0.8rem;
+  font-size: var(--text-dense);
   color: var(--color-violet);
   font-family: monospace;
 }
 
 :deep(.tool-inline-result) {
-  font-size: 0.8rem;
+  font-size: var(--text-dense);
   color: var(--semantic-text-dim);
   font-family: monospace;
 }
@@ -6059,7 +6186,7 @@ const compactSession = async () => {
   gap: 6px;
   padding: 6px 8px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: var(--text-dense);
   font-weight: 500;
   color: var(--semantic-text-dim);
   background: transparent;
@@ -6099,7 +6226,7 @@ const compactSession = async () => {
   align-items: center;
   gap: 6px;
   padding: 6px 4px;
-  font-size: 12px;
+  font-size: var(--text-dense);
   color: var(--semantic-text-dim);
   white-space: nowrap;
 }

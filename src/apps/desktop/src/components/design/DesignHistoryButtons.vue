@@ -40,7 +40,7 @@ function handleRedo(): void {
   <div class="design-history-buttons flex items-center gap-1" data-testid="design-history-buttons">
     <button
       type="button"
-      class="px-2 py-1 rounded text-xs flex items-center gap-1"
+      class="px-2 py-1 rounded text-dense flex items-center gap-1"
       style="background: var(--color-border); color: var(--semantic-text);"
       :disabled="!history.canUndo.value"
       :title="history.nextUndoLabel.value ? `Undo: ${history.nextUndoLabel.value}` : 'Undo'"
@@ -52,7 +52,7 @@ function handleRedo(): void {
     </button>
     <button
       type="button"
-      class="px-2 py-1 rounded text-xs flex items-center gap-1"
+      class="px-2 py-1 rounded text-dense flex items-center gap-1"
       style="background: var(--color-border); color: var(--semantic-text);"
       :disabled="!history.canRedo.value"
       :title="history.nextRedoLabel.value ? `Redo: ${history.nextRedoLabel.value}` : 'Redo'"

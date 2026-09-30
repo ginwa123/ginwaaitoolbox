@@ -183,83 +183,83 @@ function dispatchReorder(item: typeof reorderItems.value[number]): void {
     >
       <button
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
         style="color: var(--semantic-text);"
         :disabled="!canGroup"
         data-testid="design-context-menu-group"
         @click="emit('group', [...targetIds])"
       >
         <span>Group selection</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘G', 'Ctrl+G') }}</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">{{ acc('⌘G', 'Ctrl+G') }}</span>
       </button>
       <button
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
         style="color: var(--semantic-text);"
         :disabled="!canLeaveGroup"
         data-testid="design-context-menu-leave-group"
         @click="emit('leaveGroup', targetIds[0]!)"
       >
         <span>Leave group</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">&nbsp;</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">&nbsp;</span>
       </button>
       <button
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
         style="color: var(--semantic-text);"
         :disabled="!canUngroup"
         data-testid="design-context-menu-ungroup"
         @click="emit('ungroup', targetIds[0]!)"
       >
         <span>Ungroup</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘⇧G', 'Ctrl+Shift+G') }}</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">{{ acc('⌘⇧G', 'Ctrl+Shift+G') }}</span>
       </button>
       <button
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between"
         style="color: var(--semantic-text);"
         data-testid="design-context-menu-select-all"
         @click="emit('selectAll')"
       >
         <span>Select all</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌘A', 'Ctrl+A') }}</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">{{ acc('⌘A', 'Ctrl+A') }}</span>
       </button>
       <div class="h-px my-1" style="background-color: var(--color-border);" data-testid="design-context-menu-separator-1" />
       <button
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
         style="color: var(--semantic-text);"
         :disabled="!canMoveToPage"
         data-testid="design-context-menu-move-to-page"
         @click="emit('moveToPage', targetIds[0]!)"
       >
         <span>Move to page...</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">&nbsp;</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">&nbsp;</span>
       </button>
       <button
         v-for="item in reorderItems"
         :key="item.id"
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
         style="color: var(--semantic-text);"
         :disabled="!hasSelection"
         :data-testid="`design-context-menu-${item.id}`"
         @click="dispatchReorder(item)"
       >
         <span>{{ item.label }}</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">{{ item.acc }}</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">{{ item.acc }}</span>
       </button>
       <div class="h-px my-1" style="background-color: var(--color-border);" data-testid="design-context-menu-separator-2" />
       <button
         type="button"
-        class="w-full px-4 py-2 text-sm text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
+        class="w-full px-4 py-2 text-body text-left transition-colors hover:opacity-80 flex items-center justify-between disabled:opacity-50 disabled:cursor-not-allowed"
         style="color: var(--semantic-text);"
         :disabled="!hasSelection"
         data-testid="design-context-menu-delete"
         @click="emit('delete', [...targetIds])"
       >
         <span>Delete</span>
-        <span class="text-xs" style="color: var(--semantic-text-dim);">{{ acc('⌫', 'Del') }}</span>
+        <span class="text-dense" style="color: var(--semantic-text-dim);">{{ acc('⌫', 'Del') }}</span>
       </button>
     </div>
   </Teleport>

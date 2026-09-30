@@ -1941,7 +1941,7 @@ watch(
       data-testid="design-toolbar"
     >
       <div
-        class="text-xs font-medium truncate"
+        class="text-dense font-medium truncate"
         style="color: var(--semantic-text-dim);"
         :title="item.name"
       >
@@ -1950,7 +1950,7 @@ watch(
       <div class="flex-1" />
       <button
         type="button"
-        class="px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-opacity duration-150 hover:opacity-100"
+        class="px-2.5 py-1 rounded text-dense font-medium flex items-center gap-1.5 transition-opacity duration-150 hover:opacity-100"
         style="
           background: linear-gradient(135deg, var(--color-violet), var(--color-blue));
           color: var(--color-bg);
@@ -1978,7 +1978,7 @@ watch(
     <!-- ─── Loading state for pages ───────────────────────────────── -->
     <div
       v-if="pagesLoading"
-      class="flex-1 flex items-center justify-center text-sm"
+      class="flex-1 flex items-center justify-center text-body"
       style="color: var(--semantic-text-dim);"
       data-testid="design-pages-loading"
     >
@@ -1988,7 +1988,7 @@ watch(
     <!-- ─── Error state for pages ─────────────────────────────────── -->
     <div
       v-else-if="pagesError"
-      class="flex-1 flex items-center justify-center text-sm"
+      class="flex-1 flex items-center justify-center text-body"
       style="color: rgb(248, 113, 113);"
       data-testid="design-pages-error"
     >
@@ -2002,13 +2002,13 @@ watch(
       data-testid="design-pages-empty"
     >
       <div class="text-center">
-        <div class="text-3xl mb-2" style="color: var(--semantic-text-dim);" aria-hidden="true">▤</div>
-        <div class="text-sm mb-4" style="color: var(--semantic-text-dim);">
+        <div class="text-display mb-2" style="color: var(--semantic-text-dim);" aria-hidden="true">▤</div>
+        <div class="text-body mb-4" style="color: var(--semantic-text-dim);">
           No pages yet
         </div>
         <button
           type="button"
-          class="px-3 py-1.5 rounded-lg text-sm font-medium"
+          class="px-3 py-1.5 rounded-lg text-body font-medium"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
           @click="handleAddPage"
         >
@@ -2033,7 +2033,7 @@ watch(
           <button
             v-if="!isPreviewMode"
             type="button"
-            class="px-2 py-1 rounded text-xs font-medium"
+            class="px-2 py-1 rounded text-dense font-medium"
             style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);"
             data-testid="design-add-element-button"
             @click="openAddElementDialog"
@@ -2049,7 +2049,7 @@ watch(
           -->
           <div
             v-if="activePage"
-            class="text-xs flex-1 truncate"
+            class="text-dense flex-1 truncate"
             style="color: var(--semantic-text);"
             :title="activePage.name"
           >
@@ -2057,12 +2057,12 @@ watch(
           </div>
           <div
             v-else
-            class="text-xs flex-1"
+            class="text-dense flex-1"
             style="color: var(--semantic-text-dim);"
           >
             (no page selected)
           </div>
-          <div class="text-xs" style="color: var(--semantic-text-dim);">
+          <div class="text-dense" style="color: var(--semantic-text-dim);">
             {{ elements.length }} element{{ elements.length === 1 ? '' : 's' }}
           </div>
           <!--
@@ -2074,7 +2074,7 @@ watch(
           -->
           <button
             type="button"
-            class="px-2 py-0.5 rounded text-xs font-medium transition-colors"
+            class="px-2 py-0.5 rounded text-dense font-medium transition-colors"
             :style="isPreviewMode
               ? 'background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg); border: none;'
               : 'color: var(--semantic-text); border: 1px solid var(--color-border); opacity: 0.8;'"
@@ -2095,7 +2095,7 @@ watch(
           >
             <button
               type="button"
-              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              class="px-1.5 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80"
               style="color: var(--semantic-text); border: 1px solid var(--color-border);"
               aria-label="Zoom out (Ctrl+wheel down)"
               title="Zoom out (Ctrl+wheel down)"
@@ -2104,7 +2104,7 @@ watch(
             >−</button>
             <button
               type="button"
-              class="px-2 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80 min-w-[3.5rem] text-center"
+              class="px-2 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80 min-w-[3.5rem] text-center"
               style="color: var(--semantic-text); border: 1px solid var(--color-border);"
               :title="`Reset zoom (currently ${Math.round(zoom * 100)}%)`"
               aria-label="Reset zoom"
@@ -2113,7 +2113,7 @@ watch(
             >{{ Math.round(zoom * 100) }}%</button>
             <button
               type="button"
-              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              class="px-1.5 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80"
               style="color: var(--semantic-text); border: 1px solid var(--color-border);"
               aria-label="Fit page to viewport (shortcut: F or Shift+1)"
               title="Fit page to viewport (F or Shift+1)"
@@ -2122,7 +2122,7 @@ watch(
             >⛶</button>
             <button
               type="button"
-              class="px-1.5 py-0.5 rounded text-xs font-medium hover:opacity-100 opacity-80"
+              class="px-1.5 py-0.5 rounded text-dense font-medium hover:opacity-100 opacity-80"
               style="color: var(--semantic-text); border: 1px solid var(--color-border);"
               aria-label="Zoom in (Ctrl+wheel up)"
               title="Zoom in (Ctrl+wheel up)"
@@ -2223,12 +2223,12 @@ watch(
             </svg>
             <div
               v-if="elements.length === 0"
-              class="absolute inset-0 flex items-center justify-center text-sm pointer-events-none"
+              class="absolute inset-0 flex items-center justify-center text-body pointer-events-none"
               style="color: var(--semantic-text-dim);"
               data-testid="design-canvas-empty"
             >
               <div class="text-center">
-                <div class="text-3xl mb-2" aria-hidden="true">▢</div>
+                <div class="text-display mb-2" aria-hidden="true">▢</div>
                 <div>Click "+ Element" to add your first element</div>
               </div>
             </div>

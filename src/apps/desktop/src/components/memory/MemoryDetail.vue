@@ -205,12 +205,12 @@ defineExpose({ startCreate })
       v-if="mode === 'empty'"
       class="flex-1 flex flex-col items-center justify-center gap-4 p-6"
     >
-      <p class="text-sm" style="color: var(--semantic-text-muted);">
+      <p class="text-body" style="color: var(--semantic-text-muted);">
         Select a memory to view, or create a new one.
       </p>
       <button
         @click="startCreate"
-        class="px-4 py-2 rounded-lg text-sm font-medium"
+        class="px-4 py-2 rounded-lg text-body font-medium"
         style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
       >
         + New Memory
@@ -230,27 +230,27 @@ defineExpose({ startCreate })
 
     <!-- Error state -->
     <div v-else-if="error" class="flex-1 flex items-center justify-center">
-      <p class="text-sm" style="color: var(--color-red);">{{ error }}</p>
+      <p class="text-body" style="color: var(--color-red);">{{ error }}</p>
     </div>
 
     <!-- Create mode -->
     <div v-else-if="mode === 'create'" class="flex-1 flex flex-col overflow-hidden">
       <div class="p-4 shrink-0" style="border-bottom: 1px solid var(--color-border);">
-        <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-muted);">
+        <label class="block text-dense font-medium mb-2" style="color: var(--semantic-text-muted);">
           Name (must end in .md)
         </label>
         <input
           v-model="editName"
           type="text"
           placeholder="my-memory.md"
-          class="w-full px-3 py-2 rounded-lg border text-sm"
+          class="w-full px-3 py-2 rounded-lg border text-body"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>
       <div class="flex-1 overflow-hidden p-4 flex flex-col">
         <textarea
           v-model="editContent"
-          class="flex-1 w-full px-3 py-2 rounded-lg border text-sm font-mono resize-none"
+          class="flex-1 w-full px-3 py-2 rounded-lg border text-body font-mono resize-none"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>
@@ -261,7 +261,7 @@ defineExpose({ startCreate })
         <button
           @click="cancelCreate"
           :disabled="isSaving"
-          class="px-4 py-2 rounded-lg text-sm font-medium"
+          class="px-4 py-2 rounded-lg text-body font-medium"
           style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
         >
           Cancel
@@ -269,7 +269,7 @@ defineExpose({ startCreate })
         <button
           @click="saveCreate"
           :disabled="isSaving"
-          class="px-4 py-2 rounded-lg text-sm font-medium"
+          class="px-4 py-2 rounded-lg text-body font-medium"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
         >
           {{ isSaving ? 'Creating...' : 'Create' }}
@@ -282,9 +282,9 @@ defineExpose({ startCreate })
       <div class="p-4 shrink-0" style="border-bottom: 1px solid var(--color-border);">
         <div class="flex items-center justify-between mb-2">
           <div class="flex items-center gap-3 min-w-0">
-            <span class="text-lg">🧠</span>
+            <span class="text-title-sm">🧠</span>
             <h3
-              class="text-base font-semibold truncate"
+              class="text-lead font-semibold truncate"
               style="color: var(--semantic-text);"
             >
               {{ detail.title }}
@@ -293,7 +293,7 @@ defineExpose({ startCreate })
           <div v-if="mode === 'view'" class="flex gap-2 shrink-0">
             <button
               @click="startEdit"
-              class="px-3 py-1 text-xs rounded"
+              class="px-3 py-1 text-dense rounded"
               style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
             >
               Edit
@@ -310,7 +310,7 @@ defineExpose({ startCreate })
             </button>
           </div>
         </div>
-        <p class="text-xs truncate" style="color: var(--semantic-text-dim);">
+        <p class="text-dense truncate" style="color: var(--semantic-text-dim);">
           <span class="font-medium">Path:</span> {{ detail.path }} · {{ formatSize(detail.size) }}
         </p>
       </div>
@@ -318,13 +318,13 @@ defineExpose({ startCreate })
       <div class="flex-1 overflow-hidden p-4 flex flex-col">
         <pre
           v-if="mode === 'view'"
-          class="flex-1 overflow-y-auto text-xs p-4 rounded whitespace-pre-wrap font-mono"
+          class="flex-1 overflow-y-auto text-dense p-4 rounded whitespace-pre-wrap font-mono"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted);"
         >{{ detail.content }}</pre>
         <textarea
           v-else
           v-model="editContent"
-          class="flex-1 w-full px-3 py-2 rounded-lg border text-sm font-mono resize-none"
+          class="flex-1 w-full px-3 py-2 rounded-lg border text-body font-mono resize-none"
           style="background-color: var(--semantic-content-bg); color: var(--semantic-text); border-color: var(--color-border);"
         />
       </div>
@@ -337,7 +337,7 @@ defineExpose({ startCreate })
         <button
           @click="cancelEdit"
           :disabled="isSaving"
-          class="px-4 py-2 rounded-lg text-sm font-medium"
+          class="px-4 py-2 rounded-lg text-body font-medium"
           style="background-color: var(--semantic-card-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
         >
           Cancel
@@ -345,7 +345,7 @@ defineExpose({ startCreate })
         <button
           @click="saveEdit"
           :disabled="isSaving"
-          class="px-4 py-2 rounded-lg text-sm font-medium"
+          class="px-4 py-2 rounded-lg text-body font-medium"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
         >
           {{ isSaving ? 'Saving...' : 'Save' }}
@@ -363,17 +363,17 @@ defineExpose({ startCreate })
         class="rounded-xl p-6 max-w-sm mx-4"
         style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border);"
       >
-        <h3 class="text-base font-semibold mb-2" style="color: var(--semantic-text);">
+        <h3 class="text-lead font-semibold mb-2" style="color: var(--semantic-text);">
           Delete Memory?
         </h3>
-        <p class="text-sm mb-4" style="color: var(--semantic-text-muted);">
+        <p class="text-body mb-4" style="color: var(--semantic-text-muted);">
           Are you sure you want to delete "<strong>{{ detail?.name }}</strong>"? This action cannot be undone.
         </p>
         <div class="flex gap-3 justify-end">
           <button
             @click="cancelDelete"
             :disabled="isDeleting"
-            class="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+            class="px-4 py-2 rounded-lg text-body font-medium transition-colors duration-200"
             style="background-color: var(--semantic-content-bg); color: var(--semantic-text-muted); border: 1px solid var(--color-border);"
           >
             Cancel
@@ -381,7 +381,7 @@ defineExpose({ startCreate })
           <button
             @click="handleDelete"
             :disabled="isDeleting"
-            class="px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+            class="px-4 py-2 rounded-lg text-body font-medium transition-colors duration-200"
             style="background-color: var(--color-red); color: white;"
           >
             {{ isDeleting ? 'Deleting...' : 'Delete' }}

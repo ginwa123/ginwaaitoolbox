@@ -163,17 +163,17 @@ watch(
           style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); max-height: 70vh;"
         >
           <div class="px-5 pt-5 pb-4">
-            <h3 id="agent-knowledge-detail-title" class="text-base font-semibold" style="color: var(--semantic-text);">
+            <h3 id="agent-knowledge-detail-title" class="text-lead font-semibold" style="color: var(--semantic-text);">
               Edit Knowledge
             </h3>
-            <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+            <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
               Update the label, the source text, or switch between file and inline text.
             </p>
             <div class="flex gap-1 mt-3" role="tablist" data-testid="agent-knowledge-detail-mode-tabs">
               <button type="button" role="tab" :aria-selected="mode === 'file'"
                 @click="mode = 'file'" :disabled="props.busy"
                 data-testid="agent-knowledge-detail-mode-file"
-                class="text-xs px-2.5 py-1 rounded-md font-medium disabled:opacity-50"
+                class="text-dense px-2.5 py-1 rounded-md font-medium disabled:opacity-50"
                 :style="mode === 'file'
                   ? 'background: var(--color-violet); color: var(--color-bg);'
                   : 'background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'">
@@ -182,7 +182,7 @@ watch(
               <button type="button" role="tab" :aria-selected="mode === 'text'"
                 @click="mode = 'text'" :disabled="props.busy"
                 data-testid="agent-knowledge-detail-mode-text"
-                class="text-xs px-2.5 py-1 rounded-md font-medium disabled:opacity-50"
+                class="text-dense px-2.5 py-1 rounded-md font-medium disabled:opacity-50"
                 :style="mode === 'text'
                   ? 'background: var(--color-violet); color: var(--color-bg);'
                   : 'background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);'">
@@ -192,26 +192,26 @@ watch(
           </div>
           <div class="px-5 pb-4 space-y-4 overflow-y-auto">
             <div>
-              <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">Label</label>
+              <label class="block text-dense font-medium mb-2" style="color: var(--semantic-text-dim);">Label</label>
               <input
                 ref="labelInput"
                 v-model="label"
                 type="text"
                 placeholder="Project spec"
                 data-testid="agent-knowledge-detail-label"
-                class="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                class="w-full px-3 py-2 rounded-lg text-body outline-none"
                 style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
                 @keyup.enter="handleSave"
               />
             </div>
             <div v-if="mode === 'file'">
               <div class="flex items-center justify-between mb-2">
-                <label class="text-xs font-medium" style="color: var(--semantic-text-dim);">File Path (absolute)</label>
+                <label class="text-dense font-medium" style="color: var(--semantic-text-dim);">File Path (absolute)</label>
                 <button
                   type="button"
                   @click="showPicker = true"
                   data-testid="agent-knowledge-detail-browse"
-                  class="text-[11px] font-medium px-2 py-0.5 rounded hover:opacity-80"
+                  class="text-meta font-medium px-2 py-0.5 rounded hover:opacity-80"
                   style="background: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);"
                   :disabled="props.busy"
                 >
@@ -225,7 +225,7 @@ watch(
                 placeholder="/home/me/docs/spec.md"
                 data-testid="agent-knowledge-detail-path"
                 :aria-invalid="pathError !== null"
-                class="w-full px-3 py-2 rounded-lg text-sm font-mono outline-none"
+                class="w-full px-3 py-2 rounded-lg text-body font-mono outline-none"
                 :style="{
                   backgroundColor: 'var(--semantic-sidebar-bg)',
                   border: `1px solid ${pathError ? 'var(--color-red)' : 'var(--color-border)'}`,
@@ -235,28 +235,28 @@ watch(
                 @blur="pathTouched = true"
                 @keyup.enter="handleSave"
               />
-              <p v-if="pathError" class="text-xs mt-1" style="color: var(--color-red);" data-testid="agent-knowledge-detail-path-error">
+              <p v-if="pathError" class="text-dense mt-1" style="color: var(--color-red);" data-testid="agent-knowledge-detail-path-error">
                 {{ pathError }}
               </p>
             </div>
             <div v-else>
-              <label class="block text-xs font-medium mb-2" style="color: var(--semantic-text-dim);">Knowledge text</label>
+              <label class="block text-dense font-medium mb-2" style="color: var(--semantic-text-dim);">Knowledge text</label>
               <textarea
                 v-model="content"
                 rows="8"
                 placeholder="Knowledge text…"
                 data-testid="agent-knowledge-detail-content"
-                class="w-full px-3 py-2 rounded-lg text-sm outline-none resize-y"
+                class="w-full px-3 py-2 rounded-lg text-body outline-none resize-y"
                 style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
               ></textarea>
             </div>
           </div>
-          <div v-if="props.error" data-testid="agent-knowledge-detail-error" class="mx-5 mb-3 text-xs p-2 rounded" style="background: var(--color-red); color: var(--color-bg);">
+          <div v-if="props.error" data-testid="agent-knowledge-detail-error" class="mx-5 mb-3 text-dense p-2 rounded" style="background: var(--color-red); color: var(--color-bg);">
             {{ props.error }}
           </div>
           <div class="px-5 pb-5 flex justify-end gap-2">
-            <button type="button" @click="handleClose" :disabled="props.busy" data-testid="agent-knowledge-detail-cancel" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);">Cancel</button>
-            <button type="button" @click="handleSave" :disabled="!canSubmit" data-testid="agent-knowledge-detail-save" class="px-3 py-1.5 rounded-lg text-sm font-medium disabled:opacity-50" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);">
+            <button type="button" @click="handleClose" :disabled="props.busy" data-testid="agent-knowledge-detail-cancel" class="px-3 py-1.5 rounded-lg text-body font-medium disabled:opacity-50" style="background-color: var(--semantic-card-bg); border: 1px solid var(--color-border); color: var(--semantic-text-muted);">Cancel</button>
+            <button type="button" @click="handleSave" :disabled="!canSubmit" data-testid="agent-knowledge-detail-save" class="px-3 py-1.5 rounded-lg text-body font-medium disabled:opacity-50" style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: var(--color-bg);">
               <span v-if="props.busy">Saving…</span>
               <span v-else>Save</span>
             </button>

@@ -94,12 +94,12 @@ watch(
     >
       <div class="flex flex-col min-w-0">
         <div class="flex items-center gap-2">
-          <span aria-hidden="true" class="text-sm">🧠</span>
-          <h3 class="text-sm font-semibold truncate" style="color: var(--semantic-text);">
+          <span aria-hidden="true" class="text-body">🧠</span>
+          <h3 class="text-body font-semibold truncate" style="color: var(--semantic-text);">
             {{ itemName || 'Local Memories' }}
           </h3>
           <span
-            class="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
+            class="text-micro font-semibold px-1.5 py-0.5 rounded-full"
             :style="{
               backgroundColor: memories.length > 0 ? 'var(--color-violet)' : 'var(--semantic-card-bg)',
               color: memories.length > 0 ? 'var(--color-bg)' : 'var(--semantic-text-dim)',
@@ -109,7 +109,7 @@ watch(
         </div>
         <p
           v-if="hasCwd"
-          class="text-xs mt-1 truncate"
+          class="text-dense mt-1 truncate"
           style="color: var(--semantic-text-dim);"
           data-testid="workspace-item-memories-path"
         >
@@ -123,7 +123,7 @@ watch(
           @click="handleRefresh"
           :disabled="isLoading"
           data-testid="workspace-item-memories-refresh"
-          class="px-2.5 py-1 rounded-lg text-xs font-medium hover:opacity-80 transition-opacity disabled:opacity-50"
+          class="px-2.5 py-1 rounded-lg text-dense font-medium hover:opacity-80 transition-opacity disabled:opacity-50"
           style="
             background-color: var(--semantic-card-bg);
             color: var(--semantic-text-muted);
@@ -137,7 +137,7 @@ watch(
           type="button"
           @click="handleStartCreate"
           data-testid="workspace-item-memories-new"
-          class="px-2.5 py-1 rounded-lg text-xs font-medium hover:opacity-90 transition-opacity"
+          class="px-2.5 py-1 rounded-lg text-dense font-medium hover:opacity-90 transition-opacity"
           style="background: linear-gradient(135deg, var(--color-violet), var(--color-blue)); color: white;"
         >
           + New Memory
@@ -151,7 +151,7 @@ watch(
       class="flex-1 flex items-center justify-center"
       data-testid="workspace-item-memories-no-cwd"
     >
-      <p class="text-sm" style="color: var(--semantic-text-dim);">
+      <p class="text-body" style="color: var(--semantic-text-dim);">
         No path is set on this project — pick a directory when creating the item to enable local memories.
       </p>
     </div>
@@ -178,11 +178,11 @@ watch(
       data-testid="workspace-item-memories-error"
     >
       <div class="text-center">
-        <p class="text-sm" style="color: var(--color-red);">{{ error }}</p>
+        <p class="text-body" style="color: var(--color-red);">{{ error }}</p>
         <button
           type="button"
           @click="handleRefresh"
-          class="mt-3 px-4 py-2 rounded-lg text-sm"
+          class="mt-3 px-4 py-2 rounded-lg text-body"
           style="
             background-color: var(--semantic-card-bg);
             color: var(--semantic-text-muted);
@@ -199,11 +199,11 @@ watch(
       style="color: var(--semantic-text-dim); background-color: var(--semantic-sidebar-bg); border: 1px dashed var(--color-border);"
       data-testid="workspace-item-memories-empty"
     >
-      <div class="text-lg mb-1" aria-hidden="true">🧠</div>
-      <p class="text-xs font-medium" style="color: var(--semantic-text-dim);">
+      <div class="text-title-sm mb-1" aria-hidden="true">🧠</div>
+      <p class="text-dense font-medium" style="color: var(--semantic-text-dim);">
         No memories yet
       </p>
-      <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+      <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
         Create one with the <strong>+ New Memory</strong> button, or add a <code>.md</code> file to <code>{{ headerPath }}</code>.
       </p>
     </div>
@@ -228,14 +228,14 @@ watch(
             :data-testid="`workspace-item-memories-row-${mem.name}`"
           >
             <div class="flex items-start gap-2 min-w-0">
-              <span class="text-base">🧠</span>
+              <span class="text-lead">🧠</span>
               <div class="flex-1 min-w-0">
                 <h3
-                  class="text-sm font-medium truncate"
+                  class="text-body font-medium truncate"
                   style="color: var(--semantic-text);"
                 >{{ mem.title }}</h3>
                 <p
-                  class="text-xs mt-0.5 truncate"
+                  class="text-dense mt-0.5 truncate"
                   style="color: var(--semantic-text-dim);"
                 >{{ mem.name }} · {{ formatSize(mem.size) }}</p>
               </div>
@@ -260,7 +260,7 @@ watch(
           class="h-full flex items-center justify-center"
           data-testid="workspace-item-memories-detail-empty"
         >
-          <p class="text-sm" style="color: var(--semantic-text-muted);">
+          <p class="text-body" style="color: var(--semantic-text-muted);">
             Select a memory, or create a new one.
           </p>
         </div>

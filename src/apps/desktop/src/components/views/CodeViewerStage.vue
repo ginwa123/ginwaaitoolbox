@@ -61,12 +61,12 @@ const emit = defineEmits<{
       class="flex-1 flex flex-col items-center justify-center"
       data-testid="code-viewer-error"
     >
-      <span class="text-2xl mb-2">⚠️</span>
-      <p class="text-sm" style="color: var(--semantic-text-dim)">{{ error }}</p>
+      <span class="text-title-lg mb-2">⚠️</span>
+      <p class="text-body" style="color: var(--semantic-text-dim)">{{ error }}</p>
       <button
         type="button"
         @click="emit('close')"
-        class="mt-4 px-4 py-2 rounded-lg text-sm"
+        class="mt-4 px-4 py-2 rounded-lg text-body"
         style="background-color: var(--color-border); color: var(--semantic-text)"
         data-testid="code-viewer-error-close"
       >

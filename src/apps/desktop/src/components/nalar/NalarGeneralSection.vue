@@ -99,8 +99,8 @@ function onRetryDelayChange(event: Event) {
   <div class="space-y-6" data-testid="nalar-general-section">
     <!-- Section header — short, human-readable summary of what this tab controls -->
     <div>
-      <h2 class="text-base font-semibold" style="color: var(--semantic-text);">General</h2>
-      <p class="text-xs mt-1" style="color: var(--semantic-text-muted);">
+      <h2 class="text-lead font-semibold" style="color: var(--semantic-text);">General</h2>
+      <p class="text-dense mt-1" style="color: var(--semantic-text-muted);">
         Operational settings — desktop notifications and retry behavior.
       </p>
     </div>
@@ -111,8 +111,8 @@ function onRetryDelayChange(event: Event) {
       style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
     >
       <div class="flex items-center gap-2">
-        <span class="text-base" aria-hidden="true">🔔</span>
-        <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">Notifications</h3>
+        <span class="text-lead" aria-hidden="true">🔔</span>
+        <h3 class="text-body font-semibold" style="color: var(--semantic-text);">Notifications</h3>
       </div>
 
       <!-- Toggle: notify on complete -->
@@ -129,12 +129,12 @@ function onRetryDelayChange(event: Event) {
           style="accent-color: var(--color-violet);"
         />
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+          <div class="text-body font-medium" style="color: var(--semantic-text);">
             Notify when agent finishes
           </div>
-          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+          <div class="text-dense mt-0.5" style="color: var(--semantic-text-muted);">
             Fire a desktop notification when the LLM response completes
-            (<code class="text-[10px] font-mono">finish_reason = "stop"</code>).
+            (<code class="text-micro font-mono">finish_reason = "stop"</code>).
             Useful when you walk away from the app.
           </div>
         </div>
@@ -154,10 +154,10 @@ function onRetryDelayChange(event: Event) {
           style="accent-color: var(--color-violet);"
         />
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+          <div class="text-body font-medium" style="color: var(--semantic-text);">
             Notify when agent fails
           </div>
-          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+          <div class="text-dense mt-0.5" style="color: var(--semantic-text-muted);">
             Fire a desktop notification when the workflow hits a transport
             error, retries exhaust, or the agentic loop fails. Independent
             from the "finishes" toggle.
@@ -179,10 +179,10 @@ function onRetryDelayChange(event: Event) {
           style="accent-color: var(--color-violet);"
         />
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+          <div class="text-body font-medium" style="color: var(--semantic-text);">
             Launch web (browser mode)
           </div>
-          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+          <div class="text-dense mt-0.5" style="color: var(--semantic-text-muted);">
             Serve this same UI in your system browser on a random local port.
           </div>
         </div>
@@ -195,7 +195,7 @@ function onRetryDelayChange(event: Event) {
         data-testid="pill-web-url-row"
       >
         <span
-          class="flex-1 min-w-0 truncate text-xs font-mono px-2 py-1 rounded-md"
+          class="flex-1 min-w-0 truncate text-dense font-mono px-2 py-1 rounded-md"
           style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
           data-testid="pill-web-url"
         >{{ webUrl ?? 'Starting local web server…' }}</span>
@@ -203,7 +203,7 @@ function onRetryDelayChange(event: Event) {
           type="button"
           data-testid="btn-open-web"
           :disabled="!webUrl"
-          class="shrink-0 text-xs font-medium px-2 py-1 rounded-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          class="shrink-0 text-dense font-medium px-2 py-1 rounded-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           style="background-color: var(--color-violet); color: white;"
           @click="emit('open-web')"
         >Open</button>
@@ -211,7 +211,7 @@ function onRetryDelayChange(event: Event) {
           type="button"
           data-testid="btn-copy-web"
           :disabled="!webUrl"
-          class="shrink-0 text-xs font-medium px-2 py-1 rounded-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          class="shrink-0 text-dense font-medium px-2 py-1 rounded-md cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
           style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
           @click="emit('copy-web')"
         >Copy</button>
@@ -224,8 +224,8 @@ function onRetryDelayChange(event: Event) {
       style="background-color: var(--semantic-content-bg); border: 1px solid var(--color-border);"
     >
       <div class="flex items-center gap-2">
-        <span class="text-base" aria-hidden="true">⏱️</span>
-        <h3 class="text-sm font-semibold" style="color: var(--semantic-text);">Retry</h3>
+        <span class="text-lead" aria-hidden="true">⏱️</span>
+        <h3 class="text-body font-semibold" style="color: var(--semantic-text);">Retry</h3>
       </div>
 
       <label
@@ -233,12 +233,12 @@ function onRetryDelayChange(event: Event) {
         data-testid="row-retry-delay"
       >
         <div class="flex-1 min-w-0">
-          <div class="text-sm font-medium" style="color: var(--semantic-text);">
+          <div class="text-body font-medium" style="color: var(--semantic-text);">
             Retry delay (seconds)
           </div>
-          <div class="text-xs mt-0.5" style="color: var(--semantic-text-muted);">
+          <div class="text-dense mt-0.5" style="color: var(--semantic-text-muted);">
             Backoff before each failed LLM call is retried.
-            <code class="text-[10px] font-mono">0</code> = retry immediately.
+            <code class="text-micro font-mono">0</code> = retry immediately.
             Max 60 seconds (clamped server-side to 60 000 ms).
           </div>
         </div>
@@ -252,15 +252,15 @@ function onRetryDelayChange(event: Event) {
             data-testid="input-retry-delay-seconds"
             :value="retryDelaySeconds"
             @change="onRetryDelayChange($event)"
-            class="w-20 h-8 px-2 rounded-md text-sm font-mono text-right"
+            class="w-20 h-8 px-2 rounded-md text-body font-mono text-right"
             style="background-color: var(--semantic-sidebar-bg); border: 1px solid var(--color-border); color: var(--semantic-text);"
           />
-          <span class="text-xs font-mono" style="color: var(--semantic-text-muted);">sec</span>
+          <span class="text-dense font-mono" style="color: var(--semantic-text-muted);">sec</span>
         </div>
       </label>
 
       <!-- ms readout — shows the underlying value the backend will write -->
-      <div class="flex items-center justify-end gap-1 text-[10px] font-mono" style="color: var(--semantic-text-dim);">
+      <div class="flex items-center justify-end gap-1 text-micro font-mono" style="color: var(--semantic-text-dim);">
         <span data-testid="retry-delay-ms-readout">
           {{ model.retry_delay_ms }} ms
         </span>

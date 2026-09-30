@@ -129,7 +129,7 @@ const triggerLabel = computed(() => {
     <button
       v-if="showTrigger"
       type="button"
-      class="px-2 py-1 rounded text-xs font-medium hover:opacity-80 transition-opacity flex items-center gap-1"
+      class="px-2 py-1 rounded text-dense font-medium hover:opacity-80 transition-opacity flex items-center gap-1"
       style="
         background-color: var(--semantic-sidebar-bg);
         border: 1px solid var(--color-border);
@@ -161,7 +161,7 @@ const triggerLabel = computed(() => {
           :role="showTrigger ? 'menuitem' : 'option'"
           :aria-current="isActive(item) ? 'true' : undefined"
           :data-testid="`kanban-sort-menu-${item.id}`"
-          class="w-full px-3 py-2 text-left text-sm hover:opacity-80"
+          class="w-full px-3 py-2 text-left text-body hover:opacity-80"
           :style="
             isActive(item)
               ? 'color: var(--color-violet); font-weight: 500;'

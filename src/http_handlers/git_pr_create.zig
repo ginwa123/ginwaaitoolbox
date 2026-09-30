@@ -2,6 +2,18 @@ const std = @import("std");
 const http_response = @import("http_response.zig");
 const nalar_core = @import("nalarcore");
 const gserverz = nalar_core.gserverz;
+const run_captured = @import("helpers").run_captured;
+
+/// The `gh` binary. See `git_pr_status.zig` for the shared constants.
+const GH_PROGRAM = "gh";
+
+/// Wall-clock budget for one `gh pr create`. Creating a PR uploads a
+/// branch, so this is more generous than the read-only `pr view` budget
+/// — but still bounded, so a credential prompt can't wedge a worker.
+const GH_TIMEOUT_MS: u32 = 60_000;
+
+/// Per-stream capture cap for the PR URL / gh error text.
+const MAX_CAPTURE_BYTES: usize = 64 * 1024;
 
 /// Outcome of running `gh pr create` in a worktree. The use case catches
 /// every `gh`-related failure mode (spawn failure, non-zero exit, signal
@@ -26,11 +38,21 @@ const CreatePullRequestResult = struct {
 /// the result. No HTTP types; takes the same `(allocator, io, …)` pair
 /// the GinwaServer handler gives us, returns a domain struct.
 ///
+/// `gh` is invoked through `helpers.run_captured` rather than a
+/// hand-rolled `spawn` → drain-stdout → drain-stderr → `Child.wait`.
+/// The hand-rolled shape is what killed the server in
+/// `git_pr_status.zig`: `Child.wait` runs `childCleanupPosix`, which
+/// `closeFd`s every pipe still attached to the `Child`, and Zig 0.16
+/// turns EBADF there into `unreachable` in Debug builds — a
+/// process-wide SIGABRT. Draining stdout before stderr also deadlocks
+/// as soon as `gh` writes more than one 64 KiB pipe buffer to stderr.
+/// See `src/helpers/run_captured.zig`.
+///
 /// On success, `pr_url` holds the trimmed stdout (gh prints the URL).
 /// On any `gh`-related failure, `status` is `.gh_failed` and `stderr`
-/// holds either the trimmed gh stderr or a synthesized hint. The function
-/// does NOT raise any domain-specific errors; the handler maps the
-/// status to HTTP 200/500.
+/// holds either the trimmed gh stderr, or a synthesized hint. The
+/// function does NOT raise any domain-specific errors; the handler maps
+/// the status to HTTP 200/500.
 fn createPullRequestUseCase(
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -41,97 +63,59 @@ fn createPullRequestUseCase(
 ) !CreatePullRequestResult {
     // Run `gh pr create --base <base> --title <title> --body <body>`.
     const argv = &[_][]const u8{
-        "gh", "pr", "create",
-        "--base",  base,
-        "--title", title,
-        "--body",  body,
+        GH_PROGRAM, "pr",     "create",
+        "--base",   base,     "--title",
+        title,      "--body", body,
     };
 
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        // Per memory zig-0.16-spawn-cwd-is-not-nullable.md: `.cwd` MUST
-        // be a `process.Child.Cwd` tagged-union value, NOT `null`.
-        .cwd = .{ .path = worktree_path },
-        .stdin = .ignore,
-        .stdout = .pipe,
-        .stderr = .pipe,
+    // stdout + stderr are captured concurrently and capped; the child
+    // is killed + reaped if it outlives the deadline, so a `gh` stuck
+    // on a credential prompt can't wedge a worker-pool thread forever.
+    var res = run_captured.run(allocator, io, argv, .{
+        .cwd = worktree_path,
+        .max_output_bytes = MAX_CAPTURE_BYTES,
+        .timeout_ms = GH_TIMEOUT_MS,
     }) catch |err| {
         // Spawn-time failure (gh not installed, perm denied, etc).
         // Synthesize a stderr message so the handler can return it verbatim.
-        return CreatePullRequestResult{
-            .status = .gh_failed,
-            .pr_url = "",
-            .stderr = std.fmt.allocPrint(allocator, "{s} (is the gh CLI installed and on PATH?)", .{@errorName(err)}) catch "",
-        };
+        return ghFailed(allocator, std.fmt.allocPrint(allocator, "{s} (is the gh CLI installed and on PATH?)", .{@errorName(err)}) catch "");
     };
+    defer res.deinit(allocator);
 
-    // Read stdout + stderr in parallel, bounded to 64KB each (matches the
-    // set_git_worktree.zig:160-190 pattern).
-    var stdout_buf: std.ArrayList(u8) = .empty;
-    var stderr_buf: std.ArrayList(u8) = .empty;
-
-    var read_buf: [4096]u8 = undefined;
-    if (child.stdout) |pipe| {
-        while (true) {
-            const n = std.Io.File.readStreaming(pipe, io, &.{&read_buf}) catch break;
-            if (n == 0) break;
-            if (stdout_buf.items.len < 64 * 1024) {
-                const take = @min(n, 64 * 1024 - stdout_buf.items.len);
-                stdout_buf.appendSlice(allocator, read_buf[0..take]) catch break;
-            }
-        }
-    }
-    if (child.stderr) |pipe| {
-        while (true) {
-            const n = std.Io.File.readStreaming(pipe, io, &.{&read_buf}) catch break;
-            if (n == 0) break;
-            if (stderr_buf.items.len < 64 * 1024) {
-                const take = @min(n, 64 * 1024 - stderr_buf.items.len);
-                stderr_buf.appendSlice(allocator, read_buf[0..take]) catch break;
-            }
-        }
+    if (res.timed_out) {
+        return ghFailed(allocator, "gh pr create timed out");
     }
 
-    const term = child.wait(io) catch {
-        return CreatePullRequestResult{
-            .status = .gh_failed,
-            .pr_url = "",
-            .stderr = "gh wait failed",
-        };
-    };
-    switch (term) {
+    switch (res.term) {
         .exited => |code| {
             if (code != 0) {
                 // Surface the gh CLI error verbatim so the user can debug
                 // (e.g. "no commits between origin/main and worktree/feature-x").
-                return CreatePullRequestResult{
-                    .status = .gh_failed,
-                    .pr_url = "",
-                    .stderr = std.mem.trim(u8, stderr_buf.items, " \n\r"),
-                };
+                return ghFailed(allocator, std.mem.trim(u8, res.stderr, " \n\r"));
             }
         },
-        .signal => {
-            return CreatePullRequestResult{
-                .status = .gh_failed,
-                .pr_url = "",
-                .stderr = "gh killed by signal",
-            };
-        },
-        else => {
-            return CreatePullRequestResult{
-                .status = .gh_failed,
-                .pr_url = "",
-                .stderr = "gh terminated abnormally",
-            };
-        },
+        .signal => return ghFailed(allocator, "gh killed by signal"),
+        else => return ghFailed(allocator, "gh terminated abnormally"),
     }
 
-    // gh pr create prints the PR URL on stdout.
-    return CreatePullRequestResult{
+    // gh pr create prints the PR URL on stdout. `res` is freed by the
+    // defer above, so the URL must be copied into the request arena
+    // before returning.
+    return .{
         .status = .success,
-        .pr_url = std.mem.trim(u8, stdout_buf.items, " \n\r"),
+        .pr_url = allocator.dupe(u8, std.mem.trim(u8, res.stdout, " \n\r")) catch "",
         .stderr = "",
+    };
+}
+
+/// `.gh_failed` result whose `stderr` is a copy of `msg` in the request
+/// arena, so the caller can free `msg` (or pass a borrowed literal)
+/// without a use-after-free in the HTTP response.
+fn ghFailed(allocator: std.mem.Allocator, msg: []const u8) CreatePullRequestResult {
+    return .{
+        .status = .gh_failed,
+        .pr_url = "",
+        .stderr = allocator.dupe(u8, msg) catch "gh pr create failed",
     };
 }
 

@@ -158,9 +158,9 @@ onMounted(() => {
     >
       <!-- File icon and name -->
       <div class="flex items-center gap-2 flex-1 min-w-0">
-        <span class="text-sm">📄</span>
+        <span class="text-body">📄</span>
         <span
-          class="text-sm font-medium truncate"
+          class="text-body font-medium truncate"
           style="color: var(--semantic-text);"
           :title="filePath"
         >
@@ -168,7 +168,7 @@ onMounted(() => {
         </span>
         <span
           v-if="staged"
-          class="text-xs px-1.5 py-0.5 rounded"
+          class="text-dense px-1.5 py-0.5 rounded"
           style="background: rgba(135, 169, 135, 0.15); color: var(--color-green);"
         >
           Staged
@@ -176,7 +176,7 @@ onMounted(() => {
       </div>
 
       <!-- Stats -->
-      <div class="flex items-center gap-3 text-xs font-mono">
+      <div class="flex items-center gap-3 text-dense font-mono">
         <span style="color: var(--color-green);">+{{ stats.added }}</span>
         <span style="color: var(--color-red);">-{{ stats.removed }}</span>
       </div>
@@ -203,11 +203,11 @@ onMounted(() => {
 
     <!-- Error -->
     <div v-else-if="error" class="flex-1 flex flex-col items-center justify-center p-4">
-      <span class="text-3xl mb-3">⚠️</span>
-      <p class="text-sm" style="color: var(--semantic-error);">{{ error }}</p>
+      <span class="text-display mb-3">⚠️</span>
+      <p class="text-body" style="color: var(--semantic-error);">{{ error }}</p>
       <button
         @click="loadDiff"
-        class="mt-3 px-3 py-1.5 text-sm rounded"
+        class="mt-3 px-3 py-1.5 text-body rounded"
         style="background: var(--color-green); color: var(--color-bg);"
       >
         Retry
@@ -219,9 +219,9 @@ onMounted(() => {
       v-else-if="diffLines.length === 0"
       class="flex-1 flex flex-col items-center justify-center p-4"
     >
-      <span class="text-3xl mb-3">📄</span>
-      <p class="text-sm" style="color: var(--semantic-text-dim);">No changes detected</p>
-      <p class="text-xs mt-1" style="color: var(--semantic-text-dim);">
+      <span class="text-display mb-3">📄</span>
+      <p class="text-body" style="color: var(--semantic-text-dim);">No changes detected</p>
+      <p class="text-dense mt-1" style="color: var(--semantic-text-dim);">
         File may be identical to the committed version
       </p>
     </div>
@@ -232,7 +232,7 @@ onMounted(() => {
       class="flex-1 overflow-auto diff-wrap"
       :style="{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' }"
     >
-      <table class="w-full border-collapse" style="font-size: 12px; line-height: 20px;">
+      <table class="w-full border-collapse" style="font-size: var(--text-dense); line-height: 20px;">
         <tbody>
           <template v-for="(line, idx) in diffLines" :key="idx">
             <!-- Hunk header -->
@@ -353,7 +353,7 @@ onMounted(() => {
         }">
         <div class="mini-chat-header">
           <span style="color: var(--color-green);">💬</span>
-          <span class="text-sm font-medium" style="color: var(--semantic-text);">Review this code</span>
+          <span class="text-body font-medium" style="color: var(--semantic-text);">Review this code</span>
           <button @click="closeMiniChat" class="ml-auto p-1 rounded hover:opacity-70">
             <svg class="w-4 h-4" style="color: var(--semantic-text-dim);" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
@@ -411,7 +411,7 @@ onMounted(() => {
 .mini-chat-popup .mini-chat-code pre {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--text-meta);
   line-height: 1.5;
   color: var(--semantic-text);
   white-space: pre-wrap;

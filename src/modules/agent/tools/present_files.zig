@@ -32,7 +32,14 @@
 
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const AgentTool = schemas.AgentTool;
+// The one containment rule shared with GET /api/files/download. Imported,
+// never re-implemented here: the two disagreed once and every presented file
+// outside the session working directory became a card that 403s on every
+// fetch. See docs/plans/2026-09-29-present-files-sandbox-parity.md.
+const file_sandbox = @import("file_sandbox.zig");
 
 /// Maximum number of files per call. Keeps the card scannable and the
 /// envelope small; the LLM can split larger sets across calls.
@@ -64,7 +71,7 @@ pub const PresentFilesInput = struct {
 pub const present_files_tool_system_prompt =
     \\## Present Files Tool — Behavior
     \\Use `present_files` to present workspace files (any type: text, images, pdf, zip, code, html, video, audio) as inline-preview cards in the chat.
-    \\- Provide `files` with ABSOLUTE `path` entries (1-10). Each file must exist and be ≤ 50 MiB.
+    \\- Provide `files` with ABSOLUTE `path` entries (1-10). Each file must exist, be ≤ 50 MiB, and live INSIDE the session working directory — the browser is only served files from there, so a path outside it (e.g. under ~/Downloads) is rejected. To show such a file, copy it into the working directory first (e.g. `bash cp "<path>" "<working-dir>/"`), then present the copy.
     \\- The card renders each file inline: images full-width, html in a sandboxed iframe, text/markdown/code as fetched source, pdf embedded, video/audio with native players; anything else shows a file row with a download button.
     \\- To show generated content inline, first save it with `write_file`, then present the saved file.
     \\- Optional `label` overrides the displayed name; optional `caption` adds a note below the row.
@@ -79,8 +86,9 @@ pub const present_files_tool = AgentTool{
         \\Present one or more workspace files as inline-preview cards in the chat transcript. Use this tool when the user asks to "share", "attach", "present", "send", "show", "preview", "render", or "download" a file — or when you just created/edited a file (report, image, export, notes, html page) and want the user to see it inline with one click to download.
         \\
         \\INPUT: files (required, array of 1-10 objects). Each object: path (required, ABSOLUTE path to an existing file, e.g. "/home/user/report.md"), label (optional, short display name — defaults to the filename), caption (optional, note shown below the row).
+        \\WORKING DIRECTORY: every path must live inside the session working directory — that is the only place the browser can be served the bytes from, so a file outside it is rejected (copy it into the working directory first with `bash cp`).
         \\
-        \\BEHAVIOUR: The server stats each file (existence, size, mime) and returns metadata only — file bytes are served on demand via GET /api/files/download (disposition=inline for previews, attachment for downloads). The card renders each file inline: images (jpg/png/gif/webp/svg) full-width with click-to-fullscreen, html in a sandboxed iframe with an "open in new tab" action, text/markdown/code (md/txt/json/csv/log/zig/ts/py/js/css) as fetched source with syntax-aware rendering, pdf embedded, video/audio with native players; every other type (zip, etc.) renders a file row with a download button. Files must be ≤ 50 MiB each; missing files, directories, relative paths, and oversized files are rejected with a structured error.
+        \\BEHAVIOUR: The server stats each file (existence, size, mime) and returns metadata only — file bytes are served on demand via GET /api/files/download (disposition=inline for previews, attachment for downloads). The card renders each file inline: images (jpg/png/gif/webp/svg) full-width with click-to-fullscreen, html in a sandboxed iframe with an "open in new tab" action, text/markdown/code (md/txt/json/csv/log/zig/ts/py/js/css) as fetched source with syntax-aware rendering, pdf embedded, video/audio with native players; every other type (zip, etc.) renders a file row with a download button. Files must be ≤ 50 MiB each, must live inside the session working directory, and must not contain `..`; a path outside the working directory, a missing file, a directory, a relative path and an oversized file are all rejected with a structured error naming the offending path.
         \\
         \\OUTPUT (JSON success envelope): {"status":"presented","count":N,"files":[{"path":...,"bytes":...,"mime":...,"label":...}],"error":null}. On error: {"status":null,"count":0,"files":[],"error":"..."}.
         \\
@@ -216,13 +224,37 @@ fn statFileSize(io: std.Io, path: []const u8) !u64 {
 /// object. Any validation failure yields an `{"error": ...}` object
 /// naming the offending path (never a Zig error return — the LLM sees a
 /// structured failure it can act on).
+///
+/// `sandbox_root` is the session working directory — the ONLY place the
+/// browser can be served bytes from (`GET /api/files/download`). A file
+/// outside it would render a card whose every fetch 403s with "Path escapes
+/// the session working directory", so it is rejected here instead, with a
+/// message the model can act on (copy the file in, or tell the user the
+/// path). Pass `null` (or `""`) only from dispatches that have no session
+/// row at all — the TUI and routines — which keep the un-sandboxed
+/// behaviour they had before this rule existed.
 pub fn executePresentFilesToString(
     allocator: std.mem.Allocator,
     io: std.Io,
     input: PresentFilesInput,
+    sandbox_root: ?[]const u8,
 ) ![]u8 {
     if (input.files.len == 0) {
         return jsonErrorEnvelope(allocator, "present_files requires at least 1 file in `files`.");
+    }
+    // Every path here is model-supplied. On Windows a malformed NT name
+    // panics the process inside std's Io backend instead of failing the
+    // call, so validate before touching any of them.
+    for (input.files) |f| {
+        if (invalidPathReason(f.path)) |reason| {
+            const msg = try std.fmt.allocPrint(
+                allocator,
+                "present_files: path \"{s}\" is not a valid path on this platform: {s}",
+                .{ f.path, reason },
+            );
+            defer allocator.free(msg);
+            return jsonErrorEnvelope(allocator, msg);
+        }
     }
     if (input.files.len > MAX_FILES) {
         const msg = try std.fmt.allocPrint(
@@ -255,6 +287,56 @@ pub fn executePresentFilesToString(
             const msg = try std.fmt.allocPrint(allocator, "present_files: path \"{s}\" is not absolute. Pass an ABSOLUTE path.", .{f.path});
             defer allocator.free(msg);
             return jsonErrorEnvelope(allocator, msg);
+        }
+        // Containment, through the same helper the download endpoint uses.
+        // Runs BEFORE the stat so a file outside the working directory is
+        // reported as such (the actionable signal) instead of a confusing
+        // "not found", and so a symlink out of the root is caught at all —
+        // `openFile` would happily read the target.
+        if (sandbox_root) |root| {
+            if (root.len > 0) {
+                if (file_sandbox.resolveInsideRoot(io, allocator, root, f.path, file_sandbox.nativeStyle())) |canon| {
+                    defer allocator.free(canon);
+                } else |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    // Missing file (or a directory we cannot canonicalize):
+                    // fall through to the stat below, which words it as
+                    // "not found (or is a directory)" — the actionable form.
+                    error.TargetUnreachable => {},
+                    error.NotAbsolute => {
+                        const msg = try std.fmt.allocPrint(allocator, "present_files: path \"{s}\" is not absolute. Pass an ABSOLUTE path.", .{f.path});
+                        defer allocator.free(msg);
+                        return jsonErrorEnvelope(allocator, msg);
+                    },
+                    error.PathTraversal => {
+                        const msg = try std.fmt.allocPrint(
+                            allocator,
+                            "present_files: path \"{s}\" contains a \"..\" segment. Pass the final absolute path — parent segments are refused by the download endpoint too.",
+                            .{f.path},
+                        );
+                        defer allocator.free(msg);
+                        return jsonErrorEnvelope(allocator, msg);
+                    },
+                    error.RootNotAbsolute, error.RootUnreachable => {
+                        const msg = try std.fmt.allocPrint(
+                            allocator,
+                            "present_files: the session working directory \"{s}\" is not accessible, so no file can be presented. Tell the user the full path instead.",
+                            .{root},
+                        );
+                        defer allocator.free(msg);
+                        return jsonErrorEnvelope(allocator, msg);
+                    },
+                    error.OutsideRoot => {
+                        const msg = try std.fmt.allocPrint(
+                            allocator,
+                            "present_files: \"{s}\" is outside the session working directory \"{s}\". The chat can only preview files from the working directory, so copy it in first (bash cp \"{s}\" \"{s}/\") and present the copy — or tell the user the full path so they can open it themselves.",
+                            .{ f.path, root, f.path, root },
+                        );
+                        defer allocator.free(msg);
+                        return jsonErrorEnvelope(allocator, msg);
+                    },
+                }
+            }
         }
         const size = statFileSize(io, f.path) catch |err| switch (err) {
             error.FileNotFound => {
@@ -388,7 +470,7 @@ test "executePresentFilesToString rejects empty files list" {
     const io = threaded.io();
 
     const input = PresentFilesInput{ .files = @constCast(&[_]PresentFileRef{}) };
-    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
@@ -406,14 +488,34 @@ test "executePresentFilesToString rejects relative path" {
 
     var refs = [_]PresentFileRef{.{ .path = "relative/path.txt" }};
     const input = PresentFilesInput{ .files = &refs };
-    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
     defer parsed.deinit();
     const obj = parsed.value.object;
     try testing.expect(obj.get("status").? == .null);
-    try testing.expect(std.mem.indexOf(u8, obj.get("error").?.string, "not absolute") != null);
+
+    // Two different guards reject a relative path, and which one fires
+    // first is platform-dependent:
+    //
+    //   - POSIX: `invalidPathReason` returns null (the shape is merely
+    //     unusual, not dangerous), so the `std.fs.path.isAbsolute` guard
+    //     below it produces "... is not absolute. Pass an ABSOLUTE path."
+    //   - Windows: the NT-name guard in helpers/path_validate.zig fires
+    //     first — a bare name reaches NtCreateFile as a malformed NT
+    //     name, which panics the process rather than failing the call —
+    //     and produces "... is not a valid path on this platform: path
+    //     must be an absolute Windows path (e.g. C:\dir\file)".
+    //
+    // Both refusals are correct; the test asserts the message that this
+    // platform actually emits rather than the POSIX-shaped one.
+    const err_msg = obj.get("error").?.string;
+    if (builtin.os.tag == .windows) {
+        try testing.expect(std.mem.indexOf(u8, err_msg, "absolute Windows path") != null);
+    } else {
+        try testing.expect(std.mem.indexOf(u8, err_msg, "not absolute") != null);
+    }
 }
 
 test "executePresentFilesToString rejects empty path" {
@@ -424,7 +526,7 @@ test "executePresentFilesToString rejects empty path" {
 
     var refs = [_]PresentFileRef{.{ .path = "" }};
     const input = PresentFilesInput{ .files = &refs };
-    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
@@ -440,7 +542,7 @@ test "executePresentFilesToString rejects missing file" {
 
     var refs = [_]PresentFileRef{.{ .path = "/tmp/nalar-present-files-does-not-exist-xyz.txt" }};
     const input = PresentFilesInput{ .files = &refs };
-    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
@@ -458,7 +560,7 @@ test "executePresentFilesToString rejects too many files" {
     var refs: [11]PresentFileRef = undefined;
     for (&refs) |*r| r.* = .{ .path = "/tmp/x.txt" };
     const input = PresentFilesInput{ .files = &refs };
-    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
@@ -496,7 +598,7 @@ test "executePresentFilesToString returns success envelope for real files" {
         .{ .path = jpg_path },
     };
     const input = PresentFilesInput{ .files = &refs };
-    const payload = try present_files.executePresentFilesToString(alloc, io, input);
+    const payload = try present_files.executePresentFilesToString(alloc, io, input, null);
     defer alloc.free(payload);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
@@ -522,4 +624,460 @@ test "mimeForPath maps common extensions and falls back to octet-stream" {
     try testing.expectEqualStrings("application/pdf", present_files.mimeForPath("/a/doc.pdf"));
     try testing.expectEqualStrings("application/octet-stream", present_files.mimeForPath("/a/noext"));
     try testing.expectEqualStrings("application/octet-stream", present_files.mimeForPath("/a/file.unknownext"));
+}
+
+// ─── Sandbox tests ───────────────────────────────────────────────────────
+//
+// The reported bug: the tool returned `{"status":"presented"}` for a file the
+// download endpoint refuses to serve, so the card rendered and every fetch
+// 403'd with "Path escapes the session working directory" (Windows, a report
+// the agent had written under `C:\Users\<user>\Downloads\`). The tool now
+// applies the SAME rule as the endpoint, through `file_sandbox.zig`.
+//
+// Fixtures are built with `std.testing.tmpDir` (never a hardcoded
+// `/tmp/...`, which is not absolute on Windows) so every case runs on all CI
+// operating systems. "Inside" and "outside" are two sibling temp dirs.
+
+const builtin = @import("builtin");
+
+const Fixture = struct {
+    inside: std.testing.TmpDir,
+    outside: std.testing.TmpDir,
+    inside_abs: []const u8,
+    outside_abs: []const u8,
+    io: std.Io,
+
+    fn deinit(self: *Fixture, allocator: std.mem.Allocator) void {
+        allocator.free(self.inside_abs);
+        allocator.free(self.outside_abs);
+        self.inside.cleanup();
+        self.outside.cleanup();
+    }
+};
+
+fn realPathOf(allocator: std.mem.Allocator, dir: std.Io.Dir) ![]u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try dir.realPath(testing.io, &buf);
+    return allocator.dupe(u8, buf[0..n]);
+}
+
+fn setupFixture() !Fixture {
+    const alloc = testing.allocator;
+    var inside = testing.tmpDir(.{});
+    errdefer inside.cleanup();
+    var outside = testing.tmpDir(.{});
+    errdefer outside.cleanup();
+    const inside_abs = try realPathOf(alloc, inside.dir);
+    errdefer alloc.free(inside_abs);
+    const outside_abs = try realPathOf(alloc, outside.dir);
+    return .{
+        .inside = inside,
+        .outside = outside,
+        .inside_abs = inside_abs,
+        .outside_abs = outside_abs,
+        .io = testing.io,
+    };
+}
+
+/// Write a file into the "outside" sibling dir; returns its absolute path.
+fn makeOutsideFile(allocator: std.mem.Allocator, f: *const Fixture, rel: []const u8, body: []const u8) ![]u8 {
+    if (std.fs.path.dirname(rel)) |parent| try f.outside.dir.createDirPath(f.io, parent);
+    var file = try f.outside.dir.createFile(f.io, rel, .{});
+    defer file.close(f.io);
+    try file.writeStreamingAll(f.io, body);
+    return std.fs.path.join(allocator, &.{ f.outside_abs, rel });
+}
+
+/// Write a file into the sandbox root; returns its absolute path.
+fn makeInsideFile(allocator: std.mem.Allocator, f: *const Fixture, rel: []const u8, body: []const u8) ![]u8 {
+    if (std.fs.path.dirname(rel)) |parent| try f.inside.dir.createDirPath(f.io, parent);
+    var file = try f.inside.dir.createFile(f.io, rel, .{});
+    defer file.close(f.io);
+    try file.writeStreamingAll(f.io, body);
+    return std.fs.path.join(allocator, &.{ f.inside_abs, rel });
+}
+
+fn callTool(allocator: std.mem.Allocator, f: *const Fixture, refs: []PresentFileRef, root: ?[]const u8) ![]u8 {
+    const input = PresentFilesInput{ .files = refs };
+    return present_files.executePresentFilesToString(allocator, f.io, input, root);
+}
+
+/// Assert the failure envelope shape and hand back the error string (the
+/// parsed tree is freed with `parsed`, so the string is only valid for the
+/// caller's own parse — see `errorMessage`).
+fn expectErrorEnvelope(allocator: std.mem.Allocator, payload: []const u8) !std.json.Parsed(std.json.Value) {
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    const obj = parsed.value.object;
+    try testing.expect(obj.get("status").? == .null);
+    try testing.expectEqual(@as(i64, 0), obj.get("count").?.integer);
+    try testing.expectEqual(@as(usize, 0), obj.get("files").?.array.items.len);
+    try testing.expect(obj.get("error").? == .string);
+    return parsed;
+}
+
+fn errorMessage(parsed: *const std.json.Parsed(std.json.Value)) []const u8 {
+    return parsed.value.object.get("error").?.string;
+}
+
+/// Present `refs` and return the error string of a failing envelope.
+fn failureMessage(allocator: std.mem.Allocator, f: *const Fixture, refs: []PresentFileRef, root: ?[]const u8) ![]u8 {
+    const payload = try callTool(allocator, f, refs, root);
+    defer allocator.free(payload);
+    var parsed = try expectErrorEnvelope(allocator, payload);
+    defer parsed.deinit();
+    return allocator.dupe(u8, errorMessage(&parsed));
+}
+
+/// Present `refs` and return the first file entry's label.
+fn firstLabel(allocator: std.mem.Allocator, f: *const Fixture, refs: []PresentFileRef, root: ?[]const u8) ![]u8 {
+    const payload = try callTool(allocator, f, refs, root);
+    defer allocator.free(payload);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("presented", parsed.value.object.get("status").?.string);
+    return allocator.dupe(u8, parsed.value.object.get("files").?.array.items[0].object.get("label").?.string);
+}
+
+test "present_files: a file inside the session working directory is presented" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const payload = try callTool(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(payload);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("presented", parsed.value.object.get("status").?.string);
+    try testing.expectEqual(@as(i64, 1), parsed.value.object.get("count").?.integer);
+}
+
+test "present_files: a nested file inside the working directory is presented" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "docs/reports/before-after.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const payload = try callTool(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(payload);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("presented", parsed.value.object.get("status").?.string);
+}
+
+test "present_files: a file OUTSIDE the working directory is rejected" {
+    // The reported Windows case: the agent wrote/kept a report under
+    // `C:\Users\<user>\Downloads\…` while the session worked in its worktree.
+    // The tool used to answer "presented" and the card 403'd on every fetch.
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeOutsideFile(alloc, &f, "Downloads/report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "outside the session working directory"));
+}
+
+test "present_files: the outside-root message names BOTH the file and the working directory" {
+    // The model can only act on the failure if it knows where the file was
+    // and where it is allowed to put things.
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeOutsideFile(alloc, &f, "Downloads/report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, path));
+    try testing.expect(contains(msg, f.inside_abs));
+}
+
+test "present_files: the outside-root message tells the model to copy the file in" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeOutsideFile(alloc, &f, "Downloads/report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "copy"));
+}
+
+test "present_files: one out-of-root file fails the whole batch and names it" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const good = try makeInsideFile(alloc, &f, "notes.txt", "ok");
+    defer alloc.free(good);
+    const bad = try makeOutsideFile(alloc, &f, "Downloads/report.html", "<h1>hi</h1>");
+    defer alloc.free(bad);
+
+    var refs = [_]PresentFileRef{ .{ .path = good }, .{ .path = bad } };
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, bad));
+    // …and the in-root file is not what got rejected.
+    try testing.expect(!contains(msg, good));
+}
+
+test "present_files: a null sandbox root keeps the un-sandboxed legacy behaviour" {
+    // TUI / routine dispatches have no session row, so they pass null and must
+    // keep working exactly as before.
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeOutsideFile(alloc, &f, "report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const payload = try callTool(alloc, &f, &refs, null);
+    defer alloc.free(payload);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("presented", parsed.value.object.get("status").?.string);
+}
+
+test "present_files: an empty sandbox root is treated as no root, not as the filesystem root" {
+    // `""` must never be handed to realPath — and it must not 403 every file
+    // either (the empty-slice trap from PR #291 in a new costume).
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeOutsideFile(alloc, &f, "report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const payload = try callTool(alloc, &f, &refs, "");
+    defer alloc.free(payload);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("presented", parsed.value.object.get("status").?.string);
+}
+
+test "present_files: a symlink inside the working directory pointing outside is rejected" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest; // symlinks need a privilege
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const secret = try makeOutsideFile(alloc, &f, "secret.txt", "s3cret");
+    defer alloc.free(secret);
+    const link = try std.fs.path.join(alloc, &.{ f.inside_abs, "link.txt" });
+    defer alloc.free(link);
+    try std.Io.Dir.symLinkAbsolute(f.io, secret, link, .{});
+
+    var refs = [_]PresentFileRef{.{ .path = link }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "outside the session working directory"));
+}
+
+test "present_files: a symlink that stays inside the working directory is presented" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const real = try makeInsideFile(alloc, &f, "real.txt", "ok");
+    defer alloc.free(real);
+    const link = try std.fs.path.join(alloc, &.{ f.inside_abs, "link.txt" });
+    defer alloc.free(link);
+    try std.Io.Dir.symLinkAbsolute(f.io, real, link, .{});
+
+    var refs = [_]PresentFileRef{.{ .path = link }};
+    const payload = try callTool(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(payload);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, payload, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("presented", parsed.value.object.get("status").?.string);
+}
+
+test "present_files: a parent-segment path is rejected before the sandbox check" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "notes.txt", "ok");
+    defer alloc.free(path);
+    const dotdot = try std.fs.path.join(alloc, &.{ f.inside_abs, "..", "notes.txt" });
+    defer alloc.free(dotdot);
+
+    var refs = [_]PresentFileRef{.{ .path = dotdot }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, ".."));
+}
+
+test "present_files: a missing file inside the working directory reports not-found, not outside" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try std.fs.path.join(alloc, &.{ f.inside_abs, "nope.txt" });
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "not found"));
+    try testing.expect(!contains(msg, "outside the session working directory"));
+}
+
+test "present_files: a directory inside the working directory is rejected as not-found" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    try f.inside.dir.createDirPath(f.io, "sub");
+    const path = try std.fs.path.join(alloc, &.{ f.inside_abs, "sub" });
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "not found"));
+}
+
+test "present_files: the file-count cap is reported before the sandbox rule" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeOutsideFile(alloc, &f, "report.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs: [MAX_FILES + 1]PresentFileRef = undefined;
+    for (&refs) |*r| r.* = .{ .path = path };
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "at most"));
+    try testing.expect(!contains(msg, "outside the session working directory"));
+}
+
+test "present_files: the empty-list check runs before the sandbox rule" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+
+    const msg = try failureMessage(alloc, &f, @constCast(&[_]PresentFileRef{}), f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "at least 1 file"));
+}
+
+test "present_files: an empty path is reported before the sandbox rule" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+
+    var refs = [_]PresentFileRef{.{ .path = "" }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "empty"));
+}
+
+test "present_files: a Windows drive path is rejected as not-absolute on a posix host" {
+    // `C:\Users\…` is not a path on Linux, and handing it to realPath aborts
+    // the process (its isAbsolute assert), so the guard comes first.
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var refs = [_]PresentFileRef{.{ .path = "C:\\Users\\gilang\\Downloads\\report.html" }};
+    const msg = try failureMessage(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(msg);
+    try testing.expect(contains(msg, "not absolute"));
+}
+
+test "present_files: a file whose name contains spaces is presented" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "IRON-11463 SB-02 open endpoint.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const label = try firstLabel(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(label);
+    try testing.expectEqualStrings("IRON-11463 SB-02 open endpoint.html", label);
+}
+
+test "present_files: a file whose name contains non-ascii is presented" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "rapor-akhir-印尼.html", "<h1>hi</h1>");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path }};
+    const label = try firstLabel(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(label);
+    try testing.expectEqualStrings("rapor-akhir-印尼.html", label);
+}
+
+test "present_files: NUL and C0/DEL control characters in a label are sanitized" {
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "notes.txt", "ok");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path, .label = "re\u{1}port\u{7f}" }};
+    const label = try firstLabel(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(label);
+    try testing.expect(!contains(label, "\u{1}"));
+    try testing.expect(!contains(label, "\u{7f}"));
+    // The readable parts survive so the card still names something useful.
+    try testing.expect(contains(label, "re"));
+    try testing.expect(contains(label, "port"));
+}
+
+test "present_files: a label keeps its tabs and newlines (sanitizeControlChars contract)" {
+    // Not a wish of this test — the shared helper deliberately passes \t \n
+    // through (they are legal in JSON/XLS text) and only replaces
+    // 0x00-0x08, 0x0B, 0x0C, 0x0E-0x1F and 0x7F. Pinned here so nobody
+    // "fixes" the card by double-escaping a legitimate label.
+    const alloc = testing.allocator;
+    var f = try setupFixture();
+    defer f.deinit(alloc);
+    const path = try makeInsideFile(alloc, &f, "notes.txt", "ok");
+    defer alloc.free(path);
+
+    var refs = [_]PresentFileRef{.{ .path = path, .label = "line1\nline2\tcol" }};
+    const label = try firstLabel(alloc, &f, &refs, f.inside_abs);
+    defer alloc.free(label);
+    try testing.expect(contains(label, "\n"));
+    try testing.expect(contains(label, "\t"));
+}
+
+test "present_files: the tool definition states the working-directory rule" {
+    // The model has to learn the rule from the schema, not from a failed call.
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, TOOL_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source, "working directory"));
+    try testing.expect(contains(source, "outside"));
+}
+
+test "present_files: the tool delegates containment to file_sandbox, not a private copy" {
+    // Two private copies of this rule are exactly how the tool and the
+    // endpoint drifted apart. This source check keeps them from reappearing.
+    const alloc = testing.allocator;
+    const source = try readSource(alloc, TOOL_PATH);
+    defer alloc.free(source);
+    try testing.expect(contains(source, "@import(\"file_sandbox.zig\")"));
+    // Assembled at runtime so the needle itself is not in this file — a
+    // a literal needle spelled out here would make the check match itself.
+    const private_copy = "fn isInside" ++ "Root";
+    try testing.expect(!contains(source, private_copy));
 }

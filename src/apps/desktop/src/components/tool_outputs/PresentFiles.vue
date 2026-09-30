@@ -412,7 +412,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
 
 <template>
   <div
-    class="chat-tool-card font-mono text-xs"
+    class="chat-tool-card font-mono text-dense"
     :class="{ 'border-red-500/50 opacity-80': !!parsed.error }"
     data-testid="present-files-card"
   >
@@ -428,7 +428,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
     />
 
     <div v-if="isExpanded" class="border-t border-[var(--color-border)]">
-      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-xs">
+      <div v-if="parsed.error" class="flex gap-2 px-2 py-1.5 text-red-500 text-dense">
         <span class="font-semibold shrink-0">Error:</span>
         <span class="whitespace-pre-wrap break-all">{{ parsed.error }}</span>
       </div>
@@ -451,7 +451,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
               @click="openFullscreen(f)"
               @error="(e) => ((e.target as HTMLImageElement).style.display = 'none')"
             />
-            <span v-else class="shrink-0 text-base leading-none" aria-hidden="true">📄</span>
+            <span v-else class="shrink-0 text-lead leading-none" aria-hidden="true">📄</span>
             <div class="flex min-w-0 flex-1 flex-col">
               <a
                 :href="downloadUrl(f)"
@@ -466,7 +466,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
             <a
               :href="downloadUrl(f)"
               :download="basenameOfPath(f.path)"
-              class="shrink-0 rounded px-1.5 py-0.5 text-sm leading-none hover:bg-violet-500/10"
+              class="shrink-0 rounded px-1.5 py-0.5 text-body leading-none hover:bg-violet-500/10"
               :data-testid="`present-files-dlbtn-${idx}`"
               :title="`Download ${basenameOfPath(f.path)}`"
               aria-label="Download file"
@@ -548,7 +548,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
             >
               <button
                 type="button"
-                class="cursor-pointer rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] px-2 py-0.5 text-xs text-[var(--semantic-text)] transition-colors hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)]"
+                class="cursor-pointer rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] px-2 py-0.5 text-dense text-[var(--semantic-text)] transition-colors hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)]"
                 :data-testid="`present-files-open-tab-${idx}`"
                 :title="`Open ${displayName(f)} in a new browser tab`"
                 @click.stop="openInNewTab(f)"
@@ -600,7 +600,7 @@ const openInNewTab = (f: ParsedPresentFile) => {
             >
               <button
                 type="button"
-                class="cursor-pointer rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] px-2 py-0.5 text-xs text-[var(--semantic-text)] transition-colors hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)]"
+                class="cursor-pointer rounded border border-[var(--color-border)] bg-[var(--semantic-card-bg)] px-2 py-0.5 text-dense text-[var(--semantic-text)] transition-colors hover:bg-[var(--color-violet)]/20 hover:border-[var(--color-violet)]/60 hover:text-[var(--color-violet)]"
                 :data-testid="`present-files-open-tab-${idx}`"
                 :title="`Open ${displayName(f)} in a new browser tab`"
                 @click.stop="openInNewTab(f)"

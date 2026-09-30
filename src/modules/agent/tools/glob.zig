@@ -1,5 +1,7 @@
 const std = @import("std");
 const schemas = @import("schemas.zig");
+const path_validate = @import("helpers").path_validate;
+const invalidPathReason = path_validate.invalidPathReason;
 const AgentTool = schemas.AgentTool;
 const nalarcore = @import("nalarcore");
 const helpers = @import("helpers");
@@ -905,6 +907,15 @@ pub fn executeGlob(allocator: std.mem.Allocator, io: std.Io, input: GlobInput) !
     // caller bugs. Catching them here gives the LLM a clear, actionable
     // error message instead of a silent empty result.
     if (input.pattern.len == 0) return error.EmptyPattern;
+
+    // The LLM chooses `path`; on Windows a malformed NT name panics the
+    // process inside std's Io backend rather than failing this call.
+    if (input.path.len > 0) {
+        if (invalidPathReason(input.path)) |reason| {
+            std.log.debug("glob rejected path: {s}", .{reason});
+            return error.InvalidPath;
+        }
+    }
 
     // Whitespace-only pattern check. We strip ASCII whitespace and
     // accept the result iff non-empty.
@@ -1961,9 +1972,17 @@ test "glob: respect_ignore_files = false does NOT return a validation error" {
     var tmpdir = testing.tmpDir(.{});
     defer tmpdir.cleanup();
 
+    // `realPath` of the tmpdir, NOT ".": `invalidPathReason` refuses a
+    // relative path on Windows, so `.` returned error.InvalidPath there
+    // while passing on POSIX. The same `realPath` idiom is what the three
+    // tests below already use.
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const path_len = try tmpdir.dir.realPath(std.testing.io, &path_buf);
+    const root_abs = path_buf[0..path_len];
+
     var result = try executeGlob(allocator, std.testing.io, .{
         .pattern = "*.txt",
-        .path = ".",
+        .path = root_abs,
         .respect_ignore_files = false,
     });
     defer result.deinit(allocator);

@@ -58,10 +58,13 @@ test {
     _ = @import("design_model.zig"); // Phase 6 — inline updateElementsBatch + indexOf tests
     _ = @import("workflow_compact_message.zig"); // merged 2026-09-10 (ex-workflow_commpact_message.zig typo): url_style regression + envelope + prompt/envelope helpers
     _ = @import("handle_tool.zig"); // 2026-08-06-fix-refactor-zig-imports — 16 inline parseDiffViewFromResult tests
-    _ = @import("tool_calls_json_wire_shape_test.zig"); // task_1787590621966_10 — SSE tool_calls_json must be a JSON STRING (frontend .trim() crash regression lock)
-    _ = @import("mcp_fetch_once_test.zig"); // mcp-fetch-once-cache — tools/list fetched once, cached on singleton, run reads snapshot
-    _ = @import("tools_wrap_output.zig");
-    _ = @import("tool_output_json_contract_test.zig"); // Phase 0 RED: JSON envelope contract (fails until Phase 1)
+    // (on_event_sent.zig, workflow.zig and tools_wrap_output.zig are
+    // already registered above; their tool_calls_json wire-shape lock,
+    // fetch-once MCP cache contracts and JSON tool-output envelope
+    // contract now live inline in those files. The project-wide
+    // "no literal /tmp file op" gate — run 36496521345 — moved into
+    // src/root.zig, which is the mod test root and so already discovers
+    // its own `test` blocks.)
     _ = @import("workflow_compact_message.zig"); // merged single file — helpers + orchestration + all inline tests
     _ = @import("prompts_make_working_directory_context.zig"); // never-create-memory-md — makeWorkingDirectoryContext must never force-create AGENTS.md / CLAUDE.md / NALAR.md (inline tests at the bottom of the impl file)
     _ = @import("prompts_make_cross_project_context.zig"); // sibling-cwd loop from workspace_items only (inline in-memory DB tests)
@@ -80,6 +83,11 @@ test {
     _ = @import("tools_exec_read_file.zig");
     _ = @import("tools_exec_write_file.zig");
     _ = @import("tools_exec_text_replace.zig");
+    // Windows absolute paths in tool-call `arguments`: models emit the
+    // separators as raw `\`, which is invalid JSON. Registered here per
+    // this directory's discovery rule (see README.md §"Discovery is NOT
+    // automatic").
+    _ = @import("tools_args_repair.zig");
     _ = @import("tools_exec_remove_file.zig");
     _ = @import("tools_exec_glob.zig");
     _ = @import("tools_exec_search.zig");
@@ -111,6 +119,10 @@ test {
     // per-thread struct. Drops of these regress user-visible
     // progress to "0 sub-agents".
     _ = @import("tools_exec_spawn_sub_agent.zig");
+    // present_files exec adapter — the sandbox root it resolves from the
+    // session row is what keeps a card servable by /api/files/download
+    // (docs/plans/2026-09-29-present-files-sandbox-parity.md).
+    _ = @import("tools_exec_present_files.zig");
     // 2026-09-02 stream-resume-on-reselect (task_1787673548905_0) —
     // in-flight stream buffer registry + snapshot getter. Tests inline.
     _ = @import("stream_snapshot.zig");

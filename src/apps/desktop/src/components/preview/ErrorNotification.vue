@@ -28,17 +28,17 @@ const emit = defineEmits<{ dismiss: [] }>()
     role="alert"
   >
     <div class="flex items-start gap-3">
-      <span class="text-lg shrink-0">⚠</span>
+      <span class="text-title-sm shrink-0">⚠</span>
       <div class="flex-1 min-w-0">
         <div class="font-medium">{{ message }}</div>
-        <details v-if="details" class="mt-1 text-xs opacity-90">
+        <details v-if="details" class="mt-1 text-dense opacity-90">
           <summary class="cursor-pointer">Details</summary>
           <pre class="mt-1 whitespace-pre-wrap break-all">{{ details }}</pre>
         </details>
       </div>
       <button
         class="shrink-0 text-white opacity-70 hover:opacity-100"
-        style="background: none; border: none; font-size: 1.25rem; line-height: 1; cursor: pointer;"
+        style="background: none; border: none; font-size: var(--text-title); line-height: 1; cursor: pointer;"
         @click="emit('dismiss')"
         aria-label="Dismiss"
       >×</button>

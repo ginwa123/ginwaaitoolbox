@@ -367,6 +367,75 @@ fn firstMsvcRoot(b: *std.Build) ?[]const u8 {
     return null;
 }
 
+/// Numeric dotted-version compare: true when `a` is a HIGHER version than
+/// `b`.
+///
+/// String ordering is wrong for these directory names: `"10.0.10240.0" <
+/// "10.0.26100.0"` lexicographically, so a `lessThan` on the raw name picks
+/// the OLDER SDK. Components are compared as integers, left to right; a
+/// missing component counts as 0 (so `10.0.26100` == `10.0.26100.0`).
+fn versionGreater(a: []const u8, b: []const u8) bool {
+    var ai = std.mem.splitScalar(u8, a, '.');
+    var bi = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const an = ai.next();
+        const bn = bi.next();
+        if (an == null and bn == null) return false;
+        const av = if (an) |s| std.fmt.parseInt(u64, s, 10) catch 0 else 0;
+        const bv = if (bn) |s| std.fmt.parseInt(u64, s, 10) catch 0 else 0;
+        if (av != bv) return av > bv;
+    }
+}
+
+/// Return `<root>/<highest-versioned subdirectory that actually contains
+/// every name in `required_files`, or null when none does.
+///
+/// Do NOT use `firstSubdir` for the Windows SDK. `Windows Kits/10/Lib` on
+/// the windows-2022 image holds several decoy version directories next to
+/// the real one, and `Dir.iterate` order is undefined, so `firstSubdir`
+/// hands back whichever wins the race:
+///   * `10.0.10240.0`  — no `um/x64` at all
+///   * `wdf0.26100.0`  — has an `um/x64`, but it is EMPTY (WDF stub)
+/// Either one costs the link uuid / shlwapi / version, which is exactly
+/// what `-luuid -lshlwapi -lversion` below need:
+///   warning: unable to open library directory
+///     '...\Lib\10.0.10240.0\um\x64': FileNotFound
+///   error: lld-link: could not open 'libuuid.a': No such file or directory
+///
+/// Hence the probe checks the real `.lib` FILES, not just the directory.
+fn newestSubdirWith(b: *std.Build, root: []const u8, required_files: []const []const u8) ?[]const u8 {
+    if (b.graph.host.result.os.tag != .windows) return null;
+    const d = std.Io.Dir.openDirAbsolute(b.graph.io, root, .{ .iterate = true }) catch return null;
+    defer d.close(b.graph.io);
+    var best_name: ?[]const u8 = null;
+    var it = d.iterate();
+    while (it.next(b.graph.io) catch null) |entry| {
+        // `.sym_link` counts: the real SDK leaves ship as links (the image
+        // has `wdf0.26100.0` alongside a plain `wdf`), and a dangling one
+        // is rejected by the file probe below anyway.
+        if (entry.kind != .directory and entry.kind != .sym_link) continue;
+        const candidate = b.fmt("{s}/{s}", .{ root, entry.name });
+        var complete = true;
+        for (required_files) |f| {
+            if (!fileExists(b.fmt("{s}/{s}", .{ candidate, f }))) {
+                complete = false;
+                break;
+            }
+        }
+        if (!complete) continue;
+        if (best_name == null or versionGreater(entry.name, best_name.?)) {
+            // MUST dupe: `entry.name` points into the iterator's name buffer,
+            // which the next `it.next()` overwrites. Storing the slice made
+            // `best_name` a dangling view that later read as a FRANKENSTEIN
+            // name ("wdf0.26100.0" — the next entry's bytes over the tail of
+            // "10.0.26100.0"), so the resolver returned a path to a
+            // directory that does not exist.
+            best_name = b.dupe(entry.name);
+        }
+    }
+    return if (best_name) |n| b.fmt("{s}/{s}", .{ root, n }) else null;
+}
+
 /// Return `<root>/<first-subdirectory>`, or null when `root` doesn't
 /// exist or contains no subdirectories. Used to resolve opaque version
 /// directories (`14.44.35207`, `10.0.22621.0`) without hard-coding them.
@@ -1786,6 +1855,32 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 cflags[cn] = a;
                 cn += 1;
             }
+            // Debian/Ubuntu keep the glibc headers in a multiarch subdir
+            // and ship NO /usr/include/bits symlink, so with only
+            // /usr/include on the path the system headers' own
+            // `#include <bits/types.h>` resolves to nothing.
+            //
+            // That is invisible until a C++ TU reaches <ctime>: Zig's
+            // generic-glibc/time.h shim pulls in the system
+            // bits/types/time_t.h, which uses `__time64_t` under
+            // __USE_TIME_BITS64 — and `__time64_t` is defined in
+            // bits/types.h, the header that silently did not resolve.
+            // Result: "unknown type name '__time64_t'" in
+            // bits/types/struct_timeval.h, then an undeclared
+            // `__ts_sec` in libcxx's condition_variable.h.
+            //
+            // Arch and Fedora keep these headers flat in /usr/include,
+            // which is why this never showed up until CI left the Arch
+            // runner. Added conditionally so those distros are
+            // untouched — a non-existent -isystem dir is harmless, but
+            // being explicit keeps the flag list honest.
+            const multiarch_include = b.fmt("/usr/include/{s}-linux-gnu", .{@tagName(target.result.cpu.arch)});
+            if (dirExists(b, multiarch_include)) {
+                if (cn < cflags.len) {
+                    cflags[cn] = b.fmt("-isystem{s}", .{multiarch_include});
+                    cn += 1;
+                }
+            }
             if (libstdc_dir) |cxx| {
                 // System libstdc++: pin to the highest-version c++
                 // directory + its target-specific c++config.h. Both
@@ -2090,8 +2185,19 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
                 // will then fail loudly on the missing lib).
                 stagePrunedMsvcrt(b, msvc_lib_root, stage_dir);
             }
-            const kit_lib_root = firstSubdir(b, "C:/Program Files (x86)/Windows Kits/10/Lib") orelse
-                firstSubdir(b, "C:/Program Files/Windows Kits/10/Lib");
+            // The exact libs `-luuid -lshlwapi -lversion` below need. Probing
+            // the FILES (not just the `um/x64` dir) is what skips the
+            // `wdf0.26100.0` decoy, whose um/x64 exists but is empty.
+            // See newestSubdirWith's doc comment.
+            const kit_lib_root = newestSubdirWith(
+                b,
+                "C:/Program Files (x86)/Windows Kits/10/Lib",
+                &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
+            ) orelse newestSubdirWith(
+                b,
+                "C:/Program Files/Windows Kits/10/Lib",
+                &.{ "um/x64/uuid.lib", "um/x64/shlwapi.lib", "um/x64/version.lib" },
+            );
             if (kit_lib_root) |kl| {
                 desktop_exe.root_module.addLibraryPath(.{
                     .cwd_relative = b.fmt("{s}/um/x64", .{kl}),
@@ -2657,6 +2763,51 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     // own the vendored curl archive, and nalar builds link system
     // curl/ssl/crypto via the module graph. See the kabelweb repo.)
     test_step.dependOn(&run_mod_tests.step);
+
+    // `run_captured.zig` lives in the standalone `helpers` PACKAGE, so
+    // its inline tests are not reachable from `src/root.zig` and the
+    // mod_tests binary above never compiles them. It needs its own
+    // test root: this is the regression suite for the child-process
+    // spawn path that used to abort the whole server (EBADF in
+    // `Io.Threaded.closeFd` via `Child.wait` -> `childCleanupPosix`)
+    // and to deadlock on >64 KiB of child stderr. The file has no
+    // package imports (std only), so it builds standalone.
+    const run_captured_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/run_captured.zig"),
+            .target = test_target,
+            .optimize = optimize,
+        }),
+    });
+    const run_run_captured_tests = b.addRunArtifact(run_captured_tests);
+    test_step.dependOn(&run_run_captured_tests.step);
+    b.step("test:helpers:run_captured", "Run run_captured helper tests").dependOn(&run_run_captured_tests.step);
+
+    // Same story for `test_path.zig`: it is part of the standalone
+    // `helpers` PACKAGE (`@import("helpers").test_path.absPath` is how the
+    // agent tool tests build an absolute path), so its inline tests are
+    // not reachable from `src/root.zig` — and a relative import from
+    // there is rejected outright ("file exists in modules 'root' and
+    // 'helpers'"). Its own test root is the fix, exactly as above.
+    //
+    // These tests are load-bearing, not incidental: they assert that
+    // `absPath` emits a path the Windows branch of
+    // `helpers/path_validate.zig invalidPathReason` accepts. Checking
+    // that needs only `std.fs.path.isAbsoluteWindows`, a pure string
+    // function, so the Windows contract is verifiable on a Linux runner
+    // — the tool tests in this package have no such oracle.
+    const test_path_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/helpers/test_path.zig"),
+            .target = test_target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    const run_test_path_tests = b.addRunArtifact(test_path_tests);
+    test_step.dependOn(&run_test_path_tests.step);
+    b.step("test:helpers:test_path", "Run test_path helper tests")
+        .dependOn(&run_test_path_tests.step);
 
     // kabelweb's own suites (server + client) run in the kabelweb
     // repo's CI (github.com/ginwa123/kabelweb), not here — it's an

@@ -44,16 +44,86 @@ machine.
 
 ## Current behavior
 
-The Android app authenticates against `https://agent.ginwa.site` through
-`POST /api/auth/login`. A successful sign-in stores the `nalar_session` cookie
-encrypted with an Android Keystore AES-GCM key. On startup the app verifies that
-cookie with `GET /api/auth/me`; a 401 clears it and returns to the login screen.
-Network and credential errors are shown in the login form, and the submit
-button is disabled while a request is in flight.
+The Android app authenticates against the server named in **Server** — below
+the sign-in form, with a **Change** action — through `POST /api/auth/login`. A
+successful sign-in stores the `nalar_session` cookie encrypted with an Android
+Keystore AES-GCM key. On startup the app verifies that cookie with
+`GET /api/auth/me`; a 401 clears it and returns to the login screen. Network and
+credential errors are shown in the login form, and the submit button is disabled
+while a request is in flight.
 
 The app declares `INTERNET` but explicitly rejects cleartext traffic, so every
 client only accepts HTTPS endpoints. A transient startup verification failure
-offers retry and account-switch recovery without deleting the saved cookie.
+offers retry and account-switch recovery without deleting the saved cookie. That
+same screen offers the server change, because a wrong or unreachable address is
+what lands a reader on it and "Try again" cannot fix a typo.
+
+## The server address is a setting
+
+A person who deploys their own nalar needs the app to talk to it. The address is
+a **Server** row on both auth screens, a dialog to change it, and a preference
+that survives process death — not a constant compiled into the APK.
+
+### Why the transports take a provider, not a string
+
+The app resolves all four of its ViewModels during the first composition of
+`MainActivity`, and each builds its HTTP transport there. A host captured as a
+constructor `val` could therefore never change for the life of the process, and
+making it change would have meant tearing down the whole graph.
+
+So every transport takes `baseUrlProvider: () -> String` and calls it **per
+request**. `AuthConfig.BASE_URL` became a getter over `ServerUrl` for the same
+reason — a `val` evaluated once at construction is still a snapshot, just a
+later one. A change lands on the next call, with no Activity restart.
+
+Two guards keep that from eroding, because a captured host compiles silently:
+
+- `HttpsAuthTransport` has **no `String` overload**, so
+  `HttpsAuthTransport(AuthConfig.BASE_URL)` is a compile error rather than a
+  snapshot that looks identical from a distance.
+- `ServerUrlContractTest` reads every file in the main source set and fails if a
+  transport takes a `String` host, or if any call site hands one a value rather
+  than a lambda.
+
+### What the scheme rule is, and where it moved to
+
+The rule used to be a `require` in `HttpsAuthTransport`'s constructor. It is now
+`requireUsableBaseUrl` on the request path, because the host is person-typed: a
+value this build cannot open a socket to has to fail as a readable
+`AuthResult.Unavailable`, not as an exception out of a constructor — which would
+be a launch crash on a device that has been pointed somewhere the app cannot
+reach, with no way to get to the screen that fixes it.
+
+`normalizeBaseUrl` is the single implementation, used by both the settings
+dialog and the transport, so the sentence under the field and the exception out
+of the socket never disagree. It accepts a scheme-less host (a self-hoster
+typing `nalar.example.com` has done nothing wrong) and resolves it to `https://`.
+
+### Cleartext is a list, not a boolean
+
+`CLEAR_TEXT_HOSTS` is the **same three addresses** the debug
+`network_security_config.xml` grants cleartext to — `10.0.2.2`, `localhost`,
+`127.0.0.1` — and is empty in release. A boolean would let the store accept
+`http://server.lan`, which the platform then refuses at connect time with an
+error nobody can act on: the setting would save, the row would show the new
+host, and every request would fail. `ServerUrlContractTest` pins the Kotlin list
+against the XML, because they are two files in two languages and nothing in the
+build makes them agree.
+
+### What a server change does
+
+It is **not** `logout()`. A sign-out posts `/api/auth/logout` so the old server
+can end its own side; a server change must not, because by then the app is
+already pointed elsewhere and that POST would be one deployment's cookie sent to
+another deployment, to a host someone just typed. `AuthClient.forgetSession()`
+drops the cookie and the `/me` cache locally, the account-scoped caches and the
+open socket are closed, and the app lands on the sign-in form — which is what the
+reader asked for by changing the server.
+
+A stored value that no longer normalizes is dropped rather than obeyed, so a
+release APK cannot inherit a debug-only `http://10.0.2.2:8080` from a device
+whose last session was a debug build. A refusal changes neither memory nor file:
+a value that cannot be used cannot survive a failed attempt at using it.
 
 ## Drawer
 

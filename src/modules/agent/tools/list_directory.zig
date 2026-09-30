@@ -249,6 +249,7 @@ pub const list_directory_tool = AgentTool{
 const builtin = @import("builtin");
 const testing = std.testing;
 const list_directory = @import("list_directory.zig");
+const absPath = @import("helpers").test_path.absPath;
 
 const TestEnv = struct {
     tmp_dir: std.testing.TmpDir,
@@ -355,11 +356,17 @@ test "execute_list_directory: returns PathNotAbsolute for a relative path (no pa
 test "execute_list_directory: returns PathNotFound for missing dir" {
     const alloc = testing.allocator;
 
-    // Path that almost certainly does not exist.
+    // An ABSOLUTE name under the cwd: a hardcoded `/tmp/...` would be
+    // rooted-but-driveless on Windows, so `std.fs.path.isAbsolute` (which
+    // dispatches to `isAbsoluteWindows` there) would reject it as
+    // `PathNotAbsolute` and the test would prove the wrong thing.
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const missing = try absPath(&path_buf, "this_path_definitely_does_not_exist_xyz_123");
+
     const result = list_directory.execute_list_directory(
         alloc,
         testing.io,
-        "/tmp/this_path_definitely_does_not_exist_xyz_123",
+        missing,
         false,
         false,
     );

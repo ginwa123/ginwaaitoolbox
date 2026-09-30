@@ -537,7 +537,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
   <div
     role="button"
     tabindex="0"
-    class="flex flex-col gap-2 p-3 w-full rounded-lg text-xs group/task cursor-pointer transition-shadow duration-200"
+    class="flex flex-col gap-2 p-3 w-full rounded-lg text-dense group/task cursor-pointer transition-shadow duration-200"
     :data-task-id="task.id"
     :data-drop-indicator="dropIndicator ?? undefined"
     :data-has-agent-error="agentError ? 'true' : undefined"
@@ -651,7 +651,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
           style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red)"
           aria-label="Agent error — click card to view detail"
         >
-          <span style="color: var(--color-red); font-size: 10px; line-height: 1" aria-hidden="true"
+          <span style="color: var(--color-red); font-size: var(--text-micro); line-height: 1" aria-hidden="true"
             >⚠</span
           >
         </span>
@@ -669,18 +669,18 @@ watch([gitBranchBadge, effectiveCwd], () => {
           data-testid="task-agent-error-tooltip"
         >
           <div class="flex items-center gap-2 mb-1.5">
-            <span style="color: var(--color-red); font-size: 11px" aria-hidden="true">⚠</span>
-            <span class="text-[11px] font-medium" style="color: var(--color-red)">Agent error</span>
+            <span style="color: var(--color-red); font-size: var(--text-meta)" aria-hidden="true">⚠</span>
+            <span class="text-meta font-medium" style="color: var(--color-red)">Agent error</span>
             <span
               v-if="errorRetryLabel"
-              class="text-[10px] px-1.5 py-0.5 rounded-full"
+              class="text-micro px-1.5 py-0.5 rounded-full"
               style="background: rgba(196, 116, 110, 0.18); color: #e8928c"
               data-testid="task-agent-error-retry"
               >retry {{ errorRetryLabel }}</span
             >
           </div>
           <div
-            class="text-[11px] leading-snug"
+            class="text-meta leading-snug"
             style="color: var(--semantic-text-muted)"
             data-testid="task-agent-error-headline"
           >
@@ -706,7 +706,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
           />
         </svg>
       </span>
-      <span class="flex-1 min-w-0 text-sm font-medium leading-snug truncate">{{ task.name }}</span>
+      <span class="flex-1 min-w-0 text-body font-medium leading-snug truncate">{{ task.name }}</span>
       <!-- The four hover action buttons that used to live here
            (pin / rename / details / delete) are gone: they ate ~100px
            of a 280px column and truncated the task name to ~150px.
@@ -723,7 +723,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
          display quirk). -->
     <div
       v-if="task.description"
-      class="text-[11px] leading-relaxed pr-1 w-full text-left line-clamp-2"
+      class="text-meta leading-relaxed pr-1 w-full text-left line-clamp-2"
       style="color: var(--semantic-text-muted); max-height: 3rem; overflow: hidden"
       data-testid="task-description"
     >
@@ -753,7 +753,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       />
       <span
         v-if="extraImagesCount > 0"
-        class="absolute bottom-1 right-1 text-[10px] px-1.5 py-0.5 rounded font-medium"
+        class="absolute bottom-1 right-1 text-micro px-1.5 py-0.5 rounded font-medium"
         style="background: rgba(0, 0, 0, 0.6); color: #fff"
         data-testid="task-image-more"
         >+{{ extraImagesCount }}</span
@@ -766,7 +766,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
          card-first placeholder until the thumb arrives. -->
     <div
       v-else-if="hasUnloadedMedia"
-      class="flex items-center gap-1 text-[11px] self-start"
+      class="flex items-center gap-1 text-meta self-start"
       style="color: var(--semantic-text-muted)"
       data-testid="task-media-badge"
     >
@@ -786,7 +786,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       <span
         v-for="(tag, idx) in visibleTags"
         :key="`${tag}-${idx}`"
-        class="inline-flex items-center text-[10px] px-1.5 py-0.5 rounded font-medium"
+        class="inline-flex items-center text-micro px-1.5 py-0.5 rounded font-medium"
         :style="tagChipStyle(tag)"
         :data-testid="`task-tag-chip-${tag}`"
       >
@@ -795,7 +795,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
       <button
         v-if="extraTagsCount > 0"
         type="button"
-        class="text-[10px] underline"
+        class="text-micro underline"
         style="color: var(--semantic-text-dim)"
         @click.stop="emit('viewTaskDetail', task.id)"
         :data-testid="`task-tags-more`"
@@ -810,7 +810,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
          defaults to centered alignment. -->
     <div
       v-if="lastUpdatedLabel || typeBadge || gitBranchBadge || agentError"
-      class="flex items-center gap-1.5 pt-1 text-[10px] flex-wrap self-start w-full"
+      class="flex items-center gap-1.5 pt-1 text-micro flex-wrap self-start w-full"
       style="color: var(--semantic-text-dim)"
       data-testid="task-meta"
     >
