@@ -8,6 +8,10 @@ const STORAGE_KEY_NAV_EXPANDED = 'nalar-sidebar-nav-expanded'
 // plan: docs/plans/2026-09-22-revamp-workspace-ui-dropdown-projects.md).
 const STORAGE_KEY_LEGACY_WORKSPACES_EXPANDED = 'nalar-sidebar-workspaces-expanded'
 const STORAGE_KEY_PROJECTS_EXPANDED = 'nalar-sidebar-projects-expanded'
+// Documents section (Migration 095). Separate key from the projects one
+// so collapsing Projects does not collapse Documents — they are
+// independent lists and the user collapses them independently.
+const STORAGE_KEY_DOCUMENTS_EXPANDED = 'nalar-sidebar-documents-expanded'
 const STORAGE_KEY_RIGHT_SIDEBAR_WIDTH = 'nalar-right-sidebar-width'
 const STORAGE_KEY_SKILLS_GLOBAL = 'nalar-sidebar-skills-global-expanded'
 const STORAGE_KEY_SKILLS_LOCAL = 'nalar-sidebar-skills-local-expanded'
@@ -47,7 +51,11 @@ export const useSidebarStore = defineStore('sidebar', () => {
     const saved = localStorage.getItem(STORAGE_KEY_RIGHT_SIDEBAR_WIDTH)
     if (saved) {
       const parsed = parseInt(saved, 10)
-      if (!isNaN(parsed) && parsed >= MIN_RIGHT_SIDEBAR_WIDTH && parsed <= MAX_RIGHT_SIDEBAR_WIDTH) {
+      if (
+        !isNaN(parsed) &&
+        parsed >= MIN_RIGHT_SIDEBAR_WIDTH &&
+        parsed <= MAX_RIGHT_SIDEBAR_WIDTH
+      ) {
         return parsed
       }
     }
@@ -61,7 +69,10 @@ export const useSidebarStore = defineStore('sidebar', () => {
   }
 
   const setRightSidebarWidth = (width: number) => {
-    rightSidebarWidth.value = Math.max(MIN_RIGHT_SIDEBAR_WIDTH, Math.min(MAX_RIGHT_SIDEBAR_WIDTH, width))
+    rightSidebarWidth.value = Math.max(
+      MIN_RIGHT_SIDEBAR_WIDTH,
+      Math.min(MAX_RIGHT_SIDEBAR_WIDTH, width),
+    )
     saveRightSidebarWidth()
   }
 
@@ -90,6 +101,28 @@ export const useSidebarStore = defineStore('sidebar', () => {
 
   const navExpanded = ref(loadNavExpanded())
   const projectsExpanded = ref(loadProjectsExpanded())
+
+  // Load documents section expanded state. Default expanded so a fresh
+  // install shows the new section's contents, matching the projects and
+  // recent sections.
+  const loadDocumentsExpanded = (): boolean => {
+    const saved = localStorage.getItem(STORAGE_KEY_DOCUMENTS_EXPANDED)
+    if (saved !== null) {
+      return saved === 'true'
+    }
+    return true
+  }
+
+  const documentsExpanded = ref(loadDocumentsExpanded())
+
+  const saveDocumentsExpanded = () => {
+    localStorage.setItem(STORAGE_KEY_DOCUMENTS_EXPANDED, String(documentsExpanded.value))
+  }
+
+  const toggleDocumentsExpanded = () => {
+    documentsExpanded.value = !documentsExpanded.value
+    saveDocumentsExpanded()
+  }
 
   const saveNavExpanded = () => {
     localStorage.setItem(STORAGE_KEY_NAV_EXPANDED, String(navExpanded.value))
@@ -155,6 +188,8 @@ export const useSidebarStore = defineStore('sidebar', () => {
     projectsExpanded,
     toggleNavExpanded,
     toggleProjectsExpanded,
+    documentsExpanded,
+    toggleDocumentsExpanded,
     rightSidebarWidth,
     setRightSidebarWidth,
     skillsGlobalExpanded,

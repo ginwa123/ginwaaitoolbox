@@ -826,6 +826,22 @@ pub fn main(init: std.process.Init) !void {
     try authed.get("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesGetHandler);
     try authed.patch("/api/workspaces/:workspace_id/items/:item_id/routine", ai_mod.http_handlers.workspaceRoutinesUpdateHandler);
     try authed.post("/api/workspaces/:workspace_id/items/:item_id/routines/:routine_id/run", ai_mod.http_handlers.workspaceRoutinesRunHandler);
+    // Workspace-scoped documents (Migration 098). NOT a `workspace_items`
+    // child: a document belongs to the workspace directly and surfaces in
+    // its own sidebar section below Projects, never in the project tree.
+    //
+    // Route order: no `GET /api/workspaces/:workspace_id/:param` route
+    // exists (the only sibling with a literal 4th segment is
+    // `POST .../default-project`, a different verb), so `documents`
+    // cannot be captured as a workspace id or vice-versa. The
+    // `:document_id` routes are registered last in the group for the
+    // usual reason: matchRoute walks routes in registration order, and
+    // a param route registered before a literal sibling would swallow it.
+    try authed.get("/api/workspaces/:workspace_id/documents", ai_mod.http_handlers.documentsListHandler);
+    try authed.post("/api/workspaces/:workspace_id/documents", ai_mod.http_handlers.documentsCreateHandler);
+    try authed.get("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsGetHandler);
+    try authed.patch("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsUpdateHandler);
+    try authed.delete("/api/workspaces/:workspace_id/documents/:document_id", ai_mod.http_handlers.documentsDeleteHandler);
     try authed.get("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsListHandler);
     try authed.post("/api/workspaces/:workspace_id/items/:item_id/kanban/columns", ai_mod.http_handlers.kanbanColumnsCreateHandler);
     try authed.patch("/api/workspaces/:workspace_id/items/:item_id/kanban/columns/:column_id", ai_mod.http_handlers.kanbanColumnsUpdateHandler);

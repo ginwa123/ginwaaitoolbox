@@ -1140,6 +1140,68 @@ pub fn makeDesignPageWithElementsResponse(
     );
 }
 
+// ─── Documents response types ─────────────────────────────────────────────
+// Wire shapes for `/api/workspaces/:wsId/documents[/:documentId]`
+// (Migration 098). Mirrors `src/agentic_loop/documents_store.DocumentRow`
+// field-for-field.
+//
+// The list envelope is `{documents, count}` rather than a bare array so a
+// future paginated variant can add `has_more` / `next_cursor` without a
+// breaking shape change — the same reason `DesignPageListResponse` and
+// `WorkspaceItemTaskListResponse` are objects.
+pub const DocumentResponse = struct {
+    id: []const u8,
+    workspace_id: []const u8,
+    title: []const u8,
+    /// The markdown body. Always a string — `documents_store` flattens
+    /// SQL NULL to "" so the frontend never has to null-check it.
+    content: []const u8,
+    format: []const u8,
+    created_at: []const u8,
+    updated_at: []const u8,
+};
+
+/// Map a `documents_store.DocumentRow` (or any struct with the same
+/// fields) into the wire shape. The `anytype` parameter keeps this
+/// helper decoupled from the data-layer struct so the two can evolve
+/// independently without touching the response shape — same pattern as
+/// `makeDesignPageResponse`.
+pub fn makeDocumentResponse(doc: anytype) DocumentResponse {
+    return .{
+        .id = doc.id,
+        .workspace_id = doc.workspace_id,
+        .title = doc.title,
+        .content = doc.content,
+        .format = doc.format,
+        .created_at = doc.created_at,
+        .updated_at = doc.updated_at,
+    };
+}
+
+pub const DocumentListResponse = struct {
+    documents: []const DocumentResponse,
+    count: u32,
+};
+
+/// Build the `{"documents":[...], "count": N}` envelope. The inner
+/// slice is allocated from the per-request arena and freed before this
+/// function returns; the outer envelope JSON is what the caller
+/// receives.
+pub fn makeDocumentListResponse(allocator: std.mem.Allocator, documents: anytype) ![]u8 {
+    const mapped = try allocator.alloc(DocumentResponse, documents.len);
+    defer allocator.free(mapped);
+    for (documents, 0..) |d, i| mapped[i] = makeDocumentResponse(d);
+
+    return std.json.Stringify.valueAlloc(
+        allocator,
+        DocumentListResponse{
+            .documents = mapped,
+            .count = @intCast(documents.len),
+        },
+        .{},
+    );
+}
+
 // ─── Frontend error log response types ────────────────────────────────────
 // Wire shapes for `POST /api/logs` (no response body, 204 No Content)
 // and `GET /api/logs` (returns `{ logs: [...], count: N }`). Mirrors

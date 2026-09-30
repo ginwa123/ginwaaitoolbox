@@ -762,6 +762,10 @@ pub const save_memory = memory;
 pub const load_memory = memory;
 pub const add_mcp_server = @import("modules/agent/tools/add_mcp_server.zig"); // 2026-08-28-add-mcp-server-agent-tool
 pub const read_workspace_session_tool = @import("modules/agent/tools/read_workspace_session.zig");
+/// `add_document` / `edit_document` agent tools (Migration 098). The
+/// module resolves its own workspace from the calling session, so the
+/// tool schema deliberately carries no `workspace_id` parameter.
+pub const document_tool = @import("modules/agent/tools/document.zig");
 pub const agents = @import("modules/agent/tools/agents.zig");
 pub const list_agents = @import("modules/agent/tools/list_agents.zig");
 
@@ -985,6 +989,12 @@ pub const session_db = @import("agentic_loop/llm_history.zig");
 pub const llm_history = @import("agentic_loop/llm_history.zig");
 pub const workspace_scope = @import("agentic_loop/workspace_scope.zig");
 pub const agent_memories = @import("agentic_loop/agent_memories.zig");
+/// Workspace-scoped document storage (Migration 098). Shared by the
+/// `/api/workspaces/:wsId/documents` handlers and the `add_document` /
+/// `edit_document` tools so both obey ONE scoping rule — a second
+/// hand-written `SELECT ... FROM documents` is how a scope check drifts
+/// out of sync with its siblings.
+pub const documents_store = @import("agentic_loop/documents_store.zig");
 // 2026-08-19 — session_plan agent tools (Task 4 of 2026-08-19-session-plan-agent-tool.md).
 // Storage layer for the per-session markdown task plan (savePlan / getPlan / getPlanOpt).
 pub const session_plan = @import("agentic_loop/session_plan.zig");

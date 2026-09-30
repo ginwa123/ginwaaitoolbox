@@ -165,6 +165,15 @@ pub const workspaceRoutinesGetHandler = @import("workspace_routines_get.zig").wo
 pub const workspaceRoutinesUpdateHandler = @import("workspace_routines_update.zig").workspaceRoutinesUpdateHandler;
 pub const workspaceRoutinesRunHandler = @import("workspace_routines_run.zig").workspaceRoutinesRunHandler;
 
+// Workspace-scoped documents (Migration 098). One file per HTTP verb,
+// each carrying its own private `useCase` + inline tests — the house
+// shape (mirrors the routines block above).
+pub const documentsListHandler = @import("documents_list.zig").documentsListHandler;
+pub const documentsCreateHandler = @import("documents_create.zig").documentsCreateHandler;
+pub const documentsGetHandler = @import("documents_get.zig").documentsGetHandler;
+pub const documentsUpdateHandler = @import("documents_update.zig").documentsUpdateHandler;
+pub const documentsDeleteHandler = @import("documents_delete.zig").documentsDeleteHandler;
+
 // Kanban column CRUD handlers (item_type='kanban' sub-resources).
 // See docs/superpowers/plans/2026-06-21-workspace-item-kanban.md (Chunk 3).
 pub const kanbanColumnsListHandler = @import("kanban_columns_list.zig").kanbanColumnsListHandler;
