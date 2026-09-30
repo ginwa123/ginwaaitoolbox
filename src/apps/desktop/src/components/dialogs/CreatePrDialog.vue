@@ -76,10 +76,13 @@ const onSubmit = async () => {
     if (resp.success) {
       emit('pr-created', resp.pr_url)
     } else {
-      emit('error', resp.error || `Unknown error from ${forge.program} ${forge.noun} create`)
+      emit(
+        'error',
+        resp.error || `Unknown error from ${forge.value.program} ${forge.value.noun} create`,
+      )
     }
   } catch (err) {
-    emit('error', `Failed to create ${forge.short}: ${err}`)
+    emit('error', `Failed to create ${forge.value.short}: ${err}`)
   } finally {
     isSubmitting.value = false
   }

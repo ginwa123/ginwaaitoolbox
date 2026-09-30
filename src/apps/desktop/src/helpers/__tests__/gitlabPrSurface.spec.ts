@@ -104,6 +104,15 @@ describe('forgeWording', () => {
     expect(w.forge).toBe('GitLab')
   })
 
+  it('carries the CLI program so error text names the tool that ran', () => {
+    // CreatePrDialog interpolates `forge.program` into its failure
+    // message. The field was missing once and only `vue-tsc --build`
+    // (the CI command) caught it — pin it here so the table stays whole.
+    expect(forgeWording('github').program).toBe('gh')
+    expect(forgeWording('gitlab').program).toBe('glab')
+    expect(forgeWording('').program).toBe('gh')
+  })
+
   it('detects the forge from a URL when no provider was ever stored', () => {
     expect(forgeFromPrUrl(MR_URL).short).toBe('MR')
     expect(forgeFromPrUrl(GH_URL).short).toBe('PR')

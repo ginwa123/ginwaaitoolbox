@@ -23,6 +23,13 @@ export interface ForgeWording {
   short: string
   label: string
   forge: string
+  /**
+   * The CLI the backend spawns for this forge (`gh` / `glab`).
+   *
+   * Needed for error text: naming `gh` in a failure a GitLab user
+   * triggered is the same class of bug as telling them to install gh.
+   */
+  program: string
   /** True when the forge has no `<url>/conflicts` page to link to. */
   hasConflictPage: boolean
 }
@@ -32,6 +39,7 @@ const GITHUB: ForgeWording = {
   short: 'PR',
   label: 'Pull request',
   forge: 'GitHub',
+  program: 'gh',
   hasConflictPage: true,
 }
 
@@ -40,6 +48,7 @@ const GITLAB: ForgeWording = {
   short: 'MR',
   label: 'Merge request',
   forge: 'GitLab',
+  program: 'glab',
   // GitLab resolves conflicts inline on the MR page itself.
   hasConflictPage: false,
 }
