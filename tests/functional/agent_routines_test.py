@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness import FunctionalHarness
+from harness import FunctionalHarness, harness_path
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -44,7 +44,7 @@ def _create_routine(harness: FunctionalHarness, workspace_id: str, name: str = "
     r = harness.http(
         "POST",
         f"/api/workspaces/{workspace_id}/items/routine",
-        json_body={"name": name, "path": "/tmp/agent-routines-test"},
+        json_body={"name": name, "path": harness_path(harness, "agent-routines-test")},
         expect=201,
     )
     return r.json()["item"]["id"]
@@ -132,7 +132,7 @@ def test_knowledge_patch_mode_switch(harness: FunctionalHarness) -> None:
     created = harness.http(
         "POST",
         f"/api/agent-routines/{routine_id}/knowledge",
-        json_body={"file_path": "/tmp/switch.md", "label": "Switch"},
+        json_body={"file_path": harness_path(harness, "switch.md"), "label": "Switch"},
         expect=201,
     ).json()
 

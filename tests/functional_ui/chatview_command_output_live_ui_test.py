@@ -23,6 +23,7 @@ import pytest
 
 from chatview_boot import open_chatview
 from db_seed import DbSeed
+from harness import harness_path
 from ui_harness import UIHarness
 
 SESSION_ID = "sess_command_output_live_001"
@@ -32,14 +33,14 @@ TOOL_CALL_ID = "call-command-output-live"
 STDOUT_MARKER = "LIVE_COMMAND_STDOUT_MARKER"
 
 
-def _tool_envelope(data: dict | None) -> str:
+def _tool_envelope(data: dict | None, workdir: str) -> str:
     return json.dumps(
         {
             "tool": "command",
             "parameters": {
                 "command": "printf '%s\\n' '--- numbered excerpts ---'",
                 "timeout": 10,
-                "workdir": "/tmp",
+                "workdir": workdir,
             },
             "success": True,
             "data": data,
@@ -133,6 +134,13 @@ def test_command_stdout_updates_live_and_survives_reload(
     ui_harness: UIHarness,
 ) -> None:
     h = ui_harness
+    # The seeded workspace-item path and the seeded sessions.cwd are both
+    # resolved by the server (the command tool chdirs into `workdir`, the
+    # chatview boots from `sessions.cwd`), so they must be real absolute
+    # paths on the runner. A hardcoded "/tmp" works on ubuntu-24.04 and
+    # names no directory at all on windows-2022.
+    item_path = harness_path(h, "command-output-ui")
+    workdir = harness_path(h)
     seed = DbSeed(Path(h.temp_dir) / ".config" / "nalar" / "agent.db")
     with seed.connect() as conn:
         seed.seed_session(conn, SESSION_ID, "Command output live test")
@@ -146,7 +154,7 @@ def test_command_stdout_updates_live_and_survives_reload(
             "INSERT OR REPLACE INTO workspace_items "
             "(id, workspace_id, item_type, name, path, position) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (item_id, workspace_id, "kanban", "Command output test", "/tmp/command-output-ui", 0),
+            (item_id, workspace_id, "kanban", "Command output test", item_path, 0),
         )
         conn.execute(
             "INSERT OR REPLACE INTO workspace_item_tasks "
@@ -155,7 +163,7 @@ def test_command_stdout_updates_live_and_survives_reload(
         )
         conn.execute(
             "UPDATE sessions SET cwd = ?, workspace_id = ? WHERE id = ?",
-            ("/tmp/command-output-ui", workspace_id, SESSION_ID),
+            (item_path, workspace_id, SESSION_ID),
         )
 
     page.set_viewport_size({"width": 1440, "height": 900})
@@ -165,7 +173,7 @@ def test_command_stdout_updates_live_and_survives_reload(
     card = page.locator(".chat-tool-card").filter(
         has=page.locator('[data-testid="shell-tool-pill"]', has_text="command")
     ).first
-    _emit_until_text(h, _event(_tool_envelope(None)), card, "command")
+    _emit_until_text(h, _event(_tool_envelope(None, workdir)), card, "command")
 
     card.locator('div[role="button"]').click()
     card.get_by_text("Arguments", exact=True).wait_for(timeout=5000, state="visible")
@@ -181,7 +189,8 @@ def test_command_stdout_updates_live_and_survives_reload(
             "timeout": False,
             "stdout_lines": 2,
             "stderr_lines": 0,
-        }
+        },
+        workdir,
     )
     _emit_until_text(h, _event(completed), card, STDOUT_MARKER)
     assert "second output line" in card.inner_text()

@@ -45,6 +45,12 @@ from typing import Any, Iterator
 import pytest
 
 from ui_harness import UIHarness, FunctionalHarnessError
+from platform_gates import apply_runtime_gates, collect_ignore_for
+
+# Same wiring as tests/functional/conftest.py, reading the same table —
+# see tests/platform_gates.py for why a suite that cannot be IMPORTED
+# needs collect_ignore rather than a skip marker.
+collect_ignore = collect_ignore_for()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -59,6 +65,17 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "no_sse_gate: skip arming NALAR_TEST_SSE_EMIT=1 for this test",
     )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Apply the runtime (skip-marker) half of the platform-gate table.
+
+    Delegated to ``platform_gates`` rather than inlined: the hook body is
+    the same for both suites, and a copy that has to be kept in agreement
+    in two places is a copy that will drift. See
+    ``apply_runtime_gates`` for why items are marked rather than ignored.
+    """
+    apply_runtime_gates(items)
 
 
 # ─── Session-scoped: resolve the nalar binary once ──────────────────────────

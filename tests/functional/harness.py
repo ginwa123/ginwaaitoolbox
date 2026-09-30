@@ -192,6 +192,33 @@ def is_safe_tmp(path: str | os.PathLike[str], orig_home: str | os.PathLike[str])
     return True
 
 
+def harness_path(harness: Any, *parts: str) -> str:
+    """Return an absolute path under ``harness``'s isolated tempdir.
+
+    Use this for any path a test PUTS INTO A JSON BODY that the server
+    resolves — an agent/routine item ``path``, a knowledge
+    ``file_path``, a session ``cwd``, a command ``workdir``.
+
+    The reason is not tidiness. The server validates these with
+    ``std.fs.path.isAbsolute`` and rejects a relative one with 400
+    ``NotAbsolutePath``, and ``isAbsolute`` is platform-relative: on
+    windows-2022 ``"/tmp/a.md"`` is NOT absolute, so a literal that is
+    correct on ubuntu-24.04 fails at the HTTP door and the test reports
+    a server regression that does not exist. Deriving from
+    ``harness.temp_dir`` (itself a real ``mkdtemp`` output) is absolute
+    on every platform and needs no ``os.path`` juggling at the call
+    site.
+
+    Accepts either a ``FunctionalHarness`` or a ``UIHarness`` — both
+    expose ``temp_dir``.
+
+        json_body={"path": harness_path(h, "my-agent")}
+
+    Passing empty ``parts`` returns the tempdir itself.
+    """
+    return str(harness.temp_dir.joinpath(*parts))
+
+
 # ============================================================================
 # Response + Harness
 # ============================================================================

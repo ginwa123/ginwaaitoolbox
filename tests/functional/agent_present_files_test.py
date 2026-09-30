@@ -32,7 +32,7 @@ Covers:
     Content-Disposition: inline (thumbnail path)
   * JPG_ATTACH  — .jpg + disposition=attachment → attachment header
   * MISSING     — absent path → 404
-  * TRAVERSAL   — /etc/passwd (outside cwd) → 403
+  * TRAVERSAL   — a path outside cwd (the harness tempdir's parent) → 403
   * DOTDOT      — path with .. → 403
   * NO_SESSION  — unknown session_id → 404
   * BAD_DISP    — disposition=download → 400
@@ -167,10 +167,30 @@ def test_missing_file_404(harness: FunctionalHarness):
 
 
 def test_traversal_outside_cwd_403(harness: FunctionalHarness):
-    """/etc/passwd canonicalizes outside the sandbox → 403, never bytes."""
+    """A real file that canonicalizes outside the sandbox → 403, never bytes.
+
+    The probe used to be the literal ``/etc/passwd``. That is only
+    absolute (and only outside the sandbox) on POSIX: on windows-2022 it
+    resolves against the current drive, so the request 404s as a missing
+    file instead of 403ing as a traversal, and the guard this test exists
+    for goes unexercised. Worse, a path that does not exist proves
+    nothing on ANY platform — the handler answers 404 before it reaches
+    the sandbox check (which is exactly what the first attempt at this
+    fix did).
+
+    So the fixture is a file we CREATE, under the harness tempdir but
+    beside the session sandbox rather than inside it: absolute on every
+    platform, guaranteed to exist, and provably outside the root — the
+    same shape ``test_sibling_dir_sharing_the_root_prefix_is_403`` uses.
+    """
     sid, _root = _setup(harness)
-    r = _download(harness, sid, "/etc/passwd", "attachment", expect=403)
-    assert b"root:" not in r.body, "must not leak file contents on 403"
+    outside = harness.temp_dir / "beside-the-sandbox"
+    outside.mkdir(parents=True, exist_ok=True)
+    secret = outside / "secret.txt"
+    secret.write_text("OUTSIDE_THE_SANDBOX_MARKER", encoding="utf-8")
+
+    r = _download(harness, sid, str(secret), "attachment", expect=403)
+    assert b"OUTSIDE_THE_SANDBOX_MARKER" not in r.body, "must not leak file contents on 403"
 
 
 def test_dotdot_rejected_403(harness: FunctionalHarness):

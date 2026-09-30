@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness import FunctionalHarness
+from harness import FunctionalHarness, harness_path
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ def _create_agent(harness: FunctionalHarness, workspace_id: str, name: str = "ag
     r = harness.http(
         "POST",
         f"/api/workspaces/{workspace_id}/items/agent",
-        json_body={"name": name, "path": "/tmp/agent-kanbans-test"},
+        json_body={"name": name, "path": harness_path(harness, "agent-kanbans-test")},
         expect=201,
     )
     return r.json()["item"]["id"]
@@ -158,13 +158,13 @@ def test_knowledge_reorder_reaches_reorder_handler(harness: FunctionalHarness) -
     r1 = harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/knowledge",
-        json_body={"file_path": "/tmp/a.md", "label": "A", "content": ""},
+        json_body={"file_path": harness_path(harness, "a.md"), "label": "A", "content": ""},
         expect=201,
     )
     r2 = harness.http(
         "POST",
         f"/api/agent-kanbans/{kanban_id}/knowledge",
-        json_body={"file_path": "/tmp/b.md", "label": "B", "content": ""},
+        json_body={"file_path": harness_path(harness, "b.md"), "label": "B", "content": ""},
         expect=201,
     )
     id_a = r1.json()["id"]

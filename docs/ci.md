@@ -18,8 +18,9 @@ Three pinned images, one matrix cell each. They are deliberately **not**
 | `backend (Linux X64)` | `ubuntu-24.04` | glibc 2.39, which satisfies the `.glibc_version = 2.38` that `build.zig` pins for the Linux target. (`ubuntu-22.04`'s glibc 2.35 would not.) |
 | `backend (macOS ARM64)` | `macos-15` | The arm64 image, matching the `aarch64-macos` target and the arm64 Mach-O assertion in the verify step. (`macos-latest` currently resolves to macOS 26 arm64.) |
 | `backend (Windows X64)` | `windows-2022` | VS 2022 + Windows 11 SDK, which the Windows build branch is validated against. (`windows-latest` currently resolves to Server 2025 / VS 2026.) |
-| `functional-test` | `ubuntu-24.04` | Linux-only suite. |
-| `functional-test-ui` | `ubuntu-24.04` | Linux-only suite (Playwright needs a Linux display stack). |
+| `functional-test (ubuntu-24.04)` | `ubuntu-24.04` | API + Playwright UI suites, one pytest run. |
+| `functional-test (macos-15)` | `macos-15` | Same suites, arm64. |
+| `functional-test (windows-2022)` | `windows-2022` | Same suites. Needs vcpkg + MSVC exactly like the backend cell (the service binary links curl/openssl/libpq/sqlite3), but no WebView2 — this job builds the service only. |
 
 Bump these one cell at a time. The macOS cell in particular must stay on an
 **arm64** image: `build.zig`'s `install:macos` step hardcodes `x86_64-macos`
@@ -50,9 +51,12 @@ expressions, so per-OS shells need twin steps gated on
 
 A fresh VM **per job**. On the old self-hosted fleet the Linux box was
 persistent, so packages installed by the `backend` cell were still there when
-`functional-test` landed on the same machine. Now all three Linux jobs install
-their own dependencies by calling `scripts/ci-install-linux-deps.sh` — the
-same script, not three copy-pasted lists.
+`functional-test` landed on the same machine. Every Linux job now installs its
+own dependencies by calling `scripts/ci-install-linux-deps.sh` — the same
+script, not three copy-pasted lists. macOS cells `brew install` the keg-only
+libs and export their paths; Windows cells export the MSVC env and
+`vcpkg install` the four ports in ONE invocation (vcpkg takes an exclusive
+lock, so parallel per-port installs fail three times out of four).
 
 That script also asserts, after installing, that `pkg-config` can actually
 resolve `sqlite3`, `openssl`, `libpq`, `libcurl` and `webkit2gtk-4.1`, and
@@ -111,8 +115,8 @@ image:
 |---|---|---|
 | `.zig-cache` + `src/modules/databases/vendor` | `v4-zig-<image>-<zig target>-<hash(build.zig, build.zig.zon, fetch-vendor-sqlite3.sh)>` | **By image, not `runner.os`.** `runner.os` is the bare string `Linux`/`macOS`/`Windows` on *both* self-hosted and GitHub-hosted runners, so an `runner.os` key would have restored the old Arch box's `.zig-cache` into an Ubuntu runner and mixed two distros' object hashes — a failure that surfaces as random corrupt-cache errors with no diagnostic trail. Keying on the image label also invalidates on an image bump. |
 | pnpm store (`runner.temp/pnpm-store`) | `v1-pnpm-<image>-<hash(pnpm-lock.yaml)>` | All three backend cells run a full `pnpm install`. The self-hosted cells shared one `$HOME`, so whichever ran first warmed the store for the others; each GitHub-hosted job gets a fresh `$HOME`, so without this the largest download in the pipeline is cold every run. The path is forced via `npm_config_store_dir` because pnpm's default differs per platform and `actions/cache` paths do not expand shell variables. |
-| pytest venv + Playwright Chromium | `v2-py-<os>-py312-<hash(both requirements.txt)>` | Shared by the two functional jobs **on purpose** — the UI job restores the venv the `functional-test` job builds. That only works because `needs:` runs them in order. Keyed by interpreter, not image: a venv holds no host-compiled artifacts of its own, so it is safe across Ubuntu point releases but *not* across Python minor versions. |
-| pnpm store (functional-test-ui) | `v1-pnpm-<os>-<hash(pnpm-lock.yaml)>` | Same reasoning as the backend's. |
+| pytest venv + Playwright Chromium | `v3-py-<image>-py312-<hash(both requirements.txt)>` | **By image.** The venv is a directory of scripts + site-packages whose layout is platform-specific (Windows uses `Scripts/`, not `bin/`), so a Linux venv restored onto a Windows runner is a broken interpreter path, not a slow cache hit. Three cells means three caches — the price of running the suites on three platforms. |
+| pnpm store (`functional-test`) | `v3-pnpm-<image>-<hash(pnpm-lock.yaml)>` | Same image scoping: pnpm's store holds platform-tagged optional dependencies. Separate prefix from the backend's `v1-pnpm-` because the path differs (`runner.temp/pnpm-store` vs the backend's per-cell choice) and the jobs no longer share a machine. |
 
 `zig-out` and `webapp_assets.zig` are deliberately **not** cached: they are
 build output, regenerable from `.zig-cache` in seconds, and caching them cost
@@ -120,10 +124,54 @@ build output, regenerable from `.zig-cache` in seconds, and caching them cost
 
 ## Functional tests
 
-`zig build functional-test` is the systematic-functional-coverage step. It
-runs `pytest tests/functional/` (8 suites, ~55 tests, ~5 min wall-clock).
-`zig build functional-test-ui` adds 30 Playwright tests against the running
-Vue webapp (nalar backend + Vite dev server) in headless Chromium.
+Three build steps, and CI uses the third:
+
+| Step | Runs | Used by |
+|---|---|---|
+| `zig build functional-test` | `pytest tests/functional/` (API only) | local iteration on one suite |
+| `zig build functional-test-ui` | `pytest tests/functional_ui/` (Playwright only) | local iteration on one suite |
+| `zig build functional-test-all` | **both directories, one pytest process** | the `functional-test` CI matrix |
+
+`functional-test-all` exists because the two suites share every expensive
+input — the venv, `pip install -r`, `playwright install chromium` (~150 MB),
+and the `zig build install` walk for the nalar binary. As separate jobs that
+was paid twice per PR, for two reports and two verdicts. One process pays it
+once and answers "are the functional suites green?" with one exit code.
+`pytest.ini`'s `testpaths` lists both directories, so a bare local `pytest`
+runs the same set CI does — the two lists cannot drift.
+
+**No `-n auto`.** pytest-xdist is the obvious way to make this faster and it
+is wrong here: the port picker binds a probe socket, closes it, and hands the
+number to the nalar child, which binds tens of ms later. That gap is the
+documented reason the random range lives at 20k-32k, and widening it does not
+help when N workers draw from it simultaneously. Under `-n` the suite trades
+a deterministic ~15 min for intermittent `BindFailed` at boot.
+
+### Platform gates
+
+The suites run on all three platforms, and a test that cannot run on one is
+skipped **with a reason**, not silently or with a collection error about a
+missing `termios`. Every gate is one row in `tests/platform_gates.py`, applied
+by each suite's `conftest.py`. Two kinds, and the distinction matters:
+
+- **`collect_ignore`** — the file cannot be *imported* on that platform
+  (module-level `import pty`). A skip marker never runs, because collection
+  dies first.
+- **skip marker** — the file imports fine; its tests are skipped. The reason
+  shows up on the test id in the report.
+
+Two rules keep the table honest: a row is a statement about the *platform*
+("`pty` does not exist on Windows"), never about a test being annoying; and a
+row whose test has since been made portable must be **deleted**, because a
+stale skip hides the next regression. Most rows are structural — the product
+has no pty backend on Windows (`terminal_session.zig`'s
+`is_pty_os = linux || macos`), which is also why the frontend hides the
+terminal panel there.
+
+Anything a path could break is a `harness.harness_path()` call instead of a
+literal: the server validates `path`/`file_path`/`cwd` with
+`std.fs.path.isAbsolute`, which is *platform-relative*, so a `"/tmp/a.md"`
+literal that is correct on ubuntu-24.04 400s on windows-2022.
 
 The harness enforces a **"never delete real `$HOME`"** invariant via three
 defensive layers (see `tests/functional/harness.py` for the banner comment):

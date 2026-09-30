@@ -34,6 +34,7 @@ Run:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -113,11 +114,20 @@ def test_file_diffs_batch_rejects_relative_body_path(harness: FunctionalHarness)
 
 
 def test_file_read_rejects_absolute_file(harness: FunctionalHarness, tmp_path: Path) -> None:
-    """An absolute `file` escapes `path`; the sibling handler rejects it too."""
+    """An absolute `file` escapes `path`; the sibling handler rejects it too.
+
+    The absolute probe is built with ``os.path.join`` rather than
+    hardcoded as ``/etc/passwd``: the guard under test is "this `file`
+    is absolute, so it escapes `path`", and ``/etc/passwd`` is not
+    absolute on Windows — the handler would reject it for the OTHER
+    reason ("path is not absolute") and the assertion below would fail
+    on a message that names a different bug.
+    """
+    escaping_file = os.path.join(str(tmp_path), os.pardir, "escaped.txt")
     r = harness.http(
         "GET",
         "/api/git/file/read",
-        params={"path": str(tmp_path), "file": "/etc/passwd"},
+        params={"path": str(tmp_path), "file": escaping_file},
         expect=400,
     )
     assert "relative" in r.json()["error"], r.json()

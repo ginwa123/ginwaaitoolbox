@@ -12,6 +12,7 @@ Contract:
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any
 
@@ -81,7 +82,12 @@ def test_tui_cwd_reaches_backend_as_working_directory(
     worker is deleted when the stub LLM fails).
     """
     session_id = "tui-cwd-test-001"
-    cwd = "/tmp/my-proj"
+    # realPath for the same reason the TUI applies it: on macOS "/tmp"
+    # is a symlink to "/private/tmp", so a literal sends a string no real
+    # TUI would ever send; on Windows "/tmp/my-proj" is not absolute and
+    # the backend rejects it. A realpath'd harness tempdir is what the
+    # TUI would report on every platform.
+    cwd = os.path.realpath(str(harness.temp_dir / "my-proj"))
 
     # POST like nalar-tui does (via transport.postSend → buildSendBody)
     harness.http(
@@ -144,8 +150,12 @@ def test_tui_empty_cwd_falls_back_to_sandbox(
     assert ".local/share/nalar/data/apps" in normalized or "/tmp" in normalized, (
         f"empty cwd_session should fall back to sandbox (or /tmp). Got {got!r}"
     )
-    # Must NOT be the explicit /tmp/my-proj from the other test
-    assert got != "/tmp/my-proj", f"empty cwd should not equal explicit cwd, got {got!r}"
+    # Must NOT be the explicit cwd the sibling test sends. Each test gets
+    # a FRESH harness with its own tempdir, so this comparison is only
+    # meaningful against the path derived from THIS test's tempdir —
+    # comparing against a module constant would pass for the wrong reason.
+    explicit = os.path.realpath(str(harness.temp_dir / "my-proj"))
+    assert got != explicit, f"empty cwd should not equal explicit cwd, got {got!r}"
 
 
 def test_tui_cwd_with_special_chars_round_trips(
@@ -157,7 +167,7 @@ def test_tui_cwd_with_special_chars_round_trips(
     paths like '/tmp/my project' or '/tmp/a\"b' must round-trip.
     """
     session_id = "tui-cwd-test-003"
-    cwd = "/tmp/my project with spaces"
+    cwd = os.path.realpath(str(harness.temp_dir / "my project with spaces"))
 
     harness.http(
         "POST",

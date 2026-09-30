@@ -214,8 +214,9 @@ zig build test                    # nalarcore module unit tests
 zig build test:cli                # nalarcli unit tests
 zig build test:tui                # nalar-tui unit tests
 zig build test:desktop-app        # nalar-desktop unit tests
-zig build functional-test         # Python API tests via zig
-zig build functional-test-ui      # Playwright UI tests via zig
+zig build functional-test         # Python API tests only, via zig
+zig build functional-test-ui      # Playwright UI tests only, via zig
+zig build functional-test-all     # both suites, one pytest run (what CI runs)
 zig build --help                  # every step (install:*, test:*, build:*, run:*)
 ```
 

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness import FunctionalHarness
+from harness import FunctionalHarness, harness_path
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ def _create_agent(harness: FunctionalHarness, workspace_id: str, name: str = "ed
     r = harness.http(
         "POST",
         f"/api/workspaces/{workspace_id}/items/agent",
-        json_body={"name": name, "path": "/tmp/agent-knowledge-edit-test"},
+        json_body={"name": name, "path": harness_path(harness, "agent-knowledge-edit-test")},
         expect=201,
     )
     body = r.json()
@@ -69,7 +69,11 @@ def _add_file_knowledge(harness: FunctionalHarness, agent_id: str) -> dict:
     r = harness.http(
         "POST",
         f"/api/agents/{agent_id}/knowledge",
-        json_body={"file_path": "/tmp/agent-knowledge-edit-test/seed.md", "label": "Seed file", "content": ""},
+        json_body={
+            "file_path": harness_path(harness, "agent-knowledge-edit-test", "seed.md"),
+            "label": "Seed file",
+            "content": "",
+        },
         expect=201,
     )
     return r.json()
@@ -142,20 +146,21 @@ def test_file_mode_save_clears_content_and_sets_path(harness: FunctionalHarness)
     agent = _create_agent(harness, ws)
     row = _add_inline_knowledge(harness, agent)
 
+    switched = harness_path(harness, "agent-knowledge-edit-test", "switched.md")
     updated = _patch(harness, agent, row["id"], {
         "label": "Switched to file",
-        "file_path": "/tmp/agent-knowledge-edit-test/switched.md",
+        "file_path": switched,
         "content": "",
     })
 
-    assert updated["file_path"] == "/tmp/agent-knowledge-edit-test/switched.md"
+    assert updated["file_path"] == switched
     assert updated["content"] == "", (
         f"content should be cleared to '', got {updated['content']!r}"
     )
 
     rows = _get_knowledge(harness, ws, agent)
     mine = [k for k in rows if k["id"] == row["id"]]
-    assert mine[0]["file_path"] == "/tmp/agent-knowledge-edit-test/switched.md"
+    assert mine[0]["file_path"] == switched
     assert mine[0]["content"] == ""
 
 
@@ -177,10 +182,11 @@ def test_mode_switch_round_trip_file_text_file_text(harness: FunctionalHarness):
     assert r1["file_path"] == "" and r1["content"] == "body one"
 
     # hop 2: text → file
+    hop2 = harness_path(harness, "agent-knowledge-edit-test", "hop2.md")
     r2 = _patch(harness, agent, kid, {
-        "label": "hop2", "file_path": "/tmp/agent-knowledge-edit-test/hop2.md", "content": "",
+        "label": "hop2", "file_path": hop2, "content": "",
     })
-    assert r2["file_path"] == "/tmp/agent-knowledge-edit-test/hop2.md" and r2["content"] == ""
+    assert r2["file_path"] == hop2 and r2["content"] == ""
 
     # hop 3: file → text again
     r3 = _patch(harness, agent, kid, {

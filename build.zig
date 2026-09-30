@@ -3265,6 +3265,60 @@ const check_webapp_node = b.addSystemCommand(switch (b.graph.host.result.os.tag)
     functional_test_ui_step.dependOn(&run_functional_ui.step);
 
     // =====================================================================
+    // functional-test-all — BOTH suites in ONE pytest invocation.
+    //
+    // This is the step the CI matrix runs on ubuntu-24.04, macos-15 and
+    // windows-2022. It exists because running `functional-test` and
+    // `functional-test-ui` as two steps costs every shared input twice:
+    //
+    //   * one venv build + one `pip install -r` per suite (build.zig
+    //     already shared the venv DIR, but each step still re-ran pip)
+    //   * one `playwright install chromium` (~150 MB download) per suite
+    //   * one full `zig build install` walk for the nalar binary
+    //   * one report to read, and no single verdict for "the functional
+    //     suites"
+    //
+    // Passing both directories to ONE pytest process collapses all of
+    // that. pytest.ini's `testpaths` already lists both, so the bare
+    // `pytest` invocation a developer types locally runs exactly this
+    // set — CI and local now cover the same tests by construction
+    // rather than by two lists that have to be kept in agreement.
+    //
+    // The two suites coexist in one process because pytest scopes
+    // conftest fixtures per package: `functional/conftest.py` owns
+    // `harness`, `functional_ui/conftest.py` owns `ui_harness`, and
+    // neither sees the other's. pytest.ini's `pythonpath` already lists
+    // both suite dirs because both import `harness`/`ui_harness` as
+    // top-level modules.
+    //
+    // `functional-test` and `functional-test-ui` REMAIN registered. A
+    // developer iterating on one suite still wants to run just that one,
+    // and a split step is cheaper than a 730-test run while you work.
+    // =====================================================================
+    const run_functional_all = b.addSystemCommand(&.{
+        b.fmt("{s}/{s}", .{ venv_bin, python_venv_exe }),
+        "-m",
+        "pytest",
+        "tests/functional/",
+        "tests/functional_ui/",
+        "-v",
+        "--tb=short",
+    });
+    run_functional_all.setCwd(b.path(""));
+    // install_playwright_browsers -> install_ui_requirements -> install_venv,
+    // so this one edge covers the venv, both requirements files AND the
+    // browser download.
+    run_functional_all.step.dependOn(&install_playwright_browsers.step);
+    run_functional_all.step.dependOn(&python_probe.step);
+    run_functional_all.step.dependOn(b.getInstallStep());
+    // Same reason as run_functional: mcp_http_test.py spawns this sibling
+    // binary, and without the dep the suite fails on a missing file.
+    run_functional_all.step.dependOn(mcp_http_hello_world_step);
+
+    const functional_test_all_step = b.step("functional-test-all", "Run BOTH functional suites (API + Playwright UI) in one pytest invocation");
+    functional_test_all_step.dependOn(&run_functional_all.step);
+
+    // =====================================================================
     // End-of-build success/failure banner
     // =====================================================================
     // Zig's `install` step emits no summary by default (you have to pass
