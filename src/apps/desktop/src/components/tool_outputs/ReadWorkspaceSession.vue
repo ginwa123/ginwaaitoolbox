@@ -97,9 +97,33 @@ interface SearchEntry {
   session_name: string
   role: string
   created_at?: string
-  /** Raw snippet with `[match]` markers around hits — we render these
-   *  as a highlighted span rather than raw text. */
+  /** Raw snippet with the FTS match wrapped in bare brackets — we render
+   *  those as a highlighted span rather than raw text. */
   snippet: string
+}
+
+/** A run of search hits that share a `session_id`. */
+interface SearchGroup {
+  /** '' for hits that carry no session_id (single "no session" bucket). */
+  key: string
+  sessionId: string
+  sessionName: string
+  entries: SearchEntry[]
+  newestAt?: string
+}
+
+/** A role count for the current page. */
+interface RoleFacet {
+  role: string
+  count: number
+}
+
+/** One entry of the backend's `full_contents` array. */
+interface FullContent {
+  id: string
+  role: string
+  content: string
+  content_truncated: boolean
 }
 
 interface ReadEntry {
@@ -121,6 +145,17 @@ const props = defineProps<{
   expanded?: boolean
   parameters?: string
 }>()
+
+/**
+ * The card is presentation-only — it never routes. ChatView listens and
+ * owns the navigation, same as `SpawnSubAgent`'s `peek` event.
+ */
+const emit = defineEmits<{ openSession: [sessionId: string] }>()
+
+function openSession(sessionId: string): void {
+  if (!sessionId) return
+  emit('openSession', sessionId)
+}
 
 const isExpanded = ref(props.expanded ?? false)
 
@@ -254,6 +289,131 @@ const searchEntries = computed((): SearchEntry[] => {
   }
   return results
 })
+
+/**
+ * Full message bodies the backend returns when the caller passes
+ * `message_ids`. Keyed by message id so a hit can expand into its own body.
+ * The card previously ignored this field entirely.
+ */
+const fullContents = computed((): Map<string, FullContent> => {
+  const map = new Map<string, FullContent>()
+  const raw = dataRecord.value.full_contents
+  if (!Array.isArray(raw)) return map
+  for (const item of raw) {
+    const r = asRecord(item)
+    const id = typeof r.id === 'string' ? r.id : ''
+    if (!id) continue
+    const truncatedRaw = r.content_truncated
+    map.set(id, {
+      id,
+      role: typeof r.role === 'string' ? r.role : 'unknown',
+      content: typeof r.content === 'string' ? r.content : '',
+      content_truncated: truncatedRaw === true || truncatedRaw === 1,
+    })
+  }
+  return map
+})
+
+/**
+ * `YYYY-MM-DD HH:MM:SS` sorts lexicographically, which is why grouping by
+ * recency is only correct now that the backend returns `created_iso`
+ * instead of a raw nanosecond epoch.
+ */
+function recencyKey(entry: SearchEntry): string {
+  return entry.created_at ?? ''
+}
+
+const groupedEntries = computed((): SearchGroup[] => {
+  const bySession = new Map<string, SearchEntry[]>()
+  const order: string[] = []
+  for (const entry of searchEntries.value) {
+    // Hits with no session_id are still shown, under a single bucket.
+    const key = entry.session_id || ''
+    if (!bySession.has(key)) {
+      bySession.set(key, [])
+      order.push(key)
+    }
+    bySession.get(key)!.push(entry)
+  }
+  const groups: SearchGroup[] = order.map((key) => {
+    const entries = bySession.get(key)!
+    // Newest first inside a group.
+    entries.sort((a, b) => recencyKey(b).localeCompare(recencyKey(a)))
+    const newest = entries[0]
+    return {
+      key,
+      sessionId: newest?.session_id ?? '',
+      // Falls back to the id so a row is never nameless.
+      sessionName: newest?.session_name || newest?.session_id || '(no session)',
+      entries,
+      newestAt: newest?.created_at,
+    }
+  })
+  // Groups ordered by their own newest hit.
+  groups.sort((a, b) => (b.newestAt ?? '').localeCompare(a.newestAt ?? ''))
+  return groups
+})
+
+/**
+ * Stable test-id index per hit, taken from the ORIGINAL result order rather
+ * than the grouped render order, so `search-entry-snippet-N` keeps meaning
+ * the same row it always did.
+ */
+const entryIndexById = computed((): Map<string, number> => {
+  const map = new Map<string, number>()
+  searchEntries.value.forEach((entry, i) => map.set(entry.id, i))
+  return map
+})
+
+/** Role counts for THIS PAGE only — not the whole result set. */
+const roleFacets = computed((): RoleFacet[] => {
+  const counts = new Map<string, number>()
+  for (const entry of searchEntries.value) {
+    counts.set(entry.role, (counts.get(entry.role) ?? 0) + 1)
+  }
+  const order = ['user', 'assistant', 'tool']
+  const facets: RoleFacet[] = []
+  for (const role of order) {
+    const n = counts.get(role)
+    if (n) facets.push({ role, count: n })
+    counts.delete(role)
+  }
+  // Any role outside the known three still gets a facet.
+  for (const [role, n] of counts) facets.push({ role, count: n })
+  return facets
+})
+
+const totalInPage = computed(() => searchEntries.value.length)
+
+/**
+ * The card has no execute path, so a facet click cannot re-run the tool. It
+ * copies a ready-made call the agent can paste as its next turn.
+ */
+function facetToolCall(role: string): string {
+  const args: Record<string, string> = {}
+  const q = queryText.value ?? displayQuery.value
+  if (q) args.query = q
+  args.role = role
+  return JSON.stringify(args)
+}
+
+const copiedFacet = ref<string | null>(null)
+let facetCopyTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyFacetCall(e: Event, role: string): Promise<void> {
+  e.stopPropagation()
+  const payload = facetToolCall(role)
+  try {
+    await navigator.clipboard.writeText(payload)
+  } catch {
+    return
+  }
+  copiedFacet.value = role
+  if (facetCopyTimer) clearTimeout(facetCopyTimer)
+  facetCopyTimer = setTimeout(() => {
+    copiedFacet.value = null
+  }, 1200)
+}
 
 const readEntries = computed((): ReadEntry[] => {
   const results: ReadEntry[] = []
@@ -594,72 +754,159 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
         </li>
       </ul>
 
-      <!-- behavior="search" | "search-within": FTS results -->
-      <ul
+      <!-- behavior="search" | "search-within": FTS results, grouped by session -->
+      <div
         v-else-if="behavior === 'search' || behavior === 'search-within'"
-        class="divide-y divide-[var(--color-border)]"
         data-testid="read-workspace-session-search-entries"
       >
-        <li
-          v-for="(entry, idx) in searchEntries"
-          :key="entry.id || idx"
-          class="px-3 py-2 text-[var(--semantic-text)] hover:bg-violet-500/5"
-          data-testid="read-workspace-session-search-entry"
+        <div
+          v-for="group in groupedEntries"
+          :key="group.key || '__no_session__'"
+          class="search-group"
+          :data-testid="`search-group-${group.key || 'none'}`"
         >
-          <div class="flex items-start gap-2 min-w-0">
-            <!-- Role badge -->
-            <span
-              class="role-badge shrink-0"
-              :class="`role-${entry.role}`"
-              :data-testid="`search-entry-role-${idx}`"
+          <div class="search-group-header">
+            <button
+              v-if="group.sessionId"
+              class="search-group-name"
+              :title="`Open session ${group.sessionId}`"
+              :data-testid="`search-group-open-${group.key}`"
+              @click="openSession(group.sessionId)"
             >
-              {{ entry.role }}
+              {{ group.sessionName }}
+            </button>
+            <span v-else class="search-group-name" data-testid="search-group-open-none">
+              {{ group.sessionName }}
             </span>
-
-            <!-- ID + copy -->
-            <div class="flex items-center gap-1 min-w-0 shrink-0">
-              <code class="entry-id" :title="entry.id" :data-testid="`search-entry-id-${idx}`">
-                {{ entry.id }}
-              </code>
-              <button class="copy-btn" @click="(e) => copyId(e, entry.id)" title="Copy message id">
-                ⎘
-              </button>
-            </div>
-
-            <!-- Session name + id (truncated) -->
-            <span
-              v-if="entry.session_name || entry.session_id"
-              class="text-[var(--semantic-text-dim)] text-micro shrink-0 max-w-[140px] truncate"
-              :title="entry.session_id"
-            >
-              in {{ entry.session_name || entry.session_id }}
+            <span class="text-micro text-[var(--semantic-text-dim)] shrink-0">
+              {{ group.entries.length }} {{ group.entries.length === 1 ? 'hit' : 'hits' }}
             </span>
-
-            <!-- Timestamp -->
             <span
-              v-if="entry.created_at"
-              class="text-[var(--semantic-text-dim)] text-micro shrink-0"
-              :title="`Created at ${entry.created_at}`"
+              v-if="group.newestAt"
+              class="text-micro text-[var(--semantic-text-dim)] shrink-0"
+              :title="`Newest hit at ${group.newestAt}`"
             >
-              {{ entry.created_at }}
+              {{ group.newestAt }}
             </span>
           </div>
 
-          <!-- Snippet with [match] markers highlighted -->
-          <p
-            v-if="entry.snippet"
-            class="mt-1 ml-0 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
-            :data-testid="`search-entry-snippet-${idx}`"
+          <ul class="divide-y divide-[var(--color-border)]">
+            <li
+              v-for="entry in group.entries"
+              :key="entry.id || `${group.key}-${entry.snippet}`"
+              class="px-3 py-2 text-[var(--semantic-text)] hover:bg-violet-500/5"
+              data-testid="read-workspace-session-search-entry"
+            >
+              <div class="flex items-start gap-2 min-w-0">
+                <!-- Role badge -->
+                <span
+                  class="role-badge shrink-0"
+                  :class="`role-${entry.role}`"
+                  :data-testid="`search-entry-role-${entryIndexById.get(entry.id)}`"
+                >
+                  {{ entry.role }}
+                </span>
+
+                <!-- ID + copy -->
+                <div class="flex items-center gap-1 min-w-0 shrink-0">
+                  <code
+                    class="entry-id"
+                    :title="entry.id"
+                    :data-testid="`search-entry-id-${entryIndexById.get(entry.id)}`"
+                  >
+                    {{ entry.id }}
+                  </code>
+                  <button
+                    class="copy-btn"
+                    @click="(e) => copyId(e, entry.id)"
+                    title="Copy message id"
+                  >
+                    ⎘
+                  </button>
+                </div>
+
+                <!-- Timestamp -->
+                <span
+                  v-if="entry.created_at"
+                  class="text-[var(--semantic-text-dim)] text-micro shrink-0"
+                  :title="`Created at ${entry.created_at}`"
+                >
+                  {{ entry.created_at }}
+                </span>
+              </div>
+
+              <!-- Snippet, FTS match wrapped in bare brackets -->
+              <p
+                v-if="entry.snippet"
+                class="mt-1 ml-0 text-meta text-[var(--semantic-text-muted)] whitespace-pre-wrap break-words"
+                :data-testid="`search-entry-snippet-${entryIndexById.get(entry.id)}`"
+              >
+                <template v-for="(seg, segIdx) in parseSnippet(entry.snippet)" :key="segIdx">
+                  <mark v-if="seg.match" class="bg-yellow-500/30 text-inherit rounded px-0.5">
+                    {{ seg.text }}
+                  </mark>
+                  <span v-else>{{ seg.text }}</span>
+                </template>
+              </p>
+
+              <!-- Full body, present only when the caller passed message_ids -->
+              <div
+                v-if="fullContents.get(entry.id)"
+                class="mt-1"
+                :data-testid="`search-entry-full-${entryIndexById.get(entry.id)}`"
+              >
+                <button
+                  class="content-toggle"
+                  :data-testid="`search-entry-toggle-full-${entryIndexById.get(entry.id)}`"
+                  @click="toggleContent(entry.id)"
+                >
+                  <span class="content-toggle-icon">
+                    {{ isContentExpanded(entry.id) ? '▼' : '▶' }}
+                  </span>
+                  <span>
+                    {{ isContentExpanded(entry.id) ? 'Hide content' : 'Show content' }}
+                    <span
+                      v-if="fullContents.get(entry.id)?.content_truncated"
+                      class="text-orange-500"
+                      title="Backend truncated this content to fit context budget"
+                    >
+                      (truncated)
+                    </span>
+                  </span>
+                </button>
+                <pre
+                  v-if="isContentExpanded(entry.id)"
+                  class="content-body"
+                  :data-testid="`search-entry-content-${entryIndexById.get(entry.id)}`"
+                  >{{ fullContents.get(entry.id)?.content }}</pre>
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <!-- Role counts for THIS PAGE. Not the whole result set. -->
+        <div
+          v-if="roleFacets.length"
+          class="facet-footer"
+          data-testid="read-workspace-session-role-facets"
+        >
+          <span class="text-micro text-[var(--semantic-text-dim)]">in this page</span>
+          <button
+            v-for="facet in roleFacets"
+            :key="facet.role"
+            class="facet"
+            :class="{ 'facet-copied': copiedFacet === facet.role }"
+            :title="`Copy a read_workspace_session call filtered to role=${facet.role}`"
+            :data-testid="`role-facet-${facet.role}`"
+            @click="copyFacetCall($event, facet.role)"
           >
-            <template v-for="(seg, segIdx) in parseSnippet(entry.snippet)" :key="segIdx">
-              <mark v-if="seg.match" class="bg-yellow-500/30 text-inherit rounded px-0.5">
-                {{ seg.text }}
-              </mark>
-              <span v-else>{{ seg.text }}</span>
-            </template>
-          </p>
-        </li>
-      </ul>
+            {{ facet.role }} {{ facet.count }}
+          </button>
+          <span class="text-micro text-[var(--semantic-text-dim)] ml-auto">
+            {{ totalInPage }} of {{ totalCount ?? totalInPage }}
+          </span>
+        </div>
+      </div>
 
       <!-- behavior="read": message index -->
       <ul
@@ -883,5 +1130,74 @@ function parseSnippet(snippet: string): { text: string; match: boolean }[] {
   word-wrap: break-word;
   max-height: 320px;
   overflow-y: auto;
+}
+
+/* Search results grouped by session. The header is the only place a
+   conversation is named, so it carries the session title in full. */
+.search-group {
+  border-bottom: 1px solid var(--color-border);
+}
+
+.search-group:last-of-type {
+  border-bottom: none;
+}
+
+.search-group-header {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 4px 8px;
+  background: var(--semantic-card-bg);
+}
+
+.search-group-name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-size: var(--text-dense);
+  font-weight: 600;
+  color: var(--semantic-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.search-group-name:hover {
+  color: var(--color-violet);
+  text-decoration: underline;
+}
+
+/* Role facets. Counts are page-scoped, and the footer says so. */
+.facet-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  border-top: 1px solid var(--color-border);
+  font-size: var(--text-micro);
+}
+
+.facet {
+  font-family: inherit;
+  font-size: var(--text-micro);
+  color: var(--semantic-text-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.facet:hover {
+  color: var(--color-violet);
+}
+
+.facet-copied {
+  color: var(--color-violet);
+  font-weight: 600;
 }
 </style>

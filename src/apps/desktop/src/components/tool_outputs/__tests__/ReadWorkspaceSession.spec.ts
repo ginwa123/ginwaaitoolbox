@@ -41,6 +41,13 @@ const makeSearchContent = (
       created_at?: string
       snippet?: string
     }>
+    full_contents?: Array<{
+      id: string
+      session_id?: string
+      role?: string
+      content: string
+      content_truncated?: boolean
+    }>
   } = {},
 ) => {
   const behavior = opts.behavior ?? 'search'
@@ -70,6 +77,9 @@ const makeSearchContent = (
     count,
     total_count: total,
     results,
+    // Present only when the caller passed `message_ids`; null otherwise,
+    // which is what the backend actually emits.
+    full_contents: opts.full_contents ?? null,
   }
 }
 
@@ -312,8 +322,11 @@ describe('ReadWorkspaceSession.vue — search entries', () => {
 
     expect(entries[0]!.text()).toContain('user')
     expect(entries[0]!.text()).toContain('h1')
-    expect(entries[0]!.text()).toContain('Auth work')
     expect(entries[0]!.text()).toContain('login bug')
+    // The session name now lives on the group header, not on every row —
+    // it was repeated on each of 11,996 rows before.
+    expect(entries[0]!.text()).not.toContain('Auth work')
+    expect(wrapper.find('.search-group-header').text()).toContain('Auth work')
   })
 
   it('highlights bare-bracket spans (the format the backend actually emits)', () => {
@@ -372,6 +385,163 @@ describe('ReadWorkspaceSession.vue — search entries', () => {
     // The text after the nested-bracket term must still be visible.
     expect(snippetEl.text()).toContain('z')
     expect(snippetEl.text()).toContain('dialog')
+  })
+
+  it('groups search hits by session, newest conversation first', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [
+            {
+              id: 'h1',
+              role: 'user',
+              session_id: 's_old',
+              session_name: 'Older chat',
+              created_at: '2026-01-01 10:00:00',
+            },
+            {
+              id: 'h2',
+              role: 'user',
+              session_id: 's_new',
+              session_name: 'Newer chat',
+              created_at: '2026-03-01 10:00:00',
+            },
+            {
+              id: 'h3',
+              role: 'assistant',
+              session_id: 's_old',
+              session_name: 'Older chat',
+              created_at: '2026-02-01 10:00:00',
+            },
+          ],
+        }),
+      },
+    })
+    const groups = wrapper.findAll('.search-group')
+    // Two sessions, so two groups.
+    expect(groups).toHaveLength(2)
+    // Ordered by newest hit: s_new (March) before s_old (Feb).
+    expect(groups[0]!.text()).toContain('Newer chat')
+    expect(groups[0]!.text()).toContain('1 hit')
+    expect(groups[1]!.text()).toContain('Older chat')
+    expect(groups[1]!.text()).toContain('2 hits')
+    // All three entries still render.
+    expect(wrapper.findAll('[data-testid="read-workspace-session-search-entry"]')).toHaveLength(3)
+  })
+
+  it('groups hits with no session_id without throwing', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: {
+          behavior: 'search',
+          query: 'x',
+          count: 1,
+          total_count: 1,
+          results: [
+            { id: 'h9', role: 'user', session_id: '', session_name: '', snippet: 'a [b] c' },
+          ],
+        },
+      },
+    })
+    const group = wrapper.find('[data-testid="search-group-none"]')
+    expect(group.exists()).toBe(true)
+    expect(group.text()).toContain('(no session)')
+    // A nameless group offers no open affordance.
+    expect(wrapper.find('[data-testid="search-group-open-none"]').element.tagName).toBe('SPAN')
+  })
+
+  it('emits openSession when a session group header is clicked', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [
+            { id: 'h1', session_id: 's_42', session_name: 'Auth work' },
+            { id: 'h2', session_id: 's_99', session_name: 'Other work' },
+          ],
+        }),
+      },
+    })
+    await wrapper.find('[data-testid="search-group-open-s_42"]').trigger('click')
+    expect(wrapper.emitted('openSession')).toEqual([['s_42']])
+  })
+
+  it('renders a role facet footer scoped to the current page', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          total_count: 11996,
+          entries: [
+            { id: 'h1', role: 'tool' },
+            { id: 'h2', role: 'tool' },
+            { id: 'h3', role: 'user' },
+          ],
+        }),
+      },
+    })
+    const footer = wrapper.find('[data-testid="read-workspace-session-role-facets"]')
+    expect(footer.exists()).toBe(true)
+    expect(footer.text()).toContain('in this page')
+    expect(footer.find('[data-testid="role-facet-tool"]').text()).toContain('tool 2')
+    expect(footer.find('[data-testid="role-facet-user"]').text()).toContain('user 1')
+    // The page total is explicit so a page count is never read as a total.
+    expect(footer.text()).toContain('3 of 11996')
+  })
+
+  it('copies a ready-made role-filtered tool call when a facet is clicked', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          query: 'portal dialog',
+          entries: [{ id: 'h1', role: 'user' }],
+        }),
+      },
+    })
+    await wrapper.find('[data-testid="role-facet-user"]').trigger('click')
+    expect(clipboardWrites).toContain('{"query":"portal dialog","role":"user"}')
+  })
+
+  it('renders full_contents bodies behind a toggle', async () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: {
+        expanded: true,
+        content: makeSearchContent({
+          entries: [{ id: 'h1', role: 'user' }],
+          full_contents: [
+            {
+              id: 'h1',
+              session_id: 's_42',
+              role: 'user',
+              content: 'the whole body',
+              content_truncated: true,
+            },
+          ],
+        }),
+      },
+    })
+
+    const pre = wrapper.find('[data-testid="search-entry-content-0"]')
+    expect(pre.exists()).toBe(false)
+    // The truncation flag is visible before expanding.
+    expect(wrapper.find('[data-testid="search-entry-toggle-full-0"]').text()).toContain(
+      '(truncated)',
+    )
+
+    await wrapper.find('[data-testid="search-entry-toggle-full-0"]').trigger('click')
+    const after = wrapper.find('[data-testid="search-entry-content-0"]')
+    expect(after.exists()).toBe(true)
+    expect(after.text()).toContain('the whole body')
+  })
+
+  it('renders no content toggle when full_contents is absent', () => {
+    const wrapper = mount(ReadWorkspaceSession, {
+      props: { expanded: true, content: makeSearchContent({ entries: [{ id: 'h1' }] }) },
+    })
+    expect(wrapper.find('[data-testid="search-entry-full-0"]').exists()).toBe(false)
   })
 
   it('renders the empty-results hint when search matches nothing', () => {
