@@ -65,7 +65,15 @@ beforeEach(() => {
   getDocument.mockReset()
   updateDocument.mockReset()
   deleteDocument.mockReset()
-  useWorkspacesStore().activeWorkspaceId = 'ws_1'
+  // Seed the workspace itself, not the raw `activeWorkspaceId` ref. The
+  // view resolves its workspace through the `activeWorkspace` computed
+  // (precedence: explicit → persisted → item-owning → first workspace),
+  // so seeding the ref alone no longer gives it anything to fetch
+  // against. Seeding real store state is also what the app has: the ref
+  // is only set by the header dropdown or a `?workspaceId=` URL restore.
+  useWorkspacesStore().workspaces = [
+    { id: 'ws_1', name: 'agentic coding', icon: '📁', expanded: true, items: [] },
+  ]
   // Seed the list so `loadDocument` serves from cache, the way it does in
   // the real app (the sidebar has already listed the workspace).
   useDocumentsStore().documents = [DOC]

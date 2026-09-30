@@ -1550,8 +1550,20 @@ defineExpose({
 
       <!-- Documents (Migration 095). Its own section BELOW Projects — a
            document belongs to the workspace, not to a project, so it
-           never appears inside the project tree. -->
-      <DocumentsList v-if="!isCollapsed" :workspace-id="workspacesStore.activeWorkspaceId" />
+           never appears inside the project tree.
+
+           `activeWorkspace?.id`, NOT the raw `activeWorkspaceId` ref: the
+           ref is only set by the header dropdown or a `?workspaceId=` URL
+           restore, so a user who navigates by clicking a project row got
+           "No workspace selected" with a workspace plainly selected. The
+           computed carries the documented precedence fallback — explicit →
+           persisted → item-owning workspace → first workspace. Every other
+           consumer in this file (WorkspaceSwitcher, ProjectsList) binds it
+           the same way. -->
+      <DocumentsList
+        v-if="!isCollapsed"
+        :workspace-id="workspacesStore.activeWorkspace?.id ?? null"
+      />
     </nav>
 
     <!-- Modals -->

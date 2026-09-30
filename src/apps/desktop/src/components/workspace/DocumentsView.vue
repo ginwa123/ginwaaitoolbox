@@ -37,7 +37,13 @@ const savedContent = ref('')
 const savedTitle = ref('')
 const showPreview = ref(true)
 
-const workspaceId = computed(() => workspacesStore.activeWorkspaceId)
+// The resolved workspace, not the raw `activeWorkspaceId` ref. The ref is
+// only set by the header dropdown or a `?workspaceId=` URL restore, so a
+// user who reached a document by clicking a project row left it null —
+// and because the load `watch` below bails on a null workspace, the view
+// sat on "Loading document…" forever with no Edit/Delete button, i.e. the
+// document looked like it simply would not open.
+const workspaceId = computed(() => workspacesStore.activeWorkspace?.id ?? null)
 
 const document_ = computed(() => documentsStore.findById(props.documentId))
 
@@ -111,7 +117,15 @@ const remove = async () => {
 </script>
 
 <template>
-  <div class="flex-1 min-h-0 flex flex-col" data-testid="documents-view">
+  <!-- Absolute overlay rather than a flex child: AppLayout renders this
+       inside <main> so the project/chat behind it stays mounted (a
+       Back/Forward or a doc switch is then instant) while the document
+       covers it, exactly like the GitFileViewer / Skill Viewer overlays. -->
+  <div
+    class="absolute inset-0 flex flex-col"
+    style="background-color: var(--semantic-content-bg); z-index: 10"
+    data-testid="documents-view"
+  >
     <!-- Load failure is its own block, not a blank pane. A silently empty
          view is indistinguishable from a deleted document. -->
     <div

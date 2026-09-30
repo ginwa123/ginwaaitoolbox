@@ -668,6 +668,23 @@ watch(
         sub.detail = urlDetail
       }
     }
+    // Carry the open document (?doc=<id>, Migration 095) the same way, or
+    // any store write re-`router.replace`s a URL with it stripped and the
+    // editor closes itself. Same-project only, matching the `detail` rule
+    // above: switching projects is a deliberate navigation away from the
+    // open document. This is also the only thing protecting a cold boot /
+    // refresh on `…/projects/P?doc=<id>`, where the URL restore adopts the
+    // item from the path and the mirror fires with no prior state to bail on.
+    const urlDoc = route.query.doc as string | undefined
+    if (urlDoc) {
+      const urlDocProject =
+        pathParsed.kind === 'project' || pathParsed.kind === 'projectChat'
+          ? pathParsed.projectId
+          : parseItemIdWithChat((route.query.itemId as string) ?? '').itemId
+      if (!urlDocProject || urlDocProject === safeItemId) {
+        sub.doc = urlDoc
+      }
+    }
 
     let target: AppUrlLocation | null = null
     if (wsId && safeItemId) {
@@ -2495,6 +2512,17 @@ watch(
     // a chat from a board, or across chats). Mirrors the legacy
     // `?view=chat` branch below.
     const isOverlayView = view === 'gitfile' || view === 'skill' || view === 'code-editor'
+    // Documents (Migration 095) are a query overlay and the document IS
+    // the main content, so the path underneath is stale context — the
+    // same precedence `currentView` and `useCurrentMainView` already give
+    // `doc` (both check it before every path shape). This watcher was the
+    // one place that didn't, which is what broke document opening: it
+    // watches `route.query`, so a query-only `?doc=` change re-ran the
+    // project branch below and re-adopted the path's project, which
+    // re-fired the store->URL mirror and `router.replace`d a URL with the
+    // `doc` param stripped. The click's own navigation was undone a
+    // microtask later, so the row appeared to do nothing at all.
+    if (typeof query.doc === 'string' && query.doc.length > 0) return
     if (parsed.kind === 'chat') {
       if (activeChatId.value !== `chat-${parsed.sessionId}`) {
         workspacesStore.setActiveWorkspaceItem(null)
@@ -3337,20 +3365,27 @@ defineExpose({
           always null here.
         -->
       </div>
+
+      <!-- Documents viewer (Migration 095). INSIDE <main> and absolutely
+           positioned, matching the GitFileViewer / Skill Viewer overlays
+           above. It used to be a `flex-1` sibling of <main>, which meant
+           the open document and the project behind it split the surface
+           50/50. The `doc` id comes from the URL, so a refresh or a
+           shared link restores the same document. Guarded on the id
+           being non-empty because `currentView` already checked it — the
+           v-if is here so a racing route change cannot mount the view
+           with an undefined prop. Standalone `v-if`, not `v-else-if`:
+           `settings` and `documents` are mutually exclusive in
+           `currentView`, and this no longer chains to <SettingsView>
+           because it lives in a different element. -->
+      <DocumentsView
+        v-if="currentView === 'documents' && typeof route.query.doc === 'string'"
+        :document-id="route.query.doc as string"
+      />
     </main>
 
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
-
-    <!-- Documents viewer (Migration 095). The `doc` id comes from the
-         URL, so a refresh or a shared link restores the same document.
-         Guarded on the id being non-empty because `currentView` already
-         checked it — the v-if is here so a racing route change cannot
-         mount the view with an undefined prop. -->
-    <DocumentsView
-      v-else-if="currentView === 'documents' && typeof route.query.doc === 'string'"
-      :document-id="route.query.doc as string"
-    />
 
     <!-- Global error notification stack -->
     <NotificationContainer />
