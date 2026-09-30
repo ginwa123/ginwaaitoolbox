@@ -957,7 +957,7 @@ test "llm_test validate: allows empty api_key (keyless local / stub upstream)" {
 }
 
 test "llm_test validate: accepts all three known styles" {
-    for ([_] []const u8{ "openai", "openai-response", "anthropic" }) |style| {
+    for ([_][]const u8{ "openai", "openai-response", "anthropic" }) |style| {
         const req: LlmTestRequest = .{ .model = "m", .base_url = "http://127.0.0.1:9/x", .url_style = style };
         try llmTestValidate(req);
     }
@@ -1016,7 +1016,8 @@ test "llm_test extractReply: parses openai-response output items" {
 }
 
 test "llm_test extractReply: rejects empty choices" {
-    const raw = \\{"choices":[]}
+    const raw =
+        \\{"choices":[]}
     ;
     try testing.expectError(LlmTestError.InvalidResponse, llmTestExtractReply(testing.allocator, "openai", raw));
 }
@@ -1382,13 +1383,20 @@ fn mcpTestStdio(
 
     var attempt: u8 = 1;
     while (true) : (attempt += 1) {
-        const client = reg.getOrSpawn(preview_name, argv) catch |err| {
+        // One lease per attempt, taken for the whole request/response
+        // transaction so a concurrent session can't drive the same
+        // child while we're mid-frame. The `defer` is scoped to the
+        // loop body, so it runs on every exit from this attempt —
+        // `return` on a hard failure AND `continue` on a retry.
+        var lease = reg.acquire(preview_name, argv, .{}) catch |err| {
             logger.warnFmt("[mcp_test] stdio spawn failed for command '{s}': {s}", .{ req.command, @errorName(err) });
             const msg = std.fmt.allocPrint(allocator, "spawn:{s}", .{@errorName(err)}) catch null;
             freeStderrs(allocator, &stderrs_buf, attempts_used);
             out_err_detail.* = msg;
             return McpTestError.SpawnFailed;
         };
+        defer lease.release();
+        const client = lease.client();
 
         const stdin_file = client.stdin orelse {
             freeStderrs(allocator, &stderrs_buf, attempts_used);
@@ -1418,7 +1426,7 @@ fn mcpTestStdio(
                 attempts_used += 1;
             }
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.SendFailed) {
-                reg.markStale(preview_name);
+                lease.markStale();
                 const detail = formatAttemptsDetail(
                     allocator,
                     @errorName(err),
@@ -1430,7 +1438,10 @@ fn mcpTestStdio(
                 out_err_detail.* = detail;
                 return McpTestError.SendFailed;
             }
-            reg.markStale(preview_name);
+            lease.markStale();
+            // Hand the child back before the backoff: `defer` alone
+            // would keep the per-server lease for the whole sleep.
+            lease.release();
             std.Io.Clock.Duration.sleep(
                 .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
                 io,
@@ -1458,7 +1469,7 @@ fn mcpTestStdio(
                 attempts_used += 1;
             }
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
-                reg.markStale(preview_name);
+                lease.markStale();
                 const detail = formatAttemptsDetail(
                     allocator,
                     @errorName(err),
@@ -1483,7 +1494,10 @@ fn mcpTestStdio(
                 "[mcp_test] stdio initialize got {s} on attempt {d}/{d} — likely cold-start race; retrying",
                 .{ @errorName(err), attempt, TEST_STDIO_MAX_ATTEMPTS },
             );
-            reg.markStale(preview_name);
+            lease.markStale();
+            // Hand the child back before the backoff: `defer` alone
+            // would keep the per-server lease for the whole sleep.
+            lease.release();
             std.Io.Clock.Duration.sleep(
                 .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
                 io,
@@ -1524,7 +1538,7 @@ fn mcpTestStdio(
                 attempts_used += 1;
             }
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.SendFailed) {
-                reg.markStale(preview_name);
+                lease.markStale();
                 const detail = formatAttemptsDetail(
                     allocator,
                     @errorName(err),
@@ -1538,7 +1552,10 @@ fn mcpTestStdio(
                 allocator.free(init_resp);
                 return McpTestError.SendFailed;
             }
-            reg.markStale(preview_name);
+            lease.markStale();
+            // Hand the child back before the backoff: `defer` alone
+            // would keep the per-server lease for the whole sleep.
+            lease.release();
             allocator.free(post_init_payload);
             allocator.free(init_resp);
             std.Io.Clock.Duration.sleep(
@@ -1569,7 +1586,7 @@ fn mcpTestStdio(
                 attempts_used += 1;
             }
             if (attempt >= TEST_STDIO_MAX_ATTEMPTS or err != error.UnexpectedEof) {
-                reg.markStale(preview_name);
+                lease.markStale();
                 const detail = formatAttemptsDetail(
                     allocator,
                     @errorName(err),
@@ -1586,7 +1603,10 @@ fn mcpTestStdio(
                 "[mcp_test] stdio tools/list got {s} on attempt {d}/{d} — cold-start race; retrying",
                 .{ @errorName(err), attempt, TEST_STDIO_MAX_ATTEMPTS },
             );
-            reg.markStale(preview_name);
+            lease.markStale();
+            // Hand the child back before the backoff: `defer` alone
+            // would keep the per-server lease for the whole sleep.
+            lease.release();
             allocator.free(init_resp);
             std.Io.Clock.Duration.sleep(
                 .{ .raw = std.Io.Duration.fromMilliseconds(TEST_STDIO_RETRY_DELAY_MS), .clock = .real },
@@ -2013,7 +2033,6 @@ pub fn mcpTestHandler(
 }
 
 // ─── Inline tests ──────────────────────────────────────────────────────────
-
 
 fn mcpSourceContains(allocator: std.mem.Allocator, path: []const u8, needle: []const u8) !bool {
     const raw = try std.Io.Dir.cwd().readFileAlloc(testing.io, path, allocator, .limited(1024 * 1024));

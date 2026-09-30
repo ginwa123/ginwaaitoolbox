@@ -384,7 +384,8 @@ fn persistAuthModeStatus(ctx: ToolExecContext, di: *nalarcore.ContextIPCTui) ![]
 /// failure status. The result is owned by `allocator` — caller frees.
 /// Falls back to a literal "false" copy on OOM (allocPrint failure) so
 /// the caller doesn't have to handle the inner failure.
-fn failStatus(allocator: std.mem.Allocator, op: []const u8, reason: []const u8) []u8 {    return std.fmt.allocPrint(
+fn failStatus(allocator: std.mem.Allocator, op: []const u8, reason: []const u8) []u8 {
+    return std.fmt.allocPrint(
         allocator,
         "false: {s} {s}",
         .{ op, reason },
@@ -528,7 +529,9 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_json: []const u8, server_name:
 
     // Via the singleton struct (see root.zig `mcpStdioRegistry`).
     const reg = nalarcore.mcpStdioRegistry(ctx.allocator);
-    const client = reg.getOrSpawn(server_name, argv) catch return inner_json;
+    var lease = reg.acquire(server_name, argv, .{}) catch return inner_json;
+    defer lease.release();
+    const client = lease.client();
     const req = ctx.allocator.dupe(u8,
         \\{"jsonrpc":"2.0","id":"1","method":"tools/list","params":{}}
     ) catch return inner_json;
@@ -539,17 +542,22 @@ fn listAndAppendTools(ctx: ToolExecContext, inner_json: []const u8, server_name:
     // blocks the tool-exec handler indefinitely — same blocking
     // behaviour the stdio transport had before PR #373. On
     // SendTimeout / RecvTimeout the stale child is killed so the next
-    // `getOrSpawn` respawns a fresh process.
+    // `acquire` respawns a fresh process.
     const deadline_ns: u64 = 60 * std.time.ns_per_s;
     client.send(req, deadline_ns) catch |err| {
-        if (err == error.SendTimeout) reg.markStale(server_name);
+        if (err == error.SendTimeout) lease.markStale();
         return inner_json;
     };
     const resp = client.recv(deadline_ns, null) catch |err| {
-        if (err == error.RecvTimeout) reg.markStale(server_name);
+        if (err == error.RecvTimeout) lease.markStale();
         return inner_json;
     };
-    defer ctx.allocator.free(resp);
+    // No `free` for `resp`: it came from `client.recv`, which allocates
+    // in the client's own arena (`client.allocator()`), not in
+    // `ctx.allocator`. Freeing it here would hand a foreign pointer to
+    // the wrong allocator — an invalid free under DebugAllocator, and
+    // heap corruption in production. The arena reclaims it when the
+    // child is respawned or the registry shuts down.
 
     var arena = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena.deinit();

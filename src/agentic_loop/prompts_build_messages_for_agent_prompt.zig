@@ -681,7 +681,10 @@ fn fetchToolsFromServerStdio(
     var last_err: anyerror = error.MCPServerSpawnFailed;
     var attempt: u8 = 0;
     while (attempt < retry_attempts) : (attempt += 1) {
-        const client = reg.getOrSpawn(server_name, argv) catch {
+        // One lease per attempt, released when this iteration's block
+        // exits: a second session on the same server waits its turn
+        // instead of driving the same `StdioClient` reader at once.
+        var lease = reg.acquire(server_name, argv, .{}) catch {
             last_err = error.MCPServerSpawnFailed;
             if (attempt + 1 < retry_attempts) {
                 std.Io.Clock.Duration.sleep(
@@ -692,7 +695,9 @@ fn fetchToolsFromServerStdio(
             }
             return error.MCPServerSpawnFailed;
         };
-        errdefer reg.markStale(server_name);
+        defer lease.release();
+        const client = lease.client();
+        errdefer lease.markStale();
 
         // MCP handshake: initialize → initialized → tools/list
         // Many servers (Python SDK, Node SDK) require initialize before
@@ -711,7 +716,7 @@ fn fetchToolsFromServerStdio(
                 try c.sendNDJSON(tools_list_body);
                 // Read initialize response
                 const init_resp = try c.recv(deadline, cancel);
-                defer c.allocator.free(init_resp);
+                defer c.allocator().free(init_resp);
                 // Read tools/list response (the one we care about)
                 return try c.recv(deadline, cancel);
             }
@@ -721,7 +726,11 @@ fn fetchToolsFromServerStdio(
             last_err = err;
             const is_retryable = err == error.UnexpectedEof or err == error.RecvTimeout or err == error.BrokenPipe;
             if (is_retryable and attempt + 1 < retry_attempts) {
-                reg.markStale(server_name);
+                lease.markStale();
+                // Hand the child back before sleeping: `defer` alone
+                // would hold the per-server lease for the whole backoff,
+                // stalling every other session on this server.
+                lease.release();
                 std.Io.Clock.Duration.sleep(
                     .{ .raw = std.Io.Duration.fromMilliseconds(retry_delay_ms), .clock = .real },
                     reg.io,
@@ -732,12 +741,13 @@ fn fetchToolsFromServerStdio(
             if (err == error.UnexpectedEof) return error.MCPServerRecvFailed;
             return err;
         };
-        // `resp` is owned by the client's allocator (the registry arena),
-        // not ours — free it there (matches the `init_resp` handling in
-        // `do_handshake` above). Freeing via `allocator` is an invalid
-        // free under DebugAllocator (surfaced by the first in-process
-        // live-handshake unit test); under an arena it was a silent no-op.
-        defer client.allocator.free(resp);
+        // `resp` is owned by the client's allocator (its per-client
+        // arena), not ours — free it there (matches the `init_resp`
+        // handling in `do_handshake` above). Freeing via `allocator`
+        // is an invalid free under DebugAllocator (surfaced by the
+        // first in-process live-handshake unit test); under an arena it
+        // was a silent no-op.
+        defer client.allocator().free(resp);
 
         // Parse result.tools[] into AgentTool records (same parser the HTTP
         // branch uses after `body_to_parse` is read).
@@ -1716,7 +1726,7 @@ test "buildMCPToolsRun: server with neither command nor url is skipped" {
 }
 
 test "buildMCPToolsRun: stdio server with bogus command is skipped (no crash)" {
-    // Uses a non-existent binary — getOrSpawn fails with ChildSpawnFailed,
+    // Uses a non-existent binary — acquire fails with ChildSpawnFailed,
     // which buildMCPToolsRun catches and skips. Proves the spawn-failure
     // path doesn't crash or propagate the error.
     //
