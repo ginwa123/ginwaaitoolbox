@@ -14,6 +14,14 @@ const builtin = @import("builtin");
 const nalarcore = @import("nalarcore");
 const helpers = @import("helpers");
 
+/// This file is the ROOT of the standalone smoke build, so it is also the
+/// only place in the test suite where `pub const debug` is actually
+/// *compiled* rather than grepped for. `src/main.zig` and
+/// desktop_app/main.zig` carry the same decl for the shipped binaries;
+/// here it proves the declaration is legal and that std's
+/// `@hasDecl(root.debug, "handleSegfault")` dispatch finds it.
+pub const debug = nalarcore.crash_handler.root_debug;
+
 /// Runtime-opaque base so the compiler cannot prove the load is safe
 /// and fold it to `undefined` (a comptime-known address turns the
 /// "crash" into a no-op — see the 2026-09-30 iteration where the first
