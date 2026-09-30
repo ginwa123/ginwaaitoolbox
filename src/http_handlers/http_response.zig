@@ -699,6 +699,11 @@ pub fn makeGitWorktreeInfoResponse(allocator: std.mem.Allocator, response: GitWo
 pub const GitPrCreateResponse = struct {
     success: bool = false,
     pr_url: []const u8 = "",
+    /// Which forge the PR/MR was opened on ("github" / "gitlab").
+    /// Empty on failure, and on responses from a server predating
+    /// GitLab support — clients must treat "" as "unknown, assume
+    /// GitHub", not as an error.
+    provider: []const u8 = "",
     // Renamed from `error_message` per PR review (line 60 of git_pr_create.zig).
     // `error` is a Zig keyword, so the field is `@"error"` here; it serializes
     // to JSON `"error"` via std.json.Stringify.
@@ -714,10 +719,15 @@ pub fn makeGitPrCreateResponse(allocator: std.mem.Allocator, response: GitPrCrea
 // Wraps `gh pr view --json ...` so the CLI can show open/merged/closed
 // without shelling to `gh` itself.
 pub const GitPrStatusResponse = struct {
+    /// Which forge answered: "github" or "gitlab". The frontend needs
+    /// this to label the item correctly (pull request vs merge request)
+    /// — without it a GitLab MR is rendered with GitHub's wording and
+    /// links to a GitHub-only `/conflicts` route.
+    provider: []const u8 = "",
     pr_url: []const u8 = "",
     number: i64 = 0,
     title: []const u8 = "",
-    /// Raw `gh` state (OPEN/CLOSED/MERGED).
+    /// Raw forge state (GitHub OPEN/CLOSED/MERGED, GitLab opened/closed/merged).
     state: []const u8 = "",
     /// Normalized lowercase status (open/closed/merged).
     status: []const u8 = "",

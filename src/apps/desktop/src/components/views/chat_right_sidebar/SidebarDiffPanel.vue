@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import * as api from '../../../api'
 import { openInNewTab } from '../../../helpers/openInNewTab'
+import { conflictsUrl, forgeWording } from '../../../helpers/forgeWording'
 import { isBackgroundOpenEvent } from '../../../helpers/tabTarget'
 import { useContextMenu } from '../../../composables/useContextMenu'
 import OpenInNewTabMenu from '../../shell/OpenInNewTabMenu.vue'
@@ -119,15 +120,27 @@ const prStatusTitle = ref('')
 const prMergeable = ref('')
 const prMergeState = ref('')
 const hasPrConflict = computed(() => {
-  if ((prMergeable.value || '').toUpperCase() === 'CONFLICTING') return true
-  if ((prMergeState.value || '').toUpperCase() === 'DIRTY') return true
+  const m = (prMergeable.value || '').toUpperCase()
+  const s = (prMergeState.value || '').toUpperCase()
+  // GitHub says CONFLICTING / DIRTY.
+  if (m === 'CONFLICTING') return true
+  if (s === 'DIRTY') return true
+  // GitLab's `detailed_merge_status` has its own vocabulary. Without
+  // these rows a conflicted MR renders as mergeable, which is the worst
+  // direction to be wrong in — the user is told to merge something that
+  // cannot merge.
+  if (m === 'CONFLICTED') return true
+  if (m === 'NOT_MERGEABLE') return true
   return false
 })
-// GitHub renders conflict resolution at <pr-url>/conflicts.
-const prConflictsUrl = computed(() => {
-  const url = (props.prUrl ?? '').replace(/\/$/, '')
-  return url ? `${url}/conflicts` : ''
-})
+// GitHub renders conflict resolution at <pr-url>/conflicts. GitLab has no
+// such route, so this returns '' there and the notice renders as plain
+// text rather than as a link to a guaranteed 404.
+const prConflictsUrl = computed(() => conflictsUrl(props.prProvider, props.prUrl ?? ''))
+
+// Provider-aware vocabulary: "pull request"/"PR"/"GitHub" on GitHub,
+// "merge request"/"MR"/"GitLab" on GitLab.
+const forge = computed(() => forgeWording(props.prProvider))
 // Last GET /api/git/pr/status failure, parsed from the server's
 // `{"error": ...}` body. Empty = unknown yet or last fetch worked.
 // Shown inline (the status fetch is silent:true, so no toast) so a
@@ -219,7 +232,7 @@ const prLabel = computed(() => {
   try {
     return new URL(url).host
   } catch {
-    return 'PR'
+    return forgeWording(props.prProvider).short
   }
 })
 
@@ -695,7 +708,7 @@ defineExpose({
         "
         @click="setActiveTab('pr')"
       >
-        Pull request{{ prFiles.length > 0 ? ` (${prFiles.length})` : '' }}
+        {{ forge.label }}{{ prFiles.length > 0 ? ` (${prFiles.length})` : '' }}
       </button>
       <button
         type="button"
@@ -747,7 +760,7 @@ defineExpose({
         v-if="hasPrConflict"
         class="px-1.5 py-0.5 rounded text-dense font-medium shrink-0"
         style="background-color: var(--semantic-error); color: var(--color-bg)"
-        title="This pull request has merge conflicts that must be resolved"
+        :title="`This ${forge.noun} has merge conflicts that must be resolved`"
         data-testid="sidebar-pr-conflict-badge"
       >
         ⚠ Merge conflicts
@@ -772,7 +785,7 @@ defineExpose({
         type="button"
         class="text-dense px-2 py-1 rounded hover:opacity-70"
         style="color: var(--semantic-text-dim)"
-        title="Refresh PR diff"
+        :title="`Refresh ${forge.short} diff`"
         data-testid="sidebar-diff-refresh"
         @click="onRefreshClick"
       >
@@ -873,7 +886,9 @@ defineExpose({
           class="flex flex-col items-center justify-center p-4 text-center"
         >
           <span class="text-display mb-3">🔀</span>
-          <p class="text-dense" style="color: var(--semantic-text-dim)">No PR changes found</p>
+          <p class="text-dense" style="color: var(--semantic-text-dim)">
+            No {{ forge.short }} changes found
+          </p>
           <p
             v-if="prStatusError"
             class="text-dense break-words mt-2"
@@ -881,7 +896,7 @@ defineExpose({
             :title="prStatusError"
             data-testid="sidebar-pr-status-error"
           >
-            PR status unavailable — {{ prStatusError }}
+            {{ forge.short }} status unavailable — {{ prStatusError }}
           </p>
         </div>
         <template v-else>
@@ -916,7 +931,7 @@ defineExpose({
             :title="prStatusError"
             data-testid="sidebar-pr-status-error"
           >
-            PR status unavailable — {{ prStatusError }}
+            {{ forge.short }} status unavailable — {{ prStatusError }}
           </div>
           <div
             v-if="prStatus === 'merged'"
@@ -927,7 +942,8 @@ defineExpose({
             "
             data-testid="sidebar-pr-merged-notice"
           >
-            Merged — this PR was merged on GitHub. The diff below is the final state.
+            Merged — this {{ forge.short }} was merged on {{ forge.forge }}. The diff below is the
+            final state.
           </div>
           <div
             v-else-if="prStatus === 'closed'"
@@ -938,14 +954,18 @@ defineExpose({
             "
             data-testid="sidebar-pr-closed-notice"
           >
-            Closed — this PR was closed on GitHub without merging.
+            Closed — this {{ forge.short }} was closed on {{ forge.forge }} without merging.
           </div>
-          <div v-if="prTruncated" class="px-3 py-1 text-dense" style="color: var(--semantic-text-dim)">
+          <div
+            v-if="prTruncated"
+            class="px-3 py-1 text-dense"
+            style="color: var(--semantic-text-dim)"
+          >
             Diff truncated at 1MB — showing first files
           </div>
           <div class="py-1">
             <div class="px-3 py-1 text-dense font-semibold" style="color: var(--color-violet)">
-              PR files ({{ prFiles.length }})
+              {{ forge.short }} files ({{ prFiles.length }})
             </div>
             <div
               v-for="file in prFiles"

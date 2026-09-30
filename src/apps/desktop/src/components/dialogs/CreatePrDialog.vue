@@ -8,12 +8,19 @@
  * calls api.createGitPr(...) and emits 'pr-created' with the URL on
  * success or 'error' with the message on failure.
  */
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import * as api from '../../api'
+import { forgeWording } from '../../helpers/forgeWording'
 
 const props = defineProps<{
   worktreePath: string
+  /** Which forge to open on. '' falls back to GitHub wording. */
+  prProvider?: string
 }>()
+
+// Provider-aware vocabulary: a GitLab user sees "Create merge request",
+// never "Create PR" — and the error text names the CLI that actually ran.
+const forge = computed(() => forgeWording(props.prProvider))
 
 const emit = defineEmits<{
   (e: 'pr-created', url: string): void
@@ -63,14 +70,16 @@ const onSubmit = async () => {
   if (isSubmitting.value || title.value.trim() === '') return
   isSubmitting.value = true
   try {
-    const resp = await api.createGitPr(props.worktreePath, base.value, title.value, body.value)
+    const resp = await api.createGitPr(props.worktreePath, base.value, title.value, body.value, {
+      provider: props.prProvider,
+    })
     if (resp.success) {
       emit('pr-created', resp.pr_url)
     } else {
-      emit('error', resp.error || 'Unknown error from gh pr create')
+      emit('error', resp.error || `Unknown error from ${forge.program} ${forge.noun} create`)
     }
   } catch (err) {
-    emit('error', `Failed to create PR: ${err}`)
+    emit('error', `Failed to create ${forge.short}: ${err}`)
   } finally {
     isSubmitting.value = false
   }
@@ -97,7 +106,7 @@ const onClose = () => {
         style="border-bottom: 1px solid var(--color-border)"
       >
         <h2 class="text-body font-semibold" style="color: var(--semantic-text)">
-          🔀 Create a pull request
+          🔀 Create a {{ forge.label.toLowerCase() }}
         </h2>
         <div class="flex items-center gap-2">
           <!-- Auto-fill button: re-fetches worktree info against the
@@ -140,7 +149,11 @@ const onClose = () => {
         </div>
       </div>
 
-      <div v-if="isLoading" class="px-4 py-8 text-center text-dense" style="color: var(--semantic-text-dim)">
+      <div
+        v-if="isLoading"
+        class="px-4 py-8 text-center text-dense"
+        style="color: var(--semantic-text-dim)"
+      >
         Loading worktree info...
       </div>
 
@@ -178,7 +191,7 @@ const onClose = () => {
               color: var(--semantic-text);
               color-scheme: dark;
             "
-            placeholder="PR title"
+            :placeholder="`${forge.short} title`"
           />
         </div>
         <div>
@@ -227,17 +240,14 @@ const onClose = () => {
               ? 'opacity-50 cursor-not-allowed'
               : 'hover:opacity-80'
           "
-          style="
-            background-color: var(--color-violet);
-            color: white;
-          "
+          style="background-color: var(--color-violet); color: white"
         >
           <span
             v-if="isSubmitting"
             class="w-3 h-3 border-2 rounded-full animate-spin"
             style="border-color: white; border-top-color: transparent"
           ></span>
-          <span>{{ isSubmitting ? 'Creating...' : 'Create PR' }}</span>
+          <span>{{ isSubmitting ? 'Creating...' : `Create ${forge.short}` }}</span>
         </button>
       </div>
     </div>

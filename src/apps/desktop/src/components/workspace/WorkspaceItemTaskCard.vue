@@ -651,7 +651,9 @@ watch([gitBranchBadge, effectiveCwd], () => {
           style="background: rgba(196, 116, 110, 0.18); border: 1px solid var(--color-red)"
           aria-label="Agent error — click card to view detail"
         >
-          <span style="color: var(--color-red); font-size: var(--text-micro); line-height: 1" aria-hidden="true"
+          <span
+            style="color: var(--color-red); font-size: var(--text-micro); line-height: 1"
+            aria-hidden="true"
             >⚠</span
           >
         </span>
@@ -669,7 +671,9 @@ watch([gitBranchBadge, effectiveCwd], () => {
           data-testid="task-agent-error-tooltip"
         >
           <div class="flex items-center gap-2 mb-1.5">
-            <span style="color: var(--color-red); font-size: var(--text-meta)" aria-hidden="true">⚠</span>
+            <span style="color: var(--color-red); font-size: var(--text-meta)" aria-hidden="true"
+              >⚠</span
+            >
             <span class="text-meta font-medium" style="color: var(--color-red)">Agent error</span>
             <span
               v-if="errorRetryLabel"
@@ -706,7 +710,9 @@ watch([gitBranchBadge, effectiveCwd], () => {
           />
         </svg>
       </span>
-      <span class="flex-1 min-w-0 text-body font-medium leading-snug truncate">{{ task.name }}</span>
+      <span class="flex-1 min-w-0 text-body font-medium leading-snug truncate">{{
+        task.name
+      }}</span>
       <!-- The four hover action buttons that used to live here
            (pin / rename / details / delete) are gone: they ate ~100px
            of a 280px column and truncated the task name to ~150px.
@@ -862,7 +868,7 @@ watch([gitBranchBadge, effectiveCwd], () => {
         v-if="gitBranchBadge"
         class="inline-flex items-center gap-1 max-w-[8rem] truncate font-semibold cursor-context-menu"
         :style="gitBranchStyle"
-        :title="`${gitBranchTitle} — right-click to open GitHub`"
+        :title="`${gitBranchTitle} — right-click to open the change request`"
         :data-pr-status="prStatus || undefined"
         :data-pr-conflict="prHasConflict || undefined"
         data-testid="task-git-branch"

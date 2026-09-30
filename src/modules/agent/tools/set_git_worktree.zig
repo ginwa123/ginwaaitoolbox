@@ -944,8 +944,14 @@ pub const SetGitWorktreeJSON = struct {
     @"error": ?[]const u8 = null,
 };
 
+/// Guidance handed back after a successful worktree create. Forge-neutral
+/// on purpose: the repo may live on GitHub OR GitLab, and telling a
+/// GitLab user to run `gh pr create` sends them to a CLI that cannot
+/// work. Both spellings are named so the agent picks by the repo's
+/// remote, and `set_pull_request` auto-detects the provider from the URL
+/// either way.
 pub const worktree_pr_note =
-    "If the user asks to open a pull request, or you want to initialize one for this branch, create it with `gh pr create` (or the Create-PR dialog), then call the agent tool `set_pull_request` with the PR URL to bind it to this session.";
+    "If the user asks to open a pull request or a merge request, or you want to initialize one for this branch, create it with the forge CLI for this repo — `gh pr create` on GitHub, `glab mr create` on GitLab — or use the Create-PR dialog, then call the agent tool `set_pull_request` with the PR/MR URL to bind it to this session.";
 
 pub fn jsonSet(allocator: std.mem.Allocator, session_id: []const u8, path: []const u8, branch: []const u8, base: []const u8) []const u8 {
     return std.json.Stringify.valueAlloc(allocator, SetGitWorktreeJSON{
@@ -1756,9 +1762,16 @@ test "success SET json includes PR hint note with set_pull_request" {
         std.debug.print("!! success note does not mention set_pull_request !!\n", .{});
         return error.SuccessNoteMissingSetPullRequest;
     }
+    // Both forges must be named. Pinning only `gh pr create` is how a
+    // GitLab user ends up being told to run a CLI that cannot open a
+    // merge request for them.
     if (std.mem.indexOf(u8, source, "gh pr create") == null) {
         std.debug.print("!! success note does not mention `gh pr create` !!\n", .{});
         return error.SuccessNoteMissingGhPrCreate;
+    }
+    if (std.mem.indexOf(u8, source, "glab mr create") == null) {
+        std.debug.print("!! success note does not mention `glab mr create` (GitLab) !!\n", .{});
+        return error.SuccessNoteMissingGlabMrCreate;
     }
     if (std.mem.indexOf(u8, source, "agent tool `set_pull_request`") == null) {
         std.debug.print("!! success note must explicitly say agent tool `set_pull_request` !!\n", .{});

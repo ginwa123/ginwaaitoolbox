@@ -122,6 +122,35 @@ pub fn detectProvider(url: []const u8) PrProvider {
     return .generic;
 }
 
+/// Detect the provider from a `git remote get-url` value.
+///
+/// A remote is not always an http(s) URL: the scp-like form
+/// `git@gitlab.com:group/repo.git` carries no `://`, so feeding it
+/// straight to `detectProvider` (which needs a scheme to split a host
+/// out) reports EVERY SSH remote as `generic` — and a GitLab repo cloned
+/// over SSH is the common case. Rewrite that shape into an https URL
+/// first, then reuse the same host/path sniffing.
+///
+/// A self-hosted GitLab on a host without "gitlab" in its name still
+/// lands on `generic`; the caller passes an explicit override for that
+/// (see `set_pull_request`'s `provider` input).
+pub fn detectProviderFromRemote(remote: []const u8) PrProvider {
+    const trimmed = std.mem.trim(u8, remote, " \t\r\n");
+    if (trimmed.len == 0) return .generic;
+
+    if (std.mem.indexOf(u8, trimmed, "://") != null) return detectProvider(trimmed);
+
+    // scp-like: [user@]host:path
+    const after_user = if (std.mem.indexOfScalar(u8, trimmed, '@')) |at| trimmed[at + 1 ..] else trimmed;
+    const colon = std.mem.indexOfScalar(u8, after_user, ':') orelse return .generic;
+    const host = after_user[0..colon];
+    if (host.len == 0) return .generic;
+
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rewritten = std.fmt.bufPrint(&buf, "https://{s}/{s}", .{ host, after_user[colon + 1 ..] }) catch return .generic;
+    return detectProvider(rewritten);
+}
+
 /// Parse owner/repo + number out of a normalized URL for the given
 /// provider. Returns null when the shape does not match (the caller
 /// surfaces a validation error). Slices borrow from `url`.
@@ -190,6 +219,26 @@ test "detectProvider sniffs github, gitlab, generic" {
     try std.testing.expectEqual(PrProvider.gitlab, detectProvider("https://git.corp.example.com/g/sub/r/-/merge_requests/3"));
     try std.testing.expectEqual(PrProvider.generic, detectProvider("https://git.corp.example.com/a/b/changes/9"));
     try std.testing.expectEqual(PrProvider.generic, detectProvider("not a url"));
+}
+
+test "detectProviderFromRemote sniffs both https and scp-like remotes" {
+    // The scp-like rows are the point of this helper: a GitLab repo
+    // cloned over SSH has no `://`, so `detectProvider` alone would
+    // report every SSH remote as `generic`.
+    const cases = [_]struct { in: []const u8, out: PrProvider }{
+        .{ .in = "https://github.com/acme/app.git", .out = .github },
+        .{ .in = "https://gitlab.com/group/sub/repo.git", .out = .gitlab },
+        .{ .in = "git@github.com:acme/app.git", .out = .github },
+        .{ .in = "git@gitlab.com:group/sub/repo.git", .out = .gitlab },
+        .{ .in = "  git@gitlab.com:group/repo.git\n", .out = .gitlab },
+        .{ .in = "ssh://git@gitlab.com/group/repo.git", .out = .gitlab },
+        // A host with no forge name in it and no MR marker is still
+        // generic — the caller passes an explicit override there.
+        .{ .in = "git@git.corp.example.com:group/repo.git", .out = .generic },
+        .{ .in = "", .out = .generic },
+        .{ .in = "not a remote", .out = .generic },
+    };
+    for (cases) |c| try std.testing.expectEqual(c.out, detectProviderFromRemote(c.in));
 }
 
 test "parsePrRef extracts github owner/repo/number" {
