@@ -43,7 +43,7 @@ SMOKE_DEPS_DIR="${WORKTREE}/src"
 
 SIGNALS_REQUESTED=("$@")
 if [ "${#SIGNALS_REQUESTED[@]}" -eq 0 ]; then
-    SIGNALS_REQUESTED=(SEGV ABRT ILL FPE)
+    SIGNALS_REQUESTED=(FAULT SEGV ABRT ILL FPE)
     # BUS is Linux/macOS only — skip on Windows.
     if [ "$(uname -s)" != "Windows" ]; then
         SIGNALS_REQUESTED+=(BUS)
@@ -120,6 +120,9 @@ for sig in "${SIGNALS_REQUESTED[@]}"; do
     # The log file MUST mention the signal name (or its synonym).
     case "${sig}" in
         SEGV) SIGNAL_NAME="SEGV" ;;
+        # FAULT is a REAL access violation (not raise()), so the kernel
+        # reports it as SIGSEGV regardless of the trigger's name.
+        FAULT) SIGNAL_NAME="SEGV" ;;
         ABRT) SIGNAL_NAME="ABRT" ;;
         ILL)  SIGNAL_NAME="ILL" ;;
         FPE)  SIGNAL_NAME="FPE" ;;
@@ -141,6 +144,39 @@ for sig in "${SIGNALS_REQUESTED[@]}"; do
         echo "  WARN: ${sig} log file has no hex addresses (no stack trace)"
         # Not a hard fail — best-effort logging may legitimately produce
         # an empty trace if stack tracing is disabled.
+    fi
+
+    # ── Fault-locality: frame 0 of the report must be the frame that
+    # faulted, NOT the frame that wrote the report.
+    #
+    # Capturing with `context = null` makes the unwinder start at the
+    # handler's own frame, so the report leads with `handleCrashSignalSiginfo`
+    # (or `handleWindowsException`) and the reader has to hunt for the real
+    # culprit. Threading the crashing CpuContext through makes frame 0 the
+    # faulting PC. Only the FAULT case can assert this: with `raise()` the
+    # raiser and the handler are the same stack, so "which frame is first"
+    # is not a meaningful assertion there.
+    if [ "${sig}" = "FAULT" ]; then
+        FIRST_FRAME="$(sed -n 's/.*: \(0x[0-9a-f]*\) in .*/\1/p' "${LOG_FILE}" | head -n 1)"
+        if [ -z "${FIRST_FRAME}" ]; then
+            echo "  FAIL: ${sig} report has no symbolicated frame at all"
+            FAIL=$((FAIL + 1)); FAILED_SIGNALS+=("${sig}"); continue
+        fi
+        # Resolve frame 0 to a function name with addr2line. The report's
+        # symbolication is what is under test, so resolve independently.
+        FRAME0_SYM="$(addr2line -f -C -e "${SMOKE_BIN}" "${FIRST_FRAME}" 2>/dev/null | head -n 1)"
+        echo "  frame0 ${FIRST_FRAME} -> ${FRAME0_SYM}"
+        case "${FRAME0_SYM}" in
+            *crashSiteTarget*)
+                echo "  PASS: ${sig} frame 0 is the faulting function"
+                ;;
+            *)
+                echo "  FAIL: ${sig} frame 0 is '${FRAME0_SYM}', expected crashSiteTarget"
+                echo "         (the report is leading with the crash handler's own frame —"
+                echo "          the crashing CpuContext is not being threaded through)"
+                FAIL=$((FAIL + 1)); FAILED_SIGNALS+=("${sig}"); continue
+                ;;
+        esac
     fi
 
     echo "  PASS: ${sig} produced a CRASH: log entry"

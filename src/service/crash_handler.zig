@@ -80,6 +80,49 @@
 // `setCrashLogPath()`. Two globals (the panic handler's and this one)
 // avoid a circular `root.zig` ↔ `crash_handler.zig` import.
 //
+// ## Windows: the UEF alone is NOT enough (2026-09-30)
+//
+// `installCrashHandlers()` registers `SetUnhandledExceptionFilter`, and
+// for most of this file's life that was the whole of the Windows story.
+// It did not work, for a reason that is invisible from Linux and from
+// unit tests: **Zig installs its own vectored exception handler at
+// process start, and vectored handlers run before the
+// UnhandledExceptionFilter.**
+//
+//   std/start.zig        → std.debug.maybeEnableSegfaultHandler()
+//                         (gated on std.options.enable_segfault_handler,
+//                         whose default is `runtime_safety` — true in
+//                         Debug and ReleaseSafe)
+//   std/debug.zig:1525   → RtlAddVectoredExceptionHandler(0, handleSegfaultWindows)
+//                         call order 0 ⇒ invoked FIRST
+//   std/debug.zig:1620   → handleSegfaultWindows() intercepts
+//                         EXCEPTION_ACCESS_VIOLATION,
+//                         EXCEPTION_ILLEGAL_INSTRUCTION,
+//                         EXCEPTION_STACK_OVERFLOW,
+//                         EXCEPTION_DATATYPE_MISALIGNMENT and never
+//                         returns: it prints to stderr, then abort()s.
+//
+// So the four codes that account for essentially every real crash never
+// reached `handleWindowsException`. The process still died, so nothing
+// looked broken — it just died without nalar's report, and the only
+// output was std's stderr write, which a GUI-subsystem or detached
+// process has nowhere to send. Hence "Windows crash, no stack trace".
+//
+// Two things fix it, and both are here:
+//
+// 1. `handleSegfaultReport` (below) is wired in as `root.debug` — see
+//    its doc comment. std's own dispatch point calls it, with the
+//    faulting CONTEXT, before the UEF is ever consulted.
+// 2. Every capture threads the crashing `CpuContextPtr` (see
+//    `StackCapture`), so frame 0 is the faulting instruction rather
+//    than the frame that happens to be writing the report.
+//
+// The UEF stays registered: it is the only net for the codes std's
+// vectored handler ignores (heap corruption 0xC0000374, fail-fast
+// 0xC0000409, array bounds 0xC000008C, the FP family) and for
+// `ReleaseFast`, where `enable_segfault_handler` is false and no
+// vectored handler is installed at all.
+//
 // ## Cross-platform behaviour
 //
 // Both branches are guarded by `comptime switch (builtin.os.tag)` so
@@ -325,6 +368,56 @@ pub fn formatRawAddrs(
 }
 
 // =============================================================================
+// Stack capture — every entry point must go through here
+// =============================================================================
+
+/// How to capture the stack for a crash report.
+///
+/// `context` is the *crashing* `CpuContextPtr` supplied by the OS. It is
+/// the difference between a report that names the function that faulted
+/// and one that names the function that wrote the report: with
+/// `context = null`, `captureCurrentStackTrace` starts unwinding at the
+/// handler's own frame, so frame 0 is the handler and the faulting PC is
+/// nowhere in the trace.
+///
+/// That was the pre-2026-09-30 behaviour, and `scripts/crash_handler_smoke.sh
+/// FAULT` pins it: the assertion resolves frame 0 and requires it to be
+/// `crashSiteTarget`.
+///
+/// `allow_unsafe_unwind` is always forced on. We are already inside a
+/// fatal fault; refusing to unwind because the strategy is "unsafe" would
+/// trade a complete report for no report at all.
+pub const StackCapture = struct {
+    context: ?std.debug.CpuContextPtr = null,
+
+    pub fn options(self: StackCapture) std.debug.StackUnwindOptions {
+        return .{ .context = self.context, .allow_unsafe_unwind = true };
+    }
+};
+
+/// Capture a crash stack. `addr_buf` must outlive the returned trace.
+pub fn captureCrashStack(capture: StackCapture, addr_buf: []usize) std.debug.StackTrace {
+    return std.debug.captureCurrentStackTrace(capture.options(), addr_buf);
+}
+
+/// POSIX: build a `CpuContextPtr` from the `ucontext` the kernel handed
+/// the signal handler. The returned pointer is only valid while `out`
+/// lives, which is exactly the scope of one crash report.
+///
+/// The null check is load-bearing, not defensive noise:
+/// `cpu_context.fromPosixSignalContext` does an unconditional
+/// `@ptrCast(@alignCast(ctx_ptr))` on its first line, so handing it a
+/// null optional is a safety panic — a crash INSIDE the crash handler,
+/// which loses the report entirely. (The `posixCpuContext returns null
+/// for a null ucontext` test is the regression guard.)
+pub fn posixCpuContext(ucontext: ?*anyopaque, out: *std.debug.cpu_context.Native) ?std.debug.CpuContextPtr {
+    const ctx = ucontext orelse return null;
+    const native = std.debug.cpu_context.fromPosixSignalContext(ctx) orelse return null;
+    out.* = native;
+    return out;
+}
+
+// =============================================================================
 // POSIX (Linux + macOS)
 // =============================================================================
 
@@ -386,7 +479,11 @@ fn handleCrashSignalSiginfo(
     info: *const std.posix.siginfo_t,
     ucontext: ?*anyopaque,
 ) callconv(.c) void {
-    _ = ucontext;
+    // The ucontext is the register state at the instant of the fault. It
+    // is the ONLY way to make frame 0 of the report the faulting
+    // instruction rather than this handler — see StackCapture.
+    var native_ctx: std.debug.cpu_context.Native = undefined;
+    const crashing_ctx = posixCpuContext(ucontext, &native_ctx);
     // STEP 1 — restore the OS default handler BEFORE logging. If our
     // logger crashes inside this handler, the kernel re-delivers the
     // signal to the default action (terminate + core dump) instead of
@@ -431,63 +528,8 @@ fn handleCrashSignalSiginfo(
         ) catch "";
     defer if (fault_line.len > 0) alloc.free(fault_line);
 
-    var addr_buf: [64]usize = undefined;
-    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
-
-    // Symbolicated frames (best-effort — null when debug info is missing).
-    const sym = symbolicateStack(alloc, &stack);
-    defer if (sym) |s| alloc.free(s);
-
-    const sym_section = if (sym) |s|
-        std.fmt.allocPrint(alloc,
-            "Symbolicated stack trace ({d} frames — function + file:line):\n{s}",
-            .{ stack.return_addresses.len, s },
-        ) catch ""
-    else
-        std.fmt.allocPrint(alloc,
-            "Symbolicated stack trace: UNAVAILABLE (stripped binary or no debug info — see raw addresses below)\n",
-            .{},
-        ) catch "";
-    defer if (sym_section.len > 0) alloc.free(sym_section);
-
-    // Raw addresses are ALWAYS emitted — they are the addr2line fallback
-    // when symbolication fails, and a cross-check when it succeeds.
-    const raw = formatRawAddrs(alloc, stack.return_addresses);
-    defer alloc.free(raw);
-    const raw_section = std.fmt.allocPrint(alloc,
-        \\Raw addresses ({d} frames — post-mortem: addr2line -e <exe> <addr>):
-        \\{s}
-    , .{ stack.return_addresses.len, raw }) catch "";
-    defer if (raw_section.len > 0) alloc.free(raw_section);
-
-    const footer = "\n=============\n";
-
-    // STEP 3 — append to the panic log file (best-effort). If we
-    // can't open the file we still try stderr, then re-raise.
-    if (crash_log_path) |path| {
-        // std.c.fopen requires a NUL-terminated string ([*:0]const u8),
-        // but our path is just []const u8. Copy into a stack buffer
-        // and append a NUL — no heap allocation in signal context.
-        var path_z: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
-        if (path.len < path_z.len) {
-            @memcpy(path_z[0..path.len], path);
-            path_z[path.len] = 0;
-            // @ptrCast from *fixed-u8 to [*:0]const u8 — safe because we
-            // just wrote the NUL sentinel at path_z[path.len].
-            const path_z_ptr: [*:0]const u8 = @ptrCast(&path_z);
-            if (std.c.fopen(path_z_ptr, "a")) |file| {
-                defer _ = std.c.fclose(file);
-                _ = std.c.fwrite(header.ptr, 1, header.len, file);
-                _ = std.c.fwrite(fault_line.ptr, 1, fault_line.len, file);
-                _ = std.c.fwrite(sym_section.ptr, 1, sym_section.len, file);
-                _ = std.c.fwrite(raw_section.ptr, 1, raw_section.len, file);
-                _ = std.c.fwrite(footer.ptr, 1, footer.len, file);
-            }
-        }
-    }
-
-    // STEP 4 — mirror to stderr for terminal visibility.
-    std.debug.print("{s}{s}{s}{s}{s}", .{ header, fault_line, sym_section, raw_section, footer });
+    // STEP 3 — write the report (crash log file first, then stderr).
+    emitCrashReport(alloc, header, fault_line, .{ .context = crashing_ctx });
 
     // STEP 5 — re-raise so the OS default action runs (terminate +
     // core dump). std.c.raise returns c_int (0 on success, -1 on
@@ -537,6 +579,10 @@ pub fn windowsExceptionDescription(code: u32) []const u8 {
     return switch (code) {
         0xC0000005 => "EXCEPTION_ACCESS_VIOLATION (invalid memory reference — SIGSEGV equivalent)",
         0xC000001D => "EXCEPTION_ILLEGAL_INSTRUCTION (SIGILL equivalent)",
+        // std's vectored handler intercepts this one, so the UEF never
+        // sees it — but the description is still needed for the report
+        // the vectored handler routes through handleSegfaultReport.
+        0x80000002 => "EXCEPTION_DATATYPE_MISALIGNMENT (unaligned memory access)",
         0xC0000094 => "EXCEPTION_INT_DIVIDE_BY_ZERO (SIGFPE equivalent)",
         0xC00000FD => "EXCEPTION_STACK_OVERFLOW (exhausted stack — check for unbounded recursion)",
         0xC0000409 => "EXCEPTION_STACK_BUFFER_OVERRUN / FAIL_FAST (buffer overrun or /GS cookie check)",
@@ -593,55 +639,168 @@ fn handleWindowsException(exception_info: *std.os.windows.EXCEPTION_POINTERS) ca
     }
     defer if (access_line.len > 0) alloc.free(access_line);
 
-    var addr_buf: [64]usize = undefined;
-    const stack = std.debug.captureCurrentStackTrace(.{}, &addr_buf);
+    // The CONTEXT record is the register state at the instant of the
+    // fault. Capturing with it makes frame 0 the faulting instruction;
+    // capturing with `context = null` starts at this filter's own frame,
+    // so the report would lead with `handleWindowsException` and never
+    // name the code that crashed.
+    var native_ctx = std.debug.cpu_context.fromWindowsContext(exception_info.ContextRecord);
 
-    const sym = symbolicateStack(alloc, &stack);
-    defer if (sym) |s| alloc.free(s);
+    emitCrashReport(alloc, header, access_line, .{ .context = &native_ctx });
+
+    return win32_apis.EXCEPTION_EXECUTE_HANDLER;
+}
+
+// =============================================================================
+// std.debug.handleSegfault override — the seam that actually fires on Windows
+// =============================================================================
+
+/// Zig's `std.debug` routes every hardware fault through
+/// `root.debug.handleSegfault` if the root source file declares it
+/// (`std/debug.zig:1633`, overridable precisely so a program can install
+/// its own reporter). Each root source file re-exports this function:
+///
+///     pub const debug = nalarcore.crash_handler.root_debug;
+///
+/// ## Why this is the Windows fix
+///
+/// On Windows, `std/start.zig` installs a **vectored** exception handler
+/// at process start:
+///
+///     RtlAddVectoredExceptionHandler(0, handleSegfaultWindows)
+///
+/// Vectored handlers run BEFORE the UnhandledExceptionFilter — before
+/// SEH frame handlers, before WER. `handleSegfaultWindows` intercepts
+/// EXCEPTION_ACCESS_VIOLATION, EXCEPTION_ILLEGAL_INSTRUCTION,
+/// EXCEPTION_STACK_OVERFLOW and EXCEPTION_DATATYPE_MISALIGNMENT, and it
+/// never returns: it prints to stderr and calls `std.process.abort()`.
+///
+/// So `SetUnhandledExceptionFilter(handleWindowsException)` — the entire
+/// Windows half of this file — was dead code for exactly the four codes
+/// that account for almost every real crash. The process still died, so
+/// nothing looked broken; it just died without nalar's report. And what
+/// std printed went to stderr, which a GUI-subsystem or detached process
+/// has nowhere to send, so the user saw no stack trace at all.
+///
+/// Declaring this override puts our reporter at the front of the chain,
+/// with the faulting CONTEXT in hand. The UEF stays registered as the
+/// second net for the codes the vectored handler does NOT swallow (heap
+/// corruption 0xC0000374, fail-fast 0xC0000409, array bounds 0xC000008C,
+/// the FP exception family) and for `ReleaseFast` builds, where
+/// `std.options.enable_segfault_handler` is false and no vectored
+/// handler is installed at all.
+pub fn handleSegfaultReport(
+    addr: ?usize,
+    name: []const u8,
+    context: ?std.debug.CpuContextPtr,
+) noreturn {
+    const alloc = std.heap.page_allocator;
+    const fault_addr = addr orelse 0;
+
+    const header = std.fmt.allocPrint(alloc,
+        \\=== CRASH: {s} ===
+        \\Why: {s}
+        \\Build: {s}, {s}-{s}
+        \\
+    , .{ name, segfaultWhy(name), @tagName(builtin.mode), @tagName(builtin.cpu.arch), @tagName(builtin.os.tag) }) catch "=== CRASH: unrecoverable fault ===\n";
+    defer alloc.free(header);
+
+    const detail = std.fmt.allocPrint(alloc,
+        "Fault address: 0x{x} ({s})\n",
+        .{ fault_addr, if (addr == null) "no address available" else classifyFaultAddr(fault_addr) },
+    ) catch "";
+    defer if (detail.len > 0) alloc.free(detail);
+
+    emitCrashReport(alloc, header, detail, .{ .context = context });
+
+    // Match std's own contract: the faulting instruction is not safe to
+    // re-execute (the memory may have been mapped since), so terminate
+    // rather than return. abort() also produces the core dump on POSIX.
+    std.process.abort();
+}
+
+/// Turn std's short fault name into the "why did this happen" sentence
+/// the report leads with. The names come from `handleSegfaultWindows`
+/// and `handleSegfaultPosix`, so an unrecognised one is expected to fall
+/// through rather than to be special-cased.
+fn segfaultWhy(name: []const u8) []const u8 {
+    if (std.mem.eql(u8, name, "Segmentation fault")) return "invalid memory reference (null deref, use-after-free, bad pointer, wild/unmapped access)";
+    if (std.mem.eql(u8, name, "Illegal instruction")) return "illegal instruction (corrupt code, bad JIT emit, wrong-arch binary)";
+    if (std.mem.eql(u8, name, "Stack overflow")) return "stack exhausted — check for unbounded recursion";
+    if (std.mem.eql(u8, name, "Unaligned memory access")) return "misaligned memory access";
+    if (std.mem.eql(u8, name, "Bus error")) return "bus error (misaligned access, truncated mmap'd file, hardware fault)";
+    if (std.mem.eql(u8, name, "Arithmetic exception")) return "arithmetic exception (divide by zero, integer overflow trap)";
+    return "unrecoverable hardware fault";
+}
+
+/// Capture the stack, symbolicate it, and write `header` + `detail` +
+/// both stack sections to the crash log and mirror them to stderr.
+///
+/// Shared by all three entry points — the POSIX signal handler, the
+/// Windows unhandled exception filter, and the `root.debug` segfault
+/// override — so they cannot drift apart in what they emit. `header` and
+/// `detail` are borrowed and may be empty; neither is freed here.
+fn emitCrashReport(
+    allocator: std.mem.Allocator,
+    header: []const u8,
+    detail: []const u8,
+    capture: StackCapture,
+) void {
+    var addr_buf: [64]usize = undefined;
+    const stack = captureCrashStack(capture, &addr_buf);
+
+    const sym = symbolicateStack(allocator, &stack);
+    defer if (sym) |s| allocator.free(s);
 
     const sym_section = if (sym) |s|
-        std.fmt.allocPrint(alloc,
+        std.fmt.allocPrint(allocator,
             "Symbolicated stack trace ({d} frames — function + file:line):\n{s}",
             .{ stack.return_addresses.len, s },
         ) catch ""
     else
-        std.fmt.allocPrint(alloc,
+        std.fmt.allocPrint(allocator,
             "Symbolicated stack trace: UNAVAILABLE (stripped binary or no debug info — see raw addresses below)\n",
             .{},
         ) catch "";
-    defer if (sym_section.len > 0) alloc.free(sym_section);
+    defer if (sym_section.len > 0) allocator.free(sym_section);
 
-    const raw = formatRawAddrs(alloc, stack.return_addresses);
-    defer alloc.free(raw);
-    const raw_section = std.fmt.allocPrint(alloc,
-        \\Raw addresses ({d} frames):
+    const raw = formatRawAddrs(allocator, stack.return_addresses);
+    defer allocator.free(raw);
+    const raw_section = std.fmt.allocPrint(allocator,
+        \\Raw addresses ({d} frames — post-mortem: addr2line -e <exe> <addr>):
         \\{s}
     , .{ stack.return_addresses.len, raw }) catch "";
-    defer if (raw_section.len > 0) alloc.free(raw_section);
+    defer if (raw_section.len > 0) allocator.free(raw_section);
 
     const footer = "\n=============\n";
-
-    if (crash_log_path) |path| {
-        var path_z: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
-        if (path.len < path_z.len) {
-            @memcpy(path_z[0..path.len], path);
-            path_z[path.len] = 0;
-            const path_z_ptr: [*:0]const u8 = @ptrCast(&path_z);
-            if (std.c.fopen(path_z_ptr, "a")) |file| {
-                defer _ = std.c.fclose(file);
-                _ = std.c.fwrite(header.ptr, 1, header.len, file);
-                _ = std.c.fwrite(access_line.ptr, 1, access_line.len, file);
-                _ = std.c.fwrite(sym_section.ptr, 1, sym_section.len, file);
-                _ = std.c.fwrite(raw_section.ptr, 1, raw_section.len, file);
-                _ = std.c.fwrite(footer.ptr, 1, footer.len, file);
-            }
-        }
-    }
-
-    std.debug.print("{s}{s}{s}{s}{s}", .{ header, access_line, sym_section, raw_section, footer });
-
-    return win32_apis.EXCEPTION_EXECUTE_HANDLER;
+    appendToCrashLog(&.{ header, detail, sym_section, raw_section, footer });
+    std.debug.print("{s}{s}{s}{s}{s}", .{ header, detail, sym_section, raw_section, footer });
 }
+
+/// Append the section slices to the configured crash log. No-op when no
+/// path was set (or the path is too long for a NUL-terminated buffer) —
+/// the stderr mirror in the caller is the fallback, and a failed log
+/// write must never prevent the process from dying with its report on
+/// screen.
+fn appendToCrashLog(sections: []const []const u8) void {
+    const path = crash_log_path orelse return;
+    var path_z: [std.Io.Dir.max_path_bytes + 1]u8 = undefined;
+    if (path.len >= path_z.len) return;
+    @memcpy(path_z[0..path.len], path);
+    path_z[path.len] = 0;
+    const path_z_ptr: [*:0]const u8 = @ptrCast(&path_z);
+    const file = std.c.fopen(path_z_ptr, "a") orelse return;
+    defer _ = std.c.fclose(file);
+    for (sections) |s| {
+        if (s.len == 0) continue;
+        _ = std.c.fwrite(s.ptr, 1, s.len, file);
+    }
+}
+
+/// The `root.debug` namespace each root source file re-exports.
+pub const root_debug = struct {
+    pub const handleSegfault = handleSegfaultReport;
+};
 
 // ===== Tests merged from crash_handler_test.zig (2026-09-29 flatten) =====
 
@@ -681,6 +840,131 @@ test "installCrashHandlers is safe to call twice" {
     installCrashHandlers();
     installCrashHandlers();
     try testing.expect(true);
+}
+
+// ─── StackCapture: the crashing context must be threaded through ─────
+
+test "StackCapture.options forwards the crashing context to the unwinder" {
+    var native: std.debug.cpu_context.Native = undefined;
+    // Any well-defined register snapshot is a valid context to forward;
+    // what is under test is that the option is not silently dropped.
+    const ctx: std.debug.CpuContextPtr = &native;
+    const opts = (StackCapture{ .context = ctx }).options();
+    try testing.expectEqual(@intFromPtr(ctx), @intFromPtr(opts.context.?));
+}
+
+test "StackCapture.options always allows unsafe unwind" {
+    // Inside a fatal fault, a "safe-only" unwind policy trades a partial
+    // report for none at all. It must never be selectable.
+    var native: std.debug.cpu_context.Native = undefined;
+    const with_ctx = (StackCapture{ .context = &native }).options();
+    const without_ctx = (StackCapture{}).options();
+    try testing.expect(with_ctx.allow_unsafe_unwind);
+    try testing.expect(without_ctx.allow_unsafe_unwind);
+}
+
+test "StackCapture with a null context still captures a trace rather than failing" {
+    // ReleaseFast has no vectored segfault handler, so the UEF path is the
+    // only net and may have no usable context. It must degrade to a
+    // context-less capture, not to a crash inside the crash handler.
+    var addr_buf: [8]usize = undefined;
+    const stack = captureCrashStack(.{}, &addr_buf);
+    try testing.expect(stack.return_addresses.len <= addr_buf.len);
+}
+
+test "posixCpuContext returns null for a null ucontext instead of faulting" {
+    var native: std.debug.cpu_context.Native = undefined;
+    try testing.expect(posixCpuContext(null, &native) == null);
+}
+
+// ─── root.debug.handleSegfault: the Windows ordering contract ─────────
+
+test "root_debug exposes the handleSegfault seam std requires" {
+    // std/debug.zig dispatches on `@hasDecl(root.debug, "handleSegfault")`
+    // and calls it as `fn (?usize, []const u8, ?CpuContextPtr) noreturn`.
+    // Taking the address forces the signature to be materialised: if it
+    // drifts, this stops compiling instead of silently falling back to
+    // std's stderr-only handler, which is the bug this whole file exists
+    // to prevent on Windows.
+    const f: *const fn (?usize, []const u8, ?std.debug.CpuContextPtr) noreturn = &root_debug.handleSegfault;
+    _ = f;
+    try testing.expect(true);
+}
+
+/// Walk up from this file to the build root (the directory holding
+/// `build.zig`). `@src().file` is absolute under `zig build test` but
+/// relative under a bare `zig test src/service/crash_handler.zig`, so
+/// probing for the marker beats counting `dirname` hops.
+fn findBuildRoot(allocator: std.mem.Allocator) ?[]u8 {
+    var dir: []const u8 = if (std.fs.path.isAbsolute(@src().file))
+        std.fs.path.dirname(@src().file) orelse return null
+    else
+        ".";
+    while (true) {
+        const marker = std.fs.path.join(allocator, &.{ dir, "build.zig" }) catch return null;
+        defer allocator.free(marker);
+        if (std.Io.Dir.cwd().access(testing.io, marker, .{})) |_| return allocator.dupe(u8, dir) catch null else |_| {}
+        const parent = std.fs.path.dirname(dir) orelse return null;
+        if (std.mem.eql(u8, parent, dir)) return null;
+        dir = parent;
+    }
+}
+
+test "every root source file declares root.debug so the Windows vectored handler reports" {
+    // Static contract, deliberately. The Windows failure mode is
+    // invisible on Linux: std's `RtlAddVectoredExceptionHandler(0, …)`
+    // runs before the UnhandledExceptionFilter, so dropping these decls
+    // does not fail a single behavioural test — it just silently kills
+    // the crash report on Windows. Grepping the root source files is the
+    // only check that catches it from a Linux box.
+    const root = findBuildRoot(testing.allocator) orelse return error.SkipZigTest;
+    defer testing.allocator.free(root);
+
+    for ([_][]const u8{ "src/main.zig", "src/apps/desktop_app/main.zig" }) |rel| {
+        const path = try std.fs.path.join(testing.allocator, &.{ root, rel });
+        defer testing.allocator.free(path);
+        // NOT a `catch return error.SkipZigTest`: if the file cannot be
+        // read the contract is unverified, and a silently-skipped guard
+        // is indistinguishable from a passing one.
+        const src = try std.Io.Dir.cwd().readFileAlloc(
+            testing.io,
+            path,
+            testing.allocator,
+            .limited(1 << 20),
+        );
+        defer testing.allocator.free(src);
+        if (std.mem.indexOf(u8, src, "pub const debug = nalarcore.crash_handler.root_debug") == null) {
+            std.debug.print("missing `pub const debug` in {s}\n", .{rel});
+            return error.MissingRootDebugOverride;
+        }
+    }
+}
+
+test "windowsExceptionDescription names every code std's vectored handler swallows" {
+    // std/debug.zig `handleSegfaultWindows` intercepts exactly these four
+    // and aborts without consulting us. They are also the four that
+    // account for nearly every real crash, so a code here that falls
+    // through to "unknown Windows exception" means a report a human
+    // cannot act on.
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0xC0000005), "ACCESS_VIOLATION") != null);
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0xC000001D), "ILLEGAL_INSTRUCTION") != null);
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0xC00000FD), "STACK_OVERFLOW") != null);
+    // DATATYPE_MISALIGNMENT is intercepted by std but absent from the
+    // switch — pin it so the gap is a test failure, not a silent shrug.
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0x80000002), "MISALIGNMENT") != null);
+}
+
+test "windowsExceptionDescription names the codes only the UEF can catch" {
+    // These are NOT in std's vectored handler, so `handleWindowsException`
+    // is the only thing standing between them and a silent death. They
+    // must stay described.
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0xC0000374), "HEAP_CORRUPTION") != null);
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0xC0000409), "FAIL_FAST") != null);
+    try testing.expect(std.mem.indexOf(u8, windowsExceptionDescription(0xC000008C), "ARRAY_BOUNDS") != null);
+}
+
+test "an unrecognised exception code says so instead of guessing" {
+    try testing.expectEqualStrings("unknown Windows exception", windowsExceptionDescription(0xDEADBEEF));
 }
 
 // ─── signalDescription: one-liner per crash signal ────────────────────
