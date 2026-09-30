@@ -1,0 +1,1434 @@
+# Reusable backend build + test + publish, ONE platform per call.
+#
+# WHY THIS IS A REUSABLE WORKFLOW
+# -------------------------------
+# It used to be a 3-cell `strategy.matrix` inside ci.yml, and
+# `functional-test` had `needs: backend` — which waits for the WHOLE
+# matrix. So the Linux functional suite could not start until macOS AND
+# Windows had finished, even though it uses neither of their artifacts.
+# A matrix has no per-cell dependency edge; a workflow call does. ci.yml
+# now calls this file three times (`backend-linux`, `backend-macos`,
+# `backend-windows`) and each call's own `needs:` is a real edge, so
+# `functional (Linux X64, shard 1/3)` starts the moment `backend-linux`
+# goes green.
+#
+# The caller owns the graph; this file owns one cell's steps. Adding a
+# platform is one `uses:` block in ci.yml, not an entry in a matrix whose
+# `exclude` list can silently fail open (it did once — CI run 31838283325
+# ran 5 cells instead of 3).
+#
+# NO `concurrency:` BLOCK, DELIBERATELY
+# ------------------------------------
+# Inside a CALLED workflow `github.workflow` resolves to the CALLER's
+# workflow name, not to the `name:` above. Three calls of this file would
+# therefore compute the same group (`${{ github.workflow }}-${{ github.ref }}`)
+# and `cancel-in-progress: true` would let whichever cell started last
+# cancel the other two — silently turning a 3-platform pipeline into a
+# 1-platform race. The single concurrency group lives in ci.yml, where one
+# run really is one run. Same reasoning for `ci-cancel-on-merge.yml`, which
+# mirrors ci.yml's group literal.
+name: backend (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: >-
+          GitHub-hosted runner label. Deliberately NOT `-latest`, so a GitHub
+          image bump cannot change what a green pipeline built.
+        required: true
+        type: string
+      label:
+        description: >-
+          Human name for this cell, rendered as the check name. Free text;
+          nothing downstream parses it.
+        required: true
+        type: string
+      target_zig:
+        description: >-
+          Zig target triple. Used for the .zig-cache key, the staging
+          directory name and the release asset glob. On the three current
+          cells it is also the HOST triple, so the host build and the cache
+          key agree.
+        required: true
+        type: string
+      target_step:
+        description: >-
+          Label only — no build.zig step by this name is invoked. It is
+          carried rather than dropped so the steps gated on
+          `!= '__SKIP__'` (the smoke test, the python/playwright cache)
+          fire on every cell, Windows included.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  ZIG_VERSION: 0.16.0
+  # pnpm migration (2026-08-28): npm (and the prior bun) are gone from CI
+  # and build.zig. pnpm/action-setup pins pnpm 11; Node 24 + pnpm are the
+  # only JS toolchain bits CI needs. The canonical lockfile is now
+  # src/apps/desktop/pnpm-lock.yaml (replaces package-lock.json from the
+  # npm-everywhere era, 2026-08-25). The repo-root .npmrc pins
+  # node-linker=hoisted so node_modules is laid out flat.
+
+jobs:
+  build:
+    # Images are PINNED, not `-latest`, so a GitHub image bump cannot change
+    # the build underneath a green pipeline. The three values live as
+    # `with:` blocks in ci.yml's `uses:` calls:
+    #   ubuntu-24.04 — glibc 2.39, satisfies build.zig's pinned 2.38 target
+    #   macos-15     — arm64, matching the aarch64-macos target (macos-latest
+    #                  currently resolves to macos-26 arm64)
+    #   windows-2022 — VS 2022 + Windows 11 SDK, which the Windows build
+    #                  branch is validated against (windows-latest currently
+    #                  resolves to Server 2025 / VS 2026)
+    # Bump these deliberately, one cell at a time.
+    #
+    # Use `install:macos-arm` for macOS, NOT `install:macos`, which
+    # hardcodes x86_64-macos in build.zig and would produce a binary the
+    # arm64 runner rejects with "Bad CPU type in executable".
+    #
+    # The publish step (softprops/action-gh-release@v2) creates/updates the
+    # rolling `ci-latest` release, which needs write access to contents.
+    # The workflow default is `contents: read`; this job-level block
+    # overrides it here AND in the caller, because a called workflow can
+    # only ever be granted what the caller already holds.
+    name: ${{ inputs.label }}
+    runs-on: ${{ inputs.os }}
+    permissions:
+      contents: write
+    # Ceiling for the whole cold-cache pass: vcpkg ports (Windows) or brew
+    # (macOS) + the ~90 MB zig build + the full test binary + the webapp
+    # bundle. Healthy runs are far inside this. The job previously had NO
+    # timeout at all, which meant a wedged runner held a machine for the
+    # default 360 minutes.
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js 24
+        # pnpm migration (2026-08-28): the UIHarness now spawns `pnpm run dev`
+        # to start the Vite dev server during Playwright tests. The harness
+        # resolves pnpm via shutil.which('pnpm') / shutil.which('pnpm.cmd'),
+        # so a literal `pnpm` on PATH is what we need. Pinned to Node 24
+        # to match the dev box.
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install pnpm 11
+        # pnpm/action-setup is the canonical way to install pnpm on a
+        # GitHub-hosted runner. It downloads the pnpm binary directly
+        # (faster than corepack's per-job shim build) and is maintained
+        # by the pnpm team. Version pinned to 11.x to match the dev box
+        # and the workspace's existing toolchain. workspace .npmrc lives
+        # in the repo root, NOT in $HOME, so this action does not need
+        # any config_file input.
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Install Zig ${{ env.ZIG_VERSION }}
+        uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Setup Python 3.12
+        if: runner.os == 'Windows'
+        # Windows-only because the probe in build.zig looks for `python`
+        # (not `python3`) on Windows. setup-python puts a real, pinned
+        # interpreter on PATH ahead of whatever the image ships. Linux and
+        # macOS get a working `python3` from their base images. Version
+        # matches the one the functional jobs pin, so a cached venv is
+        # never paired with a different interpreter.
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        # A GitHub-hosted runner is a FRESH VM per job, so every job has to
+        # install its own system packages. On the old self-hosted box the
+        # packages lived on the host and one cell's install covered every
+        # other job that landed on the same machine; that is not true here,
+        # which is why the backend cell and both functional jobs each call
+        # the shared script rather than sharing the work.
+        #
+        # The list lives in scripts/ci-install-linux-deps.sh precisely
+        # because it used to be copy-pasted into three places — and when it
+        # drifted, it drifted in all three at once.
+        run: bash scripts/ci-install-linux-deps.sh
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        # Resource optimization: NO `brew update` (formula DB refresh).
+        # `brew install` is already idempotent (skips packages already at
+        # the requested version), but `brew update` re-downloads the
+        # entire homebrew/core and homebrew/bottle formulae manifests on
+        # every CI run (~30 MB and several seconds of network I/O).
+        # HOMEBREW_NO_AUTO_UPDATE=1 makes brew skip the auto-update check
+        # on every command. If a formula needs a version bump, bump it
+        # explicitly in this `brew install` line.
+        #
+        # pkg-config is needed by the "Show toolchain versions" diagnostic
+        # step. It is NOT a dependency of the actual build (build.zig uses
+        # the vendored sqlite3 amalgamation and links ssl/crypto only on
+        # Linux), but the diagnostic step below invokes
+        # `pkg-config --modversion sqlite3/openssl` for parity with Linux.
+        # The macOS runner image does not ship pkg-config either, so it is
+        # installed here like on Linux.
+        #
+        # openssl@3 + curl are keg-only; export paths explicitly so
+        # pkg-config and the Zig build can find them. These lines are
+        # idempotent (--prefix returns the same value whether or not the
+        # package was just installed). The Zig build's system-deps probe
+        # (src/modules/kabelweb/build.zig) looks at exactly
+        # these keg-only paths under /opt/homebrew/opt/<name>/ — see the
+        # "system-deps-first" plan. With both openssl@3 AND curl installed,
+        # the probe returns use_system=true and the build skips the
+        # ~5-10 min `bash build-vendor-curl.sh` cross-compile that
+        # previously failed on the Mac runner with
+        # "fatal error: SystemConfiguration/SCDynamicStoreCopySpecific.h
+        # file not found" (the macOS SDK isn't available to zig cc on a
+        # Mac runner that doesn't have Xcode CLI tools).
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          # Mirrors scripts/ci-install-linux-deps.sh, minus the packages
+          # that have no macOS equivalent. The macOS-specific subset:
+          #   - base-devel         → Xcode CLI tools (pre-installed on
+          #                          the runner image)
+          #   - openssl@3          → libssl + libcrypto (keg-only;
+          #                          CPPFLAGS/LDFLAGS exported below)
+          #   - curl               → libcurl (keg-only; probe picks it up)
+          #   - sqlite3            → vendored amalgamation via build.zig
+          #                          (fetched at runtime; system sqlite is
+          #                          NOT used on macOS)
+          #   - postgresql-libs    → NOT installed: the `databases`
+          #                          package's macOS branch doesn't link
+          #                          libpq (probe returns libpq=false;
+          #                          same as CI run 31828424315). Adding
+          #                          it here would be a wasted keg.
+          #   - ripgrep            → src/modules/agent/tools/search.zig
+          #                          spawns `rg`; without it every
+          #                          search_test.zig test fails with
+          #                          error.FileNotFound (CI run
+          #                          31719585425 was the Linux catch).
+          #   - pkgconf            → pkg-config (for the "Show toolchain
+          #                          versions" diagnostic step's
+          #                          `pkg-config --modversion` calls).
+          #   - webkit2gtk-4.1/gtk3/libsoup3 → Linux-only (GTK stack).
+          #                          macOS uses Cocoa + WebKit.framework
+          #                          (built-in), no brew install needed.
+          #   - unzip              → BSD unzip is pre-installed on
+          #                          macOS; no action needed.
+          brew install pkg-config openssl@3 curl coreutils ripgrep
+          echo "LDFLAGS=-L$(brew --prefix openssl@3)/lib" >> $GITHUB_ENV
+          echo "CPPFLAGS=-I$(brew --prefix openssl@3)/include" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$(brew --prefix openssl@3)/lib/pkgconfig" >> $GITHUB_ENV
+          # coreutils provides `timeout`, `stat -c%s`, and other GNU
+          # utilities not in stock macOS. The "Smoke test: desktop binary"
+          # step calls `timeout 10 ./zig-out/bin/nalar-desktop --smoke-test`
+          # which fails with exit 127 ("command not found") on stock macOS
+          # without coreutils installed. brew installs the binaries as
+          # `gtimeout`, but the gnubin directory provides them as `timeout`
+          # (and `stat` as GNU `stat` with the `-c%s` flag). The verify
+          # steps below use `stat -c%s` for both platforms; exporting PATH
+          # is what makes that true.
+          echo "PATH=$(brew --prefix coreutils)/libexec/gnubin:$PATH" >> $GITHUB_ENV
+
+      - name: Set up MSVC environment (Windows)
+        if: runner.os == 'Windows'
+        # The windows-2022 image already has VS 2022 with the C++
+        # workload. This action's only job is to export that environment
+        # (cl.exe / link.exe / INCLUDE / LIB) to $GITHUB_PATH and
+        # $GITHUB_ENV so every LATER step sees it — each `run:` block is
+        # a brand-new process, so Set-Item on Env: would not survive.
+        #
+        # This replaces a hand-rolled `vswhere` + `cmd /c "call vcvars64
+        # .bat && set"` + parse-and-forward loop. That loop passed
+        # actionlint, passed review, and then failed on its first real
+        # run (CI 36459257214, 2026-09-28) with:
+        #   Add-Content: Cannot bind argument to parameter 'Path'
+        #   because it is null.            [at `Add-Content -Path $env:GITHUB_ENV`]
+        # Hand-rolling GitHub's environment plumbing was the mistake;
+        # a maintained action is the right level of abstraction for it.
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Bootstrap vcpkg (Windows)
+        if: runner.os == 'Windows'
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows). The image ships vcpkg already bootstrapped at
+        # C:\vcpkg, so this is normally a no-op; the clone-and-bootstrap
+        # path exists for an image that ever stops shipping it.
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\vcpkg\vcpkg.exe") {
+            Write-Host "ok vcpkg already bootstrapped at C:\vcpkg"
+          } else {
+            Write-Host "vcpkg missing from the image - bootstrapping from source..."
+            git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+            C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+
+          # Fail here, loudly, rather than letting the next step discover a
+          # missing cl.exe as a confusing Zig link error. This is the
+          # check that says the step above actually worked.
+          if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
+            Write-Error "cl.exe is not on PATH -- ilammy/msvc-dev-cmd did not run"
+            exit 1
+          }
+          Write-Host "ok MSVC toolchain on PATH"
+          $global:LASTEXITCODE = 0
+      - name: Install vcpkg ports (Windows)
+        if: runner.os == 'Windows'
+        # `shell: pwsh` per the project rule. See the comment on
+        # `Install vcpkg + MSVC build tools (Windows)` for the
+        # why-pwsh-rationale.
+        shell: pwsh
+        # Step 2 of 3. After the previous step wrote PATH/INCLUDE/LIB/etc.
+        # to $GITHUB_ENV, this fresh pwsh process starts with MSVC already
+        # on PATH - `Get-Command cl` below finds it directly.
+        #
+        # All 4 ports go in ONE `vcpkg install` invocation rather than
+        # parallel Start-Job blocks: vcpkg takes an exclusive lock on
+        # .vcpkg-running.lock, so concurrent installs fail with
+        # "calling try_take_exclusive_file_lock failed with 16".
+        run: |
+          $useMSVC = [bool](Get-Command cl -ErrorAction SilentlyContinue)
+          Write-Host ("useMSVC: " + $useMSVC)
+          if (-not $useMSVC) {
+            Write-Warning "cl.exe not found on PATH - MSVC env did not carry over from the previous step. Falling back to per-job vcvars64.bat sourcing."
+          }
+
+          # Pin the host triplet to x64-windows BEFORE the install.
+          # build.zig hardcodes the vcpkg sysroot at
+          # C:\vcpkg\installed\x64-windows, so anything else would build
+          # the ports into a directory the Zig build never looks in. It
+          # also stops vcpkg from auto-detecting an arm64 host and trying
+          # to rebuild its own host helpers with a cross-toolchain
+          # (which fails with "Unable to find a valid toolchain for
+          # requested target architecture arm64").
+          $env:VCPKG_DEFAULT_HOST_TRIPLET = "x64-windows"
+          Write-Host ("vcpkg host triplet pinned to " + $env:VCPKG_DEFAULT_HOST_TRIPLET)
+
+          # Install all 4 ports in a SINGLE vcpkg invocation
+          # (`vcpkg install port1:triplet port2:triplet ... --recurse`).
+          # Running them in parallel via 4× Start-Job is incompatible
+          # with vcpkg's shared .vcpkg-running.lock — only one process
+          # can hold the lock at a time, and the other 3 fail with
+          # "calling try_take_exclusive_file_lock failed with 16"
+          # (CI run 31936399742 reproduced this with all 4 jobs
+          # completing and useMSVC=True). The single-command path is
+          # also ~30% faster end-to-end because vcpkg shares the
+          # download cache across the 4 ports.
+          #
+          # vcpkg exit code: 0 = all OK, 1 = build failure, 2 =
+          # dependency resolution failure. We map any non-zero to
+          # exit 1 so the step fails loudly.
+          # sqlite3 needs explicit `fts5` feature — the vcpkg default
+          # features don't include it. Without FTS5, Migration 058 +
+          # Migration 070 (which create messages_fts / agent_memories_fts
+          # FTS5 virtual tables) fail with `no such module: fts5` at
+          # migration.up() time (observed on CI run 32323478653 — 184
+          # tests fail with that error). Other tests (agent_memories,
+          # session_plan, prompts_make_plan_context) cascade because
+          # their setupDb() runs runMigrations() which trips on 058.
+          $portList = "curl:x64-windows", "openssl:x64-windows", "libpq:x64-windows", "sqlite3[fts5]:x64-windows"
+          Write-Host ("Running: vcpkg install " + ($portList -join " "))
+          & C:\vcpkg\vcpkg.exe install --recurse $portList
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error ("vcpkg install failed with exit code " + $LASTEXITCODE)
+            exit 1
+          }
+          Write-Host "vcpkg install OK"
+
+          # Verify each port's install location before the build runs.
+          # Iterate over a hashtable with a plain foreach loop, no pipe.
+          $expected = @{
+            "curl"    = "C:\vcpkg\installed\x64-windows\include\curl\curl.h"
+            "openssl" = "C:\vcpkg\installed\x64-windows\include\openssl\ssl.h"
+            "libpq"   = "C:\vcpkg\installed\x64-windows\include\libpq-fe.h"
+            "sqlite3" = "C:\vcpkg\installed\x64-windows\include\sqlite3.h"
+          }
+          foreach ($port in $expected.Keys) {
+            if (Test-Path $expected[$port]) {
+              Write-Host ("ok " + $port + " at " + $expected[$port])
+            } else {
+              Write-Error ("vcpkg port " + $port + " missing at " + $expected[$port])
+              exit 1
+            }
+          }
+
+      - name: Stage WebView2 + integrate vcpkg + install ripgrep (Windows)
+        if: runner.os == 'Windows'
+        # `shell: pwsh` per the project rule. See the comment on
+        # `Install vcpkg + MSVC build tools (Windows)` for the
+        # why-pwsh-rationale.
+        shell: pwsh
+        # Step 3 of 3. Three independent concerns, each kept simple:
+        #   1. WebView2 NuGet download + staging
+        #   2. vcpkg integrate install (single command, idempotent)
+        #   3. ripgrep, which the image already ships
+        run: |
+          # WebView2 NuGet. The .h and .dll get extracted into
+          # `src/apps/desktop_app/platform/windows/` for nalar-desktop
+          # to include at build time. The nalar.exe service binary
+          # does not need WebView2.
+          #
+          # We download the .nupkg directly from nuget.org's v3
+          # flatcontainer API and unzip it. The .nupkg is just a
+          # renamed ZIP — no nuget.exe needed. The runner does NOT
+          # ship nuget.exe on PATH (CI run 31938453096 reproduced
+          # "nuget : The term 'nuget' is not recognized" before
+          # this fix).
+          #
+          # The flatcontainer URL is lower-case-id only — case
+          # matters (CI run 31940477865 reproduced "BlobNotFound:
+          # The specified blob does not exist" when we used the
+          # mixed-case NuGet display name "Microsoft.Web.WebView2"
+          # against the v2 endpoint). The v3 endpoint is:
+          #   https://api.nuget.org/v3-flatcontainer/<lower-id>/<version>/<lower-id>.<version>.nupkg
+          $nugetVersion = "1.0.2651.64"
+          $webview2Pkg = "microsoft.web.webview2"
+          $webview2Src = Join-Path $env:USERPROFILE ".nuget\packages\$webview2Pkg\$nugetVersion"
+          $webview2Dst = "src\apps\desktop_app\platform\windows"
+          $webview2Header = Join-Path $webview2Src "build\native\include\WebView2.h"
+          if (Test-Path $webview2Header) {
+            Write-Host ("WebView2 NuGet " + $nugetVersion + " already cached")
+          } else {
+            Write-Host ("Fetching WebView2 NuGet " + $nugetVersion + "...")
+            $nupkgName = ($webview2Pkg + "." + $nugetVersion + ".nupkg")
+            $nupkgPath = Join-Path $env:TEMP $nupkgName
+            $nupkgUrl = ("https://api.nuget.org/v3-flatcontainer/" + $webview2Pkg + "/" + $nugetVersion + "/" + $nupkgName)
+            Invoke-WebRequest -Uri $nupkgUrl -OutFile $nupkgPath -UseBasicParsing -TimeoutSec 180
+            New-Item -Path $webview2Src -ItemType Directory -Force | Out-Null
+            # A .nupkg is just a renamed ZIP, but PowerShell's
+            # Expand-Archive sniffs the .nupkg extension and refuses
+            # to extract it ('.nupkg is not a supported archive file
+            # format'). Use [System.IO.Compression.ZipFile]::Extract
+            # ToDirectory which doesn't care about extensions; the
+            # System.IO.Compression.FileSystem assembly makes the
+            # ZipFile type available in PS 5.1 out of the box.
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [System.IO.Compression.ZipFile]::ExtractToDirectory($nupkgPath, $webview2Src)
+            Remove-Item $nupkgPath -Force -ErrorAction SilentlyContinue
+          }
+          # Ensure the destination directory exists. PR #354's
+          # webview/webview swap deleted src/apps/desktop_app/platform/windows/
+          # (the .h files are no longer there at build-time), but the
+          # Windows webview2MissingPrereq check in build.zig still
+          # expects WebView2.h + EventToken.h + WebView2Loader.h/.lib at
+          # this path. Create the directory on demand so the
+          # Copy-Item calls below land somewhere real. The files
+          # themselves are gitignored (they're build inputs from a
+          # NuGet download, not project sources).
+          New-Item -Path $webview2Dst -ItemType Directory -Force | Out-Null
+          Copy-Item -Force (Join-Path $webview2Src "build\native\include\WebView2.h") (Join-Path $webview2Dst "WebView2.h")
+          # EventToken.h is `#include`d by WebView2.h itself
+          # (line 1700 of build/native/include/WebView2.h). build.zig's
+          # webview2MissingPrereq check lists it as a required staging
+          # file alongside WebView2.h — without it, the compile fails
+          # with `fatal error: 'EventToken.h' file not found` deep
+          # inside Microsoft's headers (original 2026-08-22 CI trace).
+          #
+          # EventToken.h is NOT shipped by the WebView2 NuGet in 1.0.2651.64
+          # (only build/native/include/{WebView2.h, WebView2EnvironmentOptions.h}
+          # are present). It's a WinRT base header that lives in the Windows
+          # SDK at `<kitroot>\Include\<ver>\winrt\EventToken.h`. Older WebView2
+          # NuGet revs (~1.0.1418) did ship it next to WebView2.h, so try the
+          # NuGet path first and fall back to the SDK winrt dir resolved from
+          # $env:INCLUDE (set by vcvars64.bat / VS dev shells) or the canonical
+          # Windows Kits probe. CI run 33061112059 (after PR #359's New-Item
+          # fix) reproduced `Cannot find path '...\build\native\include\EventToken.h'`
+          # — confirming the NuGet no longer carries it on 1.0.2651.64.
+          $eventTokenSource = $null
+          if (Test-Path (Join-Path $webview2Src "build\native\include\EventToken.h")) {
+            $eventTokenSource = Join-Path $webview2Src "build\native\include\EventToken.h"
+          } else {
+            # Resolve the Windows SDK winrt include dir. $env:INCLUDE is the
+            # authoritative source when running under vcvars64 / VS dev shells;
+            # otherwise probe the canonical Windows Kits install paths and
+            # pick the highest-version subdir that has a winrt\EventToken.h.
+            $winrtDirs = @()
+            if ($env:INCLUDE) {
+              $winrtDirs += ($env:INCLUDE -split ';' | Where-Object {
+                ($_ -ne '') -and ((Split-Path $_ -Leaf) -eq 'winrt') -and (Test-Path (Join-Path $_ 'EventToken.h'))
+              })
+            }
+            if ($winrtDirs.Count -eq 0) {
+              $kitRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+              if (-not (Test-Path $kitRoot)) { $kitRoot = 'C:\Program Files\Windows Kits\10\Include' }
+              if (Test-Path $kitRoot) {
+                $versions = Get-ChildItem -Path $kitRoot -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { Test-Path (Join-Path (Join-Path $kitRoot $_.Name) 'winrt\EventToken.h') } |
+                  Sort-Object Name -Descending
+                if ($versions.Count -gt 0) {
+                  $winrtDirs += Join-Path (Join-Path $kitRoot $versions[0].Name) 'winrt'
+                }
+              }
+            }
+            if ($winrtDirs.Count -gt 0) {
+              $eventTokenSource = Join-Path $winrtDirs[0] 'EventToken.h'
+            }
+          }
+          if ($eventTokenSource) {
+            Copy-Item -Force $eventTokenSource (Join-Path $webview2Dst "EventToken.h")
+          } else {
+            Write-Warning "EventToken.h not found in NuGet or Windows SDK winrt; zig cc will likely fail with 'EventToken.h file not found'"
+          }
+          # WebView2Loader.h was renamed/removed in 1.0.2651.64 — the
+          # loader inline is now consolidated inside WebView2.h
+          # itself. The .dll + .lib still exist for runtime + static
+          # link. The destination WebView2Loader.h is preserved as a
+          # thin shim that #includes "WebView2.h" so any consumer
+          # that references it (legacy callers, docs, comment
+          # breadcrumbs in CI scripts) keeps compiling.
+          "#pragma once`r`n#include `"WebView2.h`"" | Out-File -FilePath (Join-Path $webview2Dst "WebView2Loader.h") -Encoding ASCII
+          # 1.0.2651.64 ships WebView2Loader.dll under both
+          # build/native/x64/ AND runtimes/win-x64/native/. They
+          # hash-equal (same upstream payload); pick either.
+          # Use build/native/x64/ as the primary; fall back to
+          # runtimes/ if not present (older .nupkg revs).
+          $wv2DllSource = Join-Path $webview2Src "build\native\x64\WebView2Loader.dll"
+          if (-not (Test-Path $wv2DllSource)) {
+            $wv2DllSource = Join-Path $webview2Src "runtimes\win-x64\native\WebView2Loader.dll"
+          }
+          if (-not (Test-Path $wv2DllSource)) {
+            Write-Error ("WebView2Loader.dll not found in NuGet " + $nugetVersion + " at build/native/x64/ nor runtimes/win-x64/native/ -- NuGet layout changed, update staging paths")
+            exit 1
+          }
+          Copy-Item -Force $wv2DllSource (Join-Path $webview2Dst "WebView2Loader.dll")
+          if (-not (Test-Path (Join-Path $webview2Dst "WebView2Loader.dll"))) {
+            Write-Error "WebView2Loader.dll staging copy failed -- destination missing after Copy-Item"
+            exit 1
+          }
+          if (Test-Path (Join-Path $webview2Src "build\native\x64\WebView2Loader.dll.lib")) {
+            Copy-Item -Force (Join-Path $webview2Src "build\native\x64\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
+          } elseif (Test-Path (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib")) {
+            Copy-Item -Force (Join-Path $webview2Src "build\native\lib\x64\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
+          } elseif (Test-Path (Join-Path $webview2Src "build\native\WebView2Loader.dll.lib")) {
+            Copy-Item -Force (Join-Path $webview2Src "build\native\WebView2Loader.dll.lib") (Join-Path $webview2Dst "WebView2Loader.lib")
+          }
+          Write-Host ("ok WebView2 staged at " + $webview2Dst)
+
+          # vcpkg integrate install registers C:\vcpkg\lib with MSVC's
+          # LIB env var globally. Idempotent.
+          C:\vcpkg\vcpkg.exe integrate install
+          Write-Host "ok vcpkg integrated with MSVC"
+
+          # ripgrep for src/modules/agent/tools/search.zig, which SPAWNS
+          # `rg`. Without it every search_test.zig case fails with
+          # error.FileNotFound.
+          #
+          # The image does NOT ship ripgrep, and it has no `winget`
+          # either (the old self-hosted Windows box did — its fallback
+          # path assumed winget and died with "The term 'winget' is not
+          # recognized"). Chocolatey IS provisioned on windows-2022, the
+          # runner user is an administrator, and C:\ProgramData\chocolatey\bin
+          # is already on PATH — so `choco install` is the package manager
+          # that actually exists here. `rg` is then re-resolved rather
+          # than assumed, because choco's shim only lands on PATH for
+          # processes started after this one.
+          $rg = Get-Command rg -ErrorAction SilentlyContinue
+          if ($rg) {
+            Write-Host ("ok ripgrep already at " + $rg.Source)
+          } else {
+            Write-Host "ripgrep missing from the image - installing via chocolatey..."
+            choco install ripgrep -y --no-progress
+            $chocoBin = "C:\ProgramData\chocolatey\bin"
+            if (Test-Path $chocoBin) {
+              $env:PATH = $chocoBin + ";" + $env:PATH
+              Add-Content -Path $env:GITHUB_PATH -Value $chocoBin
+            }
+            $rg = Get-Command rg -ErrorAction SilentlyContinue
+            if (-not $rg) {
+              Write-Error "ripgrep still not on PATH after choco install -- search_test.zig will fail"
+              exit 1
+            }
+            Write-Host ("ok ripgrep installed at " + $rg.Source)
+          }
+
+      - name: Show toolchain versions
+        shell: bash
+        # All `pkg-config` queries are wrapped in `|| echo "<not installed>"`
+        # because the macOS build uses the vendored sqlite3 amalgamation and
+        # does NOT link system openssl (build.zig's macOS branch in
+        # createPlatformExe / mod branch is a no-op for ssl/crypto/system-
+        # sqlite3). So on macOS these queries will legitimately return
+        # "not installed" — the diagnostic step should report that and let
+        # the build proceed, NOT fail.
+        #
+        # After worktree/system-deps-first: the `kabelweb` and
+        # `databases` packages probe the host system and prefer system
+        # libs over vendor when present. The Linux native build on the
+        # the Ubuntu cell should show all 4 libs as "installed" —
+        # the probe will then skip the vendor fetch steps entirely
+        # (saves ~30 min on a fresh checkout).
+        #
+        # Windows: pkg-config isn't on PATH after vcpkg-integrated install
+        # (vcpkg ships its own .pc files under installed\x64-windows\lib\pkgconfig
+        # but doesn't drop pkg-config.exe on PATH). The toolchain versions
+        # diagnostic is informational — fall back to "not installed" so
+        # Windows doesn't fail the build step.
+        if: runner.os != 'Windows'
+        run: |
+          zig version
+          cc --version | head -n 1
+          pkg-config --modversion sqlite3 2>/dev/null || echo "sqlite3.pc: not installed (vendored amalgamation is used on macOS)"
+          pkg-config --modversion openssl  2>/dev/null || echo "openssl.pc:  not installed (not linked on macOS)"
+          pkg-config --modversion libpq   2>/dev/null || echo "libpq.pc:    not installed (not linked on macOS)"
+          pkg-config --modversion libcurl 2>/dev/null || echo "libcurl.pc:  not installed (vendored archive is used on macOS)"
+
+      - name: Show toolchain versions (Windows)
+        shell: pwsh
+        if: runner.os == 'Windows'
+        # PowerShell-native diagnostic. Verifies the 4 port headers exist
+        # at C:\vcpkg\installed\x64-windows\include\*.h AND that Zig 0.16
+        # and MSVC's cl.exe are on PATH (after the vcvars64.bat step above).
+        # Each line that fails exits the step with code 1 — the build then
+        # fails with a clear "vcpkg port X missing" message rather than
+        # a confusing Zig link error.
+        run: |
+          $zig = Get-Command zig -ErrorAction SilentlyContinue
+          if (-not $zig) {
+            Write-Error "zig not on PATH"
+            exit 1
+          }
+          & zig version
+
+          $cl = Get-Command cl -ErrorAction SilentlyContinue
+          $link = Get-Command link -ErrorAction SilentlyContinue
+          if ($cl -and $link) {
+            & cl 2>&1 | Select-Object -First 1
+            & link 2>&1 | Select-Object -First 1
+          } else {
+            Write-Warning "MSVC cl.exe / link.exe not on PATH"
+          }
+
+          # Verify the 4 vcpkg port headers exist. Flat Test-Path
+          # statements, no hashtable iteration: this used to trip a
+          # brace-counter desync in PowerShell 5.1 on the old
+          # self-hosted Windows box, and the plain form reads the same
+          # either way. Also: do NOT interpolate paths with
+          # `\"$r\\include\\openssl\\ssl.h\"`-style syntax — the `$r` token
+          # followed by `\\include\\` is parsed as an attempt to invoke a
+          # cmdlet named like the rest of the literal. The safe forms:
+          # pass Join-Path's output as a -Path argument, OR use forward
+          # slashes in the literal, which NTFS accepts.
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/sqlite3.h") {
+            Write-Host "  ok sqlite3 (C:/vcpkg/installed/x64-windows/include/sqlite3.h)"
+          } else {
+            Write-Error "sqlite3 header missing — vcpkg install sqlite3:x64-windows --recurse"
+            exit 1
+          }
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/openssl/ssl.h") {
+            Write-Host "  ok openssl (C:/vcpkg/installed/x64-windows/include/openssl/ssl.h)"
+          } else {
+            Write-Error "openssl header missing — vcpkg install openssl:x64-windows --recurse"
+            exit 1
+          }
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/libpq-fe.h") {
+            Write-Host "  ok libpq (C:/vcpkg/installed/x64-windows/include/libpq-fe.h)"
+          } else {
+            Write-Error "libpq header missing — vcpkg install libpq:x64-windows --recurse"
+            exit 1
+          }
+          if (Test-Path "C:/vcpkg/installed/x64-windows/include/curl/curl.h") {
+            Write-Host "  ok libcurl (C:/vcpkg/installed/x64-windows/include/curl/curl.h)"
+          } else {
+            Write-Error "libcurl header missing — vcpkg install curl:x64-windows --recurse"
+            exit 1
+          }
+
+          # WebView2 — only needed for nalar-desktop. Same flat
+          # Test-Path pattern: no foreach, no hashtable iteration.
+          $wv2 = "src\apps\desktop_app\platform\windows"
+          if (Test-Path "$wv2\WebView2.h") {
+            Write-Host "  ok $wv2\WebView2.h"
+          } else {
+            Write-Warning "$wv2\WebView2.h missing"
+          }
+          if (Test-Path "$wv2\EventToken.h") {
+            Write-Host "  ok $wv2\EventToken.h"
+          } else {
+            Write-Warning "$wv2\EventToken.h missing"
+          }
+          if (Test-Path "$wv2\WebView2Loader.h") {
+            Write-Host "  ok $wv2\WebView2Loader.h"
+          } else {
+            Write-Warning "$wv2\WebView2Loader.h missing"
+          }
+          if (Test-Path "$wv2\WebView2Loader.dll") {
+            Write-Host "  ok $wv2\WebView2Loader.dll"
+          } else {
+            Write-Warning "$wv2\WebView2Loader.dll missing"
+          }
+          if (Test-Path "$wv2\WebView2Loader.lib") {
+            Write-Host "  ok $wv2\WebView2Loader.lib"
+          } else {
+            Write-Warning "$wv2\WebView2Loader.lib missing"
+          }
+          # The GitHub Actions runner's .ps1 trailer is:
+          #   if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) {
+          #     exit $LASTEXITCODE
+          #   }
+          # `& cl` and `& link` earlier in this step ran with no
+          # arguments (we just want the usage banner), so both
+          # commands exit 1. Their $LASTEXITCODE stays sticky at 1
+          # through the rest of the script even though every Test-Path
+          # check below prints `ok`. The trailer then exits 1 and the
+          # build fails.
+          # Reset $LASTEXITCODE before the trailer runs:
+          $global:LASTEXITCODE = 0
+
+      # Note: the sqlite3 amalgamation fetch is now handled by
+      # build.zig's `vendor_sqlite3_step` (wired into `test_step` and
+      # every `install:*` step) — no separate CI step needed. The fetch
+      # runs automatically on a fresh checkout (when the vendor dir is
+      # missing); on subsequent runs the script's idempotent skip makes
+      # it a no-op.
+
+      # PERF + CONSISTENCY (2026-08-28 — pnpm migration): setup-bun
+      # (removed 2026-08-25) and the npm-keyed node_modules cache are
+      # both gone. The backend's only webapp need is the Vite dev
+      # server for functional-test-ui, served by the "Install pnpm +
+      # webapp dependencies" step above, which keys off pnpm-lock.yaml
+      # (the canonical lockfile) and uses pnpm install --frozen-lockfile.
+      # Duplicating that with a second bun/npm-based mechanism meant
+      # two caches racing to populate the same
+      # src/apps/desktop/node_modules.
+
+      - name: Cache pnpm store
+        # Every backend cell runs a full `pnpm install`: Linux and macOS
+        # through the webapp-rebuild chain inside `zig build
+        # nalar-desktop`, Windows through the "Build webapp dist" step.
+        # The three self-hosted cells shared one $HOME, so whichever cell
+        # ran first warmed the store for the others for free. Each
+        # GitHub-hosted job gets a fresh $HOME, so without this step the
+        # largest download in the pipeline is cold on every single run.
+        #
+        # The store dir is forced via npm_config_store_dir because pnpm's
+        # default differs by platform (~/.local/share/pnpm/store on Linux,
+        # ~/Library/pnpm/store on macOS) and actions/cache paths do not
+        # expand shell variables. If pnpm ever stopped honouring the env
+        # var the effect is a cold store, not a broken build.
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pnpm-store
+          key: v1-pnpm-${{ inputs.os }}-${{ hashFiles('src/apps/desktop/pnpm-lock.yaml') }}
+          restore-keys: |
+            v1-pnpm-${{ inputs.os }}-
+
+      - name: Cache Zig build artifacts
+        uses: actions/cache@v4
+        with:
+          # The second path is the module-owned vendor dir (each module
+          # carries its own; the root-level `vendor/` was removed in PR
+          # #211's self-contained-package refactor). `src/modules/...`
+          # paths are the ones build.zig's `addObjectFile` and
+          # `addIncludePath` calls read from. (kabelweb's vendor dir is
+          # gone — external URL dependency now.) It is a separate line
+          # rather than a `#` note inside the block below: in a YAML
+          # literal scalar `#` is not a comment, it is just a character,
+          # so a `#` line here would silently become a glob pattern that
+          # matches nothing.
+          path: |
+            .zig-cache
+            src/modules/databases/vendor
+          # PERF (2026-08-25): `zig-out` (~90 MB nalar + ~34 MB
+          # nalar-desktop per cell) and
+          # `src/apps/desktop_app/embedded/webapp_assets.zig` were
+          # dropped from this cache. zig-out is pure build OUTPUT — the
+          # install step regenerates it from .zig-cache in seconds;
+          # caching it cost ~124 MB of archive I/O (upload AND download)
+          # on every run. webapp_assets.zig is regenerated on EVERY build
+          # by design (fresh-assets policy, see build.zig's webapp-rebuild
+          # workflow) so caching it was dead weight.
+          #
+          # Cache key includes `build.zig` so a build.zig change invalidates
+          # the cache.
+          #
+          # KEY: scoped by RUNNER IMAGE (`inputs.os`), not `runner.os`.
+          # `.zig-cache` holds compiled object files, which are host state,
+          # not just source state. `runner.os` evaluates to the bare string
+          # "Linux"/"macOS"/"Windows" on BOTH self-hosted and GitHub-hosted
+          # runners, so an `runner.os` key would have let the first
+          # GitHub-hosted run restore the Arch box's .zig-cache and mix two
+          # distros' object hashes into one directory — a failure mode that
+          # shows up as random corrupt-cache errors rather than anything
+          # pointing at the cache. Keying on the image label also means an
+          # image bump (ubuntu-24.04 -> ubuntu-26.04) invalidates on its own.
+          # v3->v4 for the same reason: the v3 entries are Arch-built and
+          # must stay reachable-but-unused rather than silently reused.
+          key: v4-zig-${{ inputs.os }}-${{ inputs.target_zig }}-${{ hashFiles('build.zig', 'build.zig.zon', 'src/modules/databases/scripts/fetch-vendor-sqlite3.sh') }}
+          # No restore-keys: when build.zig changes, the exact key won't
+          # match and no cache is restored. This prevents a stale build.exe
+          # (from an older build.zig) from being used.
+
+      - name: Resolve the Zig global cache dir
+        id: zig-global-dir
+        # The path is asked of zig rather than hardcoded because it is
+        # NOT the same everywhere: `~/.cache/zig` on Linux,
+        # `~/Library/Caches/zig` on macOS, `%LOCALAPPDATA%\zig` on Windows.
+        # `actions/cache`'s `path:` does not expand shell variables, so the
+        # answer has to come back as a step output. Windows needs
+        # `cygpath -u` because zig reports backslashes there and a
+        # backslash in a YAML `path:` is an escape character, not a
+        # separator.
+        shell: bash
+        run: |
+          set -euo pipefail
+          raw="$(zig env | sed -n 's/.*"global_cache_dir"[[:space:]]*:[[:space:]]*"\(.*\)",/\1/p')"
+          if [ -z "$raw" ]; then
+            echo "::error::zig env did not report global_cache_dir — cannot cache it"
+            exit 1
+          fi
+          case "$raw" in
+            [A-Za-z]:*) resolved="$(cygpath -u "$raw")" ;;
+            *)          resolved="$raw" ;;
+          esac
+          echo "path=$resolved" >> "$GITHUB_OUTPUT"
+          echo "zig global cache: $resolved"
+
+      - name: Cache the Zig global cache (fetched package sources)
+        # The OTHER zig cache. `.zig-cache` above holds this build's object
+        # files; the global cache holds the package SOURCES that
+        # `build.zig.zon` pulls from github.com (kabelweb, ruangsql). It
+        # was cold on every single run, and being cold is what produces the
+        # `NameServerFailure` / `invalid HTTP response` aborts at CONFIG
+        # time — the flake class the functional job still retries around,
+        # defensively, because a warm cache is not a guarantee.
+        #
+        # Keyed on `build.zig.zon` only, not on build.zig: a build.zig edit
+        # does not change which sources exist. Unlike the cache above this
+        # one DOES have a restore-keys prefix, because the global cache is
+        # content-addressed and hash-verified — restoring an older copy
+        # cannot produce a corrupt build, it just means the new tarball is
+        # downloaded and added to it.
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.zig-global-dir.outputs.path }}
+          key: v1-zig-global-${{ inputs.os }}-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            v1-zig-global-${{ inputs.os }}-
+
+      - name: Test (zig build test only — no nalar-desktop install)
+        # Cold-cache ceiling for the whole compile-and-run pass. A
+        # from-scratch Windows cell has to build the vcpkg ports and the full
+        # test binary first, which is the slowest thing this cell does.
+        timeout-minutes: 60
+        # This step is split from the nalar-desktop install that follows it.
+        # `zig build nalar-desktop` chains `pnpm install` + `pnpm run build`
+        # (vite + vue-tsc) with a zig LLVM link; running the test binary's
+        # compile in the same pass roughly doubles peak RSS and buries the
+        # compile log under the webapp build log. Splitting costs one extra
+        # dep-graph walk (~10 s) and keeps each failure readable.
+        #
+        # The `RUNNER_OS == 'Windows'` branch prepends vcpkg's bin dir, the
+        # API-set forwarder dir, and pnpm's bin dir to PATH so:
+        #   - the test binary's DLL imports (libcurl.dll, sqlite3.dll,
+        #     libssl-3-x64.dll, ...) resolve at process-load time;
+        #   - build.zig's webapp/mcp chain finds pnpm.
+        # On Linux/macOS vcpkg is not used, so the branch is a no-op.
+        shell: bash
+        run: |
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
+            fi
+          fi
+          # `-Dno-webapp-rebuild` skips the webapp-rebuild chain
+          # (`pnpm install` + `pnpm run build` + codegen). The Linux and
+          # macOS cells always do the full rebuild via the
+          # "Install nalar + nalar-desktop (single zig invocation,
+          # non-Windows)" step below.
+          #
+          # We use Debug mode (the default) on purpose — ReleaseSafe
+          # makes Zig 0.16 fail with "unused local constant" in the
+          # auto-generated cimport.zig (libcurl's `curl.h` transitively
+          # includes `<wchar.h>`, whose wide-string function zoo is
+          # marked unused). Debug mode silently ignores that warning,
+          # so the test build succeeds on Windows. The trade-off:
+          # Debug binaries are bigger and slower, but the test step
+          # ONLY runs the test binary, not nalar.exe.
+          zig build test --summary all -Dno-webapp-rebuild
+
+      - name: Cross-target compile check (desktop app per-OS branches)
+        # Compiles the desktop app's Windows + macOS branches FROM LINUX. A
+        # per-OS branch is otherwise only ever compiled on that OS's runner, so
+        # this is the only cheap place to catch e.g. a Windows-only type error
+        # — one shipped (`MoveFileW(...) != 0`: Win32 BOOL is a typed enum in
+        # Zig 0.16) and turned the Windows job red 20 minutes in.
+        #
+        # Linux-only on purpose: the check is driven by the -target, not by the
+        # host, so running it once on Linux covers all three branches. A
+        # non-Linux host also cannot be assumed to have a working cross
+        # toolchain for the other targets (observed on the Windows runner:
+        # mixing a host-target module into a foreign-target build dies on the
+        # calling convention).
+        #
+        # Objects only — no linking, no SDK, no webview/vcpkg deps, ~1.5s.
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          zig build check:desktop-cross --summary all
+
+      - name: Install nalar + nalar-desktop (single zig invocation, non-Windows)
+        # Linux + macOS run the merged `test nalar-desktop` step that
+        # this branch split off for Windows. Both binaries come out of a
+        # single dep-graph walk, webapp rebuild included. The Windows cell
+        # skips this step entirely (the `runner.os == 'Windows'` guard)
+        # and uses the split webapp-dist + install pair below instead.
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          # Read by the pnpm invocations below (including the one build.zig
+          # spawns). Must match the path the "Cache pnpm store" step
+          # caches, or the cache is written and never read. Set per-step
+          # because the `runner` context is unavailable at job level.
+          npm_config_store_dir: ${{ runner.temp }}/pnpm-store
+        run: zig build nalar-desktop --summary all
+
+      - name: Build webapp dist (Windows)
+        # Windows self-builds its shipped UI -- no Linux dependency, no cache.
+        # Background: `zig build nalar-desktop` chains pnpm install + vite +
+        # vue-tsc + zig LLVM link CONCURRENTLY, which is a multi-GB peak and
+        # a miserable log to debug -- hence -Dno-webapp-rebuild on the
+        # install step below. Run alone, vite fits comfortably: no
+        # vue-tsc (the Linux/macOS cells gate types), no zig link in flight,
+        # node heap capped. pnpm install is idempotent.
+        # Must run BEFORE the install step: build.zig installs dist/ to
+        # zig-out/bin/html at CONFIGURE time when dist/index.html exists.
+        # Missing afterwards = fail here (the bundle gate would fail anyway,
+        # but earlier with a clearer log).
+        if: runner.os == 'Windows'
+        timeout-minutes: 20
+        shell: bash
+        env:
+          # Read by the pnpm invocations below (including the one build.zig
+          # spawns). Must match the path the "Cache pnpm store" step
+          # caches, or the cache is written and never read. Set per-step
+          # because the `runner` context is unavailable at job level.
+          npm_config_store_dir: ${{ runner.temp }}/pnpm-store
+        run: |
+          set -euo pipefail
+          export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+          export PATH="/c/Windows/System32/downlevel:$PATH"
+          local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+          if [[ -n "$local_pnpm_path" ]]; then
+            export PATH="$(dirname "$local_pnpm_path"):$PATH"
+          fi
+          command -v pnpm >/dev/null || { echo "pnpm not on PATH" >&2; exit 1; }
+          command -v node >/dev/null || { echo "node not on PATH" >&2; exit 1; }
+          pushd src/apps/desktop >/dev/null
+          pnpm install --frozen-lockfile
+          NODE_OPTIONS="--max-old-space-size=1536" pnpm run build-only
+          popd >/dev/null
+          [[ -f "src/apps/desktop/dist/index.html" ]] \
+            || { echo "vite build produced no dist/index.html" >&2; exit 1; }
+          echo "ok dist/ built, html/ will install alongside the exes"
+
+      - name: Install nalar + nalar-desktop (Windows, webapp-rebuild disabled)
+        # Cold-cache ceiling: vcpkg ports + nalar.exe + nalar-desktop.exe from
+        # scratch. Well inside a healthy runner, and short of the default 6 h
+        # cap so a genuinely wedged job releases the machine quickly.
+        timeout-minutes: 45
+        # Windows-only twin of the previous step. Same goal — produce
+        # zig-out/bin/nalar + zig-out/bin/nalar-desktop for the smoke
+        # test + artifact publish — but with the webapp-rebuild chain
+        # turned off via `--no-webapp-rebuild` (the custom CLI flag
+        # build.zig exposes for exactly this case). The webapp bundle itself
+        # comes from the dedicated "Build webapp dist (Windows)" step above,
+        # which runs vite on its own, and build.zig copies dist/ to
+        # zig-out/bin/html at configure time.
+        #
+        # (This step used to wrap the build in a 3x retry loop. It existed to
+        # route around a hang specific to the old self-hosted Windows box —
+        # zig would finish the work and then sit idle with zero CPU and no
+        # children. That is a property of that machine, not of the build, and
+        # keeping a 3x20m retry loop here would just triple the cost of a
+        # real compile error.)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/vcpkg/installed/x64-windows/bin:$PATH"
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+            local_pnpm_path="$(command -v pnpm 2>/dev/null || true)"
+            if [[ -n "$local_pnpm_path" ]]; then
+              export PATH="$(dirname "$local_pnpm_path"):$PATH"
+            fi
+          fi
+          # -Drequire-real-webview: fail loudly instead of shipping the
+          # no-op stub (whose webview_create() always returns NULL ->
+          # WebviewCreateFailed even with the evergreen runtime installed).
+          # The stub fallback exists for dev boxes; CI must never ship it.
+          zig build nalar-desktop --summary all -Dno-webapp-rebuild -Drequire-real-webview
+
+      - name: Verify desktop + service binaries (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -u
+          # Both binaries must exist (install-nalar-desktop.sh installs both).
+          for bin in zig-out/bin/nalar zig-out/bin/nalar-desktop; do
+            if [[ ! -f "$bin" ]]; then
+              echo "✗ $bin missing" >&2
+              exit 1
+            fi
+            local_size=$(stat -c%s "$bin")
+            echo "  ✓ $bin  ($((local_size / 1024 / 1024)) MB)"
+            # Sanity: ELF magic, x86_64, dynamically linked
+            file "$bin" | grep -q "ELF 64-bit LSB executable, x86-64" \
+              || { echo "✗ $bin: not an x86-64 ELF"; exit 1; }
+          done
+          # nalar-desktop must dynamically link webkit2gtk-4.1 (the webview runtime)
+          if ! ldd zig-out/bin/nalar-desktop | grep -q webkit2gtk-4.1; then
+            echo "✗ nalar-desktop missing webkit2gtk-4.1 link"; exit 1
+          fi
+          echo "✓ all link deps present (webkit2gtk-4.1, gtk-3, libsoup-3.0, glib-2.0)"
+
+      - name: Verify desktop + service binaries (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -u
+          for bin in zig-out/bin/nalar zig-out/bin/nalar-desktop; do
+            if [[ ! -f "$bin" ]]; then
+              echo "✗ $bin missing" >&2
+              exit 1
+            fi
+            # Use GNU `stat` (coreutils installs it on the runner with
+            # libexec/gnubin at the front of PATH — see the
+            # `coreutils provides timeout, stat -c%s` comment above).
+            # The BSD form `stat -f%z` is not on PATH anymore.
+            local_size=$(stat -c%s "$bin")
+            echo "  ✓ $bin  ($((local_size / 1024 / 1024)) MB)"
+            # Sanity: Mach-O arm64, dynamically linked
+            file "$bin" | grep -q "Mach-O 64-bit executable arm64" \
+              || { echo "✗ $bin: not an arm64 Mach-O"; exit 1; }
+          done
+          # macOS uses Cocoa + WebKit frameworks (NOT webkit2gtk-4.1 like
+          # Linux). Check via otool -L for the WebKit framework, which is
+          # what platform/macos/nalar_webview.mm links via linkFramework.
+          if ! otool -L zig-out/bin/nalar-desktop | grep -q WebKit.framework; then
+            echo "✗ nalar-desktop missing WebKit.framework link"; exit 1
+          fi
+          if ! otool -L zig-out/bin/nalar-desktop | grep -q AppKit.framework; then
+            echo "✗ nalar-desktop missing AppKit.framework link"; exit 1
+          fi
+          echo "✓ all link deps present (WebKit.framework, AppKit.framework)"
+
+      - name: Verify desktop + service binaries (Windows)
+        # Windows twin of the Linux + macOS verify steps above.
+        # Same shape — confirm both binaries exist + are valid PE32+
+        # x86_64 executables. The link-deps check is intentionally
+        # skipped on Windows: nalar-desktop's webview is implemented
+        # via static + dynamic-link WebView2Loader.dll (vcpkg-installed),
+        # and the only definitive runtime check is the
+        # "Smoke test: desktop binary (Windows)" step below — which
+        # runs `nalar-desktop.exe --smoke-test` and confirms it parses
+        # CLI + extracts embedded webapp assets + exits 0.
+        #
+        # `shell: pwsh` per the project rule (bash = mac/linux, pwsh =
+        # windows). Mirrors the macOS + Linux twin steps' structure
+        # (size + magic-bytes + size sanity) so a future maintainer
+        # reading the workflow sees three symmetric verify steps.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Both binaries must exist (install-nalar-desktop.sh installs both).
+          foreach ($bin in @('nalar', 'nalar-desktop')) {
+            $path = "zig-out\bin\$bin.exe"
+            if (-not (Test-Path -LiteralPath $path)) {
+              Write-Error "✗ $path missing"
+              exit 1
+            }
+            $size = (Get-Item -LiteralPath $path).Length
+            Write-Host ("  ✓ $path  (" + [int]($size / 1MB) + " MB)")
+          }
+          # Sanity: PE32+ magic ('MZ' header), x86_64 machine type.
+          # A PE binary starts with the 2-byte 'MZ' (0x4D 0x5A) DOS
+          # stub signature, followed by the PE header at offset 0x3C.
+          # We read the first 2 bytes via [System.IO.File]::ReadAllBytes
+          # (returns a byte[]) and check them directly — `Select-Object
+          # -First 2` would return a sliced collection whose [0]/[1]
+          # indexing doesn't work the same way, so avoid the pipe.
+          # PE32+ (64-bit) machine type 0x8664 lives at offset 0x4C —
+          # see https://docs.microsoft.com/en-us/windows/win32/debug/
+          # pe-format#machine-types. Not checked here; the desktop
+          # smoke test below (which loads + invokes the binary) is the
+          # definitive runtime sanity check.
+          $mz = [System.IO.File]::ReadAllBytes("zig-out\bin/nalar.exe")
+          if ($mz.Length -lt 2 -or $mz[0] -ne 0x4D -or $mz[1] -ne 0x5A) {
+            Write-Error "✗ nalar.exe: not a valid PE (MZ) binary"
+            exit 1
+          }
+          Write-Host "✓ all binaries present + valid PE32+ x86_64"
+
+      - name: "Smoke test: criteria pass"
+        if: inputs.target_step != '__SKIP__'
+        shell: bash
+        # "Criteria pass" smoke test — boots the freshly-built nalar
+        # binary, waits for the "Agent is ready to serve!" line
+        # (emitted by src/main.zig:380 after DB migrations, event
+        # bus wiring, HTTP listener start, SSE manager, and AI
+        # workflow callback registration all complete), then hits
+        # /health and /api/workspaces, triggers graceful shutdown
+        # via /test/shutdown, and confirms clean process exit.
+        #
+        # Requires the script at `scripts/ci-smoke-test.sh` and a
+        # cleanly-bootable binary. Fails fast on: missing binary,
+        # startup crash, missing "Agent is ready to serve!" signal
+        # within 30s, dead HTTP listener, broken endpoint, or
+        # unresponsive shutdown.
+        #
+        # Port 18080 avoids collision with the project-required dev
+        # ports (8080/8081). The smoke test isolates HOME to a tempdir
+        # so each CI run boots nalar from a "fresh install" state —
+        # auto-creates config.json and runs all 54 DB migrations from
+        # scratch. This is what catches the class of fresh-DB bugs
+        # surfaced by the migration fixes in this PR (see migration.zig
+        # and migration_009_test.zig for the canonical regression).
+        run: |
+          set -u
+          # On Windows runners, MinGW-built nalar.exe dlopens the
+          # api-ms-win-crt-* UCRT forwarder DLLs by exact filename.
+          # Windows 11 ships them in C:\Windows\System32\downlevel\
+          # (not in System32\) and MinGW's dlopen doesn't understand
+          # API set virtual resolution. Without downlevel\ on PATH
+          # the binary STATUS_DLL_NOT_FOUNDs at process-load time.
+          # See the matching comment in the "Test + build" step.
+          if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+            export PATH="/c/Windows/System32/downlevel:$PATH"
+          fi
+          # On Windows runners the binary has a .exe suffix; on Linux/macOS
+          # the build.zig host_binary_name switch (build.zig:1223) drops the
+          # suffix. Probe for both shapes so the criterion check works on
+          # either platform.
+          if [ -x "zig-out/bin/nalar" ]; then
+            NALAR_BIN="./zig-out/bin/nalar"
+          elif [ -x "zig-out/bin/nalar.exe" ]; then
+            NALAR_BIN="./zig-out/bin/nalar.exe"
+          elif [ -x "zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')" ]; then
+            NALAR_BIN="./zig-out/bin/$(ls zig-out/bin/nalarcore-* 2>/dev/null | head -n1 | sed 's:.*/::')"
+          else
+            echo "✗ smoke test: no nalar binary to test" >&2
+            exit 1
+          fi
+          echo "→ smoke test: using $NALAR_BIN"
+          NALAR_BIN="$NALAR_BIN" NALAR_PORT=18080 bash scripts/ci-smoke-test.sh
+
+      - name: "Smoke test: desktop binary"
+        # --smoke-test (wired in commit 4644101c) extracts the embedded webapp
+        # assets to a temp dir, logs the asset count, and exits 0 — without
+        # calling gtk_init() or opening a window. Perfect headless smoke
+        # test for CI. Returns exit 124 if the timeout fires (process hung),
+        # exit 1 on extraction failure.
+        #
+        # Single step across all 3 OSes (Linux + macOS + Windows). The
+        # Windows variant uses Git Bash (already proven to work via the
+        # backend job's Windows build step) — `timeout` comes from GNU
+        # coreutils shipped with Git for Windows, `grep`/`cat`/etc. are
+        # POSIX tools in the same Git Bash distribution. The .exe-suffix
+        # probe at the top of the script handles Windows natively (POSIX
+        # `[ -x file.exe ]` works on NTFS via Git Bash).
+        shell: bash
+        run: |
+          set -u
+          DESKTOP_BIN="./zig-out/bin/nalar-desktop"
+          [[ -x "$DESKTOP_BIN.exe" ]] && DESKTOP_BIN="$DESKTOP_BIN.exe"
+          if [[ ! -x "$DESKTOP_BIN" ]]; then
+            echo "✗ smoke test: $DESKTOP_BIN missing" >&2
+            exit 1
+          fi
+          timeout 10 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-smoke.log 2>&1
+          rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
+            cat /tmp/desktop-smoke.log
+            exit 1
+          fi
+          grep -q "smoke:" /tmp/desktop-smoke.log \
+            || { echo "✗ expected 'smoke:' log line missing"; cat /tmp/desktop-smoke.log; exit 1; }
+          echo "✓ nalar-desktop --smoke-test passed"
+
+      - name: Verify desktop uses bundled html/ (Windows)
+        # WINDOWS-ONLY. Guarantees nalar-desktop.exe actually selects the
+        # shipped html/ sitting beside it as its webview dir -- not the
+        # embedded stub (which is empty under -Dno-webapp-rebuild).
+        # --smoke-test resolves through the same findInstalledWebapp() the
+        # real startup uses, so "installed webapp" in its log IS the exe
+        # proving the selection. Headless CI cannot open the WebView2
+        # window; this asserts the exact dir the webview backend serves.
+        # zig-out/bin layout == zip layout (exe + DLLs + html/ side by
+        # side), so passing here means the shipped zip behaves the same.
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -u
+          DESKTOP_BIN="./zig-out/bin/nalar-desktop"
+          [[ -x "$DESKTOP_BIN.exe" ]] && DESKTOP_BIN="$DESKTOP_BIN.exe"
+          timeout 30 "$DESKTOP_BIN" --smoke-test > /tmp/desktop-html-check.log 2>&1
+          rc=$?
+          if [[ $rc -ne 0 ]]; then
+            echo "✗ $DESKTOP_BIN --smoke-test exited $rc"
+            cat /tmp/desktop-html-check.log
+            exit 1
+          fi
+          grep -q "smoke: using installed webapp at .*html" /tmp/desktop-html-check.log             || { echo "✗ desktop did NOT select the bundled html/ (embedded stub?)"; cat /tmp/desktop-html-check.log; exit 1; }
+          echo "✓ desktop uses bundled html/ as its webview dir"
+
+      - name: Stage binaries with target-triple names
+        # Replaces the old actions/upload-artifact@v4 step. Artifacts are
+        # QUOTA-METERED Actions storage and the repo hit the cap
+        # ("Artifact storage quota has been hit", run of 2026-08-23), so
+        # binaries no longer go through artifact storage at all.
+        #
+        # Instead each cell renames its two binaries to carry the
+        # zig target triple into a per-run staging dir:
+        #   nalar-x86_64-linux-gnu, nalar-desktop-x86_64-linux-gnu,
+        #   nalar-aarch64-macos,    nalar-desktop-aarch64-macos,
+        #   nalar-x86_64-windows-gnu.exe, nalar-desktop-x86_64-windows-gnu.exe
+        # The triple suffix keeps the 3 cells from colliding when they all
+        # publish to the SAME shared release (see the next step).
+        #
+        # Single step across all 3 OSes — uses Git Bash on Windows
+        # (already proven via the backend Windows build step). The
+        # `if [ -f "$src.exe" ]` / `cp "$src" "$dst"` patterns handle
+        # the Windows .exe suffix natively via POSIX shell semantics.
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target_zig }}
+        run: |
+          set -euo pipefail
+          stage="bin-stage-$TARGET"
+          mkdir -p "$stage"
+          staged=0
+          for bin in nalar nalar-desktop; do
+            src="zig-out/bin/$bin"
+            if [ -f "$src" ]; then
+              dst="$stage/$bin-$TARGET"
+            elif [ -f "$src.exe" ]; then
+              src="$src.exe"
+              dst="$stage/$bin-$TARGET.exe"
+            else
+              continue
+            fi
+            cp "$src" "$dst"
+            echo "→ staged $dst"
+            staged=1
+          done
+          if [ "$staged" -eq 0 ]; then
+            echo "✗ no binaries found in zig-out/bin — build step failed?" >&2
+            exit 1
+          fi
+
+      - name: Bundle macOS Nalar.app into a zip
+        # macOS cell only: assemble Nalar.app with the SAME script the
+        # local `install:macos:app` step uses (dest = staging dir, not
+        # ~/Applications), then ditto-zip it. ditto (macOS inbox)
+        # preserves bundle bits where plain zip can break codesign.
+        # Bare nalar-*/nalar-desktop-* assets stay untouched -- the
+        # .app zip is an extra asset, published by the step below.
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target_zig }}
+        run: |
+          set -euo pipefail
+          stage="bin-stage-$TARGET"
+          packaging/macos/install-nalar-app.sh zig-out/bin "$stage/Nalar.app"
+          (cd "$stage" && ditto -c -k --keepParent Nalar.app "Nalar-$TARGET.zip")
+          echo "packaged $stage/Nalar-$TARGET.zip"
+
+      - name: Bundle Windows exes + DLLs into one zip
+        # nalar-desktop auto-spawns the nalar service binary sitting next
+        # to itself (path_resolve.zig next-to-self lookup for plain
+        # `nalar.exe`, PATH fallback), so both must ship TOGETHER: one
+        # self-contained .zip holding nalar-desktop.exe + nalar.exe +
+        # every runtime DLL (libcurl/sqlite3/... via build.zig
+        # installVcpkgDlls + WebView2Loader.dll). Inside the zip the exes
+        # carry their plain names (triple suffix stripped) so the
+        # next-to-self lookup finds the backend. A bare .exe alone cannot
+        # start (loader needs the DLLs beside it), so the staged bare
+        # exes are removed and only the zip is published.
+        #
+        # Fixed-version runtime (optional): when $fixedCabUrl below holds
+        # the Fixed Version x64 CAB link from
+        # https://developer.microsoft.com/microsoft-edge/webview2/
+        # ("Fixed Version" section, right-click -> copy link), the step
+        # downloads it into $env:RUNNER_TEMP\webview2-fixed-cache, expands
+        # it with inbox expand.exe, and stages it as webview2-runtime/
+        # inside the zip.
+        # The desktop points the loader at it via
+        # WEBVIEW2_BROWSER_EXECUTABLE_FOLDER (see
+        # pointWebView2AtBundledRuntime in main.zig) -- no install, no
+        # admin on the user machine. Until the URL is set the block skips
+        # with a warning and the zip ships without a runtime (evergreen
+        # install needed, same as today).
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ inputs.target_zig }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stage = "bin-stage-$env:TARGET"
+          $desktop = Get-ChildItem "$stage/nalar-desktop-*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          $service = Get-ChildItem "$stage/nalar-*.exe" -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike 'nalar-desktop-*' } | Select-Object -First 1
+          if (-not $desktop) { Write-Error "no staged desktop exe in $stage"; exit 1 }
+          if (-not $service) { Write-Error "no staged service exe in $stage"; exit 1 }
+          $tmp = Join-Path $stage "bundle"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          Copy-Item $desktop.FullName (Join-Path $tmp "nalar-desktop.exe")
+          Copy-Item $service.FullName (Join-Path $tmp "nalar.exe")
+          $dlls = Get-ChildItem "zig-out/bin/*.dll" -ErrorAction SilentlyContinue
+          foreach ($dll in $dlls) { Copy-Item $dll.FullName $tmp }
+          # Setup script: makes the zip a setup package. The user extracts
+          # and runs `powershell -ExecutionPolicy Bypass -File
+          # Install-Nalar.ps1` for a user-local install (LOCALAPPDATA, no
+          # admin) + Start Menu shortcut. Fail loud if the script is
+          # missing from the checkout -- a zip without setup is a regression.
+          $setupSrc = "packaging/windows/Install-Nalar.ps1"
+          if (-not (Test-Path $setupSrc)) { Write-Error "setup script missing at $setupSrc -- checkout incomplete?"; exit 1 }
+          Copy-Item -Force $setupSrc (Join-Path $tmp "Install-Nalar.ps1")
+          Write-Host "ok Install-Nalar.ps1 bundled"
+          # Shipped webapp (Windows-only persistent static dir). build.zig
+          # installs src/apps/desktop/dist to zig-out/bin/html when
+          # dist/index.html exists at configure time; the zip carries it
+          # as html/ and Install-Nalar.ps1 installs it to
+          # %LOCALAPPDATA%\nalar\html. The desktop prefers that dir and
+          # only falls back to embedded-asset temp extraction when missing.
+          # HARD GATE: Windows never ships without html/. build.zig installs
+          # src/apps/desktop/dist to zig-out/bin/html (alongside the exes);
+          # dist/ is built by the dedicated step above. Missing here = fail
+          # instead of shipping a UI-less zip.
+          $webappSrc = "zig-out/bin/html"
+          if (Test-Path (Join-Path $webappSrc "index.html")) {
+            Copy-Item -Recurse -Force $webappSrc (Join-Path $tmp "html")
+            Write-Host "ok html/ bundled alongside exe"
+          } else {
+            Write-Error "html/index.html missing at $webappSrc -- Windows cannot ship without html/; see the Build webapp dist step log"
+            exit 1
+          }
+          # WebView2Loader.dll is NOT a vcpkg DLL -- it comes from the NuGet
+          # staging dir via build.zig's addInstallBinFile. If the build took
+          # the stub fallback (missing EventToken.h etc.), zig-out/bin/ has
+          # no such DLL and the zip would ship broken. Fail loud, with a
+          # staging-dir fallback so a stub-build still bundles a runnable exe.
+          $bundledWv2 = Join-Path $tmp "WebView2Loader.dll"
+          if (-not (Test-Path $bundledWv2)) {
+            $stagedWv2 = "src\apps\desktop_app\platform\windows\WebView2Loader.dll"
+            if (Test-Path $stagedWv2) {
+              Write-Warning "WebView2Loader.dll missing in zig-out/bin (stub build?) -- copying from staging dir"
+              Copy-Item -Force $stagedWv2 $bundledWv2
+            } else {
+              Write-Error "WebView2Loader.dll missing in zig-out/bin AND staging dir -- real WebView2 branch did not run (check EventToken.h / MSVC logs above)"
+              exit 1
+            }
+          }
+          Write-Host "ok WebView2Loader.dll bundled"
+          # Fixed-version WebView2 runtime -- see the step header comment
+          # for how to enable (paste the CAB link into $fixedCabUrl).
+          $fixedCabUrl = ""
+          if ($fixedCabUrl -ne "") {
+            $cacheRoot = (Join-Path $env:RUNNER_TEMP "webview2-fixed-cache")
+            $cabName = $fixedCabUrl.Split("/")[-1]
+            $cabPath = Join-Path $cacheRoot $cabName
+            $rtCache = Join-Path $cacheRoot ([System.IO.Path]::GetFileNameWithoutExtension($cabName))
+            $rtProbe = Join-Path $rtCache "msedgewebview2.exe"
+            if (-not (Test-Path $rtProbe)) {
+              New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
+              Write-Output ("downloading fixed WebView2 runtime " + $cabName)
+              Invoke-WebRequest -Uri $fixedCabUrl -OutFile $cabPath -UseBasicParsing -TimeoutSec 600
+              if (Test-Path $rtCache) { Remove-Item $rtCache -Recurse -Force }
+              New-Item -ItemType Directory -Force -Path $rtCache | Out-Null
+              & expand.exe $cabPath -F:* $rtCache | Out-Null
+              if ($LASTEXITCODE -ne 0) { Write-Error "expand.exe failed, see the CAB link"; exit 1 }
+              Remove-Item $cabPath -Force -ErrorAction SilentlyContinue
+              if (-not (Test-Path $rtProbe)) {
+                $inner = Get-ChildItem $rtCache -Directory | Where-Object { Test-Path (Join-Path $_.FullName "msedgewebview2.exe") } | Select-Object -First 1
+                if (-not $inner) { Write-Error "msedgewebview2.exe not found after expand -- bad CAB link"; exit 1 }
+                Get-ChildItem $inner.FullName | Move-Item -Destination $rtCache -Force
+                Remove-Item $inner.FullName -Recurse -Force
+              }
+            } else {
+              Write-Output ("reusing cached fixed runtime " + $cabName)
+            }
+            New-Item -ItemType Directory -Force -Path (Join-Path $tmp "webview2-runtime") | Out-Null
+            Copy-Item (Join-Path $rtCache "*") (Join-Path $tmp "webview2-runtime") -Recurse -Force
+            Write-Output "staged embedded WebView2 runtime"
+          } else {
+            Write-Warning "fixedCabUrl not set -- zip ships WITHOUT embedded WebView2 runtime (evergreen install needed)"
+          }
+          $zip = Join-Path $stage "nalar-desktop-$env:TARGET.zip"
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          Compress-Archive -Path (Join-Path $tmp "*") -DestinationPath $zip
+          Remove-Item $tmp -Recurse -Force
+          Remove-Item $desktop.FullName -Force
+          Remove-Item $service.FullName -Force
+          Write-Output ("packaged " + $zip)
+
+      - name: Render the shared ci-latest release body
+        # `body_path:` is read VERBATIM -- the action does not evaluate
+        # expressions inside the file -- so the two @@ placeholders are
+        # substituted here instead. The substitutions go through `sed`
+        # with a `|` delimiter because the body itself is full of
+        # slashes.
+        #
+        # `shell: bash` on all three cells, Windows included: the
+        # windows-2022 image ships Git Bash and this workflow already runs
+        # `shell: bash` steps on it, so one step shape covers every OS
+        # instead of a pwsh twin.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          # Read from the environment, not interpolated into the sed
+          # expression by the runner: `github.sha` is a hex string and
+          # `github.run_id` an integer, so neither can carry a `|` or a
+          # `/` -- but keeping them out of the shell command line means a
+          # future value that can would be a quoting bug rather than an
+          # injection.
+          SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          sed -e "s|@@SHA@@|$SHA|" -e "s|@@RUN@@|$RUN_ID|" \
+            scripts/ci-release-body.md > "$RUNNER_TEMP/ci-latest-body.md"
+          test -s "$RUNNER_TEMP/ci-latest-body.md"
+          echo "rendered $(wc -l < "$RUNNER_TEMP/ci-latest-body.md") lines of release body"
+
+      - name: Publish binaries to rolling ci-latest release
+        # Merges to main + manual dispatch publish the staged binaries as
+        # assets on a single ROLLING GitHub Release tagged `ci-latest`.
+        # Releases do NOT count against the Actions artifact-storage quota,
+        # which is why this replaces upload-artifact entirely.
+        #
+        # PR builds only stage (previous step) and skip this publish —
+        # zero quota usage on any event.
+        #
+        # The release is marked prerelease + make_latest=false so it never
+        # shadows real versioned releases; softprops/action-gh-release@v2
+        # updates the tag + replaces same-named assets in place, so
+        # `ci-latest` always tracks the newest green main build.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          name: CI binaries (latest main)
+          # ONE body file for every publisher of this release. The
+          # header of scripts/ci-release-body.md explains why it is a
+          # file and not a second inline copy.
+          body_path: ${{ runner.temp }}/ci-latest-body.md
+          prerelease: true
+          make_latest: false
+          files: bin-stage-${{ inputs.target_zig }}/*
