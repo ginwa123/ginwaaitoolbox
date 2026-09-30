@@ -10,15 +10,26 @@
 //! a fresh id — no update, no delete. (`delete_memory` was removed per
 //! user decision: "memory is always add, no need edit or delete".)
 //!
+//! Per-workspace scope (Migration 095)
+//! ─────────────────────────────────
+//! BOTH `executeSaveMemory` and `executeLoadMemory` take a `workspace_id`
+//! as an explicit parameter, and it is NOT part of the `*Input` structs —
+//! so it is not a tool field the model can populate. `tools_exec_memory.zig`
+//! resolves it from `ctx.session_id` via
+//! `workspace_scope.resolveWorkspaceId` and passes it down. Neither the
+//! tool descriptions nor the wire schema offer a way to name another
+//! workspace.
+//!
 //! Wire shapes (JSON, via std.json.Stringify.valueAlloc):
 //!   save:   input { content, tags? } →
-//!           {"id","created_at","updated_at"}
+//!           {"id","created_at","updated_at","workspace_id"}
 //!           or {"error"}
 //!   load:   input { query?, id?, tags?, limit?=10, offset?=0,
 //!                   with_content?=false } →
 //!           {"query","limit","offset","with_content","count","total_count",
+//!            "workspace_id",
 //!            "results":[{"id","tags","created_at","updated_at","snippet",
-//!                         "content","truncated"}]}
+//                         "content","truncated"}]}
 //!           or {"error"}
 
 const std = @import("std");
@@ -74,6 +85,11 @@ pub const SaveMemorySuccess = struct {
     id: []const u8,
     created_at: []const u8,
     updated_at: []const u8,
+    /// The workspace the note was filed under (Migration 095). Empty
+    /// means "this session had no workspace". Echoed so the agent can
+    /// see that a note it just wrote is NOT visible to other
+    /// workspaces — the echo is the only place that fact is observable.
+    workspace_id: []const u8 = "",
 };
 
 /// Error payload shared by `save_memory` / `load_memory`.
@@ -154,12 +170,16 @@ pub const save_memory_tool = AgentTool{
         \\
         \\This is APPEND-ONLY: every call inserts a new row with a fresh auto-generated `mem_<16-hex>` id and `CURRENT_TIMESTAMP` timestamps. There is no update and no delete — to correct a stored fact, save a new memory (recency + FTS5 rank surface the latest one).
         \\
-        \\Storage: the note is stored in a global SQLite table with a FTS5 index. Searches (`load_memory`) can find it via phrase matching on the content or tags.
+        \\Storage: the note is stored in a SQLite table with an FTS5 index, filed under this session's workspace. Searches (`load_memory`) can find it via phrase matching on the content or tags.
         \\
         \\Constraints:
         \\- `content` must be 1 KiB – 1 MiB. Empty content is rejected; oversized is rejected (no silent truncation).
         \\- `tags` are joined with `||` in storage and split on `|` at read time.
-        \\- Global scope: memories are visible across all workspaces and sessions. There is no per-workspace filter.
+        \\- Per-workspace scope (Migration 095): a note is filed under the workspace this session
+        \\  belongs to, and only sessions in that same workspace can ever recall it. There is no
+        \\  `workspace_id` parameter — the scope is derived from the session, never from your
+        \\  arguments. Facts that must outlive this workspace (a user preference) belong in
+        \\  `~/.config/nalar/memories/*.md`, which stays global.
         ,
         .parameters = .{
             .type = "object",
@@ -176,10 +196,17 @@ pub const save_memory_tool = AgentTool{
 /// Execute save_memory. Returns a JSON string for the LLM.
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
+///
+/// `workspace_id` is supplied by the exec layer (resolved from
+/// `ctx.session_id`), NOT by the model — `SaveMemoryInput` has no such
+/// field on purpose, so there is no JSON a model can send that writes a
+/// note into someone else's workspace. `''` files the note in the
+/// "no workspace" bucket.
 pub fn executeSaveMemory(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: SaveMemoryInput,
+    workspace_id: []const u8,
 ) ![]const u8 {
     // Split the wire-string tags into an array for the storage layer.
     // Empty string → empty array (canonical "no tags" sentinel).
@@ -189,6 +216,7 @@ pub fn executeSaveMemory(
     const row = agent_memories.saveMemory(allocator, db, .{
         .content = input.content,
         .tags = tags_array,
+        .workspace_id = workspace_id,
     }) catch |err| {
         const msg = switch (err) {
             error.InvalidContent => "content must be non-empty (1 KiB minimum)",
@@ -262,6 +290,7 @@ fn saveSuccessJSON(allocator: std.mem.Allocator, row: agent_memories.MemoryRow) 
         .id = row.id,
         .created_at = row.created_at,
         .updated_at = row.updated_at,
+        .workspace_id = row.workspace_id,
     }, .{});
 }
 
@@ -376,6 +405,18 @@ pub const load_memory_tool_system_prompt =
     \\- `.md` files → hand-curated insights (architecture notes, conventions). Not
     \\  written by these tools; edit directly if that's the surface you need.
     \\
+    \\### Scope — per workspace, not global
+    \\Notes are filed under the workspace THIS SESSION belongs to. `load_memory`
+    \\searches only that workspace, and a `mem_<16-hex>` id from another
+    \\workspace comes back `not found`. There is no `workspace_id` argument and
+    \\no way to address another workspace from here — the scope comes from the
+    \\session, resolved server-side.
+    \\
+    \\Consequence: a preference you save here will NOT come back in a different
+    \\workspace. That is deliberate. If a fact must be true everywhere (a user
+    \\preference, a machine-wide convention), it belongs in a `.md` file under
+    \\`~/.config/nalar/memories/`, not in `save_memory`.
+    \\
     \\### Reference
     \\
     \\| Tool | Signature | Behavior |
@@ -437,6 +478,8 @@ pub const load_memory_tool = AgentTool{
         \\
         \\Context anti-bloat: by default, only `"snippet"` is returned — NOT the raw content. Pass `with_content=true` when you need the full body of a hit (capped at 2 KiB per row). The default `limit` is 10 (hard cap 50), so the worst-case response is ~6 KiB snippets-only or ~100 KiB with content. The by-id path always returns full content.
         \\
+        \\SCOPE — PER WORKSPACE, NOT GLOBAL: results are limited to notes saved in the workspace THIS SESSION belongs to (Migration 095). A `mem_<16-hex>` id belonging to another workspace returns `not found`, exactly like an id that never existed. There is no `workspace_id` parameter and no way to reach another workspace from here. The response echoes the `workspace_id` it was scoped to. If a fact must hold across every workspace, write it to a `.md` file under `~/.config/nalar/memories/` instead of `save_memory`.
+        \\
         \\MULTI-WORD QUERIES ARE JOINED WITH OR. `query="preferred model"` matches memories that mention EITHER "preferred" OR "model" (not just memories with the literal substring "preferred model"). This is the natural recall semantics — for a more precise search, use a single keyword. The query matches against both the content AND the tags column.
         \\
         \\FTS5 QUERY SANITIZATION: queries with `.`, `-`, `:`, `*`, `^`, `(`, `)`, `"`, `+` are auto-sanitized — so you can write "handle_tool.zig" or "2026-08-06" without crashes. FTS5's default tokenizer splits on those characters like the indexer did.
@@ -475,6 +518,12 @@ pub const load_memory_tool = AgentTool{
 ///
 /// Caller owns the returned slice and must free it with `allocator.free()`.
 ///
+/// `workspace_id` is supplied by the exec layer (resolved from
+/// `ctx.session_id`) and is a HARD filter on both branches: a hit owned
+/// by another workspace cannot be reached by FTS search OR by `id`, and
+/// a by-id miss is reported as `not found` rather than as a denial, so
+/// the tool never confirms that another workspace's note exists.
+///
 /// Branches on `input.id`:
 ///   - When `id` is non-empty: bypass FTS5, call
 ///     `agent_memories.getMemoryById`, return a single-row
@@ -485,6 +534,7 @@ pub fn executeLoadMemory(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: LoadMemoryInput,
+    workspace_id: []const u8,
 ) ![]const u8 {
     // Either id OR query must be non-empty. The OpenAI tool-schema DSL
     // can't express "oneOf: query OR id" for primitive strings, so the
@@ -497,7 +547,7 @@ pub fn executeLoadMemory(
     // returns the FULL content (up to 1 MiB) — no MAX_FULL_CONTENT_BYTES
     // 2 KiB cap. `tags` is ignored (only 1 row can match).
     if (input.id.len > 0) {
-        return executeById(allocator, db, input);
+        return executeById(allocator, db, input, workspace_id);
     }
 
     // FTS5 path (unchanged from the 2026-08-06 implementation).
@@ -514,6 +564,7 @@ pub fn executeLoadMemory(
         .tags = tags_array,
         .limit = effective_limit,
         .offset = input.offset,
+        .workspace_id = workspace_id,
     }) catch |err| {
         const msg = switch (err) {
             error.OutOfMemory => "out of memory",
@@ -536,7 +587,11 @@ pub fn executeLoadMemory(
         const cs = try allocator.alloc(?[]u8, hits.len);
         contents = cs;
         for (hits, 0..) |hit, i| {
-            const row = agent_memories.getMemoryById(allocator, db, hit.id) catch |err| {
+            // Scoped even though the hit came from an already-scoped
+            // search: this is the one read that returns raw content, so
+            // it must not become a way around the workspace filter if
+            // the caller's scope ever drifts.
+            const row = agent_memories.getMemoryById(allocator, db, hit.id, workspace_id) catch |err| {
                 const msg = std.fmt.allocPrint(allocator, "getMemoryById failed: {s}", .{@errorName(err)}) catch "?";
                 defer allocator.free(msg);
                 return loadErrorJSON(allocator, msg);
@@ -552,7 +607,7 @@ pub fn executeLoadMemory(
         }
     }
 
-    return loadSuccessJSON(allocator, hits, contents, input, effective_limit);
+    return loadSuccessJSON(allocator, hits, contents, input, effective_limit, workspace_id);
 }
 
 /// By-id branch of `executeLoadMemory`. Single-row SELECT against
@@ -567,8 +622,12 @@ fn executeById(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     input: LoadMemoryInput,
+    workspace_id: []const u8,
 ) ![]u8 {
-    const row = agent_memories.getMemoryById(allocator, db, input.id) catch |err| {
+    // Scoped: another workspace's row is reported as `not found`, which
+    // is indistinguishable from a row that never existed. Returning
+    // "denied" would confirm the id is real.
+    const row = agent_memories.getMemoryById(allocator, db, input.id, workspace_id) catch |err| {
         const msg = std.fmt.allocPrint(allocator, "getMemoryById failed: {s}", .{@errorName(err)}) catch "?";
         defer allocator.free(msg);
         return loadErrorJSON(allocator, msg);
@@ -609,6 +668,9 @@ pub const LoadMemorySuccess = struct {
     with_content: bool,
     count: u32,
     total_count: u32,
+    /// The workspace this result set is scoped to (Migration 095).
+    /// `total_count` and every row come from this workspace alone.
+    workspace_id: []const u8 = "",
     results: []const LoadMemoryHitJSON,
 };
 
@@ -618,6 +680,7 @@ fn loadSuccessJSON(
     contents: ?[]?[]u8,
     input: LoadMemoryInput,
     effective_limit: u32,
+    workspace_id: []const u8,
 ) ![]u8 {
     const query = try sanitizeControlChars(allocator, input.query);
     defer allocator.free(query);
@@ -664,6 +727,7 @@ fn loadSuccessJSON(
         .with_content = input.with_content,
         .count = @intCast(hits.len),
         .total_count = total_count,
+        .workspace_id = workspace_id,
         .results = results,
     }, .{});
 }
@@ -707,6 +771,7 @@ fn loadSuccessByIdJSON(
         .with_content = true,
         .count = 1,
         .total_count = 1,
+        .workspace_id = row.workspace_id,
         .results = &results,
     }, .{});
 }
@@ -744,6 +809,55 @@ test "save_memory_tool: parameters include content and tags (no id — append-on
     try testing.expect(!found_id);
 }
 
+// ─── workspace_id is NOT a model-suppliable field (Migration 095) ─────
+//
+// The backend resolves the workspace from `ctx.session_id`; the model
+// never names it. These three assertions exist so a future edit that adds
+// `workspace_id` to a tool schema fails the suite instead of quietly
+// re-opening the cross-workspace read.
+
+test "neither memory tool schema exposes a workspace_id parameter" {
+    for (save_memory_tool.function.parameters.properties) |prop| {
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace_id"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "scope"));
+    }
+    for (load_memory_tool.function.parameters.properties) |prop| {
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace_id"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "workspace"));
+        try testing.expect(!std.mem.eql(u8, prop.name, "scope"));
+    }
+    for (save_memory_tool.function.parameters.required) |r| {
+        try testing.expect(!std.mem.eql(u8, r, "workspace_id"));
+    }
+    for (load_memory_tool.function.parameters.required) |r| {
+        try testing.expect(!std.mem.eql(u8, r, "workspace_id"));
+    }
+}
+
+test "neither *Input struct has a workspace_id field" {
+    // These two literals are the assertion: if someone adds a
+    // `workspace_id` field to either struct, the suite stops BUILDING
+    // rather than quietly accepting a model-supplied scope.
+    const save: SaveMemoryInput = .{ .content = "c", .tags = "t" };
+    const load: LoadMemoryInput = .{ .query = "q" };
+    try testing.expect(save.content.len > 0);
+    try testing.expect(load.query.len > 0);
+
+    // The resolved scope travels as a separate trailing argument, not on
+    // the struct. A struct-literal call site therefore CANNOT forget to
+    // set it — the compiler asks for it. Pinning the signature here makes
+    // that guarantee explicit rather than incidental.
+    comptime {
+        const SaveFn = *const fn (std.mem.Allocator, *sqlite.SqliteBackend, SaveMemoryInput, []const u8) anyerror![]const u8;
+        const LoadFn = *const fn (std.mem.Allocator, *sqlite.SqliteBackend, LoadMemoryInput, []const u8) anyerror![]const u8;
+        const save_fn: SaveFn = &executeSaveMemory;
+        const load_fn: LoadFn = &executeLoadMemory;
+        _ = save_fn;
+        _ = load_fn;
+    }
+}
+
 test "save_memory_tool: returns success JSON payload on insert" {
     const alloc = testing.allocator;
     var ctx = try setupDb();
@@ -754,7 +868,7 @@ test "save_memory_tool: returns success JSON payload on insert" {
         .content = "user prefers dark mode",
         .tags = "preferences",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // Returns {"id","created_at","updated_at"} on success.
@@ -787,7 +901,7 @@ test "save_memory_tool: returns error JSON on empty content" {
         .content = "",
         .tags = "",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     const parsed = try std.json.parseFromSlice(MemoryError, alloc, out, .{ .allocate = .alloc_always });
@@ -811,7 +925,7 @@ test "save_memory_tool: returns error JSON on content > 1 MiB" {
         .content = oversize,
         .tags = "",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
@@ -827,7 +941,7 @@ test "save_memory_tool: saving twice appends two rows (never overwrites)" {
         .content = "original content",
         .tags = "preferences",
     };
-    const out1 = try executeSaveMemory(alloc, &ctx.db, input1);
+    const out1 = try executeSaveMemory(alloc, &ctx.db, input1, "");
     defer alloc.free(out1);
     const id1 = try extractSavedId(alloc, out1);
     defer alloc.free(id1);
@@ -837,7 +951,7 @@ test "save_memory_tool: saving twice appends two rows (never overwrites)" {
         .content = "updated content",
         .tags = "preferences||updated",
     };
-    const out2 = try executeSaveMemory(alloc, &ctx.db, input2);
+    const out2 = try executeSaveMemory(alloc, &ctx.db, input2, "");
     defer alloc.free(out2);
     const id2 = try extractSavedId(alloc, out2);
     defer alloc.free(id2);
@@ -864,7 +978,7 @@ test "save_memory_tool: auto-generates mem_<16-hex> id when none provided" {
         .content = "auto-generated memory",
         .tags = "",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // Extract the auto-generated id.
@@ -890,7 +1004,7 @@ test "save_memory_tool: round-trips tag list through storage" {
         .content = "memory with multiple tags",
         .tags = "alpha||beta||gamma",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
     const saved_id = try extractSavedId(alloc, out);
     defer alloc.free(saved_id);
@@ -944,7 +1058,7 @@ test "save_memory_tool: tags wire format is a string (parses without UnexpectedT
 
     // The string form must be passed through to storage correctly
     // (split on || at the wire boundary, joined back to || in DB).
-    const out = try executeSaveMemory(alloc, &ctx.db, parsed.value);
+    const out = try executeSaveMemory(alloc, &ctx.db, parsed.value, "");
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     const saved_id = try extractSavedId(alloc, out);
@@ -969,7 +1083,7 @@ test "save_memory_tool: single tag (no separator) round-trips" {
         .content = "single tag",
         .tags = "demo",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     const saved_id = try extractSavedId(alloc, out);
@@ -992,7 +1106,7 @@ test "save_memory_tool: empty tags string saves empty tags" {
         .content = "no tags",
         .tags = "",
     };
-    const out = try executeSaveMemory(alloc, &ctx.db, input);
+    const out = try executeSaveMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
     const saved_id = try extractSavedId(alloc, out);
@@ -1105,7 +1219,7 @@ test "load_memory_tool: returns success JSON payload" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode",
         .tags = "preferences",
-    });
+    }, "");
     defer alloc.free(_out);
     const seeded_id = try extractSavedId(alloc, _out);
     defer alloc.free(seeded_id);
@@ -1117,7 +1231,7 @@ test "load_memory_tool: returns success JSON payload" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     const parsed = try std.json.parseFromSlice(LoadMemorySuccess, alloc, out, .{ .allocate = .alloc_always });
@@ -1144,7 +1258,7 @@ test "load_memory_tool: returns error JSON on empty query" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     const parsed = try std.json.parseFromSlice(MemoryError, alloc, out, .{ .allocate = .alloc_always });
@@ -1164,7 +1278,7 @@ test "load_memory_tool: limits result count to MAX_LIMIT (50) when caller reques
         const _out = try executeSaveMemory(alloc, &ctx.db, .{
             .content = "shared memory content for cap test",
             .tags = "",
-        });
+        }, "");
         defer alloc.free(_out);
     }
 
@@ -1176,7 +1290,7 @@ test "load_memory_tool: limits result count to MAX_LIMIT (50) when caller reques
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // Verify "count":50 appears (the cap).
@@ -1193,7 +1307,7 @@ test "load_memory_tool: snippets contain [match] markers (FTS5 convention)" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode for the editor",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_out);
 
     const input = LoadMemoryInput{
@@ -1203,7 +1317,7 @@ test "load_memory_tool: snippets contain [match] markers (FTS5 convention)" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // Every snippet must have [match] markers (the FTS5 convention).
@@ -1221,21 +1335,21 @@ test "load_memory_tool: AND-filters by tags" {
     const _out1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory one with model preference",
         .tags = "preferences||user",
-    });
+    }, "");
     defer alloc.free(_out1);
     const id1 = try extractSavedId(alloc, _out1);
     defer alloc.free(id1);
     const _out2 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory two with project context",
         .tags = "preferences||project",
-    });
+    }, "");
     defer alloc.free(_out2);
     const id2 = try extractSavedId(alloc, _out2);
     defer alloc.free(id2);
     const _out3 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory three with project context",
         .tags = "project",
-    });
+    }, "");
     defer alloc.free(_out3);
     const id3 = try extractSavedId(alloc, _out3);
     defer alloc.free(id3);
@@ -1247,7 +1361,7 @@ test "load_memory_tool: AND-filters by tags" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // row two + row three match (both have "context" + "project" tag).
@@ -1273,7 +1387,7 @@ test "load_memory_tool: without with_content, snippets only (content is null)" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "short content for anti-bloat test",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_out);
 
     const input = LoadMemoryInput{
@@ -1283,7 +1397,7 @@ test "load_memory_tool: without with_content, snippets only (content is null)" {
         .offset = 0,
         .with_content = false, // ← snippets only
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // "snippet" present, "content" explicitly null.
@@ -1303,7 +1417,7 @@ test "load_memory_tool: paginates via limit + offset" {
         const _out = try executeSaveMemory(alloc, &ctx.db, .{
             .content = "pageword row",
             .tags = "",
-        });
+        }, "");
         defer alloc.free(_out);
     }
 
@@ -1314,7 +1428,7 @@ test "load_memory_tool: paginates via limit + offset" {
         .limit = 3,
         .offset = 0,
         .with_content = false,
-    });
+    }, "");
     defer alloc.free(out1);
     try testing.expect(std.mem.indexOf(u8, out1, "\"count\":3") != null);
     try testing.expect(std.mem.indexOf(u8, out1, "\"total_count\":5") != null);
@@ -1326,7 +1440,7 @@ test "load_memory_tool: paginates via limit + offset" {
         .limit = 3,
         .offset = 3,
         .with_content = false,
-    });
+    }, "");
     defer alloc.free(out2);
     try testing.expect(std.mem.indexOf(u8, out2, "\"count\":2") != null);
     try testing.expect(std.mem.indexOf(u8, out2, "\"total_count\":5") != null);
@@ -1341,7 +1455,7 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "this row contains handle_tool.zig and AGENTS.md",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_out);
     const seeded_id = try extractSavedId(alloc, _out);
     defer alloc.free(seeded_id);
@@ -1356,7 +1470,7 @@ test "load_memory_tool: FTS5 query sanitization (dots, dashes, colons don't cras
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // No "error" — the query didn't crash. The row should be found
@@ -1388,21 +1502,21 @@ test "load_memory_tool: multi-token query joins with OR (regression for strict-s
     const _o1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred model is claude-sonnet",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_o1);
     const id1 = try extractSavedId(alloc, _o1);
     defer alloc.free(id1);
     const _o2 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "user prefers claude-sonnet for writing tasks",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_o2);
     const id2 = try extractSavedId(alloc, _o2);
     defer alloc.free(id2);
     const _o3 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the project's database model is documented in spec",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_o3);
     const id3 = try extractSavedId(alloc, _o3);
     defer alloc.free(id3);
@@ -1417,7 +1531,7 @@ test "load_memory_tool: multi-token query joins with OR (regression for strict-s
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     // No "error", no crash.
@@ -1442,7 +1556,7 @@ test "load_memory_tool: single-token query still works (regression guard)" {
     const _o1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user prefers dark mode for the editor",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_o1);
     const seeded_id = try extractSavedId(alloc, _o1);
     defer alloc.free(seeded_id);
@@ -1454,7 +1568,7 @@ test "load_memory_tool: single-token query still works (regression guard)" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
@@ -1474,7 +1588,7 @@ test "load_memory_tool: hyphenated date query returns sanitized recall (no crash
     const _o1 = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "log entry on 2026-08-06 says the build is green",
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_o1);
     const seeded_id = try extractSavedId(alloc, _o1);
     defer alloc.free(seeded_id);
@@ -1490,7 +1604,7 @@ test "load_memory_tool: hyphenated date query returns sanitized recall (no crash
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
@@ -1515,7 +1629,7 @@ test "load_memory_tool: empty-after-sanitize query returns empty results (no cra
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
@@ -1544,7 +1658,7 @@ test "load_memory_tool: by-id lookup returns single row with full content" {
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "the user's preferred model is claude-sonnet",
         .tags = "preferences||user",
-    });
+    }, "");
     defer alloc.free(_out);
     const seeded_id = try extractSavedId(alloc, _out);
     defer alloc.free(seeded_id);
@@ -1559,7 +1673,7 @@ test "load_memory_tool: by-id lookup returns single row with full content" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"results\":") != null);
@@ -1597,7 +1711,7 @@ test "load_memory_tool: by-id lookup returns content beyond 2 KiB (no MAX_FULL_C
     const _out = try executeSaveMemory(alloc, &ctx.db, .{
         .content = big.items,
         .tags = "",
-    });
+    }, "");
     defer alloc.free(_out);
     const big_id = try extractSavedId(alloc, _out);
     defer alloc.free(big_id);
@@ -1610,7 +1724,7 @@ test "load_memory_tool: by-id lookup returns content beyond 2 KiB (no MAX_FULL_C
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") == null);
@@ -1635,7 +1749,7 @@ test "load_memory_tool: by-id lookup returns error when id not found" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
@@ -1658,7 +1772,7 @@ test "load_memory_tool: empty id + empty query returns error" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     try testing.expect(std.mem.indexOf(u8, out, "\"error\":") != null);
@@ -1676,14 +1790,14 @@ test "load_memory_tool: by-id ignores tags (only one row can match anyway)" {
     const _a = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory alpha",
         .tags = "alpha",
-    });
+    }, "");
     defer alloc.free(_a);
     const alpha_id = try extractSavedId(alloc, _a);
     defer alloc.free(alpha_id);
     const _b = try executeSaveMemory(alloc, &ctx.db, .{
         .content = "memory beta",
         .tags = "beta",
-    });
+    }, "");
     defer alloc.free(_b);
     const beta_id = try extractSavedId(alloc, _b);
     defer alloc.free(beta_id);
@@ -1696,7 +1810,7 @@ test "load_memory_tool: by-id ignores tags (only one row can match anyway)" {
         .offset = 0,
         .with_content = false,
     };
-    const out = try executeLoadMemory(alloc, &ctx.db, input);
+    const out = try executeLoadMemory(alloc, &ctx.db, input, "");
     defer alloc.free(out);
 
     const needle_alpha = try std.fmt.allocPrint(alloc, "\"id\":\"{s}\"", .{alpha_id});

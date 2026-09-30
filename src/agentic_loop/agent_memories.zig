@@ -11,6 +11,18 @@
 //!   - `loadMemoriesByFts` — FTS5 phrase search with snippet + tags filter
 //!   - `getMemoryById` — lookup a single row by id (returns null if missing)
 //!
+//! Per-workspace isolation (Migration 095)
+//! ──────────────────────────────────────
+//! EVERY function here takes a `workspace_id` and scopes to it. There is
+//! deliberately no un-scoped variant: the one place that does not need a
+//! scope (the read-back at the end of `saveMemory`) passes the same id it
+//! just wrote, so a caller cannot accidentally open a global reader.
+//! The value comes from `workspace_scope.resolveWorkspaceId` at the exec
+//! layer — it is never a tool parameter, so the model cannot ask for
+//! another workspace's notes. `''` is the "this session has no workspace"
+//! sentinel and behaves like any other bucket: shared by workspace-less
+//! sessions, invisible to every real workspace.
+//!
 //! Backed by Migration 070's `agent_memories` table + `agent_memories_fts`
 //! FTS5 virtual table. The sync triggers from Migration 070 keep the FTS5
 //! index in lockstep with the source table automatically — no per-call
@@ -22,9 +34,9 @@
 //! Why a dedicated module (NOT extending llm_history.zig)
 //! ──────────────────────────────────────────────────────
 //! `llm_history` is for session-scoped chat messages. The new memory
-//! store is for cross-session, cross-workspace notes. Conceptually
-//! distinct (different storage, different consumer, different access
-//! pattern). Putting them in the same file would dilute both.
+//! store is for cross-session notes, isolated per workspace.
+//! Conceptually distinct (different storage, different consumer, different
+//! access pattern). Putting them in the same file would dilute both.
 //!
 //! Why `mem_<16-hex>` auto-generated ids
 //! ─────────────────────────────────────
@@ -47,6 +59,10 @@ pub const MemoryRow = struct {
     id: []const u8,
     content: []const u8,
     tags: []const u8,
+    /// Owning workspace (Migration 095). `''` = the "no workspace"
+    /// bucket. The exec layer echoes this back to the LLM so a scoped
+    /// tool result is never mistaken for a global one.
+    workspace_id: []const u8,
     created_at: []const u8,
     updated_at: []const u8,
 };
@@ -81,6 +97,10 @@ pub const SaveMemoryArgs = struct {
     /// `||`-joined (matches the project's `tags` / `image_urls` convention
     /// — see Migration 067 / 069).
     tags: []const []const u8,
+    /// Owning workspace (Migration 095). Empty string = the "no
+    /// workspace" bucket, written via the column DEFAULT so an empty
+    /// bind never lands as SQL NULL.
+    workspace_id: []const u8 = "",
 };
 
 /// Hard cap on the size of a single memory. 1 MiB is well above any
@@ -117,47 +137,63 @@ pub fn saveMemory(
     // impossible with 64-bit random ids, and silently replacing a row
     // would violate append-only.)
     //
-    // When there are no tags the `tags` column is OMITTED so the schema
-    // `DEFAULT ''` applies. Binding an empty slice would land as SQL
-    // NULL (`SqliteBackend.exec` binds zero-length slices via
-    // `sqlite3_bind_null`) and violate the `NOT NULL` constraint.
-    if (args.tags.len == 0) {
-        const insert_sql =
-            \\INSERT INTO agent_memories (id, content, created_at, updated_at)
-            \\VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ;
-        var binds: [2][]const u8 = .{ id, args.content };
-        try db.exec(allocator, insert_sql, &binds);
-    } else {
-        // Build the `||`-joined tags string (matches Migration 067/069).
-        const tags_str = try joinTags(allocator, args.tags);
-        defer allocator.free(tags_str);
+    // The column list is built rather than branched between fixed
+    // strings because TWO columns now want the "omit me when empty"
+    // treatment: `tags` (DEFAULT '') and `workspace_id` (DEFAULT '').
+    // `SqliteBackend.exec` binds a zero-length slice via
+    // `sqlite3_bind_null`, which would violate NOT NULL — so a column
+    // is left out of the INSERT rather than bound empty, and its schema
+    // DEFAULT applies.
+    const tags_str: ?[]u8 = if (args.tags.len == 0) null else try joinTags(allocator, args.tags);
+    defer if (tags_str) |t| allocator.free(t);
 
-        const insert_sql =
-            \\INSERT INTO agent_memories (id, content, tags, created_at, updated_at)
-            \\VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        ;
-        var binds: [3][]const u8 = .{ id, args.content, tags_str };
-        try db.exec(allocator, insert_sql, &binds);
+    var insert_sql: std.ArrayList(u8) = .empty;
+    defer insert_sql.deinit(allocator);
+    var binds: std.ArrayList([]const u8) = .empty;
+    defer binds.deinit(allocator);
+
+    try insert_sql.appendSlice(allocator, "INSERT INTO agent_memories (id, content");
+    try binds.append(allocator, id);
+    try binds.append(allocator, args.content);
+
+    if (args.workspace_id.len > 0) {
+        try insert_sql.appendSlice(allocator, ", workspace_id");
+        try binds.append(allocator, args.workspace_id);
+    }
+    if (tags_str) |t| {
+        try insert_sql.appendSlice(allocator, ", tags");
+        try binds.append(allocator, t);
     }
 
+    try insert_sql.appendSlice(allocator, ", created_at, updated_at) VALUES (?, ?");
+    if (args.workspace_id.len > 0) try insert_sql.appendSlice(allocator, ", ?");
+    if (tags_str != null) try insert_sql.appendSlice(allocator, ", ?");
+    try insert_sql.appendSlice(allocator, ", CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)");
+
+    try db.exec(allocator, insert_sql.items, binds.items);
+
     // Read the row back so the caller sees the canonical timestamps.
-    const row = (try getMemoryById(allocator, db, id)) orelse return error.RowNotFoundAfterInsert;
+    // Scoped to the workspace we just stamped, so this read is the same
+    // read a `load_memory {id}` from that workspace would perform.
+    const row = (try getMemoryById(allocator, db, id, args.workspace_id)) orelse return error.RowNotFoundAfterInsert;
     return row;
 }
 
-/// Look up a memory by id. Returns null when no row with that id exists
-/// (does NOT error — the caller branches on null to handle "not found"
-/// cleanly).
+/// Look up a memory by id, scoped to `workspace_id`. Returns null when
+/// no row with that id exists IN THAT WORKSPACE — a row owned by a
+/// different workspace is indistinguishable from a missing one, which is
+/// the point: `load_memory {id}` must not be a cross-workspace read
+/// primitive that returns another workspace's full 1 MiB body.
 pub fn getMemoryById(
     allocator: std.mem.Allocator,
     db: *sqlite.SqliteBackend,
     id: []const u8,
+    workspace_id: []const u8,
 ) !?MemoryRow {
     var q = try db.query(allocator,
-        "SELECT id, content, tags, COALESCE(created_at, ''), COALESCE(updated_at, '') " ++
-            "FROM agent_memories WHERE id = ?",
-        &.{id});
+        "SELECT id, content, tags, COALESCE(workspace_id, ''), COALESCE(created_at, ''), COALESCE(updated_at, '') " ++
+            "FROM agent_memories WHERE id = ? AND workspace_id = ?",
+        &.{ id, workspace_id });
     defer q.deinit();
 
     const row = (try q.next()) orelse return null;
@@ -167,8 +203,9 @@ pub fn getMemoryById(
         .id = try allocator.dupe(u8, row.values[0]),
         .content = try allocator.dupe(u8, row.values[1]),
         .tags = try allocator.dupe(u8, row.values[2]),
-        .created_at = try allocator.dupe(u8, row.values[3]),
-        .updated_at = try allocator.dupe(u8, row.values[4]),
+        .workspace_id = try allocator.dupe(u8, row.values[3]),
+        .created_at = try allocator.dupe(u8, row.values[4]),
+        .updated_at = try allocator.dupe(u8, row.values[5]),
     };
 }
 
@@ -177,6 +214,7 @@ pub fn freeMemoryRow(allocator: std.mem.Allocator, row: MemoryRow) void {
     allocator.free(row.id);
     allocator.free(row.content);
     allocator.free(row.tags);
+    if (row.workspace_id.len > 0) allocator.free(row.workspace_id);
     if (row.created_at.len > 0) allocator.free(row.created_at);
     if (row.updated_at.len > 0) allocator.free(row.updated_at);
 }
@@ -214,6 +252,11 @@ pub const LoadOptions = struct {
     /// Skip the first N rows of the ranked result set. 0 = start from
     /// the top.
     offset: u32,
+    /// Owning workspace (Migration 095). Mandatory scope: rows owned by
+    /// any other workspace are filtered out before ranking, so they can
+    /// neither appear in `results` nor be counted in `total_count`.
+    /// `''` is the "no workspace" bucket.
+    workspace_id: []const u8,
 };
 
 /// FTS5 phrase search over `agent_memories_fts`. Returns ranked hits
@@ -225,6 +268,10 @@ pub const LoadOptions = struct {
 /// Tag filter semantics: AND across all tags. Each tag must be present
 /// in the row's `tags` column (substring match). Empty tags array = no
 /// filter.
+///
+/// Workspace scope: `opts.workspace_id` is a hard filter applied inside
+/// the FTS subquery. Every returned hit — and every `total_count` — comes
+/// from that workspace alone.
 ///
 /// FTS5 sanitization: the query is passed through
 /// `llm_history.escapeFtsQuery` so plain text with FTS5 operators
@@ -274,6 +321,7 @@ pub fn loadMemoriesByFts(
         \\    FROM agent_memories_fts
         \\    JOIN agent_memories m ON m.rowid = agent_memories_fts.rowid
         \\    WHERE agent_memories_fts MATCH ?
+        \\      AND m.workspace_id = ?
     );
 
     var binds: std.ArrayList([]const u8) = .empty;
@@ -284,6 +332,12 @@ pub fn loadMemoriesByFts(
         binds.deinit(allocator);
     }
     try binds.append(allocator, sanitized_query);
+    // The workspace scope sits INSIDE the subquery, not in the outer
+    // wrapper: `COUNT(*) OVER ()` is evaluated over the subquery's rows,
+    // so a filter applied outside would report the GLOBAL match count
+    // next to a workspace-scoped `results` array — the agent would page
+    // with an `offset` derived from rows it can never see.
+    try binds.append(allocator, opts.workspace_id);
 
     // AND-filter by tags. Each tag adds a `LIKE '%tag%'` clause to the
     // WHERE. Substring match is the project's convention (matches
@@ -652,6 +706,7 @@ test "loadMemoriesByFts: returns ranked hits with snippets" {
         .tags = &.{},
         .limit = 10,
         .offset = 0,
+        .workspace_id = "",
     });
     defer {
         for (hits) |h| {
@@ -703,6 +758,7 @@ test "loadMemoriesByFts: AND-filters by tags" {
         .tags = &.{"project"},
         .limit = 10,
         .offset = 0,
+        .workspace_id = "",
     });
     defer {
         for (hits) |h| {
@@ -721,6 +777,7 @@ test "loadMemoriesByFts: AND-filters by tags" {
         .tags = &.{ "preferences", "project" },
         .limit = 10,
         .offset = 0,
+        .workspace_id = "",
     });
     defer {
         for (hits2) |h| {
@@ -759,6 +816,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
             .tags = &.{},
             .limit = 10,
             .offset = 0,
+            .workspace_id = "",
         });
         defer {
             for (hits) |h| {
@@ -778,6 +836,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
             .tags = &.{},
             .limit = 10,
             .offset = 10,
+            .workspace_id = "",
         });
         defer {
             for (hits) |h| {
@@ -800,6 +859,7 @@ test "loadMemoriesByFts: paginates via limit + offset and reports total_count" {
             .tags = &.{},
             .limit = 10,
             .offset = 20,
+            .workspace_id = "",
         });
         defer {
             for (hits) |h| {
@@ -825,13 +885,193 @@ test "getMemoryById: returns the row when id exists, null otherwise" {
     defer freeMemoryRow(alloc, row1);
 
     // Existing id → returns the row.
-    const found = (try getMemoryById(alloc, &ctx.db, row1.id)) orelse return error.GetReturnedNull;
+    const found = (try getMemoryById(alloc, &ctx.db, row1.id, "")) orelse return error.GetReturnedNull;
     defer freeMemoryRow(alloc, found);
     try testing.expectEqualStrings(row1.id, found.id);
     try testing.expectEqualStrings("the test memory content", found.content);
     try testing.expectEqualStrings("test", found.tags);
 
     // Missing id → returns null (not error).
-    const missing = try getMemoryById(alloc, &ctx.db, "no-such-id");
+    const missing = try getMemoryById(alloc, &ctx.db, "no-such-id", "");
     try testing.expect(missing == null);
+}
+
+test "saveMemory: stamps workspace_id, and an empty one lands in the '' bucket" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const scoped = try saveMemory(alloc, &ctx.db, .{
+        .content = "scoped note",
+        .tags = &.{"test"},
+        .workspace_id = "ws_alpha",
+    });
+    defer freeMemoryRow(alloc, scoped);
+    try testing.expectEqualStrings("ws_alpha", scoped.workspace_id);
+
+    // Empty workspace_id must NOT become SQL NULL — the column is
+    // NOT NULL, and binding a zero-length slice lands as NULL. It goes
+    // in through the column DEFAULT instead.
+    const unscoped = try saveMemory(alloc, &ctx.db, .{
+        .content = "workspace-less note",
+        .tags = &.{"test"},
+    });
+    defer freeMemoryRow(alloc, unscoped);
+    try testing.expectEqualStrings("", unscoped.workspace_id);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT id, workspace_id FROM agent_memories ORDER BY rowid
+    , &.{});
+    defer q.deinit();
+    const a = (try q.next()) orelse return error.RowMissing;
+    defer a.deinit(alloc);
+    try testing.expectEqualStrings(scoped.id, a.values[0]);
+    try testing.expectEqualStrings("ws_alpha", a.values[1]);
+    const b = (try q.next()) orelse return error.RowMissing;
+    defer b.deinit(alloc);
+    try testing.expectEqualStrings("", b.values[1]);
+}
+
+test "loadMemoriesByFts: never returns another workspace's rows" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // Two workspaces each hold a note matching the SAME query term.
+    // Before Migration 095 both came back from either workspace.
+    const alpha = try saveMemory(alloc, &ctx.db, .{
+        .content = "deployment uses rsync for releases",
+        .tags = &.{"ops"},
+        .workspace_id = "ws_alpha",
+    });
+    defer freeMemoryRow(alloc, alpha);
+    const beta = try saveMemory(alloc, &ctx.db, .{
+        .content = "deployment uses ansible for releases",
+        .tags = &.{"ops"},
+        .workspace_id = "ws_beta",
+    });
+    defer freeMemoryRow(alloc, beta);
+
+    const alpha_hits = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "deployment",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+        .workspace_id = "ws_alpha",
+    });
+    defer {
+        for (alpha_hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(alpha_hits);
+    }
+    try testing.expectEqual(@as(usize, 1), alpha_hits.len);
+    try testing.expectEqualStrings(alpha.id, alpha_hits[0].id);
+    // total_count must be the SCOPED count. If the filter sat outside
+    // the subquery this would read 2 and the agent would page with an
+    // offset derived from a row it can never see.
+    try testing.expectEqual(@as(u32, 1), alpha_hits[0].total_count);
+
+    const beta_hits = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "deployment",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+        .workspace_id = "ws_beta",
+    });
+    defer {
+        for (beta_hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(beta_hits);
+    }
+    try testing.expectEqual(@as(usize, 1), beta_hits.len);
+    try testing.expectEqualStrings(beta.id, beta_hits[0].id);
+
+    // A workspace with no rows of its own sees nothing, even though the
+    // term matches two rows globally.
+    const gamma_hits = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "deployment",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+        .workspace_id = "ws_gamma",
+    });
+    defer alloc.free(gamma_hits);
+    try testing.expectEqual(@as(usize, 0), gamma_hits.len);
+}
+
+test "getMemoryById: a row owned by another workspace is indistinguishable from a missing one" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const alpha = try saveMemory(alloc, &ctx.db, .{
+        .content = "alpha-only secret note body",
+        .tags = &.{"test"},
+        .workspace_id = "ws_alpha",
+    });
+    defer freeMemoryRow(alloc, alpha);
+
+    // Owning workspace reads it.
+    const own = (try getMemoryById(alloc, &ctx.db, alpha.id, "ws_alpha")) orelse return error.GetReturnedNull;
+    defer freeMemoryRow(alloc, own);
+    try testing.expectEqualStrings("alpha-only secret note body", own.content);
+
+    // Another workspace gets null — NOT the 1 MiB body. The by-id path
+    // is the one that would leak most (full content, no snippet cap), so
+    // it is the one that must be scoped.
+    const stolen = try getMemoryById(alloc, &ctx.db, alpha.id, "ws_beta");
+    try testing.expect(stolen == null);
+
+    // The '' bucket cannot read a workspace's rows either.
+    const legacy = try getMemoryById(alloc, &ctx.db, alpha.id, "");
+    try testing.expect(legacy == null);
+}
+
+test "legacy rows (pre-Migration-095, workspace_id '') are invisible to workspace sessions" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    // A row written the old way — no workspace at all.
+    const legacy = try saveMemory(alloc, &ctx.db, .{
+        .content = "a note from before workspaces scoped memory",
+        .tags = &.{"legacy"},
+    });
+    defer freeMemoryRow(alloc, legacy);
+
+    const ws_hits = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "workspaces",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+        .workspace_id = "ws_alpha",
+    });
+    defer alloc.free(ws_hits);
+    try testing.expectEqual(@as(usize, 0), ws_hits.len);
+
+    // Workspace-less sessions still share their own '' bucket.
+    const legacy_hits = try loadMemoriesByFts(alloc, &ctx.db, .{
+        .query = "workspaces",
+        .tags = &.{},
+        .limit = 10,
+        .offset = 0,
+        .workspace_id = "",
+    });
+    defer {
+        for (legacy_hits) |h| {
+            var copy = h;
+            copy.deinit(alloc);
+        }
+        alloc.free(legacy_hits);
+    }
+    try testing.expectEqual(@as(usize, 1), legacy_hits.len);
+    try testing.expectEqualStrings(legacy.id, legacy_hits[0].id);
 }

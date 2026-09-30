@@ -2011,6 +2011,13 @@ pub const allMigrations: []const Migration = &.{
     // genuinely race. No backfill: the list read creates it on demand.
     // Plan: docs/plans/2026-09-27-sidebar-new-chat-default-project.md (D6, D12)
     .{ .version = Migration094AddDefaultProjectToWorkspaceItems.version, .name = Migration094AddDefaultProjectToWorkspaceItems.name, .up = Migration094AddDefaultProjectToWorkspaceItems.up },
+    // Migration 095 — `agent_memories.workspace_id`, so `save_memory` /
+    // `load_memory` stop sharing one note pool across every workspace.
+    // `''` is the "no workspace" bucket; legacy rows land there, which is
+    // why they stop being visible to workspace sessions (re-home with an
+    // explicit UPDATE if you want to keep one).
+    // Plan: docs/plans/2026-09-29-memory-workspace-isolation.md
+    .{ .version = Migration095AddWorkspaceIdToAgentMemories.version, .name = Migration095AddWorkspaceIdToAgentMemories.name, .up = Migration095AddWorkspaceIdToAgentMemories.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -5049,6 +5056,77 @@ pub const Migration094AddDefaultProjectToWorkspaceItems = struct {
 };
 
 // ============================================================================
+// Migration 095 — per-workspace isolation for `agent_memories`.
+// ============================================================================
+//
+// ## Why this migration exists
+//
+// The `save_memory` / `load_memory` agent tools store their notes in
+// `agent_memories` (Migration 070) with NO owner column of any kind.
+// The tool description even said so — "Global scope: memories are
+// visible across all workspaces and sessions. There is no per-workspace
+// filter." Every workspace on the machine therefore read and wrote the
+// same note pool: a note saved while working on project X was recalled
+// verbatim by an agent whose cwd was project Y, and `load_memory {id}`
+// would hand over a full 1 MiB body belonging to a different workspace.
+//
+// Workspace isolation is the rule the rest of the product already
+// follows (`read_workspace_session` scopes server-side from
+// `ctx.session_id`; the kanban tools scope every query by
+// `workspace_id`). This migration makes the memory store obey it too.
+//
+// ## The `''` sentinel
+//
+// `workspace_id TEXT NOT NULL DEFAULT ''` — `''` means "this memory
+// belongs to no workspace" and is the project's existing convention for
+// an absent string value (Migration 094's `is_default`, Migration 070's
+// `tags`). A session that cannot be resolved to a workspace
+// (`workspace_scope.resolveWorkspaceId` returns null — a bare CLI chat,
+// a session whose cwd matches no `workspace_items.path`) writes into the
+// `''` bucket, which is a bucket like any other: those sessions share
+// it with each other, but NO workspace session can see it. Fail-closed
+// in the direction that matters.
+//
+// Pre-existing rows land in `''` for free — `NOT NULL DEFAULT ''` on an
+// ADD COLUMN is an O(1) metadata change, no table rewrite, no backfill
+// UPDATE. They are therefore invisible to workspace-scoped sessions
+// after this migration. That is deliberate: re-homing 300+ rows that
+// span every workspace a user ever typed into would either guess a
+// workspace or copy the same note into all of them, and copying it into
+// all of them is the exact leak this migration exists to close. To keep
+// them, re-home the ones you want explicitly:
+//
+//   UPDATE agent_memories SET workspace_id = 'ws_...' WHERE id = 'mem_...';
+//
+// ## What is NOT changed
+//
+// `agent_memories_fts` still indexes `content` + `tags` only. The
+// workspace filter is a JOIN predicate on the source table (the FTS5
+// query already joins `agent_memories` for `snippet()`), so no FTS
+// rebuild, no trigger change and no re-tokenization is required. A
+// partitioned virtual table would force a full reindex of every note on
+// a schema-only concern.
+pub const Migration095AddWorkspaceIdToAgentMemories = struct {
+    pub const version: u32 = 95;
+    pub const name = "add_workspace_id_to_agent_memories";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try addColumnIfMissing(.{ .db = db }, allocator, "agent_memories", "workspace_id", "workspace_id TEXT NOT NULL DEFAULT ''");
+
+        // Every read path filters `workspace_id = ?` and the FTS path
+        // orders by the join's own rank, so a leading `workspace_id`
+        // column lets SQLite seek straight to the calling workspace's
+        // rows instead of probing every FTS hit. `updated_at DESC` rides
+        // along for the (still unused, but already indexed) "most recent
+        // memories in this workspace" surface.
+        try db.exec(allocator,
+            \\CREATE INDEX IF NOT EXISTS idx_agent_memories_workspace
+            \\ON agent_memories(workspace_id, updated_at DESC)
+        , &[_][]const u8{});
+    }
+};
+
+// ============================================================================
 // Migration 087 — agent config tables for routine workspace items.
 // ============================================================================
 //
@@ -6296,6 +6374,95 @@ test "Migration094 is registered in allMigrations" {
         if (m.version == Migration094AddDefaultProjectToWorkspaceItems.version) return;
     }
     return error.Migration094NotRegistered;
+}
+
+// ─── Tests for Migration 095 (agent_memories.workspace_id) ────────────
+
+/// Create a pre-Migration-095 `agent_memories` (+ FTS5 side table) with
+/// rows in it, so the ADD COLUMN can be exercised against data rather
+/// than an empty table.
+fn setupAgentMemoriesPre095(ctx: *TestCtx) !void {
+    try ctx.db.exec(testing.allocator,
+        \\CREATE TABLE agent_memories (
+        \\    id TEXT PRIMARY KEY,
+        \\    content TEXT NOT NULL,
+        \\    tags TEXT NOT NULL DEFAULT '',
+        \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        \\)
+    , &[_][]const u8{});
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_memories (id, content) VALUES ('mem_aaa', 'legacy note one')",
+        &[_][]const u8{},
+    );
+    try ctx.db.exec(testing.allocator,
+        "INSERT INTO agent_memories (id, content) VALUES ('mem_bbb', 'legacy note two')",
+        &[_][]const u8{},
+    );
+}
+
+test "Migration095 adds workspace_id and files every pre-existing row in the '' bucket" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupAgentMemoriesPre095(&ctx);
+
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        \\SELECT id, workspace_id FROM agent_memories ORDER BY id
+    , &.{});
+    defer q.deinit();
+    const a = (try q.next()) orelse return error.RowMissing;
+    defer a.deinit(alloc);
+    try testing.expectEqualStrings("mem_aaa", a.values[0]);
+    try testing.expectEqualStrings("", a.values[1]);
+    const b = (try q.next()) orelse return error.RowMissing;
+    defer b.deinit(alloc);
+    try testing.expectEqualStrings("mem_bbb", b.values[0]);
+    try testing.expectEqualStrings("", b.values[1]);
+}
+
+test "Migration095 creates the workspace index and is idempotent" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+    try setupAgentMemoriesPre095(&ctx);
+
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+    // Re-running must not throw "duplicate column" / "index already exists"
+    // and must not rewrite a row that already has an owner.
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        "UPDATE agent_memories SET workspace_id = 'ws_kept' WHERE id = 'mem_aaa'",
+        &[_][]const u8{},
+    );
+    try Migration095AddWorkspaceIdToAgentMemories.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc,
+        "SELECT workspace_id FROM agent_memories WHERE id = 'mem_aaa'",
+        &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("ws_kept", row.values[0]);
+
+    var idx = try ctx.db.query(alloc,
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_agent_memories_workspace'",
+        &.{});
+    defer idx.deinit();
+    const irow = (try idx.next()) orelse return error.IndexMissing;
+    defer irow.deinit(alloc);
+    try testing.expectEqualStrings("idx_agent_memories_workspace", irow.values[0]);
+}
+
+test "Migration095 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration095AddWorkspaceIdToAgentMemories.version) return;
+    }
+    return error.Migration095NotRegistered;
 }
 
 // ===== Tests merged from migration_test.zig (2026-09-29 flatten) =====
