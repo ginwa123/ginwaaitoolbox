@@ -40,6 +40,12 @@ const BUILTIN_DEFAULT_TOOLS: readonly string[] = [
   'save_memory',
   'load_memory',
   'read_workspace_session',
+  // Workspace-scoped documents (Migration 095). Default-on: writing a
+  // note the user asked for is a core agent behaviour, and both tools
+  // refuse cleanly outside a workspace-linked session, so enabling them
+  // by default costs nothing.
+  'add_document',
+  'edit_document',
   'use_skill',
   'remove_skill',
   'add_skill',
@@ -62,6 +68,7 @@ const TOOL_GROUPS: readonly string[] = [
   'Search',
   'Planning',
   'Memory & sessions',
+  'Documents',
   'Skills',
   'Sub-agents',
   'Interactive',
@@ -87,6 +94,8 @@ const GROUP_BY_TOOL: Record<string, string> = {
   save_memory: 'Memory & sessions',
   load_memory: 'Memory & sessions',
   read_workspace_session: 'Memory & sessions',
+  add_document: 'Documents',
+  edit_document: 'Documents',
   list_skills: 'Skills',
   use_skill: 'Skills',
   add_skill: 'Skills',

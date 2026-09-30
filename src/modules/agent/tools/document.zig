@@ -1,0 +1,713 @@
+//! `add_document` and `edit_document` — the two agent tools that let a
+//! model write into its own workspace's document store (Migration 098).
+//!
+//! SCOPE, and why it is not a parameter
+//! ────────────────────────────────────
+//! There is deliberately NO `workspace_id` in either input struct or in
+//! either tool schema. A model-supplied workspace id would be a spoofing
+//! vector: the LLM would be choosing which isolation boundary it lands
+//! inside. Instead `caller_session_id` arrives as a plain function
+//! parameter from the exec wrapper (`ctx.session_id`), and
+//! `workspace_scope.resolveWorkspaceId` maps it to a workspace. The same
+//! resolver `read_workspace_session` uses, so "which workspace am I?" has
+//! exactly one answer in the codebase.
+//!
+//! The exec wrapper parses JSON with `ignore_unknown_fields = true`, so
+//! a model that hallucinates `"workspace_id": "ws_other"` has it silently
+//! dropped rather than honoured. `static contract: document tools never
+//! accept a workspace_id` below asserts the field stays out of the struct.
+//!
+//! Fail-closed resolution
+//! ──────────────────────
+//! A session with no resolvable workspace gets a readable tool error, not
+//! a fallback. Guessing a workspace — or defaulting to "the first one" —
+//! would turn an unresolvable session into a cross-workspace write.
+//!
+//! Result shape: every function returns an inner JSON string. Success
+//! carries the stored row; failure carries `{"error": "..."}`, which the
+//! exec wrapper re-probes and flips to `success=false` so the model sees a
+//! failure rather than a successful wrapper around an error body.
+
+const std = @import("std");
+const schemas = @import("schemas.zig");
+const AgentTool = schemas.AgentTool;
+const nalarcore = @import("nalarcore");
+const sqlite = nalarcore.sqlite;
+const documents_store = nalarcore.documents_store;
+const workspace_scope = nalarcore.workspace_scope;
+
+const helpers = @import("helpers");
+const sanitizeControlChars = helpers.sanitize_control_chars;
+
+const testing = std.testing;
+const migration = @import("../../../migrations/migration.zig");
+
+// =====================================================================
+// Inputs
+// =====================================================================
+
+/// Args for `add_document`.
+///
+/// Every field has a default because the exec wrapper parses with
+/// `ignore_unknown_fields = true` and the model routinely omits optional
+/// arguments. `workspace_id` is absent BY DESIGN — see the file header.
+pub const AddDocumentInput = struct {
+    title: []const u8 = "",
+    content: []const u8 = "",
+    /// Only 'markdown' is written in v1. Present so the schema is not
+    /// silently markdown-shaped if a second format lands.
+    format: []const u8 = "",
+};
+
+/// Args for `edit_document`.
+///
+/// `document_id` identifies the row; at least one of `title` / `content`
+/// must be supplied or the call is a no-op the model would read as a
+/// silent success. `title: null` (absent) keeps the current title;
+/// `content: ""` genuinely clears the body.
+pub const EditDocumentInput = struct {
+    document_id: []const u8 = "",
+    title: ?[]const u8 = null,
+    content: ?[]const u8 = null,
+};
+
+// =====================================================================
+// Tool schemas
+// =====================================================================
+
+pub const add_document_tool_system_prompt =
+    \\## Add Document Tool — Behavior
+    \\Use `add_document` to create a markdown document in YOUR workspace.
+    \\- Scope is automatic. There is no `workspace_id` argument — passing one is ignored. You can only write into the workspace your session belongs to.
+    \\- `title` is REQUIRED and must be non-blank. It is the label shown in the sidebar's Documents list, so make it a human-readable name, not a slug.
+    \\- `content` is the markdown body and may be empty (you can create a heading-only stub and fill it in with `edit_document`).
+    \\- A human can also create and edit documents from the UI; both paths write the same table, so a document the agent writes appears in their sidebar immediately.
+    \\
+;
+
+pub const add_document_tool = AgentTool{
+    .type = "function",
+    .function = .{
+        .name = "add_document",
+        .description =
+        \\Create a markdown document in YOUR workspace. Use this to record a plan, a spec, meeting notes, a research summary, or any other prose artifact the user should be able to re-read later.
+        \\
+        \\The document is stored in SQLite and shown in the "Documents" section of the desktop sidebar, where the user can open and edit it.
+        \\
+        \\SCOPE: automatic and server-side. Your session's workspace is resolved before the write, so you can only ever create documents in your own workspace. There is no `workspace_id` argument — a model that supplies one has it ignored.
+        \\
+        \\Constraints:
+        \\- `title` is required and must contain at least one non-whitespace character.
+        \\- `content` may be empty; `format` accepts 'markdown' (the default) and is reserved for future formats.
+        \\- `content` is capped at 4 MiB. Larger is rejected, not truncated.
+        \\
+        \\Example: {"title": "Release plan v2", "content": "# Release plan\n\n- ship 095\n- add the frontend\n"}
+        ,
+        .parameters = .{
+            .type = "object",
+            .properties = &.{
+                .{ .name = "title", .type = "string", .description = "Human-readable document name, shown in the sidebar Documents list. Required, must be non-blank." },
+                .{ .name = "content", .type = "string", .description = "The markdown body. May be empty. Capped at 4 MiB. Defaults to an empty document." },
+                .{ .name = "format", .type = "string", .description = "Document format. Only 'markdown' is supported in this version; omit it unless you have a specific reason." },
+            },
+            .required = &.{"title"},
+        },
+        .system_prompt = add_document_tool_system_prompt,
+    },
+};
+
+pub const edit_document_tool_system_prompt =
+    \\## Edit Document Tool — Behavior
+    \\Use `edit_document` to change an existing document in YOUR workspace.
+    \\- `document_id` comes from the id returned by `add_document`. There is no list/search tool in v1 — if you do not have an id, ask the user which document they mean rather than guessing.
+    \\- Provide `title`, `content`, or both. An OMITTED field keeps its current value; `content: ""` genuinely clears the body. A patch with neither field is rejected.
+    \\- `content` is the WHOLE new body, not a diff. Read the existing body first (the user can paste it, or you have it in context from a prior turn) or you will silently discard what is there.
+    \\- Scope is automatic. A document belonging to another workspace reports "not found" — you cannot read it, edit it, or learn that it exists.
+    \\
+;
+
+pub const edit_document_tool = AgentTool{
+    .type = "function",
+    .function = .{
+        .name = "edit_document",
+        .description =
+        \\Edit an existing markdown document in YOUR workspace. Use this to revise a document you (or the user) created earlier — append a section, correct a plan, expand a summary.
+        \\
+        \\SCOPE: automatic and server-side. A `document_id` that belongs to another workspace reports "not found", exactly as a nonexistent id does, so you cannot enumerate or probe another workspace's documents.
+        \\
+        \\PATCH SEMANTICS:
+        \\- Omit `title` to keep the current title; omit `content` to keep the current body.
+        \\- `content` is the COMPLETE new body, not a diff or an append fragment. Include everything the document should contain after the edit.
+        \\- Passing `content: ""` clears the body. That is different from omitting the field.
+        \\- Supplying neither `title` nor `content` is rejected.
+        \\
+        \\`content` is capped at 4 MiB. Larger is rejected, not truncated.
+        \\
+        \\Example: {"document_id": "doc_1790700000000000000", "content": "# Release plan\n\n- ship 095\n- add the frontend\n- dogfood for a week\n"}
+        ,
+        .parameters = .{
+            .type = "object",
+            .properties = &.{
+                .{ .name = "document_id", .type = "string", .description = "Id of the document to edit, as returned by `add_document`. A document in another workspace reports 'not found'. Required." },
+                .{ .name = "title", .type = "string", .description = "New title. Omit to keep the current one. Must be non-blank when supplied." },
+                .{ .name = "content", .type = "string", .description = "The COMPLETE new markdown body (not a diff). Omit to keep the current body; pass \"\" to clear it. Capped at 4 MiB." },
+            },
+            .required = &.{"document_id"},
+        },
+        .system_prompt = edit_document_tool_system_prompt,
+    },
+};
+
+// =====================================================================
+// Result payloads
+// =====================================================================
+
+/// Success payload for both tools. `content` is echoed because the model
+/// often needs to confirm what landed (and `edit_document` is a whole-body
+/// replace, so the echo is the only proof of what is now stored).
+pub const DocumentToolSuccess = struct {
+    id: []const u8,
+    workspace_id: []const u8,
+    title: []const u8,
+    content: []const u8,
+    format: []const u8,
+    updated_at: []const u8,
+};
+
+/// Error payload shared by `add_document` / `edit_document`.
+pub const DocumentToolError = struct {
+    @"error": []const u8,
+};
+
+fn successJSON(allocator: std.mem.Allocator, row: documents_store.DocumentRow) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, DocumentToolSuccess{
+        .id = row.id,
+        .workspace_id = row.workspace_id,
+        .title = row.title,
+        .content = row.content,
+        .format = row.format,
+        .updated_at = row.updated_at,
+    }, .{});
+}
+
+fn errorJSON(allocator: std.mem.Allocator, msg: []const u8) ![]u8 {
+    const clean = try sanitizeControlChars(allocator, msg);
+    defer allocator.free(clean);
+    return std.json.Stringify.valueAlloc(allocator, DocumentToolError{
+        .@"error" = clean,
+    }, .{});
+}
+
+/// Resolve the calling session's workspace. Returns an OWNED id the caller
+/// must free, or null when the scope cannot be established — an empty
+/// caller session id, a session with no workspace, or a resolver failure.
+///
+/// Why `?[]u8` and not a `union(enum) { ok: []u8, err: []u8 }` carrying a
+/// pre-rendered message: the union's payload borrows from a temporary
+/// that dies at the end of the `switch` expression that destructures it.
+/// That is a use-after-free, and it does not look like one — it
+/// segfaults deep inside `std.mem.eql` on the first string comparison.
+/// Keeping the render in the caller means no borrow ever crosses this
+/// function's return.
+fn resolveScope(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    caller_session_id: []const u8,
+) !?[]u8 {
+    // Rejected BEFORE any DB access: `SqliteBackend.exec` binds a
+    // zero-length slice as SQL NULL, so querying with "" would not be a
+    // harmless no-op.
+    if (caller_session_id.len == 0) return null;
+    return workspace_scope.resolveWorkspaceId(allocator, db, caller_session_id) catch null;
+}
+
+/// The tool-level refusal for an unresolvable scope. Two messages, not
+/// one: "you have no session" and "your session has no workspace" need
+/// different user actions, and collapsing them sends the model (and the
+/// human reading its transcript) down the wrong path.
+fn scopeErrorJSON(allocator: std.mem.Allocator, caller_session_id: []const u8) ![]u8 {
+    if (caller_session_id.len == 0) {
+        return errorJSON(
+            allocator,
+            "Missing caller session — cannot resolve which workspace to write to.",
+        );
+    }
+    return errorJSON(
+        allocator,
+        "This session is not linked to any workspace, so there is nowhere to store a document. " ++
+            "Run from a workspace chat (a project task or a workspace-scoped chat).",
+    );
+}
+
+// =====================================================================
+// Executors
+// =====================================================================
+
+/// Execute `add_document`. Returns an inner JSON string the exec wrapper
+/// embeds. Caller owns the returned slice and must free it.
+pub fn executeAddDocument(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    caller_session_id: []const u8,
+    input: AddDocumentInput,
+) ![]const u8 {
+    const workspace_id = (try resolveScope(allocator, db, caller_session_id)) orelse
+        return scopeErrorJSON(allocator, caller_session_id);
+    defer allocator.free(workspace_id);
+
+    const row = documents_store.createDocument(allocator, db, .{
+        .workspace_id = workspace_id,
+        .title = input.title,
+        .content = input.content,
+        .format = input.format,
+    }) catch |err| {
+        const msg = switch (err) {
+            error.WorkspaceIdRequired => "Could not resolve this session's workspace.",
+            error.TitleRequired => "title is required and must contain at least one non-whitespace character",
+            error.ContentTooLarge => "content exceeds the 4 MiB per-document cap",
+            error.InsertFailed => "Could not store the document (database error).",
+            error.RowNotFoundAfterInsert => "The document was written but could not be read back — the row is inconsistent, please retry.",
+            error.OutOfMemory => "Out of memory",
+        };
+        return errorJSON(allocator, msg);
+    };
+    defer documents_store.freeDocumentRow(allocator, row);
+    return successJSON(allocator, row);
+}
+
+/// Execute `edit_document`. Returns an inner JSON string the exec wrapper
+/// embeds. Caller owns the returned slice and must free it.
+pub fn executeEditDocument(
+    allocator: std.mem.Allocator,
+    db: *sqlite.SqliteBackend,
+    caller_session_id: []const u8,
+    input: EditDocumentInput,
+) ![]const u8 {
+    if (std.mem.trim(u8, input.document_id, " \t\n\r").len == 0) {
+        return errorJSON(allocator, "document_id is required. Use the id returned by add_document.");
+    }
+    if (input.title == null and input.content == null) {
+        // Silently succeeding here would teach the model that an empty
+        // patch is a valid edit, which is how a document gets "updated"
+        // without any change ever being made.
+        return errorJSON(allocator, "Nothing to change: supply `title`, `content`, or both. Omitted fields keep their current value.");
+    }
+
+    const workspace_id = (try resolveScope(allocator, db, caller_session_id)) orelse
+        return scopeErrorJSON(allocator, caller_session_id);
+    defer allocator.free(workspace_id);
+
+    const row = documents_store.updateDocument(allocator, db, workspace_id, input.document_id, .{
+        .title = input.title,
+        .content = input.content,
+    }) catch |err| {
+        const msg = switch (err) {
+            error.IdsRequired => "workspace_id and document_id required",
+            // One message for "no such id", "another workspace's
+            // id" and "you blanked the title" — the first two must
+            // be indistinguishable or the tool becomes an oracle
+            // for other workspaces' row ids.
+            error.NotFound => "No document with that id in your workspace. It may not exist, or it may belong to another workspace.",
+            error.ContentTooLarge => "content exceeds the 4 MiB per-document cap",
+            error.UpdateFailed => "Could not save the document (database error).",
+            error.QueryFailed => "Could not read the document (database error).",
+            error.OutOfMemory => "Out of memory",
+        };
+        return errorJSON(allocator, msg);
+    };
+    defer documents_store.freeDocumentRow(allocator, row);
+    return successJSON(allocator, row);
+}
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+const TestCtx = struct {
+    db: sqlite.SqliteBackend,
+    threaded: std.Io.Threaded,
+};
+
+/// Two workspaces, one session each, so a cross-workspace leak has
+/// somewhere to show up. Built by hand rather than by running every
+/// migration: this is the only place the test needs three small tables,
+/// and a full migration run adds ~4s per test.
+fn setupDb() !TestCtx {
+    var threaded = std.Io.Threaded.init(testing.allocator, .{});
+    errdefer threaded.deinit();
+    const io = threaded.io();
+    var db: sqlite.SqliteBackend = .{};
+    errdefer db.deinit();
+    try db.init(io, ":memory:");
+
+    try db.exec(testing.allocator,
+        \\CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT DEFAULT 'active', cwd TEXT)
+    , &.{});
+    try db.exec(testing.allocator,
+        \\CREATE TABLE workspace_items (id TEXT PRIMARY KEY, workspace_id TEXT, item_type TEXT, name TEXT, path TEXT, position INTEGER)
+    , &.{});
+    try db.exec(testing.allocator,
+        \\CREATE TABLE workspace_item_tasks (id TEXT PRIMARY KEY, name TEXT NOT NULL, workspace_item_id TEXT NOT NULL)
+    , &.{});
+    try migration.Migration098CreateDocuments.up(&db, testing.allocator);
+
+    // ws_1 owns item i1; ws_2 owns item i2. s1 is task-linked to i1, s2
+    // to i2 — the exact-task-link branch of resolveWorkspaceId.
+    try db.exec(testing.allocator,
+        \\INSERT INTO workspace_items (id, workspace_id, item_type, name, path, position) VALUES
+        \\  ('i1', 'ws_1', 'kanban', 'A', '/proj/a', 1),
+        \\  ('i2', 'ws_2', 'kanban', 'B', '/proj/b', 1)
+    , &.{});
+    try db.exec(testing.allocator,
+        \\INSERT INTO workspace_item_tasks (id, name, workspace_item_id) VALUES
+        \\  ('s1', 'T1', 'i1'), ('s2', 'T2', 'i2')
+    , &.{});
+    try db.exec(testing.allocator,
+        \\INSERT INTO sessions (id, name, status, cwd) VALUES
+        \\  ('s1', 'One', 'active', '/proj/a'),
+        \\  ('s2', 'Two', 'active', '/proj/b')
+    , &.{});
+    return .{ .db = db, .threaded = threaded };
+}
+
+/// Owned, deinit-able view of a tool result.
+///
+/// `std.json.parseFromSlice` allocates every string into an arena owned by
+/// the `Parsed` value, and `deinit` frees that arena. Returning a struct
+/// full of those slices AFTER `deinit` hands back dangling pointers — it
+/// does not look like it, it segfaults deep inside `std.mem.eql`. So the
+/// fields are duped into the caller's allocator and `deinit` frees them.
+const Parsed = struct {
+    allocator: std.mem.Allocator,
+    id: []const u8 = "",
+    workspace_id: []const u8 = "",
+    title: []const u8 = "",
+    content: []const u8 = "",
+    format: []const u8 = "",
+    err: ?[]const u8 = null,
+
+    fn deinit(self: *Parsed) void {
+        const a = self.allocator;
+        a.free(self.id);
+        a.free(self.workspace_id);
+        a.free(self.title);
+        a.free(self.content);
+        a.free(self.format);
+        if (self.err) |e| a.free(e);
+    }
+};
+
+fn parseJson(allocator: std.mem.Allocator, raw: []const u8) !Parsed {
+    const Wire = struct {
+        id: []const u8 = "",
+        workspace_id: []const u8 = "",
+        title: []const u8 = "",
+        content: []const u8 = "",
+        format: []const u8 = "",
+        @"error": ?[]const u8 = null,
+    };
+    const p = try std.json.parseFromSlice(Wire, allocator, raw, .{
+        .allocate = .alloc_always,
+        .ignore_unknown_fields = true,
+    });
+    defer p.deinit();
+    return .{
+        .allocator = allocator,
+        .id = try allocator.dupe(u8, p.value.id),
+        .workspace_id = try allocator.dupe(u8, p.value.workspace_id),
+        .title = try allocator.dupe(u8, p.value.title),
+        .content = try allocator.dupe(u8, p.value.content),
+        .format = try allocator.dupe(u8, p.value.format),
+        .err = if (p.value.@"error") |e| try allocator.dupe(u8, e) else null,
+    };
+}
+
+// ─── add_document ───────────────────────────────────────────────────────
+
+test "add_document: creates a markdown document in the caller's own workspace" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeAddDocument(alloc, &ctx.db, "s1", .{
+        .title = "Release plan",
+        .content = "# v1\n\nship it",
+    });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+
+    try testing.expect(p.err == null);
+    try testing.expect(p.id.len > 0);
+    try testing.expectEqualStrings("ws_1", p.workspace_id);
+    try testing.expectEqualStrings("Release plan", p.title);
+    try testing.expectEqualStrings("# v1\n\nship it", p.content);
+    try testing.expectEqualStrings("markdown", p.format);
+}
+
+test "add_document: a blank title is a tool error, not a Zig error" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeAddDocument(alloc, &ctx.db, "s1", .{ .title = "   \n " });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+    try testing.expect(std.mem.indexOf(u8, p.err.?, "title") != null);
+}
+
+test "add_document: an empty body round-trips as \"\" rather than blowing up on NOT NULL" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeAddDocument(alloc, &ctx.db, "s1", .{ .title = "Blank", .content = "" });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err == null);
+    try testing.expectEqualStrings("", p.content);
+}
+
+test "add_document: an empty caller session fails closed instead of picking a workspace" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeAddDocument(alloc, &ctx.db, "", .{ .title = "Nowhere" });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+
+    // And nothing was written anywhere — "no scope" must not degrade into
+    // "some scope".
+    var q = try ctx.db.query(alloc, "SELECT COUNT(*) FROM documents", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("0", row.values[0]);
+}
+
+test "add_document: a session with no resolvable workspace fails closed" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeAddDocument(alloc, &ctx.db, "s_orphan", .{ .title = "Nowhere" });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+    try testing.expect(std.mem.indexOf(u8, p.err.?, "workspace") != null);
+}
+
+test "add_document: two workspaces writing the same title never collide or leak" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const a = try executeAddDocument(alloc, &ctx.db, "s1", .{ .title = "Shared title", .content = "from A" });
+    defer alloc.free(a);
+    const b = try executeAddDocument(alloc, &ctx.db, "s2", .{ .title = "Shared title", .content = "from B" });
+    defer alloc.free(b);
+
+    var pa = try parseJson(alloc, a);
+    defer pa.deinit();
+    var pb = try parseJson(alloc, b);
+    defer pb.deinit();
+    try testing.expectEqualStrings("ws_1", pa.workspace_id);
+    try testing.expectEqualStrings("ws_2", pb.workspace_id);
+    // Same title, different rows — the id is nano-timestamp based and the
+    // two calls are separate statements, so they must differ.
+    try testing.expect(!std.mem.eql(u8, pa.id, pb.id));
+}
+
+// ─── edit_document ──────────────────────────────────────────────────────
+
+/// Create a document in ws_1 and return its id (caller frees).
+fn seedDoc(alloc: std.mem.Allocator, db: *sqlite.SqliteBackend, title: []const u8, content: []const u8) ![]u8 {
+    const out = try executeAddDocument(alloc, db, "s1", .{ .title = title, .content = content });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    if (p.err != null) return error.SeedDocumentFailed;
+    return alloc.dupe(u8, p.id);
+}
+
+test "edit_document: replaces the body and keeps the title when only content is given" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Plan", "old body");
+    defer alloc.free(id);
+
+    const out = try executeEditDocument(alloc, &ctx.db, "s1", .{ .document_id = id, .content = "new body" });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err == null);
+    try testing.expectEqualStrings("Plan", p.title);
+    try testing.expectEqualStrings("new body", p.content);
+}
+
+test "edit_document: an omitted field is a no-op, an explicit empty string is a clear" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Plan", "body to keep");
+    defer alloc.free(id);
+
+    // title-only patch: the body must survive.
+    const renamed = try executeEditDocument(alloc, &ctx.db, "s1", .{ .document_id = id, .title = "Renamed" });
+    defer alloc.free(renamed);
+    var pr = try parseJson(alloc, renamed);
+    defer pr.deinit();
+    try testing.expectEqualStrings("Renamed", pr.title);
+    try testing.expectEqualStrings("body to keep", pr.content);
+
+    // explicit "" clears the body — different from omitting the field.
+    const cleared = try executeEditDocument(alloc, &ctx.db, "s1", .{ .document_id = id, .content = "" });
+    defer alloc.free(cleared);
+    var pc = try parseJson(alloc, cleared);
+    defer pc.deinit();
+    try testing.expectEqualStrings("", pc.content);
+    try testing.expectEqualStrings("Renamed", pc.title);
+}
+
+test "edit_document: a patch with neither field is rejected, not silently accepted" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Plan", "unchanged");
+    defer alloc.free(id);
+
+    const out = try executeEditDocument(alloc, &ctx.db, "s1", .{ .document_id = id });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+    try testing.expect(std.mem.indexOf(u8, p.err.?, "title") != null);
+}
+
+test "edit_document: a missing document_id is rejected before any DB work" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const out = try executeEditDocument(alloc, &ctx.db, "s1", .{ .content = "x" });
+    defer alloc.free(out);
+    var p = try parseJson(alloc, out);
+    defer p.deinit();
+    try testing.expect(p.err != null);
+    try testing.expect(std.mem.indexOf(u8, p.err.?, "document_id") != null);
+}
+
+test "edit_document: workspace B cannot edit workspace A's document, and the error is identical to a missing one" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Private", "ws_1 only");
+    defer alloc.free(id);
+
+    // Same session, real foreign id.
+    const denied = try executeEditDocument(alloc, &ctx.db, "s2", .{ .document_id = id, .content = "hijacked" });
+    defer alloc.free(denied);
+    var d = try parseJson(alloc, denied);
+    defer d.deinit();
+
+    // Different session, nonexistent id. If these two messages differ,
+    // the tool is an oracle for other workspaces' row ids.
+    const missing = try executeEditDocument(alloc, &ctx.db, "s2", .{ .document_id = "doc_does_not_exist", .content = "x" });
+    defer alloc.free(missing);
+    var m = try parseJson(alloc, missing);
+    defer m.deinit();
+
+    try testing.expect(d.err != null);
+    try testing.expectEqualStrings(d.err.?, m.err.?);
+
+    // And the owner's copy is untouched — a rejected cross-workspace edit
+    // must not half-apply.
+    const read_back = try documents_store.getDocument(alloc, &ctx.db, "ws_1", id);
+    defer documents_store.freeDocumentRow(alloc, read_back);
+    try testing.expectEqualStrings("ws_1 only", read_back.content);
+}
+
+test "edit_document: no content leaks through the cross-workspace denial" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    const id = try seedDoc(alloc, &ctx.db, "Private", "TOPSECRETBODY");
+    defer alloc.free(id);
+
+    const denied = try executeEditDocument(alloc, &ctx.db, "s2", .{ .document_id = id, .content = "x" });
+    defer alloc.free(denied);
+    try testing.expect(std.mem.indexOf(u8, denied, "TOPSECRETBODY") == null);
+}
+
+// ─── Schema contracts ───────────────────────────────────────────────────
+
+test "static contract: the tool schemas carry no workspace_id" {
+    // The whole isolation argument rests on the model never being able to
+    // choose its own workspace. If a future edit adds `workspace_id` to a
+    // parameter list, the exec wrapper's `ignore_unknown_fields` would
+    // start honouring a spoofed value and this file's fail-closed
+    // resolver would be bypassed.
+    for ([_]AgentTool{ add_document_tool, edit_document_tool }) |tool| {
+        for (tool.function.parameters.properties) |prop| {
+            try testing.expect(!std.mem.eql(u8, prop.name, "workspace_id"));
+        }
+        for (tool.function.parameters.required) |req| {
+            try testing.expect(!std.mem.eql(u8, req, "workspace_id"));
+        }
+    }
+}
+
+test "static contract: the input structs carry no workspace_id field" {
+    // Belt to the schema braces: even if the schema is left clean, a
+    // struct field would be a slot for `ignore_unknown_fields` to fill.
+    // The field counts are the guard — `AddDocumentInput` is exactly
+    // {title, content, format} and `EditDocumentInput` is exactly
+    // {document_id, title, content}.
+    inline for (.{ AddDocumentInput, EditDocumentInput }) |T| {
+        const fields = @typeInfo(T).@"struct".fields;
+        try testing.expectEqual(@as(usize, 3), fields.len);
+        inline for (fields, 0..) |f, i| {
+            // `fields` values hold a `type`, so they must be indexed at
+            // comptime — hence inline for, not a runtime loop.
+            _ = i;
+            try testing.expect(!std.mem.eql(u8, f.name, "workspace_id"));
+        }
+    }
+}
+
+test "static contract: both tools carry a behavioral system prompt" {
+    // The aggregator in prompts_build_messages_for_agent_prompt.zig reads
+    // `system_prompt` straight off the schema. An empty one means the
+    // model sees the JSON contract but none of the behavioral rules
+    // (whole-body replace, omitted-vs-empty, no guessing ids) that stop
+    // it from making a destructive call.
+    try testing.expect(add_document_tool.function.system_prompt.len > 0);
+    try testing.expect(edit_document_tool.function.system_prompt.len > 0);
+    try testing.expectEqualStrings("add_document", add_document_tool.function.name);
+    try testing.expectEqualStrings("edit_document", edit_document_tool.function.name);
+}

@@ -15,6 +15,7 @@ const list_memory_mod = nalarcore.list_memory_tool;
 const save_memory_mod = nalarcore.memory;
 const load_memory_mod = nalarcore.memory;
 const read_workspace_session_mod = nalarcore.read_workspace_session_tool;
+const document_mod = nalarcore.document_tool;
 const use_skill_mod = nalarcore.skill_tools;
 const remove_skill_mod = nalarcore.skill_tools;
 const list_agents_mod = nalarcore.list_agents;
@@ -95,6 +96,12 @@ pub fn equips(allocator: std.mem.Allocator) []const AgentTool {
         save_memory_mod.save_memory_tool,
         load_memory_mod.load_memory_tool,
         read_workspace_session_mod.read_workspace_session_tool,
+        // Workspace-scoped documents (Migration 098). Both resolve their
+        // own workspace server-side from the calling session, so neither
+        // schema carries a `workspace_id` — the model cannot choose which
+        // isolation boundary it writes into.
+        document_mod.add_document_tool,
+        document_mod.edit_document_tool,
         use_skill_mod.use_skill_tool,
         remove_skill_mod.remove_skill_tool,
         add_skill_mod.add_skill_tool,
@@ -228,6 +235,14 @@ pub fn UNIFIED_TOOL_REGISTRY() []const ToolInfo {
         .{ .name = "save_memory", .exec = tools.execSaveMemory, .tool_def = save_memory_mod.save_memory_tool },
         .{ .name = "load_memory", .exec = tools.execLoadMemory, .tool_def = load_memory_mod.load_memory_tool },
         .{ .name = "read_workspace_session", .exec = tools.execReadWorkspaceSession, .tool_def = read_workspace_session_mod.read_workspace_session_tool },
+        // Workspace-scoped documents (Migration 098). Registry entries
+        // here are what make the tools dispatchable at all — a name the
+        // dispatcher cannot find falls through to the MCP check and then
+        // `error.UnknownTool`, and the `agent_tools_registry` endpoint
+        // that generates the Settings → Tools checklist reads this same
+        // list, so no second list has to be maintained.
+        .{ .name = "add_document", .exec = tools.execAddDocument, .tool_def = document_mod.add_document_tool },
+        .{ .name = "edit_document", .exec = tools.execEditDocument, .tool_def = document_mod.edit_document_tool },
 
         // === FILE OPERATIONS ===
         .{ .name = "command", .exec = tools.execCommand, .tool_def = command_tool_mod.command_tool },
@@ -336,6 +351,13 @@ pub const DEFAULT_AGENT_TOOLS: []const []const u8 = &.{
     save_memory_mod.save_memory_tool.function.name,
     load_memory_mod.load_memory_tool.function.name,
     read_workspace_session_mod.read_workspace_session_tool.function.name,
+    // Workspace-scoped documents (Migration 098). Default-on: an agent
+    // that cannot write a note the user asked for is not much use, and
+    // both tools are inert outside a workspace-linked session (they
+    // resolve their own scope and refuse when there is none), so
+    // enabling them costs a plain chat nothing.
+    document_mod.add_document_tool.function.name,
+    document_mod.edit_document_tool.function.name,
 
     // skill tools
     use_skill_mod.use_skill_tool.function.name,

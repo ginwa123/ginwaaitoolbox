@@ -66,6 +66,15 @@ _ = @import("../../http_handlers/task_create.zig");
     _ = @import("../../http_handlers/workspace_items_create_routine.zig");
     _ = @import("../../http_handlers/workspace_routines_get.zig");
     _ = @import("../../http_handlers/workspace_routines_update.zig");
+    // Workspace-scoped documents (Migration 098). Same rule as the routine
+    // handlers above: an impl file's inline tests stay dormant until the
+    // file is imported from a test runner, and the `pub const` re-export
+    // in http_handlers/mod.zig does not pull them in.
+    _ = @import("../../http_handlers/documents_list.zig");
+    _ = @import("../../http_handlers/documents_create.zig");
+    _ = @import("../../http_handlers/documents_get.zig");
+    _ = @import("../../http_handlers/documents_update.zig");
+    _ = @import("../../http_handlers/documents_delete.zig");
 _ = @import("../../http_handlers/memories_detail.zig");
 _ = @import("../../http_handlers/memories_create.zig");
 _ = @import("../../http_handlers/memories_update.zig");

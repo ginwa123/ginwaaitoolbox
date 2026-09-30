@@ -7,6 +7,7 @@ import SkillDetail from './shell/SkillDetail.vue'
 import ChatView from './views/ChatView.vue'
 import StandardTaskChatView from './views/StandardTaskChatView.vue'
 import Chats from './views/Chats.vue'
+import DocumentsView from './workspace/DocumentsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import CodeViewerStage from './views/CodeViewerStage.vue'
 import NotificationContainer from './shell/NotificationContainer.vue'
@@ -1112,6 +1113,15 @@ const fetchChatSessionCwd = async (sessionId: string) => {
 const currentView = computed(() => {
   const path = route.path
   if (path === '/app/settings') return 'settings'
+  // Documents viewer (Migration 095). `?doc=<id>` is a query overlay on
+  // whatever path the user is on, so it must be checked BEFORE the
+  // path-shape branches below — a project path that happens to be
+  // current would otherwise win and the document would never render.
+  // After `settings` because that page is a dedicated route and must
+  // always win.
+  if (typeof route.query.doc === 'string' && route.query.doc.length > 0) {
+    return 'documents'
+  }
   // NEW (plan: 2026-09-02-kanban-settings-as-page). Path-based
   // kanban-settings route (/app/kanban/:itemId/settings). Must come
   // BEFORE the route.query.view fallthrough because the URL has no
@@ -3331,6 +3341,16 @@ defineExpose({
 
     <!-- Settings page -->
     <SettingsView v-if="currentView === 'settings'" />
+
+    <!-- Documents viewer (Migration 095). The `doc` id comes from the
+         URL, so a refresh or a shared link restores the same document.
+         Guarded on the id being non-empty because `currentView` already
+         checked it — the v-if is here so a racing route change cannot
+         mount the view with an undefined prop. -->
+    <DocumentsView
+      v-else-if="currentView === 'documents' && typeof route.query.doc === 'string'"
+      :document-id="route.query.doc as string"
+    />
 
     <!-- Global error notification stack -->
     <NotificationContainer />

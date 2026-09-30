@@ -2033,6 +2033,11 @@ pub const allMigrations: []const Migration = &.{
     // half plus the `base_content_hash` staleness guard used on apply.
     // Plan: docs/plans/2026-09-27-skill-evals.md (§4.6, W0)
     .{ .version = Migration097CreateSkillEvalTables.version, .name = Migration097CreateSkillEvalTables.name, .up = Migration097CreateSkillEvalTables.up },
+    // Migration 098 — the `documents` table: workspace-scoped markdown
+    // documents surfaced in their own sidebar section below Projects.
+    // `workspace_id` on the row IS the isolation boundary; the agent
+    // tools resolve it server-side from the calling session.
+    .{ .version = Migration098CreateDocuments.version, .name = Migration098CreateDocuments.name, .up = Migration098CreateDocuments.up },
 };
 
 /// Migration 060 — Re-run the `created_iso` backfill for rows that
@@ -3681,6 +3686,71 @@ fn expectColumnsEqual(list: []const []const u8, comptime expected: anytype) !voi
         try testing.expectEqualStrings(expected[i], list[i]);
     }
 }
+
+// ============================================================================
+// Migration 098 — the `documents` table.
+// ============================================================================
+//
+// Workspace-scoped markdown documents. A document is NOT a
+// `workspace_items` row: it belongs to the workspace directly and is
+// surfaced in its own "Documents" sidebar section below Projects, never
+// inside the project tree. Scoping by `workspace_id` on the row itself is
+// the isolation boundary — an agent in workspace A cannot see, edit or
+// delete workspace B's documents, and the agent tools enforce that
+// server-side (they resolve the workspace from the calling session, so
+// the model never supplies an id to spoof).
+//
+// `format` exists so the table is not markdown-shaped by accident. MVP
+// only ever writes `'markdown'`; the column is the forward-compatible
+// slot for pdf / plain-text / html without another table rewrite.
+//
+// `ON DELETE CASCADE` is documentation only — this project deliberately
+// leaves `PRAGMA foreign_keys` off (see the Migration 072 tests and
+// Migration 093's header), so the workspace delete path issues the child
+// DELETE itself.
+//
+// Every text column is `NOT NULL DEFAULT ''` rather than nullable:
+// `SqliteBackend.exec` binds a zero-length slice as SQL NULL (Migration
+// 079's `content` broke exactly this way), so writers go through
+// `COALESCE(NULLIF(?, ''), '')`. A nullable column would let a
+// well-meaning writer land NULL and read back as a null pointer in JS.
+//
+// Idempotency: CREATE TABLE/INDEX IF NOT EXISTS. One statement per
+// db.exec (sqlite3_prepare_v2 compiles only the first).
+pub const Migration098CreateDocuments = struct {
+    pub const version: u32 = 98;
+    pub const name = "create_documents";
+
+    pub fn up(db: *SqliteBackend, allocator: std.mem.Allocator) anyerror!void {
+        try db.exec(allocator,
+            \\CREATE TABLE IF NOT EXISTS documents (
+            \\    id TEXT PRIMARY KEY,
+            \\    workspace_id TEXT NOT NULL,
+            \\    title TEXT NOT NULL DEFAULT '',
+            \\    content TEXT NOT NULL DEFAULT '',
+            \\    format TEXT NOT NULL DEFAULT 'markdown',
+            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+            \\)
+        , &[_][]const u8{});
+
+        // Every read is `WHERE workspace_id = ?` — the sidebar section, the
+        // cross-workspace guard on every single-document read, and the
+        // agent tools' own scope check. This index is the isolation
+        // boundary's hot path, not just a list read.
+        try db.exec(allocator,
+            "CREATE INDEX IF NOT EXISTS idx_documents_workspace_id ON documents(workspace_id)",
+            &[_][]const u8{});
+
+        // Sidebar ordering: newest-updated first within a workspace, which
+        // is what the DocumentsList component renders.
+        try db.exec(allocator,
+            \\CREATE INDEX IF NOT EXISTS idx_documents_workspace_updated
+            \\ON documents(workspace_id, updated_at DESC)
+        , &[_][]const u8{});
+    }
+};
 
 test "Migration078 creates agents table with correct columns" {
     const alloc = testing.allocator;
@@ -14327,4 +14397,106 @@ test "Migration097 is registered in allMigrations" {
         if (m.version == Migration097CreateSkillEvalTables.version) return;
     }
     return error.Migration097NotRegistered;
+}
+
+// ============================================================================
+// Migration 098 — documents
+// ============================================================================
+
+test "Migration098 creates documents with the expected columns and NOT NULL defaults" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration098CreateDocuments.up(&ctx.db, alloc);
+
+    const cols = try columnsOf(&ctx, "documents");
+    defer {
+        for (cols) |c| alloc.free(c);
+        alloc.free(cols);
+    }
+    try expectColumnsEqual(cols, &[_][]const u8{
+        "id", "workspace_id", "title", "content", "format", "created_at", "updated_at",
+    });
+}
+
+test "Migration098's format column defaults to markdown and rejects a NULL write" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration098CreateDocuments.up(&ctx.db, alloc);
+
+    // Omit `format` entirely so the schema DEFAULT applies. Binding ""
+    // instead would land as SQL NULL and violate NOT NULL — that is the
+    // SqliteBackend.exec empty-slice trap, and it is exactly why the
+    // writers use COALESCE(NULLIF(?, ''), '').
+    try ctx.db.exec(alloc,
+        \\INSERT INTO documents (id, workspace_id, title, content)
+        \\VALUES ('doc_1', 'ws_1', 'Notes', '# hello')
+    , &.{});
+
+    var q = try ctx.db.query(alloc, "SELECT format FROM documents WHERE id = 'doc_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("markdown", row.values[0]);
+
+    try testing.expectError(error.ExecuteFailed, ctx.db.exec(alloc,
+        \\INSERT INTO documents (id, workspace_id, format) VALUES ('doc_2', 'ws_1', NULL)
+    , &.{}));
+}
+
+test "Migration098 indexes workspace_id so cross-workspace reads stay scoped" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration098CreateDocuments.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO documents (id, workspace_id, title) VALUES
+        \\  ('doc_a', 'ws_1', 'A'), ('doc_b', 'ws_2', 'B')
+    , &.{});
+
+    var q = try ctx.db.query(alloc,
+        "SELECT id FROM documents WHERE workspace_id = ?", &.{"ws_2"});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("doc_b", row.values[0]);
+    try testing.expect((try q.next()) == null);
+}
+
+test "Migration098 is idempotent on a re-run" {
+    const alloc = testing.allocator;
+    var ctx = try setupDb();
+    defer ctx.threaded.deinit();
+    defer ctx.db.deinit();
+
+    try Migration098CreateDocuments.up(&ctx.db, alloc);
+    try ctx.db.exec(alloc,
+        \\INSERT INTO documents (id, workspace_id, title, content) VALUES ('doc_1', 'ws_1', 'Notes', 'body')
+    , &.{});
+
+    // Both statements are IF NOT EXISTS, so a re-run must not throw
+    // "table already exists" and must not disturb the stored row.
+    try Migration098CreateDocuments.up(&ctx.db, alloc);
+    try Migration098CreateDocuments.up(&ctx.db, alloc);
+
+    var q = try ctx.db.query(alloc, "SELECT title, content FROM documents WHERE id = 'doc_1'", &.{});
+    defer q.deinit();
+    const row = (try q.next()) orelse return error.RowMissing;
+    defer row.deinit(alloc);
+    try testing.expectEqualStrings("Notes", row.values[0]);
+    try testing.expectEqualStrings("body", row.values[1]);
+}
+
+test "Migration098 is registered in allMigrations" {
+    for (allMigrations) |m| {
+        if (m.version == Migration098CreateDocuments.version) return;
+    }
+    return error.Migration098NotRegistered;
 }

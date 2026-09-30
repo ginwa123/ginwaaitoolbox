@@ -7,6 +7,7 @@ import { useWorkspacesStore } from '../../stores/workspaces'
 import { useSidebarStore } from '../../stores/sidebar'
 import { useNotificationStore } from '../../stores/notifications'
 import ProjectsList from '../workspace/ProjectsList.vue'
+import DocumentsList from '../workspace/DocumentsList.vue'
 import WorkspaceSwitcher from '../workspace/WorkspaceSwitcher.vue'
 import ChatsList from '../views/ChatsList.vue'
 import WorkspaceModal from '../dialogs/WorkspaceModal.vue'
@@ -1504,12 +1505,14 @@ defineExpose({
         class="w-[var(--sb-hit)] text-center text-meta leading-none"
         :style="{ color: 'var(--semantic-text-dim)' }"
         aria-hidden="true"
-      >{{ isCreatingChat ? '◌' : '✎' }}</span>
+        >{{ isCreatingChat ? '◌' : '✎' }}</span
+      >
       <span
         v-if="!isCollapsed"
         class="text-dense font-medium"
         :style="{ color: 'var(--semantic-text-dim)' }"
-      >New Chat</span>
+        >New Chat</span
+      >
     </button>
 
     <!-- Content -->
@@ -1544,6 +1547,11 @@ defineExpose({
           @go-to-settings="handleGoToSettings"
         />
       </div>
+
+      <!-- Documents (Migration 095). Its own section BELOW Projects — a
+           document belongs to the workspace, not to a project, so it
+           never appears inside the project tree. -->
+      <DocumentsList v-if="!isCollapsed" :workspace-id="workspacesStore.activeWorkspaceId" />
     </nav>
 
     <!-- Modals -->

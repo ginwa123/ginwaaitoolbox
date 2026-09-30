@@ -46,6 +46,11 @@ const MENU_FILES = [
   'components/workspace/WorkspaceSwitcher.vue',
   'components/views/ChatsList.vue',
   'components/workspace/ProjectsList.vue',
+  // Documents section (Migration 095). Added to MENU_FILES so the
+  // arbitrary-padding / font-size / type-token bans below apply to it —
+  // a new sidebar section that skips the guard is how the panel drifts
+  // back to four different left edges.
+  'components/workspace/DocumentsList.vue',
   'components/workspace/WorkspaceItem.vue',
   'components/workspace/WorkspaceItemTaskRow.vue',
 ]
@@ -55,6 +60,11 @@ const ROW_FILES = [
   'components/views/ChatsList.vue',
   'components/workspace/WorkspaceItem.vue',
   'components/workspace/WorkspaceItemTaskRow.vue',
+  // Documents rows (Migration 095) are the same kind of object as a chat
+  // row: one clickable line in a sidebar list. They must resolve their
+  // height and type off the same two tokens or the panel grows a fourth
+  // row rhythm.
+  'components/workspace/DocumentsList.vue',
 ]
 
 const read = (p: string) => readFileSync(resolve(SRC, p), 'utf8')
@@ -134,6 +144,10 @@ describe('sidebar spacing + type scale', () => {
     for (const [name, file] of [
       ['Recent', 'components/views/ChatsList.vue'],
       ['Projects', 'components/workspace/ProjectsList.vue'],
+      // Documents (Migration 095) is a third peer section, not a
+      // sub-header of Projects — so it answers the same three questions
+      // the other two do.
+      ['Documents', 'components/workspace/DocumentsList.vue'],
     ] as const) {
       const src = read(file)
       if (!src.includes('px-[var(--sb-gutter)] h-7')) {
