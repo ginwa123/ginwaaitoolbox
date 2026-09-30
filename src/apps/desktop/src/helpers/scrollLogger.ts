@@ -398,7 +398,14 @@ export const createScrollLogger = (chatId: string): ScrollLogger => {
     const { scrollTop, scrollHeight, clientHeight, messages, isAtBottom, extra, containerInfo } =
       partial
     const distanceFromTop = Math.max(0, scrollTop)
-    const distanceFromBottom = Math.max(0, scrollHeight - scrollTop - clientHeight)
+    // Prefer the caller's own number. Callers that know the real bottom edge
+    // (`buildScrollContext` resolves it through the scroller's
+    // `bottomScrollTop`) hand one in; recomputing it from the raw sizer here
+    // would print a gap that contradicts the `isAtBottom` on the same line.
+    const distanceFromBottom =
+      typeof partial.distanceFromBottom === 'number'
+        ? Math.max(0, partial.distanceFromBottom)
+        : Math.max(0, scrollHeight - scrollTop - clientHeight)
     const scrollable = scrollHeight - clientHeight
     const scrollPercent = scrollable > 0 ? Math.min(1, Math.max(0, scrollTop / scrollable)) : -1
     return {
@@ -653,6 +660,32 @@ const buildScrollerState = (scrollerRef: { value: unknown } | null | undefined):
 }
 
 /**
+ * THE bottom edge, in scrollTop coordinates — the same number the
+ * VirtualScroller's `scrollToBottom` is about to target.
+ *
+ * `scrollHeight - clientHeight` is only the bottom edge when the sizer agrees
+ * with the real content. `VirtualScroller` deliberately targets the real
+ * content bottom instead whenever the model overshoots by more than its
+ * hysteresis, and the tail-gap cap (`maxTailGap`, 100px by default) makes that
+ * overshoot the NORMAL case at the end of a long chat. Anything that asks
+ * "is the reader at the bottom?" must ask the scroller, or it will answer
+ * "no" for a reader sitting on the last message.
+ *
+ * Falls back to the DOM edge when the scroller ref is not populated (mount
+ * races) or exposes no `bottomScrollTop` (a stub, an older child).
+ */
+const resolveBottomEdge = (
+  scrollerRef: { value: unknown } | null | undefined,
+  container: HTMLElement | null | undefined,
+): number => {
+  const domEdge = Math.max(0, (container?.scrollHeight ?? 0) - (container?.clientHeight ?? 0))
+  const scroller = scrollerRef?.value as { bottomScrollTop?: () => number } | null | undefined
+  if (!scroller || typeof scroller.bottomScrollTop !== 'function') return domEdge
+  const edge = scroller.bottomScrollTop()
+  return Number.isFinite(edge) ? edge : domEdge
+}
+
+/**
  * Build the diagnostic `WrapperState` block for the outer flex
  * wrapper. Tells you whether the layout chain reached the
  * scroller's parent. Like `buildContainerInfo`, only pays the
@@ -717,6 +750,14 @@ export const buildScrollContext = (
   const scrollTop = container?.scrollTop ?? 0
   const scrollHeight = container?.scrollHeight ?? 0
   const clientHeight = container?.clientHeight ?? 0
+  // `distanceFromBottom` must be the number the CALLER decided with. ChatView
+  // measures against the scroller's `bottomScrollTop()` — the real content
+  // bottom — because `scrollHeight - clientHeight` can sit `maxTailGap` (100px)
+  // below the position a successful auto-stick actually lands on. A logger
+  // that recomputed the DOM number here would print a `distanceFromBottom`
+  // that contradicts the `isAtBottom` on the very same line, which is the one
+  // thing this logger exists to prevent.
+  const bottomEdge = resolveBottomEdge(fallback.virtualScrollerRef, container)
   return {
     chatId: fallback.chatId,
     messages: fallback.messages,
@@ -725,7 +766,7 @@ export const buildScrollContext = (
     scrollHeight,
     clientHeight,
     distanceFromTop: Math.max(0, scrollTop),
-    distanceFromBottom: Math.max(0, scrollHeight - scrollTop - clientHeight),
+    distanceFromBottom: Math.max(0, bottomEdge - scrollTop),
     scrollPercent:
       scrollHeight - clientHeight > 0
         ? Math.min(1, Math.max(0, scrollTop / (scrollHeight - clientHeight)))

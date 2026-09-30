@@ -843,6 +843,16 @@ interface VirtualScrollerExposed {
   scrollToIndex: (index: number, behavior?: ScrollBehavior) => void
   scrollToTop: (behavior?: ScrollBehavior) => void
   scrollToBottom: (behavior?: ScrollBehavior) => void
+  /**
+   * The scrollTop that counts as "the bottom" — the same number
+   * `scrollToBottom` is about to use. `handleVirtualScroll` MUST measure
+   * at-bottom against this rather than `scrollHeight - clientHeight`: when
+   * the height model overshoots the real content, the DOM's max sits up to
+   * `maxTailGap` (100px) BELOW the last message, so the DOM measure reports
+   * a perfectly good auto-stick as "the user left the bottom" and disarms
+   * every later stick for the rest of the mount.
+   */
+  bottomScrollTop: () => number
   scrollToPosition: (scrollTop: number, behavior?: ScrollBehavior) => void
   scrollToItem: (index: number, behavior?: ScrollBehavior) => void
   /** Full height-model recompute from the live DOM (append-gap fix). */
@@ -889,7 +899,16 @@ const scrollerContainerRef = computed<HTMLElement | null>(
 // a function (re-resolved on its interval) instead of a raw element.
 const getChatScrollContainer = (): HTMLElement | null => scrollerContainerRef.value
 const chatScrollStorageKey = computed(() => `chat-scroll-${sessionId.value || props.chatId}`)
-const chatScrollRestore = useChatScrollRestore(scrollerContainerRef, chatScrollStorageKey)
+// The restore composable's "is the saved position still at the bottom?" test
+// has to use the SAME bottom edge the auto-stick uses, or a position saved
+// while the reader sat on the last message (which lives at the real content
+// bottom, up to `maxTailGap` above the DOM edge) reads as "scrolled up" and
+// gets restored verbatim.
+const chatScrollRestore = useChatScrollRestore(
+  scrollerContainerRef,
+  chatScrollStorageKey,
+  (el) => virtualScrollerRef.value?.bottomScrollTop?.() ?? el.scrollHeight - el.clientHeight,
+)
 
 // Guard flag for the messages-length watcher's auto-stick. During
 // the initial load, the loadChatHistory branch handles the scroll
@@ -3190,7 +3209,25 @@ const handleVirtualScroll = (
   const { scrollHeight, clientHeight } = container
   const actualScrollTop = container.scrollTop
   const scrollTopMatches = Math.abs(scrollTop - actualScrollTop) < 1
-  const distanceFromBottom = scrollHeight - actualScrollTop - clientHeight
+  // ── "The bottom" is whatever scrollToBottom is about to target ──────────
+  // NOT `scrollHeight - clientHeight`. The sizer is a height MODEL; when it
+  // overshoots the real content, the DOM's max is up to `maxTailGap` (100px
+  // by default) below the last message — and `VirtualScroller.scrollToBottom`
+  // deliberately parks the reader at the real content bottom instead, so the
+  // DOM's max is a position the reader is never AT. Measuring against it
+  // meant every successful auto-stick immediately reported itself as "the user
+  // left the bottom", which disarmed all four auto-stick gates for the rest of
+  // the mount (scrollToBottom(force=false), the onContentShift re-stick, the
+  // SSE-chunk remeasure, the messages-length watcher). That is the
+  // "sometimes it does not autoscroll to bottom" report: the reader sat at the
+  // bottom, the FAB said otherwise, and the stream stopped following.
+  //
+  // The scroller owns this number because it owns the blank-viewport override
+  // that makes the two disagree. Fall back to the DOM measure when the ref is
+  // not populated (mount races, a caller without a scroller) — that path
+  // existed before the override did, so it is the safe default.
+  const bottomEdge = virtualScrollerRef.value?.bottomScrollTop?.() ?? scrollHeight - clientHeight
+  const distanceFromBottom = Math.max(0, bottomEdge - actualScrollTop)
   const distanceFromTop = Math.max(0, actualScrollTop)
   const newIsAtBottom = distanceFromBottom < BOTTOM_THRESHOLD
   const newIsAtTop = distanceFromTop < TOP_THRESHOLD

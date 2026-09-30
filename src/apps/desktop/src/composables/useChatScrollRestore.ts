@@ -69,10 +69,33 @@ const BOTTOM_THRESHOLD_PX = 40
 export function useChatScrollRestore(
   containerRef: Ref<HTMLElement | null>,
   storageKey: Ref<string> | string,
+  /**
+   * Resolves the scrollTop that counts as "the bottom" for this container.
+   *
+   * The DOM's `scrollHeight - clientHeight` is only the bottom when the sizer
+   * agrees with the real content. A VirtualScroller deliberately targets the
+   * REAL content bottom instead when its height model overshoots (and its
+   * tail-gap cap makes that overshoot routine at the end of a long chat), so a
+   * position saved while the reader sat on the last message can sit up to
+   * `maxTailGap` below the DOM edge. Comparing that save against the DOM edge
+   * would (a) fail to recognise it as "still at the bottom" and restore a
+   * stale position, and (b) clamp the restore to the DOM edge, parking the
+   * reader in the blank region below the transcript. ChatView passes the
+   * scroller's `bottomScrollTop`; the default keeps the pre-VirtualScroller
+   * behaviour for plain containers.
+   */
+  resolveBottomEdge?: (container: HTMLElement) => number,
 ): {
   restore: () => number | null
   restorePosition: (value: number) => void
 } {
+  const bottomEdgeOf = (el: HTMLElement): number => {
+    if (resolveBottomEdge) {
+      const edge = resolveBottomEdge(el)
+      if (Number.isFinite(edge)) return edge
+    }
+    return el.scrollHeight - el.clientHeight
+  }
   // Capture the initial key synchronously so readSaved() below has
   // the correct value even when `storageKey` is a Ref (the watch
   // below updates keyRef on future changes, but the watch's
@@ -200,9 +223,10 @@ export function useChatScrollRestore(
     const max = el.scrollHeight - el.clientHeight
     if (max <= 0) return null
     // "Near bottom" branch: if the saved position is within
-    // BOTTOM_THRESHOLD_PX of the max, treat as "still at bottom"
-    // → let the caller fall through to scrollToBottom.
-    if (savedScrollTop >= max - BOTTOM_THRESHOLD_PX) return null
+    // BOTTOM_THRESHOLD_PX of the bottom edge, treat as "still at bottom"
+    // → let the caller fall through to scrollToBottom. The edge is the
+    // caller's, not the DOM's — see `resolveBottomEdge`.
+    if (savedScrollTop >= bottomEdgeOf(el) - BOTTOM_THRESHOLD_PX) return null
     return savedScrollTop
   }
 
@@ -211,6 +235,8 @@ export function useChatScrollRestore(
     if (!el) return
     const max = el.scrollHeight - el.clientHeight
     if (max <= 0) return
+    // Clamp to the DOM edge: the browser clamps there anyway, and the DOM edge
+    // is the furthest the reader can physically go.
     const clamped = Math.max(0, Math.min(value, max))
     el.scrollTop = clamped
   }

@@ -1257,28 +1257,68 @@ const scrollToIndex = (index: number, behavior: ScrollBehavior = 'auto') => {
 }
 const scrollToTop = (behavior: ScrollBehavior = 'auto') =>
   containerRef.value?.scrollTo({ top: 0, behavior })
-const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
-  if (!containerRef.value) return
+/**
+ * THE bottom, as a scrollTop — the single ruler for "is the reader at the end".
+ *
+ * Two different notions of "the bottom" used to live in two files, and they
+ * disagreed by more than either one's tolerance:
+ *
+ *   - the DOM's notion: `scrollHeight - clientHeight`, which trusts the sizer.
+ *     When the height model overshoots the real content, that lands the
+ *     reader in a fully blank region (the blank-viewport bug).
+ *   - the content's notion: `topSpacer + content.offsetHeight`, the actual
+ *     bottom of the last rendered row. This is the one that LOOKS right.
+ *
+ * `scrollToBottom` has always chosen between them, preferring the real bottom
+ * when the model overshoots by more than `HYSTERESIS_PX`. The parent, however,
+ * decided at-bottom with the DOM's number — so a *successful* auto-stick
+ * reported a gap of exactly `maxTailGap` (100 by default) and ChatView read
+ * that as "the user left the bottom", disarming every later auto-stick for the
+ * rest of the session. That is the "sometimes it does not autoscroll to
+ * bottom" report.
+ *
+ * Exposing the choice as a pure function closes the loop: the parent asks
+ * `bottomScrollTop()` for the same number `scrollToBottom` is about to use, so
+ * the two can no longer disagree. Reading `content.offsetHeight` costs a
+ * layout flush, but every caller has already read `scrollHeight` /
+ * `clientHeight` in the same tick, so the layout is warm.
+ *
+ * Two invariants, both load-bearing for a value the parent now TRUSTS:
+ *
+ *   1. Live geometry, not `containerHeight.value`. That ref is a cache fed by
+ *      scroll events and the container ResizeObserver, so it is 0 before the
+ *      first scroll and stale whenever a reflow shrinks the container between
+ *      them. Publishing an anchor derived from it hands the parent a position
+ *      the container is not at — the same "measured 800px off" symptom this
+ *      whole fix is about, reintroduced through a different variable.
+ *   2. Never above the DOM max. The browser clamps `scrollTop` to
+ *      `scrollHeight - clientHeight`, so an anchor past that is a position the
+ *      reader can never occupy, and every at-bottom comparison against it is
+ *      permanently false.
+ */
+const bottomScrollTop = (): number => {
+  const el = containerRef.value
+  if (!el) return 0
+  const clientHeight = el.clientHeight
+  const domEdge = Math.max(0, el.scrollHeight - clientHeight)
   // Real-bottom override (blank-viewport fix) — kept, but now safe because
   // sizerHeight is stable (modelTotal only, no visibleRange dependency).
   // Previously the sizer clamp + this override together caused the loop;
   // with sizer stable, this is a one-time read that doesn't feedback.
   const range = visibleRange.value
-  const content = containerRef.value.querySelector('.virtual-scroller-content')
+  const content = el.querySelector('.virtual-scroller-content')
   const contentH = content ? (content as HTMLElement).offsetHeight : 0
   if (range.end >= props.items.length && contentH > 0) {
     const realBottom = range.topSpacer + contentH
-    const target = Math.max(0, realBottom - containerHeight.value)
-    const modelBottom = containerRef.value.scrollHeight - containerHeight.value
-    if (modelBottom - target > HYSTERESIS_PX) {
-      containerRef.value.scrollTo({ top: target, behavior })
-      return
-    }
+    const target = Math.max(0, realBottom - clientHeight)
+    if (domEdge - target > HYSTERESIS_PX) return target
   }
-  containerRef.value.scrollTo({
-    top: Math.max(0, containerRef.value.scrollHeight - containerHeight.value),
-    behavior,
-  })
+  return domEdge
+}
+
+const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+  if (!containerRef.value) return
+  containerRef.value.scrollTo({ top: bottomScrollTop(), behavior })
 }
 const scrollToPosition = (scrollTop: number, behavior: ScrollBehavior = 'auto') => {
   if (!containerRef.value) return
@@ -1407,6 +1447,7 @@ defineExpose({
   scrollToIndex,
   scrollToTop,
   scrollToBottom,
+  bottomScrollTop,
   scrollToPosition,
   scrollToItem,
   remeasure,
