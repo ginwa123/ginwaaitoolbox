@@ -135,6 +135,11 @@ yarn-error.log*
 .zig-cache/
 zig-cache/
 /.zig-cache
+# scripts/crash_handler_smoke.sh builds its standalone probe with
+# `--cache-dir .zig-cache-smoke` so it never disturbs the main build's
+# cache. That directory was never listed here, so running the smoke test
+# left an untracked build cache a `git add -A` would happily commit.
+.zig-cache-*/
 
 # === Misc local runtime files ===
 *.pid

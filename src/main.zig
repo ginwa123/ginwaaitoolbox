@@ -1,6 +1,19 @@
 const std = @import("std");
 
 const nalarcore = @import("nalarcore");
+
+/// Zig calls `root.debug.handleSegfault` before anything else for a
+/// hardware fault. Declaring it is what puts nalar's crash reporter at
+/// the FRONT of the Windows exception chain — std installs a vectored
+/// handler (`RtlAddVectoredExceptionHandler(0, handleSegfaultWindows)`)
+/// at process start, and vectored handlers run before the
+/// UnhandledExceptionFilter that `installCrashHandlers()` registers.
+/// Without this decl, an access violation is swallowed by std and
+/// nalar's own Windows report never runs.
+///
+/// See `crash_handler.root_debug` for the full ordering argument.
+pub const debug = nalarcore.crash_handler.root_debug;
+
 const ai_mod = nalarcore.ai_mod;
 const sqlite = nalarcore.sqlite;
 const database = nalarcore.database;
