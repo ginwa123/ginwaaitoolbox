@@ -99,6 +99,13 @@ const no_handle: std.Io.File.Handle = switch (builtin.os.tag) {
     else => -1,
 };
 
+/// Stand-in for a pipe `spawn` declined to hand us (`.stdout = .pipe`
+/// always yields one, so this is unreachable in practice). Reading it
+/// reports `error.NotOpenForReading` — `STATUS_INVALID_HANDLE` on
+/// Windows, `EBADF` on POSIX — which `Drain.drain` treats as "stream
+/// over" rather than a reason to abort.
+const absent_pipe: std.Io.File = .{ .handle = no_handle, .flags = .{ .nonblocking = false } };
+
 /// Output + exit status of a finished child. Both buffers are owned by
 /// the caller; release them with [`Result.deinit`].
 pub const Result = struct {
@@ -292,15 +299,31 @@ pub fn run(
         .pgid = if (own_pg) 0 else null,
     });
 
-    // Take ownership of both descriptors and detach them from the
-    // Child in one step. From here on `Child.wait` / `Child.kill` see
-    // null pipes, so std's `childCleanupPosix` closes nothing and its
+    // Take ownership of both pipes and detach them from the Child in
+    // one step. From here on `Child.wait` / `Child.kill` see null
+    // pipes, so std's `childCleanupPosix` closes nothing and its
     // `closeFd` -> `unreachable` path is unreachable. This is the fix
     // for the process-wide SIGABRT.
+    //
+    // Keep the `std.Io.File` values `spawn` produced, handle AND flags.
+    // `File.flags.nonblocking` is not cosmetic: on Windows `spawn`
+    // creates the parent ends of the stdout/stderr pipes with
+    // `MODE.IO.ASYNCHRONOUS` (`std/Io/Threaded.zig::processSpawnWindows`),
+    // so those `File`s carry `.nonblocking = true` and `readStreaming`
+    // must take its APC-wait branch. Rebuilding the `File` around the
+    // bare handle with `.nonblocking = false` made std issue
+    // `NtReadFile` with a null APC routine against an overlapped
+    // handle, which returns `STATUS_PENDING` on the very first read
+    // and trips
+    //     `.PENDING => unreachable, // unrecoverable: wrong File nonblocking flag`
+    // — i.e. it aborted the whole server on the first `run` on
+    // Windows, in every thread that had a drain parked in it.
     const child_pid = child.id;
-    const out_handle = if (child.stdout) |f| f.handle else no_handle;
+    const out_file = child.stdout orelse absent_pipe;
+    const out_handle = out_file.handle;
     child.stdout = null;
-    const err_handle = if (child.stderr) |f| f.handle else no_handle;
+    const err_file = child.stderr orelse absent_pipe;
+    const err_handle = err_file.handle;
     child.stderr = null;
     // `.stdin = .ignore` means no stdin pipe, but be explicit so a
     // future options change cannot resurrect the same hazard.
@@ -314,16 +337,28 @@ pub fn run(
     defer gpa.destroy(out);
     const errs = gpa.create(Drain) catch return error.OutOfMemory;
     defer gpa.destroy(errs);
-    out.* = .{ .gpa = gpa, .io = io, .file = .{ .handle = out_handle, .flags = .{ .nonblocking = false } }, .cap = opts.max_output_bytes };
-    errs.* = .{ .gpa = gpa, .io = io, .file = .{ .handle = err_handle, .flags = .{ .nonblocking = false } }, .cap = opts.max_output_bytes };
+    out.* = .{ .gpa = gpa, .io = io, .file = out_file, .cap = opts.max_output_bytes };
+    errs.* = .{ .gpa = gpa, .io = io, .file = err_file, .cap = opts.max_output_bytes };
     defer {
         // Only reached when we DID join the threads (or when the spawn
         // of a thread failed and we drained inline), so this frees the
         // captured bytes exactly once.
-        if (!out.orphaned) out.release();
-        if (!errs.orphaned) errs.release();
-        closeTolerant(out_handle);
-        closeTolerant(err_handle);
+        //
+        // An orphaned drain keeps its handle open on purpose. On Windows
+        // its read is an APC-backed overlapped operation; `CloseHandle`
+        // on a handle with I/O in flight cancels the IRP, the APC fires
+        // with `STATUS_CANCELLED`, and std's `ntReadFileResult` maps
+        // that status to `unreachable` — trading a leaked HANDLE for
+        // another process-wide abort. One leaked handle per abandoned
+        // child is the cheaper deal; see `Drain.orphaned`.
+        if (!out.orphaned) {
+            out.release();
+            closeTolerant(out_handle);
+        }
+        if (!errs.orphaned) {
+            errs.release();
+            closeTolerant(err_handle);
+        }
     }
 
     // Concurrent drain. Two independent pipes means neither can fill up
@@ -435,6 +470,32 @@ fn skipOnWindows() bool {
 }
 
 const SH = "/bin/sh";
+
+/// The shortest child that exists on the host, so the *host's own* pipe
+/// plumbing gets exercised on every platform. The rest of this file is
+/// POSIX-only, which is how a Windows-only abort shipped: nothing here
+/// ever ran there.
+const probe_argv: []const []const u8 = switch (builtin.os.tag) {
+    .windows => &.{ "cmd.exe", "/C", "echo hello" },
+    else => &.{ SH, "-c", "printf 'hello'" },
+};
+
+test "run: a child's stdout comes back on this host's own pipes" {
+    // Windows regression: rebuilding the child's `File` around the bare
+    // handle dropped `flags.nonblocking = true`, so std read an
+    // `ASYNCHRONOUS` pipe in its synchronous branch, got `STATUS_PENDING`
+    // back from `NtReadFile`, and hit `unreachable` — which kills the
+    // whole process, test binary included, rather than failing here.
+    const gpa = testing.allocator;
+    var r = try run(gpa, testing.io, probe_argv, .{ .timeout_ms = 20_000 });
+    defer r.deinit(gpa);
+
+    try testing.expect(!r.timed_out);
+    try testing.expectEqual(@as(u8, 0), r.term.exited);
+    // `cmd.exe /C echo` emits CRLF; `printf` emits nothing.
+    try testing.expectEqualStrings("hello", std.mem.trimEnd(u8, r.stdout, "\r\n"));
+    try testing.expectEqual(@as(usize, 0), r.stderr.len);
+}
 
 test "run: captures stdout and stderr from a successful child" {
     if (skipOnWindows()) return error.SkipZigTest;
