@@ -49,6 +49,12 @@ pub const SkillsToolRule = prompts.SkillsToolRule;
 // injected when config.json's `skill_evals.enabled` is true. So the switch
 // controls the tool, never the prompt bytes.
 pub const SkillEvalToolRule = prompts.SkillEvalToolRule;
+// The write half of the skills loop — `add_skill` when a task taught
+// something a future session would otherwise rediscover, `edit_skill` when
+// an eval flags a skill as stale. Reads AFTER SkillEvalToolRule on purpose:
+// it closes that loop. Both tools are always equipped, so the block is
+// appended unconditionally and stays byte-identical for every agent.
+pub const SkillWriteToolRule = prompts.SkillWriteToolRule;
 
 // ---------------------------------------------------------------------------
 // Thin delegating re-exports for the two pure helpers that
@@ -1852,4 +1858,93 @@ test "SkillEvalToolRule names the tool and its non-negotiable behaviors" {
     try std.testing.expect(contains(prompt, "Self-check"));
     // It must be honest about the needs_human outcome rather than hiding it.
     try std.testing.expect(contains(prompt, "needs_human"));
+}
+
+// -------------------------------------------------------------------------
+// SkillWriteToolRule — the WRITE half of the skills loop. Until this rule
+// existed the live prompt told the agent how to LOAD a skill (SkillsToolRule,
+// 33 lines, three triggers, a self-check) and mentioned `add_skill` exactly
+// once, as a parenthetical clause inside a load bullet. The 155-line
+// `skills_system_prompt` in prompts/memory.zig carried all the write-side
+// guidance — WHEN TO WRITE, SKILL FORMAT, the add/edit/remove decision tree —
+// and is referenced by nothing in the tree. So the write path was fully
+// plumbed (add_skill/edit_skill exec, auto_save_skill → session_skills,
+// skill_evals_db logging both) and never driven by the prompt.
+// -------------------------------------------------------------------------
+
+test "SkillWriteToolRule reaches the live prompt, not just PROMPT_SECTIONS" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+    try std.testing.expect(contains(src, "prompts_const.SkillWriteToolRule"));
+
+    // Membership of the table `filterAndMergeTools` actually iterates, not a
+    // source grep: a grep would pass on a UNIFIED_TOOL_REGISTRY entry, which
+    // is the dispatcher's table and is never consulted when the tool list is
+    // built. That is how `run_skill_eval` shipped unreachable once already.
+    const tools_equipped = @import("../../agentic_loop/tools_equipped.zig");
+    const equipped = tools_equipped.equips(std.testing.allocator);
+    defer std.testing.allocator.free(equipped);
+    var found_add = false;
+    var found_edit = false;
+    for (equipped) |t| {
+        if (std.mem.eql(u8, t.function.name, "add_skill")) found_add = true;
+        if (std.mem.eql(u8, t.function.name, "edit_skill")) found_edit = true;
+    }
+    try std.testing.expect(found_add);
+    try std.testing.expect(found_edit);
+}
+
+test "SkillWriteToolRule is appended unconditionally, after SkillEvalToolRule" {
+    const src = @embedFile("../../agentic_loop/prompts_build_messages_for_agent_prompt.zig");
+
+    // Order matters: the write rule closes the loop with the eval rule, so it
+    // reads after it. And gating either on `hasTool` would make the cacheable
+    // prefix differ per agent — the one thing that block must not do.
+    const i_eval = std.mem.indexOf(u8, src, "prompts_const.SkillEvalToolRule);").?;
+    const i_write = std.mem.indexOf(u8, src, "prompts_const.SkillWriteToolRule);").?;
+    try std.testing.expect(i_eval < i_write);
+
+    const between = src[i_eval..i_write];
+    try std.testing.expect(std.mem.indexOf(u8, between, "hasTool") == null);
+    try std.testing.expect(std.mem.indexOf(u8, between, "if (") == null);
+
+    // Still in the static prefix, ahead of every dynamic block.
+    const i_memory_md = std.mem.indexOf(u8, src, "makeWorkingDirectoryContext").?;
+    try std.testing.expect(i_write < i_memory_md);
+}
+
+test "SkillWriteToolRule drives the create -> eval -> edit loop" {
+    const prompt: []const u8 = SkillWriteToolRule;
+
+    try std.testing.expect(contains(prompt, "add_skill"));
+    try std.testing.expect(contains(prompt, "edit_skill"));
+    // The loop closes on the eval tool: an outdated skill is fixed, not
+    // re-litigated.
+    try std.testing.expect(contains(prompt, "run_skill_eval"));
+    const i_write_action = std.mem.indexOf(u8, prompt, "**When to write").?;
+    const i_dup_check = std.mem.indexOf(u8, prompt, "check for a near-duplicate").?;
+    const i_format = std.mem.indexOf(u8, prompt, "**Format").?;
+    const i_loop = std.mem.indexOf(u8, prompt, "Close the loop").?;
+    try std.testing.expect(i_write_action < i_dup_check);
+    try std.testing.expect(i_dup_check < i_format);
+    try std.testing.expect(i_format < i_loop);
+}
+
+test "SkillWriteToolRule states when NOT to write and what a skill body needs" {
+    const prompt: []const u8 = SkillWriteToolRule;
+
+    // The anti-bloat half. A write mandate without a stop condition trains
+    // the agent to save every routine task, and every saved skill is a future
+    // `search_skills` row that dilutes the ones that matter.
+    try std.testing.expect(contains(prompt, "Do NOT write"));
+    try std.testing.expect(contains(prompt, "fact"));
+    // Facts go to save_memory; procedures go to skills.
+    try std.testing.expect(contains(prompt, "save_memory"));
+    // Format: frontmatter `description` is what search_skills results are read
+    // from, so the rule has to name it.
+    try std.testing.expect(contains(prompt, "description"));
+    try std.testing.expect(contains(prompt, "name:"));
+    try std.testing.expect(contains(prompt, "## Procedure"));
+    try std.testing.expect(contains(prompt, "## Pitfalls"));
+    // Self-check, like every other mandate in this block.
+    try std.testing.expect(contains(prompt, "Self-check"));
 }
