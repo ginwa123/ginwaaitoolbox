@@ -19,13 +19,25 @@ changes ──▶ lint ──┬─▶ backend (Linux X64)   ──▶ functiona
 | File | Role |
 |---|---|
 | `.github/workflows/ci.yml` | the graph and nothing else — 17 jobs, all wiring |
-| `.github/workflows/reusable/backend.yml` | one platform's build + backend tests + release publish |
-| `.github/workflows/reusable/functional.yml` | one platform's + one shard's pytest run |
+| `.github/workflows/ci-backend.yml` | one platform's build + backend tests + release publish |
+| `.github/workflows/ci-functional.yml` | one platform's + one shard's pytest run |
 | `.github/workflows/ci-cancel-on-merge.yml` | kills a merged PR's still-running jobs |
 
-The two reusable workflows live in a **subdirectory** on purpose: GitHub only
-auto-discovers the *top level* of `.github/workflows`, so `reusable/*.yml` can
-never start a run of its own. They are reachable only via `uses:`.
+The two reusable workflows sit at the **top level** of `.github/workflows`,
+not in a subdirectory. A subdirectory reads as tidier and is rejected by
+GitHub outright:
+
+```
+Invalid workflow file: .github/workflows/ci.yml#L227
+invalid value workflow reference: workflows must be defined at the top
+level of the .github/workflows/ directory
+```
+
+and the symptom is a **0-second run with zero jobs and no check on the PR** —
+which reads as "CI did not run" rather than "CI did not parse". Their only
+trigger is `workflow_call`, so neither can start a run by itself; they appear
+in the Actions tab as two entries that do nothing when clicked. That is the
+price of the per-platform dependency edges.
 
 ### Why the graph looks like that
 
@@ -191,7 +203,7 @@ sources and a 10-minute cross-compile.
 
 ## What the backend job does
 
-One call of `reusable/backend.yml` per platform. Each cell runs the same
+One call of `ci-backend.yml` per platform. Each cell runs the same
 sequence and produces the artifact native to its image:
 
 1. `mlugg/setup-zig@v2` — Zig 0.16.0; `actions/setup-node@v4` — Node 24;
@@ -465,8 +477,8 @@ Run `actionlint` on all three workflow files before pushing:
 
 ```bash
 actionlint .github/workflows/ci.yml \
-           .github/workflows/reusable/backend.yml \
-           .github/workflows/reusable/functional.yml
+           .github/workflows/ci-backend.yml \
+           .github/workflows/ci-functional.yml
 ```
 
 GitHub rejects invalid workflow syntax at **parse** time: the run appears for
@@ -476,6 +488,10 @@ stricter and knows the expression contexts each key accepts (e.g. `runner` is
 available in step `env:` but *not* in job-level `env:`; `shell:` accepts no
 `${{ }}` at all). It also knows each action's real input list, which is how
 the `body_file` → `body_path` bug in this very restructure was caught.
+
+What it does **not** know is GitHub's own workflow-file rules — the
+"top level of `.github/workflows`" restriction above was found by pushing
+and reading the run page, not by any local check.
 
 Three things to keep in sync when you edit:
 

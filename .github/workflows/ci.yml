@@ -12,7 +12,7 @@
 #    not start until macOS AND Windows had finished, using neither of
 #    their artifacts. A matrix has no per-cell dependency edge; a
 #    workflow call does. The three backends are now three separate jobs
-#    (`.github/workflows/reusable/backend.yml`, called once per platform)
+#    (`.github/workflows/ci-backend.yml`, called once per platform)
 #    and each functional shard `needs:` exactly one of them.
 #    Same for android: it needed the whole backend matrix and now needs
 #    nothing but `lint`.
@@ -41,12 +41,26 @@
 #    protection needs to list, so the matrix can change shape without
 #    anyone editing the ruleset.
 #
-# The reusable workflows live in a subdirectory on purpose: GitHub only
-# auto-discovers the TOP level of .github/workflows, so
-# `reusable/backend.yml` can never start a run of its own. They also
-# declare no `concurrency:` of their own — inside a called workflow
-# `github.workflow` is the CALLER's name, so three calls would share one
-# group and cancel each other. The single group below is the only one.
+# The two reusable workflows sit at the TOP level of .github/workflows and
+# NOT in a subdirectory. A subdirectory looks tidier and is wrong: GitHub
+# rejects the whole workflow with
+#   invalid value workflow reference: workflows must be defined at the top
+#   level of the .github/workflows/ directory
+# and the symptom is a 0-second run with zero jobs and no check on the PR —
+# which reads as "CI did not run" rather than "CI did not parse". That is
+# what happened to ci.yml#747's first push; `uses:` paths in the PR body
+# and in docs/ci.md are the only other places the path is written.
+#
+# Their only trigger is `workflow_call`, so neither can start a run by
+# itself — they appear in the Actions tab as two entries that do nothing
+# when clicked. That is the price of the per-platform dependency edges,
+# and it is the whole trade: a matrix has no per-cell edge, a workflow
+# call does.
+#
+# They also declare no `concurrency:` of their own — inside a called
+# workflow `github.workflow` is the CALLER's name, so three calls would
+# share one group and cancel each other. The single group below is the
+# only one.
 name: ci
 
 on:
@@ -224,7 +238,7 @@ jobs:
     # workflow default of read.
     permissions:
       contents: write
-    uses: ./.github/workflows/reusable/backend.yml
+    uses: ./.github/workflows/ci-backend.yml
     with:
       os: ubuntu-24.04
       label: Linux X64
@@ -239,7 +253,7 @@ jobs:
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
     permissions:
       contents: write
-    uses: ./.github/workflows/reusable/backend.yml
+    uses: ./.github/workflows/ci-backend.yml
     with:
       os: macos-15
       label: macOS ARM64
@@ -255,7 +269,7 @@ jobs:
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
     permissions:
       contents: write
-    uses: ./.github/workflows/reusable/backend.yml
+    uses: ./.github/workflows/ci-backend.yml
     with:
       os: windows-2022
       label: Windows X64
@@ -294,7 +308,7 @@ jobs:
     name: functional Linux X64 · shard 1/3
     needs: [changes, lint, backend-linux]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: ubuntu-24.04
       label: Linux X64
@@ -307,7 +321,7 @@ jobs:
     name: functional Linux X64 · shard 2/3
     needs: [changes, lint, backend-linux]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: ubuntu-24.04
       label: Linux X64
@@ -320,7 +334,7 @@ jobs:
     name: functional Linux X64 · shard 3/3
     needs: [changes, lint, backend-linux]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: ubuntu-24.04
       label: Linux X64
@@ -333,7 +347,7 @@ jobs:
     name: functional macOS ARM64 · shard 1/3
     needs: [changes, lint, backend-macos]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: macos-15
       label: macOS ARM64
@@ -346,7 +360,7 @@ jobs:
     name: functional macOS ARM64 · shard 2/3
     needs: [changes, lint, backend-macos]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: macos-15
       label: macOS ARM64
@@ -359,7 +373,7 @@ jobs:
     name: functional macOS ARM64 · shard 3/3
     needs: [changes, lint, backend-macos]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: macos-15
       label: macOS ARM64
@@ -372,7 +386,7 @@ jobs:
     name: functional Windows X64 · shard 1/3
     needs: [changes, lint, backend-windows]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: windows-2022
       label: Windows X64
@@ -385,7 +399,7 @@ jobs:
     name: functional Windows X64 · shard 2/3
     needs: [changes, lint, backend-windows]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: windows-2022
       label: Windows X64
@@ -398,7 +412,7 @@ jobs:
     name: functional Windows X64 · shard 3/3
     needs: [changes, lint, backend-windows]
     if: ${{ needs.lint.result == 'success' && needs.changes.outputs.heavy == 'true' && !cancelled() }}
-    uses: ./.github/workflows/reusable/functional.yml
+    uses: ./.github/workflows/ci-functional.yml
     with:
       os: windows-2022
       label: Windows X64
@@ -419,7 +433,7 @@ jobs:
     # desktop binaries and the phone client.
     #
     # A SEPARATE job rather than a fourth platform in the backend chain.
-    # Every step of `reusable/backend.yml` reads `inputs.target_zig` /
+    # Every step of `ci-backend.yml` reads `inputs.target_zig` /
     # `inputs.target_step` (cache key, staging dir name, release asset glob,
     # the `!= '__SKIP__'` smoke-test gate), so an Android entry there would
     # have to invent a zig triple to keep that shape -- and the triple would

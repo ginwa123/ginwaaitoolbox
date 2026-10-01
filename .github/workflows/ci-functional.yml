@@ -24,7 +24,7 @@
 # per-test cost is boot-a-nalar, not compile: the expensive input is
 # wall clock, and only separate jobs attack wall clock.
 #
-# NO `concurrency:` BLOCK — see the identical note in reusable/backend.yml.
+# NO `concurrency:` BLOCK — see the identical note in ci-backend.yml.
 #
 # BOTH SUITES, ONE PYTEST INVOCATION
 # ---------------------------------
